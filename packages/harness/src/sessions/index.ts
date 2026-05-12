@@ -136,6 +136,7 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
+  const contentCaptureMode = resolveContentCaptureMode(definition.telemetry, definition.logger)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterContext: HarnessAdapterContext = {
     harnessName: definition.name,
@@ -426,7 +427,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.name': definition.name,
           'harness.session.id': sessionId,
           'harness.run.id': runId,
-          'harness.agent.id': agentId
+          'harness.agent.id': agentId,
+          'harness.telemetry.content_capture_mode': contentCaptureMode,
+          ...metadataSpanAttrs(opts?.metadata)
         }, async () => {
         await emit({ type: 'run.started', runId, at: startedAt })
         const resolvedHistoryWindow = opts?.historyWindow ?? definition.defaults.historyWindow
@@ -604,7 +607,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.name': definition.name,
           'harness.session.id': sessionId,
           'harness.run.id': runId,
-          'harness.workflow.id': workflowId
+          'harness.workflow.id': workflowId,
+          'harness.telemetry.content_capture_mode': contentCaptureMode,
+          ...metadataSpanAttrs(opts?.metadata)
         }, async () => {
         const runStarted: RunEvent = { type: 'run.started', runId, at: startedAt }
         await emit(runStarted)
@@ -672,7 +677,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.name': definition.name,
           'harness.session.id': sessionId,
           'harness.run.id': runId,
-          'harness.workflow.id': workflowId
+          'harness.workflow.id': workflowId,
+          ...metadataSpanAttrs(opts?.metadata)
         }, async () => runWorkflow<S>({
             ...workflowArgs,
             ...(opts ? { opts: { ...opts, signal: runSignal.signal } } : { opts: { signal: runSignal.signal } })
@@ -819,13 +825,50 @@ async function withIncomingTraceContext<T>(
   if (!opts?.traceparent) return fn()
   if (!isValidTraceparent(opts.traceparent) || (opts.tracestate !== undefined && !isValidTracestate(opts.tracestate))) {
     logger.warn('Invalid Trace Context ignored.', {
-      code: 'INVALID_TRACE_CONTEXT',
+      'harness.warning.code': 'INVALID_TRACE_CONTEXT',
       traceparent: opts.traceparent,
       tracestate: opts.tracestate
     })
     return fn()
   }
   return telemetry.withTraceContext?.({ traceparent: opts.traceparent, ...(opts.tracestate ? { tracestate: opts.tracestate } : {}) }, fn) ?? fn()
+}
+
+function resolveContentCaptureMode(options: TelemetryOptions | undefined, logger: Logger): string {
+  if (options?.contentCaptureMode !== undefined) {
+    if (options.captureContent !== undefined) {
+      logger.warn('Deprecated telemetry captureContent ignored because contentCaptureMode is set.', {
+        'harness.warning.code': 'TELEMETRY_CAPTURE_CONTENT_DEPRECATED'
+      })
+    }
+    return options.contentCaptureMode
+  }
+  if (options?.captureContent === true) return 'SPAN_AND_EVENT'
+  if (options?.captureContent === false) return 'NO_CONTENT'
+  const envValue = process.env['OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT']
+  if (envValue === 'true') return 'SPAN_AND_EVENT'
+  if (envValue === 'false') return 'NO_CONTENT'
+  if (envValue === 'NO_CONTENT' || envValue === 'SPAN_ONLY' || envValue === 'EVENT_ONLY' || envValue === 'SPAN_AND_EVENT') return envValue
+  return 'NO_CONTENT'
+}
+
+function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
+  const attrs: Record<string, string | number | boolean | undefined> = {}
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
+    if (typeof value === 'string') {
+      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'boolean') {
+      attrs[`harness.metadata.${key}`] = value
+    }
+  }
+  return attrs
 }
 
 function isValidTraceparent(traceparent: string): boolean {

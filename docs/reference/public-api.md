@@ -206,9 +206,12 @@ defineHarness()
 | `openinference_only` | OpenInference attributes only. |
 
 `contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
-`SPAN_AND_EVENT`. The default is `NO_CONTENT`. The deprecated
-`captureContent: true` option maps to content capture for telemetry only and
-does not affect persisted StateStore events.
+`SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
+prompt, output, tool argument/result, context, file, and memory content out of
+spans, span events, and persisted StateStore events. Non-`NO_CONTENT` modes are
+reserved compatibility inputs for future content telemetry. The deprecated
+`captureContent: true` option maps to `SPAN_AND_EVENT` policy but does not
+cause v1 core to emit content.
 
 ## Eval Helpers
 
@@ -235,6 +238,10 @@ pass rate descending, then candidate id ascending.
 `@purista/harness/testing` exports `evaluateDeterministicScorer(...)` for
 unit-testing `regex`, `contains`, `json-schema`, and `attribute-equality`
 scorers without invoking a model provider.
+
+The `json-schema` scorer is a deterministic subset, not a full JSON Schema
+draft implementation. It supports `type`, `const`, `enum`, object
+`properties`, object `required`, and `additionalProperties: false`.
 
 ## OpenAI Adapter
 

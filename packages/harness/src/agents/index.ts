@@ -70,14 +70,34 @@ export async function runDefaultAgent(args: {
     'gen_ai.operation.name': 'invoke_agent',
     'openinference.span.kind': 'AGENT',
     'metadata.agent_name': args.agentId,
-    'metadata.agent_id': args.runId,
+    'metadata.agent_id': args.agentId,
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
-    [ATTR_GEN_AI_AGENT_ID]: args.runId,
+    [ATTR_GEN_AI_AGENT_ID]: args.agentId,
     'harness.agent.model': args.agent.model,
-    'harness.agent.has_handler': args.agent.handler !== undefined
+    'harness.agent.has_handler': args.agent.handler !== undefined,
+    ...metadataSpanAttrs(args.metadata)
   }
   const execute = () => runDefaultAgentInner(args)
   return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, execute)
+}
+
+function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
+  const attrs: Record<string, string | number | boolean | undefined> = {}
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
+    if (typeof value === 'string') {
+      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'boolean') {
+      attrs[`harness.metadata.${key}`] = value
+    }
+  }
+  return attrs
 }
 
 async function runDefaultAgentInner(args: {

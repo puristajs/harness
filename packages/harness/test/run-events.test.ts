@@ -29,7 +29,7 @@ describe('run event persistence privacy', () => {
     expect(events.some((event) => Object.prototype.hasOwnProperty.call(event.payload as object, 'at'))).toBe(false)
   })
 
-  it('keeps persisted event content redacted even when telemetry content capture is enabled', async () => {
+  it('keeps persisted event content redacted even when a non-default telemetry content policy is configured', async () => {
     const state = new InMemoryStateStore()
     const harness = defineHarness()
       .telemetry({ captureContent: true, contentCaptureMode: 'SPAN_AND_EVENT' })

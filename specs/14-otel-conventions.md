@@ -45,14 +45,19 @@ Default: env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else
 
 | Mode | Span attributes | Span events |
 | --- | --- | --- |
-| `NO_CONTENT` | Content, tool arguments, tool results, documents, and files omitted or `null`. | Events may be emitted with content fields `null`. |
-| `SPAN_ONLY` | OpenInference indexed content attributes are emitted when flavor includes OpenInference. | OTel content events use `null` content. |
-| `EVENT_ONLY` | OpenInference indexed content attributes are omitted or `null`. | OTel GenAI content events include content when flavor includes GenAI. |
-| `SPAN_AND_EVENT` | Both OpenInference indexed content attributes and OTel content events include content. | Both include content. |
+| `NO_CONTENT` | Content, tool arguments, tool results, documents, and files omitted. | No content-bearing span events are emitted by core. |
+| `SPAN_ONLY` | Reserved in v1; core still omits content attributes. | No content-bearing span events are emitted by core. |
+| `EVENT_ONLY` | Content attributes omitted. | Reserved in v1; core still emits no content-bearing span events. |
+| `SPAN_AND_EVENT` | Reserved in v1; core still omits content attributes. | Reserved in v1; core still emits no content-bearing span events. |
 
 Structured objects, prompts, documents, tool parameters, tool results, file
 content, and model outputs are content. Operational metadata such as ids, token
 counts, finish reasons, dimensions, and scores is not content.
+
+The enum is intentionally present before content telemetry is implemented so
+applications and adapters can pass a stable policy value. In v1, selecting a
+non-`NO_CONTENT` mode never causes core to emit prompt, output, tool argument,
+tool result, expected-output, context, file, or memory content.
 
 ## Attribute value types
 
@@ -213,9 +218,8 @@ Emitted by `evaluatePromptCandidates`.
 | `harness.eval.score` | double |
 | `harness.eval.passed` | boolean |
 
-No prompt, input, expected output, or context content is emitted unless
-`contentCaptureMode` permits span content. When permitted, the helper may emit
-`input.value` and `output.value` OpenInference attributes as JSON strings.
+No prompt, input, expected output, or context content is emitted by v1 core,
+regardless of `contentCaptureMode`.
 
 ## Sandbox and state spans
 
@@ -251,9 +255,9 @@ Latest experimental event:
 
 - `gen_ai.client.inference.operation.details`
 
-The harness emits legacy events for broad backend compatibility and may also
-emit the latest experimental aggregate event. Content fields follow
-`contentCaptureMode`; when content is disabled they are `null`.
+v1 core does not emit these content events. Future implementations that add
+content events must follow `contentCaptureMode` and preserve `NO_CONTENT` as the
+default.
 
 ## Errors
 

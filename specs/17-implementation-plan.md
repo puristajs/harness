@@ -195,8 +195,8 @@ Deliverables:
 - `evaluatePromptCandidates` in the main `@purista/harness` export, with stable
   ordering, abort propagation, aggregate score calculation, and deterministic
   sorting.
-- `evaluateDeterministicScorer` plus deterministic scorer types under
-  `@purista/harness/testing`.
+- `evaluateDeterministicScorer` plus deterministic scorer types in the main
+  `@purista/harness` export, re-exported by `@purista/harness/testing`.
 - No Cloudgrid adapter package, HTTP endpoint, dataset store, prompt-version
   store, product scorer registry, Python, Optuna, or external optimizer
   dependency.

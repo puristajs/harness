@@ -151,10 +151,12 @@ executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 
 ```ts
 .logger(new JsonLogger({ level: process.env.PURISTA_HARNESS_LOG_LEVEL ?? 'info' }))
-.telemetry({ captureContent: false })
+.telemetry({ contentCaptureMode: 'NO_CONTENT' })
 ```
 
-`captureContent` defaults to false. Keep it false outside local diagnostics.
+`contentCaptureMode` defaults to `NO_CONTENT`. v1 core accepts the full enum but
+does not emit prompt, model output, tool input/result, file, memory,
+expected-output, or context content in any mode.
 
 ## Environment Variables Used By Examples
 

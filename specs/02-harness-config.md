@@ -58,8 +58,10 @@ interface TelemetryOptions {
    */
   flavor?: 'dual' | 'gen_ai_only' | 'openinference_only'
   /**
-   * OTel GenAI content capture mode. Defaults to env
+   * Content telemetry policy. Defaults to env
    * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`.
+   * In v1 core, non-`NO_CONTENT` values are reserved and do not cause content
+   * to be emitted.
    */
   contentCaptureMode?: 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
   /**
@@ -74,6 +76,10 @@ Default: `{ flavor: 'dual', contentCaptureMode: 'NO_CONTENT' }`. Tracer and
 meter names are locked to `'@purista/harness'` (see
 [14-otel-conventions](./14-otel-conventions.md)). `captureContent` remains only
 for compatibility with older callers.
+
+Core v1 never emits prompt, model output, tool input/result, file, memory,
+expected-output, or context content in telemetry or persisted run events,
+regardless of `contentCaptureMode`.
 
 ### `.logger(logger)`
 

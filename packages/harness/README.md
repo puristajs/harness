@@ -7,8 +7,9 @@ The core package also exports provider-neutral eval helpers:
 
 - `evaluatePromptCandidates(...)` compares prompt candidates against a fixed
   item set and deterministic or custom scorers.
-- `@purista/harness/testing` exports `evaluateDeterministicScorer(...)` for
-  unit-testing JSON Pointer based scorer definitions without provider calls.
+- `evaluateDeterministicScorer(...)` runs JSON Pointer based deterministic
+  scorer definitions without provider calls. It is exported from the main
+  package and re-exported from `@purista/harness/testing`.
 
 Telemetry defaults to dual GenAI and OpenInference attributes with no content
 capture. `InvokeOptions.traceparent` and `tracestate` accept inbound W3C Trace

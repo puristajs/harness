@@ -397,7 +397,7 @@ interface InvokeOptions {
 `traceparent`/`tracestate` follow W3C Trace Context and are propagated into the
 run span before child workflow, agent, model, tool, sandbox, and state spans are
 created. `metadata` is available to handlers and emitted only as sanitized
-scalar `harness.metadata.*` attributes as specified in
+scalar string, number, and boolean `harness.metadata.*` attributes as specified in
 [19-ai-eval-core](./19-ai-eval-core.md).
 
 ### `RunSummary`
@@ -544,10 +544,10 @@ export interface ScorerResult {
 }
 ```
 
-The fake adapters, contract suites, and `evaluateDeterministicScorer` helper are
-**only** reachable via `@purista/harness/testing`. They MUST NOT be re-exported
-from the main entry. Shared data types such as `ScorerTarget` and `ScorerResult`
-may be exported by the main entry because `evaluatePromptCandidates` uses them.
+The fake adapters and contract suites are only reachable via
+`@purista/harness/testing`. `evaluateDeterministicScorer` and its deterministic
+scorer types are main-entry runtime exports and are also re-exported by the
+testing subpath for test ergonomics.
 Implementation agents must add a CI test that verifies the actual exports of
 each entry against the lists above.
 

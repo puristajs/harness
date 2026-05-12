@@ -65,6 +65,12 @@ If both `captureContent` and `contentCaptureMode` are supplied,
 `contentCaptureMode` wins and the harness logs one `warn` line with
 `harness.warning.code = "TELEMETRY_CAPTURE_CONTENT_DEPRECATED"`.
 
+v1 core does not emit prompt, completion, tool input/result, expected-output, or
+context content on spans or span events. Non-`NO_CONTENT` values are accepted as
+reserved compatibility inputs for future content telemetry and for adapters that
+want to inspect the configured policy, but persisted `StateStore` events remain
+redacted in every mode.
+
 ## Trace Context propagation
 
 Every public run entry point accepts trace context through `InvokeOptions`:
@@ -91,12 +97,14 @@ Rules:
   logs `warn` with `harness.warning.code = "INVALID_TRACE_CONTEXT"`.
 - `metadata` is not added to model/tool prompts. It is available to custom
   agent/workflow handlers on `ctx.metadata` and is emitted only as sanitized
-  `harness.metadata.<key>` span attributes for scalar JSON values.
+  `harness.metadata.<key>` span attributes for scalar string, number, and
+  boolean JSON values.
 
 Metadata scalar rules:
 
 - strings longer than 256 chars are omitted;
-- numbers, booleans, and null are emitted;
+- finite numbers and booleans are emitted;
+- null is omitted because OTel attributes do not support null values;
 - arrays and objects are omitted;
 - keys must match `/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/`.
 
@@ -132,9 +140,9 @@ collector and does not inspect spans.
 
 ## Deterministic scorer helpers
 
-The harness exports deterministic scorer execution from the testing subpath
-only. `ScorerTarget` and `ScorerResult` are shared main-entry types because
-`evaluatePromptCandidates` uses them.
+The harness exports deterministic scorer execution from the main package
+entrypoint because it is a runtime primitive for local eval workflows.
+`@purista/harness/testing` re-exports the same helper for test ergonomics.
 
 ```ts
 export type DeterministicScorerDefinition =
@@ -156,7 +164,6 @@ export interface ScorerResult {
   evidence?: JsonValue
 }
 
-// testing subpath only
 export function evaluateDeterministicScorer(
   definition: DeterministicScorerDefinition,
   target: ScorerTarget
@@ -169,9 +176,23 @@ Rules:
 - `regex` and `contains` select from `target.output`.
 - Missing pointer targets return
   `{ score: 0, passed: false, evidence: { reason: 'missing_pointer' } }`.
-- `json-schema` validates `target.output`.
+- `json-schema` validates `target.output` with the harness subset listed below.
 - Passing deterministic scorers return `score: 1`; failing scorers return
   `score: 0`.
+
+The `json-schema` scorer is intentionally a small deterministic subset, not a
+full JSON Schema draft implementation. Supported keywords are:
+
+- `type`: `object`, `array`, `string`, `number`, `integer`, `boolean`, `null`
+- `const`
+- `enum`
+- object `properties`
+- object `required`
+- `additionalProperties: false`
+
+Unsupported keywords are ignored. Downstream agents must not assume `$ref`,
+`oneOf`, `anyOf`, `allOf`, `format`, numeric bounds, string patterns, array
+item schemas, or draft-specific behavior.
 
 These helpers are testing/local primitives. LLM judge and RAG scorers are not
 core exports in v1 because they require product-specific dataset, prompt, and

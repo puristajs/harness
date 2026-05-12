@@ -61,7 +61,10 @@ it('emits OpenInference attributes alongside GenAI attributes by default', async
 
   expect(agentSpan?.attrs).toMatchObject({
     'gen_ai.operation.name': 'invoke_agent',
-    'openinference.span.kind': 'AGENT'
+    'openinference.span.kind': 'AGENT',
+    'gen_ai.agent.id': 'responder',
+    'metadata.agent_id': 'responder',
+    'harness.agent.id': 'responder'
   })
   expect(modelSpan?.attrs).toMatchObject({
     'gen_ai.request.model': 'fake',
@@ -108,11 +111,58 @@ it('extracts valid incoming Trace Context before root spans', async () => {
 })
 
 it('ignores invalid incoming Trace Context', async () => {
-  const { session, telemetry } = await runTelemetryFlowHarness()
+  const { session, telemetry, logger } = await runTelemetryFlowHarness()
 
   await session.workflows.wf.prompt('find the policy', {
     traceparent: 'invalid'
   })
 
   expect(telemetry.traceContexts).toEqual([])
+  expect(logger.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      level: 'warn',
+      fields: expect.objectContaining({ 'harness.warning.code': 'INVALID_TRACE_CONTEXT' })
+    })
+  ]))
+})
+
+it('emits sanitized scalar invoke metadata as harness metadata attributes', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy', {
+    metadata: {
+      tenant: 'acme',
+      runNumber: 7,
+      approved: true,
+      nested: { ignored: true },
+      longValue: 'x'.repeat(257),
+      'invalid key': 'ignored'
+    }
+  })
+
+  const sessionSpan = telemetry.spans.find((span) => span.name === 'harness.session.prompt')
+  const workflowSpan = telemetry.spans.find((span) => span.name === 'harness.workflow.run')
+  const agentSpan = telemetry.spans.find((span) => span.name === 'invoke_agent responder')
+
+  for (const span of [sessionSpan, workflowSpan, agentSpan]) {
+    expect(span?.attrs).toMatchObject({
+      'harness.metadata.tenant': 'acme',
+      'harness.metadata.runNumber': 7,
+      'harness.metadata.approved': true
+    })
+    expect(span?.attrs['harness.metadata.nested']).toBeUndefined()
+    expect(span?.attrs['harness.metadata.longValue']).toBeUndefined()
+    expect(span?.attrs['harness.metadata.invalid key']).toBeUndefined()
+  }
+})
+
+it('logs deprecated content capture alias when contentCaptureMode wins', async () => {
+  const { logger } = await runTelemetryFlowHarness({ telemetry: { captureContent: true, contentCaptureMode: 'NO_CONTENT' } })
+
+  expect(logger.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      level: 'warn',
+      fields: expect.objectContaining({ 'harness.warning.code': 'TELEMETRY_CAPTURE_CONTENT_DEPRECATED' })
+    })
+  ]))
 })

@@ -30,6 +30,7 @@ interface WorkflowContext<S, I, O> {
   signal: AbortSignal
   runId: string
   sessionId: string
+  metadata: Readonly<Record<string, JsonValue>>
 }
 ```
 
@@ -38,7 +39,7 @@ interface WorkflowContext<S, I, O> {
 - All registered agents are reachable from `agents`. Workflows are not scoped to a subset.
 - Each `agents[id](input)` call:
   - Validates `input` against the agent's `input` schema. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_input'}.
-  - Opens a child `harness.agent.run` span (linked to the workflow's `harness.workflow.run` span).
+  - Opens a child `invoke_agent {agent.name}` span (linked to the workflow's `harness.workflow.run` span).
   - Executes the agent (default loop or custom handler).
   - Validates the agent's output. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_output'}.
   - Returns the validated output.

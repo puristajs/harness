@@ -1,7 +1,7 @@
-status: approved
+status: needs_human_approval
 human_approval:
-  status: approved
-  approved_at: "2026-05-06"
+  status: pending
+  approved_at: null
 scope:
   specs:
     - specs/00-overview.md
@@ -23,29 +23,36 @@ scope:
     - specs/16-testing.md
     - specs/17-implementation-plan.md
     - specs/18-living-wiki-jaeger-example.md
+    - specs/19-ai-eval-core.md
 summary:
-  updated_at: "2026-05-06"
-  purpose: "Approve the consolidated harness spec set as the current source of truth."
+  updated_at: "2026-05-12"
+  purpose: "Promote harness-owned AI eval research into the ai-harness spec tree while keeping the Cloudgrid adapter out of this repository."
 blocking_decisions: []
 confirmed_decisions:
-  - ".runtime(...), .requires(...), and harness.inspect() are approved public names for adapter capability policy."
-  - "object/object_stream are the approved public provider operation names replacing json/json_stream."
-  - "Embeddings and reranking belong on the model provider port, not on agents or workflows."
-  - "Capabilities are policy: absent operation capabilities remove methods; absent marker capabilities remove related request shapes."
-  - "Sandbox capabilities are policy: files-only sandbox sessions do not expose exec in precise TypeScript types."
-  - "RunEvent remains the internal stream/event surface for PURISTA integration."
-inferred_defaults: []
+  - "The Cloudgrid adapter package belongs in ~/projekte/@cloudgrid/cloudgrid, not in ai-harness."
+  - "ai-harness owns backend-agnostic telemetry emission, trace-context propagation, run summaries, deterministic local scorer helpers, and prompt candidate evaluation helpers."
+  - "OTel GenAI is the primary telemetry convention; OpenInference is emitted as an interoperability shape when telemetry flavor includes it."
+  - "Telemetry content capture controls spans and span events only; persisted StateStore run events remain content-redacted in v1."
+  - "No Python, Optuna, product dataset store, prompt-version store, experiment database, or Cloudgrid-specific HTTP API belongs in harness core."
+inferred_defaults:
+  - "Telemetry flavor defaults to PURISTA_TELEMETRY_FLAVOR, else dual."
+  - "Content capture defaults to OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, else NO_CONTENT."
 gate_simulation:
-  status: passed
+  status: passed_pending_approval
   notes:
-    - "Append-only specs and plan documents were consolidated into the numbered core specs."
-    - "Provider runtime parity and adapter capability policy are active spec requirements."
-    - "Living Wiki Jaeger and Intelligence Workspace requirements are consolidated into specs/18-living-wiki-jaeger-example.md."
+    - "Public API entries now define TelemetryFlavor, ContentCaptureMode, InvokeOptions trace context, RunSummary, evaluatePromptCandidates, and deterministic scorer testing helpers."
+    - "Telemetry spec now locks namespace behavior for dual, gen_ai_only, and openinference_only."
+    - "Implementation plan includes AI eval core helpers and explicitly excludes the Cloudgrid adapter from this repo."
+    - "Testing spec covers telemetry flavor, content capture modes, trace context, run summary, deterministic scorers, and prompt candidate evaluation."
 deterministic_check:
-  command: "rg -n \"19-living-wiki-intelligence-workspace|Living Wiki Intelligence Workspace And MCP Refactor|superseded by \\[19|specs/19-living\" specs README.md docs examples/living-wiki-jaeger/README.md"
-  status: passed
+  command: "rg -n \"cloudgrid-harness-adapter|@cloudgrid|telemetry.captureContent ===|TODO|TBD\" specs"
+  status: passed_with_expected_mentions
+  notes:
+    - "Remaining cloudgrid-harness-adapter/@cloudgrid mentions are negative ownership-boundary statements in specs/19-ai-eval-core.md."
+    - "Remaining captureContent mentions document the deprecated compatibility alias."
 confidence: high
-risks: []
+risks:
+  - "Formal approval is pending because this update changes the previously approved spec set."
 statistics:
-  specs_approved: 19
-  plans_approved: 0
+  specs_reviewed: 20
+  specs_approved: 0

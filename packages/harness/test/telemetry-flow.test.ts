@@ -49,3 +49,70 @@ it('marks failing spans with standard OTel error status and safe error attribute
     'harness.error.retriable': false
   })
 })
+
+it('emits OpenInference attributes alongside GenAI attributes by default', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy')
+
+  const agentSpan = telemetry.spans.find((span) => span.name === 'invoke_agent responder')
+  const modelSpan = telemetry.spans.find((span) => span.name === 'chat fake')
+  const toolSpan = telemetry.spans.find((span) => span.name === 'execute_tool policy_lookup')
+
+  expect(agentSpan?.attrs).toMatchObject({
+    'gen_ai.operation.name': 'invoke_agent',
+    'openinference.span.kind': 'AGENT'
+  })
+  expect(modelSpan?.attrs).toMatchObject({
+    'gen_ai.request.model': 'fake',
+    'openinference.span.kind': 'LLM',
+    'llm.provider': 'fake'
+  })
+  expect(toolSpan?.attrs).toMatchObject({
+    'gen_ai.tool.name': 'policy_lookup',
+    'openinference.span.kind': 'TOOL',
+    'tool.name': 'policy_lookup'
+  })
+})
+
+it('filters telemetry namespaces by configured flavor', async () => {
+  const genAi = await runTelemetryFlowHarness({ telemetry: { flavor: 'gen_ai_only' } })
+  await genAi.session.workflows.wf.prompt('find the policy')
+  const genAiModelSpan = genAi.telemetry.spans.find((span) => span.name === 'chat fake')
+  expect(genAiModelSpan?.attrs['gen_ai.request.model']).toBe('fake')
+  expect(genAiModelSpan?.attrs['openinference.span.kind']).toBeUndefined()
+  expect(genAiModelSpan?.attrs['llm.token_count.total']).toBeUndefined()
+
+  const openInference = await runTelemetryFlowHarness({ telemetry: { flavor: 'openinference_only' } })
+  await openInference.session.workflows.wf.prompt('find the policy')
+  const openInferenceModelSpan = openInference.telemetry.spans.find((span) => span.name === 'chat fake')
+  expect(openInferenceModelSpan?.attrs['gen_ai.request.model']).toBeUndefined()
+  expect(openInferenceModelSpan?.attrs['gen_ai.usage.total_tokens']).toBeUndefined()
+  expect(openInferenceModelSpan?.attrs['openinference.span.kind']).toBe('LLM')
+})
+
+it('extracts valid incoming Trace Context before root spans', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy', {
+    traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    tracestate: 'vendor=value'
+  })
+
+  expect(telemetry.traceContexts).toEqual([
+    {
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      tracestate: 'vendor=value'
+    }
+  ])
+})
+
+it('ignores invalid incoming Trace Context', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy', {
+    traceparent: 'invalid'
+  })
+
+  expect(telemetry.traceContexts).toEqual([])
+})

@@ -12,6 +12,8 @@ The harness gives PURISTA applications a typed runtime boundary for:
 - TypeScript, built-in, and MCP tools;
 - reusable skills;
 - state, sandboxing, logs, traces, and run events;
+- provider-neutral eval helpers for deterministic scorer tests and prompt
+  candidate comparison;
 - provider adapters for OpenAI, Anthropic, Amazon Bedrock, and Azure AI Foundry.
 
 This repository is not a SaaS product. It is lower-level infrastructure that
@@ -53,6 +55,7 @@ See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for
 npm run lint
 npm run typecheck
 npm test
+npm run test:coverage
 npm run build
 ```
 

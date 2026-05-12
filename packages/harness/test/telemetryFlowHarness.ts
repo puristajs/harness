@@ -7,6 +7,7 @@ import { InMemoryStateStore } from '../src/state/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import type { TelemetryShim } from '../src/telemetry/index.js'
+import type { TelemetryOptions } from '../src/index.js'
 
 export class RecordingTelemetry implements TelemetryShim {
   public readonly spans: Array<{
@@ -17,6 +18,7 @@ export class RecordingTelemetry implements TelemetryShim {
     status?: { code: SpanStatusCode; message?: string }
     exceptions: unknown[]
   }> = []
+  public readonly traceContexts: Array<{ traceparent: string; tracestate?: string }> = []
 
   private readonly stack: string[] = []
 
@@ -60,6 +62,11 @@ export class RecordingTelemetry implements TelemetryShim {
   public currentTraceparent(): string | undefined {
     return this.stack.length > 0 ? '00-00000000000000000000000000000001-0000000000000001-01' : undefined
   }
+
+  public async withTraceContext<T>(carrier: { traceparent: string; tracestate?: string }, fn: () => Promise<T>): Promise<T> {
+    this.traceContexts.push(carrier)
+    return fn()
+  }
 }
 
 class FlowModelProvider implements ModelProvider {
@@ -85,11 +92,12 @@ class FlowModelProvider implements ModelProvider {
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean } = {}) {
+export async function runTelemetryFlowHarness(opts: { failTool?: boolean; telemetry?: TelemetryOptions } = {}) {
   const telemetry = new RecordingTelemetry()
   const harness = createSessionHarness<any>({
     name: 'telemetry-test',
     logger: new JsonLogger({ level: 'fatal' }),
+    telemetry: opts.telemetry,
     telemetryShim: telemetry,
     state: new InMemoryStateStore(),
     sandbox: inMemorySandbox(),

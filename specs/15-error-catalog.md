@@ -32,7 +32,7 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - category: `validation`
 - retriable: `false`
 - when: Zod or JSON Schema parse failure on tool/agent/workflow/MCP input/output, memory key, memory value, model request/response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
-- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_request'|'model_response'|'memory_key'|'memory_value'|'message'|'session_history'|'invoke_options'`, `issues: unknown`.
+- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_request'|'model_response'|'memory_key'|'memory_value'|'message'|'session_history'|'invoke_options'|'eval_input'`, `issues: unknown`.
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
@@ -179,6 +179,8 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 The following codes are emitted in log records but are NOT thrown as `HarnessError` instances:
 
 - `STREAM_SUBSCRIBER_FAILED` — a run-event consumer's `take()` threw. The harness removes the subscription, logs `warn` with this code, and the run continues. See [12-streaming](./12-streaming.md) §"Subscriber failures".
+- `TELEMETRY_CAPTURE_CONTENT_DEPRECATED` — both `captureContent` and `contentCaptureMode` were supplied; `contentCaptureMode` wins.
+- `INVALID_TRACE_CONTEXT` — `InvokeOptions.traceparent`/`tracestate` could not be extracted; the run starts a new trace.
 
 ## Cross-references
 

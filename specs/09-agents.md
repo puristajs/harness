@@ -58,6 +58,7 @@ interface AgentContext<S, I, O> {
   signal: AbortSignal
   runId: string
   sessionId: string
+  metadata: Readonly<Record<string, JsonValue>>
 }
 
 interface ConversationHistory {
@@ -196,8 +197,8 @@ When `handler` is provided, the harness skips the default loop and invokes `hand
 
 - Span `invoke_agent {agent.name}` per invocation (GenAI conv); attributes `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.agent.description`, plus `harness.agent.id`, `harness.agent.model`, `harness.agent.has_handler`.
 - Span `harness.agent.iteration` per default-loop iteration; attribute `harness.iteration.index`.
-- Span `chat {request.model}` per model call (GenAI conv).
-- Span `execute_tool {tool.name}` per tool call (GenAI conv); for permission-gated calls, attributes `harness.permission.mode` and `harness.permission.decision`.
+- Span `chat {request.model}` or equivalent provider operation per model call. Attributes follow the active telemetry flavor in [14-otel-conventions](./14-otel-conventions.md).
+- Span `execute_tool {tool.name}` per tool call. Attributes follow the active telemetry flavor; for permission-gated calls, attributes `harness.permission.mode` and `harness.permission.decision` are always present.
 - Histogram `harness.agent.iterations` (sample of total iterations).
 - Counter `harness.permission.denials` per denied tool call.
 - RunEvents: `agent.started`, `agent.finished`, `model.delta`/`model.message`, `model.object.partial`/`model.object` where structured output streaming is used, `tool.started`/`tool.finished`.

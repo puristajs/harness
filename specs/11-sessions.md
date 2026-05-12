@@ -15,6 +15,7 @@ interface Session<S> {
   readonly workflows: { readonly [K in keyof S['workflows']]: WorkflowInvoker<S, K> }
   memory: SessionMemory
   history: ConversationHistory
+  getRunSummary(runId: string): Promise<RunSummary | undefined>
   /** Remove all messages for this session. See "Conversation history and threads". */
   clearHistory(): Promise<void>
   /** Atomically replace history with the provided messages. Each entry gets a fresh ULID and current timestamp. */
@@ -38,6 +39,12 @@ interface InvokeOptions {
   timeoutMs?: number
   /** Override `harness.defaults.historyWindow` for this call. Same semantics; negative throws `ValidationError{where:'invoke_options'}`. */
   historyWindow?: number
+  /** Optional W3C Trace Context parent. Invalid values are ignored with warning log code `INVALID_TRACE_CONTEXT`. */
+  traceparent?: string
+  /** Optional W3C Trace Context state paired with `traceparent`. */
+  tracestate?: string
+  /** Sanitized scalar metadata made available to handlers and emitted as `harness.metadata.*` attributes. */
+  metadata?: Record<string, JsonValue>
 }
 ```
 
@@ -47,6 +54,7 @@ interface InvokeOptions {
 - An `agents` map: one `AgentInvoker` per registered agent id.
 - A `workflows` map: one `WorkflowInvoker` per registered workflow id.
 - `memory` and `history` handles for direct out-of-run access.
+- A `getRunSummary(runId)` method.
 - A `close()` method.
 
 There is no dynamic `session.<workflowId>` property lookup and no `session.agent(...)` method. Direct one-agent execution is available through `session.agents.<agentId>.prompt(...)` and `.stream(...)`. Multi-agent execution is reachable only through workflows.
@@ -67,17 +75,18 @@ For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(
 
 1. **Synchronous pre-checks.** Assert `opts.signal` is not aborted (if aborted, reject in a microtask with `OperationCancelledError{scope:'run'}`). Assert no other run is in-flight on this session (else throw `SessionBusyError` synchronously).
 2. **Acquire session lock.**
-3. **Open `harness.session.prompt` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
-4. **Validate input** via the selected agent/workflow input schema. Failure → `ValidationError{where:'agent_input'|'workflow_input'}`.
-5. **`state.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `prompt`/`stream`.
-6. **Emit `run.started`** to the in-process run queue (see [12-streaming](./12-streaming.md)) and persist via `state.appendEvents`.
-7. **Open child span**: `harness.agent.run` for direct agent runs or `harness.workflow.run` for workflow runs.
-8. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `state.finishRun({status:'succeeded', finishedAt, output})`.
-9. **On error:** classify the error; emit `run.finished{error}`; `state.finishRun({status:'failed'|'cancelled', finishedAt, error})`. (`cancelled` is used when the cause is `OperationCancelledError`; `failed` otherwise — including `OperationTimeoutError`.)
-10. **Close spans, release lock.**
-11. **Resolve `prompt` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
+3. **Extract trace context** from `opts.traceparent`/`opts.tracestate` if present. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`.
+4. **Open `harness.session.prompt` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
+5. **Validate input** via the selected agent/workflow input schema. Failure → `ValidationError{where:'agent_input'|'workflow_input'}`.
+6. **`state.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `prompt`/`stream`.
+7. **Emit `run.started`** to the in-process run queue (see [12-streaming](./12-streaming.md)) and persist via `state.appendEvents`.
+8. **Open child span**: `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
+9. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `state.finishRun({status:'succeeded', finishedAt, output})`.
+10. **On error:** classify the error; emit `run.finished{error}`; `state.finishRun({status:'failed'|'cancelled', finishedAt, error})`. (`cancelled` is used when the cause is `OperationCancelledError`; `failed` otherwise — including `OperationTimeoutError`.)
+11. **Close spans, release lock.**
+12. **Resolve `prompt` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
 
-The outermost span is always `harness.session.prompt`; the child is `harness.agent.run` for direct agent runs or `harness.workflow.run` for workflow runs.
+The outermost span is always `harness.session.prompt`; the child is `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
 
 ## Concurrency rule (locked)
 

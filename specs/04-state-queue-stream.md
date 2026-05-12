@@ -104,7 +104,7 @@ interface PersistedRunEvent {
 - `listMessages` returns messages in ascending order by `(timestamp, id)`. `before` cursor is a message id; pagination is exclusive.
 - `listRuns` returns runs in descending order by `startedAt` then by `id` descending. `before` cursor is a run id; pagination is exclusive.
 - `appendEvents` / `listEvents` preserve insertion order; `after` cursor is an event id; pagination is exclusive.
-- Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted unless `telemetry.captureContent === true`.
+- Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted regardless of telemetry span content capture until a future spec adds a dedicated persisted-event content flag.
 - `upsertSession` is idempotent: if `id` exists, `updatedAt` and `runCount` are overwritten with the supplied record.
 - StateStore methods MUST throw [`StateError`](./15-error-catalog.md) on backend failure.
 

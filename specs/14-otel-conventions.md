@@ -1,215 +1,325 @@
 # OpenTelemetry conventions
 
-**Purpose.** Authoritative enumeration of every span, metric, attribute key, and event emitted by the harness, plus the per-log fields. Implementation agents MUST emit exactly these names.
+**Purpose.** Authoritative enumeration of every span, metric, attribute key,
+event, and log correlation field emitted by the harness. Implementation agents
+MUST emit exactly these names.
 
-Aligned with OpenTelemetry semantic conventions for Generative AI as of the **stable v1.30 / experimental v1.30** revision (2025). See <https://opentelemetry.io/docs/specs/semconv/gen-ai/>.
+The harness emits OTel GenAI semantic conventions as the primary shape and can
+also emit OpenInference attributes for interoperability. Both shapes are derived
+from one internal telemetry record so paired values cannot drift.
 
 ## Tracer / meter
 
-- Tracer name (locked): `'@purista/harness'`.
-- Meter name (locked): `'@purista/harness'`.
-- Tracer and meter version: `HARNESS_VERSION`.
+- Tracer name: `'@purista/harness'`
+- Meter name: `'@purista/harness'`
+- Tracer and meter version: `HARNESS_VERSION`
+
+Core depends only on `@opentelemetry/api` and semantic-convention constants. It
+does not initialize exporters or SDK providers.
+
+## Telemetry flavor
+
+```ts
+type TelemetryFlavor = 'dual' | 'gen_ai_only' | 'openinference_only'
+```
+
+| Flavor | Emission |
+| --- | --- |
+| `dual` | Emit both OTel GenAI and OpenInference attributes where a mapping exists. Default. |
+| `gen_ai_only` | Emit OTel GenAI and `harness.*` attributes only. |
+| `openinference_only` | Emit OpenInference and `harness.*` attributes only. |
+
+For OpenInference-only span kinds with no OTel equivalent (`RETRIEVER`,
+`RERANKER`, `GUARDRAIL`, `EVALUATOR`, `PROMPT`), the harness emits only
+OpenInference attributes in `dual` and `openinference_only`. The harness does
+not invent matching `gen_ai.*` names.
+
+## Content capture
+
+```ts
+type ContentCaptureMode = 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
+```
+
+Default: env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else
+`NO_CONTENT`.
+
+| Mode | Span attributes | Span events |
+| --- | --- | --- |
+| `NO_CONTENT` | Content, tool arguments, tool results, documents, and files omitted or `null`. | Events may be emitted with content fields `null`. |
+| `SPAN_ONLY` | OpenInference indexed content attributes are emitted when flavor includes OpenInference. | OTel content events use `null` content. |
+| `EVENT_ONLY` | OpenInference indexed content attributes are omitted or `null`. | OTel GenAI content events include content when flavor includes GenAI. |
+| `SPAN_AND_EVENT` | Both OpenInference indexed content attributes and OTel content events include content. | Both include content. |
+
+Structured objects, prompts, documents, tool parameters, tool results, file
+content, and model outputs are content. Operational metadata such as ids, token
+counts, finish reasons, dimensions, and scores is not content.
 
 ## Attribute value types
 
-All attribute values are one of:
+All OTel attribute values are one of:
 
-| Type     | Notes                                              |
-|----------|----------------------------------------------------|
-| string   | UTF-8                                              |
-| integer  | 64-bit; used for counts, indexes, token counts     |
-| double   | floating point; durations in seconds, sampling     |
-| boolean  | `true`/`false`                                     |
-| string[] | string array; used for `gen_ai.response.finish_reasons` |
+| Type | Notes |
+| --- | --- |
+| string | UTF-8 |
+| integer | 64-bit integer |
+| double | floating point |
+| boolean | true/false |
+| string[] | OTel arrays, used only where semconv expects arrays |
 
-Undefined values are dropped before being passed to OTel.
+Undefined values are dropped.
 
-## Span name mapping (locked)
+## Common attributes
 
-| Harness span                | Span name                                       | Source convention |
-|-----------------------------|-------------------------------------------------|-------------------|
-| Outermost session prompt    | `harness.session.prompt`                        | custom |
-| Workflow run                | `harness.workflow.run`                          | custom |
-| Agent run                   | `invoke_agent {agent.name}`                     | GenAI conv |
-| Model call                  | `{operation_name} {request.model}` e.g. `chat gpt-4o` | GenAI conv |
-| Tool call                   | `execute_tool {tool.name}`                      | GenAI conv |
-| Sandbox `exec`              | `harness.sandbox.exec`                          | custom |
-| State op                    | `harness.state.op`                              | custom |
+Every harness-created span carries when available:
 
-For GenAI-conv spans, attach BOTH the GenAI attributes (canonical) and the internal correlation attributes (`harness.run.id`, `harness.session.id`, `harness.workflow.id`).
+| Key | Type |
+| --- | --- |
+| `harness.name` | string |
+| `harness.session.id` | string |
+| `harness.run.id` | string |
+| `harness.workflow.id` | string |
+| `harness.agent.id` | string |
 
-## Common correlation attributes
+`InvokeOptions.metadata` scalar entries are emitted as
+`harness.metadata.<key>` only when the metadata key and value pass the rules in
+[19-ai-eval-core](./19-ai-eval-core.md).
 
-Every harness span carries (when applicable) `harness.session.id`, `harness.run.id`, `harness.workflow.id`. Spans inside an agent additionally carry `harness.agent.id`. Every span receives `harness.name = HarnessOptions.name` (string) when set.
+## Span name mapping
 
-## Span attributes
+| Harness span | Span name | Required semantic shape |
+| --- | --- | --- |
+| Outermost prompt/run | `harness.session.prompt` | `harness.*` |
+| Workflow run | `harness.workflow.run` | `harness.*`, OpenInference `CHAIN` in `dual`/`openinference_only` |
+| Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
+| Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
+| Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
+| Sandbox exec | `harness.sandbox.exec` | `harness.*` |
+| State op | `harness.state.op` | `harness.*` |
+| Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
 
-### `harness.session.prompt`
+## GenAI operations
 
-| Key                    | Type    |
-|------------------------|---------|
-| `harness.session.id`   | string  |
-| `harness.run.id`       | string  |
-| `harness.workflow.id`  | string  |
+The harness uses only these `gen_ai.operation.name` values:
 
-### `harness.workflow.run`
+| Operation | Used for |
+| --- | --- |
+| `chat` | Chat-style text and object generation implemented through chat. |
+| `text_completion` | Legacy completion providers. |
+| `embeddings` | Embedding model calls. |
+| `generate_content` | Multimodal generation when the provider uses this operation. |
+| `invoke_agent` | One harness agent invocation. |
+| `execute_tool` | One tool invocation. |
 
-Adds:
+`rerank` and `object_generation` are not `gen_ai.operation.name` values. Rerank
+spans use OpenInference `RERANKER` plus `harness.model.method = "rerank"`.
+Object generation uses the provider's underlying GenAI operation, usually
+`chat`, plus `harness.model.method = "object"` or `"object_stream"`.
 
-| Key                    | Type    |
-|------------------------|---------|
-| `harness.workflow.id`  | string  |
+## OpenInference span kinds
 
-### `invoke_agent {agent.name}` (GenAI conv)
+The harness emits:
 
-| Key                          | Type    |
-|------------------------------|---------|
-| `gen_ai.agent.name`          | string — the agent key |
-| `gen_ai.agent.id`            | string — the run id |
-| `gen_ai.agent.description`   | string — first 200 chars of `instructions` if a string; otherwise omitted |
-| `harness.agent.id`           | string  |
-| `harness.agent.model`        | string — alias key |
-| `harness.agent.has_handler`  | boolean |
+| `openinference.span.kind` | Harness operation |
+| --- | --- |
+| `CHAIN` | Workflow run |
+| `AGENT` | Agent run |
+| `LLM` | Text/object model call |
+| `EMBEDDING` | Embedding model call |
+| `RERANKER` | Rerank model call |
+| `TOOL` | Tool call |
+| `EVALUATOR` | Prompt candidate evaluation helper |
 
-### `{operation_name} {request.model}` (GenAI conv — model call)
+The harness does not emit `RETRIEVER`, `GUARDRAIL`, or `PROMPT` in v1 because
+core has no retrieval store, guardrail engine, or prompt store.
 
-`operation_name` is one of `chat`, `text_completion`, `embeddings`, `rerank`, or provider-neutral `object_generation` when a provider cannot map object generation to a chat operation. The default loop uses object generation and may still emit a `chat {request.model}` GenAI span when the underlying provider implements object generation through chat completions.
+## Agent span attributes
 
-| Key                                  | Type     |
-|--------------------------------------|----------|
-| `gen_ai.system`                      | string — provider-declared (e.g. `'openai'`, `'anthropic'`, `'azure.ai.openai'`). The harness asserts the provider sets this. |
-| `gen_ai.operation.name`              | string — `'chat' \| 'text_completion' \| 'embeddings' \| 'rerank' \| 'object_generation'` |
-| `gen_ai.request.model`               | string — alias's `model` field |
-| `gen_ai.response.model`              | string — when known |
-| `gen_ai.request.temperature`         | double — when set |
-| `gen_ai.request.max_tokens`          | integer — when set |
-| `gen_ai.request.top_p`               | double — when set |
-| `gen_ai.request.frequency_penalty`   | double — when present in `providerOptions` |
-| `gen_ai.request.presence_penalty`    | double — when present in `providerOptions` |
-| `gen_ai.response.id`                 | string — when known |
-| `gen_ai.response.finish_reasons`     | string[] |
-| `gen_ai.usage.input_tokens`          | integer |
-| `gen_ai.usage.output_tokens`         | integer |
-| `harness.model.alias`                | string  |
-| `harness.model.method`               | string — `'text' \| 'text_stream' \| 'object' \| 'object_stream' \| 'embed' \| 'rerank'` |
+Span: `invoke_agent {agent.name}`
 
-### `execute_tool {tool.name}` (GenAI conv)
+| Canonical field | GenAI key | OpenInference key | Harness key |
+| --- | --- | --- | --- |
+| Operation/kind | `gen_ai.operation.name = "invoke_agent"` | `openinference.span.kind = "AGENT"` | |
+| Agent name | `gen_ai.agent.name` | `metadata.agent_name` | |
+| Agent id | `gen_ai.agent.id` | `metadata.agent_id` | `harness.agent.id` |
+| Agent version | `gen_ai.agent.version` when configured | `metadata.agent_version` | |
+| Description | `gen_ai.agent.description` | | |
+| Model alias | | | `harness.agent.model` |
+| Has custom handler | | | `harness.agent.has_handler` |
 
-| Key                              | Type    |
-|----------------------------------|---------|
-| `gen_ai.tool.name`               | string — canonical tool name. Built-in canonical names: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `list`. Aliases (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `LS`, `List`) are normalized to canonical before emission. |
-| `gen_ai.tool.call.id`            | string — `tc_<ulid>` |
-| `gen_ai.tool.type`               | string — one of `'builtin'`, `'ts'`, `'mcp_stdio'`, `'mcp_http'`. |
-| `harness.tool.id`                | string  |
-| `harness.mcp.server`             | string — MCP local server/tool identity; set only for MCP tools. |
-| `harness.mcp.tool`               | string — upstream MCP tool name; set only for MCP tools. |
-| `harness.mcp.transport`          | string — `'stdio'|'http'`; set only for MCP tools. |
-| `harness.permission.mode`        | string — `'allow'\|'ask'\|'deny'`; set when the call was permission-gated |
-| `harness.permission.decision`    | string — `'allow'\|'deny'`; set when the call was permission-gated |
+## Model span attributes
+
+Span: `{operation} {request.model}`
+
+| Canonical field | GenAI key | OpenInference key | Harness key |
+| --- | --- | --- | --- |
+| Operation/kind | `gen_ai.operation.name` | `openinference.span.kind` | |
+| Provider | `gen_ai.provider.name` and legacy `gen_ai.system` | `llm.provider` | |
+| Request model | `gen_ai.request.model` | `llm.model_name` | |
+| Response model | `gen_ai.response.model` | | |
+| Temperature | `gen_ai.request.temperature` | `llm.invocation_parameters` JSON string | |
+| Max tokens | `gen_ai.request.max_tokens` | `llm.invocation_parameters` JSON string | |
+| Top P | `gen_ai.request.top_p` | `llm.invocation_parameters` JSON string | |
+| Response id | `gen_ai.response.id` | | |
+| Finish reasons | `gen_ai.response.finish_reasons` | `llm.output_messages.0.message.finish_reason` when content capture permits output attributes | |
+| Input tokens | `gen_ai.usage.input_tokens` | `llm.token_count.prompt` | |
+| Output tokens | `gen_ai.usage.output_tokens` | `llm.token_count.completion` | |
+| Total tokens | derived sum, not a GenAI attribute | `llm.token_count.total` | |
+| Cached input tokens | `gen_ai.input.usage.details.cache_read_tokens` | `llm.token_count.prompt_details.cache_read` | |
+| Reasoning tokens | `gen_ai.output.usage.details.reasoning_tokens` | `llm.token_count.completion_details.reasoning` | |
+| Alias | | | `harness.model.alias` |
+| Method | | | `harness.model.method` |
+
+`harness.model.method` is one of
+`'text' | 'text_stream' | 'object' | 'object_stream' | 'embed' | 'rerank'`.
+
+Provider adapters must set `gen_ai.provider.name` and `gen_ai.system` to the
+same provider id for v1 compatibility. `gen_ai.provider.name` is canonical;
+`gen_ai.system` remains for older backends.
+
+## Tool span attributes
+
+Span: `execute_tool {tool.name}`
+
+| Canonical field | GenAI key | OpenInference key | Harness key |
+| --- | --- | --- | --- |
+| Operation/kind | `gen_ai.operation.name = "execute_tool"` | `openinference.span.kind = "TOOL"` | |
+| Tool name | `gen_ai.tool.name` | `tool.name` | |
+| Tool call id | `gen_ai.tool.call.id` | `tool.call.id` | `harness.tool.call_id` |
+| Tool description | | `tool.description` | |
+| Tool parameters | event content when enabled | `tool.parameters` JSON string when span content enabled | |
+| Tool result | event content when enabled | `output.value` JSON string when span content enabled | |
+| Tool type | | | `gen_ai.tool.type`, `harness.tool.type` |
+| Tool id | | | `harness.tool.id` |
+| MCP server | | | `harness.mcp.server` |
+| MCP tool | | | `harness.mcp.tool` |
+| MCP transport | | | `harness.mcp.transport` |
+| Permission mode | | | `harness.permission.mode` |
+| Permission decision | | | `harness.permission.decision` |
+
+Tool calls are represented as separate child spans. The harness must not use
+only OpenInference indexed tool-call attributes on a parent LLM span.
+
+## Evaluator span attributes
+
+Span: `harness.eval.candidate`
+
+Emitted by `evaluatePromptCandidates`.
+
+| Key | Type |
+| --- | --- |
+| `openinference.span.kind` | string, `EVALUATOR` |
+| `harness.eval.candidate.id` | string |
+| `harness.eval.item.id` | string |
+| `harness.eval.score` | double |
+| `harness.eval.passed` | boolean |
+
+No prompt, input, expected output, or context content is emitted unless
+`contentCaptureMode` permits span content. When permitted, the helper may emit
+`input.value` and `output.value` OpenInference attributes as JSON strings.
+
+## Sandbox and state spans
 
 ### `harness.sandbox.exec`
 
-| Key                                | Type    |
-|------------------------------------|---------|
-| `harness.session.id`               | string  |
-| `harness.run.id`                   | string  |
-| `harness.exec.exit_code`           | integer |
-| `harness.exec.duration`            | double — seconds |
+| Key | Type |
+| --- | --- |
+| `harness.exec.exit_code` | integer |
+| `harness.exec.duration` | double seconds |
 
 ### `harness.state.op`
 
-| Key                          | Type    |
-|------------------------------|---------|
-| `harness.state.op_name`      | string  |
-| `harness.session.id`         | string (when applicable) |
-| `harness.run.id`             | string (when applicable) |
+| Key | Type |
+| --- | --- |
+| `harness.state.op_name` | string |
 
-Persistence-of-events happens inline in the run lifecycle (no dedicated span). Failures are tracked via the `harness.events.persist_errors` counter.
+State persistence failures are also tracked via the
+`harness.events.persist_errors` counter.
 
-Spans use status `OK` on success and `ERROR` on failure; on failure, `recordException(err)` is called with the thrown error.
+## Content events
 
-## GenAI events on `chat` span
+When flavor includes GenAI, model and tool spans emit OTel content events.
 
-Per the GenAI conv, the harness emits these span events on the `chat`/`text_completion`/`embeddings`/`rerank`/`object_generation` span when the operation has matching message content:
+Legacy event names:
 
-- `gen_ai.system.message` — body `{role:'system', content}` per system message present.
-- `gen_ai.user.message` — body `{role:'user', content}`.
-- `gen_ai.assistant.message` — body `{role:'assistant', content, tool_calls?}`.
-- `gen_ai.tool.message` — body `{role:'tool', id, content}`.
-- `gen_ai.choice` — body `{index, finish_reason, message: {role:'assistant', content?, tool_calls?}}`.
+- `gen_ai.system.message`
+- `gen_ai.user.message`
+- `gen_ai.assistant.message`
+- `gen_ai.tool.message`
+- `gen_ai.choice`
 
-For `object`/`object_stream`, the choice body uses `message.content` only when
-`telemetry.captureContent === true`; otherwise structured object content is
-reported as `null` and operational metadata remains on attributes and metrics.
-For `embed` and `rerank`, prompt/document content is omitted unless
-`telemetry.captureContent === true`.
+Latest experimental event:
 
-### Privacy gate (`telemetry.captureContent`)
+- `gen_ai.client.inference.operation.details`
 
-The harness config option `telemetry.captureContent` controls content visibility:
+The harness emits legacy events for broad backend compatibility and may also
+emit the latest experimental aggregate event. Content fields follow
+`contentCaptureMode`; when content is disabled they are `null`.
 
-- `false` (default): events are still emitted, but `content`, `tool_calls.arguments`, and `tool_results.content` fields are replaced with `null`.
-- `true`: full content is included.
+## Errors
 
-This matches the GenAI conv guidance.
+On span failure, set:
 
-## Errors (all spans)
+| Key | Type |
+| --- | --- |
+| `error.type` | string, the `HarnessError.code` |
+| `harness.error.code` | string, same as `error.type` |
+| `harness.error.category` | string |
+| `harness.error.retriable` | boolean |
 
-On span failure, the harness sets:
-
-| Key                                | Type    |
-|------------------------------------|---------|
-| `error.type`                       | string — the `HarnessError.code`, e.g. `'MODEL_ERROR'`. (Per OTel `error.type` convention.) |
-| `harness.error.code`               | string — same value as `error.type`, kept for backward correlation in custom spans |
-| `harness.error.category`           | string  |
-| `harness.error.retriable`          | boolean |
-
-`error.type` is set on every failing span — both GenAI-conv spans and harness-only spans.
+Call `recordException(err)` for the thrown error. Span status is `ERROR` on
+failure and `OK` on success.
 
 ## Metrics
 
-Per the GenAI conv, durations are seconds (double); token counts are units of `{token}`. All metrics carry `harness.session.id` and `harness.run.id` where applicable.
+All durations are seconds. Token counts use unit `{token}`.
 
-### Canonical GenAI metrics
+### GenAI metrics
 
-| Instrument                          | Type      | Unit       | Attributes                                                                                  |
-|-------------------------------------|-----------|------------|---------------------------------------------------------------------------------------------|
-| `gen_ai.client.token.usage`         | Histogram | `{token}`  | `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.token.type` (`'input'\|'output'`) |
-| `gen_ai.client.operation.duration`  | Histogram | `s`        | `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `error.type` (when error) |
+| Instrument | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `gen_ai.client.token.usage` | Histogram | `{token}` | `gen_ai.provider.name`, `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.token.type` |
+| `gen_ai.client.operation.duration` | Histogram | `s` | `gen_ai.provider.name`, `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `error.type` |
 
-`gen_ai.client.token.usage` is the canonical token-count instrument; `gen_ai.client.operation.duration` is the canonical model-call duration. There are no harness-emitted `tokens.*` counters or `*_ms` histograms for model calls — token counts and latencies flow only through the GenAI-conv instruments above.
+### Harness metrics
 
-### Harness-only metrics (kept)
+| Instrument | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `harness.agent.iterations` | Histogram | `1` | `harness.agent.id`, `harness.session.id`, `harness.run.id` |
+| `harness.tool.duration` | Histogram | `s` | `gen_ai.tool.name`, `harness.tool.type`, `harness.run.id`, `harness.session.id` |
+| `harness.run.duration` | Histogram | `s` | `harness.workflow.id`, `harness.session.id`, `error.type` |
+| `harness.run.errors` | Counter | `1` | `harness.workflow.id`, `error.type` |
+| `harness.events.persist_errors` | Counter | `1` | `harness.session.id`, `harness.run.id` |
+| `harness.permission.denials` | Counter | `1` | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id` |
+| `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
 
-| Instrument                          | Type      | Unit | Attributes                                                                  |
-|-------------------------------------|-----------|------|-----------------------------------------------------------------------------|
-| `harness.tool.duration`             | Histogram | `s`  | `gen_ai.tool.name`, `gen_ai.tool.type`, `harness.run.id`, `harness.session.id` |
-| `harness.run.duration`              | Histogram | `s`  | `harness.workflow.id`, `harness.session.id`, `error.type` (when error)      |
-| `harness.run.errors`                | Counter   | `1`  | `harness.workflow.id`, `error.type`                                         |
-| `harness.events.persist_errors`     | Counter   | `1`  | `harness.session.id`, `harness.run.id`                                      |
-| `harness.permission.denials`        | Counter   | `1`  | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id`                |
-
-Naming convention: harness-only durations use `_duration` suffix and unit `s` (seconds, double), aligned with OTel semconv. No `_ms` instruments exist.
+No `_ms` instruments exist.
 
 ## Log fields
 
-Every harness-emitted log line carries (when applicable):
+Every harness-emitted log line carries when applicable:
 
-| Field             | Source                            |
-|-------------------|-----------------------------------|
-| `harness`         | `HarnessOptions.name`             |
-| `session_id`      | active session                    |
-| `run_id`          | active run                        |
-| `agent_id`        | active agent                      |
-| `workflow_id`     | active workflow                   |
-| `tool_id`         | active tool                       |
-| `trace_id`        | active OTel trace                 |
-| `span_id`         | active OTel span                  |
-| `duration_seconds` | when emitted alongside an operation finish; double, seconds. Logger field naming aligns with OTel conv (no `_ms` suffixes). |
+| Field | Source |
+| --- | --- |
+| `harness` | `HarnessOptions.name` |
+| `session_id` | active session |
+| `run_id` | active run |
+| `agent_id` | active agent |
+| `workflow_id` | active workflow |
+| `tool_id` | active tool |
+| `trace_id` | active OTel trace |
+| `span_id` | active OTel span |
+| `duration_seconds` | operation duration |
+| `harness.warning.code` | warning code when applicable |
 
-Plus standard `level`, `time`, `msg`, and any user-supplied `fields`.
+Known warning codes:
+
+- `TELEMETRY_CAPTURE_CONTENT_DEPRECATED`
+- `INVALID_TRACE_CONTEXT`
 
 ## Cross-references
 
-- [03-foundation](./03-foundation.md) — telemetry shim API.
-- [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), [12-streaming](./12-streaming.md).
+- [03-foundation](./03-foundation.md)
+- [09-agents](./09-agents.md)
+- [10-workflows](./10-workflows.md)
+- [12-streaming](./12-streaming.md)
+- [19-ai-eval-core](./19-ai-eval-core.md)

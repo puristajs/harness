@@ -10,9 +10,13 @@ Deliverables:
 - `packages/harness/src/errors/` with every class from [15-error-catalog](./15-error-catalog.md) and `HarnessError` base.
 - `packages/harness/src/logger/` with `Logger` interface and built-in `JsonLogger` default.
 - `packages/harness/src/telemetry/` with span/metric helpers wrapping `@opentelemetry/api` and canonical keys from `@opentelemetry/semantic-conventions`.
+- One internal telemetry record renderer that emits OTel GenAI and/or
+  OpenInference according to `TelemetryOptions.flavor`.
+- Trace Context extraction from `InvokeOptions.traceparent`/`tracestate`.
 - `packages/harness/src/ulid/` with monotonic ULID utility.
 
-Exit: errors and logger tests green; coverage ≥85%.
+Exit: errors, logger, telemetry flavor, content capture, and trace-context tests
+green; coverage ≥85%.
 
 ## Phase 2 — State port + in-memory default + history API (no memory KV)
 
@@ -104,6 +108,7 @@ Exit: skills tests green.
 
 Deliverables:
 - `packages/harness/src/sessions/` with `Session` facade (incl. `clearHistory`, `replaceHistory`).
+- `Session.getRunSummary(runId)` derived from `StateStore`.
 - Run lifecycle, OTel spans, run-event persistence.
 - Internal in-process bounded run-event queue with overflow notification; slow consumers do not pause model/tool execution.
 - `SessionMemory` backed by `/memory/<key>.json` in the sandbox.
@@ -112,7 +117,7 @@ Tests:
 - Lifecycle, `SessionBusyError`, streaming generator suite.
 - `SessionMemory` round-trip; non-serializable values rejected.
 
-Exit: session integration green.
+Exit: session integration and run-summary tests green.
 
 ## Phase 10 — Agents (default loop with built-in tools, skill mount, permissions)
 
@@ -183,6 +188,20 @@ Constraints:
 - Examples MUST NOT use the Vercel AI SDK stream protocol or a PURISTA AI protocol envelope.
 
 Exit: example runs against `FakeModelProvider` in CI.
+
+## Phase 15 — AI evaluation core helpers
+
+Deliverables:
+- `evaluatePromptCandidates` in the main `@purista/harness` export, with stable
+  ordering, abort propagation, aggregate score calculation, and deterministic
+  sorting.
+- `evaluateDeterministicScorer` plus deterministic scorer types under
+  `@purista/harness/testing`.
+- No Cloudgrid adapter package, HTTP endpoint, dataset store, prompt-version
+  store, product scorer registry, Python, Optuna, or external optimizer
+  dependency.
+
+Exit: AI eval core tests in [19-ai-eval-core](./19-ai-eval-core.md) green.
 
 ## CI
 

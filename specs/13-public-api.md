@@ -182,6 +182,8 @@ export interface Logger
 export type LogLevel
 export type ErrorCategory
 export interface TelemetryOptions
+export type TelemetryFlavor
+export type ContentCaptureMode
 
 // State / Sandbox ports
 export interface StateStore
@@ -218,12 +220,24 @@ export type JsonValue
 // Streaming
 export type RunEvent
 export interface SerializedError
+export interface RunSummary
 
 // MCP
 export type McpAuth
 
 // Inference helper
 export type InferTypes<S>
+
+// AI evaluation core
+export interface PromptCandidate
+export interface EvaluationItem
+export interface CandidateScore
+export interface ScorerTarget
+export interface ScorerResult
+export interface EvaluatePromptCandidatesInput
+export function evaluatePromptCandidates<I = unknown>(
+  input: EvaluatePromptCandidatesInput<I>
+): Promise<CandidateScore[]>
 ```
 
 ### `HarnessBuilder<S>` (locked)
@@ -275,6 +289,7 @@ interface Session<S extends BuilderState> {
   readonly workflows: { readonly [K in keyof S['workflows']]: WorkflowInvoker<S, K> }
   memory: SessionMemory
   history: ConversationHistory
+  getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message,'id'|'timestamp'>>): Promise<void>
   close(): Promise<void>
@@ -342,17 +357,109 @@ required for JavaScript callers and widened configuration.
 ### `TelemetryOptions`
 
 ```ts
+type TelemetryFlavor = 'dual' | 'gen_ai_only' | 'openinference_only'
+type ContentCaptureMode = 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
+
 interface TelemetryOptions {
   /**
-   * When true, GenAI message/choice span events include full content/tool arguments.
-   * When false (default), content fields are emitted as `null`.
-   * See [14-otel-conventions](./14-otel-conventions.md).
+   * Backend emission shape. Default: env `PURISTA_TELEMETRY_FLAVOR`, else
+   * `'dual'`.
    */
-  captureContent?: boolean   // default false
+  flavor?: TelemetryFlavor
+  /**
+   * Content capture mode. Default: env
+   * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `NO_CONTENT`.
+   */
+  contentCaptureMode?: ContentCaptureMode
+  /**
+   * Deprecated alias. `true` maps to `SPAN_AND_EVENT`, `false` maps to
+   * `NO_CONTENT`. Ignored when `contentCaptureMode` is set.
+   */
+  captureContent?: boolean
 }
 ```
 
 Tracer + meter names are locked to `'@purista/harness'` (no `tracerName`/`meterName` knobs).
+
+### `InvokeOptions`
+
+```ts
+interface InvokeOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  historyWindow?: number
+  traceparent?: string
+  tracestate?: string
+  metadata?: Record<string, JsonValue>
+}
+```
+
+`traceparent`/`tracestate` follow W3C Trace Context and are propagated into the
+run span before child workflow, agent, model, tool, sandbox, and state spans are
+created. `metadata` is available to handlers and emitted only as sanitized
+scalar `harness.metadata.*` attributes as specified in
+[19-ai-eval-core](./19-ai-eval-core.md).
+
+### `RunSummary`
+
+```ts
+interface RunSummary {
+  runId: string
+  sessionId: string
+  status: RunStatus
+  startedAt: string
+  finishedAt?: string
+  tokenTotals: TokenUsage
+  modelCalls: number
+  toolCalls: number
+  agentCalls: number
+  error?: SerializedError
+}
+```
+
+`Session.getRunSummary(runId)` derives this from the configured `StateStore`; it
+does not inspect OTel spans.
+
+### AI evaluation core
+
+```ts
+interface PromptCandidate<I = unknown> {
+  id: string
+  prompt: string
+  metadata?: Record<string, JsonValue>
+}
+
+interface EvaluationItem<I = unknown> {
+  id: string
+  input: I
+  expected?: unknown
+  context?: unknown[]
+}
+
+interface CandidateScore {
+  candidateId: string
+  meanScore: number
+  passRate: number
+  itemCount: number
+  scorerCount: number
+}
+
+interface EvaluatePromptCandidatesInput<I = unknown> {
+  candidates: PromptCandidate<I>[]
+  items: EvaluationItem<I>[]
+  scorer: (target: ScorerTarget, signal: AbortSignal) => Promise<ScorerResult>
+  runCandidate: (
+    candidate: PromptCandidate<I>,
+    item: EvaluationItem<I>,
+    signal: AbortSignal
+  ) => Promise<unknown>
+  signal: AbortSignal
+}
+```
+
+`evaluatePromptCandidates` is provider-neutral and product-neutral. It does not
+generate candidates, persist datasets, call external optimizers, or know about
+Cloudgrid.
 
 ## Type inference and DX
 
@@ -405,9 +512,44 @@ export function loggerContract(make: () => Logger): void
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness() returning a fresh builder
 export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
+
+// AI eval test helpers
+export type DeterministicScorerDefinition
+export interface ScorerTarget
+export interface ScorerResult
+export function evaluateDeterministicScorer(
+  definition: DeterministicScorerDefinition,
+  target: ScorerTarget
+): ScorerResult
 ```
 
-The testing surface is **only** reachable via `@purista/harness/testing`. It MUST NOT be re-exported from the main entry. Implementation agents must add a CI test that verifies the actual exports of each entry against the lists above.
+```ts
+export type DeterministicScorerDefinition =
+  | { type: 'regex'; path: string; pattern: string; flags?: 'i' | 'm' | 'im' }
+  | { type: 'json-schema'; schema: JsonValue }
+  | { type: 'contains'; path: string; value: string; caseInsensitive?: boolean }
+  | { type: 'attribute-equality'; leftPath: string; rightPath: string }
+
+export interface ScorerTarget {
+  input: unknown
+  output: unknown
+  expected?: unknown
+  context?: unknown[]
+}
+
+export interface ScorerResult {
+  score: number
+  passed: boolean
+  evidence?: JsonValue
+}
+```
+
+The fake adapters, contract suites, and `evaluateDeterministicScorer` helper are
+**only** reachable via `@purista/harness/testing`. They MUST NOT be re-exported
+from the main entry. Shared data types such as `ScorerTarget` and `ScorerResult`
+may be exported by the main entry because `evaluatePromptCandidates` uses them.
+Implementation agents must add a CI test that verifies the actual exports of
+each entry against the lists above.
 
 ## `@purista/harness-openai` package
 
@@ -442,7 +584,7 @@ export interface OpenAiFactoryOptions extends ClientOptions {
 export function openai(opts?: OpenAiFactoryOptions): ModelProvider
 ```
 
-`openai(...)` returns a fully-typed `ModelProvider` implementing `text`, `textStream`, `object`, `objectStream`, and `embed` when the selected official OpenAI SDK operations support them. Reranking is implemented only if the current official OpenAI SDK exposes a suitable operation; otherwise the provider omits the `rerank` capability and fake-provider contract tests cover the core behavior. The adapter is intentionally thin over the official `openai` SDK: SDK client options are accepted directly, and per-call `providerOptions` are passed through to the matching SDK call with `providerOptions.requestOptions` forwarded as the SDK request-options object. Harness logger, telemetry, and model timeout defaults are inherited automatically when the provider is registered; adapter options only override those inherited values. The provider sets `gen_ai.system = 'openai'` on every model-call span (see [14-otel-conventions](./14-otel-conventions.md)). Capability claims at the alias level are the user's responsibility.
+`openai(...)` returns a fully-typed `ModelProvider` implementing `text`, `textStream`, `object`, `objectStream`, and `embed` when the selected official OpenAI SDK operations support them. Reranking is implemented only if the current official OpenAI SDK exposes a suitable operation; otherwise the provider omits the `rerank` capability and fake-provider contract tests cover the core behavior. The adapter is intentionally thin over the official `openai` SDK: SDK client options are accepted directly, and per-call `providerOptions` are passed through to the matching SDK call with `providerOptions.requestOptions` forwarded as the SDK request-options object. Harness logger, telemetry, and model timeout defaults are inherited automatically when the provider is registered; adapter options only override those inherited values. The provider sets provider id `'openai'` for both `gen_ai.provider.name` and legacy `gen_ai.system` on every model-call span (see [14-otel-conventions](./14-otel-conventions.md)). Capability claims at the alias level are the user's responsibility.
 
 ### Exports — types
 

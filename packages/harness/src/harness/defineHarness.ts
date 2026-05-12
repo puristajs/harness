@@ -36,6 +36,7 @@ import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
+import type { RunStatus } from '../models/state.js'
 import type { HarnessError } from '../errors/harness-error.js'
 import { HarnessConfigError } from '../errors/catalog.js'
 import { autoDetectSandbox, type Sandbox } from '../sandbox/index.js'
@@ -55,12 +56,19 @@ import {
 export const HARNESS_VERSION = '0.0.0'
 
 /** OpenTelemetry capture controls used by the harness. */
+export type TelemetryFlavor = 'dual' | 'gen_ai_only' | 'openinference_only'
+export type ContentCaptureMode = 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
+
 export interface TelemetryOptions {
   /**
    * When `true`, emitted telemetry may include full prompt/message content.
    * The default is `false` to avoid accidental sensitive-content capture.
    */
   captureContent?: boolean
+  /** Backend emission shape. */
+  flavor?: TelemetryFlavor
+  /** Span/event content capture mode. */
+  contentCaptureMode?: ContentCaptureMode
 }
 
 /** Default harness budgets and execution behavior. */
@@ -96,6 +104,12 @@ export interface InvokeOptions {
   timeoutMs?: number
   /** Optional history-window override for this call only. */
   historyWindow?: number
+  /** Optional W3C Trace Context parent. */
+  traceparent?: string
+  /** Optional W3C Trace Context state. */
+  tracestate?: string
+  /** Scalar metadata exposed to handlers and telemetry sanitizers. */
+  metadata?: Record<string, JsonValue>
 }
 
 /** Canonical built-in tool names provided by the harness. */
@@ -311,6 +325,7 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   runId: string
   history: ConversationHistory
   memory: SessionMemory
+  metadata: Readonly<Record<string, JsonValue>>
 }
 
 /** Full context passed to workflow handlers. */
@@ -321,6 +336,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   signal: AbortSignal
   runId: string
   sessionId: string
+  metadata: Readonly<Record<string, JsonValue>>
   output?: O
 }
 
@@ -489,6 +505,7 @@ export interface Session<S extends BuilderState> {
   readonly workflows: { readonly [K in keyof NonNullable<S['workflows']>]: WorkflowInvoker<S, K> }
   memory: SessionMemory
   history: ConversationHistory
+  getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
   close(): Promise<void>
@@ -503,6 +520,19 @@ export interface SerializedError {
   meta?: Record<string, unknown>
 }
 
+export interface RunSummary {
+  runId: string
+  sessionId: string
+  status: RunStatus
+  startedAt: string
+  finishedAt?: string
+  tokenTotals: TokenUsage
+  modelCalls: number
+  toolCalls: number
+  agentCalls: number
+  error?: SerializedError
+}
+
 /** Harness streaming events emitted from `session.workflows.<id>.stream(...)`. */
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
@@ -514,7 +544,7 @@ export type RunEvent =
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.message'; runId: string; agentId: string; message: Message }
   | { type: 'model.object.partial'; runId: string; agentId?: string; partial: JsonValue }
-  | { type: 'model.object'; runId: string; agentId?: string; object: JsonValue }
+  | { type: 'model.object'; runId: string; agentId?: string; object: JsonValue; usage?: TokenUsage }
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
   | { type: 'stream.overflow'; runId: string; at: string; dropped: number }

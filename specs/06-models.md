@@ -112,8 +112,9 @@ and the provider SDK's request/response shapes.
 interface ModelProvider {
   readonly id: string
   /**
-   * GenAI semantic-conventions value for `gen_ai.system`, e.g. 'openai',
-   * 'anthropic', 'azure.ai.openai'. The harness asserts this is set when
+   * Provider identifier used for `gen_ai.provider.name` and legacy
+   * `gen_ai.system`, e.g. 'openai', 'anthropic', 'azure.ai.openai'.
+   * The harness asserts this is set when
    * emitting model-call spans. See [14-otel-conventions](./14-otel-conventions.md).
    */
   readonly genAiSystem: string
@@ -193,8 +194,8 @@ Content-part capability rules:
 - `file` and `file_url` require `file_input`.
 - Providers may reject URL parts if a specific SDK/model cannot consume remote
   URLs.
-- Data-bearing parts are omitted from persisted run-event payloads unless
-  `telemetry.captureContent === true`.
+- Data-bearing parts are always omitted from persisted run-event payloads in v1.
+  Telemetry content capture controls spans and span events only.
 - Sandbox files are never implicitly uploaded. Applications or provider
   adapters must explicitly convert files into supported content parts.
 

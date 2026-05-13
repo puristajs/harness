@@ -113,7 +113,7 @@ Use specs for intended contracts and docs for user-facing examples:
 ## Implementation-Vs-Spec Checks
 When docs/specs and source disagree, verify source before teaching behavior. Known check points:
 - custom agent handler context in source exposes models/memory/history/signal/session/run, not typed `ctx.tools` or callable skill handles
-- the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `captureContent`, while application SDK/exporter bootstrapping is external
+- the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `contentCaptureMode`, while application SDK/exporter bootstrapping is external
 - default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` is safer for file-only agents
 - harness streams are `RunEvent`, not an HTTP/SSE wire protocol
 - feedback has exported types and testing recorder, but no production store in core

@@ -209,9 +209,7 @@ defineHarness()
 `SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
 prompt, output, tool argument/result, context, file, and memory content out of
 spans, span events, and persisted StateStore events. Non-`NO_CONTENT` modes are
-reserved compatibility inputs for future content telemetry. The deprecated
-`captureContent: true` option maps to `SPAN_AND_EVENT` policy but does not
-cause v1 core to emit content.
+reserved inputs for future content telemetry.
 
 ## Eval Helpers
 

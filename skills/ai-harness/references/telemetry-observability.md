@@ -42,13 +42,15 @@ Call this before creating/running harness sessions.
 ```ts
 const harness = defineHarness({ name: 'my-harness-app' })
   .logger(new JsonLogger({ level: process.env.PURISTA_HARNESS_LOG_LEVEL ?? 'info' }))
-  .telemetry({ captureContent: false })
+  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
   .models(...)
   .agents(...)
   .build()
 ```
 
-The implementation creates the internal OpenTelemetry-backed shim during session setup. `.telemetry(...)` supplies options such as `captureContent`. `captureContent` defaults to false and should stay false in production unless there is explicit approval for sensitive content capture.
+The implementation creates the internal OpenTelemetry-backed shim during
+session setup. `.telemetry(...)` supplies options such as
+`contentCaptureMode`. It defaults to `NO_CONTENT`.
 
 ## TelemetryShim
 Adapters and tools receive a minimal shim:
@@ -118,9 +120,10 @@ configureHarnessContext(context) {
 `BaseModelProvider` uses inherited logger/telemetry/default model timeout unless explicitly configured. Prefer inheriting harness context over creating independent tracers/loggers inside each adapter.
 
 ## Privacy Gate
-When `captureContent: false`:
+When `contentCaptureMode: 'NO_CONTENT'`:
 - GenAI events can still exist
 - message content, tool-call arguments, tool results, embedding input, and rerank documents should be omitted or nulled
 - operational metadata, token usage, duration, model names, and error codes remain available
 
-When `captureContent: true`, treat traces as sensitive data.
+v1 core does not emit prompt, model output, tool input/result, file, memory,
+expected-output, or context content in any mode.

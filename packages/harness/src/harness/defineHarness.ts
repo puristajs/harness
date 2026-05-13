@@ -60,11 +60,6 @@ export type TelemetryFlavor = 'dual' | 'gen_ai_only' | 'openinference_only'
 export type ContentCaptureMode = 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
 
 export interface TelemetryOptions {
-  /**
-   * When `true`, emitted telemetry may include full prompt/message content.
-   * The default is `false` to avoid accidental sensitive-content capture.
-   */
-  captureContent?: boolean
   /** Backend emission shape. */
   flavor?: TelemetryFlavor
   /** Span/event content capture mode. */

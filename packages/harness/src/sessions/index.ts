@@ -136,7 +136,7 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
-  const contentCaptureMode = resolveContentCaptureMode(definition.telemetry, definition.logger)
+  const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterContext: HarnessAdapterContext = {
     harnessName: definition.name,
@@ -834,17 +834,8 @@ async function withIncomingTraceContext<T>(
   return telemetry.withTraceContext?.({ traceparent: opts.traceparent, ...(opts.tracestate ? { tracestate: opts.tracestate } : {}) }, fn) ?? fn()
 }
 
-function resolveContentCaptureMode(options: TelemetryOptions | undefined, logger: Logger): string {
-  if (options?.contentCaptureMode !== undefined) {
-    if (options.captureContent !== undefined) {
-      logger.warn('Deprecated telemetry captureContent ignored because contentCaptureMode is set.', {
-        'harness.warning.code': 'TELEMETRY_CAPTURE_CONTENT_DEPRECATED'
-      })
-    }
-    return options.contentCaptureMode
-  }
-  if (options?.captureContent === true) return 'SPAN_AND_EVENT'
-  if (options?.captureContent === false) return 'NO_CONTENT'
+function resolveContentCaptureMode(options: TelemetryOptions | undefined): string {
+  if (options?.contentCaptureMode !== undefined) return options.contentCaptureMode
   const envValue = process.env['OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT']
   if (envValue === 'true') return 'SPAN_AND_EVENT'
   if (envValue === 'false') return 'NO_CONTENT'

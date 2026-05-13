@@ -48,7 +48,6 @@ type ContentCaptureMode = 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_
 
 interface TelemetryOptions {
   flavor?: TelemetryFlavor
-  captureContent?: boolean
   contentCaptureMode?: ContentCaptureMode
 }
 ```
@@ -58,12 +57,6 @@ Defaults:
 - `flavor`: env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'`
 - `contentCaptureMode`: env
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`
-- `captureContent`: deprecated compatibility alias; `true` maps to
-  `'SPAN_AND_EVENT'`, `false` maps to `'NO_CONTENT'`
-
-If both `captureContent` and `contentCaptureMode` are supplied,
-`contentCaptureMode` wins and the harness logs one `warn` line with
-`harness.warning.code = "TELEMETRY_CAPTURE_CONTENT_DEPRECATED"`.
 
 v1 core does not emit prompt, completion, tool input/result, expected-output, or
 context content on spans or span events. Non-`NO_CONTENT` values are accepted as

@@ -317,7 +317,6 @@ Every harness-emitted log line carries when applicable:
 
 Known warning codes:
 
-- `TELEMETRY_CAPTURE_CONTENT_DEPRECATED`
 - `INVALID_TRACE_CONTEXT`
 
 ## Cross-references

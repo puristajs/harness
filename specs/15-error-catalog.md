@@ -179,7 +179,6 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 The following codes are emitted in log records but are NOT thrown as `HarnessError` instances:
 
 - `STREAM_SUBSCRIBER_FAILED` — a run-event consumer's `take()` threw. The harness removes the subscription, logs `warn` with this code, and the run continues. See [12-streaming](./12-streaming.md) §"Subscriber failures".
-- `TELEMETRY_CAPTURE_CONTENT_DEPRECATED` — both `captureContent` and `contentCaptureMode` were supplied; `contentCaptureMode` wins.
 - `INVALID_TRACE_CONTEXT` — `InvokeOptions.traceparent`/`tracestate` could not be extracted; the run starts a new trace.
 
 ## Cross-references

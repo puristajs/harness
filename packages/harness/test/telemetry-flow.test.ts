@@ -155,14 +155,3 @@ it('emits sanitized scalar invoke metadata as harness metadata attributes', asyn
     expect(span?.attrs['harness.metadata.invalid key']).toBeUndefined()
   }
 })
-
-it('logs deprecated content capture alias when contentCaptureMode wins', async () => {
-  const { logger } = await runTelemetryFlowHarness({ telemetry: { captureContent: true, contentCaptureMode: 'NO_CONTENT' } })
-
-  expect(logger.entries).toEqual(expect.arrayContaining([
-    expect.objectContaining({
-      level: 'warn',
-      fields: expect.objectContaining({ 'harness.warning.code': 'TELEMETRY_CAPTURE_CONTENT_DEPRECATED' })
-    })
-  ]))
-})

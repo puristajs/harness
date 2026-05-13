@@ -32,7 +32,7 @@ describe('run event persistence privacy', () => {
   it('keeps persisted event content redacted even when a non-default telemetry content policy is configured', async () => {
     const state = new InMemoryStateStore()
     const harness = defineHarness()
-      .telemetry({ captureContent: true, contentCaptureMode: 'SPAN_AND_EVENT' })
+      .telemetry({ contentCaptureMode: 'SPAN_AND_EVENT' })
       .sandbox(inMemorySandbox())
       .state(state)
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })

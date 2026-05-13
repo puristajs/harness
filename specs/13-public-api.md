@@ -371,11 +371,6 @@ interface TelemetryOptions {
    * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `NO_CONTENT`.
    */
   contentCaptureMode?: ContentCaptureMode
-  /**
-   * Deprecated alias. `true` maps to `SPAN_AND_EVENT`, `false` maps to
-   * `NO_CONTENT`. Ignored when `contentCaptureMode` is set.
-   */
-  captureContent?: boolean
 }
 ```
 

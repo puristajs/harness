@@ -64,18 +64,12 @@ interface TelemetryOptions {
    * to be emitted.
    */
   contentCaptureMode?: 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
-  /**
-   * Deprecated compatibility alias. `true` maps to `SPAN_AND_EVENT`, `false`
-   * maps to `NO_CONTENT`. Ignored when `contentCaptureMode` is supplied.
-   */
-  captureContent?: boolean
 }
 ```
 
 Default: `{ flavor: 'dual', contentCaptureMode: 'NO_CONTENT' }`. Tracer and
 meter names are locked to `'@purista/harness'` (see
-[14-otel-conventions](./14-otel-conventions.md)). `captureContent` remains only
-for compatibility with older callers.
+[14-otel-conventions](./14-otel-conventions.md)).
 
 Core v1 never emits prompt, model output, tool input/result, file, memory,
 expected-output, or context content in telemetry or persisted run events,
@@ -303,7 +297,6 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `logger`                             | built-in `JsonLogger`                |
 | `telemetry.flavor`                   | env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'` |
 | `telemetry.contentCaptureMode`       | env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'` |
-| `telemetry.captureContent`           | deprecated alias for `contentCaptureMode` |
 | `defaults.agentMaxIterations`        | `16`                                 |
 | `defaults.runTimeoutMs`              | `600_000`                            |
 | `defaults.toolTimeoutMs`             | `120_000`                            |

@@ -89,6 +89,8 @@ await expect(evaluateDeterministicScorer({
 Use `evaluatePromptCandidates(...)` from `@purista/harness` when a test must
 compare multiple candidate prompts against the same item set. Candidate order,
 item order, and tie-breaking are stable so CI output remains deterministic.
+See [Evaluating Prompts](./evaluating-prompts.md) for the full helper contract
+and scorer limitations.
 
 ## Test MCP
 

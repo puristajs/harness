@@ -71,6 +71,7 @@ npm run build
 - Build and extend
   - [Usage guide](docs/guides/usage.md)
   - [Configuration](docs/guides/configuration.md)
+  - [Evaluating prompts](docs/guides/evaluating-prompts.md)
   - [MCP tools](docs/guides/mcp-tools.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)

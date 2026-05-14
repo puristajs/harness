@@ -35,6 +35,7 @@ Main core entry exports:
 - JSON/model state types
 - model registry and capability-projected model handles
 - sandbox factories and sandbox types
+- `sandboxMemory()` memory adapter
 - MCP tool support
 - `defineHarness` and builder/session/agent/workflow types
 
@@ -63,6 +64,8 @@ Azure AI Foundry entry exports:
 - `makeHarness`
 - `FakeModelProvider`
 - `stateStoreContract`
+- `FakeMemoryAdapter`
+- `memoryAdapterContract`
 - `sandboxContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`
@@ -83,7 +86,7 @@ Use these files as the implementation source of truth:
 | Workflow invocation | `packages/harness/src/workflows/index.ts` |
 | Models/capability gates | `packages/harness/src/models/registry.ts`, `ports/model-provider.ts`, `ports/base-model-provider.ts` |
 | State port/default | `ports/state.ts`, `state/in-memory.ts`, `models/state.ts` |
-| Memory port/default | `ports/memory.ts`, `memory/*` |
+| Memory port/default | `ports/memory.ts`, `ports/memory/*`, `memory/*` |
 | Sandbox | `sandbox/index.ts` |
 | Skills | `skills/index.ts` |
 | MCP | `tools/mcp/*` |

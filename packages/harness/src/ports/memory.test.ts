@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest'
 import type { Span } from '@opentelemetry/api'
-import { ModelCapabilityError, ValidationError } from '../errors/index.js'
+import { HarnessConfigError, ModelCapabilityError, ValidationError } from '../errors/index.js'
 import { sandboxMemory } from '../memory/sandbox/index.js'
 import { inMemorySandbox } from '../sandbox/index.js'
 import { FakeMemoryAdapter } from '../testing/fakeMemoryAdapter.js'
-import { createMemoryFacade, type MemoryAdapter } from './memory.js'
+import { createMemoryFacade, type MemoryAdapter, validateMemoryAdapter } from './memory.js'
 import type { Logger } from '../logger/index.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 
@@ -79,7 +79,7 @@ it('round-trips scoped memory and propagates types through read<T>()', async () 
 
   expect(topic?.value).toBe('pricing')
   expect(await facade.session.list()).toEqual(['topic'])
-  expect(await facade.session.search?.({ text: 'pricing' })).toEqual([{ key: 'topic', value: { value: 'pricing' }, score: 1 }])
+  expect(await facade.session.search({ text: 'pricing' })).toEqual([{ key: 'topic', value: { value: 'pricing' }, score: 1 }])
 })
 
 it('fails before adapter IO when scope identifiers or capabilities are missing', async () => {
@@ -100,7 +100,30 @@ it('fails before adapter IO when scope identifiers or capabilities are missing',
   await expect(facade.user().read('x')).rejects.toBeInstanceOf(ValidationError)
 
   const unsupported = memory(sandboxMemory()).facade
-  await expect(unsupported.session.search?.({ text: 'x' })).rejects.toBeInstanceOf(ModelCapabilityError)
+  await expect(unsupported.session.search({ text: 'x' })).rejects.toBeInstanceOf(ModelCapabilityError)
+})
+
+it('rejects invalid JSON values before adapter IO', async () => {
+  const { facade } = memory(new FakeMemoryAdapter())
+  const circular: Record<string, unknown> = {}
+  circular['self'] = circular
+
+  await expect(facade.session.write('fn', { bad: () => undefined } as never)).rejects.toBeInstanceOf(ValidationError)
+  await expect(facade.session.write('symbol', { bad: Symbol('x') } as never)).rejects.toBeInstanceOf(ValidationError)
+  await expect(facade.session.write('bigint', { bad: BigInt(1) } as never)).rejects.toBeInstanceOf(ValidationError)
+  await expect(facade.session.write('undefined', undefined as never)).rejects.toBeInstanceOf(ValidationError)
+  await expect(facade.session.write('circular', circular as never)).rejects.toBeInstanceOf(ValidationError)
+})
+
+it('rejects inconsistent adapter capability metadata', () => {
+  const adapter = new FakeMemoryAdapter()
+  const invalid: MemoryAdapter = {
+    ...adapter,
+    info: { ...adapter.info, capabilities: ['memory.kv'] as const },
+    capabilities: ['memory.kv', 'memory.session'] as const
+  }
+
+  expect(() => validateMemoryAdapter(invalid)).toThrow(HarnessConfigError)
 })
 
 it('omits raw memory content by default and captures bounded content only when enabled', async () => {
@@ -146,4 +169,52 @@ it('stores sandbox memory values and metadata under the documented paths', async
     metadata: { source: 'test' }
   })
   expect(await sandbox.exists('/memory/profile.json')).toBe(false)
+})
+
+it('stores sandbox run memory under the documented run path and rejects ttl', async () => {
+  const sandbox = await inMemorySandbox().open({
+    sessionId: 's1',
+    runId: 'r1',
+    signal: new AbortController().signal
+  })
+  const facade = createMemoryFacade({
+    adapter: sandboxMemory(),
+    logger,
+    telemetry: new RecordingMemoryTelemetry(),
+    contentCaptureMode: 'NO_CONTENT',
+    signal: new AbortController().signal,
+    harnessName: 'memory-test',
+    sessionId: 's1',
+    runId: 'r1',
+    sandbox
+  })
+
+  await facade.run.write('scratch', { step: 1 })
+  expect(JSON.parse(await sandbox.readText('/memory/runs/r1/scratch.json'))).toEqual({ step: 1 })
+  await expect(facade.run.write('ttl', { step: 2 }, { ttlMs: 1000 })).rejects.toBeInstanceOf(ValidationError)
+})
+
+it('reports method_missing when a search-capable adapter omits store.search', async () => {
+  const adapter: MemoryAdapter = {
+    ...new FakeMemoryAdapter(),
+    info: {
+      id: 'searchless_memory',
+      packageName: '@purista/harness-memory-searchless',
+      capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.search', 'memory.session'] as const
+    },
+    capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.search', 'memory.session'] as const,
+    configureHarnessContext() {},
+    async open() {
+      return {
+        get: async () => undefined,
+        set: async () => undefined,
+        delete: async () => undefined,
+        list: async () => []
+      }
+    }
+  }
+
+  await expect(memory(adapter).facade.session.search({ text: 'x' })).rejects.toMatchObject({
+    meta: { reason: 'method_missing' }
+  })
 })

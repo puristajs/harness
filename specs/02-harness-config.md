@@ -60,8 +60,9 @@ interface TelemetryOptions {
   /**
    * Content telemetry policy. Defaults to env
    * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`.
-   * In v1 core, non-`NO_CONTENT` values are reserved and do not cause content
-   * to be emitted.
+   * In v1 core, prompt, model output, tool input/result, file, expected-output,
+   * and context content are never emitted. Memory content follows the bounded
+   * memory-facade policy in `20-memory-adapters`.
    */
   contentCaptureMode?: 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
 }

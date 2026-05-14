@@ -9,6 +9,7 @@ same session API.
 flowchart TD
   Harness["defineHarness"] --> Model["ModelProvider adapter"]
   Harness --> State["StateStore adapter"]
+  Harness --> Memory["MemoryAdapter"]
   Harness --> Sandbox["Sandbox adapter"]
   Harness --> Tools["TypeScript and MCP tools"]
   Harness --> Skills["Skill directories"]
@@ -39,6 +40,26 @@ Implement `StateStore` when sessions, runs, messages, and events must outlive
 the process.
 
 Durable adapters should pass the shared state-store contract tests.
+
+## Add A Memory Adapter
+
+Implement `MemoryAdapter` when agent memory must live outside the default
+sandbox-backed `sandboxMemory()` adapter.
+
+Adapter responsibilities:
+
+- declare exact `memory.*` capabilities, including scopes and optional search,
+  TTL, and persistence;
+- implement backend I/O only; core owns standard validation, telemetry, metrics,
+  content-capture policy, and error wrapping;
+- respect `ctx.signal` on every backend call;
+- use `ctx.telemetry` and `ctx.metrics` only for backend-specific nested spans
+  or metrics;
+- keep Redis, Postgres, vector, graph, or product-specific adapters in separate
+  `@purista/harness-memory-*` packages.
+
+Memory adapters should pass `memoryAdapterContract` from
+`@purista/harness/testing`.
 
 ## Add A Sandbox Adapter
 

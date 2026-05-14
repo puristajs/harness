@@ -4,7 +4,7 @@
 
 ## Goals
 
-- Preserve the existing developer workflow: `session.memory.read/write/delete/list` continues to work.
+- Expose session-scoped `session.memory.read/write/delete/list/search` through the configured adapter.
 - Make memory storage pluggable through a single adapter port.
 - Keep core backend-neutral. Core owns the port, facade, telemetry wrapper, validation, and the sandbox-backed reference adapter.
 - Support different project memory needs without implementation-time decisions: ephemeral run memory, per-session memory, persistent agent memory, tenant/user memory, and semantic search when the adapter supports it.
@@ -32,7 +32,7 @@ defineHarness()
   .build()
 ```
 
-`.memory(adapter)` is an optional foundation-stage builder method. It is normally called after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used. When called more than once, the latest adapter replaces the previous one.
+`.memory(adapter)` is an optional foundation-stage builder method. It is normally called after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used. Duplicate `.memory(...)` calls are invalid and MUST fail builder validation.
 
 Validation rules:
 
@@ -87,7 +87,7 @@ interface SessionMemory {
   write(key: string, value: JsonValue, opts?: MemoryWriteOptions): Promise<void>
   delete(key: string): Promise<void>
   list(opts?: MemoryListOptions): Promise<string[]>
-  search?(query: MemorySearchQuery): Promise<MemorySearchResult[]>
+  search(query: MemorySearchQuery): Promise<MemorySearchResult[]>
 }
 ```
 

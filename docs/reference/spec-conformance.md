@@ -12,6 +12,8 @@ should read.
 - TypeScript tools and MCP stdio/HTTP tools are executable.
 - MCP stdio runs through the sandbox executor and supports sandbox install
   commands.
+- Memory adapters are wired through the session, workflow, agent, and tool
+  contexts with secure-by-default telemetry.
 - Living Wiki Jaeger demonstrates the full application path with optional
   external integrations.
 
@@ -21,6 +23,7 @@ should read.
 |---|---|---|
 | Foundation: errors, logger, telemetry, ULID | Aligned | Error metadata and structured logs are covered by tests. |
 | State and event persistence | Aligned | In-memory default and contracts cover ordering and event persistence. |
+| Memory adapters | Aligned | `sandboxMemory()`, scope/capability gates, memory telemetry, and `memoryAdapterContract` are covered. |
 | Sandbox | Aligned | Files-only and executor-capable paths are covered. |
 | Models and OpenAI adapter | Aligned | Capability gates and provider error normalization are covered. |
 | Direct agents | Aligned | `session.agents.<id>.prompt/stream` is canonical. |

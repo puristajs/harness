@@ -358,7 +358,7 @@ interface SessionMemory {
   write(key: string, value: JsonValue, opts?: MemoryWriteOptions): Promise<void>
   delete(key: string): Promise<void>
   list(opts?: MemoryListOptions): Promise<string[]>
-  search?(query: MemorySearchQuery): Promise<MemorySearchResult[]>
+  search(query: MemorySearchQuery): Promise<MemorySearchResult[]>
 }
 
 interface MemoryFacade {
@@ -370,8 +370,9 @@ interface MemoryFacade {
   scope(scope: MemoryScope): SessionMemory
 }
 
-interface MemoryAdapter extends HarnessContextConfigurable {
+interface MemoryAdapter extends HarnessContextConfigurable, AdapterCapabilities {
   readonly info: MemoryAdapterInfo
+  readonly capabilities: readonly MemoryCapability[]
   open(scope: MemoryScope, ctx: MemoryOpenContext): Promise<MemoryStore>
   close?(): Promise<void>
 }

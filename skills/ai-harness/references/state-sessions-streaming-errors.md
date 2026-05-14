@@ -120,7 +120,7 @@ for await (const event of session.workflows.audit.stream(input)) {
 }
 ```
 
-Ordering is lifecycle order for a single run. Streams are live observation. Persisted events support audit/replay, but recovery should use durable checkpoints, not stream cursors.
+Ordering is lifecycle order for a single run. Streams are live observation. Persisted events support audit/history inspection, but recovery should use durable checkpoints, not stream cursors.
 
 Do not expose `RunEvent` directly as a provider protocol unless your application owns that contract. HTTP/SSE adapters should map harness events into client-facing event shapes.
 

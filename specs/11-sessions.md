@@ -123,7 +123,7 @@ interface SessionMemory {
   write(key: string, value: JsonValue, opts?: MemoryWriteOptions): Promise<void>
   delete(key: string): Promise<void>
   list(opts?: MemoryListOptions): Promise<string[]>
-  search?(query: MemorySearchQuery): Promise<MemorySearchResult[]>
+  search(query: MemorySearchQuery): Promise<MemorySearchResult[]>
 }
 ```
 

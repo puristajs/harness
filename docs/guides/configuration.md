@@ -217,7 +217,6 @@ handler: async (ctx) => {
 | `AZURE_AI_ENDPOINT` / `AZURE_AI_API_KEY` / `AZURE_AI_MODEL` | Optional Azure AI Foundry provider configuration. |
 | `PURISTA_HARNESS_LOG_LEVEL` | Logger level for `JsonLogger`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP endpoint for traces, default example value `http://localhost:4318`. |
-| `LIVING_WIKI_DRAWIO_MCP_*` | Optional Living Wiki draw.io MCP integration. |
 
 ## Production Checklist
 

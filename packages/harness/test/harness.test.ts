@@ -204,4 +204,8 @@ it('inspects effective adapter capabilities and validates requirements at build 
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
     .build()).toThrow(HarnessConfigError)
+
+  expect(() => defineHarness()
+    .memory(sandboxMemory())
+    .memory(sandboxMemory())).toThrow(HarnessConfigError)
 })

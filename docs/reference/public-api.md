@@ -174,6 +174,27 @@ Token usage remains on model spans using GenAI and OpenInference attributes.
 The harness also emits token usage metrics so aggregate usage can remain
 available even when trace storage samples or drops spans.
 
+## Memory
+
+`session.memory` exposes session-scoped JSON memory. Run contexts also receive
+`ctx.memory.session`, `ctx.memory.run`, optional `ctx.memory.agent`,
+`ctx.memory.user()`, `ctx.memory.tenant()`, and `ctx.memory.scope(...)`.
+
+```ts
+await ctx.memory.session.write('last_topic', { value: 'pricing' })
+const last = await ctx.memory.session.read<{ value: string }>('last_topic')
+const keys = await ctx.memory.session.list({ prefix: 'last_' })
+```
+
+`sandboxMemory()` is the default adapter. It stores session memory under
+`/memory/session/<key>.json` and run memory under
+`/memory/runs/<runId>/<key>.json` inside the session sandbox. External memory
+adapters implement `MemoryAdapter`, declare exact `memory.*` capabilities, and
+keep backend-specific packages under the `@purista/harness-memory-*` pattern.
+
+Search is always present on `SessionMemory`; it throws `ModelCapabilityError`
+when the configured adapter does not advertise `memory.search`.
+
 ## Model Provider Operations
 
 Provider packages implement the operations they support and declare matching

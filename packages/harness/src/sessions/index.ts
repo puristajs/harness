@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import type { Logger } from '../logger/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
 import type { JsonValue } from '../models/json.js'
@@ -8,9 +7,7 @@ import {
   OperationTimeoutError,
   HarnessError,
   SessionBusyError,
-  StateError,
   ValidationError,
-  WorkflowNotFoundError,
   serializeError
 } from '../errors/index.js'
 import { ulid } from '../ulid/index.js'
@@ -20,7 +17,6 @@ import type {
   AgentDefinition,
   AgentInput,
   AgentOutput,
-  BuiltinToolName,
   InvokeOptions,
   ModelsConfig,
   ResolvedSkill,
@@ -38,7 +34,7 @@ import type {
   ContentCaptureMode,
   TelemetryOptions
 } from '../harness/defineHarness.js'
-import type { MemoryAdapter, MemoryFacade, SessionMemory } from '../ports/memory.js'
+import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { HarnessInspection } from '../ports/capabilities.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'

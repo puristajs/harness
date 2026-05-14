@@ -612,6 +612,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   }
 
   public memory(memory: MemoryAdapter): HarnessBuilder<S> {
+    if (this.configured.memory) {
+      throw new HarnessConfigError('Memory adapter is already configured.', { reason: 'duplicate_adapter', path: 'memory' })
+    }
     validateMemoryAdapter(memory)
     return this.clone({ memory })
   }

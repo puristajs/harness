@@ -29,12 +29,14 @@ Prefer this order because it preserves inference and mirrors dependency directio
 
 ```ts
 defineHarness({ name: 'app-name' })
-  .logger(...)
   .telemetry(...)
-  .defaults(...)
+  .logger(...)
   .state(...)
   .sandbox(...)
   .memory(...)
+  .runtime(...)
+  .requires(...)
+  .defaults(...)
   .models(...)
   .tools(...)
   .skills(...)

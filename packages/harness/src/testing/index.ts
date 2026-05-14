@@ -1,6 +1,7 @@
 import { defineHarness } from '../harness/defineHarness.js'
 
 export { FakeModelProvider } from './fakeModelProvider.js'
+export { FakeMemoryAdapter, memoryAdapterContract } from './fakeMemoryAdapter.js'
 export { adapterCapabilitiesContract, fakeCapabilityAdapter, type FakeCapabilityAdapter } from './capabilities.js'
 export { createInMemoryFeedbackRecorder } from './feedback.js'
 export { evaluateDeterministicScorer } from '../eval/index.js'

@@ -115,7 +115,7 @@ Append rules:
 
 ## Session memory
 
-`Session.memory` is a session-scoped facade over the configured `MemoryAdapter`. Memory is not stored in the `StateStore`. The default adapter is `sandboxMemory()`, which stores session memory in the sandbox and preserves compatibility with the previous `/memory/<key>.json` layout.
+`Session.memory` is a session-scoped facade over the configured `MemoryAdapter`. Memory is not stored in the `StateStore`. The default adapter is `sandboxMemory()`, which stores session memory in `/memory/session/` inside the sandbox.
 
 ```ts
 interface SessionMemory {

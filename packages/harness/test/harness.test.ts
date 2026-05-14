@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError } from '../src/index.js'
+import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError } from '../src/errors/index.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
@@ -118,8 +118,19 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
   model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
   const state = new ContextAwareStateStore()
   let sandboxConfigured = false
+  let memoryConfigured = false
   let toolConfigured = false
   let toolSawContext = false
+  const baseMemory = sandboxMemory()
+  const memory = {
+    info: baseMemory.info,
+    capabilities: baseMemory.capabilities,
+    open: baseMemory.open.bind(baseMemory),
+    ...(baseMemory.close ? { close: baseMemory.close.bind(baseMemory) } : {}),
+    configureHarnessContext(context: HarnessAdapterContext) {
+      memoryConfigured = context.harnessName === 'ctx-test' && Boolean(context.metrics) && context.contentCaptureMode === 'NO_CONTENT'
+    }
+  } satisfies MemoryAdapter
   const sandbox = {
     ...inMemorySandbox(),
     configureHarnessContext(context: HarnessAdapterContext) {
@@ -131,6 +142,7 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
     .logger(new JsonLogger({ level: 'fatal', out: { write: () => undefined } }))
     .state(state)
     .sandbox(sandbox)
+    .memory(memory)
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
     .tools({
       ctx_tool: {
@@ -142,7 +154,7 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
           toolConfigured = context.harnessName === 'ctx-test'
         },
         handler: async (ctx) => {
-          toolSawContext = Boolean(ctx.logger && ctx.telemetry && ctx.runId && ctx.sessionId)
+          toolSawContext = Boolean(ctx.logger && ctx.telemetry && ctx.memory.session && ctx.runId && ctx.sessionId)
           return { ok: true }
         }
       }
@@ -156,6 +168,7 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
   await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
   expect(state.configured).toBe(true)
   expect(sandboxConfigured).toBe(true)
+  expect(memoryConfigured).toBe(true)
   expect(toolConfigured).toBe(true)
   expect(toolSawContext).toBe(true)
 })
@@ -172,14 +185,22 @@ it('inspects effective adapter capabilities and validates requirements at build 
 
   const inspection = harness.inspect()
   expect(inspection.name).toBe('capability-test')
-  expect(inspection.capabilities).toEqual(['sandbox.fs', 'runtime.checkpoint'])
+  expect(inspection.capabilities).toEqual(['sandbox.fs', 'memory.kv', 'memory.list', 'memory.delete', 'memory.run', 'memory.session', 'runtime.checkpoint'])
   expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'runtime.checkpoint'])
+  expect(inspection.adapters.some((adapter) => adapter.kind === 'memory' && adapter.id === 'sandbox_memory')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'runtime' && adapter.id === 'fake-runtime')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'model' && adapter.id === 'fast')).toBe(true)
 
   expect(() => defineHarness()
     .sandbox(inMemorySandbox())
     .requires(['sandbox.resume'])
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
+    .build()).toThrow(HarnessConfigError)
+
+  expect(() => defineHarness()
+    .sandbox(inMemorySandbox())
+    .requires(['memory.persistent'])
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
     .build()).toThrow(HarnessConfigError)

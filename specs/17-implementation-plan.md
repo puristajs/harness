@@ -112,7 +112,7 @@ Deliverables:
 - Run lifecycle, OTel spans, run-event persistence.
 - Internal in-process bounded run-event queue with overflow notification; slow consumers do not pause model/tool execution.
 - `SessionMemory` facade backed by the configured `MemoryAdapter`.
-- `sandboxMemory()` default adapter integration for session scope, including legacy `/memory/<key>.json` reads and new `/memory/session/<key>.json` writes.
+- `sandboxMemory()` default adapter integration for session scope using `/memory/session/<key>.json` and run scope using `/memory/runs/<runId>/<key>.json`.
 
 Tests:
 - Lifecycle, `SessionBusyError`, streaming generator suite.

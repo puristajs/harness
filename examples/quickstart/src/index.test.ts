@@ -23,6 +23,7 @@ describe('quickstart', () => {
     const output = await session.workflows.explain_quickstart.prompt({ topic: 'harnesses' })
 
     expect(output.answer).toContain('typed boundaries')
+    await expect(session.memory.read<{ topic: string }>('last_topic')).resolves.toEqual({ topic: 'harnesses' })
     await harness.shutdown()
   })
 })

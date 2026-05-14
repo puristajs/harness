@@ -33,6 +33,13 @@ import type {
 import type { StateStore } from '../ports/state.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
+import { sandboxMemory } from '../memory/sandbox/index.js'
+import type {
+  MemoryAdapter,
+  MemoryFacade,
+  SessionMemory
+} from '../ports/memory.js'
+import { validateMemoryAdapter } from '../ports/memory.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -165,18 +172,6 @@ export interface ResolvedSkill {
   directory: string
 }
 
-/** Sandbox-backed per-session memory facade. */
-export interface SessionMemory {
-  /** Reads `/memory/<key>.json` and returns the parsed JSON value if present. */
-  read<T = JsonValue>(key: string): Promise<T | undefined>
-  /** Writes JSON-serializable data to `/memory/<key>.json`. */
-  write(key: string, value: JsonValue): Promise<void>
-  /** Deletes `/memory/<key>.json` if it exists. */
-  delete(key: string): Promise<void>
-  /** Lists known memory keys without the `.json` suffix. */
-  list(): Promise<string[]>
-}
-
 /** Conversation history accessor for a single session thread. */
 export interface ConversationHistory {
   /** Returns persisted conversation messages for the session. */
@@ -190,6 +185,7 @@ export interface ToolHandlerContext {
   logger: Logger
   telemetry: TelemetryShim
   metrics: Metrics
+  memory: MemoryFacade
   runId: string
   sessionId: string
   agentId: string
@@ -320,7 +316,7 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   sessionId: string
   runId: string
   history: ConversationHistory
-  memory: SessionMemory
+  memory: MemoryFacade
   metadata: Readonly<Record<string, JsonValue>>
   metrics: Metrics
 }
@@ -334,6 +330,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
+  memory: MemoryFacade
   metrics: Metrics
   output?: O
 }
@@ -553,6 +550,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   logger(logger: Logger): HarnessBuilder<S>
   state(store: StateStore): HarnessBuilder<S>
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
+  memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
@@ -577,6 +575,7 @@ type BuilderStateInternal = {
   logger?: Logger
   state?: StateStore
   sandbox?: Sandbox<any>
+  memory?: MemoryAdapter
   runtime?: DurableRuntimeAdapter
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
@@ -610,6 +609,11 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   public sandbox(sandbox: Sandbox<any> = autoDetectSandbox()): HarnessBuilder<S> {
     return this.clone({ sandbox })
+  }
+
+  public memory(memory: MemoryAdapter): HarnessBuilder<S> {
+    validateMemoryAdapter(memory)
+    return this.clone({ memory })
   }
 
   public runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S> {
@@ -672,7 +676,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
     }
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
-    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, models)
+    const memory = this.configured.memory ?? sandboxMemory()
+    validateMemoryAdapter(memory)
+    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
       throw new HarnessConfigError('Required adapter capabilities are not available.', {
@@ -688,6 +694,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       ...(this.configured.telemetry ? { telemetry: this.configured.telemetry } : {}),
       state: this.configured.state ?? new InMemoryStateStore(),
       sandbox,
+      memory,
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -711,13 +718,22 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return new Builder(this.options, { ...this.configured, ...patch })
   }
 
-  private resolveInspection(name: string, sandbox: Sandbox, models: ModelsConfig): HarnessInspection {
+  private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {
     const adapters: AdapterInspection[] = []
     const sandboxCapabilities = hasAdapterCapabilities(sandbox) ? uniqueCapabilities(sandbox.capabilities) : []
     adapters.push({
       kind: 'sandbox',
       id: getAdapterId(sandbox, 'sandbox'),
       capabilities: sandboxCapabilities
+    })
+    adapters.push({
+      kind: 'memory',
+      id: memory.info.id,
+      capabilities: uniqueCapabilities(memory.info.capabilities),
+      metadata: {
+        packageName: memory.info.packageName,
+        ...(memory.info.version ? { version: memory.info.version } : {})
+      }
     })
 
     if (this.configured.runtime) {

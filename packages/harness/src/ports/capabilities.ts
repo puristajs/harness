@@ -27,6 +27,28 @@ export type AdapterCapability =
   | 'runtime.resume_from_checkpoint'
   /** Adapter can record feedback. */
   | 'feedback.record'
+  /** Memory adapter supports key/value reads and writes. */
+  | 'memory.kv'
+  /** Memory adapter supports key listing. */
+  | 'memory.list'
+  /** Memory adapter supports key deletion. */
+  | 'memory.delete'
+  /** Memory adapter supports text search over stored memory. */
+  | 'memory.search'
+  /** Memory adapter supports entry expiration. */
+  | 'memory.ttl'
+  /** Memory adapter supports run-scoped memory. */
+  | 'memory.run'
+  /** Memory adapter supports session-scoped memory. */
+  | 'memory.session'
+  /** Memory adapter supports agent-scoped memory. */
+  | 'memory.agent'
+  /** Memory adapter supports user-scoped memory. */
+  | 'memory.user'
+  /** Memory adapter supports tenant-scoped memory. */
+  | 'memory.tenant'
+  /** Memory survives adapter close/reopen for the same logical scope. */
+  | 'memory.persistent'
 
 /** Data-only descriptor implemented by adapters that expose capability metadata. */
 export interface AdapterCapabilities {
@@ -35,7 +57,7 @@ export interface AdapterCapabilities {
 
 /** Adapter descriptor surfaced through `harness.inspect()`. */
 export interface AdapterInspection {
-  readonly kind: 'state' | 'sandbox' | 'runtime' | 'feedback' | 'model'
+  readonly kind: 'state' | 'sandbox' | 'runtime' | 'feedback' | 'model' | 'memory'
   readonly id: string
   readonly capabilities: readonly AdapterCapability[]
   readonly metadata?: Record<string, unknown>

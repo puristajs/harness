@@ -68,8 +68,8 @@ Use stable, tenant-safe session ids. Do not put secrets in session ids.
 
 ## Memory And History
 Session memory is exposed through `SessionMemory` and backed by the configured `MemoryAdapter`.
-The default `sandboxMemory()` adapter stores session memory in the sandbox and
-reads legacy `/memory/<key>.json` files for compatibility.
+The default `sandboxMemory()` adapter stores session memory in `/memory/session/`
+inside the session sandbox.
 
 ```ts
 await session.memory.write('last-topic', { topic: 'pricing' })

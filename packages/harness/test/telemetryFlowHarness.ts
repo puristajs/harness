@@ -5,6 +5,7 @@ import type { Logger } from '../src/logger/index.js'
 import type { ObjectResponse, ModelProvider } from '../src/ports/model-provider.js'
 import { InMemoryStateStore } from '../src/state/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
+import { sandboxMemory } from '../src/memory/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import type { TelemetryShim } from '../src/telemetry/index.js'
 import type { TelemetryOptions } from '../src/index.js'
@@ -119,6 +120,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
     telemetryShim: telemetry,
     state: new InMemoryStateStore(),
     sandbox: inMemorySandbox(),
+    memory: sandboxMemory(),
     defaults: {
       agentMaxIterations: 4,
       runTimeoutMs: 60_000,
@@ -137,6 +139,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
         output: z.object({ policy: z.string() }),
         handler: async (ctx) => {
           ctx.metrics.counter('app.policy_lookup.calls')
+          await ctx.memory.session.write('tool_seen', { query: ctx.sessionId })
           if (opts.failTool) throw new Error('policy backend unavailable')
           return { policy: 'yes' }
         }
@@ -157,7 +160,11 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
       wf: {
         input: z.string(),
         output: z.object({ answer: z.string() }),
-        handler: async (ctx: any) => ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () => ctx.agents.responder(ctx.input))
+        handler: async (ctx: any) => {
+          await ctx.memory.session.write('workflow_topic', { value: ctx.input })
+          await ctx.memory.run.write('workflow_step', { value: 'started' })
+          return ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () => ctx.agents.responder(ctx.input))
+        }
       }
     }
   })

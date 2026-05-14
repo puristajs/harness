@@ -32,7 +32,7 @@ defineHarness()
   .build()
 ```
 
-`.memory(adapter)` is an optional foundation-stage builder method. It is callable at most once after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used.
+`.memory(adapter)` is an optional foundation-stage builder method. It is normally called after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used. When called more than once, the latest adapter replaces the previous one.
 
 Validation rules:
 
@@ -62,7 +62,7 @@ interface MemoryScope {
 Scope rules:
 
 - `session`: per conversation thread. Requires `sessionId`.
-- `run`: per single agent/workflow run. Requires `sessionId` and `runId`. Core provides an in-process run store even when the configured adapter does not persist run memory.
+- `run`: per single agent/workflow run. Requires `sessionId` and `runId`. The configured adapter must advertise `memory.run` for this scope.
 - `agent`: memory for one agent across sessions. Requires `agentId`. It MAY also include `userId` or `tenantId`.
 - `user`: memory for one application user across sessions. Requires `userId`.
 - `tenant`: memory shared inside one tenant. Requires `tenantId`.
@@ -79,7 +79,7 @@ Default public handles:
 
 ## Public facade
 
-`SessionMemory` remains the simple KV facade for compatibility with current code and docs:
+`SessionMemory` is the simple KV facade exposed for direct session-scoped memory access:
 
 ```ts
 interface SessionMemory {
@@ -129,8 +129,9 @@ interface MemoryAdapterInfo {
   capabilities: readonly MemoryCapability[]
 }
 
-interface MemoryAdapter extends HarnessContextConfigurable {
+interface MemoryAdapter extends HarnessContextConfigurable, AdapterCapabilities {
   readonly info: MemoryAdapterInfo
+  readonly capabilities: readonly MemoryCapability[]
   open(scope: MemoryScope, ctx: MemoryOpenContext): Promise<MemoryStore>
   close?(): Promise<void>
 }
@@ -141,6 +142,7 @@ interface MemoryOpenContext {
   readonly metrics: Metrics
   readonly contentCaptureMode: ContentCaptureMode
   readonly signal: AbortSignal
+  readonly sandbox?: SandboxSession
 }
 
 interface MemoryStore {
@@ -231,7 +233,8 @@ Validation rules enforced by core before adapter calls:
 
 Capability behavior:
 
-- If `search` is called and the adapter lacks `'memory.search'` or omits `store.search`, throw `ModelCapabilityError{meta.reason:'memory_search_unavailable'}` before adapter I/O.
+- If `search` is called and the adapter lacks `'memory.search'`, throw `ModelCapabilityError{meta.reason:'missing_capability'}` before adapter I/O.
+- If `search` is called and the adapter advertises `'memory.search'` but omits `store.search`, throw `ModelCapabilityError{meta.reason:'method_missing'}`.
 - If `ttlMs` is provided and the adapter lacks `'memory.ttl'`, throw `ValidationError{where:'memory_write_options', meta.reason:'ttl_unsupported'}` before adapter I/O.
 - If a scope kind is unsupported by the adapter capabilities, throw `ValidationError{where:'memory_scope', meta.reason:'scope_unsupported'}` before adapter I/O.
 
@@ -244,9 +247,8 @@ Behavior:
 - Supports capabilities: `'memory.kv'`, `'memory.list'`, `'memory.delete'`, `'memory.run'`, `'memory.session'`.
 - Session scope stores JSON files in `/memory/session/<key>.json` inside the session sandbox.
 - Run scope stores JSON files in `/memory/runs/<runId>/<key>.json` inside the session sandbox.
-- For compatibility with the current implementation, the adapter MUST also read existing `/memory/<key>.json` files for session scope when `/memory/session/<key>.json` is absent.
-- New session writes MUST use `/memory/session/<key>.json`.
-- `list()` for session scope MUST merge keys from `/memory/session/*.json` and legacy `/memory/*.json`, deduplicate by key, and prefer the new path for reads.
+- Session writes MUST use `/memory/session/<key>.json`.
+- `list()` for session scope MUST list only `/memory/session/*.json`.
 - Search is unsupported and MUST fail through the core capability gate.
 - `ttlMs`, `tags`, and `metadata` are accepted only when they can be represented in a sidecar `/memory/.meta/<scope>/<key>.json`; v1 implementation MUST reject `ttlMs` because the reference adapter does not run expiry jobs.
 - Atomicity is per key. Writes serialize to a string first, then write one file.

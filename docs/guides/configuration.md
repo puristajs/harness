@@ -36,6 +36,7 @@ flowchart LR
   Harness --> Workflows["workflows"]
   Harness --> State["state adapter"]
   Harness --> Sandbox["sandbox adapter"]
+  Harness --> Memory["memory adapter"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -44,6 +45,7 @@ flowchart LR
 | Logger | `JsonLogger` | You need structured logs at a specific level or sink. |
 | State | In-memory state | Runs/history must survive process restart. |
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
+| Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
 | Models | Required | Every agent needs a model alias. |
 | Tools | Optional | Agents need retrieval, writes, MCP, or application APIs. |
 | Skills | Optional | Agents need reusable instructions or report methods. |
@@ -146,6 +148,32 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 Choose `inMemorySandbox()` when agents do not need command execution. Choose an
 executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
+
+## Memory
+
+```ts
+import { sandboxMemory } from '@purista/harness'
+
+.memory(sandboxMemory())
+```
+
+`sandboxMemory()` is the default when `.memory(...)` is omitted. It stores
+session memory in `/memory/session/<key>.json` and run memory in
+`/memory/runs/<runId>/<key>.json` inside the session sandbox. Use a dedicated
+memory adapter package when the application needs persistence outside the
+sandbox, semantic search, user or tenant scopes, TTL handling, or shared memory
+across sessions.
+
+```ts
+const result = await ctx.agents.answerer(ctx.input, {
+  metadata: { userId: account.id, tenantId: account.tenantId }
+})
+```
+
+Inside workflows, agents, and TypeScript tools, use `ctx.memory.session`,
+`ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and
+`ctx.memory.tenant()`. The `user()` and `tenant()` helpers use sanitized
+`metadata.userId` and `metadata.tenantId` when no explicit id is passed.
 
 ## Telemetry And Logs
 

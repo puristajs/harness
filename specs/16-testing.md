@@ -136,7 +136,7 @@ The harness package additionally has integration tests:
 - Session: serial concurrency rule throws `SessionBusyError` synchronously on overlap; `clearHistory` / `replaceHistory` reject with `SessionBusyError` when a run is in flight; `replaceHistory` validation failure throws `ValidationError{where:'session_history'}`.
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
-- `sandboxMemory()` migration behavior: reads legacy `/memory/<key>.json`, writes new `/memory/session/<key>.json`, merges legacy and new keys in `list()`, and rejects search through the capability gate.
+- `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.

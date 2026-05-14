@@ -91,7 +91,7 @@ A session provides:
 | `session.workflows.<id>.prompt(input)` | Workflow call. |
 | `session.workflows.<id>.stream(input)` | Workflow call with run events. |
 | `session.history.list()` | Conversation messages for this session. |
-| `session.memory.read/write/delete/list()` | JSON memory stored under the session sandbox. |
+| `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
 | `session.close()` | Close the sandbox session. |
 
 Sessions enforce one active run at a time. Use different session IDs for

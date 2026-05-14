@@ -262,8 +262,8 @@ function withModelStreamSpan<T>(
         'llm.token_count.completion': lastUsage.outputTokens,
         'llm.token_count.total': lastUsage.totalTokens
       })
-      options.telemetry?.recordCounter('gen_ai.client.token.usage', lastUsage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
-      options.telemetry?.recordCounter('gen_ai.client.token.usage', lastUsage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
+      options.telemetry?.recordHistogram('gen_ai.client.token.usage', lastUsage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
+      options.telemetry?.recordHistogram('gen_ai.client.token.usage', lastUsage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
     }
     if (lastFinishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [lastFinishReason])
     options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
@@ -335,8 +335,8 @@ async function withModelSpan<T>(
         'llm.token_count.completion': usage.outputTokens,
         'llm.token_count.total': usage.totalTokens
       })
-      options.telemetry?.recordCounter('gen_ai.client.token.usage', usage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
-      options.telemetry?.recordCounter('gen_ai.client.token.usage', usage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
+      options.telemetry?.recordHistogram('gen_ai.client.token.usage', usage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
+      options.telemetry?.recordHistogram('gen_ai.client.token.usage', usage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
     }
     if (finishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [finishReason])
     options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)

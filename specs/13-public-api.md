@@ -127,6 +127,7 @@ export interface AgentContext<S, I, O>
 export interface AgentContextMinimal<S, I>
 export interface WorkflowContext<S, I, O>
 export interface ToolHandlerContext
+export interface Metrics
 export interface SessionMemory
 export interface ConversationHistory
 

@@ -31,6 +31,7 @@ interface WorkflowContext<S, I, O> {
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
+  metrics: Metrics
 }
 ```
 

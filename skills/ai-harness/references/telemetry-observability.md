@@ -90,6 +90,26 @@ Common instruments:
 
 Durations are seconds. Do not invent `_ms` metrics in harness adapters.
 
+Token usage is attached to model spans using both GenAI attributes
+(`gen_ai.usage.*`) and OpenInference attributes (`llm.token_count.*`). The
+`gen_ai.client.token.usage` metric is emitted in addition because production
+trace backends may sample or drop spans while still aggregating metrics.
+
+Handler code should use the scoped `ctx.metrics` helper for application-owned
+measurements:
+
+```ts
+handler: async (ctx) => {
+  ctx.metrics.counter('app.workflow.started', 1, { workflow: 'triage' })
+  return ctx.metrics.duration('app.workflow.duration', { workflow: 'triage' }, async () => {
+    return ctx.agents.triage(ctx.input)
+  })
+}
+```
+
+Use an application prefix such as `app.` or a service-specific namespace. Avoid
+colliding with `gen_ai.*` and `harness.*` instruments.
+
 ## Logs
 Use `JsonLogger` or a compatible `Logger`. Tool handlers receive `ctx.logger`; include operational ids and avoid content:
 

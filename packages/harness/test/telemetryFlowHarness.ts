@@ -19,6 +19,7 @@ export class RecordingTelemetry implements TelemetryShim {
     exceptions: unknown[]
   }> = []
   public readonly traceContexts: Array<{ traceparent: string; tracestate?: string }> = []
+  public readonly metrics: Array<{ kind: 'counter' | 'histogram'; name: string; value: number; attrs: Record<string, unknown> }> = []
 
   private readonly stack: string[] = []
 
@@ -55,9 +56,13 @@ export class RecordingTelemetry implements TelemetryShim {
     }
   }
 
-  public recordHistogram(): void {}
+  public recordHistogram(name: string, value: number, attrs: Record<string, unknown>): void {
+    this.metrics.push({ kind: 'histogram', name, value, attrs: { ...attrs } })
+  }
 
-  public recordCounter(): void {}
+  public recordCounter(name: string, value: number, attrs: Record<string, unknown>): void {
+    this.metrics.push({ kind: 'counter', name, value, attrs: { ...attrs } })
+  }
 
   public currentTraceparent(): string | undefined {
     return this.stack.length > 0 ? '00-00000000000000000000000000000001-0000000000000001-01' : undefined
@@ -130,7 +135,8 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
         description: 'Looks up a policy.',
         input: z.object({ query: z.string() }),
         output: z.object({ policy: z.string() }),
-        handler: async () => {
+        handler: async (ctx) => {
+          ctx.metrics.counter('app.policy_lookup.calls')
           if (opts.failTool) throw new Error('policy backend unavailable')
           return { policy: 'yes' }
         }
@@ -151,7 +157,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
       wf: {
         input: z.string(),
         output: z.object({ answer: z.string() }),
-        handler: async (ctx: any) => ctx.agents.responder(ctx.input)
+        handler: async (ctx: any) => ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () => ctx.agents.responder(ctx.input))
       }
     }
   })

@@ -85,6 +85,10 @@ stores, and sandboxes can inherit logger and telemetry via
 
 The implementation creates an OpenTelemetry-backed `TelemetryShim` internally when telemetry is configured. Applications still own SDK/exporter bootstrapping, for example using `@opentelemetry/sdk-node` plus an OTLP exporter before harness runs begin.
 
+Workflow, custom-agent, and TypeScript-tool handlers receive `ctx.metrics` for
+application-owned counters, histograms, and duration measurements. Prefer this
+helper over low-level `ctx.telemetry.record*` calls.
+
 ## State, Sandbox, Runtime, And Requirements
 Defaults:
 - state: `InMemoryStateStore`

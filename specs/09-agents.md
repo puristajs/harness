@@ -38,6 +38,8 @@ interface AgentContextMinimal<S, I> {
   runId: string
   history: ConversationHistory
   memory: SessionMemory
+  metadata: Readonly<Record<string, JsonValue>>
+  metrics: Metrics
 }
 ```
 
@@ -59,6 +61,7 @@ interface AgentContext<S, I, O> {
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
+  metrics: Metrics
 }
 
 interface ConversationHistory {

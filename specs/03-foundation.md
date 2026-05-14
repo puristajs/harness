@@ -120,7 +120,7 @@ abstract class HarnessError extends Error {
 
 Per OTel semconv, durations are seconds (double). The harness emits no `_ms`-suffixed instruments.
 
-## Telemetry helper API (internal, not exported)
+## Telemetry and metrics helper API
 
 ```ts
 interface TelemetryShim {
@@ -128,9 +128,18 @@ interface TelemetryShim {
   recordHistogram(name: string, value: number, attrs: SpanAttrs): void
   recordCounter(name: string, value: number, attrs: SpanAttrs): void
 }
+
+interface Metrics {
+  counter(name: string, value?: number, attrs?: SpanAttrs): void
+  histogram(name: string, value: number, attrs?: SpanAttrs): void
+  duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
+}
 ```
 
-`SpanAttrs` is `Record<string, string | number | boolean | string[] | undefined>`. Undefined values are dropped before being passed to OTel.
+`TelemetryShim` is the low-level adapter surface. `Metrics` is the
+developer-facing helper exposed on workflow, custom-agent, and TypeScript-tool
+contexts. `SpanAttrs` is `Record<string, string | number | boolean | string[] |
+undefined>`. Undefined values are dropped before being passed to OTel.
 
 ## Cross-references
 

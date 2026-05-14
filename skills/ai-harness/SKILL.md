@@ -27,6 +27,7 @@ Keep these layers separate:
 - Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
+- Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
@@ -77,7 +78,10 @@ const harness = defineHarness({ name: 'support-ai' })
     triage_ticket: workflow({
       input: z.object({ ticketId: z.string() }),
       output: z.object({ priority: z.string(), reason: z.string() }),
-      handler: (ctx) => ctx.agents.triage(ctx.input)
+      handler: (ctx) => {
+        ctx.metrics.counter('support.triage.started', 1)
+        return ctx.metrics.duration('support.triage.duration', undefined, () => ctx.agents.triage(ctx.input))
+      }
     })
   }))
   .build()

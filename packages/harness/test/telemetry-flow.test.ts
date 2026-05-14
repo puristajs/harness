@@ -205,3 +205,38 @@ it('records GenAI token usage as histogram samples while keeping token counts on
     'llm.token_count.total': 3
   })
 })
+
+it('emits privacy-safe memory spans and metrics from the core wrapper', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy')
+
+  const memorySpans = telemetry.spans.filter((span) => span.name.startsWith('harness.memory.'))
+  expect(memorySpans.map((span) => span.name)).toEqual(expect.arrayContaining([
+    'harness.memory.set',
+    'harness.memory.set',
+    'harness.memory.set'
+  ]))
+  for (const span of memorySpans) {
+    expect(span.attrs).toMatchObject({
+      'harness.memory.provider': 'sandbox_memory',
+      'harness.memory.content_captured': false,
+      'harness.session.id': 'telemetry-session'
+    })
+    expect(span.attrs['harness.memory.key']).toBeUndefined()
+    expect(span.attrs['harness.memory.value']).toBeUndefined()
+  }
+
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'counter',
+      name: 'harness.memory.operations',
+      attrs: expect.objectContaining({ 'harness.memory.operation': 'set' })
+    }),
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'harness.memory.operation.duration',
+      attrs: expect.objectContaining({ 'harness.memory.provider': 'sandbox_memory' })
+    })
+  ]))
+})

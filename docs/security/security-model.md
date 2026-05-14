@@ -61,8 +61,10 @@ Default behavior is privacy-safe:
   context content;
 - provider and MCP error metadata should be actionable without leaking secrets.
 
-`telemetry.contentCaptureMode` is accepted as a stable policy value, but v1 core
-does not emit content in any mode.
+`telemetry.contentCaptureMode` is accepted as a stable policy value. v1 core
+does not emit prompt/tool/file/context content in any mode; memory content is
+omitted by default and only follows the bounded memory-facade policy when
+non-`NO_CONTENT` modes are enabled.
 
 ## Review Gates
 

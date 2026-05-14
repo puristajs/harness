@@ -111,7 +111,8 @@ Deliverables:
 - `Session.getRunSummary(runId)` derived from `StateStore`.
 - Run lifecycle, OTel spans, run-event persistence.
 - Internal in-process bounded run-event queue with overflow notification; slow consumers do not pause model/tool execution.
-- `SessionMemory` backed by `/memory/<key>.json` in the sandbox.
+- `SessionMemory` facade backed by the configured `MemoryAdapter`.
+- `sandboxMemory()` default adapter integration for session scope using `/memory/session/<key>.json` and run scope using `/memory/runs/<runId>/<key>.json`.
 
 Tests:
 - Lifecycle, `SessionBusyError`, streaming generator suite.
@@ -119,7 +120,31 @@ Tests:
 
 Exit: session integration and run-summary tests green.
 
-## Phase 10 — Agents (default loop with built-in tools, skill mount, permissions)
+## Phase 10 — Memory adapter port + scoped memory facade
+
+Deliverables:
+- `packages/harness/src/ports/memory.ts` with `MemoryAdapter`, `MemoryStore`,
+  scope, capability, option, entry, and search result types from
+  [20-memory-adapters](./20-memory-adapters.md).
+- `packages/harness/src/memory/facade.ts` wrapping adapter calls with validation,
+  scope construction, standard spans, standard metrics, error mapping, and
+  content-capture policy.
+- `packages/harness/src/memory/sandbox/` with `sandboxMemory()` reference adapter.
+- `FakeMemoryAdapter` and `memoryAdapterContract` under
+  `packages/harness/src/testing/`.
+- Builder `.memory(adapter)` support and default `sandboxMemory()`.
+
+Tests:
+- Memory adapter contract green.
+- Scope isolation for `run`, `session`, `agent`, `user`, and `tenant`.
+- Capability gates for search, TTL, persistence, and unsupported scopes.
+- Standard memory spans/metrics emitted by core wrapper; adapters do not emit
+  duplicate standard spans/metrics.
+- Content capture modes for memory raw key/value/query/result content.
+
+Exit: memory contract, telemetry, content capture, and public API tests green.
+
+## Phase 11 — Agents (default loop with built-in tools, skill mount, permissions)
 
 Deliverables:
 - `packages/harness/src/agents/registry.ts`.
@@ -138,14 +163,14 @@ Tests:
 
 Exit: agent tests green.
 
-## Phase 11 — Workflows
+## Phase 12 — Workflows
 
 Deliverables:
 - `packages/harness/src/workflows/` with `WorkflowContext`, parallel agent invocation, signal propagation.
 
 Exit: workflow tests green.
 
-## Phase 12 — Public API + builder + `$infer` + testing subpath
+## Phase 13 — Public API + builder + `$infer` + testing subpath
 
 Deliverables:
 - `packages/harness/src/harness/defineHarness.ts` exporting the chainable `HarnessBuilder` entry point.
@@ -154,7 +179,7 @@ Deliverables:
 
 Exit: harness complete; coverage ≥85%.
 
-## Phase 13 — `@purista/harness-openai` provider
+## Phase 14 — `@purista/harness-openai` provider
 
 Deliverables:
 - `packages/harness-openai/` with `openai(...)` factory extending `BaseModelProvider`.
@@ -164,7 +189,7 @@ Deliverables:
 
 Exit: provider package green; coverage ≥80%.
 
-## Phase 13b — Additional provider addons
+## Phase 14b — Additional provider addons
 
 Deliverables:
 - `packages/harness-anthropic/` with `anthropic(...)` extending `BaseModelProvider` over the official `@anthropic-ai/sdk`.
@@ -174,7 +199,7 @@ Deliverables:
 
 Exit: provider package tests, typechecks, and build green; coverage ≥80%.
 
-## Phase 14 — Quickstart and provider-parity examples
+## Phase 15 — Quickstart and provider-parity examples
 
 Deliverables:
 - `examples/quickstart/` (private package) demonstrating: define a harness with `@purista/harness-openai`, mount one skill, enable built-in `bash`/`read`, run `prompt` and `stream`.
@@ -189,7 +214,7 @@ Constraints:
 
 Exit: example runs against `FakeModelProvider` in CI.
 
-## Phase 15 — AI evaluation core helpers
+## Phase 16 — AI evaluation core helpers
 
 Deliverables:
 - `evaluatePromptCandidates` in the main `@purista/harness` export, with stable

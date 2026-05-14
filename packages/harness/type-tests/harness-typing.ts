@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { defineHarness } from '../src/harness/defineHarness.js'
 import { createModelRegistry } from '../src/models/registry.js'
-import { inMemorySandbox } from '../src/index.js'
+import { inMemorySandbox, sandboxMemory } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
 import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
@@ -23,6 +23,7 @@ const provider: ModelProvider = {
 }
 
 const harness = defineHarness()
+  .memory(sandboxMemory())
   .models({
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] }
   })
@@ -35,12 +36,16 @@ const harness = defineHarness()
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
         const _inputExact: Expect<Equal<Input, { task: string; priority: number }>> = true
+        const _memoryRead = ctx.memory.session.read<{ value: string }>('topic')
+        void _memoryRead
         return `Plan ${ctx.input.task} at priority ${ctx.input.priority}.`
       },
       handler: async (ctx) => {
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
         const _inputExact: Expect<Equal<Input, { task: string; priority: number }>> = true
+        await ctx.memory.run.write('plan_input', { task: ctx.input.task })
+        await ctx.memory.agent?.write('last_priority', ctx.input.priority)
         return { plan: ctx.input.task, accepted: ctx.input.priority > 0 }
       }
     })
@@ -53,6 +58,9 @@ const harness = defineHarness()
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
         const _inputExact: Expect<Equal<Input, { task: string }>> = true
+        await ctx.memory.session.write('workflow_task', { task: ctx.input.task })
+        await ctx.memory.run.write('workflow_seen', true)
+        await ctx.memory.user('u1').write('workflow_user', 'ok')
 
         const plan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 })
         type PlanOutput = typeof plan
@@ -114,6 +122,7 @@ const _futureCapabilitiesExact: Expect<Equal<typeof futureCapabilities, AdapterC
 
 // @ts-expect-error requires only accepts stable AdapterCapability values
 const _invalidFutureRequirement: AdapterCapability = 'sandbox.teleport'
+const _validMemoryRequirement: AdapterCapability = 'memory.persistent'
 
 const capabilityRegistry = createModelRegistry({
   textOnly: { provider, model: 'type-test-model', capabilities: ['text'] },

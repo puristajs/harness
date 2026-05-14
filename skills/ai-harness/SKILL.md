@@ -9,12 +9,12 @@ description: Use when designing, implementing, configuring, testing, or extendin
 Use this skill for work involving `@purista/harness`, `@purista/harness-openai`, or addon packages named `@purista/harness-*`.
 
 ## Core Model
-`@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, state, sandboxing, logging, telemetry, and streaming behind one session API.
+`@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, state, memory, sandboxing, logging, telemetry, and streaming behind one session API.
 
 Keep these layers separate:
 - configuration: `defineHarness()` registers adapters, defaults, models, tools, skills, agents, and workflows
 - execution: `harness.getSession(id)` returns typed `session.agents.*` and `session.workflows.*`
-- adapter code: provider, state, sandbox, MCP, durable runtime, logger, and telemetry ports
+- adapter code: provider, state, memory, sandbox, MCP, durable runtime, logger, and telemetry ports
 - application integration: HTTP/SSE, queues, persistence, auth, and business state stay outside the harness unless represented by a port or tool
 
 ## Hard Rules
@@ -34,7 +34,7 @@ Keep these layers separate:
 2. Decide whether the task is one agent loop, a custom handler agent, or an orchestrating workflow.
 3. Define Zod schemas at every agent, workflow, and tool boundary.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
-5. Attach tools, skill directories, permissions, sandbox, state, runtime requirements, logger, and telemetry explicitly.
+5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
 6. Decide how state, history, memory, streaming, errors, security, and operations are handled at the application edge.
 7. Invoke through `harness.getSession(id)` and close sessions/harnesses during shutdown.
 8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
@@ -101,6 +101,6 @@ await harness.shutdown()
 - `references/state-sessions-streaming-errors.md` for `StateStore`, session lifecycle, memory/history, run events, error mapping, and replay.
 - `references/durable-feedback-operations.md` for durable runtime checkpoints, adapter capabilities, feedback records, readiness, and operational runbooks.
 - `references/telemetry-observability.md` for OpenTelemetry setup, `TelemetryShim`, span/metric names, logs, privacy, and adapter context propagation.
-- `references/adapters.md` for provider, state store, sandbox, durable runtime, logger, telemetry, and addon adapter patterns.
+- `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
 - `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
-- `references/package-surface.md` for exports, package boundaries, source files, docs/specs, and known implementation-vs-spec checks.
+- `references/package-surface.md` for exports, package boundaries, source files, public docs, and known source-vs-doc checks.

@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 21 files (this README plus 20 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, and `@purista/harness-azure-foundry`. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 22 files (this README plus 21 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, and future `@purista/harness-memory-*` packages. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -28,6 +28,7 @@ For an implementation agent starting cold, read in this order:
 18. [17-implementation-plan.md](./17-implementation-plan.md) — ordered build phases.
 19. [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) — canonical Living Wiki intelligence workspace with direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger tracing.
 20. [19-ai-eval-core.md](./19-ai-eval-core.md) — harness-owned AI eval core, telemetry interop, run summaries, trace-context propagation, and local scorer/candidate helpers.
+21. [20-memory-adapters.md](./20-memory-adapters.md) — pluggable memory adapter port, scopes, telemetry, metrics, reference adapter, and testing contract.
 
 ## File index (one-liners)
 
@@ -44,7 +45,7 @@ For an implementation agent starting cold, read in this order:
 | [08-skills.md](./08-skills.md) | `SKILL.md` frontmatter (Anthropic Agent Skills convention), mount-at-`/skills/<name>/`, progressive disclosure. |
 | [09-agents.md](./09-agents.md) | Inline `AgentDefinition`, default loop with built-in tools, per-agent permissions, `maxSteps`. |
 | [10-workflows.md](./10-workflows.md) | Inline `WorkflowDefinition`, parallel agents, cancellation. |
-| [11-sessions.md](./11-sessions.md) | `Session` API, persistence, serial concurrency rule, `SessionMemory` (backed by `/memory/` in the sandbox), conversation history. |
+| [11-sessions.md](./11-sessions.md) | `Session` API, persistence, serial concurrency rule, `SessionMemory`, conversation history. |
 | [12-streaming.md](./12-streaming.md) | `RunEvent` union, ordering guarantees, in-process buffered queue. |
 | [13-public-api.md](./13-public-api.md) | Authoritative export list; Zod-to-JSON-Schema conversion rules. |
 | [14-otel-conventions.md](./14-otel-conventions.md) | Spans, metrics, attribute keys, log fields. |
@@ -53,6 +54,7 @@ For an implementation agent starting cold, read in this order:
 | [17-implementation-plan.md](./17-implementation-plan.md) | Phased build order with exit criteria. |
 | [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) | Canonical living-wiki intelligence workspace contract covering Hono, React/Vite, OpenAI, direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger. |
 | [19-ai-eval-core.md](./19-ai-eval-core.md) | Harness-owned AI eval core functionality and explicit non-ownership of Cloudgrid adapter concerns. |
+| [20-memory-adapters.md](./20-memory-adapters.md) | Memory adapter port, run/session/agent/user/tenant scopes, telemetry, metrics, and sandbox-backed reference adapter. |
 
 ## Authoritative anchors
 

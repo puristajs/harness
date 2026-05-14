@@ -1,7 +1,8 @@
 # Public API Overview
 
 This page summarizes the public surface most application developers need. The
-full contract is specified in [specs/13-public-api.md](../../specs/13-public-api.md).
+interfaces below are the supported API entry points for applications and
+adapter packages.
 
 ## Packages
 
@@ -18,6 +19,7 @@ full contract is specified in [specs/13-public-api.md](../../specs/13-public-api
 ```ts
 const harness = defineHarness({ name: 'my-service' })
   .runtime(...)
+  .memory(...)
   .requires(...)
   .models(...)
   .tools(...)
@@ -32,8 +34,8 @@ const report = await session.workflows.research_report.prompt(input)
 await harness.shutdown()
 ```
 
-`runtime(...)` and `requires(...)` are optional. Omit them for the simple
-in-process default.
+`runtime(...)`, `memory(...)`, and `requires(...)` are optional. Omit them for
+the simple in-process defaults.
 
 ## Main Types
 
@@ -46,6 +48,7 @@ in-process default.
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `StateStore` | Persistence port for sessions, runs, messages, and events. |
+| `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
 | `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `runtime.checkpoint`. |
@@ -57,7 +60,7 @@ in-process default.
 ```ts
 const harness = defineHarness()
   .runtime(inMemoryDurableRuntime())
-  .requires(['sandbox.fs', 'runtime.checkpoint'])
+  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint'])
   .models(...)
   .agents(...)
   .build()
@@ -68,7 +71,9 @@ console.log(inspection.capabilities)
 
 `harness.inspect()` is synchronous and data-only. It does not open sessions,
 call networks, or mutate adapters. Missing required adapter capabilities fail
-during `build()` with `HarnessConfigError`.
+during `build()` with `HarnessConfigError`. Memory adapter capabilities use the
+same policy path, for example `memory.session`, `memory.search`, and
+`memory.persistent`.
 
 ## Tool Definitions
 
@@ -169,6 +174,27 @@ Token usage remains on model spans using GenAI and OpenInference attributes.
 The harness also emits token usage metrics so aggregate usage can remain
 available even when trace storage samples or drops spans.
 
+## Memory
+
+`session.memory` exposes session-scoped JSON memory. Run contexts also receive
+`ctx.memory.session`, `ctx.memory.run`, optional `ctx.memory.agent`,
+`ctx.memory.user()`, `ctx.memory.tenant()`, and `ctx.memory.scope(...)`.
+
+```ts
+await ctx.memory.session.write('last_topic', { value: 'pricing' })
+const last = await ctx.memory.session.read<{ value: string }>('last_topic')
+const keys = await ctx.memory.session.list({ prefix: 'last_' })
+```
+
+`sandboxMemory()` is the default adapter. It stores session memory under
+`/memory/session/<key>.json` and run memory under
+`/memory/runs/<runId>/<key>.json` inside the session sandbox. External memory
+adapters implement `MemoryAdapter`, declare exact `memory.*` capabilities, and
+keep backend-specific packages under the `@purista/harness-memory-*` pattern.
+
+Search is always present on `SessionMemory`; it throws `ModelCapabilityError`
+when the configured adapter does not advertise `memory.search`.
+
 ## Model Provider Operations
 
 Provider packages implement the operations they support and declare matching
@@ -228,9 +254,12 @@ defineHarness()
 
 `contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
 `SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
-prompt, output, tool argument/result, context, file, and memory content out of
-spans, span events, and persisted StateStore events. Non-`NO_CONTENT` modes are
-reserved inputs for future content telemetry.
+prompt, output, tool argument/result, context, and file content out of spans,
+span events, and persisted StateStore events. Memory content follows the
+memory-facade capture policy: `NO_CONTENT` emits no raw memory content, while
+non-`NO_CONTENT` modes opt into bounded `harness.memory.key`,
+`harness.memory.value`, and `harness.memory.query` fields on memory spans or
+span events according to the selected mode.
 
 ## Eval Helpers
 

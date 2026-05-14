@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import type { Logger } from '../logger/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
 import type { JsonValue } from '../models/json.js'
@@ -8,9 +7,7 @@ import {
   OperationTimeoutError,
   HarnessError,
   SessionBusyError,
-  StateError,
   ValidationError,
-  WorkflowNotFoundError,
   serializeError
 } from '../errors/index.js'
 import { ulid } from '../ulid/index.js'
@@ -20,7 +17,6 @@ import type {
   AgentDefinition,
   AgentInput,
   AgentOutput,
-  BuiltinToolName,
   InvokeOptions,
   ModelsConfig,
   ResolvedSkill,
@@ -29,15 +25,17 @@ import type {
   Harness,
   HarnessDefaults,
   Session,
-  SessionMemory,
   SkillDefinition,
   ToolsConfig,
   WorkflowDefinition,
   WorkflowInput,
   WorkflowOutput,
   BuilderState,
+  ContentCaptureMode,
   TelemetryOptions
 } from '../harness/defineHarness.js'
+import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
+import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { HarnessInspection } from '../ports/capabilities.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
@@ -54,6 +52,7 @@ type HarnessDefinition<S extends BuilderState> = {
   telemetryShim?: TelemetryShim
   state: StateStore
   sandbox: Sandbox
+  memory: MemoryAdapter
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -69,50 +68,10 @@ type SessionState = {
   mountedSkills: Set<string>
 }
 
-const MEMORY_KEY_PATTERN = /^[A-Za-z0-9_.\-:]{1,256}$/
+const NEVER_ABORT_SIGNAL = new AbortController().signal
 
 function now(): string {
   return new Date().toISOString()
-}
-
-function makeMemory(sessionId: string, sandboxSession: SandboxSession): SessionMemory {
-  return {
-    async read<T = JsonValue>(key: string): Promise<T | undefined> {
-      validateMemoryKey(key)
-      const path = `/memory/${key}.json`
-      if (!(await sandboxSession.exists(path))) {
-        return undefined
-      }
-      return JSON.parse(await sandboxSession.readText(path)) as T
-    },
-    async write(key: string, value: JsonValue): Promise<void> {
-      validateMemoryKey(key)
-      let encoded: string
-      try {
-        encoded = JSON.stringify(value)
-      } catch (error) {
-        throw new ValidationError('Memory value must be JSON-serializable.', { where: 'memory_value', issues: { key } }, error)
-      }
-      await sandboxSession.write(`/memory/${key}.json`, encoded)
-    },
-    async delete(key: string): Promise<void> {
-      validateMemoryKey(key)
-      await sandboxSession.remove(`/memory/${key}.json`).catch(() => undefined)
-    },
-    async list(): Promise<string[]> {
-      const entries = await sandboxSession.list('/memory').catch(() => [])
-      return entries
-        .filter((entry) => entry.kind === 'file' && entry.name.endsWith('.json'))
-        .map((entry) => entry.name.slice(0, -5))
-        .sort()
-    }
-  }
-}
-
-function validateMemoryKey(key: string): void {
-  if (!MEMORY_KEY_PATTERN.test(key)) {
-    throw new ValidationError('Invalid session memory key.', { where: 'memory_key', issues: { key } })
-  }
 }
 
 function validateInvokeOptions(opts: InvokeOptions | undefined): void {
@@ -138,10 +97,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   const sessionStates = new Map<string, SessionState>()
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
+  const adapterMetrics = createMetrics(telemetry, { 'harness.name': definition.name })
   const adapterContext: HarnessAdapterContext = {
     harnessName: definition.name,
     logger: definition.logger,
     telemetry,
+    metrics: adapterMetrics,
+    contentCaptureMode,
     defaults: {
       agentMaxIterations: definition.defaults.agentMaxIterations ?? 16,
       runTimeoutMs: definition.defaults.runTimeoutMs ?? 600_000,
@@ -151,7 +113,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
-  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.tools as ToolsConfig)
+  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
 
@@ -228,6 +190,45 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
   }
 
+  function memoryOptions(
+    sessionId: string,
+    sandboxSession: SandboxSession,
+    signal: AbortSignal,
+    opts: {
+      runId?: string
+      agentId?: string
+      workflowId?: string
+      metadata?: Readonly<Record<string, JsonValue>>
+    } = {}
+  ): Parameters<typeof createSessionMemory>[0] {
+    return {
+      adapter: definition.memory,
+      logger: definition.logger,
+      telemetry,
+      contentCaptureMode,
+      signal,
+      sandbox: sandboxSession,
+      harnessName: definition.name,
+      sessionId,
+      ...(opts.runId ? { runId: opts.runId } : {}),
+      ...(opts.agentId ? { agentId: opts.agentId } : {}),
+      ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
+      metadata: opts.metadata ?? {}
+    }
+  }
+
+  function memoryFacade(opts: {
+    sessionId: string
+    sandboxSession: SandboxSession
+    signal: AbortSignal
+    runId: string
+    agentId?: string
+    workflowId?: string
+    metadata: Readonly<Record<string, JsonValue>>
+  }): MemoryFacade {
+    return createMemoryFacade(memoryOptions(opts.sessionId, opts.sandboxSession, opts.signal, opts))
+  }
+
   return {
     inspect(): HarnessInspection {
       return definition.inspection
@@ -235,7 +236,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     async getSession(sessionId: string): Promise<Session<S>> {
       await ensureSessionRecord(sessionId)
       const state = await getSessionState(sessionId)
-      const memory = makeMemory(sessionId, state.sandboxSession)
+      const memory = createSessionMemory(memoryOptions(sessionId, state.sandboxSession, NEVER_ABORT_SIGNAL), { kind: 'session', sessionId })
       const workflowEntries = Object.entries(definition.workflows).map(([workflowId, workflow]) => {
         const invoker = {
           prompt: (input: WorkflowInput<S, keyof NonNullable<S['workflows']>>, opts?: InvokeOptions) => runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts) as Promise<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>,
@@ -321,6 +322,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       } catch (error) {
         errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close state store.', undefined, error))
       }
+      try {
+        await definition.memory.close?.()
+      } catch (error) {
+        errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close memory adapter.', undefined, error))
+      }
       return { errors }
     },
     $infer: {} as Harness<S>['$infer']
@@ -391,7 +397,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
     const state = await getSessionState(sessionId)
-    const memory = makeMemory(sessionId, state.sandboxSession)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
@@ -399,6 +404,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const startedAt = now()
     const runId = ulid()
+    const memory = memoryFacade({
+      sessionId,
+      runId,
+      agentId,
+      signal: runSignal.signal,
+      sandboxSession: state.sandboxSession,
+      metadata: opts?.metadata ?? {}
+    })
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -571,7 +584,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
     const state = await getSessionState(sessionId)
-    const memory = makeMemory(sessionId, state.sandboxSession)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
@@ -579,6 +591,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const startedAt = now()
     const runId = ulid()
+    const memory = memoryFacade({
+      sessionId,
+      runId,
+      workflowId,
+      signal: runSignal.signal,
+      sandboxSession: state.sandboxSession,
+      metadata: opts?.metadata ?? {}
+    })
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -631,6 +651,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             models: modelRegistry,
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
+            memory,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
@@ -638,6 +659,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                   const agentSignal = combineSignals(runSignal.signal, agentOpts?.signal)
                   try {
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
+                    const agentMetadata = { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
+                    const agentMemory = memoryFacade({
+                      sessionId,
+                      runId,
+                      workflowId,
+                      agentId,
+                      signal: agentSignal.signal,
+                      sandboxSession: state.sandboxSession,
+                      metadata: agentMetadata
+                    })
                     const run = await runDefaultAgent({
                       harnessName: definition.name,
                       agentId,
@@ -652,7 +683,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       customTools: definition.tools as ToolsConfig,
                       mcpRegistry,
                       session: state.sandboxSession,
-                      memory,
+                      memory: agentMemory,
                       mountedSkills: state.mountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
@@ -661,7 +692,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       logger: definition.logger,
                       telemetry,
                       emitEvent: emit,
-                      metadata: { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
+                      metadata: agentMetadata
                     })
                     if (run.emitted.length > 0) {
                       await definition.state.appendMessages(sessionId, run.emitted)
@@ -678,7 +709,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                 : never
               : never
           }
-        } as Parameters<typeof runWorkflow<S>>[0]
+        } as unknown as Parameters<typeof runWorkflow<S>>[0]
 
         return telemetry.span('harness.workflow.run', {
           'harness.name': definition.name,
@@ -788,6 +819,7 @@ function configureHarnessAdapters(
   models: ModelsConfig,
   state: StateStore,
   sandbox: Sandbox,
+  memory: MemoryAdapter,
   tools: ToolsConfig
 ): void {
   const seen = new Set<unknown>()
@@ -796,6 +828,7 @@ function configureHarnessAdapters(
   }
   configureOne(state, context, seen)
   configureOne(sandbox, context, seen)
+  configureOne(memory, context, seen)
   for (const tool of Object.values(tools)) {
     configureOne(tool, context, seen)
   }
@@ -841,7 +874,7 @@ async function withIncomingTraceContext<T>(
   return telemetry.withTraceContext?.({ traceparent: opts.traceparent, ...(opts.tracestate ? { tracestate: opts.tracestate } : {}) }, fn) ?? fn()
 }
 
-function resolveContentCaptureMode(options: TelemetryOptions | undefined): string {
+function resolveContentCaptureMode(options: TelemetryOptions | undefined): ContentCaptureMode {
   if (options?.contentCaptureMode !== undefined) return options.contentCaptureMode
   const envValue = process.env['OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT']
   if (envValue === 'true') return 'SPAN_AND_EVENT'

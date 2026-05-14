@@ -24,6 +24,10 @@ export class ValidationError extends HarnessError {
         /** Model provider response shape is invalid. */ | 'model_response'
         /** Session memory key is invalid. */ | 'memory_key'
         /** Session memory value is invalid or non-serializable. */ | 'memory_value'
+        /** Session memory scope is invalid or unsupported. */ | 'memory_scope'
+        /** Session memory options are invalid or unsupported. */ | 'memory_write_options'
+        /** Session memory listing options are invalid. */ | 'memory_list_options'
+        /** Session memory search query is invalid. */ | 'memory_search_query'
         /** Message envelope validation failed. */ | 'message'
         /** Session history shape validation failed. */ | 'session_history'
         /** Invocation options are invalid. */ | 'invoke_options'
@@ -182,7 +186,10 @@ export class StateError extends HarnessError {
       op:
         | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
         | 'clearMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
+        | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
       reason?: 'duplicate_message_id' | string
+      adapter?: 'memory' | string
+      memory_provider?: string
     },
     cause?: unknown
   ) {
@@ -192,14 +199,14 @@ export class StateError extends HarnessError {
 
 /** Timed execution budget expired. */
 export class OperationTimeoutError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run'; timeout_ms: number }, cause?: unknown) {
+  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run' | 'memory'; timeout_ms: number }, cause?: unknown) {
     super({ code: 'OPERATION_TIMEOUT', category: 'timeout', retriable: true, message, meta, cause })
   }
 }
 
 /** Operation cancelled by abort signal or explicit cancellation path. */
 export class OperationCancelledError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' }, cause?: unknown) {
+  public constructor(message: string, meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' }, cause?: unknown) {
     super({ code: 'OPERATION_CANCELLED', category: 'cancelled', retriable: false, message, meta, cause })
   }
 }

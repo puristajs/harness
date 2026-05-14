@@ -59,10 +59,11 @@ Defaults:
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`
 
 v1 core does not emit prompt, completion, tool input/result, expected-output, or
-context content on spans or span events. Non-`NO_CONTENT` values are accepted as
-reserved compatibility inputs for future content telemetry and for adapters that
-want to inspect the configured policy, but persisted `StateStore` events remain
-redacted in every mode.
+context content on spans or span events. Memory content is governed by
+[20-memory-adapters](./20-memory-adapters.md) and defaults to no raw content.
+Non-`NO_CONTENT` values are accepted as stable policy inputs for memory content
+capture and for adapters that want to inspect the configured policy, but
+persisted `StateStore` events remain redacted in every mode.
 
 ## Trace Context propagation
 

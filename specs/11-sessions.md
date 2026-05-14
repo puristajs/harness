@@ -1,6 +1,6 @@
 # Sessions
 
-**Purpose.** Defines the `Session` API, persistence semantics, the serial-execution concurrency rule, message shape (referenced from [04](./04-state-queue-stream.md)), and session memory semantics (backed by the sandbox `/memory/` directory).
+**Purpose.** Defines the `Session` API, persistence semantics, the serial-execution concurrency rule, message shape (referenced from [04](./04-state-queue-stream.md)), and session memory facade semantics. The pluggable memory adapter contract lives in [20-memory-adapters](./20-memory-adapters.md).
 
 ## API
 
@@ -115,27 +115,30 @@ Append rules:
 
 ## Session memory
 
-Session memory is collapsed into a `/memory/` directory inside the sandbox. There is no typed KV in the StateStore. App-side typed access is provided via `Session.memory` (`SessionMemory`); the model can also read/write `/memory/` directly via the built-in `read`/`write` tools.
+`Session.memory` is a session-scoped facade over the configured `MemoryAdapter`. Memory is not stored in the `StateStore`. The default adapter is `sandboxMemory()`, which stores session memory in `/memory/session/` inside the sandbox.
 
 ```ts
 interface SessionMemory {
-  read(key: string): Promise<JsonValue | undefined>           // reads /memory/<key>.json
-  write(key: string, value: JsonValue): Promise<void>          // writes /memory/<key>.json (creates dir if missing)
+  read(key: string): Promise<JsonValue | undefined>
+  write(key: string, value: JsonValue, opts?: MemoryWriteOptions): Promise<void>
   delete(key: string): Promise<void>
-  list(): Promise<string[]>                                    // returns keys, derived from /memory/*.json filenames
+  list(opts?: MemoryListOptions): Promise<string[]>
+  search(query: MemorySearchQuery): Promise<MemorySearchResult[]>
 }
 ```
 
 Locked semantics:
 
-- `key` regex `/^[A-Za-z0-9_.\-:]+$/`, ≤256 chars. Invalid → `ValidationError{where:'memory_key'}`.
+- `key` regex `/^[A-Za-z0-9_.\-:]{1,256}$/`. Invalid → `ValidationError{where:'memory_key'}`.
 - `value` is JSON-serialized via `JSON.stringify`. Non-serializable values (functions, symbols, BigInt, circular refs) throw `ValidationError{where:'memory_value'}`.
-- Reads and writes are atomic per key (single file write).
-- Memory persists for the lifetime of the sandbox session. The default in-memory sandbox loses everything on process exit; future persistent sandbox adapters may persist `/memory/` to disk.
+- Reads and writes are atomic per key from the caller perspective.
+- Persistence depends on the configured memory adapter. `sandboxMemory()` persists for the lifetime of the sandbox session; the default in-memory sandbox loses everything on process exit.
+- Search, TTL, tags, metadata, run/agent/user/tenant scopes, telemetry, metrics, and adapter capability gates are defined in [20-memory-adapters](./20-memory-adapters.md).
+- The model can read/write the default adapter's sandbox files only when `sandboxMemory()` is used. With external memory adapters, model access to memory is through tools or application code, not direct filesystem reads.
 
 ## Conversation history and threads
 
-**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session (with `/memory/`), and serial-execution lock.
+**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
 
 ### History window
 
@@ -178,3 +181,4 @@ Out of scope for v1. The persisted `RunRecord` + `PersistedRunEvent` log is suff
 - [09-agents](./09-agents.md), [10-workflows](./10-workflows.md) — invocation paths.
 - [12-streaming](./12-streaming.md) — `RunEvent` and stream relay.
 - [15-error-catalog](./15-error-catalog.md) — `SessionBusyError`, `SessionNotFoundError`.
+- [20-memory-adapters](./20-memory-adapters.md) — memory scopes, adapter contract, reference adapter, telemetry, metrics.

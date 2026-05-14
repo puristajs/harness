@@ -10,7 +10,8 @@ import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationT
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ModelHandles, ResolvedSkill, RunEvent, SessionMemory, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, BuiltinToolName, ModelHandles, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelMessage } from '../ports/model-provider.js'
 import type { SandboxSession } from '../sandbox/index.js'
 import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/index.js'
@@ -50,7 +51,7 @@ export async function runDefaultAgent(args: {
   customTools: ToolsConfig
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
-  memory: SessionMemory
+  memory: MemoryFacade
   mountedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
@@ -115,7 +116,7 @@ async function runDefaultAgentInner(args: {
   customTools: ToolsConfig
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
-  memory: SessionMemory
+  memory: MemoryFacade
   mountedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
@@ -267,6 +268,7 @@ async function runDefaultAgentInner(args: {
               'harness.agent.id': args.agentId,
               'harness.tool.id': canonical
             }),
+            memory: args.memory,
             runId: args.runId,
             sessionId: args.sessionId,
             agentId: args.agentId,

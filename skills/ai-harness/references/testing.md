@@ -67,8 +67,10 @@ Use `@ts-expect-error` for negative cases.
 ## Contract Tests
 Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `FakeModelProvider`
+- `FakeMemoryAdapter`
 - `makeHarness`
 - `stateStoreContract`
+- `memoryAdapterContract`
 - `sandboxContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`
@@ -118,10 +120,11 @@ Provider adapters should cover:
 - cancellation through `AbortSignal`
 - model/tool/schema validation failures
 
-State and sandbox adapters should cover:
+State, memory, and sandbox adapters should cover:
 - stable ordering
 - idempotent close/shutdown
 - append atomicity where required
 - missing sessions/files/runs
 - executor unavailable behavior
 - snapshot/resume behavior when implemented
+- scope isolation, unsupported capability gates, and content-capture behavior for memory adapters

@@ -56,7 +56,7 @@ harness, not separately on every sandbox adapter.
 - **Path semantics.** All paths are POSIX style, absolute (must start with `/`). Implementations validate and normalize. Relative paths throw `SandboxError{reason:'invalid_path'}`.
 - **Reserved paths inside the sandbox** (locked, conventions enforced by the harness, not the backend):
   - `/skills/<id>/...` — skill mounts; read-only by convention.
-  - `/memory/<key>.json` — session memory KV.
+  - `/memory/session/<key>.json` and `/memory/runs/<runId>/<key>.json` — default `sandboxMemory()` adapter files.
   - `/workspace/` — free model scratch; default `cwd` for `exec`.
 - **Timeouts.** `exec` honors `opts.timeoutMs` (default `defaults.toolTimeoutMs`); on timeout throws `OperationTimeoutError{scope:'sandbox_run'}`.
 - **`executor === 'unavailable'`.** Indicates this sandbox session has no shell executor. Precise files-only session types do not expose `exec`; dynamically widened sessions that still call `exec` fail with `SandboxNoExecutorError`. The built-in tool registry checks this and disables `bash` automatically; see [07-tools](./07-tools.md) §"Built-in tools".

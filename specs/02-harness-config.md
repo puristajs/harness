@@ -18,7 +18,7 @@ The methods MUST be called in this order, each at most once:
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .runtime(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .requires(...)?  .defaults(...)?
   .models({...})            // REQUIRED, before tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
@@ -31,7 +31,7 @@ defineHarness(opts?)
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
-- `.runtime(...)` and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.memory(...)`, `.runtime(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -60,8 +60,9 @@ interface TelemetryOptions {
   /**
    * Content telemetry policy. Defaults to env
    * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`.
-   * In v1 core, non-`NO_CONTENT` values are reserved and do not cause content
-   * to be emitted.
+   * In v1 core, prompt, model output, tool input/result, file, expected-output,
+   * and context content are never emitted. Memory content follows the bounded
+   * memory-facade policy in `20-memory-adapters`.
    */
   contentCaptureMode?: 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
 }
@@ -71,9 +72,12 @@ Default: `{ flavor: 'dual', contentCaptureMode: 'NO_CONTENT' }`. Tracer and
 meter names are locked to `'@purista/harness'` (see
 [14-otel-conventions](./14-otel-conventions.md)).
 
-Core v1 never emits prompt, model output, tool input/result, file, memory,
+Core v1 never emits prompt, model output, tool input/result, file,
 expected-output, or context content in telemetry or persisted run events,
-regardless of `contentCaptureMode`.
+regardless of `contentCaptureMode`. Memory content is governed separately by
+the facade rules in [20-memory-adapters](./20-memory-adapters.md): default
+`NO_CONTENT` emits no raw memory content; non-`NO_CONTENT` modes opt into the
+bounded memory content fields defined there.
 
 ### `.logger(logger)`
 
@@ -86,6 +90,17 @@ Pass a `StateStore`. Default: `InMemoryStateStore`.
 ### `.sandbox(sandbox?)`
 
 Pass a `Sandbox`. If omitted, or called with no argument, the harness auto-detects: tries `bashSandbox()` first; on import failure (the `just-bash` peer dep is not installed), falls back to `inMemorySandbox()`. See [05-sandbox](./05-sandbox.md).
+
+### `.memory(adapter)`
+
+Pass a `MemoryAdapter`. If omitted, the harness uses `sandboxMemory()`, the sandbox-backed reference adapter. See [20-memory-adapters](./20-memory-adapters.md).
+
+Validation:
+
+- `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
+- `adapter.info.packageName` is non-empty.
+- `adapter.info.capabilities` contains `'memory.kv'`.
+- The method is callable at most once and only in the foundation stage after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or domain methods.
 
 ### `.runtime(runtime)`
 
@@ -101,8 +116,9 @@ Declares adapter capabilities required by this harness definition:
 ```ts
 defineHarness()
   .sandbox(snapshotSandbox)
+  .memory(persistentMemory)
   .runtime(durableRuntime)
-  .requires(['sandbox.snapshot', 'sandbox.resume', 'runtime.checkpoint'])
+  .requires(['sandbox.snapshot', 'sandbox.resume', 'memory.persistent', 'runtime.checkpoint'])
 ```
 
 `build()` aggregates capabilities from configured adapters and throws
@@ -294,6 +310,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `name`                               | `'agent-harness'`                    |
 | `state`                              | `InMemoryStateStore`                 |
 | `sandbox`                            | auto-detect: `bashSandbox()` if `just-bash` is installed, else `inMemorySandbox()` |
+| `memory`                             | `sandboxMemory()`                    |
 | `logger`                             | built-in `JsonLogger`                |
 | `telemetry.flavor`                   | env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'` |
 | `telemetry.contentCaptureMode`       | env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'` |
@@ -319,6 +336,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 11. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
 12. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
 13. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
+14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 
 ## `Harness<S>` returned object
 
@@ -326,7 +344,7 @@ The builder's `.build()` returns the typed `Harness<S>`. The full type surface (
 
 `getSession` is `async` because the StateStore may be remote.
 
-`shutdown()` calls `.close()` on every adapter that has the method (state, sandbox, logger, every model provider). Every adapter's `close()` runs regardless of individual failures. Errors are aggregated and returned in `errors`. Errors are also logged at `error` level. Resolves when all attempts finish.
+`shutdown()` calls `.close()` on every adapter that has the method (state, sandbox, memory, logger, every model provider). Every adapter's `close()` runs regardless of individual failures. Errors are aggregated and returned in `errors`. Errors are also logged at `error` level. Resolves when all attempts finish.
 
 `inspect()` returns a synchronous, data-only snapshot of the resolved harness
 setup: harness name, effective adapter capabilities, required capabilities, and
@@ -334,7 +352,7 @@ adapter descriptors. It must not make network calls or mutate runtime state.
 
 ## Cross-references
 
-- [03-foundation](./03-foundation.md), [04-state-queue-stream](./04-state-queue-stream.md), [05-sandbox](./05-sandbox.md)
+- [03-foundation](./03-foundation.md), [04-state-queue-stream](./04-state-queue-stream.md), [05-sandbox](./05-sandbox.md), [20-memory-adapters](./20-memory-adapters.md)
 - [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md)
 - [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), [11-sessions](./11-sessions.md)
 - [13-public-api](./13-public-api.md), [15-error-catalog](./15-error-catalog.md)

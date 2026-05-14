@@ -105,6 +105,7 @@ interface ToolHandlerContext {
   logger: Logger
   telemetry: TelemetryShim
   metrics: Metrics
+  memory: MemoryFacade
   signal: AbortSignal
   sandbox: SandboxSession                   // the open session for this run
   runId: string

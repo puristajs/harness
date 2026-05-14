@@ -1,12 +1,12 @@
 # State and Events
 
-**Purpose.** Defines the `StateStore` foundation port (the only persistence port), its in-memory default, ordering and durability guarantees, the persisted shapes, and how per-run events are streamed in-process. There is no `Stream` port; per-run streaming uses an internal in-process buffered queue owned by the harness (see [12-streaming](./12-streaming.md)).
+**Purpose.** Defines the `StateStore` foundation port for session history, run records, and run events, its in-memory default, ordering and durability guarantees, the persisted shapes, and how per-run events are streamed in-process. There is no `Stream` port; per-run streaming uses an internal in-process buffered queue owned by the harness (see [12-streaming](./12-streaming.md)).
 
-Session memory is NOT held in the StateStore. It lives as `/memory/<key>.json` files inside the sandbox; see [11-sessions](./11-sessions.md) §"Session memory".
+Session memory is NOT held in the StateStore. It is served by the configured `MemoryAdapter`; see [11-sessions](./11-sessions.md) §"Session memory" and [20-memory-adapters](./20-memory-adapters.md).
 
 ## StateStore port
 
-`StateStore` persists session conversation history, run records, and run events. It is the only persistence port — no separate session/run/event ports.
+`StateStore` persists session conversation history, run records, and run events. It is not the memory persistence port.
 State adapters that extend `StateStoreAdapterBase` inherit the harness logger,
 telemetry shim, and defaults through `configureHarnessContext(...)`; custom
 state adapters may implement the same hook directly.
@@ -128,6 +128,7 @@ The harness exposes per-run streaming via `Session.workflows[id].stream(...)`. I
 ## Cross-references
 
 - [03-foundation](./03-foundation.md) — error categories.
-- [11-sessions](./11-sessions.md) — how sessions use StateStore (history, memory, runs).
+- [11-sessions](./11-sessions.md) — how sessions use StateStore (history and runs).
+- [20-memory-adapters](./20-memory-adapters.md) — memory persistence port.
 - [12-streaming](./12-streaming.md) — `SerializedError`, bounded in-process queue, overflow, privacy-safe persistence.
 - [16-testing](./16-testing.md) — port contract tests.

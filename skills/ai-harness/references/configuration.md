@@ -29,11 +29,14 @@ Prefer this order because it preserves inference and mirrors dependency directio
 
 ```ts
 defineHarness({ name: 'app-name' })
-  .logger(...)
   .telemetry(...)
-  .defaults(...)
+  .logger(...)
   .state(...)
   .sandbox(...)
+  .memory(...)
+  .runtime(...)
+  .requires(...)
+  .defaults(...)
   .models(...)
   .tools(...)
   .skills(...)
@@ -93,6 +96,7 @@ helper over low-level `ctx.telemetry.record*` calls.
 Defaults:
 - state: `InMemoryStateStore`
 - sandbox: `autoDetectSandbox()` when `.sandbox()` is omitted or called with no argument
+- memory: `sandboxMemory()` when `.memory(...)` is omitted
 - logger: `JsonLogger`
 - telemetry shim: created internally; `.telemetry(...)` supplies options such as `contentCaptureMode`
 
@@ -102,14 +106,15 @@ Use explicit infrastructure in production:
 defineHarness({ name: 'research-service' })
   .state(durableStateStore)
   .sandbox(bashSandbox({ network: { deny: ['169.254.169.254'] } }))
+  .memory(persistentMemory)
   .runtime(durableRuntime)
-  .requires(['sandbox.fs', 'sandbox.exec', 'runtime.checkpoint'])
+  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'runtime.checkpoint'])
   .models(...)
   .agents(...)
   .build()
 ```
 
-`.requires(...)` validates adapter capabilities during setup. Use it to fail fast when a required sandbox/runtime capability is missing.
+`.requires(...)` validates adapter capabilities during setup. Use it to fail fast when a required sandbox, memory, or runtime capability is missing.
 
 ## Streaming
 Harness stream methods return typed `RunEvent` values:

@@ -82,7 +82,7 @@ Timeouts throw `OperationTimeoutError` with `scope: 'sandbox_run'`. Aborts throw
 ## Skills And Memory Mounts
 The harness uses the sandbox for two important runtime paths:
 - mounted skills: `/skills/<name>/...`
-- session memory: `/memory/<key>.json`
+- default `sandboxMemory()` files: `/memory/session/<key>.json` and `/memory/runs/<runId>/<key>.json`
 
 If an agent needs mounted skill instructions, leave read-only built-ins available:
 

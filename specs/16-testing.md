@@ -28,6 +28,7 @@ export class FakeModelProvider implements ModelProvider     // configurable scri
 export class FakeStateStore extends InMemoryStateStore       // exposes inspection helpers
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory
+export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -40,6 +41,10 @@ export function modelProviderContract(
   opts: { capabilities: ModelCapability[] }
 ): void
 export function loggerContract(make: () => Logger): void
+export function memoryAdapterContract(
+  make: () => MemoryAdapter | Promise<MemoryAdapter>,
+  opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
+): void
 
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness(); returns a fresh builder
@@ -102,6 +107,21 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 2. `child(bindings)` merges bindings; child-scope shadows parent.
 3. `time` is RFC3339.
 
+### MemoryAdapter
+
+1. `info.id`, `info.packageName`, and `info.capabilities` pass [20-memory-adapters](./20-memory-adapters.md) validation.
+2. `open(scope, ctx)` returns an isolated store for `session`, `run`, `agent`, `user`, and `tenant` scopes when the matching capability is advertised.
+3. `get` returns `undefined` for unknown keys and the stored JSON value for known keys.
+4. `set` then `get` round-trips JSON values; non-serializable values are rejected by the core facade before adapter I/O.
+5. `delete` removes a key and is idempotent.
+6. `list` returns sorted keys, honors `prefix`, `limit`, and `cursor` when supported by the facade contract.
+7. Unsupported `search` fails through the core capability gate before adapter I/O. When `opts.search === 'available'`, search returns deterministic results sorted by descending score.
+8. Unsupported `ttlMs` fails through the core capability gate before adapter I/O. When `'memory.ttl'` is advertised, expired entries are not returned by `get`, `list`, or `search`.
+9. `signal` cancellation causes `OperationCancelledError{meta.scope:'memory'}`.
+10. Backend failures surface as `StateError{meta.adapter:'memory'}` unless already a `HarnessError`.
+11. Standard memory spans and metrics are emitted by the core wrapper, not by adapter code.
+12. Content capture tests cover `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT`; raw keys/values/queries/results appear only in the modes allowed by [20-memory-adapters](./20-memory-adapters.md).
+
 ## Core test catalog (non-port)
 
 The harness package additionally has integration tests:
@@ -115,6 +135,8 @@ The harness package additionally has integration tests:
 - Workflow: parallel agent calls, abort propagates to all.
 - Session: serial concurrency rule throws `SessionBusyError` synchronously on overlap; `clearHistory` / `replaceHistory` reject with `SessionBusyError` when a run is in flight; `replaceHistory` validation failure throws `ValidationError{where:'session_history'}`.
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
+- Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
+- `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.
@@ -135,7 +157,7 @@ The harness package additionally has integration tests:
   3. `inMemorySandbox()` type tests assert files-only sessions do not expose `exec`.
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
-- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter.
+- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*` spans and metrics.
 - Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
 - Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
 - Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.

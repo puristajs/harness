@@ -1,17 +1,69 @@
 # Adapter Authoring
 
 ## Contents
+- Adapter Types And Packages
+- Using Adapters
 - Model Provider Adapter
 - OpenAI-Compatible Provider
 - Anthropic Provider
 - Amazon Bedrock Provider
 - Azure AI Foundry Provider
 - State Store Adapter
+- Memory Adapter
 - Sandbox Adapter
+- Tool And MCP Adapters
 - Durable Runtime Adapter
 - Harness Context
 
 Adapters should be thin, typed implementations of harness ports. Prefer official provider SDKs and pass provider-specific options through instead of recreating provider feature matrices inside the harness.
+
+## Adapter Types And Packages
+
+Core ships the common ports, default local adapters, and testing contracts. External adapters belong in independent packages that depend on `@purista/harness` plus their backend SDK only.
+
+| Adapter type | Core port / API | Core default | External package pattern |
+| --- | --- | --- | --- |
+| Model provider | `ModelProvider` / `BaseModelProvider` | `FakeModelProvider` for tests only | `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-{provider}` |
+| State store | `StateStore` / `StateStoreAdapterBase` | `InMemoryStateStore` | `@purista/harness-state-{backend}` |
+| Memory | `MemoryAdapter` / `MemoryStore` | `sandboxMemory()` | `@purista/harness-memory-{backend}` |
+| Sandbox | `Sandbox` / `SandboxSession` | `inMemorySandbox()`, `bashSandbox()` | `@purista/harness-sandbox-{backend}` |
+| Durable runtime | `DurableRuntimeAdapter` | none unless implemented by core/test helpers | `@purista/harness-runtime-{backend}` |
+| Tool adapter | `TsToolDefinition`, MCP stdio/http definitions | built-in tools + TS tools | app-local tools or `@purista/harness-tools-{domain}` |
+| Logger/telemetry bridge | `Logger`, `TelemetryShim`, `Metrics` | `JsonLogger`, OTel shim | app-local integration package |
+
+Package rules:
+- Do not import harness internals from external adapter packages.
+- Do not import PURISTA framework packages from harness or harness addon packages.
+- Do not make adapter packages depend on each other.
+- Keep provider/backend credentials in adapter options or environment-owned app code, not in specs or examples.
+- Export one factory with a stable, lowercase adapter id, for example `redisMemory(...)`, `postgresStateStore(...)`, or `remoteSandbox(...)`.
+
+## Using Adapters
+
+Register adapters in the foundation stage before models/agents/workflows:
+
+```ts
+const harness = defineHarness()
+  .logger(logger)
+  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
+  .state(postgresStateStore({ url: process.env.DATABASE_URL! }))
+  .sandbox(remoteSandbox({ endpoint: process.env.SANDBOX_URL! }))
+  .memory(redisMemory({ url: process.env.REDIS_URL! }))
+  .runtime(durableRuntime)
+  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'runtime.checkpoint'])
+  .models({ /* aliases */ })
+  .agents(({ agent }) => ({ /* agents */ }))
+  .build()
+```
+
+Use `.requires([...])` for capabilities the application needs to be correct. Do not silently degrade when a missing capability changes persistence, isolation, durability, or security behavior.
+
+Inside handlers, prefer high-level context helpers over raw adapter access:
+- `ctx.models.*` for model calls
+- `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, `ctx.memory.tenant()` for memory
+- `ctx.sandbox` in TypeScript tools for file/exec work
+- `ctx.metrics` for application metrics
+- `ctx.telemetry` only in adapter/tool internals that need custom spans
 
 ## Model Provider Adapter
 Prefer extending `BaseModelProvider`:
@@ -168,6 +220,57 @@ Durable state stores should pass the state-store contract tests from `@purista/h
 
 State stores may implement `configureHarnessContext(context)` directly or extend `StateStoreAdapterBase`. Keep message and event ordering stable because session history and stream replay rely on deterministic order.
 
+## Memory Adapter
+Implement `MemoryAdapter` when a project needs memory outside the default sandbox-backed `sandboxMemory()` adapter. Keep standard validation, spans, metrics, error mapping, and content-capture enforcement in core; adapters implement backend I/O only.
+
+```ts
+import type {
+  MemoryAdapter,
+  MemoryOpenContext,
+  MemoryOperationContext,
+  MemoryScope,
+  MemoryStore
+} from '@purista/harness'
+
+export function redisMemory(options: RedisMemoryOptions): MemoryAdapter {
+  return new RedisMemoryAdapter(options)
+}
+
+class RedisMemoryAdapter implements MemoryAdapter {
+  readonly info = {
+    id: 'redis_memory',
+    packageName: '@purista/harness-memory-redis',
+    capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.session', 'memory.user', 'memory.persistent']
+  } as const
+
+  configureHarnessContext(context) {
+    this.logger ??= context.logger
+    this.metrics ??= context.metrics
+  }
+
+  async open(scope: MemoryScope, ctx: MemoryOpenContext): Promise<MemoryStore> {
+    const prefix = this.scopePrefix(scope)
+    return {
+      get: (key, op) => this.get(prefix, key, op),
+      set: (key, value, op) => this.set(prefix, key, value, op),
+      delete: (key, op) => this.delete(prefix, key, op),
+      list: (op) => this.list(prefix, op)
+    }
+  }
+}
+```
+
+Memory adapter rules:
+- Declare exact capabilities: `memory.kv`, `memory.list`, `memory.delete`, `memory.search`, `memory.ttl`, `memory.run`, `memory.session`, `memory.agent`, `memory.user`, `memory.tenant`, `memory.persistent`.
+- Honor `ctx.signal` on every backend call.
+- Do not emit standard `harness.memory.*` spans or metrics; core wraps facade calls.
+- Use `ctx.telemetry` and `ctx.metrics` only for adapter-specific nested spans/metrics.
+- Never add raw keys, values, queries, metadata, user ids, or tenant ids to logs/telemetry when `ctx.contentCaptureMode === 'NO_CONTENT'`.
+- Throw `HarnessError` instances when you can classify failures; otherwise let core wrap backend failures as memory `StateError`.
+- Put Redis/Postgres/vector/graph/product-specific memory adapters in their own TypeScript packages.
+
+Use `memoryAdapterContract` and `FakeMemoryAdapter` from `@purista/harness/testing`. Cover scope isolation, cancellation, unsupported search/TTL gates, persistence behavior, and content-capture modes.
+
 ## Sandbox Adapter
 Implement `Sandbox` and `SandboxSession` for custom isolation:
 
@@ -185,6 +288,27 @@ Make executor availability explicit:
 - `executor: 'available'` when `exec(...)` is supported
 
 Snapshot-capable adapters may implement `snapshot`, `resume`, and `hibernate`, and should declare matching capabilities so applications can fail fast with `.requires([...])`.
+
+Use `sandboxContract` and optional snapshot contract tests from `@purista/harness/testing`. Cover POSIX absolute path rules, mount semantics, executor availability, timeout/cancellation, and close idempotency.
+
+## Tool And MCP Adapters
+Use TypeScript tools for app-local deterministic capabilities and MCP stdio/http tools for external tool servers.
+
+TypeScript tools can receive inherited context:
+- `ctx.logger`
+- `ctx.telemetry`
+- `ctx.metrics`
+- `ctx.memory`
+- `ctx.sandbox`
+- `ctx.signal`
+
+Tool rules:
+- Validate every input/output with Zod.
+- Keep tool ids stable and lowercase.
+- Put domain-specific logic behind app services; keep the harness tool adapter thin.
+- For MCP stdio, ensure the configured sandbox supports `sandbox.exec`.
+- For MCP http, keep authentication in `auth`/headers config and do not log secrets.
+- Treat tool arguments and results as content; do not put them in logs or custom telemetry under `NO_CONTENT`.
 
 ## Durable Runtime Adapter
 Use a durable runtime adapter when workflow execution needs leases, checkpoints, retries, and resume behavior:
@@ -209,8 +333,11 @@ Adapters that need shared logger, telemetry, timeout defaults, or harness name c
 configureHarnessContext(context) {
   this.logger ??= context.logger
   this.telemetry ??= context.telemetry
+  this.metrics ??= context.metrics
   this.harnessName ??= context.harnessName
 }
 ```
 
-Avoid importing application packages in adapters. Adapter packages should depend on `@purista/harness` and their provider SDK only.
+The context also carries `contentCaptureMode`. Adapter code must inspect it before adding any backend-specific content to custom spans, metrics, or logs.
+
+Avoid importing application packages in adapters. Adapter packages should depend on `@purista/harness` and their provider/backend SDK only.

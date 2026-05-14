@@ -103,4 +103,4 @@ await harness.shutdown()
 - `references/telemetry-observability.md` for OpenTelemetry setup, `TelemetryShim`, span/metric names, logs, privacy, and adapter context propagation.
 - `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
 - `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
-- `references/package-surface.md` for exports, package boundaries, source files, docs/specs, and known implementation-vs-spec checks.
+- `references/package-surface.md` for exports, package boundaries, source files, public docs, and known source-vs-doc checks.

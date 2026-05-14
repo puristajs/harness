@@ -5,8 +5,8 @@
 - Public Exports
 - Testing Exports
 - Source Map
-- Docs And Specs Map
-- Implementation-Vs-Spec Checks
+- Public Docs Map
+- Source-Vs-Docs Checks
 - Boundary Rules
 
 ## Packages
@@ -83,36 +83,29 @@ Use these files as the implementation source of truth:
 | Workflow invocation | `packages/harness/src/workflows/index.ts` |
 | Models/capability gates | `packages/harness/src/models/registry.ts`, `ports/model-provider.ts`, `ports/base-model-provider.ts` |
 | State port/default | `ports/state.ts`, `state/in-memory.ts`, `models/state.ts` |
+| Memory port/default | `ports/memory.ts`, `memory/*` |
 | Sandbox | `sandbox/index.ts` |
 | Skills | `skills/index.ts` |
 | MCP | `tools/mcp/*` |
-| Telemetry | `telemetry/*`, `specs/14-otel-conventions.md` |
+| Telemetry | `telemetry/*` |
 | Durable runtime | `runtime/*` |
 | Errors | `errors/catalog.ts`, `errors/harness-error.ts` |
 | Provider adapters | `packages/harness-openai/src/index.ts`, `packages/harness-anthropic/src/index.ts`, `packages/harness-bedrock/src/index.ts`, `packages/harness-azure-foundry/src/index.ts` |
 
-## Docs And Specs Map
-Use specs for intended contracts and docs for user-facing examples:
-- `specs/02-harness-config.md`: builder methods and validation
-- `specs/05-sandbox.md`: sandbox port
-- `specs/06-models.md`: model provider/capabilities
-- `specs/07-tools.md`: built-ins, TS tools, MCP
-- `specs/08-skills.md`: skill loader/mounting
-- `specs/09-agents.md`: agent loop
-- `specs/10-workflows.md`: workflow orchestration
-- `specs/11-sessions.md`: sessions/history/memory
-- `specs/12-streaming.md`: run events
-- `specs/13-public-api.md`: locked public surface
-- `specs/14-otel-conventions.md`: telemetry
-- `specs/15-error-catalog.md`: errors
-- `specs/16-testing.md`: testing contracts
-- `specs/20-memory-adapters.md`: memory adapter port, scopes, telemetry, metrics
-- `docs/guides/*`: user-facing patterns
+## Public Docs Map
+Use public docs for user-facing examples and source files for exact behavior:
+- `docs/getting-started/quickstart.md`: minimal setup
+- `docs/guides/configuration.md`: builder methods, defaults, telemetry, and adapter wiring
+- `docs/guides/usage.md`: sessions, agents, workflows, memory, and history
+- `docs/guides/extending-and-customizing.md`: custom tools, providers, sandboxes, and extension points
+- `docs/guides/testing.md`: fakes, contracts, and local testing
+- `docs/reference/public-api.md`: exported public surface
 - `docs/security/security-model.md`: security defaults
 - `docs/operations/runbook.md`: operations and triage
+- `docs/guides/*`: user-facing patterns
 
-## Implementation-Vs-Spec Checks
-When docs/specs and source disagree, verify source before teaching behavior. Known check points:
+## Source-Vs-Docs Checks
+When docs and source disagree, verify source before teaching behavior. Known check points:
 - custom agent handler context in source exposes models/memory/history/signal/session/run, not typed `ctx.tools` or callable skill handles
 - the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `contentCaptureMode`, while application SDK/exporter bootstrapping is external
 - default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` is safer for file-only agents

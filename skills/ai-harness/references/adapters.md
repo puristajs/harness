@@ -35,7 +35,7 @@ Package rules:
 - Do not import harness internals from external adapter packages.
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Do not make adapter packages depend on each other.
-- Keep provider/backend credentials in adapter options or environment-owned app code, not in specs or examples.
+- Keep provider/backend credentials in adapter options or environment-owned app code, not in docs or examples.
 - Export one factory with a stable, lowercase adapter id, for example `redisMemory(...)`, `postgresStateStore(...)`, or `remoteSandbox(...)`.
 
 ## Using Adapters

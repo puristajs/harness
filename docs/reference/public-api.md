@@ -148,6 +148,27 @@ ignored with a warning log and do not fail the run.
 handlers and custom agent handlers. Do not put secrets, prompts, or user content
 in metadata.
 
+## Metrics
+
+Workflow handlers, custom agent handlers, and TypeScript tool handlers receive a
+scoped `ctx.metrics` helper:
+
+```ts
+interface Metrics {
+  counter(name: string, value?: number, attrs?: SpanAttrs): void
+  histogram(name: string, value: number, attrs?: SpanAttrs): void
+  duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
+}
+```
+
+Use it for application-owned measurements, for example queue sizes, business
+outcomes, or workflow step durations. The helper records through the harness
+OpenTelemetry meter and adds the active harness/session/run attributes.
+
+Token usage remains on model spans using GenAI and OpenInference attributes.
+The harness also emits token usage metrics so aggregate usage can remain
+available even when trace storage samples or drops spans.
+
 ## Model Provider Operations
 
 Provider packages implement the operations they support and declare matching

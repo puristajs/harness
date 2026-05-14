@@ -13,7 +13,7 @@ import type { Message } from '../models/state.js'
 import type { AgentDefinition, BuiltinToolName, ModelHandles, ResolvedSkill, RunEvent, SessionMemory, ToolsConfig } from '../harness/defineHarness.js'
 import type { ModelMessage } from '../ports/model-provider.js'
 import type { SandboxSession } from '../sandbox/index.js'
-import type { TelemetryShim } from '../telemetry/index.js'
+import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/index.js'
 import { buildSkillIndex, mountSkillsOnce } from '../skills/index.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, getBuiltinToolSpecs, invokeBuiltinTool } from '../tools/index.js'
 import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
@@ -77,7 +77,8 @@ export async function runDefaultAgent(args: {
     'harness.agent.has_handler': args.agent.handler !== undefined,
     ...metadataSpanAttrs(args.metadata)
   }
-  const execute = () => runDefaultAgentInner(args)
+  const metrics = createMetrics(args.telemetry, agentAttrs)
+  const execute = () => runDefaultAgentInner({ ...args, metrics })
   return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, execute)
 }
 
@@ -122,6 +123,7 @@ async function runDefaultAgentInner(args: {
   toolTimeoutMs: number
   logger: Logger
   telemetry: TelemetryShim
+  metrics: Metrics
   emitEvent?: (event: RunEvent) => Promise<void>
   metadata?: Readonly<Record<string, JsonValue>>
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
@@ -144,14 +146,15 @@ async function runDefaultAgentInner(args: {
       sessionId: args.sessionId,
       history: { list: async () => args.history },
       memory: args.memory,
-      metadata: args.metadata ?? {}
+      metadata: args.metadata ?? {},
+      metrics: args.metrics
     })
     const validated = parseAgentSchema(outputSchema, output, 'agent_output')
     return { output: validated as JsonValue, emitted: [{ id: `msg_${Date.now()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
-    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {} })
+    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {}, metrics: args.metrics })
     : args.agent.instructions
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
@@ -251,7 +254,24 @@ async function runDefaultAgentInner(args: {
           }
           const tsTool = tool
           const parsed = tsTool.input.parse(input)
-          const out = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => tsTool.handler({ signal, sandbox: withSandboxTelemetry(args, canonical), logger: args.logger, telemetry: args.telemetry, runId: args.runId, sessionId: args.sessionId, agentId: args.agentId, toolId: canonical }, parsed))
+          const out = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => tsTool.handler({
+            signal,
+            sandbox: withSandboxTelemetry(args, canonical),
+            logger: args.logger,
+            telemetry: args.telemetry,
+            metrics: createMetrics(args.telemetry, {
+              'harness.name': args.harnessName,
+              'harness.session.id': args.sessionId,
+              'harness.run.id': args.runId,
+              ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
+              'harness.agent.id': args.agentId,
+              'harness.tool.id': canonical
+            }),
+            runId: args.runId,
+            sessionId: args.sessionId,
+            agentId: args.agentId,
+            toolId: canonical
+          }, parsed))
           return { output: tsTool.output.parse(out) as JsonValue }
         })
       } catch (error) {

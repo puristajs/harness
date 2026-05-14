@@ -31,7 +31,7 @@ import type {
   ModelCallOptions
 } from '../ports/model-provider.js'
 import type { StateStore } from '../ports/state.js'
-import type { TelemetryShim } from '../telemetry/index.js'
+import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
@@ -189,6 +189,7 @@ export interface ToolHandlerContext {
   sandbox: import('../sandbox/index.js').SandboxSession
   logger: Logger
   telemetry: TelemetryShim
+  metrics: Metrics
   runId: string
   sessionId: string
   agentId: string
@@ -321,6 +322,7 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   history: ConversationHistory
   memory: SessionMemory
   metadata: Readonly<Record<string, JsonValue>>
+  metrics: Metrics
 }
 
 /** Full context passed to workflow handlers. */
@@ -332,6 +334,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
+  metrics: Metrics
   output?: O
 }
 

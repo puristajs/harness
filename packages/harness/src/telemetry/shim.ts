@@ -8,6 +8,16 @@ export type SpanAttrs = Record<string, string | number | boolean | string[] | un
 
 type AttrValue = string | number | boolean | string[]
 
+/** Developer-facing metric helper exposed in handler contexts. */
+export interface Metrics {
+  /** Adds to a counter instrument. */
+  counter(name: string, value?: number, attrs?: SpanAttrs): void
+  /** Records a histogram sample. */
+  histogram(name: string, value: number, attrs?: SpanAttrs): void
+  /** Records the duration of an async operation in seconds. */
+  duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
+}
+
 /** Minimal telemetry abstraction used by harness internals and integrations. */
 export interface TelemetryShim {
   /** Creates a span, executes `fn`, and closes the span with success/error status. */
@@ -150,4 +160,25 @@ export class OtelTelemetryShim implements TelemetryShim {
 /** Creates the default telemetry shim instance. */
 export function createTelemetryShim(): TelemetryShim {
   return new OtelTelemetryShim()
+}
+
+/** Creates a scoped metrics helper with default attributes merged into every metric. */
+export function createMetrics(telemetry: TelemetryShim, defaultAttrs: SpanAttrs = {}): Metrics {
+  const merge = (attrs: SpanAttrs | undefined): SpanAttrs => ({ ...defaultAttrs, ...(attrs ?? {}) })
+  return {
+    counter(name, value = 1, attrs) {
+      telemetry.recordCounter(name, value, merge(attrs))
+    },
+    histogram(name, value, attrs) {
+      telemetry.recordHistogram(name, value, merge(attrs))
+    },
+    async duration(name, attrs, fn) {
+      const started = Date.now()
+      try {
+        return await fn()
+      } finally {
+        telemetry.recordHistogram(name, (Date.now() - started) / 1000, merge(attrs))
+      }
+    }
+  }
 }

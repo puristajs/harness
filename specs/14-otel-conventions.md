@@ -277,6 +277,14 @@ failure and `OK` on success.
 
 All durations are seconds. Token counts use unit `{token}`.
 
+Token usage is always attached to model spans when the provider returns usage:
+GenAI keys use `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and
+`gen_ai.usage.total_tokens`; OpenInference keys use
+`llm.token_count.prompt`, `llm.token_count.completion`, and
+`llm.token_count.total`. Metrics are emitted in addition to those span
+attributes because production backends may sample or drop spans while still
+aggregating metrics.
+
 ### GenAI metrics
 
 | Instrument | Type | Unit | Attributes |
@@ -297,6 +305,11 @@ All durations are seconds. Token counts use unit `{token}`.
 | `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
 
 No `_ms` instruments exist.
+
+Developer-defined metrics use the `Metrics` helper exposed on workflow,
+custom-agent, and TypeScript-tool contexts. Application metric names should use
+an application prefix such as `app.` or a service-specific namespace to avoid
+colliding with `gen_ai.*` and `harness.*` instruments.
 
 ## Log fields
 

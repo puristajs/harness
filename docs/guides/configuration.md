@@ -158,6 +158,23 @@ executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 does not emit prompt, model output, tool input/result, file, memory,
 expected-output, or context content in any mode.
 
+Model token usage is attached to model spans using both GenAI and OpenInference
+attributes. The harness also emits metrics through the configured OpenTelemetry
+meter so aggregate usage and durations remain available even when a production
+trace backend samples or drops spans.
+
+Application code can add its own metrics from workflow, custom-agent, and
+TypeScript-tool handlers:
+
+```ts
+handler: async (ctx) => {
+  ctx.metrics.counter('app.requests', 1, { route: 'support' })
+  return ctx.metrics.duration('app.workflow.duration', undefined, async () => {
+    return ctx.agents.answerer(ctx.input)
+  })
+}
+```
+
 ## Environment Variables Used By Examples
 
 | Variable | Purpose |

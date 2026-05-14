@@ -44,7 +44,7 @@ import type { StateStore } from '../ports/state.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
-import { createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
+import { createMetrics, createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 
 type HarnessDefinition<S extends BuilderState> = {
@@ -613,6 +613,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         }, async () => {
         const runStarted: RunEvent = { type: 'run.started', runId, at: startedAt }
         await emit(runStarted)
+        const workflowMetrics = createMetrics(telemetry, {
+          'harness.name': definition.name,
+          'harness.session.id': sessionId,
+          'harness.run.id': runId,
+          'harness.workflow.id': workflowId
+        })
 
         const workflowArgs = {
           workflowId,
@@ -624,6 +630,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             sessionId,
             models: modelRegistry,
             metadata: opts?.metadata ?? {},
+            metrics: workflowMetrics,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,

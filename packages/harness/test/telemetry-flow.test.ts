@@ -155,3 +155,53 @@ it('emits sanitized scalar invoke metadata as harness metadata attributes', asyn
     expect(span?.attrs['harness.metadata.invalid key']).toBeUndefined()
   }
 })
+
+it('exposes scoped metrics helpers to workflow and tool handlers', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy')
+
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'app.workflow.duration',
+      attrs: expect.objectContaining({
+        'harness.workflow.id': 'wf',
+        'harness.session.id': 'telemetry-session',
+        'app.workflow.name': 'wf'
+      })
+    }),
+    expect.objectContaining({
+      kind: 'counter',
+      name: 'app.policy_lookup.calls',
+      value: 1,
+      attrs: expect.objectContaining({
+        'harness.tool.id': 'policy_lookup',
+        'harness.agent.id': 'responder',
+        'harness.session.id': 'telemetry-session'
+      })
+    })
+  ]))
+})
+
+it('records GenAI token usage as histogram samples while keeping token counts on spans', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+
+  await session.workflows.wf.prompt('find the policy')
+
+  const tokenMetrics = telemetry.metrics.filter((metric) => metric.name === 'gen_ai.client.token.usage')
+  expect(tokenMetrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'histogram', value: 1, attrs: expect.objectContaining({ 'gen_ai.token.type': 'input' }) }),
+    expect.objectContaining({ kind: 'histogram', value: 2, attrs: expect.objectContaining({ 'gen_ai.token.type': 'output' }) })
+  ]))
+
+  const finalModelSpan = telemetry.spans.filter((span) => span.name === 'chat fake').at(-1)
+  expect(finalModelSpan?.attrs).toMatchObject({
+    'gen_ai.usage.input_tokens': 1,
+    'gen_ai.usage.output_tokens': 2,
+    'gen_ai.usage.total_tokens': 3,
+    'llm.token_count.prompt': 1,
+    'llm.token_count.completion': 2,
+    'llm.token_count.total': 3
+  })
+})

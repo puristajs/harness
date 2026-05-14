@@ -104,6 +104,7 @@ interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.Zo
 interface ToolHandlerContext {
   logger: Logger
   telemetry: TelemetryShim
+  metrics: Metrics
   signal: AbortSignal
   sandbox: SandboxSession                   // the open session for this run
   runId: string

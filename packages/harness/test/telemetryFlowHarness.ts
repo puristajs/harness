@@ -1,12 +1,13 @@
 import { z } from 'zod'
 import { SpanStatusCode, type Span } from '@opentelemetry/api'
 
-import { JsonLogger } from '../src/logger/index.js'
+import type { Logger } from '../src/logger/index.js'
 import type { ObjectResponse, ModelProvider } from '../src/ports/model-provider.js'
 import { InMemoryStateStore } from '../src/state/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import type { TelemetryShim } from '../src/telemetry/index.js'
+import type { TelemetryOptions } from '../src/index.js'
 
 export class RecordingTelemetry implements TelemetryShim {
   public readonly spans: Array<{
@@ -17,6 +18,7 @@ export class RecordingTelemetry implements TelemetryShim {
     status?: { code: SpanStatusCode; message?: string }
     exceptions: unknown[]
   }> = []
+  public readonly traceContexts: Array<{ traceparent: string; tracestate?: string }> = []
 
   private readonly stack: string[] = []
 
@@ -60,6 +62,23 @@ export class RecordingTelemetry implements TelemetryShim {
   public currentTraceparent(): string | undefined {
     return this.stack.length > 0 ? '00-00000000000000000000000000000001-0000000000000001-01' : undefined
   }
+
+  public async withTraceContext<T>(carrier: { traceparent: string; tracestate?: string }, fn: () => Promise<T>): Promise<T> {
+    this.traceContexts.push(carrier)
+    return fn()
+  }
+}
+
+export class RecordingLogger implements Logger {
+  public readonly entries: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = []
+
+  public trace(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'trace', msg, fields }) }
+  public debug(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'debug', msg, fields }) }
+  public info(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'info', msg, fields }) }
+  public warn(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'warn', msg, fields }) }
+  public error(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'error', msg, fields }) }
+  public fatal(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'fatal', msg, fields }) }
+  public child(): Logger { return this }
 }
 
 class FlowModelProvider implements ModelProvider {
@@ -85,11 +104,13 @@ class FlowModelProvider implements ModelProvider {
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean } = {}) {
+export async function runTelemetryFlowHarness(opts: { failTool?: boolean; telemetry?: TelemetryOptions } = {}) {
   const telemetry = new RecordingTelemetry()
+  const logger = new RecordingLogger()
   const harness = createSessionHarness<any>({
     name: 'telemetry-test',
-    logger: new JsonLogger({ level: 'fatal' }),
+    logger,
+    telemetry: opts.telemetry,
     telemetryShim: telemetry,
     state: new InMemoryStateStore(),
     sandbox: inMemorySandbox(),
@@ -135,5 +156,5 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean } = {})
     }
   })
   const session = await harness.getSession('telemetry-session')
-  return { session, telemetry }
+  return { session, telemetry, logger }
 }

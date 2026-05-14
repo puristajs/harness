@@ -59,6 +59,7 @@ export async function runDefaultAgent(args: {
   logger: Logger
   telemetry: TelemetryShim
   emitEvent?: (event: RunEvent) => Promise<void>
+  metadata?: Readonly<Record<string, JsonValue>>
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   const agentAttrs = {
     'harness.name': args.harnessName,
@@ -66,13 +67,37 @@ export async function runDefaultAgent(args: {
     'harness.run.id': args.runId,
     ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
     'harness.agent.id': args.agentId,
+    'gen_ai.operation.name': 'invoke_agent',
+    'openinference.span.kind': 'AGENT',
+    'metadata.agent_name': args.agentId,
+    'metadata.agent_id': args.agentId,
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
-    [ATTR_GEN_AI_AGENT_ID]: args.runId,
+    [ATTR_GEN_AI_AGENT_ID]: args.agentId,
     'harness.agent.model': args.agent.model,
-    'harness.agent.has_handler': args.agent.handler !== undefined
+    'harness.agent.has_handler': args.agent.handler !== undefined,
+    ...metadataSpanAttrs(args.metadata)
   }
   const execute = () => runDefaultAgentInner(args)
   return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, execute)
+}
+
+function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
+  const attrs: Record<string, string | number | boolean | undefined> = {}
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
+    if (typeof value === 'string') {
+      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'boolean') {
+      attrs[`harness.metadata.${key}`] = value
+    }
+  }
+  return attrs
 }
 
 async function runDefaultAgentInner(args: {
@@ -98,6 +123,7 @@ async function runDefaultAgentInner(args: {
   logger: Logger
   telemetry: TelemetryShim
   emitEvent?: (event: RunEvent) => Promise<void>
+  metadata?: Readonly<Record<string, JsonValue>>
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   args.signal.throwIfAborted()
   const inputSchema = args.agent.input ?? z.string()
@@ -117,14 +143,15 @@ async function runDefaultAgentInner(args: {
       runId: args.runId,
       sessionId: args.sessionId,
       history: { list: async () => args.history },
-      memory: args.memory
+      memory: args.memory,
+      metadata: args.metadata ?? {}
     })
     const validated = parseAgentSchema(outputSchema, output, 'agent_output')
     return { output: validated as JsonValue, emitted: [{ id: `msg_${Date.now()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
-    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory })
+    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {} })
     : args.agent.instructions
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
@@ -181,6 +208,7 @@ async function runDefaultAgentInner(args: {
     if (toolCalls.length === 0) {
       const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
       emitted.push({ id: `msg_${Date.now()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+      await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: validated as JsonValue, usage: response.usage })
       await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
       return { output: validated as JsonValue, emitted }
     }
@@ -301,6 +329,10 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
     ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
     'harness.agent.id': args.agentId,
     'harness.tool.id': toolId,
+    'gen_ai.operation.name': 'execute_tool',
+    'openinference.span.kind': 'TOOL',
+    'tool.name': toolId,
+    'tool.call.id': callId,
     [ATTR_GEN_AI_TOOL_NAME]: toolId,
     [ATTR_GEN_AI_TOOL_CALL_ID]: callId,
     [ATTR_GEN_AI_TOOL_TYPE]: toolKind,

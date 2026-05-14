@@ -257,7 +257,10 @@ function withModelStreamSpan<T>(
       span.setAttributes({
         [ATTR_GEN_AI_USAGE_INPUT_TOKENS]: lastUsage.inputTokens,
         [ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: lastUsage.outputTokens,
-        'gen_ai.usage.total_tokens': lastUsage.totalTokens
+        'gen_ai.usage.total_tokens': lastUsage.totalTokens,
+        'llm.token_count.prompt': lastUsage.inputTokens,
+        'llm.token_count.completion': lastUsage.outputTokens,
+        'llm.token_count.total': lastUsage.totalTokens
       })
       options.telemetry?.recordCounter('gen_ai.client.token.usage', lastUsage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
       options.telemetry?.recordCounter('gen_ai.client.token.usage', lastUsage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
@@ -327,7 +330,10 @@ async function withModelSpan<T>(
       span.setAttributes({
         [ATTR_GEN_AI_USAGE_INPUT_TOKENS]: usage.inputTokens,
         [ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: usage.outputTokens,
-        'gen_ai.usage.total_tokens': usage.totalTokens
+        'gen_ai.usage.total_tokens': usage.totalTokens,
+        'llm.token_count.prompt': usage.inputTokens,
+        'llm.token_count.completion': usage.outputTokens,
+        'llm.token_count.total': usage.totalTokens
       })
       options.telemetry?.recordCounter('gen_ai.client.token.usage', usage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
       options.telemetry?.recordCounter('gen_ai.client.token.usage', usage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
@@ -353,10 +359,27 @@ function modelSpanAttrs(
     'harness.agent.id': ctx?.agentId,
     'harness.model.alias': aliasKey,
     'harness.model.method': method,
+    'gen_ai.operation.name': genAiOperationName(method),
+    'openinference.span.kind': openInferenceSpanKind(method),
     [ATTR_GEN_AI_SYSTEM]: alias.provider.genAiSystem,
+    'gen_ai.provider.name': alias.provider.genAiSystem,
     [ATTR_GEN_AI_REQUEST_MODEL]: alias.model,
-    'model.provider': alias.provider.id
+    'model.provider': alias.provider.id,
+    'llm.provider': alias.provider.genAiSystem,
+    'llm.model_name': alias.model
   }
+}
+
+function genAiOperationName(method: ModelCapability): string | undefined {
+  if (method === 'embeddings') return 'embeddings'
+  if (method === 'rerank') return undefined
+  return 'chat'
+}
+
+function openInferenceSpanKind(method: ModelCapability): string {
+  if (method === 'embeddings') return 'EMBEDDING'
+  if (method === 'rerank') return 'RERANKER'
+  return 'LLM'
 }
 
 /**

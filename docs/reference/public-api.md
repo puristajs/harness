@@ -41,7 +41,7 @@ in-process default.
 |---|---|
 | `Harness<S>` | Built runtime with `getSession`, `shutdown`, and `$infer`. |
 | `HarnessInspection` | Data-only adapter and capability snapshot returned by `harness.inspect()`. |
-| `Session<S>` | Operational context exposing `agents`, `workflows`, `history`, `memory`, and `close`. |
+| `Session<S>` | Operational context exposing `agents`, `workflows`, `history`, `memory`, `getRunSummary`, and `close`. |
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
@@ -114,6 +114,40 @@ Streaming invokers yield `RunEvent` values:
 runtime events when the configured provider path supports those operations.
 They remain harness events, not a Vercel stream protocol.
 
+## Run Summary
+
+```ts
+const summary = await session.getRunSummary(runId)
+```
+
+`getRunSummary` reads the configured `StateStore` and returns status, start and
+finish timestamps, model/tool/agent call counts, token totals, and any
+serialized run error. It does not require an OpenTelemetry backend.
+
+Persisted event payloads are redacted even when telemetry content capture is
+enabled. Usage counts and operational metadata remain available for summaries
+and dashboards.
+
+## Invoke Options
+
+```ts
+await session.agents.answerer.prompt(input, {
+  timeoutMs: 30_000,
+  historyWindow: 20,
+  traceparent: req.headers.get('traceparent') ?? undefined,
+  tracestate: req.headers.get('tracestate') ?? undefined,
+  metadata: { tenantId: 'tenant-a' }
+})
+```
+
+`traceparent` and `tracestate` follow W3C Trace Context. Valid values become the
+parent context for the root run span and all child spans. Invalid values are
+ignored with a warning log and do not fail the run.
+
+`metadata` is JSON-serializable scalar application context exposed to workflow
+handlers and custom agent handlers. Do not put secrets, prompts, or user content
+in metadata.
+
 ## Model Provider Operations
 
 Provider packages implement the operations they support and declare matching
@@ -152,6 +186,60 @@ Common codes:
 - `OPERATION_TIMEOUT`
 - `OPERATION_CANCELLED`
 - `SESSION_BUSY`
+
+## Telemetry Options
+
+```ts
+defineHarness()
+  .telemetry({
+    flavor: 'dual',
+    contentCaptureMode: 'NO_CONTENT'
+  })
+```
+
+`flavor` controls emitted attribute namespaces:
+
+| Flavor | Attributes |
+|---|---|
+| `dual` | GenAI and OpenInference attributes. |
+| `gen_ai_only` | GenAI attributes only. |
+| `openinference_only` | OpenInference attributes only. |
+
+`contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
+`SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
+prompt, output, tool argument/result, context, file, and memory content out of
+spans, span events, and persisted StateStore events. Non-`NO_CONTENT` modes are
+reserved inputs for future content telemetry.
+
+## Eval Helpers
+
+```ts
+import { evaluateDeterministicScorer, evaluatePromptCandidates } from '@purista/harness'
+
+const scores = await evaluatePromptCandidates({
+  candidates: [{ id: 'concise', prompt: 'Answer in one paragraph.' }],
+  items: [{ id: 'item-1', input: { question: 'What changed?' } }],
+  runCandidate: async (candidate, item) => runPrompt(candidate.prompt, item.input),
+  scorer: async (target) => evaluateDeterministicScorer({
+    type: 'contains',
+    path: '/answer',
+    value: 'changed'
+  }, target),
+  signal: new AbortController().signal
+})
+```
+
+`evaluatePromptCandidates` is deterministic: it evaluates candidates in input
+order, items in input order, and sorts final scores by mean score descending,
+pass rate descending, then candidate id ascending.
+
+`@purista/harness/testing` exports `evaluateDeterministicScorer(...)` for
+unit-testing `regex`, `contains`, `json-schema`, and `attribute-equality`
+scorers without invoking a model provider.
+
+The `json-schema` scorer is a deterministic subset, not a full JSON Schema
+draft implementation. It supports `type`, `const`, `enum`, object
+`properties`, object `required`, and `additionalProperties: false`.
 
 ## OpenAI Adapter
 

@@ -18,6 +18,8 @@ export interface TelemetryShim {
   recordCounter(name: string, value: number, attrs: SpanAttrs): void
   /** Injects the current active trace context into a W3C traceparent carrier. */
   currentTraceparent(): string | undefined
+  /** Runs `fn` with the supplied W3C Trace Context as the active parent context. */
+  withTraceContext?<T>(carrier: { traceparent: string; tracestate?: string }, fn: () => Promise<T>): Promise<T>
 }
 
 function sanitizeAttrs(attrs: SpanAttrs): Record<string, AttrValue> {
@@ -134,6 +136,14 @@ export class OtelTelemetryShim implements TelemetryShim {
     const carrier: Record<string, string> = {}
     propagation.inject(context.active(), carrier)
     return carrier['traceparent']
+  }
+
+  public async withTraceContext<T>(carrier: { traceparent: string; tracestate?: string }, fn: () => Promise<T>): Promise<T> {
+    const extracted = propagation.extract(context.active(), {
+      traceparent: carrier.traceparent,
+      ...(carrier.tracestate ? { tracestate: carrier.tracestate } : {})
+    })
+    return context.with(extracted, fn)
   }
 }
 

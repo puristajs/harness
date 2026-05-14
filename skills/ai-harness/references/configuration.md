@@ -76,10 +76,12 @@ Set explicit budgets for production:
   historyWindow: 20
 })
 .logger(new JsonLogger({ level: process.env.PURISTA_HARNESS_LOG_LEVEL ?? 'info' }))
-.telemetry({ captureContent: false })
+.telemetry({ contentCaptureMode: 'NO_CONTENT' })
 ```
 
-`captureContent` should stay false outside approved diagnostics. Model providers, tools, state stores, and sandboxes can inherit logger and telemetry via `configureHarnessContext`.
+`contentCaptureMode` defaults to `NO_CONTENT`. Model providers, tools, state
+stores, and sandboxes can inherit logger and telemetry via
+`configureHarnessContext`.
 
 The implementation creates an OpenTelemetry-backed `TelemetryShim` internally when telemetry is configured. Applications still own SDK/exporter bootstrapping, for example using `@opentelemetry/sdk-node` plus an OTLP exporter before harness runs begin.
 
@@ -88,7 +90,7 @@ Defaults:
 - state: `InMemoryStateStore`
 - sandbox: `autoDetectSandbox()` when `.sandbox()` is omitted or called with no argument
 - logger: `JsonLogger`
-- telemetry shim: created internally; `.telemetry(...)` supplies options such as `captureContent`
+- telemetry shim: created internally; `.telemetry(...)` supplies options such as `contentCaptureMode`
 
 Use explicit infrastructure in production:
 

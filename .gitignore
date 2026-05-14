@@ -9,3 +9,4 @@ coverage/
 *.log
 .env
 examples/living-wiki-jaeger/data/artifacts
+ai-eval-research/

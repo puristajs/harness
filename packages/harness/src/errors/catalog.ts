@@ -27,6 +27,7 @@ export class ValidationError extends HarnessError {
         /** Message envelope validation failed. */ | 'message'
         /** Session history shape validation failed. */ | 'session_history'
         /** Invocation options are invalid. */ | 'invoke_options'
+        /** Evaluation helper input is invalid. */ | 'eval_input'
       issues: unknown
     },
     cause?: unknown

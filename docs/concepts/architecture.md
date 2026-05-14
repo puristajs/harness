@@ -154,5 +154,14 @@ flowchart TD
   R2 --> OTel
 ```
 
-By default, persisted events and spans avoid full content capture. Enable
-content capture only for deliberate local diagnostics.
+Telemetry emits GenAI and OpenInference attributes by default. Set
+`telemetry.flavor` to `gen_ai_only` or `openinference_only` when a backend
+expects one namespace. `InvokeOptions.traceparent` and `tracestate` are
+extracted before the root run span is created; invalid Trace Context is logged
+and the run starts a new trace.
+
+Persisted run events never store prompts, model outputs, tool inputs/results,
+memory, files, or user data. They may store operational metadata such as ids,
+counts, dimensions, status, serialized errors, and token usage. Telemetry
+content capture controls span content only; it does not change StateStore audit
+retention.

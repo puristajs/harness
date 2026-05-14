@@ -81,6 +81,9 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Sessions with persisted conversation history (one session = one thread) and `/memory/` directory in the sandbox for session memory.
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
+- Harness-owned AI evaluation primitives: trace-context propagation, run
+  summaries, telemetry interop, deterministic local scorer helpers, and prompt
+  candidate evaluation helpers. See [19-ai-eval-core](./19-ai-eval-core.md).
 
 ## Non-goals
 
@@ -93,6 +96,8 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No production/SaaS example apps. Spec-approved private examples may exist
   under `examples/`, with quickstart remaining the minimal entry point.
 - No pluggable stream adapter — the streaming generator is internal.
+- No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
+  prompt-version store, or experiment database in this repository.
 
 ## Glossary
 
@@ -120,3 +125,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [11-sessions](./11-sessions.md) — conversation history and threads.
 - [13-public-api](./13-public-api.md) — authoritative export list and `$infer` namespace.
 - [17-implementation-plan](./17-implementation-plan.md) — build order.
+- [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.

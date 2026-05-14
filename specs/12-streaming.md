@@ -88,9 +88,9 @@ If a consumer's `take()` throws (e.g. consumer code rejects), the harness remove
 
 Persisted event payloads are sanitized by default. `runId`, `at`, and `type` are stored as `PersistedRunEvent` fields and are not duplicated inside `payload`.
 
-When `telemetry.captureContent` is false or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, and serialized harness errors.
+When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, and serialized harness errors.
 
-When `telemetry.captureContent === true`, persisted payloads may include full event content for diagnostics. This mode is explicit and should be used only where sensitive-content retention is allowed.
+When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not StateStore audit retention.
 
 ## Persistence
 

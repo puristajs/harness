@@ -106,6 +106,8 @@ abstract class HarnessError extends Error {
   ```
 - If no provider is registered, both APIs no-op (zero overhead).
 - Span creation: every public operation (session prompt, workflow run, agent run, model call, tool call, skill call) wraps its work in a standard OpenTelemetry active span (`tracer.startActiveSpan`). Span attributes are set at start; result attributes on success; status `ERROR` and recorded exception on failure.
+- Telemetry emission is record-driven: harness code creates one internal telemetry record per span, then renders OTel GenAI and/or OpenInference attributes from that record according to `TelemetryOptions.flavor`. Implementation code must not maintain separate GenAI and OpenInference data paths.
+- Trace Context: `InvokeOptions.traceparent` and `InvokeOptions.tracestate` are extracted before the run span is created. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`; it is never a run failure.
 - Span linkage: child operations attach to the parent span via the active OTel context.
 - Metric instruments are created lazily once at harness construction. Canonical names (full enumeration in [14-otel-conventions](./14-otel-conventions.md)):
   - `gen_ai.client.token.usage`: `Histogram` (unit `{token}`) — GenAI conv.
@@ -128,7 +130,7 @@ interface TelemetryShim {
 }
 ```
 
-`SpanAttrs` is `Record<string, string | number | boolean | undefined>`. Undefined values are dropped before being passed to OTel.
+`SpanAttrs` is `Record<string, string | number | boolean | string[] | undefined>`. Undefined values are dropped before being passed to OTel.
 
 ## Cross-references
 

@@ -24,6 +24,7 @@ import type {
   InvokeOptions,
   ModelsConfig,
   ResolvedSkill,
+  RunSummary,
   RunEvent,
   Harness,
   HarnessDefaults,
@@ -135,7 +136,8 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
-  const telemetry = definition.telemetryShim ?? createTelemetryShim()
+  const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
+  const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterContext: HarnessAdapterContext = {
     harnessName: definition.name,
     logger: definition.logger,
@@ -152,7 +154,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.tools as ToolsConfig)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
-  const captureContent = definition.telemetry?.captureContent === true
 
   async function ensureSessionRecord(sessionId: string): Promise<SessionRecord> {
     const existing = await definition.state.getSession(sessionId)
@@ -188,6 +189,42 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     } catch (error) {
       telemetry.recordCounter('harness.events.persist_errors', 1, { harness: definition.name })
       definition.logger.error('Failed to persist run events.', { harness: definition.name, run_id: runId, error: serializeError(error) })
+    }
+  }
+
+  async function getRunSummary(runId: string): Promise<RunSummary | undefined> {
+    const run = await definition.state.getRun(runId)
+    if (!run) return undefined
+    const events = await definition.state.listEvents(runId)
+    const tokenTotals = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+    let modelCalls = 0
+    let toolCalls = 0
+    let agentCalls = 0
+
+    for (const event of events) {
+      if (event.type === 'agent.started') agentCalls += 1
+      if (event.type === 'tool.started') toolCalls += 1
+      if (event.type.startsWith('model.') && event.type.endsWith('.completed')) modelCalls += 1
+      if (event.type === 'model.object') modelCalls += 1
+      const payload = event.payload
+      if (isJsonRecord(payload) && isTokenUsage(payload['usage'])) {
+        tokenTotals.inputTokens += payload['usage'].inputTokens
+        tokenTotals.outputTokens += payload['usage'].outputTokens
+        tokenTotals.totalTokens += payload['usage'].totalTokens
+      }
+    }
+
+    return {
+      runId: run.id,
+      sessionId: run.sessionId,
+      status: run.status,
+      startedAt: run.startedAt,
+      ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
+      tokenTotals,
+      modelCalls,
+      toolCalls,
+      agentCalls,
+      ...(run.error ? { error: normalizeSerializedRunError(run.error) } : {})
     }
   }
 
@@ -231,6 +268,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         memory,
         history: {
           list: (opts) => definition.state.listMessages(sessionId, opts)
+        },
+        async getRunSummary(runId: string): Promise<RunSummary | undefined> {
+          return getRunSummary(runId)
         },
         async clearHistory(): Promise<void> {
           if (state.busy) {
@@ -372,7 +412,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
       await onEvent?.(event)
-      await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event, captureContent) }])
+      await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
     try {
@@ -383,12 +423,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
 
     try {
-      const result = await telemetry.span('harness.session.agent_prompt', {
-        'harness.name': definition.name,
-        'harness.session.id': sessionId,
-        'harness.run.id': runId,
-        'harness.agent.id': agentId
-      }, async () => {
+      const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.agent_prompt', {
+          'harness.name': definition.name,
+          'harness.session.id': sessionId,
+          'harness.run.id': runId,
+          'harness.agent.id': agentId,
+          'harness.telemetry.content_capture_mode': contentCaptureMode,
+          ...metadataSpanAttrs(opts?.metadata)
+        }, async () => {
         await emit({ type: 'run.started', runId, at: startedAt })
         const resolvedHistoryWindow = opts?.historyWindow ?? definition.defaults.historyWindow
         const run = await runDefaultAgent({
@@ -412,13 +454,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
           logger: definition.logger,
           telemetry,
-          emitEvent: emit
+          emitEvent: emit,
+          metadata: opts?.metadata ?? {}
         })
         if (run.emitted.length > 0) {
           await definition.state.appendMessages(sessionId, run.emitted)
         }
         return run.output
-      })
+      }))
 
       const finishedAt = now()
       await emit({ type: 'run.finished', runId, at: finishedAt, output: result as JsonValue })
@@ -549,7 +592,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
       await onEvent?.(event)
-      await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event, captureContent) }])
+      await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
     try {
@@ -560,12 +603,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
 
     try {
-      const result = await telemetry.span('harness.session.prompt', {
-        'harness.name': definition.name,
-        'harness.session.id': sessionId,
-        'harness.run.id': runId,
-        'harness.workflow.id': workflowId
-      }, async () => {
+      const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
+          'harness.name': definition.name,
+          'harness.session.id': sessionId,
+          'harness.run.id': runId,
+          'harness.workflow.id': workflowId,
+          'harness.telemetry.content_capture_mode': contentCaptureMode,
+          ...metadataSpanAttrs(opts?.metadata)
+        }, async () => {
         const runStarted: RunEvent = { type: 'run.started', runId, at: startedAt }
         await emit(runStarted)
 
@@ -578,6 +623,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             runId,
             sessionId,
             models: modelRegistry,
+            metadata: opts?.metadata ?? {},
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
@@ -607,7 +653,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
                       logger: definition.logger,
                       telemetry,
-                      emitEvent: emit
+                      emitEvent: emit,
+                      metadata: { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
                     })
                     if (run.emitted.length > 0) {
                       await definition.state.appendMessages(sessionId, run.emitted)
@@ -630,12 +677,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.name': definition.name,
           'harness.session.id': sessionId,
           'harness.run.id': runId,
-          'harness.workflow.id': workflowId
+          'harness.workflow.id': workflowId,
+          ...metadataSpanAttrs(opts?.metadata)
         }, async () => runWorkflow<S>({
             ...workflowArgs,
             ...(opts ? { opts: { ...opts, signal: runSignal.signal } } : { opts: { signal: runSignal.signal } })
           } as Parameters<typeof runWorkflow<S>>[0]))
-      })
+      }))
 
       const finishedAt = now()
       const runFinished: RunEvent = { type: 'run.finished', runId, at: finishedAt, output: result as JsonValue }
@@ -753,6 +801,128 @@ function configureOne(adapter: unknown, context: HarnessAdapterContext, seen: Se
   seen.add(adapter)
 }
 
+function withTelemetryFlavor(telemetry: TelemetryShim, options: TelemetryOptions | undefined): TelemetryShim {
+  const flavor = options?.flavor ?? process.env['PURISTA_TELEMETRY_FLAVOR'] ?? 'dual'
+  if (flavor === 'dual') return telemetry
+  const filtered: TelemetryShim = {
+    span: (name, attrs, fn) => telemetry.span(name, filterTelemetryAttrs(attrs, flavor), (span) => fn(filterSpanAttrs(span, flavor))),
+    recordHistogram: (name, value, attrs) => telemetry.recordHistogram(name, value, filterTelemetryAttrs(attrs, flavor)),
+    recordCounter: (name, value, attrs) => telemetry.recordCounter(name, value, filterTelemetryAttrs(attrs, flavor)),
+    currentTraceparent: () => telemetry.currentTraceparent()
+  }
+  if (telemetry.withTraceContext) {
+    filtered.withTraceContext = (carrier, fn) => telemetry.withTraceContext?.(carrier, fn) ?? fn()
+  }
+  return filtered
+}
+
+async function withIncomingTraceContext<T>(
+  telemetry: TelemetryShim,
+  opts: InvokeOptions | undefined,
+  logger: Logger,
+  fn: () => Promise<T>
+): Promise<T> {
+  if (!opts?.traceparent) return fn()
+  if (!isValidTraceparent(opts.traceparent) || (opts.tracestate !== undefined && !isValidTracestate(opts.tracestate))) {
+    logger.warn('Invalid Trace Context ignored.', {
+      'harness.warning.code': 'INVALID_TRACE_CONTEXT',
+      traceparent: opts.traceparent,
+      tracestate: opts.tracestate
+    })
+    return fn()
+  }
+  return telemetry.withTraceContext?.({ traceparent: opts.traceparent, ...(opts.tracestate ? { tracestate: opts.tracestate } : {}) }, fn) ?? fn()
+}
+
+function resolveContentCaptureMode(options: TelemetryOptions | undefined): string {
+  if (options?.contentCaptureMode !== undefined) return options.contentCaptureMode
+  const envValue = process.env['OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT']
+  if (envValue === 'true') return 'SPAN_AND_EVENT'
+  if (envValue === 'false') return 'NO_CONTENT'
+  if (envValue === 'NO_CONTENT' || envValue === 'SPAN_ONLY' || envValue === 'EVENT_ONLY' || envValue === 'SPAN_AND_EVENT') return envValue
+  return 'NO_CONTENT'
+}
+
+function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
+  const attrs: Record<string, string | number | boolean | undefined> = {}
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
+    if (typeof value === 'string') {
+      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      attrs[`harness.metadata.${key}`] = value
+      continue
+    }
+    if (typeof value === 'boolean') {
+      attrs[`harness.metadata.${key}`] = value
+    }
+  }
+  return attrs
+}
+
+function isValidTraceparent(traceparent: string): boolean {
+  const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(traceparent)
+  if (!match) return false
+  const [, version, traceId, parentId] = match
+  return version !== 'ff' && traceId !== '00000000000000000000000000000000' && parentId !== '0000000000000000'
+}
+
+function isValidTracestate(tracestate: string): boolean {
+  return tracestate.length <= 512 && !/[\r\n]/.test(tracestate)
+}
+
+function filterSpanAttrs(span: Parameters<TelemetryShim['span']>[2] extends (span: infer S) => Promise<unknown> ? S : never, flavor: string): typeof span {
+  const target = span as {
+    setAttribute?: (key: string, value: unknown) => unknown
+    setAttributes?: (attrs: Record<string, unknown>) => unknown
+  }
+  return new Proxy(span as object, {
+    get(value, property, receiver) {
+      if (property === 'setAttribute' && target.setAttribute) {
+        return (key: string, attrValue: unknown) => {
+          const filtered = filterTelemetryAttrs({ [key]: attrValue }, flavor)
+          if (Object.keys(filtered).length === 0) return span
+          target.setAttribute?.(key, attrValue)
+          return span
+        }
+      }
+      if (property === 'setAttributes' && target.setAttributes) {
+        return (attrs: Record<string, unknown>) => {
+          target.setAttributes?.(filterTelemetryAttrs(attrs, flavor))
+          return span
+        }
+      }
+      return Reflect.get(value, property, receiver)
+    }
+  }) as typeof span
+}
+
+function filterTelemetryAttrs<T extends Record<string, unknown>>(attrs: T, flavor: string): T {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined) continue
+    if (flavor === 'gen_ai_only' && isOpenInferenceAttr(key)) continue
+    if (flavor === 'openinference_only' && key.startsWith('gen_ai.')) continue
+    out[key] = value
+  }
+  return out as T
+}
+
+function isOpenInferenceAttr(key: string): boolean {
+  return key === 'openinference.span.kind'
+    || key.startsWith('llm.')
+    || key.startsWith('tool.')
+    || key.startsWith('retrieval.')
+    || key.startsWith('embedding.')
+    || key.startsWith('reranker.')
+    || key.startsWith('guardrail.')
+    || key.startsWith('evaluator.')
+    || key === 'input.value'
+    || key === 'output.value'
+}
+
 function normalizeRunError(error: unknown, signal: AbortSignal): unknown {
   if (!signal.aborted) return error
   if (signal.reason instanceof OperationTimeoutError) return signal.reason
@@ -760,12 +930,7 @@ function normalizeRunError(error: unknown, signal: AbortSignal): unknown {
   return new OperationCancelledError('Run was cancelled.', { scope: 'run' }, signal.reason ?? error)
 }
 
-function sanitizeEventForPersistence(event: RunEvent, captureContent: boolean): JsonValue {
-  if (captureContent) {
-    const { runId: _runId, at: _at, type: _type, ...payload } = event as unknown as Record<string, JsonValue>
-    return payload as JsonValue
-  }
-
+function sanitizeEventForPersistence(event: RunEvent): JsonValue {
   switch (event.type) {
     case 'run.started':
       return {}
@@ -799,7 +964,11 @@ function sanitizeEventForPersistence(event: RunEvent, captureContent: boolean): 
     case 'model.object.partial':
       return { ...(event.agentId ? { agentId: event.agentId } : {}), partial: '[redacted]' }
     case 'model.object':
-      return { ...(event.agentId ? { agentId: event.agentId } : {}), object: '[redacted]' }
+      return {
+        ...(event.agentId ? { agentId: event.agentId } : {}),
+        object: '[redacted]',
+        ...(event.usage ? { usage: event.usage } : {})
+      } as unknown as JsonValue
     case 'model.embedding.completed':
       return {
         ...(event.agentId ? { agentId: event.agentId } : {}),
@@ -816,6 +985,27 @@ function sanitizeEventForPersistence(event: RunEvent, captureContent: boolean): 
       } as unknown as JsonValue
     case 'stream.overflow':
       return { dropped: event.dropped }
+  }
+}
+
+function isJsonRecord(value: unknown): value is Record<string, JsonValue> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isTokenUsage(value: unknown): value is { inputTokens: number; outputTokens: number; totalTokens: number } {
+  return isJsonRecord(value)
+    && typeof value['inputTokens'] === 'number'
+    && typeof value['outputTokens'] === 'number'
+    && typeof value['totalTokens'] === 'number'
+}
+
+function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<RunSummary['error']> {
+  return {
+    code: error?.code ?? 'UNKNOWN',
+    category: error?.category ?? 'internal',
+    retriable: error?.retriable ?? false,
+    message: error?.message ?? 'Unknown error',
+    ...(error?.meta ? { meta: error.meta } : {})
   }
 }
 

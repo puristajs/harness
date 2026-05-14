@@ -55,11 +55,14 @@ Recommended defaults:
 
 Default behavior is privacy-safe:
 
-- persisted event payload content is redacted unless content capture is enabled;
-- spans should include IDs and error metadata, not full prompts or file content;
+- persisted event payload content is always redacted by core;
+- spans include IDs, safe scalar metadata, and error metadata, not full prompts,
+  model outputs, tool input/results, files, memory, expected outputs, or
+  context content;
 - provider and MCP error metadata should be actionable without leaking secrets.
 
-Only enable `telemetry.captureContent` for local diagnostics with approved data.
+`telemetry.contentCaptureMode` is accepted as a stable policy value, but v1 core
+does not emit content in any mode.
 
 ## Review Gates
 

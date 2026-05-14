@@ -26,7 +26,7 @@ Keep these layers separate:
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
 - Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
 - Do not import PURISTA framework packages from harness or harness addon packages.
-- Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ captureContent: false })` is the production default.
+- Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
@@ -46,7 +46,7 @@ import { openai } from '@purista/harness-openai'
 
 const harness = defineHarness({ name: 'support-ai' })
   .logger(new JsonLogger({ level: 'info' }))
-  .telemetry({ captureContent: false })
+  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
   .sandbox(inMemorySandbox())
   .models({
     assistant: {

@@ -3,6 +3,21 @@
 Self-hosted enterprise agent harness for typed tools, agents, workflows, state,
 sandboxing, streaming, and OpenTelemetry instrumentation.
 
+The core package also exports provider-neutral eval helpers:
+
+- `evaluatePromptCandidates(...)` compares prompt candidates against a fixed
+  item set and deterministic or custom scorers.
+- `evaluateDeterministicScorer(...)` runs JSON Pointer based deterministic
+  scorer definitions without provider calls. It is exported from the main
+  package and re-exported from `@purista/harness/testing`.
+
+Telemetry defaults to dual GenAI and OpenInference attributes with no content
+capture. `InvokeOptions.traceparent` and `tracestate` accept inbound W3C Trace
+Context so application traces can parent harness run spans.
+
+See [Evaluating Prompts](https://github.com/puristajs/harness/blob/main/docs/guides/evaluating-prompts.md)
+for the execution model, scorer limits, and privacy behavior.
+
 ## Install
 
 ```bash

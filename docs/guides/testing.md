@@ -19,11 +19,15 @@ flowchart TD
 npm run lint
 npm run typecheck
 npm test
+npm run test:coverage
 npm run test:contracts
 npm run test:integration
 npm run test:failure
 npm run build
 ```
+
+`npm run test:coverage` enforces the harness package coverage gate. The current
+core gate is statements `80`, branches `75`, functions `80`, and lines `80`.
 
 ## Test With A Fake Model Provider
 
@@ -62,6 +66,31 @@ expect(events).toContain('run.finished')
 
 Call TypeScript tool handlers with a small context object and a temporary store.
 Assert both successful output and validation failure behavior.
+
+## Test Eval Scorers
+
+Use the testing subpath to validate deterministic scorer definitions before
+running expensive prompt comparisons:
+
+```ts
+import { evaluateDeterministicScorer } from '@purista/harness/testing'
+
+await expect(evaluateDeterministicScorer({
+  type: 'contains',
+  path: '/answer',
+  value: 'policy'
+}, {
+  candidateId: 'candidate-a',
+  itemId: 'item-1',
+  output: { answer: 'The policy allows it.' }
+})).resolves.toMatchObject({ score: 1, passed: true })
+```
+
+Use `evaluatePromptCandidates(...)` from `@purista/harness` when a test must
+compare multiple candidate prompts against the same item set. Candidate order,
+item order, and tie-breaking are stable so CI output remains deterministic.
+See [Evaluating Prompts](./evaluating-prompts.md) for the full helper contract
+and scorer limitations.
 
 ## Test MCP
 

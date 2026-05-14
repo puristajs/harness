@@ -53,14 +53,27 @@ interface HarnessOptions {
 ```ts
 interface TelemetryOptions {
   /**
-   * When true, GenAI message/choice span events include full content/tool arguments.
-   * When false (default), content fields are emitted as `null`. See [14-otel-conventions](./14-otel-conventions.md).
+   * Backend emission shape. Defaults to env `PURISTA_TELEMETRY_FLAVOR`, else
+   * `'dual'`.
    */
-  captureContent?: boolean
+  flavor?: 'dual' | 'gen_ai_only' | 'openinference_only'
+  /**
+   * Content telemetry policy. Defaults to env
+   * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`.
+   * In v1 core, non-`NO_CONTENT` values are reserved and do not cause content
+   * to be emitted.
+   */
+  contentCaptureMode?: 'NO_CONTENT' | 'SPAN_ONLY' | 'EVENT_ONLY' | 'SPAN_AND_EVENT'
 }
 ```
 
-Default: `{ captureContent: false }`. Tracer and meter names are locked to `'@purista/harness'` (see [14-otel-conventions](./14-otel-conventions.md)).
+Default: `{ flavor: 'dual', contentCaptureMode: 'NO_CONTENT' }`. Tracer and
+meter names are locked to `'@purista/harness'` (see
+[14-otel-conventions](./14-otel-conventions.md)).
+
+Core v1 never emits prompt, model output, tool input/result, file, memory,
+expected-output, or context content in telemetry or persisted run events,
+regardless of `contentCaptureMode`.
 
 ### `.logger(logger)`
 
@@ -282,7 +295,8 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `state`                              | `InMemoryStateStore`                 |
 | `sandbox`                            | auto-detect: `bashSandbox()` if `just-bash` is installed, else `inMemorySandbox()` |
 | `logger`                             | built-in `JsonLogger`                |
-| `telemetry.captureContent`           | `false`                              |
+| `telemetry.flavor`                   | env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'` |
+| `telemetry.contentCaptureMode`       | env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'` |
 | `defaults.agentMaxIterations`        | `16`                                 |
 | `defaults.runTimeoutMs`              | `600_000`                            |
 | `defaults.toolTimeoutMs`             | `120_000`                            |
@@ -303,6 +317,8 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 9. `defaults.historyWindow`: `undefined`/`0`/positive int OK; negative → `HarnessConfigError`. Same rules apply to `InvokeOptions.historyWindow` (negative throws `ValidationError{where:'invoke_options'}`).
 10. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set MUST be in `[1, 64]`.
 11. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
+12. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
+13. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 
 ## `Harness<S>` returned object
 

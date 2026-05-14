@@ -44,6 +44,13 @@ export function loggerContract(make: () => Logger): void
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness(); returns a fresh builder
 export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
+export type DeterministicScorerDefinition
+export interface ScorerTarget
+export interface ScorerResult
+export function evaluateDeterministicScorer(
+  definition: DeterministicScorerDefinition,
+  target: ScorerTarget
+): ScorerResult
 ```
 
 There is no `streamContract` — streaming is internal to the harness; see "Streaming generator" in the core test catalog below.
@@ -121,7 +128,7 @@ The harness package additionally has integration tests:
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
   3. Type tests assert capability-projected handles: absent operation capabilities remove methods; absent marker capabilities reject `tools`, tool-role messages, and unsupported content parts.
   4. `FakeModelProvider` covers text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
-  5. Persisted `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content unless `telemetry.captureContent === true`.
+  5. Persisted `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
 - Adapter capability policy:
   1. `.requires(...)` fails during `build()` when required adapter capabilities are missing.
   2. `harness.inspect()` returns only data and includes effective capabilities, required capabilities, and adapter descriptors.
@@ -129,6 +136,11 @@ The harness package additionally has integration tests:
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
 - OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter.
+- Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
+- Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
+- Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.
+- Run summary: `Session.getRunSummary(runId)` derives status, token totals, model/tool/agent counts, and errors from `StateStore` data without reading OTel spans.
+- AI eval core: deterministic scorer helper and `evaluatePromptCandidates` tests listed in [19-ai-eval-core](./19-ai-eval-core.md) are required.
 
 ## Fixtures
 

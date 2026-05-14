@@ -58,7 +58,10 @@ export function createQuickstartHarness(provider?: ModelProvider) {
       explain_quickstart: workflow({
         input: quickstartInput,
         output: quickstartOutput,
-        handler: async (ctx) => ctx.agents.assistant(ctx.input)
+        handler: async (ctx) => {
+          ctx.metrics.counter('quickstart.workflow.started', 1, { workflow: 'explain_quickstart' })
+          return ctx.metrics.duration('quickstart.workflow.duration', { workflow: 'explain_quickstart' }, () => ctx.agents.assistant(ctx.input))
+        }
       })
     }))
     .build()

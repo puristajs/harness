@@ -7,6 +7,7 @@
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
+- `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -54,6 +55,9 @@ export function bashSandbox(opts?: {
   executionLimits?: { wallClockMs?: number; memoryMb?: number }
   python?: boolean
 }): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+
+// Memory factory (default reference adapter)
+export function sandboxMemory(): MemoryAdapter
 
 // Errors (every class from 15-error-catalog)
 export class HarnessError extends Error { /* see 03-foundation */ }
@@ -129,6 +133,7 @@ export interface WorkflowContext<S, I, O>
 export interface ToolHandlerContext
 export interface Metrics
 export interface SessionMemory
+export interface MemoryFacade
 export interface ConversationHistory
 
 // Built-in tools and permissions
@@ -177,6 +182,22 @@ export interface RerankDocument
 export interface RerankResult
 export interface TokenUsage
 export type FinishReason
+
+// Memory
+export interface MemoryAdapter
+export interface MemoryAdapterInfo
+export interface MemoryOpenContext
+export interface MemoryStore
+export interface MemoryOperationContext
+export interface MemoryScope
+export type MemoryScopeKind
+export type MemoryOperation
+export type MemoryCapability
+export interface MemoryWriteOptions
+export interface MemoryListOptions
+export interface MemoryEntry
+export interface MemorySearchQuery
+export interface MemorySearchResult
 
 // Foundation
 export interface Logger
@@ -252,6 +273,7 @@ interface HarnessBuilder<S extends BuilderState> {
   logger(logger: Logger): HarnessBuilder<S>
   state(store: StateStore): HarnessBuilder<S>
   sandbox(sandbox: Sandbox): HarnessBuilder<S>
+  memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
@@ -325,6 +347,91 @@ type InferTypes<S extends BuilderState> = {
   skills: keyof S['skills']
   agents: { [K in keyof S['agents']]: { input: AgentInput<S, K>; output: AgentOutput<S, K> } }
   workflows: { [K in keyof S['workflows']]: { input: WorkflowInput<S, K>; output: WorkflowOutput<S, K> } }
+}
+```
+
+### Memory API
+
+```ts
+interface SessionMemory {
+  read<T = JsonValue>(key: string): Promise<T | undefined>
+  write(key: string, value: JsonValue, opts?: MemoryWriteOptions): Promise<void>
+  delete(key: string): Promise<void>
+  list(opts?: MemoryListOptions): Promise<string[]>
+  search?(query: MemorySearchQuery): Promise<MemorySearchResult[]>
+}
+
+interface MemoryFacade {
+  session: SessionMemory
+  run: SessionMemory
+  agent?: SessionMemory
+  user(userId?: string): SessionMemory
+  tenant(tenantId?: string): SessionMemory
+  scope(scope: MemoryScope): SessionMemory
+}
+
+interface MemoryAdapter extends HarnessContextConfigurable {
+  readonly info: MemoryAdapterInfo
+  open(scope: MemoryScope, ctx: MemoryOpenContext): Promise<MemoryStore>
+  close?(): Promise<void>
+}
+
+interface MemoryStore {
+  get<T = JsonValue>(key: string, ctx: MemoryOperationContext): Promise<T | undefined>
+  set(key: string, value: JsonValue, ctx: MemoryOperationContext & { opts?: MemoryWriteOptions }): Promise<void>
+  delete(key: string, ctx: MemoryOperationContext): Promise<void>
+  list(ctx: MemoryOperationContext & { opts?: MemoryListOptions }): Promise<MemoryEntry[]>
+  search?(query: MemorySearchQuery, ctx: MemoryOperationContext): Promise<MemorySearchResult[]>
+}
+```
+
+Full memory scope, capability, validation, telemetry, metrics, and reference adapter semantics are locked in [20-memory-adapters](./20-memory-adapters.md).
+
+### Adapter capabilities
+
+```ts
+type AdapterCapability =
+  | 'sandbox.fs'
+  | 'sandbox.exec'
+  | 'sandbox.persistent_fs'
+  | 'sandbox.snapshot'
+  | 'sandbox.resume'
+  | 'sandbox.hibernate'
+  | 'runtime.checkpoint'
+  | 'runtime.retry'
+  | 'runtime.distributed_lock'
+  | 'runtime.resume_from_checkpoint'
+  | 'feedback.record'
+  | MemoryCapability
+
+interface AdapterInspection {
+  kind: 'state' | 'sandbox' | 'runtime' | 'feedback' | 'model' | 'memory'
+  id: string
+  capabilities: readonly AdapterCapability[]
+}
+```
+
+### Adapter context
+
+```ts
+interface HarnessAdapterContext {
+  harnessName: string
+  logger: Logger
+  telemetry: TelemetryShim
+  metrics: Metrics
+  contentCaptureMode: ContentCaptureMode
+  defaults: {
+    agentMaxIterations: number
+    runTimeoutMs: number
+    toolTimeoutMs: number
+    skillTimeoutMs: number
+    modelTimeoutMs: number
+    historyWindow?: number
+  }
+}
+
+interface HarnessContextConfigurable {
+  configureHarnessContext(context: HarnessAdapterContext): void
 }
 ```
 
@@ -492,6 +599,7 @@ export class FakeModelProvider implements ModelProvider     // configurable scri
 export class FakeStateStore extends InMemoryStateStore       // exposes inspection helpers
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory
+export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -504,6 +612,10 @@ export function modelProviderContract(
   opts: { capabilities: ModelCapability[] }
 ): void
 export function loggerContract(make: () => Logger): void
+export function memoryAdapterContract(
+  make: () => MemoryAdapter | Promise<MemoryAdapter>,
+  opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
+): void
 
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness() returning a fresh builder

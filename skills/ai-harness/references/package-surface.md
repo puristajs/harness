@@ -106,6 +106,7 @@ Use specs for intended contracts and docs for user-facing examples:
 - `specs/14-otel-conventions.md`: telemetry
 - `specs/15-error-catalog.md`: errors
 - `specs/16-testing.md`: testing contracts
+- `specs/20-memory-adapters.md`: memory adapter port, scopes, telemetry, metrics
 - `docs/guides/*`: user-facing patterns
 - `docs/security/security-model.md`: security defaults
 - `docs/operations/runbook.md`: operations and triage

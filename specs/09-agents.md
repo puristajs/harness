@@ -37,13 +37,13 @@ interface AgentContextMinimal<S, I> {
   sessionId: string
   runId: string
   history: ConversationHistory
-  memory: SessionMemory
+  memory: MemoryFacade
   metadata: Readonly<Record<string, JsonValue>>
   metrics: Metrics
 }
 ```
 
-The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)).
+The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped `MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md); `ctx.memory.session` is equivalent to `session.memory` for the current session, and `ctx.memory.agent` is bound to the current agent id when the configured adapter supports agent scope.
 
 ## `AgentContext`
 
@@ -54,7 +54,7 @@ interface AgentContext<S, I, O> {
   models: { [K in keyof S['models']]: ModelHandle<S['models'][K]> }
   tools:  { [K in NonNullable<S['agents'][string]['tools']>[number]]: ToolInvoke<S['tools'][K]> }
   skills: { [K in NonNullable<S['agents'][string]['skills']>[number]]: SkillHandle }
-  memory: SessionMemory
+  memory: MemoryFacade
   history: ConversationHistory          // read-only
   log: Logger
   signal: AbortSignal
@@ -69,7 +69,7 @@ interface ConversationHistory {
 }
 ```
 
-`SessionMemory` is defined in [11-sessions](./11-sessions.md). `SkillHandle` exposes only metadata (`name`, `description`, `directory`); skills are not "called" — the model accesses them via the sandbox `/skills/<name>/` mount.
+`MemoryFacade` and `SessionMemory` are defined in [20-memory-adapters](./20-memory-adapters.md) and [11-sessions](./11-sessions.md). `SkillHandle` exposes only metadata (`name`, `description`, `directory`); skills are not "called" — the model accesses them via the sandbox `/skills/<name>/` mount.
 
 Agents do not spawn other agents. Multi-agent orchestration is performed only inside workflow handlers via `WorkflowContext.agents`.
 

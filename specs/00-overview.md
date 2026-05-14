@@ -6,7 +6,7 @@
 
 ```
 Harness
-  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec)
+  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory
   ├─ Models       (alias → provider + capabilities + default settings)
   ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
   ├─ Custom tools (TS+zod, MCP stdio, MCP http)
@@ -72,13 +72,13 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 ## In scope
 
 - Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
-- Foundation: telemetry, logging, state store, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v1).
+- Foundation: telemetry, logging, state store, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v1), and memory adapter.
 - Model registry (aliases to providers, capability-gated).
 - Built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox.
 - Custom tools: inline TypeScript, MCP stdio, and MCP HTTP.
 - Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
 - Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
-- Sessions with persisted conversation history (one session = one thread) and `/memory/` directory in the sandbox for session memory.
+- Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
 - Harness-owned AI evaluation primitives: trace-context propagation, run
@@ -105,7 +105,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 |-----------------|---------|
 | Harness         | Result of `defineHarness()...build()`. Owns adapters, registries, factories. |
 | HarnessBuilder  | The chainable builder returned by `defineHarness()`. See [13-public-api](./13-public-api.md). |
-| Session         | A conversation thread with persisted history and a sandbox-backed `/memory/` directory. Indexed by user-supplied id. One session = one thread. |
+| Session         | A conversation thread with persisted history and a `SessionMemory` facade. Indexed by user-supplied id. One session = one thread. |
 | Run             | A single `prompt`/`stream` invocation. Has its own id, span, lifecycle. |
 | Agent           | A unit with typed input/output, an instructions string, and (optionally) a handler. |
 | Workflow        | A user-authored handler that orchestrates agents. |
@@ -113,8 +113,8 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
 | Sandbox         | An isolated FS + (optional) shell-exec environment. v1 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
-| Port            | An interface a harness depends on (state, sandbox, model provider). |
-| Adapter         | A concrete implementation of a port. In v1, only in-memory implementations ship. |
+| Port            | An interface a harness depends on (state, sandbox, memory, model provider). |
+| Adapter         | A concrete implementation of a port. Core ships in-memory/default implementations plus the sandbox-backed memory reference adapter; non-core adapters live in independent packages. |
 | ULID            | Lexicographically sortable id format. Harness mints `${kind}_${ulid}`. |
 | `$infer`        | Phantom value on `Harness` exposing compile-time keys/types of registered models, tools, skills, agents, workflows. |
 
@@ -126,3 +126,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [13-public-api](./13-public-api.md) — authoritative export list and `$infer` namespace.
 - [17-implementation-plan](./17-implementation-plan.md) — build order.
 - [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.
+- [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.

@@ -155,8 +155,9 @@ executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 ```
 
 `contentCaptureMode` defaults to `NO_CONTENT`. v1 core accepts the full enum but
-does not emit prompt, model output, tool input/result, file, memory,
-expected-output, or context content in any mode.
+does not emit prompt, model output, tool input/result, file, expected-output, or
+context content in any mode. Memory content is omitted by default and follows
+the bounded memory-facade capture policy when non-`NO_CONTENT` modes are enabled.
 
 Model token usage is attached to model spans using both GenAI and OpenInference
 attributes. The harness also emits metrics through the configured OpenTelemetry

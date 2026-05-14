@@ -105,7 +105,7 @@ abstract class HarnessError extends Error {
   const meter  = metrics.getMeter('@purista/harness', HARNESS_VERSION)
   ```
 - If no provider is registered, both APIs no-op (zero overhead).
-- Span creation: every public operation (session prompt, workflow run, agent run, model call, tool call, skill call) wraps its work in a standard OpenTelemetry active span (`tracer.startActiveSpan`). Span attributes are set at start; result attributes on success; status `ERROR` and recorded exception on failure.
+- Span creation: every public operation (session prompt, workflow run, agent run, model call, tool call, skill call, memory operation) wraps its work in a standard OpenTelemetry active span (`tracer.startActiveSpan`). Span attributes are set at start; result attributes on success; status `ERROR` and recorded exception on failure.
 - Telemetry emission is record-driven: harness code creates one internal telemetry record per span, then renders OTel GenAI and/or OpenInference attributes from that record according to `TelemetryOptions.flavor`. Implementation code must not maintain separate GenAI and OpenInference data paths.
 - Trace Context: `InvokeOptions.traceparent` and `InvokeOptions.tracestate` are extracted before the run span is created. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`; it is never a run failure.
 - Span linkage: child operations attach to the parent span via the active OTel context.
@@ -117,6 +117,9 @@ abstract class HarnessError extends Error {
   - `harness.permission.denials`: `Counter` (unit `1`).
   - `harness.run.errors`: `Counter` (unit `1`).
   - `harness.events.persist_errors`: `Counter` (unit `1`); attributes `harness.session.id`, `harness.run.id`. Incremented on every `state.appendEvents` failure.
+  - `harness.memory.operation.duration`: `Histogram` (unit `s`).
+  - `harness.memory.operations`: `Counter` (unit `1`).
+  - `harness.memory.search.results`: `Histogram` (unit `1`).
 
 Per OTel semconv, durations are seconds (double). The harness emits no `_ms`-suffixed instruments.
 
@@ -136,9 +139,10 @@ interface Metrics {
 }
 ```
 
-`TelemetryShim` is the low-level adapter surface. `Metrics` is the
-developer-facing helper exposed on workflow, custom-agent, and TypeScript-tool
-contexts. `SpanAttrs` is `Record<string, string | number | boolean | string[] |
+`TelemetryShim` is the low-level adapter surface exposed to model, state,
+sandbox, tool, and memory adapters. `Metrics` is the developer-facing helper
+exposed on workflow, custom-agent, TypeScript-tool, and memory adapter contexts.
+`SpanAttrs` is `Record<string, string | number | boolean | string[] |
 undefined>`. Undefined values are dropped before being passed to OTel.
 
 ## Cross-references

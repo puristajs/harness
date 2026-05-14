@@ -228,9 +228,10 @@ defineHarness()
 
 `contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
 `SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
-prompt, output, tool argument/result, context, file, and memory content out of
-spans, span events, and persisted StateStore events. Non-`NO_CONTENT` modes are
-reserved inputs for future content telemetry.
+prompt, output, tool argument/result, context, and file content out of spans,
+span events, and persisted StateStore events. Memory content follows the
+memory-facade capture policy: `NO_CONTENT` emits no raw memory content, while
+non-`NO_CONTENT` modes opt into the bounded memory fields defined by the specs.
 
 ## Eval Helpers
 

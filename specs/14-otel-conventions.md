@@ -51,13 +51,16 @@ Default: env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else
 | `SPAN_AND_EVENT` | Reserved in v1; core still omits content attributes. | Reserved in v1; core still emits no content-bearing span events. |
 
 Structured objects, prompts, documents, tool parameters, tool results, file
-content, and model outputs are content. Operational metadata such as ids, token
-counts, finish reasons, dimensions, and scores is not content.
+content, memory keys, memory values, memory search queries, memory search
+results, and model outputs are content. Operational metadata such as ids, token
+counts, finish reasons, dimensions, scores, memory hit booleans, result counts,
+and hashed keys is not content.
 
-The enum is intentionally present before content telemetry is implemented so
-applications and adapters can pass a stable policy value. In v1, selecting a
-non-`NO_CONTENT` mode never causes core to emit prompt, output, tool argument,
-tool result, expected-output, context, file, or memory content.
+The enum is intentionally present before broad content telemetry is implemented
+so applications and adapters can pass a stable policy value. In v1, selecting a
+non-`NO_CONTENT` mode causes content capture only for the memory facade rules in
+[20-memory-adapters](./20-memory-adapters.md). Core still omits prompt, output,
+tool argument, tool result, expected-output, context, and file content.
 
 ## Attribute value types
 
@@ -98,6 +101,7 @@ Every harness-created span carries when available:
 | Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
+| Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
 | State op | `harness.state.op` | `harness.*` |
 | Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
@@ -221,6 +225,36 @@ Emitted by `evaluatePromptCandidates`.
 No prompt, input, expected output, or context content is emitted by v1 core,
 regardless of `contentCaptureMode`.
 
+## Memory span attributes
+
+Spans: `harness.memory.get`, `harness.memory.set`, `harness.memory.delete`,
+`harness.memory.list`, `harness.memory.search`.
+
+Memory spans use only `harness.*` attributes. The harness does not emit
+OpenInference `RETRIEVER` in v1 because memory search is a generic adapter
+operation, not a full retrieval pipeline contract.
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `harness.memory.provider` | string | `MemoryAdapter.info.id` |
+| `harness.memory.operation` | string | `get`, `set`, `delete`, `list`, `search` |
+| `harness.memory.scope` | string | `run`, `session`, `agent`, `user`, `tenant` |
+| `harness.memory.capability` | string | Primary required capability for the operation |
+| `harness.memory.key_hash` | string | SHA-256 hex of key for key-based operations |
+| `harness.memory.hit` | boolean | `get` only |
+| `harness.memory.result_count` | integer | `list` and `search` only |
+| `harness.memory.content_captured` | boolean | true only when raw content is emitted |
+| `harness.session.id` | string | when available |
+| `harness.run.id` | string | when available |
+| `harness.agent.id` | string | when available |
+| `harness.workflow.id` | string | when available |
+| `error.type` | string | failure only |
+
+Raw memory keys, values, queries, result values, tags, metadata, user ids, and
+tenant ids are content. They MUST be omitted when `contentCaptureMode` is
+`NO_CONTENT`; see [20-memory-adapters](./20-memory-adapters.md) for the exact
+opt-in capture behavior.
+
 ## Sandbox and state spans
 
 ### `harness.sandbox.exec`
@@ -303,13 +337,16 @@ aggregating metrics.
 | `harness.events.persist_errors` | Counter | `1` | `harness.session.id`, `harness.run.id` |
 | `harness.permission.denials` | Counter | `1` | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id` |
 | `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
+| `harness.memory.operation.duration` | Histogram | `s` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `error.type` |
+| `harness.memory.operations` | Counter | `1` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `harness.memory.hit`, `error.type` |
+| `harness.memory.search.results` | Histogram | `1` | `harness.memory.provider`, `harness.memory.scope` |
 
 No `_ms` instruments exist.
 
 Developer-defined metrics use the `Metrics` helper exposed on workflow,
-custom-agent, and TypeScript-tool contexts. Application metric names should use
-an application prefix such as `app.` or a service-specific namespace to avoid
-colliding with `gen_ai.*` and `harness.*` instruments.
+custom-agent, TypeScript-tool, and memory adapter contexts. Application metric
+names should use an application prefix such as `app.` or a service-specific
+namespace to avoid colliding with `gen_ai.*` and `harness.*` instruments.
 
 ## Log fields
 

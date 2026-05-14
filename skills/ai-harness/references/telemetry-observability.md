@@ -145,5 +145,7 @@ When `contentCaptureMode: 'NO_CONTENT'`:
 - message content, tool-call arguments, tool results, embedding input, and rerank documents should be omitted or nulled
 - operational metadata, token usage, duration, model names, and error codes remain available
 
-v1 core does not emit prompt, model output, tool input/result, file, memory,
-expected-output, or context content in any mode.
+v1 core does not emit prompt, model output, tool input/result, file,
+expected-output, or context content in any mode. Memory content is omitted by
+default and follows the bounded memory-facade capture policy when
+non-`NO_CONTENT` modes are enabled.

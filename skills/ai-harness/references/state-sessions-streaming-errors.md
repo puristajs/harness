@@ -67,7 +67,9 @@ The session API exposes:
 Use stable, tenant-safe session ids. Do not put secrets in session ids.
 
 ## Memory And History
-Session memory is sandbox-backed JSON at `/memory/<key>.json`.
+Session memory is exposed through `SessionMemory` and backed by the configured `MemoryAdapter`.
+The default `sandboxMemory()` adapter stores session memory in the sandbox and
+reads legacy `/memory/<key>.json` files for compatibility.
 
 ```ts
 await session.memory.write('last-topic', { topic: 'pricing' })
@@ -77,6 +79,8 @@ const keys = await session.memory.list()
 ```
 
 Memory keys must match `/^[A-Za-z0-9_.\-:]{1,256}$/`. Values must be JSON-serializable.
+Use `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`,
+and `ctx.memory.tenant()` inside run contexts when scoped memory is needed.
 
 History:
 

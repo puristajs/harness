@@ -31,6 +31,7 @@ interface WorkflowContext<S, I, O> {
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
+  memory: MemoryFacade
   metrics: Metrics
 }
 ```
@@ -38,6 +39,7 @@ interface WorkflowContext<S, I, O> {
 `AgentInput<S, K>` and `AgentOutput<S, K>` are derived from the agent's `input`/`output` Zod schemas (or default to `string` when omitted), mirroring the `WorkflowInput`/`WorkflowOutput` derivation in [13-public-api](./13-public-api.md).
 
 - All registered agents are reachable from `agents`. Workflows are not scoped to a subset.
+- `ctx.memory` exposes run/session/user/tenant memory scopes as defined in [20-memory-adapters](./20-memory-adapters.md). Workflow contexts do not expose `ctx.memory.agent` because no single agent id owns the workflow run.
 - Each `agents[id](input)` call:
   - Validates `input` against the agent's `input` schema. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_input'}.
   - Opens a child `invoke_agent {agent.name}` span (linked to the workflow's `harness.workflow.run` span).
@@ -61,7 +63,7 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
 - The workflow's `signal` is wired to:
   - The run's `runTimeoutMs` — when elapsed, abort the controller and throw `OperationTimeoutError`. `runTimeoutMs === 0` disables the run timeout; negative values are rejected at config parse time. `InvokeOptions.timeoutMs` overrides the default for a single call (same `>0/0/<0` semantics; negative throws `ValidationError`).
   - External cancellation passed to `session.workflows[id].prompt(input, {signal})`.
-- Aborts propagate down to every active agent, model, tool, and skill call. Each layer translates abort into `OperationCancelledError`.
+- Aborts propagate down to every active agent, model, tool, skill, and memory adapter call. Each layer translates abort into `OperationCancelledError`.
 - After `signal.aborted`, the workflow handler MUST NOT start new agent calls; doing so throws `OperationCancelledError` synchronously.
 
 ## Errors
@@ -82,3 +84,4 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
 - [11-sessions](./11-sessions.md) — session-level concurrency rule.
 - [12-streaming](./12-streaming.md) — `RunEvent` shapes.
 - [14-otel-conventions](./14-otel-conventions.md), [15-error-catalog](./15-error-catalog.md).
+- [20-memory-adapters](./20-memory-adapters.md) — workflow memory facade.

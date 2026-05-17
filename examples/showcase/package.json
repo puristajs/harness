@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src",
-    "start": "node dist/examples/showcase/src/index.js",
-    "lint": "echo 'no lint configured for @purista/showcase'"
+		"test": "vitest run src",
+		"start": "node dist/examples/showcase/src/index.js",
+		"lint": "npm run typecheck"
   },
   "dependencies": {
     "@purista/harness": "*",

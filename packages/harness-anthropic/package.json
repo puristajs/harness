@@ -36,8 +36,8 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.typecheck.json",
-    "test": "vitest run",
-    "lint": "echo 'no lint configured for @purista/harness-anthropic'"
+		"test": "vitest run",
+		"lint": "npm run typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1"

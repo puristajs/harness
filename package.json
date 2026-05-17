@@ -11,6 +11,9 @@
 		"packages/*",
 		"examples/*"
 	],
+	"overrides": {
+		"express-rate-limit": "^8.5.2"
+	},
 	"scripts": {
 		"lint": "npm run lint --workspaces --if-present",
 		"typecheck": "npm run typecheck --workspaces --if-present",

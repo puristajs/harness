@@ -12,16 +12,16 @@
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src --exclude 'src/**/*.ui.test.tsx'",
+		"test": "vitest run src --exclude 'src/**/*.ui.test.tsx' && npm run test:ui",
     "test:ui": "vitest run src/**/*.ui.test.tsx --environment jsdom",
     "jaeger": "docker run --rm --name jaeger -p 16686:16686 -p 4317:4317 -p 4318:4318 -p 5778:5778 -p 9411:9411 cr.jaegertracing.io/jaegertracing/jaeger:2.17.0",
-    "lint": "echo 'no lint configured for @purista/living-wiki-jaeger-example'"
+		"lint": "npm run typecheck"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.216.0",
+		"@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
     "@opentelemetry/resources": "^2.7.1",
-    "@opentelemetry/sdk-node": "^0.216.0",
+		"@opentelemetry/sdk-node": "^0.218.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@purista/harness": "*",
     "@purista/harness-openai": "*",

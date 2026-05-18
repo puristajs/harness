@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-bedrock",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Amazon Bedrock model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -36,8 +36,8 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.typecheck.json",
-		"test": "vitest run",
-		"lint": "npm run typecheck"
+    "test": "vitest run",
+    "lint": "npm run typecheck"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1045.0"

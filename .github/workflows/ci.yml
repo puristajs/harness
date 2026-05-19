@@ -100,8 +100,31 @@ jobs:
 
       - name: Verify package contents
         run: |
-          npm pack --workspace @purista/harness --dry-run
-          npm pack --workspace @purista/harness-openai --dry-run
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const { execSync } = require('node:child_process')
+
+          const packageDirs = fs.readdirSync(path.join(process.cwd(), 'packages'), { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => path.join(process.cwd(), 'packages', entry.name))
+            .filter((dir) => fs.existsSync(path.join(dir, 'package.json')))
+            .map((dir) => {
+              const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+              return { dir, pkg }
+            })
+            .filter(({ pkg }) => pkg.private !== true)
+            .sort((a, b) => {
+              if (a.pkg.name === '@purista/harness') return -1
+              if (b.pkg.name === '@purista/harness') return 1
+              return a.pkg.name.localeCompare(b.pkg.name)
+            })
+
+          for (const { pkg } of packageDirs) {
+            console.log(`Packing ${pkg.name}`)
+            execSync(`npm pack --workspace "${pkg.name}" --dry-run`, { stdio: 'inherit' })
+          }
+          NODE
 
       - name: Publish packages
         run: |
@@ -110,13 +133,22 @@ jobs:
           const path = require('node:path')
           const { execSync } = require('node:child_process')
 
-          const packageDirs = [
-            path.join(process.cwd(), 'packages/harness'),
-            path.join(process.cwd(), 'packages/harness-openai')
-          ]
+          const packageDirs = fs.readdirSync(path.join(process.cwd(), 'packages'), { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => path.join(process.cwd(), 'packages', entry.name))
+            .filter((dir) => fs.existsSync(path.join(dir, 'package.json')))
+            .map((dir) => {
+              const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+              return { dir, pkg }
+            })
+            .filter(({ pkg }) => pkg.private !== true)
+            .sort((a, b) => {
+              if (a.pkg.name === '@purista/harness') return -1
+              if (b.pkg.name === '@purista/harness') return 1
+              return a.pkg.name.localeCompare(b.pkg.name)
+            })
 
-          for (const dir of packageDirs) {
-            const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+          for (const { dir, pkg } of packageDirs) {
             const spec = `${pkg.name}@${pkg.version}`
 
             try {

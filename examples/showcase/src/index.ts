@@ -78,7 +78,7 @@ export function createShowcaseHarness(provider?: ModelProvider) {
         structured: {
           provider: modelProvider,
           model,
-          capabilities: ['object']
+          capabilities: ['object', 'tool_use']
         },
         toolReady: {
           provider: modelProvider,
@@ -107,7 +107,7 @@ export function createShowcaseHarness(provider?: ModelProvider) {
           model: 'structured',
           input: z.object({ incident: z.string() }),
           output: z.object({ summary: z.string() }),
-          builtinTools: false,
+          builtinTools: ['read'],
           skills: ['incident-responder'],
           instructions: (ctx) => [
             'Use the mounted incident-responder skill guidance.',

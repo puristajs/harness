@@ -2,7 +2,7 @@
 
 **Purpose.** Defines the `StateStore` foundation port for session history, run records, and run events, its in-memory default, ordering and durability guarantees, the persisted shapes, and how per-run events are streamed in-process. There is no `Stream` port; per-run streaming uses an internal in-process buffered queue owned by the harness (see [12-streaming](./12-streaming.md)).
 
-Session memory is NOT held in the StateStore. It is served by the configured `MemoryAdapter`; see [11-sessions](./11-sessions.md) §"Session memory" and [20-memory-adapters](./20-memory-adapters.md).
+Session memory is NOT held in the StateStore. It is served by the configured `MemoryAdapter`; see [11-sessions](./11-sessions.md) §"Session memory" and [20-memory-adapters](./20-memory-adapters.md). Durable workspace snapshots and checkpoint payload storage are NOT held in the StateStore; see [21-durable-workspaces](./21-durable-workspaces.md).
 
 ## StateStore port
 
@@ -130,5 +130,6 @@ The harness exposes per-run streaming via `Session.workflows[id].stream(...)`. I
 - [03-foundation](./03-foundation.md) — error categories.
 - [11-sessions](./11-sessions.md) — how sessions use StateStore (history and runs).
 - [20-memory-adapters](./20-memory-adapters.md) — memory persistence port.
+- [21-durable-workspaces](./21-durable-workspaces.md) — durable replay workspace references and checkpoint linkage.
 - [12-streaming](./12-streaming.md) — `SerializedError`, bounded in-process queue, overflow, privacy-safe persistence.
 - [16-testing](./16-testing.md) — port contract tests.

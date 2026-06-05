@@ -43,7 +43,7 @@ interface AgentContextMinimal<S, I> {
 }
 ```
 
-The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped `MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md); `ctx.memory.session` is equivalent to `session.memory` for the current session, and `ctx.memory.agent` is bound to the current agent id when the configured adapter supports agent scope.
+The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped `MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md); `ctx.memory.session` is equivalent to `session.memory` for the current session, and `ctx.memory.agent` is bound to the current agent id when the configured adapter supports agent scope. Durable workspace replay is not exposed as an always-present agent context helper; custom handlers that need it receive application-owned runtime bindings or use workflow step semantics backed by [21-durable-workspaces](./21-durable-workspaces.md).
 
 ## `AgentContext`
 
@@ -69,7 +69,7 @@ interface ConversationHistory {
 }
 ```
 
-`MemoryFacade` and `SessionMemory` are defined in [20-memory-adapters](./20-memory-adapters.md) and [11-sessions](./11-sessions.md). `SkillHandle` exposes only metadata (`name`, `description`, `directory`); skills are not "called" — the model accesses them via the sandbox `/skills/<name>/` mount.
+`MemoryFacade` and `SessionMemory` are defined in [20-memory-adapters](./20-memory-adapters.md) and [11-sessions](./11-sessions.md). `SkillHandle` exposes resolved skill metadata (`name`, `description`, `location`, `mountPath`, optional compatibility, trust, and diagnostics); skills are not "called" — the model accesses them via the sandbox `/skills/<name>/` mount.
 
 Agents do not spawn other agents. Multi-agent orchestration is performed only inside workflow handlers via `WorkflowContext.agents`.
 
@@ -130,7 +130,7 @@ When `handler` is undefined, the harness executes this algorithm:
 2. **Open sandbox session** (if not already open for this session). Mount declared skills.
 3. **Build system message**:
    - Resolve `instructions` (string or function call).
-   - Append the skill index (one line per declared skill: `- <name>: <description>`) preceded by `\n\nAvailable skills (read /skills/<name>/SKILL.md for full instructions):`.
+   - Append the skill catalog format defined in [08-skills](./08-skills.md), including `Location: /skills/<name>/SKILL.md` and optional compatibility.
 4. **Resolve tool set**:
    - Custom tools from `tools[]` (typed against harness config).
    - Built-in tools per `builtinTools` rule, filtered by sandbox executor availability.
@@ -224,3 +224,4 @@ When `handler` is provided, the harness skips the default loop and invokes `hand
 - [05-sandbox](./05-sandbox.md), [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md)
 - [10-workflows](./10-workflows.md), [11-sessions](./11-sessions.md), [12-streaming](./12-streaming.md)
 - [13-public-api](./13-public-api.md), [15-error-catalog](./15-error-catalog.md)
+- [21-durable-workspaces](./21-durable-workspaces.md)

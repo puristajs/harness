@@ -37,6 +37,7 @@ flowchart LR
   Harness --> State["state adapter"]
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
+  Harness --> Workspace["durable workspace adapter"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -46,6 +47,7 @@ flowchart LR
 | State | In-memory state | Runs/history must survive process restart. |
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
 | Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
+| Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
 | Models | Required | Every agent needs a model alias. |
 | Tools | Optional | Agents need retrieval, writes, MCP, or application APIs. |
 | Skills | Optional | Agents need reusable instructions or report methods. |
@@ -149,6 +151,25 @@ Choose `inMemorySandbox()` when agents do not need command execution. Choose an
 executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
 
+Sandbox snapshot/resume/hibernate is a low-level sandbox adapter capability.
+Production durable replay also requires a durable workspace adapter:
+
+```ts
+.runtime(durableRuntime)
+.workspace(durableWorkspace)
+.requires([
+  'runtime.workspace_checkpoint',
+  'workspace.durable',
+  'workspace.snapshot',
+  'workspace.resume',
+  'workspace.cleanup'
+])
+```
+
+Use [Durable Workspaces](./durable-workspaces.md) when runs must survive process
+restart, retry from a committed checkpoint, enforce retention, encrypt stored
+workspace state, clean up terminal workspaces, or enforce quotas.
+
 ## Memory
 
 ```ts
@@ -226,4 +247,6 @@ handler: async (ctx) => {
 - Keep content capture disabled unless approved.
 - Use permission gates for mutating built-in tools.
 - Use executor-capable sandbox only where command execution is required.
+- Use durable workspace adapters for production replay; sandbox snapshots alone
+  are not a production replay guarantee.
 - Test provider failures, validation failures, cancellation, and shutdown.

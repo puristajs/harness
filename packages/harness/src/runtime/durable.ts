@@ -1,6 +1,7 @@
 import type { AdapterCapability } from '../ports/capabilities.js'
 import type { JsonValue } from '../models/json.js'
 import type { RunStatus, SerializedError } from '../models/state.js'
+import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 
 /** Non-terminal run status used while durable work can still be resumed. */
 export type DurableActiveRunStatus = 'running'
@@ -71,6 +72,8 @@ export interface RunCheckpoint {
   readonly sequence: number
   /** JSON-serializable checkpoint payload. */
   readonly output?: JsonValue
+  /** Optional durable workspace replay checkpoint linked to this runtime checkpoint. */
+  readonly replay?: DurableReplayCheckpoint
   /** Adapter-neutral checkpoint metadata. */
   readonly metadata?: Record<string, JsonValue>
   /** ISO timestamp for the commit. */
@@ -173,7 +176,8 @@ class InMemoryDurableRuntime implements DurableRuntime {
     'runtime.checkpoint',
     'runtime.retry',
     'runtime.distributed_lock',
-    'runtime.resume_from_checkpoint'
+    'runtime.resume_from_checkpoint',
+    'runtime.workspace_checkpoint'
   ] as const satisfies readonly AdapterCapability[]
 
   private readonly runs = new Map<string, RunState>()

@@ -102,6 +102,7 @@ Every harness-created span carries when available:
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
+| Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
 | State op | `harness.state.op` | `harness.*` |
 | Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
@@ -257,6 +258,31 @@ opt-in capture behavior.
 
 ## Sandbox and state spans
 
+### `harness.workspace.{operation}`
+
+Workspace spans use only `harness.*` attributes. Operation is one of `start`,
+`pause`, `resume`, `abort`, `cleanup`, or `inspect`.
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `harness.workspace.adapter` | string | `DurableWorkspaceAdapter.info.id` |
+| `harness.workspace.operation` | string | `start`, `pause`, `resume`, `abort`, `cleanup`, `inspect` |
+| `harness.workspace.state` | string | lifecycle state returned by the adapter |
+| `harness.workspace.ref_hash` | string | SHA-256 hex of `workspaceRef` |
+| `harness.workspace.checkpoint_ref_hash` | string | SHA-256 hex of `checkpointRef` when available |
+| `harness.workspace.snapshot_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
+| `harness.workspace.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
+| `harness.workspace.quota` | string | quota id when a quota is checked or exceeded |
+| `harness.run.id` | string | when available |
+| `harness.session.id` | string | when available |
+| `harness.workflow.id` | string | when available |
+| `harness.agent.id` | string | when available |
+| `error.type` | string | failure only |
+
+Raw workspace, checkpoint, and snapshot references are content-sensitive
+operational identifiers. They are returned to callers and persisted in
+checkpoint records; spans, metrics, and logs emit only hashes.
+
 ### `harness.sandbox.exec`
 
 | Key | Type |
@@ -340,6 +366,11 @@ aggregating metrics.
 | `harness.memory.operation.duration` | Histogram | `s` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `error.type` |
 | `harness.memory.operations` | Counter | `1` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `harness.memory.hit`, `error.type` |
 | `harness.memory.search.results` | Histogram | `1` | `harness.memory.provider`, `harness.memory.scope` |
+| `harness.workspace.operation.duration` | Histogram | `s` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
+| `harness.workspace.operations` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
+| `harness.workspace.bytes` | Histogram | `By` | `harness.workspace.adapter`, `harness.workspace.operation` |
+| `harness.workspace.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.cleanup.reason`, `error.type` |
+| `harness.workspace.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.quota` |
 
 No `_ms` instruments exist.
 
@@ -368,6 +399,7 @@ Every harness-emitted log line carries when applicable:
 Known warning codes:
 
 - `INVALID_TRACE_CONTEXT`
+- `WORKSPACE_EPHEMERAL_FALLBACK`
 
 ## Cross-references
 
@@ -376,3 +408,4 @@ Known warning codes:
 - [10-workflows](./10-workflows.md)
 - [12-streaming](./12-streaming.md)
 - [19-ai-eval-core](./19-ai-eval-core.md)
+- [21-durable-workspaces](./21-durable-workspaces.md)

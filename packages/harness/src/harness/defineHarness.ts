@@ -40,6 +40,8 @@ import type {
   SessionMemory
 } from '../ports/memory.js'
 import { validateMemoryAdapter } from '../ports/memory.js'
+import type { DurableWorkspaceAdapter } from '../ports/workspace.js'
+import { validateDurableWorkspaceAdapter } from '../ports/workspace.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -552,6 +554,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
+  workspace(adapter: DurableWorkspaceAdapter): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -577,6 +580,7 @@ type BuilderStateInternal = {
   sandbox?: Sandbox<any>
   memory?: MemoryAdapter
   runtime?: DurableRuntimeAdapter
+  workspace?: DurableWorkspaceAdapter
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -621,6 +625,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   public runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S> {
     return this.clone({ runtime })
+  }
+
+  public workspace(workspace: DurableWorkspaceAdapter): HarnessBuilder<S> {
+    if (this.configured.workspace) {
+      throw new HarnessConfigError('Workspace adapter is already configured.', { reason: 'duplicate_adapter', path: 'workspace' })
+    }
+    validateDurableWorkspaceAdapter(workspace)
+    return this.clone({ workspace })
   }
 
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
@@ -681,6 +693,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
+    if (this.configured.workspace) validateDurableWorkspaceAdapter(this.configured.workspace)
     const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
@@ -744,6 +757,18 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         kind: 'runtime',
         id: this.configured.runtime.id ?? 'runtime',
         capabilities: uniqueCapabilities(this.configured.runtime.capabilities)
+      })
+    }
+
+    if (this.configured.workspace) {
+      adapters.push({
+        kind: 'workspace',
+        id: this.configured.workspace.info.id,
+        capabilities: uniqueCapabilities(this.configured.workspace.info.capabilities),
+        metadata: {
+          packageName: this.configured.workspace.info.packageName,
+          policy: this.configured.workspace.info.policy
+        }
       })
     }
 

@@ -158,4 +158,54 @@ describe('inMemoryDurableRuntime', () => {
       attempt: 7
     }))
   })
+
+  it('persists workspace replay checkpoint metadata', async () => {
+    const runtime = inMemoryDurableRuntime()
+    expect(runtime.capabilities).toContain('runtime.workspace_checkpoint')
+
+    const lease = await runtime.startRun({
+      runId: 'run-workspace',
+      sessionId: 'session-workspace',
+      workerId: 'worker-1',
+      stepId: 'start',
+      input: { prompt: 'resume me' }
+    })
+
+    await runtime.commitCheckpoint({
+      runId: lease.runId,
+      sessionId: lease.sessionId,
+      leaseId: lease.leaseId,
+      workerId: lease.workerId,
+      attempt: lease.attempt,
+      sequence: 1,
+      stepId: 'workspace-step',
+      input: lease.start.input,
+      output: { ok: true },
+      replay: {
+        runId: lease.runId,
+        sessionId: lease.sessionId,
+        workerId: lease.workerId,
+        leaseId: lease.leaseId,
+        stepId: 'workspace-step',
+        sequence: 1,
+        attempt: lease.attempt,
+        checkpointRef: 'workspace-1:checkpoint:1',
+        workspaceRef: 'workspace-1',
+        snapshotRef: 'snapshot-1',
+        runtimeCheckpointRef: 'run-workspace:1',
+        schemaVersion: 1,
+        payload: { ok: true },
+        payloadSizeBytes: 11,
+        committedAt: '2026-06-05T00:00:00.000Z'
+      }
+    })
+
+    await expect(runtime.loadCheckpoint('run-workspace')).resolves.toEqual(expect.objectContaining({
+      replay: expect.objectContaining({
+        workspaceRef: 'workspace-1',
+        checkpointRef: 'workspace-1:checkpoint:1',
+        schemaVersion: 1
+      })
+    }))
+  })
 })

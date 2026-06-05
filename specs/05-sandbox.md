@@ -73,7 +73,7 @@ The harness ships **two** default sandbox factories in core. Both are exported f
 
 If `just-bash` is not installed and the user calls `bashSandbox()`, throw `HarnessConfigError{reason:'just_bash_not_installed'}` synchronously at construction time.
 
-## Optional durable sandbox capabilities
+## Optional sandbox snapshot capabilities
 
 Sandbox adapters may add snapshot/resume methods behind declared capabilities:
 
@@ -103,6 +103,11 @@ interface HibernateCapableSandbox {
 
 `sandbox.snapshot`, `sandbox.resume`, `sandbox.hibernate`, and `sandbox.persistent_fs` are opt-in adapter capabilities. Harness construction fails early when `.requires(...)` names a capability the configured adapters do not provide.
 
+These capabilities describe low-level sandbox session behavior only. They do
+not imply production durable replay, retention, encryption, cleanup, or quota
+support. Production durable replay requires a `DurableWorkspaceAdapter` and the
+`workspace.*` capabilities defined in [21-durable-workspaces](./21-durable-workspaces.md).
+
 ### Auto-detect
 
 If the user calls `.sandbox()` with no argument or omits `.sandbox()` entirely, the harness auto-detects: tries `bashSandbox()` first, falls back to `inMemorySandbox()` on import failure. This auto-detect is locked in [02-harness-config](./02-harness-config.md) §`.sandbox(...)`.
@@ -117,3 +122,4 @@ Packages like `@purista/harness-sandbox-docker`, `@purista/harness-sandbox-e2b`,
 - [07-tools](./07-tools.md) — built-in tools layer over the Sandbox.
 - [09-agents](./09-agents.md) — agent loop mounts skills at session start.
 - [13-public-api](./13-public-api.md) — exported types.
+- [21-durable-workspaces](./21-durable-workspaces.md) — production durable workspace replay.

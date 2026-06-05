@@ -24,6 +24,7 @@ flowchart TB
     Model["ModelProvider"]
     State["StateStore"]
     Sandbox["SandboxSession"]
+    Workspace["DurableWorkspaceAdapter"]
     Telemetry["Logger + OTel"]
   end
 
@@ -48,6 +49,7 @@ flowchart TB
   TsTool --> Sandbox
   Mcp --> Sandbox
   Session --> State
+  Session --> Workspace
   Session --> Events
   Events --> Telemetry
 ```
@@ -63,6 +65,7 @@ flowchart TB
 | `Tool` | Callable capability exposed to an agent: built-in, TypeScript, or MCP. | What can the agent do besides model calls? |
 | `Skill` | Mounted instruction directory with `SKILL.md` frontmatter. | What reusable method or domain guidance should the agent follow? |
 | `Sandbox` | Filesystem and optional command execution boundary. | Can this run execute commands, and with what isolation? |
+| `DurableWorkspaceAdapter` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
 
 ## Agents Versus Workflows
 

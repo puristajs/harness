@@ -197,16 +197,80 @@ export class StateError extends HarnessError {
   }
 }
 
+/** Durable workspace lifecycle, consistency, inspection, or backend failure. */
+export class WorkspaceError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      reason:
+        | 'idempotency_conflict'
+        | 'not_found'
+        | 'aborted'
+        | 'expired'
+        | 'missing_checkpoint'
+        | 'backend_failure'
+        | 'unsupported_operation'
+        | 'invalid_reference'
+        | 'checkpoint_conflict'
+        | 'cleanup_pending'
+      workspace_ref?: string
+      checkpoint_ref?: string
+      snapshot_ref?: string
+      run_id?: string
+      session_id?: string
+    },
+    cause?: unknown
+  ) {
+    const retriable = meta.reason === 'backend_failure' || meta.reason === 'cleanup_pending'
+    super({ code: 'WORKSPACE_ERROR', category: 'workspace', retriable, message, meta, cause })
+  }
+}
+
+/** Durable workspace quota would be or was exceeded. */
+export class WorkspaceQuotaExceededError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      quota: string
+      limit?: number
+      actual?: number
+      partial?: boolean
+      workspace_ref?: string
+      run_id?: string
+      session_id?: string
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'WORKSPACE_QUOTA_EXCEEDED', category: 'workspace', retriable: false, message, meta, cause })
+  }
+}
+
+/** Durable workspace cleanup could not complete in the current attempt. */
+export class WorkspaceCleanupError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      reason: 'backend_failure' | 'partial_delete' | 'invalid_reference'
+      workspace_ref: string
+      remaining_refs?: readonly string[]
+      retry_after_ms?: number
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'WORKSPACE_CLEANUP_ERROR', category: 'workspace', retriable: true, message, meta, cause })
+  }
+}
+
 /** Timed execution budget expired. */
 export class OperationTimeoutError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run' | 'memory'; timeout_ms: number }, cause?: unknown) {
+  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run' | 'memory' | 'workspace'; timeout_ms: number }, cause?: unknown) {
     super({ code: 'OPERATION_TIMEOUT', category: 'timeout', retriable: true, message, meta, cause })
   }
 }
 
 /** Operation cancelled by abort signal or explicit cancellation path. */
 export class OperationCancelledError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' }, cause?: unknown) {
+  public constructor(message: string, meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' | 'workspace' }, cause?: unknown) {
     super({ code: 'OPERATION_CANCELLED', category: 'cancelled', retriable: false, message, meta, cause })
   }
 }

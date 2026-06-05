@@ -8,6 +8,7 @@
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
+- `@purista/harness-workspace-*` — optional durable workspace adapters. Core ships only test fakes under `@purista/harness/testing`.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -78,6 +79,9 @@ export class WorkflowNotFoundError extends HarnessError {}
 export class SessionNotFoundError extends HarnessError {}
 export class SessionBusyError extends HarnessError {}
 export class StateError extends HarnessError {}
+export class WorkspaceError extends HarnessError {}
+export class WorkspaceQuotaExceededError extends HarnessError {}
+export class WorkspaceCleanupError extends HarnessError {}
 export class OperationTimeoutError extends HarnessError {}
 export class OperationCancelledError extends HarnessError {}
 export class McpProtocolError extends HarnessError {}
@@ -118,6 +122,12 @@ export interface McpStdioToolDefinition
 export interface McpHttpToolDefinition
 export type SkillsConfig
 export interface SkillDefinition
+export type SkillValidationMode
+export interface SkillFrontmatter
+export interface SkillDiagnostic
+export interface DiscoverSkillsOptions
+export interface DiscoveredSkills
+export function discoverSkills(options?: DiscoverSkillsOptions): Promise<DiscoveredSkills>
 export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
 export type WorkflowsConfig<S>
@@ -199,6 +209,26 @@ export interface MemoryEntry
 export interface MemorySearchQuery
 export interface MemorySearchResult
 
+// Durable workspace replay
+export interface DurableWorkspaceAdapter
+export interface DurableWorkspaceAdapterInfo
+export interface DurableWorkspacePolicy
+export interface WorkspaceStartOptions
+export interface WorkspaceHandle
+export interface WorkspacePauseOptions
+export interface WorkspaceCheckpoint
+export interface WorkspaceResumeOptions
+export interface WorkspaceAbortOptions
+export interface WorkspaceAbortResult
+export interface WorkspaceCleanupOptions
+export interface WorkspaceCleanupResult
+export interface WorkspaceInspectionOptions
+export interface WorkspaceInspection
+export interface WorkspaceQuotaPolicy
+export interface WorkspaceRetentionPolicy
+export interface WorkspaceEncryptionInfo
+export interface DurableReplayCheckpoint
+
 // Foundation
 export interface Logger
 export type LogLevel
@@ -275,6 +305,7 @@ interface HarnessBuilder<S extends BuilderState> {
   sandbox(sandbox: Sandbox): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
+  workspace(adapter: DurableWorkspaceAdapter): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
@@ -348,6 +379,86 @@ type InferTypes<S extends BuilderState> = {
   agents: { [K in keyof S['agents']]: { input: AgentInput<S, K>; output: AgentOutput<S, K> } }
   workflows: { [K in keyof S['workflows']]: { input: WorkflowInput<S, K>; output: WorkflowOutput<S, K> } }
 }
+```
+
+### Skill API
+
+```ts
+type SkillValidationMode = 'strict' | 'lenient'
+
+interface SkillFrontmatter {
+  name: string
+  description: string
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  'allowed-tools'?: string
+}
+
+interface SkillDefinition {
+  directory: string
+  validationMode?: SkillValidationMode
+  trust?: 'trusted' | 'project' | 'user'
+  source?: string
+}
+
+type SkillsConfig = Record<string, SkillDefinition>
+
+interface SkillDiagnostic {
+  level: 'warn' | 'error'
+  code:
+    | 'missing_skill_md'
+    | 'invalid_frontmatter'
+    | 'missing_description'
+    | 'invalid_name'
+    | 'name_mismatch'
+    | 'directory_missing'
+    | 'collision_shadowed'
+    | 'untrusted_project_skill'
+    | 'scan_limit_reached'
+  message: string
+  skillName?: string
+  directory?: string
+  source?: string
+}
+
+interface ResolvedSkill {
+  name: string
+  description: string
+  directory: string
+  skillPath: string
+  location: string
+  mountPath: `/skills/${string}`
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  allowedTools?: string
+  trust: 'trusted' | 'project' | 'user'
+  source?: string
+  diagnostics: readonly SkillDiagnostic[]
+}
+
+interface DiscoverSkillsOptions {
+  projectRoot?: string
+  clientName?: string
+  includeProjectAgentsDir?: boolean
+  includeProjectClientDir?: boolean
+  includeUserAgentsDir?: boolean
+  includeUserClientDir?: boolean
+  includeClaudeCompatDir?: boolean
+  includeAncestorProjectDirs?: boolean
+  trustedProjectRoots?: readonly string[]
+  validationMode?: SkillValidationMode
+  maxDepth?: number
+  maxDirectories?: number
+}
+
+interface DiscoveredSkills {
+  skills: SkillsConfig
+  diagnostics: readonly SkillDiagnostic[]
+}
+
+function discoverSkills(options?: DiscoverSkillsOptions): Promise<DiscoveredSkills>
 ```
 
 ### Memory API
@@ -601,6 +712,7 @@ export class FakeStateStore extends InMemoryStateStore       // exposes inspecti
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
+export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -616,6 +728,14 @@ export function loggerContract(make: () => Logger): void
 export function memoryAdapterContract(
   make: () => MemoryAdapter | Promise<MemoryAdapter>,
   opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
+): void
+export function durableWorkspaceContract(
+  make: () => DurableWorkspaceAdapter | Promise<DurableWorkspaceAdapter>,
+  opts?: {
+    retention?: 'available' | 'unavailable'
+    encryption?: 'available' | 'unavailable'
+    quota?: 'available' | 'unavailable'
+  }
 ): void
 
 // Helpers

@@ -67,6 +67,21 @@ expect(events).toContain('run.finished')
 Call TypeScript tool handlers with a small context object and a temporary store.
 Assert both successful output and validation failure behavior.
 
+## Test Durable Workspace Adapters
+
+Workspace replay adapters should pass the shared contract before application
+integration tests use them:
+
+```ts
+import { durableWorkspaceAdapterContract } from '@purista/harness/testing'
+
+durableWorkspaceAdapterContract(() => makeDurableWorkspaceAdapter())
+```
+
+Also test application startup with `.requires(...)` so missing
+`runtime.workspace_checkpoint`, `workspace.durable`, `workspace.resume`, or
+cleanup/retention/quota capabilities fail before work is queued.
+
 ## Test Eval Scorers
 
 Use the testing subpath to validate deterministic scorer definitions before

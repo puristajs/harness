@@ -87,15 +87,19 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - code: `SKILL_NOT_FOUND`
 - category: `skill`
 - retriable: `false`
-- when: agent calls unknown skill id.
-- meta: `skill_id: string`.
+- when: an agent references a skill id that is not in the resolved skill registry.
+- meta: `skill_id: string`, `agent_id?: string`.
 
 ### `SkillManifestError`
 - code: `SKILL_MANIFEST_ERROR`
 - category: `config`
 - retriable: `false`
-- when: `SKILL.md` invalid (missing file, invalid YAML frontmatter, name does not match config key, directory missing, reserved name).
-- meta: `skill_id?: string`, `directory: string`, `reason: 'missing_skill_md'|'invalid_frontmatter'|'name_mismatch'|'directory_missing'|'reserved_name'`.
+- when: skill directory discovery, `SKILL.md` parsing, validation, trust checks, or required skill activation preconditions fail.
+- meta: `skill_id?: string`, `directory?: string`, `source?: string`, `agent_id?: string`, `reason: 'missing_skill_md'|'invalid_frontmatter'|'missing_description'|'invalid_name'|'name_mismatch'|'directory_missing'|'reserved_name'|'skill_not_declared'|'skill_read_tool_missing'|'skill_sandbox_unsupported'|'untrusted_project_skill'`.
+
+`SkillManifestError` metadata must not include skill body text, supporting file
+content, prompts, completions, tool arguments, tool results, credentials,
+tokens, raw headers, or attachments.
 
 ### `AgentNotFoundError`
 - code: `AGENT_NOT_FOUND`
@@ -139,19 +143,40 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - when: StateStore backend failure, or duplicate message id on `appendMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
 - meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'`, `reason?: 'duplicate_message_id'|string`.
 
+### `WorkspaceError`
+- code: `WORKSPACE_ERROR`
+- category: `workspace`
+- retriable: dynamic — `true` for backend failure and cleanup-pending states; `false` for invalid reference, idempotency conflict, aborted, expired, and missing checkpoint.
+- when: Durable workspace lifecycle, consistency, inspection, or adapter backend failure outside quota and cleanup-specific failures.
+- meta: `reason: 'idempotency_conflict'|'not_found'|'aborted'|'expired'|'missing_checkpoint'|'backend_failure'|'unsupported_operation'|'invalid_reference'|'checkpoint_conflict'|'cleanup_pending'`, `workspace_ref?: string`, `checkpoint_ref?: string`, `snapshot_ref?: string`, `run_id?: string`, `session_id?: string`.
+
+### `WorkspaceQuotaExceededError`
+- code: `WORKSPACE_QUOTA_EXCEEDED`
+- category: `workspace`
+- retriable: `false`
+- when: A durable workspace quota would be exceeded or was exceeded during an operation that the adapter rolled back or marked orphaned.
+- meta: `quota: string`, `limit?: number`, `actual?: number`, `partial?: boolean`, `workspace_ref?: string`, `run_id?: string`, `session_id?: string`.
+
+### `WorkspaceCleanupError`
+- code: `WORKSPACE_CLEANUP_ERROR`
+- category: `workspace`
+- retriable: `true`
+- when: `cleanupWorkspace` fails after deletion cannot complete in the current attempt.
+- meta: `reason: 'backend_failure'|'partial_delete'|'invalid_reference'`, `workspace_ref: string`, `remaining_refs?: readonly string[]`, `retry_after_ms?: number`.
+
 ### `OperationTimeoutError`
 - code: `OPERATION_TIMEOUT`
 - category: `timeout`
 - retriable: `true`
 - when: any timed budget elapsed.
-- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'`, `timeout_ms: number`.
+- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'|'workspace'`, `timeout_ms: number`.
 
 ### `OperationCancelledError`
 - code: `OPERATION_CANCELLED`
 - category: `cancelled`
 - retriable: `false`
 - when: AbortSignal aborted (including pre-aborted signals at entry points).
-- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'`.
+- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'workspace'`.
 
 ### `McpProtocolError`
 - code: `MCP_PROTOCOL_ERROR`
@@ -185,3 +210,4 @@ The following codes are emitted in log records but are NOT thrown as `HarnessErr
 
 - [03-foundation](./03-foundation.md) — `HarnessError` base, categories.
 - [13-public-api](./13-public-api.md) — error class export list.
+- [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace error semantics.

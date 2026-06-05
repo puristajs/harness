@@ -11,7 +11,7 @@ The harness gives PURISTA applications a typed runtime boundary for:
   model operations;
 - TypeScript, built-in, and MCP tools;
 - reusable skills;
-- state, sandboxing, logs, traces, and run events;
+- state, sandboxing, durable workspace replay, logs, traces, and run events;
 - provider-neutral eval helpers for deterministic scorer tests and prompt
   candidate comparison;
 - provider adapters for OpenAI, Anthropic, Amazon Bedrock, and Azure AI Foundry.
@@ -71,6 +71,7 @@ npm run build
 - Build and extend
   - [Usage guide](docs/guides/usage.md)
   - [Configuration](docs/guides/configuration.md)
+  - [Durable Workspaces](docs/guides/durable-workspaces.md)
   - [Evaluating prompts](docs/guides/evaluating-prompts.md)
   - [MCP tools](docs/guides/mcp-tools.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)

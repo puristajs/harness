@@ -166,7 +166,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: ingestSourceInputSchema,
         output: ingestSourceOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: ingest_source\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -175,7 +175,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: ingestSourceInputSchema,
         output: ingestSourceOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator', 'reflective-critic'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: ingest_source\nPlan source extraction and produce proposed page changes for human review.\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -184,7 +184,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: askWikiInputSchema,
         output: askWikiOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: ask_wiki\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -193,7 +193,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: lintWikiInputSchema,
         output: lintWikiOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: lint_wiki\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -202,7 +202,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: reconcileContradictionInputSchema,
         output: reconcileContradictionOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: reconcile_contradiction\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -211,7 +211,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: generateResearchBriefInputSchema,
         output: generateResearchBriefOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator', 'research-brief-writer'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: generate_research_brief\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -220,7 +220,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: decisionMemoInputSchema,
         output: decisionMemoOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['decision-memo-planner', 'research-brief-writer', 'diagram-designer', 'reflective-critic', 'judge-rubric'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: decision_memo\nUse plan, retrieve, reason, reflect, judge, publish phases.\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -229,7 +229,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: architectureReviewInputSchema,
         output: architectureReviewOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator', 'reflective-critic', 'judge-rubric', 'diagram-designer'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: architecture_review\nReview API, data, operations, security, migration, and observability concerns.\nInput: ${JSON.stringify(ctx.input)}`
       }),
@@ -238,7 +238,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         input: wikiQualityAuditInputSchema,
         output: wikiQualityAuditOutputSchema,
         tools: agentTools,
-        builtinTools: false,
+        builtinTools: ['read'],
         skills: ['wiki-curator', 'reflective-critic', 'judge-rubric'],
         instructions: (ctx) => `${baseInstructions}\nWorkflow: wiki_audit\nAudit without mutating pages; return proposed changes and a review request.\nInput: ${JSON.stringify(ctx.input)}`
       })

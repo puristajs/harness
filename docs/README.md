@@ -45,6 +45,7 @@ flowchart TD
 - Build applications
   - [Usage Guide](./guides/usage.md): define a harness, open sessions, invoke agents, stream runs, and orchestrate workflows.
   - [Configuration Guide](./guides/configuration.md): configure models, defaults, sandboxing, timeouts, logging, and OpenTelemetry.
+  - [Durable Workspaces](./guides/durable-workspaces.md): configure production replay workspaces, checkpoint references, retention, encryption, cleanup, and quotas.
   - [Evaluating Prompts](./guides/evaluating-prompts.md): compare prompt candidates with local deterministic or custom scorers.
   - [Extending And Customizing](./guides/extending-and-customizing.md): add adapters, TypeScript tools, skills, workflows, and custom state/sandbox implementations.
   - [MCP Tools](./guides/mcp-tools.md): register stdio and HTTP MCP tools, install stdio servers inside the sandbox, and map MCP failures.
@@ -89,7 +90,8 @@ flowchart LR
 
 The application API is `harness.getSession(...)`, then
 `session.agents.<id>` or `session.workflows.<id>`. Providers, tools, sandboxes,
-and state stores are infrastructure behind that boundary.
+state stores, and durable workspace stores are infrastructure behind that
+boundary.
 
 In harness terminology, an **agent** is the typed LLM conversation loop: it
 builds prompts, calls a model, executes tool invocations, feeds tool results

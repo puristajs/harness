@@ -6,7 +6,7 @@
 
 ```
 Harness
-  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory
+  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable runtime, durable workspace
   ├─ Models       (alias → provider + capabilities + default settings)
   ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
   ├─ Custom tools (TS+zod, MCP stdio, MCP http)
@@ -15,7 +15,7 @@ Harness
   └─ Workflows    (handler with agents context)
 ```
 
-**Progressive disclosure.** Skills are surfaced to the model in three levels (the [Anthropic Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) convention): Level 1 — the harness injects only `name + description` per skill into the system prompt (~100 tokens each). Level 2 — when the model decides a skill is relevant, it reads `/skills/<name>/SKILL.md` via the built-in `read` tool. Level 3 — supporting files (scripts, examples, references) live in the same directory and are accessed on demand by the model. The harness never auto-injects skill bodies.
+**Progressive disclosure.** Skills follow the Agent Skills client model: Level 1 — the harness injects only compact metadata (`name`, `description`, location, and optional compatibility) into the system prompt. Level 2 — when the model decides a skill is relevant, it reads `/skills/<name>/SKILL.md` via the built-in `read` tool. Level 3 — supporting files (`scripts/`, `references/`, `assets/`, or any other bundled files) are accessed on demand. The harness never auto-injects skill bodies.
 
 Streaming is an internal concern of the harness (no `stream` foundation port); per-run events flow through an in-process buffered queue.
 
@@ -79,6 +79,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
 - Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
 - Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
+- Durable runtime checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
 - Harness-owned AI evaluation primitives: trace-context propagation, run
@@ -92,7 +93,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No definition bundle format, signed catalog, or remote loading.
 - No approval lifecycle, policy engine, or governance hooks.
 - No multi-tenant authentication, billing, or quota engine.
-- No replay or time-travel debugging in v1.
+- No time-travel debugger or visual replay UI. Durable workspace replay is an adapter contract for resumable execution state, not a debugger product.
 - No production/SaaS example apps. Spec-approved private examples may exist
   under `examples/`, with quickstart remaining the minimal entry point.
 - No pluggable stream adapter — the streaming generator is internal.
@@ -113,7 +114,8 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
 | Sandbox         | An isolated FS + (optional) shell-exec environment. v1 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
-| Port            | An interface a harness depends on (state, sandbox, memory, model provider). |
+| Durable workspace | Production replay workspace state that links runtime checkpoints to persisted sandbox/workspace state through opaque references. |
+| Port            | An interface a harness depends on (state, sandbox, memory, durable runtime, durable workspace, model provider). |
 | Adapter         | A concrete implementation of a port. Core ships in-memory/default implementations plus the sandbox-backed memory reference adapter; non-core adapters live in independent packages. |
 | ULID            | Lexicographically sortable id format. Harness mints `${kind}_${ulid}`. |
 | `$infer`        | Phantom value on `Harness` exposing compile-time keys/types of registered models, tools, skills, agents, workflows. |
@@ -127,3 +129,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [17-implementation-plan](./17-implementation-plan.md) — build order.
 - [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.
 - [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
+- [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.

@@ -51,8 +51,12 @@ the simple in-process defaults.
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
 | `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
+| `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
+| `DiscoverSkillsOptions` / `DiscoveredSkills` | Client-style skill discovery input and diagnostics. |
 | `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `runtime.checkpoint`. |
 | `DurableRuntime` | Optional checkpoint/lease runtime contract for durable use cases. |
+| `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
+| `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
 
 ## Adapter Capabilities
@@ -60,7 +64,8 @@ the simple in-process defaults.
 ```ts
 const harness = defineHarness()
   .runtime(inMemoryDurableRuntime())
-  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint'])
+  .workspaceStore(durableWorkspace)
+  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint', 'runtime.workspace_checkpoint', 'workspace_store.durable'])
   .models(...)
   .agents(...)
   .build()
@@ -88,6 +93,42 @@ flowchart LR
 ```
 
 TypeScript tools validate with Zod before and after handler execution.
+
+## Skills
+
+```ts
+import { defineHarness, discoverSkills } from '@purista/harness'
+
+const discovered = await discoverSkills({
+  projectRoot: process.cwd(),
+  trustedProjectRoots: [process.cwd()],
+  includeUserAgentsDir: true
+})
+
+const harness = defineHarness({ name: 'assistant' })
+  .skills({
+    ...discovered.skills,
+    'incident-responder': {
+      directory: './src/skills/incident-responder',
+      trust: 'trusted',
+      source: 'application'
+    }
+  })
+  .models(...)
+  .agents(({ agent }) => ({
+    triage: agent({
+      model: 'fast',
+      skills: ['incident-responder'],
+      builtinTools: ['read'],
+      instructions: 'Read relevant skills before answering.'
+    })
+  }))
+  .build()
+```
+
+Skill prompts contain only catalog metadata and `/skills/<name>/SKILL.md`
+locations. The full skill directory is mounted into the sandbox once per
+session and is loaded through read-only filesystem tools.
 
 MCP stdio tools:
 

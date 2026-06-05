@@ -18,7 +18,7 @@ The methods MUST be called in this order, each at most once:
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .requires(...)?  .defaults(...)?
   .models({...})            // REQUIRED, before tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
@@ -31,7 +31,7 @@ defineHarness(opts?)
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
-- `.memory(...)`, `.runtime(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -109,6 +109,22 @@ support as an opt-in adapter capability surface, not a mandatory worker or
 queue. Runtime adapters declare `capabilities`; checkpoint, retry, lock, and
 resume semantics stay owned by the runtime adapter.
 
+### `.workspaceStore(adapter)`
+
+Pass an optional `DurableWorkspaceStore`. Core treats durable workspace
+support as an opt-in adapter capability surface for production replay. The
+adapter lifecycle, references, retention, encryption, cleanup, quota, fallback,
+and telemetry rules are locked in [21-durable-workspaces](./21-durable-workspaces.md).
+
+Validation:
+
+- `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
+- `adapter.info.packageName` is non-empty.
+- `adapter.info.capabilities` contains `workspace_store.durable`.
+- The method is callable at most once and only in the foundation stage after
+  `.runtime(...)` and before `.requires(...)`, `.defaults(...)`, or domain
+  methods.
+
 ### `.requires(capabilities)`
 
 Declares adapter capabilities required by this harness definition:
@@ -118,7 +134,17 @@ defineHarness()
   .sandbox(snapshotSandbox)
   .memory(persistentMemory)
   .runtime(durableRuntime)
-  .requires(['sandbox.snapshot', 'sandbox.resume', 'memory.persistent', 'runtime.checkpoint'])
+  .workspaceStore(durableWorkspace)
+  .requires([
+    'sandbox.snapshot',
+    'sandbox.resume',
+    'memory.persistent',
+    'runtime.checkpoint',
+    'runtime.workspace_checkpoint',
+    'workspace_store.durable',
+    'workspace_store.resume',
+    'workspace_store.cleanup',
+  ])
 ```
 
 `build()` aggregates capabilities from configured adapters and throws
@@ -237,10 +263,13 @@ type SkillsConfig = Record<string, SkillDefinition>
 interface SkillDefinition {
   /** Absolute path to the directory containing SKILL.md. */
   directory: string
+  validationMode?: 'strict' | 'lenient'
+  trust?: 'trusted' | 'project' | 'user'
+  source?: string
 }
 ```
 
-The harness resolves `directory` and parses `SKILL.md` (YAML frontmatter) synchronously inside `.skills()`. See [08-skills](./08-skills.md) for the frontmatter schema and validation. The harness config key MUST equal the frontmatter `name`; mismatch throws `SkillManifestError{reason:'name_mismatch'}`.
+The harness resolves `directory` and parses `SKILL.md` (YAML frontmatter) synchronously inside `.skills()` for explicit local definitions. See [08-skills](./08-skills.md) for the frontmatter schema, strict/lenient validation, diagnostics, discovery helpers, trust rules, and collision behavior. In strict mode the harness config key MUST equal the frontmatter `name`; mismatch throws `SkillManifestError{reason:'name_mismatch'}`. In lenient mode, mismatch may load the frontmatter name and record a diagnostic when no collision occurs.
 
 ### `.agents(agents)`
 
@@ -327,7 +356,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 2. Every `agent.model` matches a `.models()` key — checked in `.agents()`.
 3. Every `agent.tools[]` entry matches a `.tools()` key — checked in `.agents()`.
 4. Every `agent.skills[]` entry matches a `.skills()` key — checked in `.agents()`.
-5. For every skill: `SKILL.md` parsed, frontmatter validated, config key equals frontmatter `name` — checked in `.skills()`.
+5. For every skill: `SKILL.md` parsed with YAML semantics, frontmatter validated, optional fields preserved, diagnostics recorded, and strict key/name rules enforced — checked in `.skills()`.
 6. Tool/skill/agent/workflow/model-alias keys MUST match `/^[a-z][a-z0-9_]*$/`, ≤64 chars; reserved prefixes `harness_`/`system_` rejected; cross-namespace collisions (tool vs skill, tool vs built-in name) and reserved Session member collisions (workflows) rejected.
 7. `defaults.runTimeoutMs === 0` disables the run timeout. Per-call timeouts must be > 0; negative values rejected. `InvokeOptions.timeoutMs` follows the same `>0/0/<0` rules: negative throws `ValidationError`.
 8. Default-loop agents need `'object'` capability on their alias; `'tool_use'` if any custom tools or any built-in tools enabled — checked in `.agents()`.
@@ -337,6 +366,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 12. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
 13. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
+15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
 
 ## `Harness<S>` returned object
 
@@ -352,7 +382,7 @@ adapter descriptors. It must not make network calls or mutate runtime state.
 
 ## Cross-references
 
-- [03-foundation](./03-foundation.md), [04-state-queue-stream](./04-state-queue-stream.md), [05-sandbox](./05-sandbox.md), [20-memory-adapters](./20-memory-adapters.md)
+- [03-foundation](./03-foundation.md), [04-state-queue-stream](./04-state-queue-stream.md), [05-sandbox](./05-sandbox.md), [20-memory-adapters](./20-memory-adapters.md), [21-durable-workspaces](./21-durable-workspaces.md)
 - [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md)
 - [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), [11-sessions](./11-sessions.md)
 - [13-public-api](./13-public-api.md), [15-error-catalog](./15-error-catalog.md)

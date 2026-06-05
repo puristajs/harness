@@ -29,6 +29,8 @@ export type { SessionRecord, Message, RunRecord, PersistedRunEvent, RunStatus } 
 export * from './models/registry.js'
 export * from './eval/index.js'
 export * from './memory/sandbox/index.js'
+export * from './skills/index.js'
 export * from './sandbox/index.js'
+export * from './workspace/index.js'
 export * from './tools/mcp/index.js'
 export * from './harness/defineHarness.js'

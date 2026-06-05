@@ -38,6 +38,8 @@ Built-in `bash`, `write`, and `edit` can mutate state or execute commands.
 Recommended defaults:
 
 - disable built-ins with `builtinTools: false` unless needed;
+- for skill-backed agents, enable `builtinTools: ['read']` so skills can be
+  loaded without enabling mutation or command execution;
 - allow only explicit custom tools;
 - use `inMemorySandbox()` for file-only use cases;
 - use executor-capable sandbox only for trusted workloads that require command

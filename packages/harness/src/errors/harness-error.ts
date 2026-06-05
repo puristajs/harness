@@ -24,6 +24,8 @@ export type ErrorCategory =
   | 'session'
   /** State-store persistence failures. */
   | 'state'
+  /** Durable workspace lifecycle or backend failures. */
+  | 'workspace'
   /** Timeout budget failures. */
   | 'timeout'
   /** Cooperative cancellation events. */

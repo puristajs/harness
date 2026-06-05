@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 22 files (this README plus 21 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, and future `@purista/harness-memory-*` packages. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 23 files (this README plus 22 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future durable workspace store packages. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -29,6 +29,7 @@ For an implementation agent starting cold, read in this order:
 19. [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) — canonical Living Wiki intelligence workspace with direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger tracing.
 20. [19-ai-eval-core.md](./19-ai-eval-core.md) — harness-owned AI eval core, telemetry interop, run summaries, trace-context propagation, and local scorer/candidate helpers.
 21. [20-memory-adapters.md](./20-memory-adapters.md) — pluggable memory adapter port, scopes, telemetry, metrics, reference adapter, and testing contract.
+22. [21-durable-workspaces.md](./21-durable-workspaces.md) — production durable workspace lifecycle, checkpoint references, retention, encryption, cleanup, quotas, fallback, telemetry, and contract tests.
 
 ## File index (one-liners)
 
@@ -42,7 +43,7 @@ For an implementation agent starting cold, read in this order:
 | [05-sandbox.md](./05-sandbox.md) | Sandbox port (FS + exec), `inMemorySandbox()` files-only and `bashSandbox()` (just-bash) defaults, auto-detect. |
 | [06-models.md](./06-models.md) | Model alias, `ModelProvider` port, capability enforcement. |
 | [07-tools.md](./07-tools.md) | TS, MCP-stdio, MCP-http tool configs and behavior. |
-| [08-skills.md](./08-skills.md) | `SKILL.md` frontmatter (Anthropic Agent Skills convention), mount-at-`/skills/<name>/`, progressive disclosure. |
+| [08-skills.md](./08-skills.md) | Agent Skills discovery, strict/lenient `SKILL.md` frontmatter parsing, trust/collision rules, mount-at-`/skills/<name>/`, progressive disclosure, activation, and privacy. |
 | [09-agents.md](./09-agents.md) | Inline `AgentDefinition`, default loop with built-in tools, per-agent permissions, `maxSteps`. |
 | [10-workflows.md](./10-workflows.md) | Inline `WorkflowDefinition`, parallel agents, cancellation. |
 | [11-sessions.md](./11-sessions.md) | `Session` API, persistence, serial concurrency rule, `SessionMemory`, conversation history. |
@@ -55,12 +56,14 @@ For an implementation agent starting cold, read in this order:
 | [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) | Canonical living-wiki intelligence workspace contract covering Hono, React/Vite, OpenAI, direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger. |
 | [19-ai-eval-core.md](./19-ai-eval-core.md) | Harness-owned AI eval core functionality and explicit non-ownership of Cloudgrid adapter concerns. |
 | [20-memory-adapters.md](./20-memory-adapters.md) | Memory adapter port, run/session/agent/user/tenant scopes, telemetry, metrics, and sandbox-backed reference adapter. |
+| [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace store contract for production replay across runtime checkpoints and sandbox workspace state. |
 
 ## Authoritative anchors
 
 - All exported symbols → [13-public-api.md](./13-public-api.md).
 - All error classes → [15-error-catalog.md](./15-error-catalog.md).
 - All OTel names → [14-otel-conventions.md](./14-otel-conventions.md).
+- Durable workspace lifecycle and replay semantics → [21-durable-workspaces.md](./21-durable-workspaces.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.

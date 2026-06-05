@@ -168,6 +168,18 @@ Register it:
 ```
 
 Mount skills only on agents that need them.
+Skill-backed agents need the `read` built-in so the model can load
+`/skills/<name>/SKILL.md`; keep mutation and command built-ins disabled unless
+the use case explicitly requires them.
+
+```ts
+agent({
+  model: 'assistant',
+  skills: ['incident-responder'],
+  builtinTools: ['read'],
+  instructions: 'Read relevant skills before drafting the final response.'
+})
+```
 
 ## Add Workflows
 

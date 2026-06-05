@@ -40,6 +40,8 @@ import type {
   SessionMemory
 } from '../ports/memory.js'
 import { validateMemoryAdapter } from '../ports/memory.js'
+import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import { validateDurableWorkspaceStore } from '../ports/workspace.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -160,16 +162,59 @@ export type PermissionDecision = 'allow' | 'deny'
 /** Async permission hook used for interactive approvals or custom policy engines. */
 export type OnPermission = (ctx: PermissionContext) => Promise<PermissionDecision>
 
+/** Skill frontmatter parsed from `SKILL.md`. */
+export interface SkillFrontmatter {
+  name: string
+  description: string
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  'allowed-tools'?: string
+}
+
+/** Validation mode for `SKILL.md` frontmatter. */
+export type SkillValidationMode = 'strict' | 'lenient'
+
+/** Diagnostic produced while parsing or discovering skills. */
+export interface SkillDiagnostic {
+  level: 'warn' | 'error'
+  code:
+    | 'missing_skill_md'
+    | 'invalid_frontmatter'
+    | 'missing_description'
+    | 'invalid_name'
+    | 'name_mismatch'
+    | 'directory_missing'
+    | 'collision_shadowed'
+    | 'untrusted_project_skill'
+    | 'scan_limit_reached'
+  message: string
+  skillName?: string
+  directory?: string
+  source?: string
+}
+
 /** Mounted skill metadata after frontmatter parsing. */
 export interface ResolvedSkill {
   /** Public skill id. */
   name: string
   /** Short user-facing description from frontmatter. */
   description: string
-  /** Optional skill version. */
-  version?: string
   /** Absolute directory mounted into `/skills/<name>`. */
   directory: string
+  /** Absolute path to the parsed `SKILL.md`. */
+  skillPath: string
+  /** Absolute path exposed as the skill instruction file location. */
+  location: string
+  /** Sandbox mount path for this skill. */
+  mountPath: `/skills/${string}`
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  allowedTools?: string
+  trust: 'trusted' | 'project' | 'user'
+  source?: string
+  diagnostics: readonly SkillDiagnostic[]
 }
 
 /** Conversation history accessor for a single session thread. */
@@ -264,10 +309,35 @@ export type ToolsConfig = Record<string, ToolDefinition>
 export interface SkillDefinition {
   /** Absolute path to the directory containing `SKILL.md`. */
   directory: string
+  validationMode?: SkillValidationMode
+  trust?: 'trusted' | 'project' | 'user'
+  source?: string
 }
 
 /** Full skill registry shape. */
 export type SkillsConfig = Record<string, SkillDefinition>
+
+/** Options for local Agent Skills discovery. */
+export interface DiscoverSkillsOptions {
+  projectRoot?: string
+  clientName?: string
+  includeProjectAgentsDir?: boolean
+  includeProjectClientDir?: boolean
+  includeUserAgentsDir?: boolean
+  includeUserClientDir?: boolean
+  includeClaudeCompatDir?: boolean
+  includeAncestorProjectDirs?: boolean
+  trustedProjectRoots?: readonly string[]
+  validationMode?: SkillValidationMode
+  maxDepth?: number
+  maxDirectories?: number
+}
+
+/** Result of local Agent Skills discovery. */
+export interface DiscoveredSkills {
+  skills: SkillsConfig
+  diagnostics: readonly SkillDiagnostic[]
+}
 
 /** Alias map passed to `.models(...)`. */
 export type ModelsConfig = Record<string, ModelAlias>
@@ -552,6 +622,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
+  workspaceStore(store: DurableWorkspaceStore): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -577,6 +648,7 @@ type BuilderStateInternal = {
   sandbox?: Sandbox<any>
   memory?: MemoryAdapter
   runtime?: DurableRuntimeAdapter
+  workspaceStore?: DurableWorkspaceStore
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -623,6 +695,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ runtime })
   }
 
+  public workspaceStore(workspaceStore: DurableWorkspaceStore): HarnessBuilder<S> {
+    if (this.configured.workspaceStore) {
+      throw new HarnessConfigError('Workspace store is already configured.', { reason: 'duplicate_adapter', path: 'workspaceStore' })
+    }
+    validateDurableWorkspaceStore(workspaceStore)
+    return this.clone({ workspaceStore })
+  }
+
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
     return this.clone({ requiredCapabilities: uniqueCapabilities(capabilities) })
   }
@@ -658,6 +738,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const resolved = typeof agents === 'function'
       ? agents({ agent: (definition) => definition })
       : agents
+    this.validateAgentSkillReferences(resolved)
     return this.clone({ agents: resolved }) as unknown as HarnessBuilder<any>
   }
 
@@ -681,6 +762,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
+    if (this.configured.workspaceStore) validateDurableWorkspaceStore(this.configured.workspaceStore)
     const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
@@ -721,6 +803,21 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return new Builder(this.options, { ...this.configured, ...patch })
   }
 
+  private validateAgentSkillReferences(agents: Record<string, AgentDefinition<any, any, any>>): void {
+    const configuredSkills = new Set(Object.keys(this.configured.skills ?? {}))
+    for (const [agentId, agent] of Object.entries(agents)) {
+      for (const skillId of agent.skills ?? []) {
+        if (!configuredSkills.has(skillId)) {
+          throw new HarnessConfigError('Agent references an unknown skill.', {
+            reason: 'invalid_agent',
+            path: `agents.${agentId}.skills`,
+            id: skillId
+          })
+        }
+      }
+    }
+  }
+
   private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {
     const adapters: AdapterInspection[] = []
     const sandboxCapabilities = hasAdapterCapabilities(sandbox) ? uniqueCapabilities(sandbox.capabilities) : []
@@ -744,6 +841,18 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         kind: 'runtime',
         id: this.configured.runtime.id ?? 'runtime',
         capabilities: uniqueCapabilities(this.configured.runtime.capabilities)
+      })
+    }
+
+    if (this.configured.workspaceStore) {
+      adapters.push({
+        kind: 'workspace_store',
+        id: this.configured.workspaceStore.info.id,
+        capabilities: uniqueCapabilities(this.configured.workspaceStore.info.capabilities),
+        metadata: {
+          packageName: this.configured.workspaceStore.info.packageName,
+          policy: this.configured.workspaceStore.info.policy
+        }
       })
     }
 

@@ -25,6 +25,28 @@ export type AdapterCapability =
   | 'runtime.distributed_lock'
   /** Runtime can resume from committed checkpoints. */
   | 'runtime.resume_from_checkpoint'
+  /** Runtime checkpoint records can carry durable workspace references. */
+  | 'runtime.workspace_checkpoint'
+  /** Runtime exposes checkpoint retention and expiry metadata. */
+  | 'runtime.checkpoint_retention'
+  /** Workspace store persists state beyond process exit. */
+  | 'workspace_store.durable'
+  /** Workspace store can produce stable checkpoints. */
+  | 'workspace_store.checkpoint'
+  /** Workspace store can resume committed checkpoints. */
+  | 'workspace_store.resume'
+  /** Workspace store can abort active or paused workspaces. */
+  | 'workspace_store.abort'
+  /** Workspace store supports idempotent cleanup. */
+  | 'workspace_store.cleanup'
+  /** Workspace store supports read-only inspection. */
+  | 'workspace_store.inspect'
+  /** Workspace store exposes retention policy and expiry metadata. */
+  | 'workspace_store.retention'
+  /** Workspace store enforces and reports quota policy. */
+  | 'workspace_store.quota'
+  /** Workspace store encrypts checkpoint, snapshot, file, and metadata storage. */
+  | 'workspace_store.encrypted_storage'
   /** Adapter can record feedback. */
   | 'feedback.record'
   /** Memory adapter supports key/value reads and writes. */
@@ -57,7 +79,7 @@ export interface AdapterCapabilities {
 
 /** Adapter descriptor surfaced through `harness.inspect()`. */
 export interface AdapterInspection {
-  readonly kind: 'state' | 'sandbox' | 'runtime' | 'feedback' | 'model' | 'memory'
+  readonly kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'feedback' | 'model' | 'memory'
   readonly id: string
   readonly capabilities: readonly AdapterCapability[]
   readonly metadata?: Record<string, unknown>

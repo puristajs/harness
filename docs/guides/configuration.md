@@ -37,6 +37,7 @@ flowchart LR
   Harness --> State["state adapter"]
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
+  Harness --> Workspace["durable workspace store"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -46,6 +47,7 @@ flowchart LR
 | State | In-memory state | Runs/history must survive process restart. |
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
 | Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
+| Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
 | Models | Required | Every agent needs a model alias. |
 | Tools | Optional | Agents need retrieval, writes, MCP, or application APIs. |
 | Skills | Optional | Agents need reusable instructions or report methods. |
@@ -136,6 +138,43 @@ Capabilities gate runtime calls:
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
 
+## Skills
+
+Skills are reusable instructions mounted into the sandbox. The harness prompt
+contains only the skill name, description, compatibility, and
+`/skills/<name>/SKILL.md` location. The full skill body is mounted only when an
+agent declares the skill and must be loaded with the `read` built-in.
+
+```ts
+.skills({
+  incident-responder: {
+    directory: './src/skills/incident-responder',
+    trust: 'trusted',
+    source: 'application'
+  }
+})
+.agents(({ agent }) => ({
+  triage: agent({
+    model: 'fast',
+    skills: ['incident-responder'],
+    builtinTools: ['read'],
+    instructions: 'Use relevant skills before producing the final object.'
+  })
+}))
+```
+
+`SKILL.md` must start with YAML frontmatter containing `name` and
+`description`. Optional fields such as `compatibility`, `license`, `metadata`,
+and `allowed-tools` are preserved for catalog and policy use. Strict parsing is
+the default for explicit bindings. Discovery uses lenient parsing so agent
+clients can repair common scalar quoting issues without exposing invalid skill
+bodies.
+
+Use explicit `.skills(...)` bindings for production. `discoverSkills(...)` is
+available for client-style local projects; project skill roots are ignored until
+the project root is explicitly trusted. Higher-precedence bindings win and
+shadowed collisions are returned as diagnostics.
+
 ## Sandbox
 
 ```ts
@@ -148,6 +187,25 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 Choose `inMemorySandbox()` when agents do not need command execution. Choose an
 executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
+
+Sandbox snapshot/resume/hibernate is a low-level sandbox adapter capability.
+Production durable replay also requires a durable workspace store:
+
+```ts
+.runtime(durableRuntime)
+.workspaceStore(durableWorkspace)
+.requires([
+  'runtime.workspace_checkpoint',
+  'workspace_store.durable',
+  'workspace_store.checkpoint',
+  'workspace_store.resume',
+  'workspace_store.cleanup'
+])
+```
+
+Use [Durable Workspaces](./durable-workspaces.md) when runs must survive process
+restart, retry from a committed checkpoint, enforce retention, encrypt stored
+workspace state, clean up terminal workspaces, or enforce quotas.
 
 ## Memory
 
@@ -226,4 +284,6 @@ handler: async (ctx) => {
 - Keep content capture disabled unless approved.
 - Use permission gates for mutating built-in tools.
 - Use executor-capable sandbox only where command execution is required.
+- Use durable workspace stores for production replay; sandbox snapshots alone
+  are not a production replay guarantee.
 - Test provider failures, validation failures, cancellation, and shutdown.

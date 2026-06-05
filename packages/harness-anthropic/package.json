@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-anthropic",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Anthropic model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,12 +40,12 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.1"
+    "@anthropic-ai/sdk": "^0.100.1"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.5",
+    "@vitest/coverage-v8": "^4.1.8",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.8"
   },
   "peerDependencies": {
     "@purista/harness": "*"

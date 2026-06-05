@@ -130,8 +130,19 @@ export class SkillManifestError extends HarnessError {
     message: string,
     meta: {
       directory: string
-      reason: 'missing_skill_md' | 'invalid_frontmatter' | 'name_mismatch' | 'directory_missing' | 'reserved_name'
+      reason:
+        | 'missing_skill_md'
+        | 'invalid_frontmatter'
+        | 'missing_description'
+        | 'invalid_name'
+        | 'name_mismatch'
+        | 'directory_missing'
+        | 'collision_shadowed'
+        | 'untrusted_project_skill'
+        | 'scan_limit_reached'
+        | 'reserved_name'
       skill_id?: string
+      source?: string
     },
     cause?: unknown
   ) {

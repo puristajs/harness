@@ -27,6 +27,7 @@ Keep these layers separate:
 - Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
+- Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
 - Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
 
 ## Default Workflow

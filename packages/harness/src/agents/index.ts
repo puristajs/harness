@@ -6,7 +6,7 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE
 } from '@opentelemetry/semantic-conventions/incubating'
-import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
+import { AgentLoopBudgetError, HarnessConfigError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -137,6 +137,7 @@ async function runDefaultAgentInner(args: {
   if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: args.agent.model } })
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
+  const activatedSkills = new Set<string>()
 
   if (args.agent.handler) {
     const output = await args.agent.handler({
@@ -160,6 +161,13 @@ async function runDefaultAgentInner(args: {
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
   const enabledBuiltins: BuiltinToolName[] = args.agent.builtinTools === false ? [] : (args.agent.builtinTools?.slice() as BuiltinToolName[] | undefined) ?? ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']
+  if (skillIds.length > 0 && !enabledBuiltins.includes('read')) {
+    throw new HarnessConfigError('Agents with skills require the read built-in tool for skill activation.', {
+      reason: 'skill_read_tool_missing',
+      path: `agents.${args.agentId}.builtinTools`,
+      id: args.agentId
+    })
+  }
   const builtinSpecs = getBuiltinToolSpecs(enabledBuiltins, args.session)
   const enabledCustomTools = new Set<string>((args.agent.tools ?? []) as readonly string[])
   const tsCustomSpecs = Object.entries(args.customTools)
@@ -239,7 +247,9 @@ async function runDefaultAgentInner(args: {
             throw new PermissionDeniedError('Permission denied.', { tool_name: canonical, agent_id: args.agentId, reason: 'hook_deny' })
           }
           if (canonical in BUILTIN_ALIAS_TO_CANONICAL) {
-            return { output: await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeBuiltinTool(canonical, input, withSandboxTelemetry(args, canonical), signal)) }
+            const output = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeBuiltinTool(canonical, input, withSandboxTelemetry(args, canonical), signal))
+            if (canonical === 'read') markSkillActivation(input, args.skills, activatedSkills)
+            return { output }
           }
           if (!enabledCustomTools.has(canonical)) {
             throw new ToolNotFoundError('Tool is not allowed for this agent.', { tool_id: canonical, where: 'agent_allowlist' })
@@ -293,6 +303,18 @@ async function runDefaultAgentInner(args: {
       modelMessages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify(result.output ?? result.error ?? {}) })
     }
     steps += 1
+  }
+}
+
+function markSkillActivation(input: unknown, skills: Record<string, ResolvedSkill>, activated: Set<string>): void {
+  if (!input || typeof input !== 'object') return
+  const readPath = (input as { path?: unknown }).path
+  if (typeof readPath !== 'string') return
+  for (const skill of Object.values(skills)) {
+    if (readPath === `${skill.mountPath}/SKILL.md`) {
+      activated.add(skill.name)
+      return
+    }
   }
 }
 

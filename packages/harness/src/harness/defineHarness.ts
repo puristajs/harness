@@ -162,16 +162,59 @@ export type PermissionDecision = 'allow' | 'deny'
 /** Async permission hook used for interactive approvals or custom policy engines. */
 export type OnPermission = (ctx: PermissionContext) => Promise<PermissionDecision>
 
+/** Skill frontmatter parsed from `SKILL.md`. */
+export interface SkillFrontmatter {
+  name: string
+  description: string
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  'allowed-tools'?: string
+}
+
+/** Validation mode for `SKILL.md` frontmatter. */
+export type SkillValidationMode = 'strict' | 'lenient'
+
+/** Diagnostic produced while parsing or discovering skills. */
+export interface SkillDiagnostic {
+  level: 'warn' | 'error'
+  code:
+    | 'missing_skill_md'
+    | 'invalid_frontmatter'
+    | 'missing_description'
+    | 'invalid_name'
+    | 'name_mismatch'
+    | 'directory_missing'
+    | 'collision_shadowed'
+    | 'untrusted_project_skill'
+    | 'scan_limit_reached'
+  message: string
+  skillName?: string
+  directory?: string
+  source?: string
+}
+
 /** Mounted skill metadata after frontmatter parsing. */
 export interface ResolvedSkill {
   /** Public skill id. */
   name: string
   /** Short user-facing description from frontmatter. */
   description: string
-  /** Optional skill version. */
-  version?: string
   /** Absolute directory mounted into `/skills/<name>`. */
   directory: string
+  /** Absolute path to the parsed `SKILL.md`. */
+  skillPath: string
+  /** Absolute path exposed as the skill instruction file location. */
+  location: string
+  /** Sandbox mount path for this skill. */
+  mountPath: `/skills/${string}`
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  allowedTools?: string
+  trust: 'trusted' | 'project' | 'user'
+  source?: string
+  diagnostics: readonly SkillDiagnostic[]
 }
 
 /** Conversation history accessor for a single session thread. */
@@ -266,10 +309,35 @@ export type ToolsConfig = Record<string, ToolDefinition>
 export interface SkillDefinition {
   /** Absolute path to the directory containing `SKILL.md`. */
   directory: string
+  validationMode?: SkillValidationMode
+  trust?: 'trusted' | 'project' | 'user'
+  source?: string
 }
 
 /** Full skill registry shape. */
 export type SkillsConfig = Record<string, SkillDefinition>
+
+/** Options for local Agent Skills discovery. */
+export interface DiscoverSkillsOptions {
+  projectRoot?: string
+  clientName?: string
+  includeProjectAgentsDir?: boolean
+  includeProjectClientDir?: boolean
+  includeUserAgentsDir?: boolean
+  includeUserClientDir?: boolean
+  includeClaudeCompatDir?: boolean
+  includeAncestorProjectDirs?: boolean
+  trustedProjectRoots?: readonly string[]
+  validationMode?: SkillValidationMode
+  maxDepth?: number
+  maxDirectories?: number
+}
+
+/** Result of local Agent Skills discovery. */
+export interface DiscoveredSkills {
+  skills: SkillsConfig
+  diagnostics: readonly SkillDiagnostic[]
+}
 
 /** Alias map passed to `.models(...)`. */
 export type ModelsConfig = Record<string, ModelAlias>
@@ -670,6 +738,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const resolved = typeof agents === 'function'
       ? agents({ agent: (definition) => definition })
       : agents
+    this.validateAgentSkillReferences(resolved)
     return this.clone({ agents: resolved }) as unknown as HarnessBuilder<any>
   }
 
@@ -732,6 +801,21 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   private clone(patch: Partial<BuilderStateInternal>): Builder<S> {
     return new Builder(this.options, { ...this.configured, ...patch })
+  }
+
+  private validateAgentSkillReferences(agents: Record<string, AgentDefinition<any, any, any>>): void {
+    const configuredSkills = new Set(Object.keys(this.configured.skills ?? {}))
+    for (const [agentId, agent] of Object.entries(agents)) {
+      for (const skillId of agent.skills ?? []) {
+        if (!configuredSkills.has(skillId)) {
+          throw new HarnessConfigError('Agent references an unknown skill.', {
+            reason: 'invalid_agent',
+            path: `agents.${agentId}.skills`,
+            id: skillId
+          })
+        }
+      }
+    }
   }
 
   private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {

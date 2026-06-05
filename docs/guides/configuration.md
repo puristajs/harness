@@ -138,6 +138,43 @@ Capabilities gate runtime calls:
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
 
+## Skills
+
+Skills are reusable instructions mounted into the sandbox. The harness prompt
+contains only the skill name, description, compatibility, and
+`/skills/<name>/SKILL.md` location. The full skill body is mounted only when an
+agent declares the skill and must be loaded with the `read` built-in.
+
+```ts
+.skills({
+  incident-responder: {
+    directory: './src/skills/incident-responder',
+    trust: 'trusted',
+    source: 'application'
+  }
+})
+.agents(({ agent }) => ({
+  triage: agent({
+    model: 'fast',
+    skills: ['incident-responder'],
+    builtinTools: ['read'],
+    instructions: 'Use relevant skills before producing the final object.'
+  })
+}))
+```
+
+`SKILL.md` must start with YAML frontmatter containing `name` and
+`description`. Optional fields such as `compatibility`, `license`, `metadata`,
+and `allowed-tools` are preserved for catalog and policy use. Strict parsing is
+the default for explicit bindings. Discovery uses lenient parsing so agent
+clients can repair common scalar quoting issues without exposing invalid skill
+bodies.
+
+Use explicit `.skills(...)` bindings for production. `discoverSkills(...)` is
+available for client-style local projects; project skill roots are ignored until
+the project root is explicitly trusted. Higher-precedence bindings win and
+shadowed collisions are returned as diagnostics.
+
 ## Sandbox
 
 ```ts

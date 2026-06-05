@@ -67,6 +67,24 @@ expect(events).toContain('run.finished')
 Call TypeScript tool handlers with a small context object and a temporary store.
 Assert both successful output and validation failure behavior.
 
+## Test Skills
+
+Skill tests should cover both catalog behavior and runtime activation:
+
+- valid `SKILL.md` frontmatter is parsed without inlining the body into the
+  system prompt;
+- invalid strict frontmatter fails before the body can be mounted or logged;
+- discovery reports trust, collisions, and scan-limit diagnostics;
+- an agent with `skills: [...]` has the `read` built-in available before model
+  I/O starts;
+- reading `/skills/<name>/SKILL.md` returns the mounted skill file and repeated
+  reads do not remount duplicate copies.
+
+Use a temporary skill directory and a scripted model for end-to-end tests. The
+first model response should call the `read` tool for `/skills/<name>/SKILL.md`;
+the second response should return the final validated object. Assert the first
+request contains the catalog entry and does not contain the skill body.
+
 ## Test Durable Workspace Adapters
 
 Workspace replay adapters should pass the shared contract before application

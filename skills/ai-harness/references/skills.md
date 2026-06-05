@@ -31,7 +31,8 @@ The harness mounts the entire directory at `/skills/<name>/` inside the active s
 ---
 name: incident-responder
 description: Use for drafting incident summaries with impact, owner, timeline, and next action.
-version: 1.0.0
+compatibility: "@purista/harness >=0.0.0"
+license: MIT
 ---
 
 # Incident Responder
@@ -40,11 +41,11 @@ Read `references/incident-template.md` before drafting postmortem-ready summarie
 ```
 
 Rules from implementation:
-- `name` must match `/^[a-z][a-z0-9-]*$/`
-- `name` must not include reserved words matched by `anthropic|claude|purista`
+- `name` must match lowercase ASCII letters, numbers, and hyphens with no leading, trailing, or consecutive hyphens
 - `description` must be present and no longer than 1024 characters
-- optional `version` is copied into resolved metadata
+- optional `compatibility`, `license`, `metadata`, and `allowed-tools` are preserved in resolved metadata
 - harness config key must equal frontmatter `name`
+- explicit bindings parse frontmatter strictly by default; discovery parses leniently and reports diagnostics
 
 ## Register And Allowlist
 Register skills globally, then allowlist them per agent:
@@ -59,7 +60,9 @@ defineHarness()
   .models(...)
   .skills({
     'incident-responder': {
-      directory: join(here, 'skills/incident-responder')
+      directory: join(here, 'skills/incident-responder'),
+      trust: 'trusted',
+      source: 'application'
     }
   })
   .agents(({ agent }) => ({
@@ -75,6 +78,9 @@ defineHarness()
 ```
 
 Use absolute directories or resolve them from `import.meta.url`. Avoid brittle process-relative paths.
+For local agent-client projects, `discoverSkills(...)` can build the `.skills(...)`
+map from trusted user roots and explicitly trusted project roots. Explicit
+bindings have higher precedence than discovery.
 
 ## Runtime Behavior
 At run start, for each declared skill:
@@ -84,8 +90,11 @@ At run start, for each declared skill:
 4. Instructions get a compact skill index appended:
 
 ```text
-Available skills (read /skills/<name>/SKILL.md for full instructions):
+Available skills:
 - incident-responder: Use for drafting incident summaries...
+  Location: /skills/incident-responder/SKILL.md
+
+Use the read tool to load /skills/<name>/SKILL.md when a skill is relevant.
 ```
 
 The full `SKILL.md` body is not injected. The model must use filesystem tools such as `read`, `list`, or `grep` to inspect `/skills/<name>/`.

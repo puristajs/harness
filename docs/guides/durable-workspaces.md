@@ -9,10 +9,10 @@ Sandbox snapshot support and durable workspace replay are different guarantees:
 |---|---|
 | `sandbox.snapshot` | A sandbox adapter can capture one sandbox session. |
 | `sandbox.resume` | A sandbox adapter can reopen a captured sandbox session. |
-| `workspace.durable` | A workspace adapter persists replay state beyond process exit. |
-| `workspace.retention` | The adapter reports effective expiry and cleanup policy. |
-| `workspace.encrypted_storage` | The adapter encrypts checkpoint payloads, snapshots, files, and metadata at rest. |
-| `workspace.quota` | The adapter enforces workspace size, file, age, and concurrency limits. |
+| `workspace_store.durable` | A workspace store persists replay state beyond process exit. |
+| `workspace_store.retention` | The store reports effective expiry and cleanup policy. |
+| `workspace_store.encrypted_storage` | The store encrypts checkpoint payloads, snapshots, files, and metadata at rest. |
+| `workspace_store.quota` | The store enforces workspace size, file, age, and concurrency limits. |
 
 Use durable workspaces for long-running agent workflows, offline eval jobs,
 dataset backfills, optimization jobs, and production measurement runs where a
@@ -23,16 +23,16 @@ fresh sandbox restart would lose useful execution state.
 ```ts
 const harness = defineHarness()
   .runtime(durableRuntime)
-  .workspace(durableWorkspace)
+  .workspaceStore(durableWorkspace)
   .requires([
     'runtime.workspace_checkpoint',
-    'workspace.durable',
-    'workspace.snapshot',
-    'workspace.resume',
-    'workspace.cleanup',
-    'workspace.retention',
-    'workspace.encrypted_storage',
-    'workspace.quota',
+    'workspace_store.durable',
+    'workspace_store.checkpoint',
+    'workspace_store.resume',
+    'workspace_store.cleanup',
+    'workspace_store.retention',
+    'workspace_store.encrypted_storage',
+    'workspace_store.quota',
   ])
   .models(models)
   .agents(agents)
@@ -41,6 +41,25 @@ const harness = defineHarness()
 
 `.requires(...)` is the fail-fast guard. The harness never silently downgrades
 from durable replay to ephemeral execution.
+
+## Out-of-the-box Store
+
+`inMemoryDurableWorkspaceStore()` is included for local development, examples,
+and tests:
+
+```ts
+import { defineHarness, inMemoryDurableWorkspaceStore } from '@purista/harness'
+
+const harness = defineHarness()
+  .workspaceStore(inMemoryDurableWorkspaceStore())
+  .requires(['workspace_store.durable', 'workspace_store.checkpoint', 'workspace_store.resume'])
+  .models(models)
+  .agents(agents)
+  .build()
+```
+
+The in-memory store is process-local. It is not a production persistence layer
+and does not survive process restart.
 
 ## Replay Boundary
 
@@ -62,7 +81,7 @@ own concrete policy values:
 - cleanup scheduling;
 - product records, UI, billing, and usage reports.
 
-CloudGrid can use durable workspace adapters for production replay while still
+CloudGrid can use durable workspace stores for production replay while still
 owning datasets, evaluation runs, result records, comparisons, and promotion
 evidence outside harness core.
 
@@ -76,14 +95,14 @@ emitted by harness telemetry.
 
 ## Testing
 
-Adapters must pass the durable workspace contract suite:
+Stores must pass the durable workspace contract suite:
 
 ```ts
-import { durableWorkspaceAdapterContract } from '@purista/harness/testing'
+import { durableWorkspaceStoreContract } from '@purista/harness/testing'
 
-durableWorkspaceAdapterContract(() => makeDurableWorkspaceAdapter())
+durableWorkspaceStoreContract(() => makeDurableWorkspaceStore())
 ```
 
 Application tests should cover missing capabilities, resume from a committed
 checkpoint, cleanup retry, quota exceeded behavior, and explicit ephemeral
-fallback policy when the application allows it.
+non-durable restart policy when the application declares `required:false`.

@@ -22,7 +22,7 @@ summary:
 open_decisions: []
 blocking_decisions: []
 confirmed_decisions:
-  - "DurableWorkspaceAdapter is separate from Sandbox."
+  - "DurableWorkspaceStore is separate from Sandbox."
   - "Sandbox snapshot/resume does not imply production durable replay."
   - "Harness core owns generic contracts, errors, telemetry, and tests, not product policy values."
 gates:

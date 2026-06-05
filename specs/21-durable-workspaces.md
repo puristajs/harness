@@ -9,7 +9,21 @@ Source: [puristajs/harness issue #11](https://github.com/puristajs/harness/issue
 This specification defines production durable replay workspace support for
 `@purista/harness` standalone users and for PURISTA attached agents. It closes
 the gap between the existing durable runtime checkpoint port and the existing
-sandbox snapshot/resume/hibernate capabilities.
+sandbox snapshot/resume/hibernate capabilities without merging their
+responsibilities.
+
+Mental model:
+
+- `Sandbox` is the live execution boundary. It owns file access, command
+  execution, MCP stdio execution, and optional low-level session
+  snapshot/resume/hibernate.
+- `DurableWorkspaceStore` is the durable replay state boundary. It owns
+  workspace/checkpoint references, replay lifecycle, retention, cleanup, quota,
+  and encryption metadata. It never exposes file, command, process, or MCP
+  execution APIs.
+- A managed platform may provide one package that constructs both a `Sandbox`
+  and a `DurableWorkspaceStore`, but the harness validates them as separate
+  contracts and reports their capabilities separately.
 
 ## 1. Ownership Boundary
 
@@ -56,8 +70,8 @@ The source contract is TypeScript declarations exported from
 
 New public symbols:
 
-- `DurableWorkspaceAdapter`
-- `DurableWorkspaceAdapterInfo`
+- `DurableWorkspaceStore`
+- `DurableWorkspaceStoreInfo`
 - `DurableWorkspacePolicy`
 - `WorkspaceStartOptions`
 - `WorkspaceHandle`
@@ -77,14 +91,15 @@ New public symbols:
 - `WorkspaceError`
 - `WorkspaceQuotaExceededError`
 - `WorkspaceCleanupError`
-- `FakeDurableWorkspaceAdapter`
-- `durableWorkspaceContract(...)`
+- `InMemoryDurableWorkspaceStore`
+- `inMemoryDurableWorkspaceStore(...)`
+- `durableWorkspaceStoreContract(...)`
 
 execution_semantics:
 
-- `DurableWorkspaceAdapter` methods are asynchronous, idempotent where stated,
+- `DurableWorkspaceStore` methods are asynchronous, idempotent where stated,
   cancellation-aware, and bounded by caller timeouts or `AbortSignal`.
-- `defineHarness().workspace(adapter)` binds one workspace adapter.
+- `defineHarness().workspaceStore(store)` binds one durable workspace store.
 - `defineHarness().requires([...])` validates workspace capabilities before
   `.build()` returns.
 - `harness.inspect()` reports effective workspace capabilities and policy
@@ -96,16 +111,15 @@ execution_semantics:
 
 | Capability | Meaning |
 | --- | --- |
-| `workspace.durable` | Adapter persists workspace state beyond process exit and exposes lifecycle methods. |
-| `workspace.snapshot` | Adapter can produce stable workspace checkpoints. |
-| `workspace.resume` | Adapter can resume from a committed workspace checkpoint. |
-| `workspace.hibernate` | Adapter can release active execution resources while retaining resumable workspace state. |
-| `workspace.abort` | Adapter can mark active or paused workspace state aborted and stop further resumes. |
-| `workspace.cleanup` | Adapter supports idempotent cleanup/delete with result metadata. |
-| `workspace.inspect` | Adapter supports non-mutating inspection by workspace or checkpoint reference. |
-| `workspace.retention` | Adapter exposes effective retention policy and expiry metadata. |
-| `workspace.quota` | Adapter enforces and reports quota policy. |
-| `workspace.encrypted_storage` | Adapter encrypts checkpoint payloads, snapshots, files, and metadata at rest according to reported policy. |
+| `workspace_store.durable` | Adapter persists workspace state beyond process exit and exposes lifecycle methods. |
+| `workspace_store.checkpoint` | Adapter can produce stable workspace checkpoints. |
+| `workspace_store.resume` | Adapter can resume from a committed workspace checkpoint. |
+| `workspace_store.abort` | Adapter can mark active or paused workspace state aborted and stop further resumes. |
+| `workspace_store.cleanup` | Adapter supports idempotent cleanup/delete with result metadata. |
+| `workspace_store.inspect` | Adapter supports non-mutating inspection by workspace or checkpoint reference. |
+| `workspace_store.retention` | Adapter exposes effective retention policy and expiry metadata. |
+| `workspace_store.quota` | Adapter enforces and reports quota policy. |
+| `workspace_store.encrypted_storage` | Adapter encrypts checkpoint payloads, snapshots, files, and metadata at rest according to reported policy. |
 | `runtime.workspace_checkpoint` | Runtime checkpoint records can carry durable workspace references. |
 | `runtime.checkpoint_retention` | Runtime adapter exposes checkpoint retention and expiry metadata. |
 
@@ -117,7 +131,7 @@ Capability aggregation:
 
 1. Sandbox capabilities come from the configured `Sandbox`.
 2. Runtime capabilities come from the configured `DurableRuntimeAdapter`.
-3. Workspace capabilities come from the configured `DurableWorkspaceAdapter`.
+3. Workspace capabilities come from the configured `DurableWorkspaceStore`.
 4. `.requires(...)` validates the union.
 5. A capability missing from every configured adapter fails build with
    `HarnessConfigError{meta.reason:'missing_required_capability'}`.
@@ -125,8 +139,8 @@ Capability aggregation:
 ## 6. Adapter Contract
 
 ```ts
-interface DurableWorkspaceAdapter {
-  readonly info: DurableWorkspaceAdapterInfo
+interface DurableWorkspaceStore {
+  readonly info: DurableWorkspaceStoreInfo
   configureHarnessContext?(context: HarnessAdapterContext): void
   startWorkspace(opts: WorkspaceStartOptions): Promise<WorkspaceHandle>
   pauseWorkspace(opts: WorkspacePauseOptions): Promise<WorkspaceCheckpoint>
@@ -136,7 +150,7 @@ interface DurableWorkspaceAdapter {
   inspectWorkspace?(opts: WorkspaceInspectionOptions): Promise<WorkspaceInspection>
 }
 
-interface DurableWorkspaceAdapterInfo {
+interface DurableWorkspaceStoreInfo {
   id: string
   packageName: string
   capabilities: readonly AdapterCapability[]
@@ -148,12 +162,26 @@ Validation:
 
 - `info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
 - `info.packageName` is non-empty.
-- `info.capabilities` contains `workspace.durable`.
+- `info.capabilities` contains `workspace_store.durable`.
+- The store has no file read/write, command execution, MCP execution, shell,
+  process, or live sandbox session methods.
 - Capabilities are honest: contract tests fail when advertised behavior is not
   implemented.
-- The adapter must accept `configureHarnessContext(...)` from the harness
+- The store must accept `configureHarnessContext(...)` from the harness
   builder and must use the provided logger and telemetry shim for harness-owned
   logs/spans/metrics.
+
+Default store:
+
+- `inMemoryDurableWorkspaceStore()` returns an in-process durable workspace
+  store for local development, examples, and hermetic tests.
+- The in-memory store advertises `workspace_store.durable`,
+  `workspace_store.checkpoint`, `workspace_store.resume`,
+  `workspace_store.abort`, `workspace_store.cleanup`,
+  `workspace_store.inspect`, `workspace_store.retention`, and
+  `workspace_store.quota`.
+- The in-memory store is not a production persistence guarantee across process
+  restarts and must be documented as local/test only.
 
 ## 7. Data Shapes
 
@@ -164,7 +192,7 @@ Applications must not parse reference internals.
 type WorkspaceLifecycleState =
   | 'active'
   | 'paused'
-  | 'hibernated'
+
   | 'aborted'
   | 'cleanup_pending'
   | 'cleaned'
@@ -343,11 +371,10 @@ Rules:
 ### Pause
 
 - `pauseWorkspace` creates a workspace checkpoint and returns stable references.
-- The adapter records the lifecycle state as `paused` unless the reason is
-  `shutdown` and the adapter reports `workspace.hibernate`; then it may record
-  `hibernated`.
-- A paused or hibernated workspace remains resumable until `expiresAt` or
-  cleanup.
+- The store records the lifecycle state as `paused`. Releasing active compute is
+  a sandbox responsibility; a sandbox may use `sandbox.hibernate`, but the
+  workspace store does not expose hibernate or execution-resource operations.
+- A paused workspace remains resumable until `expiresAt` or cleanup.
 - A pause failure leaves the prior committed checkpoint as the current replay
   boundary.
 
@@ -413,13 +440,13 @@ interface WorkspaceRetentionPolicy {
 Rules:
 
 - Harness core does not define product retention durations.
-- A production adapter that advertises `workspace.retention` must report the
+- A production adapter that advertises `workspace_store.retention` must report the
   effective retention policy through `info.policy.retention` and
   `WorkspaceInspection.retention`.
 - `expiresAt` is computed from the reported policy and the checkpoint state
   transition time.
-- An adapter without `workspace.retention` must omit `expiresAt` and must not be
-  accepted when `.requires(['workspace.retention'])` is used.
+- An adapter without `workspace_store.retention` must omit `expiresAt` and must not be
+  accepted when `.requires(['workspace_store.retention'])` is used.
 - Reference in-memory/test adapters use `cleanupMode:'manual_only'` and no
   expiry.
 
@@ -436,7 +463,7 @@ interface WorkspaceEncryptionInfo {
 
 Rules:
 
-- A production adapter advertising `workspace.encrypted_storage` must encrypt
+- A production adapter advertising `workspace_store.encrypted_storage` must encrypt
   checkpoint payloads, snapshots, files, and metadata at rest.
 - Provider credentials, API keys, OAuth tokens, raw headers, and secret-store
   material must not be persisted by harness core.
@@ -472,7 +499,7 @@ Rules:
 - Quota metadata includes `quota`, `limit`, `actual`, `workspaceRef`, `runId`,
   and `sessionId` when available.
 - Applications that require production quota enforcement use
-  `.requires(['workspace.quota'])`.
+  `.requires(['workspace_store.quota'])`.
 
 ## 14. Errors
 
@@ -503,18 +530,18 @@ Spans are added to [14-otel-conventions](./14-otel-conventions.md):
 
 - `harness.workspace.start`
 - `harness.workspace.pause`
-- `harness.workspace.resume`
-- `harness.workspace.abort`
-- `harness.workspace.cleanup`
-- `harness.workspace.inspect`
+- `harness.workspace_store.resume`
+- `harness.workspace_store.abort`
+- `harness.workspace_store.cleanup`
+- `harness.workspace_store.inspect`
 
 Metrics:
 
 - `harness.workspace.operation.duration` histogram, unit `s`
 - `harness.workspace.operations` counter, unit `1`
 - `harness.workspace.bytes` histogram, unit `By`
-- `harness.workspace.cleanup.failures` counter, unit `1`
-- `harness.workspace.quota.exceeded` counter, unit `1`
+- `harness.workspace_store.cleanup.failures` counter, unit `1`
+- `harness.workspace_store.quota.exceeded` counter, unit `1`
 
 Allowed span/log/metric attributes:
 
@@ -523,9 +550,9 @@ Allowed span/log/metric attributes:
 - `harness.workspace.state`
 - `harness.workspace.ref_hash`
 - `harness.workspace.checkpoint_ref_hash`
-- `harness.workspace.snapshot_ref_hash`
-- `harness.workspace.cleanup.reason`
-- `harness.workspace.quota`
+- `harness.workspace_store.checkpoint_ref_hash`
+- `harness.workspace_store.cleanup.reason`
+- `harness.workspace_store.quota`
 - `harness.run.id`
 - `harness.session.id`
 - `harness.workflow.id`
@@ -538,7 +565,7 @@ records, not in spans, metrics, or logs.
 
 ## 16. Runtime Integration
 
-The builder gains `.workspace(adapter)` in the foundation stage after
+The builder gains `.workspaceStore(adapter)` in the foundation stage after
 `.runtime(...)` and before `.requires(...)`.
 
 Ordering:
@@ -546,7 +573,7 @@ Ordering:
 ```text
 defineHarness(opts?)
   .telemetry(...)? .logger(...)? .state(...)? .sandbox(...)? .memory(...)?
-  .runtime(...)? .workspace(...)? .requires(...)? .defaults(...)?
+  .runtime(...)? .workspaceStore(...)? .requires(...)? .defaults(...)?
   .models(...)
   .tools(...)?
   .skills(...)?
@@ -557,65 +584,60 @@ defineHarness(opts?)
 
 Rules:
 
-- `.workspace(...)` is callable at most once.
-- `.workspace(...)` validates `DurableWorkspaceAdapterInfo` synchronously when
+- `.workspaceStore(...)` is callable at most once.
+- `.workspaceStore(...)` validates `DurableWorkspaceStoreInfo` synchronously when
   possible and throws `HarnessConfigError` on malformed metadata.
-- When no workspace adapter is configured, the harness has no workspace
+- When no workspace store is configured, the harness has no workspace
   capabilities.
 - A workflow or custom handler may use durable runtime checkpoints without a
-  workspace adapter. It cannot claim durable workspace replay without both
-  `runtime.workspace_checkpoint` and `workspace.durable`.
+  workspace store. It cannot claim durable workspace replay without both
+  `runtime.workspace_checkpoint` and `workspace_store.durable`.
 - Direct applications may require durable workspace behavior with:
 
 ```ts
 defineHarness()
   .runtime(runtime)
-  .workspace(workspace)
+  .workspaceStore(workspace)
   .requires([
     'runtime.workspace_checkpoint',
-    'workspace.durable',
-    'workspace.snapshot',
-    'workspace.resume',
-    'workspace.cleanup',
-    'workspace.retention',
-    'workspace.encrypted_storage',
-    'workspace.quota',
+    'workspace_store.durable',
+    'workspace_store.checkpoint',
+    'workspace_store.resume',
+    'workspace_store.cleanup',
+    'workspace_store.retention',
+    'workspace_store.encrypted_storage',
+    'workspace_store.quota',
   ])
 ```
 
-## 17. Fallback Policy
+## 17. Required Policy
 
-Harness core exposes capability facts. Applications choose fallback policy.
-
-Allowed fallback modes for application integrations:
-
-- `fail_startup` — construction or service startup fails when required
-  capabilities are missing.
-- `fresh_ephemeral` — a run may restart in a fresh sandbox when durable replay
-  is unavailable or a committed checkpoint cannot be resumed.
+Harness core exposes capability facts. Applications choose required/fallback
+policy.
 
 Rules:
 
-- Harness direct users express `fail_startup` with `.requires(...)`.
+- Harness direct users express required durable replay with `.requires(...)`.
 - Harness core does not silently fall back from durable replay to fresh
   ephemeral execution.
+- Application integrations may expose a `required:false` policy when product
+  semantics tolerate losing prior workspace state.
 - A resume failure never mutates the failed checkpoint.
-- Fallback to fresh ephemeral must emit a warning log with
+- Integration fallback to fresh ephemeral must emit one warning log with
   `harness.warning.code:'WORKSPACE_EPHEMERAL_FALLBACK'`.
+- The warning may include service, agent, run, and capability names only. It
+  must not include workspace refs, checkpoint refs, file paths, prompts,
+  completions, tool IO, credentials, tokens, or raw headers.
 
 ## 18. Testing
 
 `@purista/harness/testing` adds:
 
 ```ts
-export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter
-export function durableWorkspaceContract(
-  make: () => DurableWorkspaceAdapter | Promise<DurableWorkspaceAdapter>,
-  opts?: {
-    retention?: 'available' | 'unavailable'
-    encryption?: 'available' | 'unavailable'
-    quota?: 'available' | 'unavailable'
-  }
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
+export function durableWorkspaceStoreContract(
+  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
 ): void
 ```
 
@@ -646,7 +668,7 @@ Required integration tests:
 - crash after runtime commit before caller return;
 - missing workspace checkpoint at resume;
 - build failure when `.requires(...)` names missing workspace capability;
-- `harness.inspect()` reports workspace adapter id, package, capabilities, and
+- `harness.inspect()` reports workspace store id, package, capabilities, and
   policy without opening a workspace.
 
 ## 19. Documentation
@@ -655,7 +677,7 @@ Harness docs must add a durable workspace page or section covering:
 
 - difference between sandbox snapshot/resume and durable workspace replay;
 - adapter capabilities and `.requires(...)`;
-- standalone harness setup with durable runtime and workspace adapters;
+- standalone harness setup with durable runtime and workspace stores;
 - checkpoint/snapshot consistency rules;
 - retention, encryption, cleanup, quota, and fallback policy boundaries;
 - test adapter and contract suite usage;
@@ -665,7 +687,7 @@ Harness docs must add a durable workspace page or section covering:
 
 | Flow | Entrypoint | Consumer | Success | Failure/Recovery | Verification |
 | --- | --- | --- | --- | --- | --- |
-| F-DW-01 standalone durable run | `defineHarness().runtime(...).workspace(...).requires(...).workflows(...)` | Direct harness application | Workflow pauses, runtime checkpoint references workspace checkpoint, resume returns final output, cleanup succeeds | Missing capability fails build; cleanup retry leaves `cleanup_pending` then cleans | Harness integration and contract tests |
+| F-DW-01 standalone durable run | `defineHarness().runtime(...).workspaceStore(...).requires(...).workflows(...)` | Direct harness application | Workflow pauses, runtime checkpoint references workspace checkpoint, resume returns final output, cleanup succeeds | Missing capability fails build; cleanup retry leaves `cleanup_pending` then cleans | Harness integration and contract tests |
 | F-DW-02 checkpoint crash | Durable workflow step boundary | Runtime adapter | Orphan workspace checkpoint is inspectable and sweepable when runtime commit fails | Resume ignores orphan; cleanup removes it | Crash matrix test |
 | F-DW-03 resume failure | `session.workflows[id].prompt(...)` with checkpointed runtime | Direct harness application | Latest valid checkpoint resumes | Missing/expired/aborted workspace checkpoint throws deterministic `WorkspaceError`; app fallback requires explicit policy | Integration test |
 | F-DW-04 policy inspection | `harness.inspect()` | PURISTA/CloudGrid/runtime bootstrap | Effective capabilities and policy metadata are visible without mutation | Unsupported inspect omitted; requiring inspect fails build when absent | API test |
@@ -673,10 +695,10 @@ Harness docs must add a durable workspace page or section covering:
 
 ## 21. Migration And Compatibility
 
-- Existing harness users without `.workspace(...)` are unaffected.
+- Existing harness users without `.workspaceStore(...)` are unaffected.
 - Existing `sandbox.snapshot`, `sandbox.resume`, and `sandbox.hibernate`
   adapters remain valid low-level sandbox adapters.
-- Production durable replay users must add `.workspace(adapter)` and explicit
+- Production durable replay users must add `.workspaceStore(adapter)` and explicit
   `.requires(...)` capabilities.
 - Existing runtime checkpoints without workspace fields remain valid and resume
   through the existing `DurableRuntimeAdapter` behavior.

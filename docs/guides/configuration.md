@@ -37,7 +37,7 @@ flowchart LR
   Harness --> State["state adapter"]
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
-  Harness --> Workspace["durable workspace adapter"]
+  Harness --> Workspace["durable workspace store"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -152,17 +152,17 @@ executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
 
 Sandbox snapshot/resume/hibernate is a low-level sandbox adapter capability.
-Production durable replay also requires a durable workspace adapter:
+Production durable replay also requires a durable workspace store:
 
 ```ts
 .runtime(durableRuntime)
-.workspace(durableWorkspace)
+.workspaceStore(durableWorkspace)
 .requires([
   'runtime.workspace_checkpoint',
-  'workspace.durable',
-  'workspace.snapshot',
-  'workspace.resume',
-  'workspace.cleanup'
+  'workspace_store.durable',
+  'workspace_store.checkpoint',
+  'workspace_store.resume',
+  'workspace_store.cleanup'
 ])
 ```
 
@@ -247,6 +247,6 @@ handler: async (ctx) => {
 - Keep content capture disabled unless approved.
 - Use permission gates for mutating built-in tools.
 - Use executor-capable sandbox only where command execution is required.
-- Use durable workspace adapters for production replay; sandbox snapshots alone
+- Use durable workspace stores for production replay; sandbox snapshots alone
   are not a production replay guarantee.
 - Test provider failures, validation failures, cancellation, and shutdown.

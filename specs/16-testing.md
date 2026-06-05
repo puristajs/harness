@@ -29,7 +29,8 @@ export class FakeStateStore extends InMemoryStateStore       // exposes inspecti
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -46,13 +47,8 @@ export function memoryAdapterContract(
   make: () => MemoryAdapter | Promise<MemoryAdapter>,
   opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
 ): void
-export function durableWorkspaceContract(
-  make: () => DurableWorkspaceAdapter | Promise<DurableWorkspaceAdapter>,
-  opts?: {
-    retention?: 'available' | 'unavailable'
-    encryption?: 'available' | 'unavailable'
-    quota?: 'available' | 'unavailable'
-  }
+export function durableWorkspaceStoreContract(
+  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
 ): void
 
 // Helpers
@@ -131,7 +127,7 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 11. Standard memory spans and metrics are emitted by the core wrapper, not by adapter code.
 12. Content capture tests cover `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT`; raw keys/values/queries/results appear only in the modes allowed by [20-memory-adapters](./20-memory-adapters.md).
 
-### DurableWorkspaceAdapter
+### DurableWorkspaceStore
 
 1. `info.id`, `info.packageName`, and `info.capabilities` pass [21-durable-workspaces](./21-durable-workspaces.md) validation.
 2. `startWorkspace` is idempotent for the same idempotency key and throws `WorkspaceError{meta.reason:'idempotency_conflict'}` for conflicting input.
@@ -139,7 +135,7 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 4. `resumeWorkspace` succeeds only for committed, non-expired, non-aborted, non-cleaned checkpoints.
 5. `abortWorkspace` is idempotent and blocks later resume.
 6. `cleanupWorkspace` is idempotent, returns `cleaned` for full deletion, and returns `cleanup_pending` with retry metadata for partial deletion.
-7. `inspectWorkspace` is read-only and returns policy metadata when `workspace.inspect`, `workspace.retention`, `workspace.encrypted_storage`, or `workspace.quota` is advertised.
+7. `inspectWorkspace` is read-only and returns policy metadata when `workspace_store.inspect`, `workspace_store.retention`, `workspace_store.encrypted_storage`, or `workspace_store.quota` is advertised.
 8. Quota failures throw `WorkspaceQuotaExceededError` and expose no visible partial checkpoint except an inspectable orphan marked for cleanup.
 9. `signal` cancellation causes `OperationCancelledError{meta.scope:'workspace'}`.
 10. Backend failures surface as `WorkspaceError` or `WorkspaceCleanupError`.
@@ -176,7 +172,7 @@ The harness package additionally has integration tests:
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
 - `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
-- Durable workspace integration: `.workspace(custom)` registers a durable workspace adapter; `.requires(['workspace.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, runtime checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
+- Durable workspace integration: `.workspaceStore(custom)` registers a durable workspace store; `.requires(['workspace_store.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, runtime checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.

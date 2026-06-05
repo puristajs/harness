@@ -1,32 +1,32 @@
 import { expect, it } from 'vitest'
 
 import { HarnessConfigError } from '../errors/index.js'
-import { FakeDurableWorkspaceAdapter, durableWorkspaceAdapterContract } from '../testing/index.js'
-import type { DurableWorkspaceAdapter } from './workspace.js'
-import { validateDurableWorkspaceAdapter } from './workspace.js'
+import { durableWorkspaceStoreContract, inMemoryDurableWorkspaceStore } from '../testing/index.js'
+import type { DurableWorkspaceStore } from './workspace.js'
+import { validateDurableWorkspaceStore } from './workspace.js'
 
-durableWorkspaceAdapterContract(() => new FakeDurableWorkspaceAdapter())
+durableWorkspaceStoreContract(() => inMemoryDurableWorkspaceStore())
 
-it('rejects workspace adapters without durable workspace capability', () => {
-  const adapter = new FakeDurableWorkspaceAdapter()
-  const invalid: DurableWorkspaceAdapter = {
+it('rejects workspace stores without durable workspace capability', () => {
+  const adapter = inMemoryDurableWorkspaceStore()
+  const invalid: DurableWorkspaceStore = {
     ...adapter,
     info: {
       ...adapter.info,
-      capabilities: ['workspace.snapshot']
+      capabilities: ['workspace_store.checkpoint']
     },
-    capabilities: ['workspace.snapshot']
+    capabilities: ['workspace_store.checkpoint']
   }
 
-  expect(() => validateDurableWorkspaceAdapter(invalid)).toThrow(HarnessConfigError)
+  expect(() => validateDurableWorkspaceStore(invalid)).toThrow(HarnessConfigError)
 })
 
-it('rejects workspace adapters with divergent capability declarations', () => {
-  const adapter = new FakeDurableWorkspaceAdapter()
-  const invalid: DurableWorkspaceAdapter = {
+it('rejects workspace stores with divergent capability declarations', () => {
+  const adapter = inMemoryDurableWorkspaceStore()
+  const invalid: DurableWorkspaceStore = {
     ...adapter,
-    capabilities: [...adapter.info.capabilities, 'workspace.encrypted_storage']
+    capabilities: [...adapter.info.capabilities, 'workspace_store.encrypted_storage']
   }
 
-  expect(() => validateDurableWorkspaceAdapter(invalid)).toThrow(HarnessConfigError)
+  expect(() => validateDurableWorkspaceStore(invalid)).toThrow(HarnessConfigError)
 })

@@ -6,7 +6,6 @@ import type { HarnessAdapterContext } from './harness-context.js'
 export type WorkspaceLifecycleState =
   | 'active'
   | 'paused'
-  | 'hibernated'
   | 'aborted'
   | 'cleanup_pending'
   | 'cleaned'
@@ -47,7 +46,7 @@ export interface DurableWorkspacePolicy {
   quota?: WorkspaceQuotaPolicy
 }
 
-export interface DurableWorkspaceAdapterInfo {
+export interface DurableWorkspaceStoreInfo {
   id: string
   packageName: string
   capabilities: readonly AdapterCapability[]
@@ -190,8 +189,8 @@ export interface DurableReplayCheckpoint {
   metadata?: Record<string, JsonValue>
 }
 
-export interface DurableWorkspaceAdapter extends AdapterCapabilities {
-  readonly info: DurableWorkspaceAdapterInfo
+export interface DurableWorkspaceStore extends AdapterCapabilities {
+  readonly info: DurableWorkspaceStoreInfo
   configureHarnessContext?(context: HarnessAdapterContext): void
   startWorkspace(opts: WorkspaceStartOptions): Promise<WorkspaceHandle>
   pauseWorkspace(opts: WorkspacePauseOptions): Promise<WorkspaceCheckpoint>
@@ -203,32 +202,32 @@ export interface DurableWorkspaceAdapter extends AdapterCapabilities {
 
 const adapterIdPattern = /^[a-z][a-z0-9_.-]{1,63}$/
 
-export function validateDurableWorkspaceAdapter(adapter: DurableWorkspaceAdapter): void {
+export function validateDurableWorkspaceStore(adapter: DurableWorkspaceStore): void {
   if (!adapterIdPattern.test(adapter.info.id)) {
-    throw new HarnessConfigError('Workspace adapter id is invalid.', {
-      reason: 'invalid_workspace_adapter',
-      path: 'workspace.info.id',
+    throw new HarnessConfigError('Workspace store id is invalid.', {
+      reason: 'invalid_workspace_store',
+      path: 'workspaceStore.info.id',
       id: adapter.info.id
     })
   }
   if (!adapter.info.packageName.trim()) {
-    throw new HarnessConfigError('Workspace adapter packageName is required.', {
-      reason: 'invalid_workspace_adapter',
-      path: 'workspace.info.packageName',
+    throw new HarnessConfigError('Workspace store packageName is required.', {
+      reason: 'invalid_workspace_store',
+      path: 'workspaceStore.info.packageName',
       id: adapter.info.id
     })
   }
-  if (!adapter.info.capabilities.includes('workspace.durable')) {
-    throw new HarnessConfigError('Workspace adapter must support workspace.durable.', {
-      reason: 'invalid_workspace_adapter',
-      path: 'workspace.info.capabilities',
+  if (!adapter.info.capabilities.includes('workspace_store.durable')) {
+    throw new HarnessConfigError('Workspace store must support workspace_store.durable.', {
+      reason: 'invalid_workspace_store',
+      path: 'workspaceStore.info.capabilities',
       id: adapter.info.id
     })
   }
   if (adapter.capabilities.length !== adapter.info.capabilities.length || adapter.capabilities.some((capability) => !adapter.info.capabilities.includes(capability))) {
-    throw new HarnessConfigError('Workspace adapter capabilities must match info.capabilities.', {
-      reason: 'invalid_workspace_adapter',
-      path: 'workspace.capabilities',
+    throw new HarnessConfigError('Workspace store capabilities must match info.capabilities.', {
+      reason: 'invalid_workspace_store',
+      path: 'workspaceStore.capabilities',
       id: adapter.info.id
     })
   }

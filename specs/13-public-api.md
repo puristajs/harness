@@ -8,7 +8,7 @@
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
-- `@purista/harness-workspace-*` — optional durable workspace adapters. Core ships only test fakes under `@purista/harness/testing`.
+- `@purista/harness-workspace-*` — optional durable workspace stores. Core ships only test fakes under `@purista/harness/testing`.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -210,8 +210,8 @@ export interface MemorySearchQuery
 export interface MemorySearchResult
 
 // Durable workspace replay
-export interface DurableWorkspaceAdapter
-export interface DurableWorkspaceAdapterInfo
+export interface DurableWorkspaceStore
+export interface DurableWorkspaceStoreInfo
 export interface DurableWorkspacePolicy
 export interface WorkspaceStartOptions
 export interface WorkspaceHandle
@@ -305,7 +305,7 @@ interface HarnessBuilder<S extends BuilderState> {
   sandbox(sandbox: Sandbox): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
-  workspace(adapter: DurableWorkspaceAdapter): HarnessBuilder<S>
+  workspace(adapter: DurableWorkspaceStore): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
@@ -513,11 +513,22 @@ type AdapterCapability =
   | 'runtime.retry'
   | 'runtime.distributed_lock'
   | 'runtime.resume_from_checkpoint'
+  | 'runtime.workspace_checkpoint'
+  | 'runtime.checkpoint_retention'
+  | 'workspace_store.durable'
+  | 'workspace_store.checkpoint'
+  | 'workspace_store.resume'
+  | 'workspace_store.abort'
+  | 'workspace_store.cleanup'
+  | 'workspace_store.inspect'
+  | 'workspace_store.retention'
+  | 'workspace_store.quota'
+  | 'workspace_store.encrypted_storage'
   | 'feedback.record'
   | MemoryCapability
 
 interface AdapterInspection {
-  kind: 'state' | 'sandbox' | 'runtime' | 'feedback' | 'model' | 'memory'
+  kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'feedback' | 'model' | 'memory'
   id: string
   capabilities: readonly AdapterCapability[]
 }
@@ -712,7 +723,8 @@ export class FakeStateStore extends InMemoryStateStore       // exposes inspecti
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -729,13 +741,8 @@ export function memoryAdapterContract(
   make: () => MemoryAdapter | Promise<MemoryAdapter>,
   opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
 ): void
-export function durableWorkspaceContract(
-  make: () => DurableWorkspaceAdapter | Promise<DurableWorkspaceAdapter>,
-  opts?: {
-    retention?: 'available' | 'unavailable'
-    encryption?: 'available' | 'unavailable'
-    quota?: 'available' | 'unavailable'
-  }
+export function durableWorkspaceStoreContract(
+  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
 ): void
 
 // Helpers

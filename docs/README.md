@@ -90,7 +90,7 @@ flowchart LR
 
 The application API is `harness.getSession(...)`, then
 `session.agents.<id>` or `session.workflows.<id>`. Providers, tools, sandboxes,
-state stores, and durable workspace adapters are infrastructure behind that
+state stores, and durable workspace stores are infrastructure behind that
 boundary.
 
 In harness terminology, an **agent** is the typed LLM conversation loop: it

@@ -265,14 +265,14 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `harness.workspace.adapter` | string | `DurableWorkspaceAdapter.info.id` |
+| `harness.workspace.adapter` | string | `DurableWorkspaceStore.info.id` |
 | `harness.workspace.operation` | string | `start`, `pause`, `resume`, `abort`, `cleanup`, `inspect` |
 | `harness.workspace.state` | string | lifecycle state returned by the adapter |
 | `harness.workspace.ref_hash` | string | SHA-256 hex of `workspaceRef` |
 | `harness.workspace.checkpoint_ref_hash` | string | SHA-256 hex of `checkpointRef` when available |
-| `harness.workspace.snapshot_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
-| `harness.workspace.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
-| `harness.workspace.quota` | string | quota id when a quota is checked or exceeded |
+| `harness.workspace_store.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
+| `harness.workspace_store.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
+| `harness.workspace_store.quota` | string | quota id when a quota is checked or exceeded |
 | `harness.run.id` | string | when available |
 | `harness.session.id` | string | when available |
 | `harness.workflow.id` | string | when available |
@@ -369,8 +369,8 @@ aggregating metrics.
 | `harness.workspace.operation.duration` | Histogram | `s` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.operations` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.bytes` | Histogram | `By` | `harness.workspace.adapter`, `harness.workspace.operation` |
-| `harness.workspace.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.cleanup.reason`, `error.type` |
-| `harness.workspace.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.quota` |
+| `harness.workspace_store.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.cleanup.reason`, `error.type` |
+| `harness.workspace_store.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.quota` |
 
 No `_ms` instruments exist.
 

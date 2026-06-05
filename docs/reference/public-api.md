@@ -53,7 +53,7 @@ the simple in-process defaults.
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `runtime.checkpoint`. |
 | `DurableRuntime` | Optional checkpoint/lease runtime contract for durable use cases. |
-| `DurableWorkspaceAdapter` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
+| `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
 
@@ -62,8 +62,8 @@ the simple in-process defaults.
 ```ts
 const harness = defineHarness()
   .runtime(inMemoryDurableRuntime())
-  .workspace(durableWorkspace)
-  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint', 'runtime.workspace_checkpoint', 'workspace.durable'])
+  .workspaceStore(durableWorkspace)
+  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint', 'runtime.workspace_checkpoint', 'workspace_store.durable'])
   .models(...)
   .agents(...)
   .build()

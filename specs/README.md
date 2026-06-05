@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 23 files (this README plus 22 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future durable workspace adapter packages. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 23 files (this README plus 22 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future durable workspace store packages. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -56,7 +56,7 @@ For an implementation agent starting cold, read in this order:
 | [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) | Canonical living-wiki intelligence workspace contract covering Hono, React/Vite, OpenAI, direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger. |
 | [19-ai-eval-core.md](./19-ai-eval-core.md) | Harness-owned AI eval core functionality and explicit non-ownership of Cloudgrid adapter concerns. |
 | [20-memory-adapters.md](./20-memory-adapters.md) | Memory adapter port, run/session/agent/user/tenant scopes, telemetry, metrics, and sandbox-backed reference adapter. |
-| [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace adapter contract for production replay across runtime checkpoints and sandbox workspace state. |
+| [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace store contract for production replay across runtime checkpoints and sandbox workspace state. |
 
 ## Authoritative anchors
 

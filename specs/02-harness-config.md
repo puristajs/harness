@@ -18,7 +18,7 @@ The methods MUST be called in this order, each at most once:
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspace(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .requires(...)?  .defaults(...)?
   .models({...})            // REQUIRED, before tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
@@ -31,7 +31,7 @@ defineHarness(opts?)
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
-- `.memory(...)`, `.runtime(...)`, `.workspace(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -109,9 +109,9 @@ support as an opt-in adapter capability surface, not a mandatory worker or
 queue. Runtime adapters declare `capabilities`; checkpoint, retry, lock, and
 resume semantics stay owned by the runtime adapter.
 
-### `.workspace(adapter)`
+### `.workspaceStore(adapter)`
 
-Pass an optional `DurableWorkspaceAdapter`. Core treats durable workspace
+Pass an optional `DurableWorkspaceStore`. Core treats durable workspace
 support as an opt-in adapter capability surface for production replay. The
 adapter lifecycle, references, retention, encryption, cleanup, quota, fallback,
 and telemetry rules are locked in [21-durable-workspaces](./21-durable-workspaces.md).
@@ -120,7 +120,7 @@ Validation:
 
 - `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
 - `adapter.info.packageName` is non-empty.
-- `adapter.info.capabilities` contains `workspace.durable`.
+- `adapter.info.capabilities` contains `workspace_store.durable`.
 - The method is callable at most once and only in the foundation stage after
   `.runtime(...)` and before `.requires(...)`, `.defaults(...)`, or domain
   methods.
@@ -134,16 +134,16 @@ defineHarness()
   .sandbox(snapshotSandbox)
   .memory(persistentMemory)
   .runtime(durableRuntime)
-  .workspace(durableWorkspace)
+  .workspaceStore(durableWorkspace)
   .requires([
     'sandbox.snapshot',
     'sandbox.resume',
     'memory.persistent',
     'runtime.checkpoint',
     'runtime.workspace_checkpoint',
-    'workspace.durable',
-    'workspace.resume',
-    'workspace.cleanup',
+    'workspace_store.durable',
+    'workspace_store.resume',
+    'workspace_store.cleanup',
   ])
 ```
 
@@ -366,7 +366,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 12. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
 13. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
-15. `workspace.info` and durable workspace adapter capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
+15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
 
 ## `Harness<S>` returned object
 

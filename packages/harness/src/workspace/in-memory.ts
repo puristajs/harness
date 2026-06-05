@@ -1,9 +1,7 @@
-import { describe, expect, it } from 'vitest'
-
 import type { JsonValue } from '../models/json.js'
 import type {
-  DurableWorkspaceAdapter,
-  DurableWorkspaceAdapterInfo,
+  DurableWorkspaceStore,
+  DurableWorkspaceStoreInfo,
   WorkspaceAbortOptions,
   WorkspaceAbortResult,
   WorkspaceCheckpoint,
@@ -16,7 +14,6 @@ import type {
   WorkspaceResumeOptions,
   WorkspaceStartOptions
 } from '../ports/workspace.js'
-import { validateDurableWorkspaceAdapter } from '../ports/workspace.js'
 
 interface StoredWorkspace {
   workspaceRef: string
@@ -30,20 +27,20 @@ interface StoredWorkspace {
   checkpoints: WorkspaceCheckpoint[]
 }
 
-/** Deterministic in-memory durable workspace adapter for tests and adapter examples. */
-export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter {
+/** In-process durable workspace store for local development, examples, and tests. */
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
   public readonly info = {
-    id: 'fake_workspace',
-    packageName: '@purista/harness/testing',
+    id: 'in_memory_workspace_store',
+    packageName: '@purista/harness',
     capabilities: [
-      'workspace.durable',
-      'workspace.snapshot',
-      'workspace.resume',
-      'workspace.abort',
-      'workspace.cleanup',
-      'workspace.inspect',
-      'workspace.retention',
-      'workspace.quota'
+      'workspace_store.durable',
+      'workspace_store.checkpoint',
+      'workspace_store.resume',
+      'workspace_store.abort',
+      'workspace_store.cleanup',
+      'workspace_store.inspect',
+      'workspace_store.retention',
+      'workspace_store.quota'
     ] as const,
     policy: {
       retention: {
@@ -54,7 +51,7 @@ export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter {
       },
       quota: { maxActiveWorkspaces: 100, maxWorkspaceBytes: 10_000_000 }
     }
-  } satisfies DurableWorkspaceAdapterInfo
+  } satisfies DurableWorkspaceStoreInfo
 
   public readonly capabilities = this.info.capabilities
   private readonly workspaces = new Map<string, StoredWorkspace>()
@@ -176,43 +173,7 @@ export class FakeDurableWorkspaceAdapter implements DurableWorkspaceAdapter {
   }
 }
 
-/** Shared contract for durable workspace adapters. */
-export function durableWorkspaceAdapterContract(make: () => DurableWorkspaceAdapter | Promise<DurableWorkspaceAdapter>): void {
-  describe('durableWorkspaceAdapterContract', () => {
-    it('validates metadata and round-trips checkpointed workspaces', async () => {
-      const adapter = await make()
-      validateDurableWorkspaceAdapter(adapter)
-      const signal = new AbortController().signal
-      const handle = await adapter.startWorkspace({
-        sessionId: 'session-1',
-        runId: 'run-1',
-        agentId: 'agent-1',
-        attempt: 1,
-        idempotencyKey: 'start-1',
-        signal
-      })
-      const checkpoint = await adapter.pauseWorkspace({
-        handle,
-        stepId: 'step-1',
-        sequence: 1,
-        attempt: 1,
-        reason: 'step_completed',
-        idempotencyKey: 'pause-1',
-        signal
-      })
-      const resumed = await adapter.resumeWorkspace({
-        workspaceRef: handle.workspaceRef,
-        checkpointRef: checkpoint.checkpointRef,
-        sessionId: 'session-1',
-        runId: 'run-2',
-        attempt: 2,
-        idempotencyKey: 'resume-1',
-        signal
-      })
-      const inspection = await adapter.inspectWorkspace?.({ workspaceRef: resumed.workspaceRef, signal })
-
-      expect(resumed.workspaceRef).toBe(handle.workspaceRef)
-      expect(inspection?.checkpoints.map((item) => item.checkpointRef)).toEqual([checkpoint.checkpointRef])
-    })
-  })
+/** Creates a fresh in-process durable workspace store. */
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore {
+  return new InMemoryDurableWorkspaceStore()
 }

@@ -73,13 +73,13 @@ Workspace replay adapters should pass the shared contract before application
 integration tests use them:
 
 ```ts
-import { durableWorkspaceAdapterContract } from '@purista/harness/testing'
+import { durableWorkspaceStoreContract } from '@purista/harness/testing'
 
-durableWorkspaceAdapterContract(() => makeDurableWorkspaceAdapter())
+durableWorkspaceStoreContract(() => makeDurableWorkspaceStore())
 ```
 
 Also test application startup with `.requires(...)` so missing
-`runtime.workspace_checkpoint`, `workspace.durable`, `workspace.resume`, or
+`runtime.workspace_checkpoint`, `workspace_store.durable`, `workspace_store.resume`, or
 cleanup/retention/quota capabilities fail before work is queued.
 
 ## Test Eval Scorers

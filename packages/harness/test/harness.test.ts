@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { expect, it } from 'vitest'
 import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { FakeDurableWorkspaceAdapter } from '../src/testing/index.js'
+import { inMemoryDurableWorkspaceStore } from '../src/index.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError } from '../src/errors/index.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
@@ -176,12 +176,12 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
 
 it('inspects effective adapter capabilities and validates requirements at build time', () => {
   const model = new FakeModelProvider()
-  const workspace = new FakeDurableWorkspaceAdapter()
+  const workspace = inMemoryDurableWorkspaceStore()
   const harness = defineHarness({ name: 'capability-test' })
     .sandbox(inMemorySandbox())
     .runtime({ id: 'fake-runtime', capabilities: ['runtime.checkpoint'] })
-    .workspace(workspace)
-    .requires(['sandbox.fs', 'runtime.checkpoint', 'workspace.durable', 'workspace.resume'])
+    .workspaceStore(workspace)
+    .requires(['sandbox.fs', 'runtime.checkpoint', 'workspace_store.durable', 'workspace_store.resume'])
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
     .build()
@@ -196,19 +196,19 @@ it('inspects effective adapter capabilities and validates requirements at build 
     'memory.run',
     'memory.session',
     'runtime.checkpoint',
-    'workspace.durable',
-    'workspace.snapshot',
-    'workspace.resume',
-    'workspace.abort',
-    'workspace.cleanup',
-    'workspace.inspect',
-    'workspace.retention',
-    'workspace.quota'
+    'workspace_store.durable',
+    'workspace_store.checkpoint',
+    'workspace_store.resume',
+    'workspace_store.abort',
+    'workspace_store.cleanup',
+    'workspace_store.inspect',
+    'workspace_store.retention',
+    'workspace_store.quota'
   ])
-  expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'runtime.checkpoint', 'workspace.durable', 'workspace.resume'])
+  expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'runtime.checkpoint', 'workspace_store.durable', 'workspace_store.resume'])
   expect(inspection.adapters.some((adapter) => adapter.kind === 'memory' && adapter.id === 'sandbox_memory')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'runtime' && adapter.id === 'fake-runtime')).toBe(true)
-  expect(inspection.adapters.some((adapter) => adapter.kind === 'workspace' && adapter.id === 'fake_workspace')).toBe(true)
+  expect(inspection.adapters.some((adapter) => adapter.kind === 'workspace_store' && adapter.id === 'in_memory_workspace_store')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'model' && adapter.id === 'fast')).toBe(true)
 
   expect(() => defineHarness()
@@ -230,6 +230,6 @@ it('inspects effective adapter capabilities and validates requirements at build 
     .memory(sandboxMemory())).toThrow(HarnessConfigError)
 
   expect(() => defineHarness()
-    .workspace(new FakeDurableWorkspaceAdapter())
-    .workspace(new FakeDurableWorkspaceAdapter())).toThrow(HarnessConfigError)
+    .workspaceStore(inMemoryDurableWorkspaceStore())
+    .workspaceStore(inMemoryDurableWorkspaceStore())).toThrow(HarnessConfigError)
 })

@@ -105,7 +105,7 @@ interface HibernateCapableSandbox {
 
 These capabilities describe low-level sandbox session behavior only. They do
 not imply production durable replay, retention, encryption, cleanup, or quota
-support. Production durable replay requires a `DurableWorkspaceAdapter` and the
+support. Production durable replay requires a `DurableWorkspaceStore` and the
 `workspace.*` capabilities defined in [21-durable-workspaces](./21-durable-workspaces.md).
 
 ### Auto-detect

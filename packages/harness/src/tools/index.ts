@@ -5,6 +5,7 @@ import type { Message } from '../models/state.js'
 import type { BuiltinToolName } from '../harness/defineHarness.js'
 import type { ModelToolSpec } from '../ports/model-provider.js'
 import type { SandboxSession } from '../sandbox/index.js'
+import { ulid } from '../ulid/index.js'
 
 export const BUILTIN_ALIAS_TO_CANONICAL: Record<string, BuiltinToolName> = {
   bash: 'bash', Bash: 'bash',
@@ -115,7 +116,7 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
 
 export function toToolErrorMessage(toolCallId: string, error: unknown): Message {
   return {
-    id: `msg_${Date.now()}`,
+    id: `msg_${ulid()}`,
     sessionId: '',
     role: 'tool',
     content: '',

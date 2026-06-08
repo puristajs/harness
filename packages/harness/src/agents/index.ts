@@ -18,6 +18,7 @@ import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/in
 import { buildSkillIndex, mountSkillsOnce } from '../skills/index.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, getBuiltinToolSpecs, invokeBuiltinTool } from '../tools/index.js'
 import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
+import { ulid } from '../ulid/index.js'
 
 function stringifyInput(input: unknown): string { return typeof input === 'string' ? input : JSON.stringify(input) }
 
@@ -152,7 +153,7 @@ async function runDefaultAgentInner(args: {
       metrics: args.metrics
     })
     const validated = parseAgentSchema(outputSchema, output, 'agent_output')
-    return { output: validated as JsonValue, emitted: [{ id: `msg_${Date.now()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+    return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
@@ -219,14 +220,14 @@ async function runDefaultAgentInner(args: {
     const toolCalls = response.toolCalls ?? []
     if (toolCalls.length === 0) {
       const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
-      emitted.push({ id: `msg_${Date.now()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+      emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
       await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: validated as JsonValue, usage: response.usage })
       await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
       return { output: validated as JsonValue, emitted }
     }
 
     const assistantMsg: Message = {
-      id: `msg_${Date.now()}_assistant`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
+      id: `msg_${ulid()}_assistant`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
       timestamp: new Date().toISOString()
     }
     emitted.push(assistantMsg)
@@ -291,7 +292,7 @@ async function runDefaultAgentInner(args: {
       }
       await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, ...(result.output !== undefined ? { output: result.output } : {}), ...(result.error ? { error: result.error } : {}) })
       const toolMessage: Message = {
-        id: `msg_${Date.now()}_${call.id}`,
+        id: `msg_${ulid()}_${call.id}`,
         sessionId: args.sessionId,
         runId: args.runId,
         role: 'tool',

@@ -123,13 +123,14 @@ Each `.models(...)` entry is a `ModelAlias`:
     maxTokens: 1200,
     topP: 0.9,
     stopSequences: ['</final>'],
+    parallelToolCalls: true,
     providerOptions: {}
   },
   providerOptions: {}
 }
 ```
 
-`defaults` are merged with per-call `call` options. `call.providerOptions` overrides or extends `defaults.providerOptions`.
+`defaults` are merged with per-call `call` options. Use `parallelToolCalls` on the alias for agent-loop defaults and direct model call overrides when needed. `call.providerOptions` overrides or extends `defaults.providerOptions` for provider-specific escape hatches.
 
 ## Capabilities
 Capabilities are enforced at type level and runtime:

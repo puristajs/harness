@@ -4,6 +4,7 @@ import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, 
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { inMemoryDurableWorkspaceStore } from '../src/index.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError } from '../src/errors/index.js'
+import type { ObjectRequest } from '../src/ports/model-provider.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
 
@@ -172,6 +173,249 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
   expect(memoryConfigured).toBe(true)
   expect(toolConfigured).toBe(true)
   expect(toolSawContext).toBe(true)
+})
+
+it('executes tool calls from the same model response concurrently and preserves model result order', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [
+      { id: 'call-slow', name: 'timed_tool', arguments: { id: 'slow', delayMs: 70 } },
+      { id: 'call-fast', name: 'timed_tool', arguments: { id: 'fast', delayMs: 10 } }
+    ],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  let activeTools = 0
+  let maxActiveTools = 0
+  const completionOrder: string[] = []
+
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      timed_tool: {
+        kind: 'ts',
+        description: 'Records overlapping tool execution.',
+        input: z.object({ id: z.string(), delayMs: z.number().int().nonnegative() }),
+        output: z.object({ id: z.string() }),
+        handler: async (_ctx, input) => {
+          activeTools += 1
+          maxActiveTools = Math.max(maxActiveTools, activeTools)
+          await new Promise((resolve) => setTimeout(resolve, input.delayMs))
+          activeTools -= 1
+          completionOrder.push(input.id)
+          return { id: input.id }
+        }
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Use both tool calls, then return done.',
+        tools: ['timed_tool'],
+        builtinTools: false
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  const s = await harness.getSession('parallel-tools')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  expect(maxActiveTools).toBe(2)
+  expect(completionOrder).toEqual(['fast', 'slow'])
+
+  const secondModelRequest = model.requests[1] as ObjectRequest
+  const toolMessages = secondModelRequest.messages.filter((message) => message.role === 'tool')
+  expect(toolMessages.map((message) => message.toolCallId)).toEqual(['call-slow', 'call-fast'])
+  expect(toolMessages.map((message) => JSON.parse(message.content) as unknown)).toEqual([{ id: 'slow' }, { id: 'fast' }])
+})
+
+it('limits parallel tool execution with maxParallelToolCalls', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [
+      { id: 'call-1', name: 'timed_tool', arguments: { id: 'one', delayMs: 30 } },
+      { id: 'call-2', name: 'timed_tool', arguments: { id: 'two', delayMs: 30 } },
+      { id: 'call-3', name: 'timed_tool', arguments: { id: 'three', delayMs: 5 } }
+    ],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  let activeTools = 0
+  let maxActiveTools = 0
+
+  const harness = defineHarness()
+    .defaults({ maxParallelToolCalls: 2 })
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      timed_tool: {
+        kind: 'ts',
+        description: 'Records bounded overlapping tool execution.',
+        input: z.object({ id: z.string(), delayMs: z.number().int().nonnegative() }),
+        output: z.object({ id: z.string() }),
+        handler: async (_ctx, input) => {
+          activeTools += 1
+          maxActiveTools = Math.max(maxActiveTools, activeTools)
+          await new Promise((resolve) => setTimeout(resolve, input.delayMs))
+          activeTools -= 1
+          return { id: input.id }
+        }
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Use all tool calls, then return done.',
+        tools: ['timed_tool'],
+        builtinTools: false
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  const s = await harness.getSession('limited-parallel-tools')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  expect(maxActiveTools).toBe(2)
+  const secondModelRequest = model.requests[1] as ObjectRequest
+  const toolMessages = secondModelRequest.messages.filter((message) => message.role === 'tool')
+  expect(toolMessages.map((message) => message.toolCallId)).toEqual(['call-1', 'call-2', 'call-3'])
+})
+
+it('rejects invalid maxParallelToolCalls defaults', () => {
+  expect(() => defineHarness().defaults({ maxParallelToolCalls: 0 })).toThrow(HarnessConfigError)
+  expect(() => defineHarness().defaults({ maxParallelToolCalls: 1.5 })).toThrow(HarnessConfigError)
+})
+
+it('reports static permission denials with mode_deny instead of hook_deny', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'call-write', name: 'write', arguments: { path: '/workspace/blocked.txt', content: 'blocked' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Try the write tool, then recover.',
+        builtinTools: ['write'],
+        permissions: { write: 'deny' }
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  const s = await harness.getSession('permission-denied')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  const secondModelRequest = model.requests[1] as ObjectRequest
+  const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
+  expect(toolMessage?.toolCallId).toBe('call-write')
+  expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
+    code: 'PERMISSION_DENIED',
+    meta: { reason: 'mode_deny' }
+  })
+})
+
+it('enforces permission deny patterns before mutating built-in tools run', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'call-write', name: 'write', arguments: { path: '/workspace/blocked.txt', content: 'blocked' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Try the write tool, then recover.',
+        builtinTools: ['write'],
+        permissions: { write: { mode: 'allow', deny: ['/workspace/blocked*'] } }
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  const s = await harness.getSession('permission-deny-pattern')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  const secondModelRequest = model.requests[1] as ObjectRequest
+  const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
+  expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
+    code: 'PERMISSION_DENIED',
+    meta: { reason: 'mode_deny' }
+  })
+})
+
+it('bounds permission hooks with the tool timeout and lets the model recover', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'call-write', name: 'write', arguments: { path: '/workspace/slow.txt', content: 'slow' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = defineHarness()
+    .defaults({ toolTimeoutMs: 5 })
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Try the write tool, then recover.',
+        builtinTools: ['write'],
+        permissions: { write: 'ask' },
+        onPermission: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50))
+          return 'allow'
+        }
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  const s = await harness.getSession('permission-timeout')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  const secondModelRequest = model.requests[1] as ObjectRequest
+  const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
+  expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
+    code: 'OPERATION_TIMEOUT',
+    meta: { scope: 'tool', timeout_ms: 5 }
+  })
 })
 
 it('inspects effective adapter capabilities and validates requirements at build time', () => {

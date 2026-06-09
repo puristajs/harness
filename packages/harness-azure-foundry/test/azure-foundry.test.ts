@@ -75,6 +75,72 @@ describe('azureFoundry provider factory', () => {
     })
   })
 
+  it('preserves multiple application tool calls from object responses', async () => {
+    const provider = azureFoundry({
+      client: client(async () => ({
+        status: '200',
+        body: {
+          choices: [
+            {
+              message: {
+                content: '{}',
+                tool_calls: [
+                  { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
+                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
+                ]
+              },
+              finish_reason: 'tool_calls'
+            }
+          ],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
+        }
+      }))
+    })
+
+    const response = await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use tools' }],
+      schema: { type: 'object' },
+      tools: [
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(response.toolCalls).toEqual([
+      { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+    ])
+  })
+
+  it('maps first-class parallelToolCalls to OpenAI-compatible Azure payloads', async () => {
+    const calls: Array<{ options: any }> = []
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls.push({ options })
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+          }
+        }
+      })
+    })
+
+    await provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      defaults: { parallelToolCalls: true },
+      call: { parallelToolCalls: false },
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.options.body.parallel_tool_calls).toBe(false)
+  })
+
   it('maps embeddings response', async () => {
     const provider = azureFoundry({
       client: client(async () => ({

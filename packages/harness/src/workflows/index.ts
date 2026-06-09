@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { OperationCancelledError, ValidationError } from '../errors/index.js'
 import type { BuilderState, InvokeOptions, WorkflowContext, WorkflowDefinition } from '../harness/defineHarness.js'
+import { withAbortSignal } from '../runtime/abort.js'
 
 export async function runWorkflow<S extends BuilderState>(args: {
   workflowId: string
@@ -17,7 +18,9 @@ export async function runWorkflow<S extends BuilderState>(args: {
   } catch (error) {
     throw new ValidationError('Workflow input validation failed.', { where: 'workflow_input', issues: validationIssues(error) }, error)
   }
-  const output = await args.workflow.handler({ ...(args.ctx as WorkflowContext<S, unknown, unknown>), input: parsed })
+  const output = await withAbortSignal(args.ctx['signal'], 'workflow', 'Workflow execution was cancelled.', () =>
+    args.workflow.handler({ ...(args.ctx as WorkflowContext<S, unknown, unknown>), input: parsed }))
+  if (args.ctx['signal'].aborted) throw new OperationCancelledError('Workflow execution was cancelled.', { scope: 'workflow' })
   if (!args.workflow.output) return output
   try {
     return args.workflow.output.parse(output)

@@ -83,7 +83,9 @@ For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(
 8. **Open child span**: `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
 9. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `state.finishRun({status:'succeeded', finishedAt, output})`.
 10. **On error:** classify the error; emit `run.finished{error}`; `state.finishRun({status:'failed'|'cancelled', finishedAt, error})`. (`cancelled` is used when the cause is `OperationCancelledError`; `failed` otherwise — including `OperationTimeoutError`.)
-11. **Close spans, release lock.**
+11. **Close spans, release lock.** Failed/cancelled spans carry safe
+    `harness.error.*` attributes. Timeout/cancel errors include
+    `harness.error.scope` and, for timeouts, `harness.error.timeout_ms`.
 12. **Resolve `prompt` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
 
 The outermost span is always `harness.session.prompt`; the child is `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.

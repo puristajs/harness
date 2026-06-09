@@ -53,6 +53,7 @@ interface ModelDefaults {
   maxTokens?: number            // positive int
   topP?: number                 // 0..1
   stopSequences?: string[]
+  parallelToolCalls?: boolean   // provider-level preference for multi-tool-call turns
   /** Provider-specific knobs. Use this for reasoning effort, etc. */
   providerOptions?: Record<string, unknown>
 }
@@ -163,6 +164,7 @@ interface ModelCallOptions {
   maxTokens?: number
   topP?: number
   stopSequences?: string[]
+  parallelToolCalls?: boolean             // request provider-level multi-tool-call behavior
   providerOptions?: Record<string, unknown>
 }
 
@@ -252,6 +254,11 @@ type ObjectStreamChunk<T = JsonValue> =
 The harness validates final objects against the requested schema when a schema
 validator is available in core. Provider packages may use stricter native schema
 support, but harness-level validation remains the final provider-neutral guard.
+When `tools` are supplied, provider adapters must preserve application tool
+calls in `ObjectResponse.toolCalls` before a final object is available. Adapters
+that emulate structured output with an internal response tool may include that
+tool in the provider request, but must not hide application tool calls from the
+harness agent loop.
 
 ## Embeddings
 
@@ -385,10 +392,17 @@ effective = { ...alias.defaults, ...req.call }
 ```
 
 Then pass `effective.providerOptions` through verbatim. `temperature`,
-`maxTokens`, `topP`, and `stopSequences` map to first-class fields on the
-provider's request. `EmbeddingRequest` and `RerankRequest` receive the same
-`call.providerOptions` pass-through path, but generation-only knobs may be
-ignored by adapters if the provider operation does not support them.
+`maxTokens`, `topP`, `stopSequences`, and `parallelToolCalls` map to first-class
+fields on the provider's request when the provider has a native equivalent.
+`parallelToolCalls` controls whether the model provider may emit multiple tool
+calls in one model turn; the harness still executes any returned batch according
+to the agent loop rules. OpenAI-compatible adapters map it to
+`parallel_tool_calls`; Anthropic maps `false` to
+`tool_choice.disable_parallel_tool_use`; adapters without a native equivalent
+leave provider-specific control to `providerOptions`. `EmbeddingRequest` and
+`RerankRequest` receive the same `call.providerOptions` pass-through path, but
+generation-only knobs may be ignored by adapters if the provider operation does
+not support them.
 
 ## Errors
 

@@ -54,6 +54,8 @@ function errorAttributes(error: unknown): SpanAttrs {
       'harness.error.code': error.code,
       'harness.error.category': error.category,
       'harness.error.retriable': error.retriable,
+      'harness.error.scope': stringAttr(meta?.['scope']),
+      'harness.error.timeout_ms': numberAttr(meta?.['timeout_ms']),
       'harness.error.provider': stringAttr(meta?.['provider']),
       'harness.error.model': stringAttr(meta?.['model']),
       'harness.error.model_provider_status': numberAttr(meta?.['status']),

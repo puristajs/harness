@@ -75,14 +75,13 @@ const discoveredCache = new WeakMap<McpTransportRunner, Promise<McpDiscoveredToo
 
 export async function getMcpToolSpecs(tools: ToolsConfig, allowlist: Iterable<string>, ctx: McpFacadeContext = {}): Promise<ModelToolSpec[]> {
   const allowed = new Set(allowlist)
-  const specs: ModelToolSpec[] = []
   const registry = ctx.registry ?? createMcpRunnerRegistry()
-  for (const [toolId, tool] of Object.entries(tools)) {
-    if (!allowed.has(toolId) || !isMcpToolDefinition(tool)) continue
+  const specs = await Promise.all(Object.entries(tools).map(async ([toolId, tool]) => {
+    if (!allowed.has(toolId) || !isMcpToolDefinition(tool)) return undefined
     const config = resolveMcpTool(toolId, tool, ctx)
-    specs.push(await getResolvedModelToolSpec(config, registry.getRunner(config), ctx.signal, ctx.warn))
-  }
-  return specs
+    return getResolvedModelToolSpec(config, registry.getRunner(config), ctx.signal, ctx.warn)
+  }))
+  return specs.filter((spec): spec is ModelToolSpec => spec !== undefined)
 }
 
 export async function invokeMcpTool(toolId: string, tool: ToolDefinition, input: unknown, ctx: McpFacadeContext): Promise<JsonValue>
@@ -170,6 +169,9 @@ async function discoverConfiguredTool(config: ResolvedMcpToolConfig, runner: Mcp
   let promise = discoveredCache.get(runner)
   if (!promise) {
     promise = runner.listTools({ ...(signal ? { signal } : {}), timeoutMs: config.timeoutMs })
+    void promise.catch(() => {
+      if (discoveredCache.get(runner) === promise) discoveredCache.delete(runner)
+    })
     discoveredCache.set(runner, promise)
   }
   const tools = await promise
@@ -275,6 +277,7 @@ export async function withMcpTimeout<T>(opts: { signal?: AbortSignal; timeoutMs?
   const controller = new AbortController()
   const relay = () => controller.abort(opts.signal?.reason)
   opts.signal?.addEventListener('abort', relay, { once: true })
+  if (opts.signal?.aborted) relay()
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {

@@ -110,6 +110,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
       skillTimeoutMs: definition.defaults.skillTimeoutMs ?? 60_000,
       modelTimeoutMs: definition.defaults.modelTimeoutMs ?? 300_000,
+      maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
@@ -465,6 +466,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: runSignal.signal,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
           telemetry,
           emitEvent: emit,
@@ -689,6 +691,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
                       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+                      maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
                       logger: definition.logger,
                       telemetry,
                       emitEvent: emit,
@@ -1051,8 +1054,9 @@ function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<Run
 
 function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController()
-  const relay = () => controller.abort(parent?.reason)
+  const relay = () => controller.abort(runAbortReason(parent?.reason))
   if (parent) parent.addEventListener('abort', relay, { once: true })
+  if (parent?.aborted) relay()
   const timeout = timeoutMs && timeoutMs > 0
     ? setTimeout(() => controller.abort(new OperationTimeoutError('Run timed out.', { scope: 'run', timeout_ms: timeoutMs })), timeoutMs)
     : undefined
@@ -1068,10 +1072,12 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
 function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined): { signal: AbortSignal; cleanup: () => void } {
   if (!secondary) return { signal: primary, cleanup: () => undefined }
   const controller = new AbortController()
-  const relayPrimary = () => controller.abort(primary.reason)
-  const relaySecondary = () => controller.abort(secondary.reason)
+  const relayPrimary = () => controller.abort(runAbortReason(primary.reason))
+  const relaySecondary = () => controller.abort(runAbortReason(secondary.reason))
   primary.addEventListener('abort', relayPrimary, { once: true })
   secondary.addEventListener('abort', relaySecondary, { once: true })
+  if (primary.aborted) relayPrimary()
+  else if (secondary.aborted) relaySecondary()
   return {
     signal: controller.signal,
     cleanup: () => {
@@ -1079,4 +1085,9 @@ function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined
       secondary.removeEventListener('abort', relaySecondary)
     }
   }
+}
+
+function runAbortReason(reason: unknown): unknown {
+  if (reason instanceof OperationCancelledError || reason instanceof OperationTimeoutError) return reason
+  return new OperationCancelledError('Run was cancelled.', { scope: 'run' }, reason)
 }

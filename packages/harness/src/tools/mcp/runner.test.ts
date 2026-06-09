@@ -51,6 +51,34 @@ describe('MCP runner facade', () => {
     })
   })
 
+  it('retries MCP discovery after transient list failures', async () => {
+    const discovered = [{
+      name: 'upstream.draw',
+      description: 'Upstream summary',
+      inputSchema: {
+        type: 'object',
+        required: ['title'],
+        additionalProperties: false,
+        properties: { title: { type: 'string' } }
+      }
+    }]
+    const runner: McpTransportRunner = {
+      listTools: vi.fn()
+        .mockRejectedValueOnce(new Error('temporary discovery failure'))
+        .mockResolvedValueOnce(discovered),
+      callTool: vi.fn(async () => ({ structuredContent: { ok: true } })),
+      close: vi.fn(async () => undefined)
+    }
+
+    await expect(getModelToolSpec(config, runner)).rejects.toThrow('temporary discovery failure')
+    await expect(getModelToolSpec(config, runner)).resolves.toEqual({
+      name: 'drawDiagram',
+      description: 'Create diagram\n\nUpstream summary',
+      parameters: discovered[0]?.inputSchema
+    })
+    expect(runner.listTools).toHaveBeenCalledTimes(2)
+  })
+
   it('normalizes structured, text, image, and resource MCP envelopes', () => {
     expect(normalizeMcpOutput({ structuredContent: { ok: true }, content: [{ type: 'text', text: 'ignored' }] })).toEqual({ ok: true })
     expect(normalizeMcpOutput({ content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] })).toBe('a\nb')

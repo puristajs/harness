@@ -44,11 +44,13 @@ export class RecordingTelemetry implements TelemetryShim {
     } catch (error) {
       record.exceptions.push(error)
       if (error && typeof error === 'object' && 'code' in error) {
-        const harnessError = error as { code?: string; category?: string; retriable?: boolean }
+        const harnessError = error as { code?: string; category?: string; retriable?: boolean; meta?: Record<string, unknown> }
         record.attrs['error.type'] = harnessError.code
         record.attrs['harness.error.code'] = harnessError.code
         record.attrs['harness.error.category'] = harnessError.category
         record.attrs['harness.error.retriable'] = harnessError.retriable
+        if (typeof harnessError.meta?.scope === 'string') record.attrs['harness.error.scope'] = harnessError.meta.scope
+        if (typeof harnessError.meta?.timeout_ms === 'number') record.attrs['harness.error.timeout_ms'] = harnessError.meta.timeout_ms
       }
       record.status = { code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) }
       throw error
@@ -110,7 +112,7 @@ class FlowModelProvider implements ModelProvider {
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean; telemetry?: TelemetryOptions } = {}) {
+export async function runTelemetryFlowHarness(opts: { failTool?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions } = {}) {
   const telemetry = new RecordingTelemetry()
   const logger = new RecordingLogger()
   const harness = createSessionHarness<any>({
@@ -126,7 +128,8 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
       runTimeoutMs: 60_000,
       toolTimeoutMs: 10_000,
       skillTimeoutMs: 10_000,
-      modelTimeoutMs: 60_000
+      modelTimeoutMs: 60_000,
+      maxParallelToolCalls: 8
     },
     models: {
       fast: { provider: new FlowModelProvider(), model: 'fake', capabilities: ['object', 'tool_use'] }
@@ -161,6 +164,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; teleme
         input: z.string(),
         output: z.object({ answer: z.string() }),
         handler: async (ctx: any) => {
+          if (opts.hangWorkflow) return new Promise<never>(() => undefined)
           await ctx.memory.session.write('workflow_topic', { value: ctx.input })
           await ctx.memory.run.write('workflow_step', { value: 'started' })
           return ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () => ctx.agents.responder(ctx.input))

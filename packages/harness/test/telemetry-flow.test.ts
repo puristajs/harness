@@ -2,6 +2,7 @@ import { SpanStatusCode } from '@opentelemetry/api'
 import { expect, it } from 'vitest'
 
 import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
+import { OperationTimeoutError } from '../src/errors/index.js'
 
 it('emits a traceable session workflow agent model tool flow', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness()
@@ -48,6 +49,49 @@ it('marks failing spans with standard OTel error status and safe error attribute
     'harness.error.category': 'tool',
     'harness.error.retriable': false
   })
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'harness.tool.duration',
+      attrs: expect.objectContaining({
+        'harness.tool.id': 'policy_lookup',
+        'harness.error.code': 'TOOL_ERROR',
+        'harness.error.category': 'tool',
+        'harness.error.retriable': false
+      })
+    })
+  ]))
+})
+
+it('records run timeout cancellation in logs and trace error attributes', async () => {
+  const { session, telemetry, logger } = await runTelemetryFlowHarness({ hangWorkflow: true })
+
+  await expect(session.workflows.wf.prompt('find the policy', { timeoutMs: 5 })).rejects.toBeInstanceOf(OperationTimeoutError)
+
+  expect(logger.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      level: 'error',
+      msg: 'Harness workflow run failed.',
+      fields: expect.objectContaining({
+        error: expect.objectContaining({
+          code: 'OPERATION_TIMEOUT',
+          meta: expect.objectContaining({ scope: 'run', timeout_ms: 5 })
+        })
+      })
+    })
+  ]))
+
+  const sessionSpan = telemetry.spans.find((span) => span.name === 'harness.session.prompt')
+  const workflowSpan = telemetry.spans.find((span) => span.name === 'harness.workflow.run')
+  for (const span of [sessionSpan, workflowSpan]) {
+    expect(span?.status?.code).toBe(SpanStatusCode.ERROR)
+    expect(span?.attrs).toMatchObject({
+      'harness.error.code': 'OPERATION_TIMEOUT',
+      'harness.error.category': 'timeout',
+      'harness.error.scope': 'run',
+      'harness.error.timeout_ms': 5
+    })
+  }
 })
 
 it('emits OpenInference attributes alongside GenAI attributes by default', async () => {

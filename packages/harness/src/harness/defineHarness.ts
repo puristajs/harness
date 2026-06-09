@@ -87,6 +87,8 @@ export interface HarnessDefaults {
   skillTimeoutMs?: number
   /** Per-model timeout in milliseconds. Default: `300_000`. */
   modelTimeoutMs?: number
+  /** Maximum tool calls from one model response executed at the same time. Default: `8`. */
+  maxParallelToolCalls?: number
   /**
    * Max non-system messages forwarded into model calls.
    * `undefined` keeps all history, `0` keeps only system messages.
@@ -711,6 +713,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (defaults.historyWindow !== undefined && defaults.historyWindow < 0) {
       throw new HarnessConfigError('historyWindow must be >= 0', { reason: 'invalid_defaults', path: 'defaults.historyWindow' })
     }
+    if (defaults.maxParallelToolCalls !== undefined && (!Number.isInteger(defaults.maxParallelToolCalls) || defaults.maxParallelToolCalls < 1)) {
+      throw new HarnessConfigError('maxParallelToolCalls must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.maxParallelToolCalls' })
+    }
     return this.clone({ defaults })
   }
 
@@ -786,6 +791,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         toolTimeoutMs: this.configured.defaults?.toolTimeoutMs ?? 120_000,
         skillTimeoutMs: this.configured.defaults?.skillTimeoutMs ?? 60_000,
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
+        maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
         ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {})
       },
       models,

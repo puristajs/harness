@@ -39,7 +39,8 @@ function harnessContext(logger: Logger, telemetry: TelemetryShim, modelTimeoutMs
       runTimeoutMs: 600_000,
       toolTimeoutMs: 120_000,
       skillTimeoutMs: 60_000,
-      modelTimeoutMs
+      modelTimeoutMs,
+      maxParallelToolCalls: 8
     }
   }
 }

@@ -273,6 +273,78 @@ describe('openai provider factory', () => {
     })
   })
 
+  it('preserves multiple application tool calls from object responses', async () => {
+    const provider = openai({
+      client: {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: '{}',
+                    tool_calls: [
+                      { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
+                      { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
+                    ]
+                  },
+                  finish_reason: 'tool_calls'
+                }
+              ],
+              usage: { prompt_tokens: 3, completion_tokens: 2 }
+            })
+          }
+        }
+      } as any
+    })
+
+    const response = await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use tools' }],
+      schema: { type: 'object' },
+      tools: [
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(response.toolCalls).toEqual([
+      { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+    ])
+  })
+
+  it('maps first-class parallelToolCalls to OpenAI parallel_tool_calls', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      client: {
+        chat: {
+          completions: {
+            create: async (payload: any, options: any) => {
+              calls.push({ payload, options })
+              return {
+                choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+                usage: { prompt_tokens: 1, completion_tokens: 1 }
+              }
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      defaults: { parallelToolCalls: true },
+      call: { parallelToolCalls: false },
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.parallel_tool_calls).toBe(false)
+  })
+
   it('passes provider options through to the official SDK payload and request options', async () => {
     const calls: Array<{ payload: any; options: any }> = []
     const provider = openai({

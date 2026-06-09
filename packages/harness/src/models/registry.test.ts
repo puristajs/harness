@@ -7,8 +7,10 @@ import { createModelRegistry } from './registry.js'
 class FakeProvider implements ModelProvider {
   public readonly id = 'fake'
   public readonly genAiSystem = 'fake'
+  public requests: TextRequest[] = []
 
   public async text(req: TextRequest): Promise<TextResponse> {
+    this.requests.push(req)
     return {
       content: req.model,
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
@@ -63,5 +65,25 @@ describe('createModelRegistry', () => {
     )
 
     expect(result.content).toBe('model-x')
+  })
+
+  it('preserves parallelToolCalls defaults without other generation options', async () => {
+    const provider = new FakeProvider()
+    const registry = createModelRegistry({
+      a: {
+        provider,
+        model: 'model-x',
+        capabilities: ['text', 'tool_use'],
+        defaults: { parallelToolCalls: false }
+      }
+    })
+    const handle = registry['a']
+
+    await handle!.text(
+      { messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }] },
+      AbortSignal.abort()
+    )
+
+    expect(provider.requests[0]?.defaults?.parallelToolCalls).toBe(false)
   })
 })

@@ -457,6 +457,7 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
     || merged.maxTokens !== undefined
     || merged.topP !== undefined
     || merged.stopSequences !== undefined
+    || merged.parallelToolCalls !== undefined
     || Object.keys(merged.providerOptions ?? {}).length > 0
   return hasTopLevel ? merged : undefined
 }

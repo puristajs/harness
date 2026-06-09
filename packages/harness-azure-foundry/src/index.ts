@@ -220,6 +220,7 @@ async function postChat(client: AzureFoundryClient, req: ChatRequest, stream: bo
       max_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,
       top_p: req.call?.topP ?? req.defaults?.topP,
       stop: req.call?.stopSequences ?? req.defaults?.stopSequences,
+      ...(req.tools && (req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls) !== undefined ? { parallel_tool_calls: req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls } : {}),
       response_format: toResponseFormat(req),
       ...bodyOptions
     },

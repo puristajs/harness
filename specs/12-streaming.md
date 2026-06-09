@@ -60,7 +60,7 @@ Each `prompt`/`stream` invocation creates an internal async generator. Events ar
 1. Per-run total order: events for a given `runId` are yielded in the order they are produced.
 2. `run.started` precedes every other event for the run.
 3. `run.finished` succeeds every other event for the run.
-4. For each tool call, `tool.started` precedes `tool.finished` (same `callId`). Same for skills.
+4. For each tool call, `tool.started` precedes `tool.finished` (same `callId`). Tool events for different `callId` values may interleave when one model response returns multiple tool calls. Same for skills.
 5. For each agent call, `agent.started` precedes `agent.finished`.
 6. `model.delta` events for a given assistant message are yielded in stream order; `model.message` is yielded at most once per assistant message AFTER all deltas for that message.
 7. `model.object.partial` events for a structured object stream are yielded in provider chunk order; `model.object` is yielded at most once for the final validated object AFTER all partials for that object.

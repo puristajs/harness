@@ -64,6 +64,10 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
   - The run's `runTimeoutMs` — when elapsed, abort the controller and throw `OperationTimeoutError`. `runTimeoutMs === 0` disables the run timeout; negative values are rejected at config parse time. `InvokeOptions.timeoutMs` overrides the default for a single call (same `>0/0/<0` semantics; negative throws `ValidationError`).
   - External cancellation passed to `session.workflows[id].prompt(input, {signal})`.
 - Aborts propagate down to every active agent, model, tool, skill, and memory adapter call. Each layer translates abort into `OperationCancelledError`.
+- The harness races the workflow handler against the workflow signal. A
+  non-cooperative handler cannot block timeout/cancel finalization, but any
+  in-process work it started may keep running until that application code
+  observes `ctx.signal` or returns.
 - After `signal.aborted`, the workflow handler MUST NOT start new agent calls; doing so throws `OperationCancelledError` synchronously.
 
 ## Errors

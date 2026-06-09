@@ -131,6 +131,7 @@ Capabilities gate runtime calls:
   toolTimeoutMs: 120_000,
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
+  maxParallelToolCalls: 8,
   historyWindow: 20
 })
 ```
@@ -262,6 +263,19 @@ handler: async (ctx) => {
 }
 ```
 
+Run cancellation uses `InvokeOptions.signal`; per-call `timeoutMs` overrides
+`defaults.runTimeoutMs`. The harness passes the active signal into workflows,
+custom agents, model calls, tools, memory, and sandbox operations. Workflow and
+custom-agent handlers are also raced against the signal so a hung handler does
+not keep the run open forever. Application code should still stop work when
+`ctx.signal.aborted` or `ctx.signal.throwIfAborted()` indicates cancellation.
+
+Cancelled runs are logged at `warn`; timeout and other failures are logged at
+`error`. Logs and spans use the normalized harness error shape. Trace error
+attributes include `harness.error.code`, `harness.error.category`,
+`harness.error.retriable`, and, for timeout/cancel paths,
+`harness.error.scope` plus `harness.error.timeout_ms` when available.
+
 ## Environment Variables Used By Examples
 
 | Variable | Purpose |
@@ -281,6 +295,7 @@ handler: async (ctx) => {
 - Use durable `StateStore` for long-lived sessions and audit history.
 - Define tenant-safe session IDs.
 - Set explicit timeout budgets.
+- Wire caller cancellation through `InvokeOptions.signal`.
 - Keep content capture disabled unless approved.
 - Use permission gates for mutating built-in tools.
 - Use executor-capable sandbox only where command execution is required.

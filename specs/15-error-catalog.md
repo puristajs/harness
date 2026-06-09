@@ -95,7 +95,8 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - category: `config`
 - retriable: `false`
 - when: skill directory discovery, `SKILL.md` parsing, validation, trust checks, or required skill activation preconditions fail.
-- meta: `skill_id?: string`, `directory?: string`, `source?: string`, `agent_id?: string`, `reason: 'missing_skill_md'|'invalid_frontmatter'|'missing_description'|'invalid_name'|'name_mismatch'|'directory_missing'|'reserved_name'|'skill_not_declared'|'skill_read_tool_missing'|'skill_sandbox_unsupported'|'untrusted_project_skill'`.
+- meta: `skill_id?: string`, `directory?: string`, `source?: string`, `agent_id?: string`, `reason: 'missing_skill_md'|'invalid_frontmatter'|'missing_description'|'invalid_name'|'name_mismatch'|'directory_missing'|'reserved_name'|'skill_not_declared'|'skill_read_tool_missing'|'skill_sandbox_unsupported'|'untrusted_project_skill'|'collision_shadowed'|'scan_limit_reached'`.
+- `reserved_name` is also used when a custom tool id collides with a built-in tool name or a skill id, or when a skill id collides with a built-in tool name (tool/skill/built-in share one model-facing namespace). For a tool collision, `skill_id` carries the colliding id and `source` is `'tool'`.
 
 `SkillManifestError` metadata must not include skill body text, supporting file
 content, prompts, completions, tool arguments, tool results, credentials,

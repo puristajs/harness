@@ -3,7 +3,7 @@ import { expect, it } from 'vitest'
 import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { inMemoryDurableWorkspaceStore } from '../src/index.js'
-import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError } from '../src/errors/index.js'
+import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError, SkillManifestError } from '../src/errors/index.js'
 import type { ObjectRequest } from '../src/ports/model-provider.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
@@ -476,4 +476,60 @@ it('inspects effective adapter capabilities and validates requirements at build 
   expect(() => defineHarness()
     .workspaceStore(inMemoryDurableWorkspaceStore())
     .workspaceStore(inMemoryDurableWorkspaceStore())).toThrow(HarnessConfigError)
+})
+
+it('rejects malformed custom tool ids at the .tools() call', () => {
+  const model = new FakeModelProvider()
+  const base = () => defineHarness().models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+  expect(() => base().tools({ 'Bad-Id': { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })).toThrow(HarnessConfigError)
+  expect(() => base().tools({ '1leading': { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })).toThrow(HarnessConfigError)
+})
+
+it('rejects a custom tool id that collides with a built-in tool name', () => {
+  const model = new FakeModelProvider()
+  expect(() => defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .tools({ read: { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })
+    .build()).toThrow(SkillManifestError)
+})
+
+it('serializes two same-tick prompts on a fresh session (concurrency race)', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({ object: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  model.enqueue({ object: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  // Fire both before any await resolves: the first must win, the second must be rejected.
+  const session = await harness.getSession('race')
+  const results = await Promise.allSettled([session.workflows.wf.prompt('a'), session.workflows.wf.prompt('b')])
+  const rejected = results.filter((r) => r.status === 'rejected')
+  const fulfilled = results.filter((r) => r.status === 'fulfilled')
+  expect(fulfilled).toHaveLength(1)
+  expect(rejected).toHaveLength(1)
+  expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(SessionBusyError)
+})
+
+it('atomically replaces session history', async () => {
+  const model = new FakeModelProvider()
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
+    .build()
+
+  const session = await harness.getSession('hist')
+  await session.replaceHistory([{ role: 'user', content: 'one' }, { role: 'assistant', content: 'two' }])
+  const messages = await session.history.list()
+  expect(messages.map((m) => m.content)).toEqual(['one', 'two'])
+
+  await session.replaceHistory([{ role: 'user', content: 'fresh' }])
+  const replaced = await session.history.list()
+  expect(replaced.map((m) => m.content)).toEqual(['fresh'])
 })

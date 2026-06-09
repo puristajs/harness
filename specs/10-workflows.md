@@ -72,8 +72,11 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
 
 ## Errors
 
-- Errors from agent calls bubble up unchanged unless caught.
-- If the workflow handler itself throws a non-`HarnessError`, the harness wraps it in `InternalError` with `cause`.
+- Errors from agent, model, and tool calls bubble up unchanged unless caught.
+- A handler error is preserved by identity (it is not re-wrapped), so failure
+  terminalization never masks the original failure. When the error is not a
+  `HarnessError`, it is persisted with code `INTERNAL_ERROR` via `serializeError`,
+  but the original error instance is what the caller receives.
 - `WorkflowNotFoundError` is thrown by the session API when a workflow id doesn't exist; never thrown from inside a handler.
 
 ## Telemetry

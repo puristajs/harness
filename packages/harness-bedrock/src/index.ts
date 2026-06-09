@@ -188,10 +188,10 @@ function toConverseInput(req: ChatRequest, forceObject: boolean): Record<string,
     ...(system.length > 0 ? { system } : {}),
     ...(tools.length > 0 ? { toolConfig: { tools, ...(forceObjectTool ? { toolChoice: { tool: { name: 'harness_response' } } } : {}) } } : {}),
     inferenceConfig: {
-      ...(req.call?.maxTokens ?? req.defaults?.maxTokens !== undefined ? { maxTokens: req.call?.maxTokens ?? req.defaults?.maxTokens } : {}),
-      ...(req.call?.temperature ?? req.defaults?.temperature !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
-      ...(req.call?.topP ?? req.defaults?.topP !== undefined ? { topP: req.call?.topP ?? req.defaults?.topP } : {}),
-      ...(req.call?.stopSequences ?? req.defaults?.stopSequences ? { stopSequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {})
+      ...((req.call?.maxTokens ?? req.defaults?.maxTokens) !== undefined ? { maxTokens: req.call?.maxTokens ?? req.defaults?.maxTokens } : {}),
+      ...((req.call?.temperature ?? req.defaults?.temperature) !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
+      ...((req.call?.topP ?? req.defaults?.topP) !== undefined ? { topP: req.call?.topP ?? req.defaults?.topP } : {}),
+      ...((req.call?.stopSequences ?? req.defaults?.stopSequences) !== undefined ? { stopSequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {})
     },
     ...providerOptions
   }

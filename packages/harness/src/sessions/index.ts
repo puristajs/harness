@@ -74,6 +74,85 @@ function now(): string {
   return new Date().toISOString()
 }
 
+const STREAM_MAX_BUFFERED_EVENTS = 1024
+const STREAM_TERMINAL_EVENT_TYPES = new Set<string>(['run.finished', 'agent.finished'])
+
+/**
+ * Relay run events from an in-process run to a stream consumer.
+ *
+ * The unread events live in a bounded queue: consumed events are removed (no
+ * growing cursor over a shared array), and on overflow the oldest non-terminal
+ * unread event is dropped and counted, so a slow consumer never silently skips
+ * an unread event. Delivery is promise-notified rather than time-polled, so
+ * there is no fixed per-event latency or periodic timer.
+ */
+export async function* relayRunEvents(
+  run: (onEvent: (event: RunEvent) => Promise<void>) => Promise<unknown>
+): AsyncIterable<RunEvent> {
+  const queue: RunEvent[] = []
+  let dropped = 0
+  let liveRunId = 'unknown'
+  let done = false
+  let failure: unknown
+  let wake: (() => void) | undefined
+
+  const notify = (): void => {
+    const resolve = wake
+    wake = undefined
+    resolve?.()
+  }
+
+  const result = run((event) => {
+    if ('runId' in event) liveRunId = event.runId
+    if (queue.length >= STREAM_MAX_BUFFERED_EVENTS) {
+      const dropIndex = queue.findIndex((candidate) => !STREAM_TERMINAL_EVENT_TYPES.has(candidate.type))
+      if (dropIndex >= 0) {
+        queue.splice(dropIndex, 1)
+        dropped += 1
+      }
+    }
+    queue.push(event)
+    notify()
+    return Promise.resolve()
+  })
+    .catch((error) => {
+      failure = error
+      return undefined
+    })
+    .finally(() => {
+      done = true
+      notify()
+    })
+
+  try {
+    while (true) {
+      if (dropped > 0) {
+        const droppedCount = dropped
+        dropped = 0
+        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped: droppedCount }
+      }
+      while (queue.length > 0) {
+        yield queue.shift() as RunEvent
+        // Surface a fresh overflow notice promptly between events.
+        if (dropped > 0) break
+      }
+      if (queue.length === 0 && dropped === 0) {
+        if (done) {
+          break
+        }
+        // No await between the empty check and installing `wake`, so a producer
+        // push cannot be lost between them.
+        await new Promise<void>((resolve) => {
+          wake = resolve
+        })
+      }
+    }
+  } finally {
+    await result.catch(() => undefined)
+  }
+  if (failure) throw failure
+}
+
 function validateInvokeOptions(opts: InvokeOptions | undefined): void {
   if (opts?.historyWindow !== undefined && opts.historyWindow < 0) {
     throw new ValidationError('Invoke options are invalid.', { where: 'invoke_options', issues: { historyWindow: opts.historyWindow } })
@@ -95,6 +174,10 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
+  // In-flight session-state creations, memoized so concurrent first-time callers
+  // share one sandbox open (no orphaned sessions) and one SessionState object
+  // (so the synchronous busy check/set below serializes runs correctly).
+  const sessionStateOpenings = new Map<string, Promise<SessionState>>()
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterMetrics = createMetrics(telemetry, { 'harness.name': definition.name })
@@ -124,26 +207,38 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return existing
     }
 
+    const createdAt = now()
     const created: SessionRecord = {
       id: sessionId,
-      createdAt: now(),
-      updatedAt: now(),
+      createdAt,
+      updatedAt: createdAt,
       runCount: 0
     }
     await definition.state.upsertSession(created)
     return created
   }
 
-  async function getSessionState(sessionId: string): Promise<SessionState> {
+  function getSessionState(sessionId: string): Promise<SessionState> {
     const existing = sessionStates.get(sessionId)
     if (existing) {
-      return existing
+      return Promise.resolve(existing)
+    }
+    const pending = sessionStateOpenings.get(sessionId)
+    if (pending) {
+      return pending
     }
 
-    const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
-    const created: SessionState = { busy: false, sandboxSession, mountedSkills: new Set<string>() }
-    sessionStates.set(sessionId, created)
-    return created
+    const opening = (async () => {
+      const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
+      const created: SessionState = { busy: false, sandboxSession, mountedSkills: new Set<string>() }
+      sessionStates.set(sessionId, created)
+      sessionStateOpenings.delete(sessionId)
+      return created
+    })()
+    // Let a failed open be retried instead of caching the rejection forever.
+    opening.catch(() => sessionStateOpenings.delete(sessionId))
+    sessionStateOpenings.set(sessionId, opening)
+    return opening
   }
 
   async function appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
@@ -291,14 +386,20 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               throw new ValidationError('Session history replacement failed validation.', { where: 'session_history', issues: { message } }, error)
             }
           })
-          await definition.state.clearMessages(sessionId)
-          if (parsed.length > 0) {
-            await definition.state.appendMessages(sessionId, parsed)
+          if (definition.state.replaceMessages) {
+            await definition.state.replaceMessages(sessionId, parsed)
+          } else {
+            // Non-atomic fallback for adapters without atomic replace.
+            await definition.state.clearMessages(sessionId)
+            if (parsed.length > 0) {
+              await definition.state.appendMessages(sessionId, parsed)
+            }
           }
         },
         async close(): Promise<void> {
           await definition.state.closeSession(sessionId)
           sessionStates.delete(sessionId)
+          sessionStateOpenings.delete(sessionId)
           await state.sandboxSession.close()
         }
       }
@@ -340,47 +441,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: AgentInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    const buffer: RunEvent[] = []
-    const maxBufferedEvents = 1024
-    let dropped = 0
-    let done = false
-    let failure: unknown
-    let liveRunId = 'unknown'
-    const result = runAgentCall(sessionId, agentId, agent, input, opts, (event) => {
-      if ('runId' in event) liveRunId = event.runId
-      if (buffer.length >= maxBufferedEvents) {
-        const dropIndex = buffer.findIndex((candidate) => candidate.type !== 'run.finished')
-        if (dropIndex >= 0) {
-          buffer.splice(dropIndex, 1)
-          dropped += 1
-        }
-      }
-      buffer.push(event)
-      return Promise.resolve()
-    }).catch((error) => {
-      failure = error
-      return undefined
-    }).finally(() => {
-      done = true
-    })
-
-    let cursor = 0
-    while (true) {
-      if (dropped > 0) {
-        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped }
-        dropped = 0
-      }
-      while (cursor < buffer.length) {
-        yield buffer[cursor] as RunEvent
-        cursor += 1
-      }
-      if (done) {
-        await result.catch(() => undefined)
-        if (failure) throw failure
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    yield* relayRunEvents((onEvent) => runAgentCall(sessionId, agentId, agent, input, opts, onEvent))
   }
 
   async function runAgentCall<K extends keyof NonNullable<S['agents']>>(
@@ -528,47 +589,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: WorkflowInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    const buffer: RunEvent[] = []
-    const maxBufferedEvents = 1024
-    let dropped = 0
-    let done = false
-    let failure: unknown
-    let liveRunId = 'unknown'
-    const result = runWorkflowCall(sessionId, workflowId, workflow, input, opts, (event) => {
-      if ('runId' in event) liveRunId = event.runId
-      if (buffer.length >= maxBufferedEvents) {
-        const dropIndex = buffer.findIndex((candidate) => candidate.type !== 'run.finished')
-        if (dropIndex >= 0) {
-          buffer.splice(dropIndex, 1)
-          dropped += 1
-        }
-      }
-      buffer.push(event)
-      return Promise.resolve()
-    }).catch((error) => {
-      failure = error
-      return undefined
-    }).finally(() => {
-      done = true
-    })
-
-    let cursor = 0
-    while (true) {
-      if (dropped > 0) {
-        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped }
-        dropped = 0
-      }
-      while (cursor < buffer.length) {
-        yield buffer[cursor] as RunEvent
-        cursor += 1
-      }
-      if (done) {
-        await result.catch(() => undefined)
-        if (failure) throw failure
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    yield* relayRunEvents((onEvent) => runWorkflowCall(sessionId, workflowId, workflow, input, opts, onEvent))
   }
 
   async function runWorkflowCall<K extends keyof NonNullable<S['workflows']>>(
@@ -1028,6 +1049,12 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
       } as unknown as JsonValue
     case 'stream.overflow':
       return { dropped: event.dropped }
+    default: {
+      // Exhaustiveness guard: adding a RunEvent variant without updating this
+      // sanitizer becomes a compile error instead of silently persisting undefined.
+      event satisfies never
+      return {}
+    }
   }
 }
 

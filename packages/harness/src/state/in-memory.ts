@@ -39,6 +39,7 @@ export class InMemoryStateStore implements StateStore {
   public async closeSession(id: string): Promise<void> {
     this.sessions.delete(id)
     this.messages.delete(id)
+    this.messageLocks.delete(id)
     for (const [runId, run] of this.runs) {
       if (run.sessionId === id) {
         this.runs.delete(runId)
@@ -82,6 +83,21 @@ export class InMemoryStateStore implements StateStore {
   public async clearMessages(sessionId: string): Promise<void> {
     return this.withMessageLock(sessionId, async () => {
       this.messages.delete(sessionId)
+    })
+  }
+
+  public async replaceMessages(sessionId: string, messages: Message[]): Promise<void> {
+    return this.withMessageLock(sessionId, async () => {
+      const ids = new Set<string>()
+      for (const message of messages) {
+        if (ids.has(message.id)) {
+          throw new StateError('Duplicate message id.', { op: 'appendMessages', reason: 'duplicate_message_id' })
+        }
+        ids.add(message.id)
+      }
+      // Atomic clear+append under one lock: validate first, then commit so a
+      // failure never leaves history partially replaced.
+      this.messages.set(sessionId, [...messages])
     })
   }
 

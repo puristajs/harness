@@ -1,4 +1,5 @@
 import { McpProtocolError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
+import { HARNESS_VERSION } from '../../version.js'
 import type { McpDiscoveredTool, McpTransportRunner, ResolvedMcpStdioTool } from './runner.js'
 import { withMcpTimeout } from './runner.js'
 
@@ -77,7 +78,7 @@ async function exchange(
       params: {
         protocolVersion,
         capabilities: {},
-        clientInfo: { name: '@purista/harness', version: '0.0.0' }
+        clientInfo: { name: '@purista/harness', version: HARNESS_VERSION }
       }
     }),
     JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),

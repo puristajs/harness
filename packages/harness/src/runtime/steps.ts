@@ -29,6 +29,13 @@ export class DurableStepError extends Error {
 /** Creates a durable workflow context bound to an acquired runtime lease. */
 export function createDurableWorkflowContext(runtime: DurableRuntime, lease: DurableRunLease): DurableWorkflowContext {
   const completed = new Set<string>()
+  // Committed step outputs from prior attempts, keyed by stepId. On resume,
+  // these steps replay their stored output instead of re-running side effects.
+  const replay = new Map<string, JsonValue | undefined>()
+  for (const checkpoint of lease.checkpoints ?? []) {
+    replay.set(checkpoint.stepId, checkpoint.output)
+  }
+  let sequence = (lease.checkpoints ?? []).reduce((max, checkpoint) => Math.max(max, checkpoint.sequence), 0)
 
   return {
     lease,
@@ -39,9 +46,15 @@ export function createDurableWorkflowContext(runtime: DurableRuntime, lease: Dur
       }
       completed.add(stepId)
 
+      // Durable replay: a step committed on a prior attempt returns its stored
+      // output without re-executing `fn()` or re-committing a checkpoint.
+      if (replay.has(stepId)) {
+        return replay.get(stepId) as T
+      }
+
       const output = await fn()
       assertJsonSerializable(output, stepId)
-      const sequence = (lease.checkpoint?.sequence ?? 0) + completed.size
+      sequence += 1
       const checkpoint: RunCheckpoint = {
         runId: lease.runId,
         sessionId: lease.sessionId,

@@ -330,6 +330,20 @@ On span failure, set:
 | `harness.error.category` | string |
 | `harness.error.retriable` | boolean |
 
+For model/provider failures, the following sanitized operational attributes may
+also be set when present in the error meta. These are diagnostic metadata, not
+content: the provider body is redacted with the content-aware sanitizer, so
+prompt/completion/tool content never appears regardless of content-capture mode.
+
+| Key | Type |
+| --- | --- |
+| `harness.error.scope` | string |
+| `harness.error.timeout_ms` | number |
+| `harness.error.provider` / `harness.error.model` | string |
+| `harness.error.model_provider_status` | number |
+| `harness.error.model_provider_code` / `_type` / `_param` / `_request_id` / `_message` | string |
+| `harness.error.model_provider_body` | string (content-redacted JSON) |
+
 Call `recordException(err)` for the thrown error. Span status is `ERROR` on
 failure and `OK` on success.
 

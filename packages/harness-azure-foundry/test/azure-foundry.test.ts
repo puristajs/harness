@@ -231,4 +231,38 @@ describe('azureFoundry provider factory', () => {
       }
     })
   })
+
+  it('preserves HTTP status so 429 is classified as a retriable http error', async () => {
+    const provider = azureFoundry({
+      client: client(async () => ({
+        status: 429,
+        body: { error: { message: 'rate limited', code: 'TooManyRequests' } }
+      }))
+    })
+
+    await expect(
+      provider.text!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: mockSignal()
+      })
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: true,
+      meta: { status: 429, reason: 'http_error', providerCode: 'TooManyRequests' }
+    })
+  })
+
+  it('does not set stream_options on the non-streaming path', async () => {
+    let body: any
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        body = options.body
+        return { status: 200, body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} } }
+      })
+    })
+    await provider.text!({ model: 'm', messages: [{ role: 'user', content: 'hi' }], signal: mockSignal() })
+    expect(body.stream).toBe(false)
+    expect(body.stream_options).toBeUndefined()
+  })
 })

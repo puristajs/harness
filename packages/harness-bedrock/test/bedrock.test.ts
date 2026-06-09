@@ -65,6 +65,30 @@ describe('bedrock provider factory', () => {
     })
   })
 
+  it('applies temperature 0 and alias-default sampling params (precedence regression)', async () => {
+    const calls: any[] = []
+    const provider = bedrock({
+      client: {
+        send: async (command: any) => {
+          calls.push(command.input)
+          return { output: { message: { content: [{ text: 'ok' }] } }, stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } }
+        }
+      }
+    })
+
+    await provider.text!({
+      model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      messages: [{ role: 'user', content: 'hi' }],
+      call: { temperature: 0 },
+      defaults: { topP: 0.9, stopSequences: ['END'] },
+      signal: mockSignal()
+    })
+
+    expect(calls[0].inferenceConfig.temperature).toBe(0)
+    expect(calls[0].inferenceConfig.topP).toBe(0.9)
+    expect(calls[0].inferenceConfig.stopSequences).toEqual(['END'])
+  })
+
   it('preserves application tool calls from object responses when tools are supplied', async () => {
     const calls: any[] = []
     const provider = bedrock({

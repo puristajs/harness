@@ -18,6 +18,9 @@ export async function runWorkflow<S extends BuilderState>(args: {
   } catch (error) {
     throw new ValidationError('Workflow input validation failed.', { where: 'workflow_input', issues: validationIssues(error) }, error)
   }
+  // The handler error (including errors bubbling from agent/model/tool calls) is
+  // intentionally preserved by identity so failure terminalization never masks
+  // the original failure. See spec 10 "Errors".
   const output = await withAbortSignal(args.ctx['signal'], 'workflow', 'Workflow execution was cancelled.', () =>
     args.workflow.handler({ ...(args.ctx as WorkflowContext<S, unknown, unknown>), input: parsed }))
   if (args.ctx['signal'].aborted) throw new OperationCancelledError('Workflow execution was cancelled.', { scope: 'workflow' })

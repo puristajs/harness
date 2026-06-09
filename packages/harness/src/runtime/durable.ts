@@ -48,6 +48,8 @@ export interface DurableRunLease {
   readonly start: DurableRunStart & { readonly attempt: number }
   /** Last committed checkpoint, if any. */
   readonly checkpoint?: RunCheckpoint
+  /** All committed checkpoints for this run, in commit order, for step replay. */
+  readonly checkpoints?: readonly RunCheckpoint[]
   /** Releases this in-memory lease without making the run terminal. */
   release(): Promise<void>
 }
@@ -143,6 +145,8 @@ interface RunState {
   status: DurableRunStatus
   attempt: number
   checkpoint?: RunCheckpoint
+  /** Committed checkpoints keyed by stepId, preserving commit order for replay. */
+  readonly checkpoints: Map<string, RunCheckpoint>
   finished?: FinishRunPatch
 }
 
@@ -198,11 +202,12 @@ class InMemoryDurableRuntime implements DurableRuntime {
 
       this.assertNoConflictingLease(record)
 
-      const state = current ?? {
+      const state: RunState = current ?? {
         start: record,
         status: 'running',
-        attempt: Math.max(1, record.attempt ?? 1)
-      } satisfies RunState
+        attempt: Math.max(1, record.attempt ?? 1),
+        checkpoints: new Map<string, RunCheckpoint>()
+      }
 
       if (current) {
         state.attempt += 1
@@ -244,7 +249,9 @@ class InMemoryDurableRuntime implements DurableRuntime {
       }
 
       const committedAt = checkpoint.committedAt ?? new Date().toISOString()
-      state.checkpoint = { ...checkpoint, committedAt }
+      const stored = { ...checkpoint, committedAt }
+      state.checkpoint = stored
+      state.checkpoints.set(stored.stepId, stored)
       this.checkpointCommitCount += 1
 
       if (this.options.failAfterCheckpoint === this.checkpointCommitCount) {
@@ -307,6 +314,7 @@ class InMemoryDurableRuntime implements DurableRuntime {
         attempt: state.attempt
       },
       ...(state.checkpoint ? { checkpoint: state.checkpoint } : {}),
+      checkpoints: [...state.checkpoints.values()].sort((a, b) => a.sequence - b.sequence),
       release: async () => {
         await this.withSessionLock(lease.sessionId, async () => {
           this.releaseLease(lease)

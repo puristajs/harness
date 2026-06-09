@@ -6,7 +6,7 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE
 } from '@opentelemetry/semantic-conventions/incubating'
-import { AgentLoopBudgetError, HarnessConfigError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
+import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, SkillManifestError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -238,10 +238,9 @@ async function runDefaultAgentInner(args: {
 
   const enabledBuiltins: BuiltinToolName[] = args.agent.builtinTools === false ? [] : (args.agent.builtinTools?.slice() as BuiltinToolName[] | undefined) ?? ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']
   if (skillIds.length > 0 && !enabledBuiltins.includes('read')) {
-    throw new HarnessConfigError('Agents with skills require the read built-in tool for skill activation.', {
+    throw new SkillManifestError('Agents with skills require the read built-in tool for skill activation.', {
       reason: 'skill_read_tool_missing',
-      path: `agents.${args.agentId}.builtinTools`,
-      id: args.agentId
+      agent_id: args.agentId
     })
   }
   const builtinSpecs = getBuiltinToolSpecs(enabledBuiltins, args.session)
@@ -273,54 +272,65 @@ async function runDefaultAgentInner(args: {
   const maxSteps = Math.min(args.agent.maxSteps ?? args.maxSteps, 64)
   let steps = 0
 
-  while (true) {
-    if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
-    if (steps >= maxSteps) throw new AgentLoopBudgetError('Agent loop budget exceeded.', { agent_id: args.agentId, reason: 'iterations_exceeded', limit: maxSteps })
-    if (steps === 0) await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString() })
-    const response = await model.object({
-      messages: [
-        { role: 'system', content: instructions },
-        ...modelMessages
-      ],
-      tools: [...builtinSpecs, ...customSpecs],
-      schema: z.toJSONSchema(outputSchema) as JsonValue
-    }, args.signal, {
-      harnessName: args.harnessName,
-      sessionId: args.sessionId,
-      runId: args.runId,
-      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-      agentId: args.agentId
-    })
+  await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString() })
 
-    const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
-    if (toolCalls.length === 0) {
-      const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
-      emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
-      await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: validated as JsonValue, usage: response.usage })
-      await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
-      return { output: validated as JsonValue, emitted }
-    }
+  try {
+    while (true) {
+      if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
+      if (steps >= maxSteps) throw new AgentLoopBudgetError('Agent loop budget exceeded.', { agent_id: args.agentId, reason: 'iterations_exceeded', limit: maxSteps })
+      const response = await model.object({
+        messages: [
+          { role: 'system', content: instructions },
+          ...modelMessages
+        ],
+        tools: [...builtinSpecs, ...customSpecs],
+        schema: z.toJSONSchema(outputSchema) as JsonValue
+      }, args.signal, {
+        harnessName: args.harnessName,
+        sessionId: args.sessionId,
+        runId: args.runId,
+        ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+        agentId: args.agentId
+      })
 
-    const assistantMsg: Message = {
-      id: `msg_${ulid()}_assistant`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
-      timestamp: new Date().toISOString()
-    }
-    emitted.push(assistantMsg)
-    modelMessages.push({ role: 'assistant', content: assistantMsg.content, toolCalls })
+      // Emit one usage-bearing model event per model round-trip (including
+      // tool-call steps) so run-summary modelCalls and tokenTotals are accurate
+      // for multi-step runs.
+      await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: (response.object ?? null) as JsonValue, usage: response.usage })
 
-    args.metrics.histogram('harness.agent.tool_batch.size', toolCalls.length, {
-      'harness.agent.tool_batch.max_parallel': args.maxParallelToolCalls
-    })
-    const outcomes = await runLimited(toolCalls, args.maxParallelToolCalls, (call) => executeToolCall({
-      ...args,
-      enabledCustomTools,
-      activatedSkills
-    }, call))
-    for (const outcome of outcomes) {
-      emitted.push(outcome.emitted)
-      modelMessages.push(outcome.modelMessage)
+      const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
+      if (toolCalls.length === 0) {
+        const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
+        emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
+        return { output: validated as JsonValue, emitted }
+      }
+
+      const assistantMsg: Message = {
+        id: `msg_${ulid()}_assistant`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
+        timestamp: new Date().toISOString()
+      }
+      emitted.push(assistantMsg)
+      modelMessages.push({ role: 'assistant', content: assistantMsg.content, toolCalls })
+
+      args.metrics.histogram('harness.agent.tool_batch.size', toolCalls.length, {
+        'harness.agent.tool_batch.max_parallel': args.maxParallelToolCalls
+      })
+      const outcomes = await runLimited(toolCalls, args.maxParallelToolCalls, (call) => executeToolCall({
+        ...args,
+        enabledCustomTools,
+        activatedSkills
+      }, call))
+      for (const outcome of outcomes) {
+        emitted.push(outcome.emitted)
+        modelMessages.push(outcome.modelMessage)
+      }
+      steps += 1
     }
-    steps += 1
+  } catch (error) {
+    // Pair every agent.started with an agent.finished, even on error/cancel/budget.
+    await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error) })
+    throw error
   }
 }
 

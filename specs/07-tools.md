@@ -146,8 +146,9 @@ interface McpStdioToolDefinition {
 
 Behavior:
 
-- Implementation lives inside `@purista/harness` under `src/tools/mcp/`. MCP runner modules load `@modelcontextprotocol/sdk` dynamically so harnesses with only TS tools do not load MCP code at runtime.
-- Stdio MCP runs through the current `SandboxSession`. It MUST NOT spawn directly from the host process. If the sandbox has no executor, the call fails with `SandboxNoExecutorError`.
+- Implementation lives inside `@purista/harness` under `src/tools/mcp/`. The HTTP runner loads `@modelcontextprotocol/sdk` dynamically so harnesses with only TS tools do not load MCP code at runtime.
+- Stdio MCP runs through the current `SandboxSession` using a one-shot JSON-RPC exchange over the sandbox's one-shot `exec` executor: each call spawns the server, sends `initialize` + `notifications/initialized` + the single request, and reads the response. It MUST NOT spawn directly from the host process. If the sandbox has no executor, the call fails with `SandboxNoExecutorError`.
+- Because each call (including `tools/list` and a later `tools/call`) is an independent one-shot exchange, the stdio transport is leak-free (no persistent child process) but does not carry server-side session state between calls. Stateful stdio servers that require a persistent session are not supported by the in-process sandbox executor; use the HTTP runner or a custom adapter for those. A persistent stdio session would require a sandbox spawn/streaming capability and is tracked as scoped follow-up work.
 - `install.command`, when provided, runs inside the same sandbox executor before first use. Use it to install or bootstrap the MCP server inside the sandbox, for example `npm install`/`npx` setup in a sandbox workspace.
 - The MCP server's `tools/list` is queried before model tool exposure; the declared input/output JSON Schemas are validated by an embedded JSON Schema validator (see "MCP JSON Schema validator" below).
 - `mcp_stdio` adapter input/output flow ordering is locked: `input → inputAdapter → JSON-Schema validate → MCP call → response → JSON-Schema validate → outputAdapter → return`.

@@ -87,6 +87,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     req.signal.throwIfAborted()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    const toolState: StreamToolCallState = new Map()
 
     for await (const event of streamChat(this.client, req, false)) {
       req.signal.throwIfAborted()
@@ -96,17 +97,21 @@ class AzureFoundryModelProvider extends BaseModelProvider {
         if (choice.delta?.content) {
           yield { kind: 'delta', text: choice.delta.content }
         }
-        const toolCalls = extractToolCalls(choice.delta?.tool_calls, req, 'textStream')
-        for (const call of toolCalls ?? []) {
-          yield { kind: 'tool_call', call }
+        if (choice.delta?.tool_calls) {
+          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
-        finishReason = toFinishReason(choice.finish_reason ?? finishReason)
+        if (choice.finish_reason) {
+          finishReason = toFinishReason(choice.finish_reason)
+        }
       }
       if (data.usage) {
         usage = toUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
       }
     }
 
+    for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
+      yield { kind: 'tool_call', call }
+    }
     yield { kind: 'finish', usage, finishReason }
   }
 
@@ -131,6 +136,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     let partial = ''
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    const toolState: StreamToolCallState = new Map()
 
     for await (const event of streamChat(this.client, req, true)) {
       req.signal.throwIfAborted()
@@ -141,17 +147,21 @@ class AzureFoundryModelProvider extends BaseModelProvider {
           partial += choice.delta.content
           yield { kind: 'partial', partial: safePartialJson(partial) }
         }
-        const toolCalls = extractToolCalls(choice.delta?.tool_calls, req, 'objectStream')
-        for (const call of toolCalls ?? []) {
-          yield { kind: 'tool_call', call }
+        if (choice.delta?.tool_calls) {
+          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
-        finishReason = toFinishReason(choice.finish_reason ?? finishReason)
+        if (choice.finish_reason) {
+          finishReason = toFinishReason(choice.finish_reason)
+        }
       }
       if (data.usage) {
         usage = toUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
       }
     }
 
+    for (const call of finalizeStreamToolCalls(toolState, req, 'objectStream')) {
+      yield { kind: 'tool_call', call }
+    }
     const object = parseJson(partial || '{}', req, 'objectStream') as T
     yield { kind: 'finish', object, usage, finishReason }
   }
@@ -215,6 +225,8 @@ async function postChat(client: AzureFoundryClient, req: ChatRequest, stream: bo
       model: req.model,
       messages: toAzureMessages(req.messages),
       stream,
+      // Only emits a usage event during streaming when this is set.
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       tools: toTools(req.tools),
       temperature: req.call?.temperature ?? req.defaults?.temperature,
       max_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,
@@ -233,7 +245,7 @@ async function* streamChat(client: AzureFoundryClient, req: ChatRequest, objectM
   const response = await postChat(client, req, true)
   const nodeResponse = typeof response.asNodeStream === 'function' ? await response.asNodeStream() : response
   if (nodeResponse.status && nodeResponse.status !== '200' && nodeResponse.status !== 200) {
-    throw nodeResponse.body?.error ?? new Error('Azure AI Foundry streaming request failed.')
+    throw azureFailure(nodeResponse, 'Azure AI Foundry streaming request failed.')
   }
   if (nodeResponse.body?.[Symbol.asyncIterator]) {
     const sses = createSseStream(nodeResponse.body)
@@ -250,9 +262,25 @@ async function* streamChat(client: AzureFoundryClient, req: ChatRequest, objectM
 
 function ensureOk(response: any): any {
   if (response.status && response.status !== '200' && response.status !== 200) {
-    throw response.body?.error ?? new Error('Azure AI Foundry request failed.')
+    throw azureFailure(response, 'Azure AI Foundry request failed.')
   }
   return response.body ?? response
+}
+
+/**
+ * Build an error that preserves the HTTP status (and body/headers) so the base
+ * provider's `normalizeError` can classify retriability (429/5xx) instead of
+ * misclassifying every failure as a non-retriable network error.
+ */
+function azureFailure(response: any, fallbackMessage: string): Error {
+  const status = Number(response?.status)
+  const body = response?.body
+  const message = (body?.error?.message ?? body?.message) as string | undefined
+  return Object.assign(new Error(message ?? fallbackMessage), {
+    ...(Number.isFinite(status) ? { status } : {}),
+    ...(body?.error ? { error: body.error } : body !== undefined ? { body } : {}),
+    ...(response?.headers ? { headers: response.headers } : {})
+  })
 }
 
 function toAzureMessages(messages: ModelMessage[]): any[] {
@@ -321,6 +349,36 @@ function extractToolCalls(toolCalls: unknown, req: ChatRequest, method: string):
       id: String(call.id),
       name: String(call.function.name),
       arguments: parseJson(call.function.arguments ?? '{}', req, method)
+    }))
+}
+
+/**
+ * Per-index accumulator for streamed tool-call fragments (OpenAI-compatible
+ * delta format): the first delta carries `index`/`id`/`function.name`, later
+ * deltas carry only `index` and argument fragments. Concatenate by index and
+ * parse arguments once at stream end.
+ */
+type StreamToolCallState = Map<number, { id?: string; name?: string; args: string }>
+
+function accumulateToolCallDeltas(state: StreamToolCallState, deltas: any[]): void {
+  for (const delta of deltas) {
+    const index = typeof delta?.index === 'number' ? delta.index : 0
+    const existing = state.get(index) ?? { args: '' }
+    if (delta?.id) existing.id = String(delta.id)
+    if (delta?.function?.name) existing.name = String(delta.function.name)
+    if (typeof delta?.function?.arguments === 'string') existing.args += delta.function.arguments
+    state.set(index, existing)
+  }
+}
+
+function finalizeStreamToolCalls(state: StreamToolCallState, req: ChatRequest, method: string): ToolCallSpec[] {
+  return [...state.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .filter(([, call]) => call.id && call.name)
+    .map(([, call]) => ({
+      id: call.id as string,
+      name: call.name as string,
+      arguments: parseJson(call.args || '{}', req, method)
     }))
 }
 

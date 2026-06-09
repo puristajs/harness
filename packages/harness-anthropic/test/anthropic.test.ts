@@ -67,6 +67,32 @@ describe('anthropic provider factory', () => {
     })
   })
 
+  it('applies temperature 0 and alias-default sampling params (precedence regression)', async () => {
+    const calls: any[] = []
+    const provider = anthropic({
+      client: {
+        messages: {
+          create: async (payload: any) => {
+            calls.push(payload)
+            return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'hi' }],
+      call: { temperature: 0 },
+      defaults: { topP: 0.9, stopSequences: ['END'] },
+      signal: mockSignal()
+    })
+
+    expect(calls[0].temperature).toBe(0)
+    expect(calls[0].top_p).toBe(0.9)
+    expect(calls[0].stop_sequences).toEqual(['END'])
+  })
+
   it('preserves application tool calls from object responses when tools are supplied', async () => {
     const calls: any[] = []
     const provider = anthropic({

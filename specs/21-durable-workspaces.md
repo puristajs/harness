@@ -565,6 +565,34 @@ records, not in spans, metrics, or logs.
 
 ## 16. Runtime Integration
 
+### Implementation status
+
+The durable building blocks are implemented and contract-tested:
+
+- `inMemoryDurableRuntime()` enforces leases, single-owner checkpoint commits,
+  and per-step checkpoint storage.
+- `createDurableWorkflowContext(runtime, lease).step(id, fn)` provides durable
+  replay: a step committed on a prior attempt returns its stored output without
+  re-running `fn()` (verified by `durable-steps.test.ts`).
+- `inMemoryDurableWorkspaceStore()` honors idempotency/conflict, abort-blocks-
+  resume, idempotent cleanup, typed `WorkspaceError`/`WorkspaceQuotaExceededError`,
+  retention/expiry, and workspace-scoped cancellation, all exercised by
+  `durableWorkspaceStoreContract`.
+
+These primitives are opt-in: a workflow/custom handler that holds a lease and
+uses `ctx.step(...)` (and, where configured, the workspace store) gets durable
+replay. The session run loop does **not** yet auto-acquire a lease per
+`session.workflows[id].prompt(...)` call or auto-drive the workspace lifecycle —
+that automatic integration (including stable run-id/resume entry points across
+process restart) is the remaining scoped work. Until it lands, configuring
+`.runtime(...)`/`.workspaceStore(...)` and `.requires([...workspace...])` enables
+the capabilities and primitives but does not by itself make every workflow run
+durable; durability is engaged explicitly through the durable context. Treat the
+F-DW-01..03 outcomes and §18/§20 integration matrices as the acceptance criteria
+for that remaining auto-wiring.
+
+### Builder ordering
+
 The builder gains `.workspaceStore(adapter)` in the foundation stage after
 `.runtime(...)` and before `.requires(...)`.
 

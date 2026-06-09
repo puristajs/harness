@@ -397,6 +397,43 @@ describe('openai provider factory', () => {
     expect(calls[0]?.options.signal).toBeInstanceOf(AbortSignal)
   })
 
+  it('accumulates fragmented streaming tool calls, usage, and finish reason', async () => {
+    let payload: any
+    async function* chunks() {
+      // First fragment: id + name, empty args.
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'lookup', arguments: '' } }] } }] }
+      // Argument fragments arrive without id/name.
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"qu' } }] } }] }
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ery":"hi"}' } }] } }] }
+      // Finish reason on its own delta.
+      yield { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+      // Usage chunk arrives with an empty choices array.
+      yield { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } }
+    }
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async (p: any) => { payload = p; return chunks() } } }
+      } as any
+    })
+
+    const out: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use a tool' }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })) {
+      out.push(chunk)
+    }
+
+    expect(payload.stream_options).toEqual({ include_usage: true })
+    const toolCall = out.find((c) => c.kind === 'tool_call')
+    expect(toolCall.call).toEqual({ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } })
+    const finish = out.find((c) => c.kind === 'finish')
+    expect(finish.finishReason).toBe('tool_calls')
+    expect(finish.usage.totalTokens).toBe(10)
+  })
+
   it('preserves assistant tool_calls before tool result messages', async () => {
     const calls: Array<{ payload: any; options: any }> = []
     const provider = openai({

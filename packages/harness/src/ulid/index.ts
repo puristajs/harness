@@ -1,4 +1,7 @@
+import { webcrypto } from 'node:crypto'
+
 const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+const RANDOM_MAX = (1n << 80n) - 1n
 
 let lastTime = -1
 let lastRandom = 0n
@@ -15,25 +18,40 @@ function encode(value: bigint, length: number): string {
   return out
 }
 
-function nextRandom(): bigint {
-  const now = Date.now()
-  if (now !== lastTime) {
-    lastTime = now
-    const seed = BigInt(Math.floor(Math.random() * 2 ** 24))
-    lastRandom = seed << 56n
-    return lastRandom
+/** Cryptographically-strong 80-bit random component. */
+function randomEntropy(): bigint {
+  const bytes = new Uint8Array(10)
+  webcrypto.getRandomValues(bytes)
+  let value = 0n
+  for (const byte of bytes) {
+    value = (value << 8n) | BigInt(byte)
   }
-  lastRandom += 1n
-  return lastRandom
+  return value
 }
 
 /**
  * Generates a monotonic ULID-like identifier.
  *
- * Subsequent calls within the same millisecond increment the random suffix to preserve ordering.
+ * Ordering is guaranteed even across same-millisecond bursts and wall-clock
+ * regressions: the time component never moves backward (it is clamped to a
+ * monotonic high-water mark), and within a millisecond the 80-bit random
+ * component is incremented. Each new millisecond seeds the random component
+ * from a cryptographically-strong source, so intra-millisecond collisions are
+ * negligible across calls and processes.
  */
 export function ulid(): string {
-  const timePart = encode(BigInt(Date.now()), 10)
-  const randomPart = encode(nextRandom(), 16)
-  return `${timePart}${randomPart}`
+  const now = Date.now()
+  if (now > lastTime) {
+    lastTime = now
+    lastRandom = randomEntropy()
+  } else {
+    // Same millisecond or a backward clock step: keep ordering by never
+    // emitting a smaller time, and advance the random component instead.
+    lastRandom += 1n
+    if (lastRandom > RANDOM_MAX) {
+      lastTime += 1
+      lastRandom = randomEntropy()
+    }
+  }
+  return `${encode(BigInt(lastTime), 10)}${encode(lastRandom, 16)}`
 }

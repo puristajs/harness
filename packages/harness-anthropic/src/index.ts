@@ -188,9 +188,9 @@ async function createMessage(client: AnthropicClient, req: ChatRequest, stream: 
     ...(system ? { system } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
-    ...(req.call?.temperature ?? req.defaults?.temperature !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
-    ...(req.call?.topP ?? req.defaults?.topP !== undefined ? { top_p: req.call?.topP ?? req.defaults?.topP } : {}),
-    ...(req.call?.stopSequences ?? req.defaults?.stopSequences ? { stop_sequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {}),
+    ...((req.call?.temperature ?? req.defaults?.temperature) !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
+    ...((req.call?.topP ?? req.defaults?.topP) !== undefined ? { top_p: req.call?.topP ?? req.defaults?.topP } : {}),
+    ...((req.call?.stopSequences ?? req.defaults?.stopSequences) !== undefined ? { stop_sequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {}),
     ...bodyOptions
   }, { ...requestOptions, signal: req.signal })
 }

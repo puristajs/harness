@@ -1,12 +1,18 @@
+import { exec, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { env as processEnv } from 'node:process'
+import type { Readable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter } from '../src/index.js'
+import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { inMemoryDurableWorkspaceStore } from '../src/index.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError, SkillManifestError } from '../src/errors/index.js'
 import type { ObjectRequest } from '../src/ports/model-provider.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
+
+const fakeMcpServerPath = fileURLToPath(new URL('../src/testing/fixtures/mcp/fake-stdio-server.mjs', import.meta.url))
 
 class SlowBaseProvider extends BaseModelProvider {
   public constructor() {
@@ -296,6 +302,117 @@ it('limits parallel tool execution with maxParallelToolCalls', async () => {
   expect(toolMessages.map((message) => message.toolCallId)).toEqual(['call-1', 'call-2', 'call-3'])
 })
 
+it('uses persistent stdio MCP transport through the agent sandbox telemetry wrapper', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [
+      { id: 'call-1', name: 'counter_tool', arguments: {} },
+      { id: 'call-2', name: 'counter_tool', arguments: {} }
+    ],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const sandbox = hostSpawnExecSandbox()
+  const harness = defineHarness()
+    .defaults({ maxParallelToolCalls: 1 })
+    .sandbox({
+      ...sandbox,
+      open: async () => sandbox
+    })
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      counter_tool: {
+        kind: 'mcp_stdio',
+        description: 'Stateful counter over stdio MCP.',
+        command: '/usr/bin/env',
+        args: ['node', fakeMcpServerPath],
+        tool: 'counter'
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Call counter twice, then return done.',
+        tools: ['counter_tool'],
+        builtinTools: false
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  try {
+    const session = await harness.getSession('agent-persistent-mcp')
+    await expect(session.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+    const secondModelRequest = model.requests[1] as ObjectRequest
+    const toolMessages = secondModelRequest.messages.filter((message) => message.role === 'tool')
+    expect(toolMessages.map((message) => JSON.parse(message.content) as unknown)).toEqual([{ value: 1 }, { value: 2 }])
+    expect(sandbox.spawnCalls).toBe(1)
+  } finally {
+    await sandbox.close()
+  }
+})
+
+it('preserves sandbox spawn capability through the agent sandbox telemetry wrapper', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'call-spawn', name: 'spawn_probe', arguments: {} }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const sandbox = hostSpawnExecSandbox()
+  const harness = defineHarness()
+    .sandbox({
+      ...sandbox,
+      open: async () => sandbox
+    })
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      spawn_probe: {
+        kind: 'ts',
+        description: 'Reports whether the sandbox still exposes spawn.',
+        input: z.object({}),
+        output: z.object({ hasSpawn: z.boolean() }),
+        handler: async (ctx) => ({
+          hasSpawn: typeof (ctx.sandbox as Partial<SpawnCapableSandboxSession>).spawn === 'function'
+        })
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'Call spawn_probe, then return done.',
+        tools: ['spawn_probe'],
+        builtinTools: false
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .build()
+
+  try {
+    const session = await harness.getSession('spawn-wrapper')
+    await expect(session.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+    const secondModelRequest = model.requests[1] as ObjectRequest
+    const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
+    expect(JSON.parse(toolMessage?.content ?? '{}')).toEqual({ hasSpawn: true })
+  } finally {
+    await sandbox.close()
+  }
+})
+
 it('rejects invalid maxParallelToolCalls defaults', () => {
   expect(() => defineHarness().defaults({ maxParallelToolCalls: 0 })).toThrow(HarnessConfigError)
   expect(() => defineHarness().defaults({ maxParallelToolCalls: 1.5 })).toThrow(HarnessConfigError)
@@ -533,3 +650,87 @@ it('atomically replaces session history', async () => {
   const replaced = await session.history.list()
   expect(replaced.map((m) => m.content)).toEqual(['fresh'])
 })
+
+interface HostSpawnExecSandbox extends SandboxSession, SpawnCapableSandboxSession {
+  spawnCalls: number
+}
+
+function hostSpawnExecSandbox(): HostSpawnExecSandbox {
+  const children = new Set<ChildProcessWithoutNullStreams>()
+  const sandbox = {
+    executor: 'available',
+    spawnCalls: 0,
+    async read() { throw new Error('not implemented') },
+    async readText() { throw new Error('not implemented') },
+    async write() {},
+    async remove() {},
+    async list() { return [] },
+    async stat() { throw new Error('not implemented') },
+    async exists() { return false },
+    async mount() {},
+    async exec(command, opts) {
+      return new Promise((resolve, reject) => {
+        const started = Date.now()
+        const child = exec(command, {
+          cwd: opts?.cwd,
+          env: { ...processEnv, ...(opts?.env ?? {}) },
+          timeout: opts?.timeoutMs
+        }, (error, stdout, stderr) => {
+          if (error && !('code' in error)) {
+            reject(error)
+            return
+          }
+          resolve({
+            stdout,
+            stderr,
+            exitCode: typeof (error as { code?: unknown } | null)?.code === 'number' ? (error as { code: number }).code : 0,
+            durationSeconds: (Date.now() - started) / 1000
+          })
+        })
+        if (opts?.stdin) child.stdin?.end(opts.stdin)
+        else child.stdin?.end()
+        opts?.signal?.addEventListener('abort', () => {
+          child.kill()
+          reject(opts.signal?.reason ?? new Error('aborted'))
+        }, { once: true })
+      })
+    },
+    async close() {
+      for (const child of children) child.kill('SIGKILL')
+      children.clear()
+    }
+  } as Omit<HostSpawnExecSandbox, 'spawn'>
+
+  Object.defineProperty(sandbox, 'spawn', {
+    enumerable: false,
+    value: async (command: string, opts?: Parameters<SpawnCapableSandboxSession['spawn']>[1]): Promise<SandboxProcess> => {
+      sandbox.spawnCalls += 1
+      const child = spawn(command, [...(opts?.args ?? [])], {
+        cwd: opts?.cwd,
+        env: { ...processEnv, ...(opts?.env ?? {}) },
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+      children.add(child)
+      const exit = new Promise<{ exitCode: number; signal?: string }>((resolve) => {
+        child.on('exit', (code, signal) => resolve({ exitCode: code ?? 0, ...(signal ? { signal } : {}) }))
+      })
+      opts?.signal?.addEventListener('abort', () => child.kill(), { once: true })
+      return {
+        async writeStdin(chunk) { child.stdin.write(chunk) },
+        stdout: decodeStream(child.stdout),
+        stderr: decodeStream(child.stderr),
+        exit,
+        async kill(signal) { child.kill(signal ?? 'SIGTERM') }
+      }
+    }
+  })
+
+  return sandbox as HostSpawnExecSandbox
+}
+
+async function* decodeStream(stream: Readable): AsyncIterable<string> {
+  const decoder = new TextDecoder()
+  for await (const chunk of stream) {
+    yield decoder.decode(chunk as Buffer, { stream: true })
+  }
+}

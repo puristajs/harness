@@ -13,7 +13,7 @@ import type { Message } from '../models/state.js'
 import type { AgentDefinition, BuiltinToolName, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelMessage, ToolCallSpec } from '../ports/model-provider.js'
-import type { SandboxSession } from '../sandbox/index.js'
+import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
 import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/index.js'
 import { buildSkillIndex, mountSkillsOnce } from '../skills/index.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, getBuiltinToolSpecs, invokeBuiltinTool } from '../tools/index.js'
@@ -577,7 +577,15 @@ function withSandboxTelemetry(args: {
   session: SandboxSession
 }, toolId: string): SandboxSession {
   if (!args.telemetry || args.session.executor === 'unavailable') return args.session
-  return {
+  const attrs = {
+    'harness.name': args.harnessName,
+    'harness.session.id': args.sessionId,
+    'harness.run.id': args.runId,
+    ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
+    'harness.agent.id': args.agentId,
+    'harness.tool.id': toolId
+  }
+  const wrapped: SandboxSession & Partial<SpawnCapableSandboxSession> = {
     ...args.session,
     executor: args.session.executor,
     read: args.session.read.bind(args.session),
@@ -589,14 +597,7 @@ function withSandboxTelemetry(args: {
     exists: args.session.exists.bind(args.session),
     mount: args.session.mount.bind(args.session),
     close: args.session.close.bind(args.session),
-    exec: async (command, opts) => args.telemetry!.span('harness.sandbox.exec', {
-      'harness.name': args.harnessName,
-      'harness.session.id': args.sessionId,
-      'harness.run.id': args.runId,
-      ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
-      'harness.agent.id': args.agentId,
-      'harness.tool.id': toolId
-    }, async (span) => {
+    exec: async (command, opts) => args.telemetry!.span('harness.sandbox.exec', attrs, async (span) => {
       const result = await args.session.exec(command, opts)
       span.setAttributes({
         'harness.exec.exit_code': result.exitCode,
@@ -605,4 +606,10 @@ function withSandboxTelemetry(args: {
       return result
     })
   }
+  const spawn = (args.session as Partial<SpawnCapableSandboxSession>).spawn
+  if (typeof spawn === 'function') {
+    wrapped.spawn = async (command, opts) => args.telemetry!.span('harness.sandbox.spawn', attrs, async () =>
+      spawn.call(args.session, command, opts))
+  }
+  return wrapped
 }

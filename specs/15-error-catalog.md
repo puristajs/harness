@@ -24,8 +24,8 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - code: `HARNESS_CONFIG_ERROR`
 - category: `config`
 - retriable: `false`
-- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.).
-- meta: `path?: string` (config path), `id?: string`, `reason: string`.
+- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.runtime(...)` (`reason:'durable_runtime_required'`).
+- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'durable_runtime_required'`).
 
 ### `ValidationError`
 - code: `VALIDATION_ERROR`

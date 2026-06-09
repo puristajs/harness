@@ -33,6 +33,8 @@ interface WorkflowContext<S, I, O> {
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
   metrics: Metrics
+  /** Runs `fn` as a durable step. See "Durable steps". */
+  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
 }
 ```
 
@@ -49,6 +51,30 @@ interface WorkflowContext<S, I, O> {
   - Errors are thrown directly (not wrapped) to allow the workflow to handle them.
 
 The workflow's own input is validated by `workflow.input.parse(value)` at run start; output is validated by `workflow.output.parse(value)` after the handler returns. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
+
+## Durable steps
+
+`ctx.step(stepId, fn)` marks a JSON-serializable boundary in a workflow handler.
+Its behavior depends purely on how the workflow is invoked:
+
+- **Durable invocation** (`opts.durable` supplied and a `.runtime(...)` adapter is
+  configured — see [21-durable-workspaces](./21-durable-workspaces.md) §16.1): a
+  step committed on a prior attempt returns its stored output **without re-running
+  `fn`** or re-committing a checkpoint. A new step runs `fn`, validates that the
+  output is JSON-serializable (`DurableStepError` otherwise), commits a runtime
+  checkpoint, and — when a workspace store is configured — links a durable
+  workspace checkpoint committed before the runtime checkpoint.
+- **Ephemeral invocation** (no `opts.durable`, or no configured runtime):
+  `ctx.step(stepId, fn)` is a transparent pass-through — it simply awaits `fn` and
+  returns its value with no checkpointing.
+
+Locked rules:
+
+- `stepId` matches `/^[A-Za-z0-9_.:-]{1,128}$/`; an invalid id throws
+  `DurableStepError`.
+- A duplicate `stepId` within one run throws `DurableStepError`.
+- The same workflow body therefore runs durably or ephemerally with no code
+  change; durability is an invocation-time decision, not a handler concern.
 
 ## Parallel invocation
 

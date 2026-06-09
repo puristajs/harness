@@ -60,7 +60,9 @@ side effects stop promptly.
 }))
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.signal`, `ctx.runId`, and `ctx.sessionId`.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`.
+
+`ctx.step(stepId, fn)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Durable execution is workflow-only — see `durable-feedback-operations.md`.
 
 Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the calls are independent. Propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
 The harness also races workflow handlers against `ctx.signal`, so a run can

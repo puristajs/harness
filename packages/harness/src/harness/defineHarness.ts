@@ -103,6 +103,18 @@ export interface HarnessOptions {
   name?: string
 }
 
+/** Durable execution opt-in for a single workflow call. */
+export interface DurableInvokeOptions {
+  /** Stable run id reused across resumes/retries. Matches `/^[A-Za-z0-9_.:-]{1,200}$/`. */
+  runId: string
+  /** Worker/process id owning the durable lease. Defaults to the harness worker id. */
+  workerId?: string
+  /** Initial durable step id label. Defaults to the workflow id. */
+  stepId?: string
+  /** Optional attempt hint; the runtime may raise it on retry. */
+  attempt?: number
+}
+
 /** Shared invoke options for workflow and agent execution. */
 export interface InvokeOptions {
   /** Abort signal used to cooperatively cancel the call. */
@@ -117,6 +129,12 @@ export interface InvokeOptions {
   tracestate?: string
   /** Scalar metadata exposed to handlers and telemetry sanitizers. */
   metadata?: Record<string, JsonValue>
+  /**
+   * Opt a workflow run into durable execution against the configured
+   * `.runtime(...)` (and optional `.workspaceStore(...)`). Workflow-only;
+   * supplying it on an agent run throws `ValidationError`.
+   */
+  durable?: DurableInvokeOptions
 }
 
 /** Canonical built-in tool names provided by the harness. */
@@ -405,6 +423,12 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
   metrics: Metrics
+  /**
+   * Runs `fn` as a durable step. Under a durable invocation the output is
+   * checkpointed and replayed on resume without re-running `fn`; otherwise it is
+   * a transparent pass-through. See spec 10 "Durable steps".
+   */
+  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
   output?: O
 }
 
@@ -795,6 +819,8 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       state: this.configured.state ?? new InMemoryStateStore(),
       sandbox,
       memory,
+      ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
+      ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,

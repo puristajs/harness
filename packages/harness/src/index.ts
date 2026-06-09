@@ -14,6 +14,8 @@ export {
 export type {
   DurableActiveRunStatus,
   DurableWorkflowContext,
+  DurableWorkflowContextOptions,
+  DurableStepCommit,
   DurableRunLease,
   DurableRunStart,
   DurableRunStatus,

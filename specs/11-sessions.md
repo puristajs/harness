@@ -45,6 +45,24 @@ interface InvokeOptions {
   tracestate?: string
   /** Sanitized scalar metadata made available to handlers and emitted as `harness.metadata.*` attributes. */
   metadata?: Record<string, JsonValue>
+  /**
+   * Opt into durable execution for a workflow run. Requires a configured
+   * executable `.runtime(...)`. Workflow-only; supplying it on an agent run
+   * throws `ValidationError{where:'invoke_options'}`. See
+   * [21-durable-workspaces](./21-durable-workspaces.md) §16.1.
+   */
+  durable?: DurableInvokeOptions
+}
+
+interface DurableInvokeOptions {
+  /** Stable run id reused across resumes/retries. Matches /^[A-Za-z0-9_.:-]{1,200}$/. */
+  runId: string
+  /** Worker/process id owning the lease. Defaults to the harness worker id. */
+  workerId?: string
+  /** Initial durable step id label. Defaults to the workflow id. */
+  stepId?: string
+  /** Optional attempt hint; the runtime may raise it on retry. */
+  attempt?: number
 }
 ```
 
@@ -89,6 +107,24 @@ For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(
 12. **Resolve `prompt` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
 
 The outermost span is always `harness.session.prompt`; the child is `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
+
+### Durable workflow runs
+
+When `opts.durable` is supplied to a workflow `prompt`/`stream`, the locked order
+above is extended (see [21-durable-workspaces](./21-durable-workspaces.md) §16.1):
+
+- The run id is `opts.durable.runId` (not a fresh ULID), so the `RunRecord`,
+  persisted events, run summary, durable runtime lease, and any durable workspace
+  share one stable id.
+- After the busy check and before the handler runs, the harness acquires a durable
+  runtime lease and (when a workspace store is configured) starts or resumes the
+  durable workspace. `ctx.step(...)` becomes durable for the call.
+- On terminal, the harness finalizes the durable runtime (`finishRun`) and drives
+  the workspace lifecycle in addition to the ordinary `state.finishRun`. Durable
+  finalization failures are logged and counted but never mask the primary error.
+- Supplying `opts.durable` on an agent run throws
+  `ValidationError{where:'invoke_options'}`; supplying it without an executable
+  `.runtime(...)` throws `HarnessConfigError{meta.reason:'durable_runtime_required'}`.
 
 ## Concurrency rule (locked)
 

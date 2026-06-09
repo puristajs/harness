@@ -25,6 +25,25 @@ server.registerTool('echo', {
   }
 })
 
+let counter = 0
+
+server.registerTool('counter', {
+  description: 'Increments and returns a per-process counter (proves persistent server state).',
+  inputSchema: {
+    by: z.number().optional()
+  },
+  outputSchema: {
+    value: z.number()
+  }
+}, async ({ by }) => {
+  counter += by ?? 1
+  const structuredContent = { value: counter }
+  return {
+    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
+    structuredContent
+  }
+})
+
 server.registerTool('bad-envelope', {
   description: 'Returns an MCP error envelope.',
   inputSchema: { message: z.string() }

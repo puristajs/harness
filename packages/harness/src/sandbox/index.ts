@@ -25,6 +25,43 @@ export interface ExecCapableSandboxSession extends SandboxSessionBase {
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
 }
 
+/** Options for spawning a long-lived process inside the sandbox. */
+export interface SpawnOptions {
+  /** Command arguments. */
+  args?: readonly string[]
+  /** Working directory inside the sandbox. */
+  cwd?: string
+  /** Extra environment variables. */
+  env?: Record<string, string>
+  /** Cancellation signal; aborting terminates the process. */
+  signal?: AbortSignal
+}
+
+/** A long-lived process owned by a sandbox session with streaming stdio. */
+export interface SandboxProcess {
+  /** Writes a chunk to the process stdin. */
+  writeStdin(chunk: string): Promise<void>
+  /** Decoded stdout chunks. Completes when the process exits. */
+  readonly stdout: AsyncIterable<string>
+  /** Decoded stderr chunks. Completes when the process exits. */
+  readonly stderr: AsyncIterable<string>
+  /** Resolves with the exit code when the process terminates. Never rejects. */
+  readonly exit: Promise<{ exitCode: number; signal?: string }>
+  /** Terminates the process. Idempotent. */
+  kill(signal?: 'SIGTERM' | 'SIGKILL'): Promise<void>
+}
+
+/** Sandbox session that can host long-lived processes (`sandbox.spawn`). */
+export interface SpawnCapableSandboxSession extends SandboxSessionBase {
+  readonly executor: 'available'
+  spawn(command: string, opts?: SpawnOptions): Promise<SandboxProcess>
+}
+
+/** Returns true when a sandbox session can spawn long-lived processes. */
+export function isSpawnCapableSession(session: SandboxSessionBase): session is SpawnCapableSandboxSession {
+  return typeof (session as Partial<SpawnCapableSandboxSession>).spawn === 'function'
+}
+
 export type SandboxSession = SandboxSessionBase & {
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
 }

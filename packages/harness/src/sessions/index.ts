@@ -36,7 +36,11 @@ import type {
 } from '../harness/defineHarness.js'
 import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
-import type { HarnessInspection } from '../ports/capabilities.js'
+import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
+import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
+import type { DurableRuntime } from '../runtime/durable.js'
+import { HarnessConfigError } from '../errors/catalog.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
@@ -53,6 +57,8 @@ type HarnessDefinition<S extends BuilderState> = {
   state: StateStore
   sandbox: Sandbox
   memory: MemoryAdapter
+  runtime?: DurableRuntimeAdapter
+  workspaceStore?: DurableWorkspaceStore
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -178,6 +184,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // share one sandbox open (no orphaned sessions) and one SessionState object
   // (so the synchronous busy check/set below serializes runs correctly).
   const sessionStateOpenings = new Map<string, Promise<SessionState>>()
+  // Stable per-harness-instance worker id used as the default durable lease owner.
+  const durableWorkerId = `worker_${ulid()}`
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterMetrics = createMetrics(telemetry, { 'harness.name': definition.name })
@@ -325,6 +333,21 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return createMemoryFacade(memoryOptions(opts.sessionId, opts.sandboxSession, opts.signal, opts))
   }
 
+  /**
+   * Validates `opts.durable` and returns the executable durable runtime, or
+   * `undefined` for an ephemeral run. Throws before any run record is created.
+   */
+  function resolveDurableRuntime(opts: InvokeOptions | undefined): DurableRuntime | undefined {
+    if (!opts?.durable) return undefined
+    if (!DURABLE_RUN_ID_PATTERN.test(opts.durable.runId)) {
+      throw new ValidationError('Durable run id is invalid.', { where: 'invoke_options', issues: { 'durable.runId': opts.durable.runId } })
+    }
+    if (!isExecutableDurableRuntime(definition.runtime)) {
+      throw new HarnessConfigError('Durable execution requires an executable .runtime(...) adapter.', { reason: 'durable_runtime_required', path: 'runtime' })
+    }
+    return definition.runtime
+  }
+
   return {
     inspect(): HarnessInspection {
       return definition.inspection
@@ -453,6 +476,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<AgentOutput<S, K>> {
     validateInvokeOptions(opts)
+    if (opts?.durable) {
+      throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
+    }
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
@@ -601,6 +627,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<WorkflowOutput<S, K>> {
     validateInvokeOptions(opts)
+    const durableRuntime = resolveDurableRuntime(opts)
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
@@ -613,7 +640,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     state.busy = true
 
     const startedAt = now()
-    const runId = ulid()
+    const runId = opts?.durable ? opts.durable.runId : ulid()
     const memory = memoryFacade({
       sessionId,
       runId,
@@ -645,7 +672,22 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw error
     }
 
+    let durableBinding: DurableWorkflowBinding | undefined
     try {
+      if (durableRuntime && opts?.durable) {
+        durableBinding = await beginDurableWorkflow({
+          runtime: durableRuntime,
+          ...(definition.workspaceStore ? { workspaceStore: definition.workspaceStore } : {}),
+          durable: opts.durable,
+          defaultWorkerId: durableWorkerId,
+          sessionId,
+          workflowId,
+          input: input as JsonValue,
+          signal: runSignal.signal,
+          logger: definition.logger,
+          harnessName: definition.name
+        })
+      }
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -675,6 +717,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
+            step: durableBinding ? durableBinding.step : passthroughStep,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
@@ -748,6 +791,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }))
 
       const finishedAt = now()
+      if (durableBinding) {
+        await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_success' }, () => durableBinding!.finishSuccess(result as JsonValue))
+      }
       const runFinished: RunEvent = { type: 'run.finished', runId, at: finishedAt, output: result as JsonValue }
       await emit(runFinished)
       await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
@@ -758,6 +804,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finalError = normalizeRunError(error, runSignal.signal)
       const finishedAt = now()
       const serialized = serializeError(finalError)
+      if (durableBinding && finalError instanceof OperationCancelledError) {
+        await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_cancelled' }, () => durableBinding!.finishCancelled(finalError))
+      }
       const log = finalError instanceof OperationCancelledError ? definition.logger.warn.bind(definition.logger) : definition.logger.error.bind(definition.logger)
       log('Harness workflow run failed.', {
         harness: definition.name,
@@ -786,8 +835,42 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
       throw finalError
     } finally {
+      // Releases the lease for a non-cancel failure so a retry with the same run
+      // id can resume; a no-op once the run was settled (success/cancel).
+      if (durableBinding) await durableBinding.dispose()
       runSignal.cleanup()
       state.busy = false
+    }
+  }
+
+  /** Pass-through step used when a workflow runs without durable execution. */
+  function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>): Promise<T> {
+    return fn()
+  }
+
+  /**
+   * Runs a durable finalization side effect (runtime finish / workspace lifecycle)
+   * without ever masking the primary run outcome (spec 21 §16.1 step 7).
+   */
+  async function guardDurableStep(
+    args: { sessionId: string; runId: string; workflowId: string; operation: string },
+    step: () => Promise<void>
+  ): Promise<void> {
+    try {
+      await step()
+    } catch (error) {
+      telemetry.recordCounter('harness.runs.durable_errors', 1, {
+        harness: definition.name,
+        'harness.run.durable.operation': args.operation
+      })
+      definition.logger.error('Durable finalization step failed; preserving run outcome.', {
+        harness: definition.name,
+        session_id: args.sessionId,
+        run_id: args.runId,
+        workflow_id: args.workflowId,
+        operation: args.operation,
+        error: serializeError(error)
+      })
     }
   }
 

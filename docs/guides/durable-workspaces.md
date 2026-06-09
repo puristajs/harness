@@ -61,6 +61,61 @@ const harness = defineHarness()
 The in-memory store is process-local. It is not a production persistence layer
 and does not survive process restart.
 
+## Running a durable workflow
+
+Durable execution is opt-in **per call** and applies to workflow runs only.
+Mark replayable boundaries in the handler with `ctx.step(...)`, then invoke the
+workflow with a stable `durable.runId`:
+
+```ts
+const harness = defineHarness()
+  .runtime(durableRuntime)              // an executable DurableRuntime, e.g. inMemoryDurableRuntime()
+  .workspaceStore(durableWorkspace)     // optional; enables workspace checkpoints
+  .models(models)
+  .agents(agents)
+  .workflows({
+    research: {
+      input: z.object({ topic: z.string() }),
+      output: z.string(),
+      handler: async (ctx) => {
+        // Each step is checkpointed; on resume it replays its stored output
+        // without re-running the body.
+        const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input.topic))
+        const draft = await ctx.step('draft', () => ctx.agents.write(outline))
+        return draft
+      },
+    },
+  })
+  .build()
+
+const session = await harness.getSession('user-42')
+// First call runs both steps. If the process crashes after "outline" commits,
+// re-invoking with the same runId replays "outline" and only runs "draft".
+const result = await session.workflows.research.prompt(
+  { topic: 'durable execution' },
+  { durable: { runId: 'research-2026-06-09-user-42' } },
+)
+```
+
+Behavior (see [spec 21 §16.1](../../specs/21-durable-workspaces.md)):
+
+- The harness acquires a runtime lease for `durable.runId`, injects a durable
+  `ctx.step`, and finalizes the runtime (`finishRun`) on success/cancel.
+- With a workspace store configured, it starts (or resumes) the durable
+  workspace, writes a workspace checkpoint before each runtime checkpoint, and —
+  when the store's retention `cleanupMode` is `adapter_automatic` — cleans up on
+  terminal success. Cancellation aborts the workspace; a non-cancel failure
+  leaves it resumable for a retry with the same `runId`.
+- Without `durable`, `ctx.step(fn)` is a transparent pass-through, so the same
+  workflow body runs ephemerally with no code change.
+- Supplying `durable` without an executable `.runtime(...)` throws
+  `HarnessConfigError{reason:'durable_runtime_required'}`; supplying it on an
+  agent run throws `ValidationError`.
+
+Resume across an actual process restart additionally requires runtime and
+workspace adapters whose state survives process exit; the bundled in-memory
+adapters are local/test only.
+
 ## Replay Boundary
 
 At a replay boundary, workspace state is written first and the runtime

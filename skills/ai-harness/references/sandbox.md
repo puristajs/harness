@@ -128,8 +128,30 @@ Adapter capabilities include:
 - `sandbox.snapshot`
 - `sandbox.resume`
 - `sandbox.hibernate`
+- `sandbox.spawn`
 
 Use `.requires([...])` to force startup failure when a required capability is absent.
+
+## Long-Lived Processes (`sandbox.spawn`)
+`exec` is one-shot. A sandbox that can host a long-lived process with streaming
+stdio declares `sandbox.spawn` and exposes `spawn` on its session:
+
+```ts
+spawn(command, { args, cwd, env, signal }): Promise<{
+  writeStdin(chunk: string): Promise<void>
+  stdout: AsyncIterable<string>
+  stderr: AsyncIterable<string>
+  exit: Promise<{ exitCode: number; signal?: string }>
+  kill(signal?: 'SIGTERM' | 'SIGKILL'): Promise<void>
+}>
+```
+
+`session.close()` must terminate every spawned process. The in-core
+`inMemorySandbox()`/`bashSandbox()` do not advertise `sandbox.spawn`; isolation
+backends (Docker/e2b/microvm) do. This capability powers the **persistent MCP
+stdio transport** (a stateful server is spawned once and multiplexed across
+calls); without it, `mcp_stdio` uses the stateless one-shot `exec` model. Use
+`isSpawnCapableSession(session)` to detect support.
 
 ## Snapshot And Resume Capabilities
 Snapshot-capable adapters may implement:

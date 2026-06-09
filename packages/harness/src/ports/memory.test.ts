@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { Span } from '@opentelemetry/api'
-import { HarnessConfigError, ModelCapabilityError, ValidationError } from '../errors/index.js'
+import { HarnessConfigError, ModelCapabilityError, StateError, ValidationError } from '../errors/index.js'
 import { sandboxMemory } from '../memory/sandbox/index.js'
 import { inMemorySandbox } from '../sandbox/index.js'
 import { FakeMemoryAdapter } from '../testing/fakeMemoryAdapter.js'
@@ -65,6 +65,26 @@ function memory(adapter: MemoryAdapter, telemetry = new RecordingMemoryTelemetry
       metadata: { userId: 'u1', tenantId: 't1' }
     })
   }
+}
+
+async function sandboxMemoryHarness() {
+  const sandbox = await inMemorySandbox().open({
+    sessionId: 's1',
+    runId: 'r1',
+    signal: new AbortController().signal
+  })
+  const facade = createMemoryFacade({
+    adapter: sandboxMemory(),
+    logger,
+    telemetry: new RecordingMemoryTelemetry(),
+    contentCaptureMode: 'NO_CONTENT',
+    signal: new AbortController().signal,
+    harnessName: 'memory-test',
+    sessionId: 's1',
+    runId: 'r1',
+    sandbox
+  })
+  return { facade, sandbox }
 }
 
 it('round-trips scoped memory and propagates types through read<T>()', async () => {
@@ -143,23 +163,7 @@ it('omits raw memory content by default and captures bounded content only when e
 })
 
 it('stores sandbox memory values and metadata under the documented paths', async () => {
-  const telemetry = new RecordingMemoryTelemetry()
-  const sandbox = await inMemorySandbox().open({
-    sessionId: 's1',
-    runId: 'r1',
-    signal: new AbortController().signal
-  })
-  const facade = createMemoryFacade({
-    adapter: sandboxMemory(),
-    logger,
-    telemetry,
-    contentCaptureMode: 'NO_CONTENT',
-    signal: new AbortController().signal,
-    harnessName: 'memory-test',
-    sessionId: 's1',
-    runId: 'r1',
-    sandbox
-  })
+  const { facade, sandbox } = await sandboxMemoryHarness()
 
   await facade.session.write('profile', { locale: 'de-DE' }, { tags: ['user'], metadata: { source: 'test' } })
 
@@ -172,11 +176,30 @@ it('stores sandbox memory values and metadata under the documented paths', async
 })
 
 it('stores sandbox run memory under the documented run path and rejects ttl', async () => {
-  const sandbox = await inMemorySandbox().open({
-    sessionId: 's1',
-    runId: 'r1',
-    signal: new AbortController().signal
+  const { facade, sandbox } = await sandboxMemoryHarness()
+
+  await facade.run.write('scratch', { step: 1 })
+  expect(JSON.parse(await sandbox.readText('/memory/runs/r1/scratch.json'))).toEqual({ step: 1 })
+  await expect(facade.run.write('ttl', { step: 2 }, { ttlMs: 1000 })).rejects.toBeInstanceOf(ValidationError)
+})
+
+it('lists sandbox memory with filters and keeps metadata across value rewrites', async () => {
+  const { facade, sandbox } = await sandboxMemoryHarness()
+
+  await facade.session.write('alpha', { step: 0 })
+  await facade.session.write('pref-a', { step: 1 }, { tags: ['keep'], metadata: { source: 'initial' } })
+  await facade.session.write('pref-b', { step: 2 }, { tags: ['second'] })
+  await facade.session.write('pref-a', { step: 3 })
+  await sandbox.write('/memory/.meta/session/pref-b.json', '{bad json')
+
+  await expect(facade.session.list({ prefix: 'pref', cursor: 'pref-a', limit: 1 })).resolves.toEqual(['pref-b'])
+  expect(JSON.parse(await sandbox.readText('/memory/.meta/session/pref-a.json'))).toMatchObject({
+    tags: ['keep'],
+    metadata: { source: 'initial' }
   })
+})
+
+it('rejects sandbox memory operations without an active sandbox session', async () => {
   const facade = createMemoryFacade({
     adapter: sandboxMemory(),
     logger,
@@ -185,13 +208,13 @@ it('stores sandbox run memory under the documented run path and rejects ttl', as
     signal: new AbortController().signal,
     harnessName: 'memory-test',
     sessionId: 's1',
-    runId: 'r1',
-    sandbox
+    runId: 'r1'
   })
 
-  await facade.run.write('scratch', { step: 1 })
-  expect(JSON.parse(await sandbox.readText('/memory/runs/r1/scratch.json'))).toEqual({ step: 1 })
-  await expect(facade.run.write('ttl', { step: 2 }, { ttlMs: 1000 })).rejects.toBeInstanceOf(ValidationError)
+  await expect(facade.session.read('missing')).rejects.toBeInstanceOf(StateError)
+  await expect(facade.session.read('missing')).rejects.toMatchObject({
+    meta: { reason: 'missing_sandbox' }
+  })
 })
 
 it('reports method_missing when a search-capable adapter omits store.search', async () => {

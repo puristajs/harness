@@ -565,6 +565,124 @@ records, not in spans, metrics, or logs.
 
 ## 16. Runtime Integration
 
+### Implementation status
+
+The durable building blocks are implemented and contract-tested:
+
+- `inMemoryDurableRuntime()` enforces leases, single-owner checkpoint commits,
+  and per-step checkpoint storage.
+- `createDurableWorkflowContext(runtime, lease, options?).step(id, fn)` provides
+  durable replay: a step committed on a prior attempt returns its stored output
+  without re-running `fn()` (verified by `durable-steps.test.ts`).
+- `inMemoryDurableWorkspaceStore()` honors idempotency/conflict, abort-blocks-
+  resume, idempotent cleanup, typed `WorkspaceError`/`WorkspaceQuotaExceededError`,
+  retention/expiry, and workspace-scoped cancellation, all exercised by
+  `durableWorkspaceStoreContract`.
+
+These primitives are also wired into the session run loop so that a workflow
+invoked with the durable opt-in runs durably end to end (the
+F-DW-01..03 acceptance criteria). See §16.1.
+
+### 16.1 Session run-loop auto-wiring (locked)
+
+Durable execution is **opt-in per call** and applies to **workflow runs only**
+(`session.workflows[id].prompt(...)` / `.stream(...)`). Direct agent runs
+(`session.agents[id]...`) are single model loops and are not checkpointed; an
+agent gains durability only when invoked from inside a durable workflow handler
+through `ctx.step(...)`.
+
+Opt-in is expressed through a new `InvokeOptions.durable` field:
+
+```ts
+interface DurableInvokeOptions {
+  /** Stable run id. Resumes/retries of the same logical run MUST reuse this value. */
+  runId: string
+  /** Worker/process id that owns the run lease. Defaults to the harness worker id. */
+  workerId?: string
+  /** Initial durable step id label recorded on the lease. Defaults to the workflow id. */
+  stepId?: string
+  /** Optional attempt hint. The runtime may raise it on retry. */
+  attempt?: number
+}
+
+interface InvokeOptions {
+  // ...existing fields...
+  durable?: DurableInvokeOptions
+}
+```
+
+`runId` matches `/^[A-Za-z0-9_.:-]{1,200}$/`; an invalid value throws
+`ValidationError{where:'invoke_options'}`.
+
+Locked behavior when `opts.durable` is present on a workflow call:
+
+1. **Runtime required.** The configured `.runtime(...)` adapter MUST be an
+   executable `DurableRuntime` (it exposes `startRun`/`commitCheckpoint`/
+   `finishRun`/`withSessionLock`). If no runtime is configured, or the configured
+   runtime is capability-only, the call throws
+   `HarnessConfigError{meta.reason:'durable_runtime_required'}` before any run
+   record is created.
+2. **Stable run id.** The harness uses `opts.durable.runId` as the run id (instead
+   of generating a fresh ULID). The same run id is used for the durable runtime
+   lease, the `RunRecord`, persisted events, and the run summary.
+3. **Lease acquisition.** Inside the session serial lock, after the synchronous
+   busy check and before the workflow handler runs, the harness calls
+   `runtime.startRun({ runId, sessionId, workerId, stepId, input, attempt })` and
+   holds the returned lease for the duration of the run. `worker id` defaults to a
+   stable per-harness-instance id, overridable through `opts.durable.workerId`.
+4. **Durable step injection.** `ctx.step(stepId, fn)` is bound to
+   `createDurableWorkflowContext(runtime, lease, ...)`. Committed steps replay
+   from stored output on resume; new steps run `fn`, commit a runtime checkpoint,
+   and (when a workspace store is configured) link a durable workspace checkpoint.
+5. **Workspace lifecycle (only when `.workspaceStore(...)` is configured).**
+   - Fresh run (`lease.resumed === false`): `startWorkspace` with idempotency key
+     `${runId}:start`.
+   - Resume (`lease.resumed === true`) when the last runtime checkpoint carries a
+     `replay.workspaceRef`: `resumeWorkspace` from that workspace/checkpoint ref
+     with idempotency key `${runId}:${attempt}:resume`. When no workspace link
+     exists, the harness re-`startWorkspace`s with the stable start key (which
+     returns the existing workspace).
+   - Per new step: `pauseWorkspace({ reason:'step_completed', stepId, sequence,
+     attempt })` runs **before** the runtime checkpoint commit (§10 ordering:
+     workspace state first, runtime checkpoint second). The returned
+     `WorkspaceCheckpoint` is recorded on the runtime checkpoint's
+     `replay` (`DurableReplayCheckpoint`).
+   - Terminal success: `cleanupWorkspace({ reason:'terminal_success' })` **only**
+     when `info.policy.retention.cleanupMode === 'adapter_automatic'`. Under
+     `application_scheduled` / `manual_only`, the workspace is left intact for the
+     application or a scheduled sweep.
+   - Cancellation (`OperationCancelledError`): `abortWorkspace({ reason:'cancelled' })`
+     so the run is not silently resumed.
+   - Non-cancel failure: the workspace is left paused/resumable so a retry with the
+     same `runId` can resume; the harness does not abort or clean it up.
+6. **Runtime finalization.** On success the harness calls
+   `runtime.finishRun(runId, { status:'succeeded', output })`; on cancellation
+   `{ status:'cancelled', error }`; on other failure `{ status:'failed', error }`.
+   `finishRun` releases the lease. If the run throws before finalization, the
+   lease is released in a `finally` block so a retry can re-acquire it.
+7. **Failure preservation.** Durable finalization participates in the same
+   failure-terminalization discipline as ordinary runs (spec 10 "Errors"): the
+   original handler error is preserved by identity and surfaced to the caller;
+   runtime/workspace finalization failures are logged and counted, never masking
+   the primary error.
+
+`ctx.step(...)` is **always** present on `WorkflowContext`. Without a durable
+invocation (no `opts.durable`, or a workflow run without a configured runtime) it
+is a transparent pass-through that simply awaits `fn` with no checkpointing, so
+the same workflow body runs durably or ephemerally depending only on how it is
+invoked.
+
+**Cross-process restart.** Within a single process / harness instance, resume is
+fully supported: a crashed durable run (lease released mid-flight) re-acquires its
+lease on the next `prompt(...)` with the same `runId` and replays committed steps.
+Resume across an actual process restart additionally requires a `DurableRuntime`
+and `DurableWorkspaceStore` whose state survives process exit; the bundled
+`inMemoryDurableRuntime()` / `inMemoryDurableWorkspaceStore()` are local/test only
+and reset on process exit (§6, §18). Supplying persistent adapters is the only
+additional requirement — the run-loop wiring above is adapter-agnostic.
+
+### Builder ordering
+
 The builder gains `.workspaceStore(adapter)` in the foundation stage after
 `.runtime(...)` and before `.requires(...)`.
 

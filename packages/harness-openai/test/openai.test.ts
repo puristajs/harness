@@ -273,6 +273,78 @@ describe('openai provider factory', () => {
     })
   })
 
+  it('preserves multiple application tool calls from object responses', async () => {
+    const provider = openai({
+      client: {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: '{}',
+                    tool_calls: [
+                      { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
+                      { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
+                    ]
+                  },
+                  finish_reason: 'tool_calls'
+                }
+              ],
+              usage: { prompt_tokens: 3, completion_tokens: 2 }
+            })
+          }
+        }
+      } as any
+    })
+
+    const response = await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use tools' }],
+      schema: { type: 'object' },
+      tools: [
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(response.toolCalls).toEqual([
+      { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+    ])
+  })
+
+  it('maps first-class parallelToolCalls to OpenAI parallel_tool_calls', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      client: {
+        chat: {
+          completions: {
+            create: async (payload: any, options: any) => {
+              calls.push({ payload, options })
+              return {
+                choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+                usage: { prompt_tokens: 1, completion_tokens: 1 }
+              }
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      defaults: { parallelToolCalls: true },
+      call: { parallelToolCalls: false },
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.parallel_tool_calls).toBe(false)
+  })
+
   it('passes provider options through to the official SDK payload and request options', async () => {
     const calls: Array<{ payload: any; options: any }> = []
     const provider = openai({
@@ -323,6 +395,43 @@ describe('openai provider factory', () => {
       headers: { 'x-test': 'yes' }
     })
     expect(calls[0]?.options.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('accumulates fragmented streaming tool calls, usage, and finish reason', async () => {
+    let payload: any
+    async function* chunks() {
+      // First fragment: id + name, empty args.
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'lookup', arguments: '' } }] } }] }
+      // Argument fragments arrive without id/name.
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"qu' } }] } }] }
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ery":"hi"}' } }] } }] }
+      // Finish reason on its own delta.
+      yield { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+      // Usage chunk arrives with an empty choices array.
+      yield { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } }
+    }
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async (p: any) => { payload = p; return chunks() } } }
+      } as any
+    })
+
+    const out: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use a tool' }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })) {
+      out.push(chunk)
+    }
+
+    expect(payload.stream_options).toEqual({ include_usage: true })
+    const toolCall = out.find((c) => c.kind === 'tool_call')
+    expect(toolCall.call).toEqual({ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } })
+    const finish = out.find((c) => c.kind === 'finish')
+    expect(finish.finishReason).toBe('tool_calls')
+    expect(finish.usage.totalTokens).toBe(10)
   })
 
   it('preserves assistant tool_calls before tool result messages', async () => {

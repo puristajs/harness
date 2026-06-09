@@ -20,6 +20,12 @@ export interface StateStore {
   appendMessages(sessionId: string, messages: Message[]): Promise<void>
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<Message[]>
   clearMessages(sessionId: string): Promise<void>
+  /**
+   * Atomically replace all messages for a session under one lock (clear +
+   * append). Adapters that implement this provide the spec-mandated atomic
+   * `replaceHistory`; the session layer falls back to clear+append when absent.
+   */
+  replaceMessages?(sessionId: string, messages: Message[]): Promise<void>
 
   createRun(record: RunRecord): Promise<void>
   finishRun(runId: string, patch: FinishRunPatch): Promise<void>

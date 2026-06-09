@@ -25,7 +25,7 @@ should read.
 | State and event persistence | Aligned | In-memory default and contracts cover ordering and event persistence. |
 | Memory adapters | Aligned | `sandboxMemory()`, scope/capability gates, memory telemetry, and `memoryAdapterContract` are covered. |
 | Sandbox | Aligned | Files-only and executor-capable paths are covered. |
-| Models and OpenAI adapter | Aligned | Capability gates and provider error normalization are covered. |
+| Models and provider adapters | Aligned | Capability gates, provider error normalization, and object-mode application tool-call preservation are covered. |
 | Direct agents | Aligned | `session.agents.<id>.prompt/stream` is canonical. |
 | Workflows | Aligned | Optional orchestration with typed `ctx.agents`. |
 | TypeScript tools | Aligned | Zod input/output validation and tool spans. |

@@ -35,11 +35,16 @@ Default agent loop requirements:
 - the model alias needs `object`
 - the model alias needs `tool_use` when the agent has custom tools or enabled built-in tools
 - output is validated after the model returns
+- multiple tool calls returned by the same model response execute concurrently up to `defaults.maxParallelToolCalls`, with results returned to the next model call in the original call order
 - `maxSteps` defaults from harness defaults and must stay bounded
 
 Use a custom `handler` only when the default loop is the wrong execution model.
 
 Current custom agent handler context includes `input`, resolved `instructions`, `models`, `memory`, `history`, `signal`, `runId`, `sessionId`, and optional `output`. It does not expose typed `ctx.tools` or callable skill handles in the implementation; use the default loop for model-driven tool use or call application services directly from the handler.
+
+Custom agent handlers are raced against the run signal for timeout/cancel
+finalization. Still check `ctx.signal` inside long-running work so application
+side effects stop promptly.
 
 ## Workflow Pattern
 ```ts
@@ -55,9 +60,14 @@ Current custom agent handler context includes `input`, resolved `instructions`, 
 }))
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.signal`, `ctx.runId`, and `ctx.sessionId`.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`.
+
+`ctx.step(stepId, fn)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Durable execution is workflow-only — see `durable-feedback-operations.md`.
 
 Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the calls are independent. Propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
+The harness also races workflow handlers against `ctx.signal`, so a run can
+finish as cancelled/timed out even when handler code hangs. This is not a
+thread/process kill; cooperative cancellation is still required for cleanup.
 
 ## TypeScript Tools
 Use TypeScript tools for application APIs and deterministic logic:

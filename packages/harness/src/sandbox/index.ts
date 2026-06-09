@@ -25,6 +25,43 @@ export interface ExecCapableSandboxSession extends SandboxSessionBase {
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
 }
 
+/** Options for spawning a long-lived process inside the sandbox. */
+export interface SpawnOptions {
+  /** Command arguments. */
+  args?: readonly string[]
+  /** Working directory inside the sandbox. */
+  cwd?: string
+  /** Extra environment variables. */
+  env?: Record<string, string>
+  /** Cancellation signal; aborting terminates the process. */
+  signal?: AbortSignal
+}
+
+/** A long-lived process owned by a sandbox session with streaming stdio. */
+export interface SandboxProcess {
+  /** Writes a chunk to the process stdin. */
+  writeStdin(chunk: string): Promise<void>
+  /** Decoded stdout chunks. Completes when the process exits. */
+  readonly stdout: AsyncIterable<string>
+  /** Decoded stderr chunks. Completes when the process exits. */
+  readonly stderr: AsyncIterable<string>
+  /** Resolves with the exit code when the process terminates. Never rejects. */
+  readonly exit: Promise<{ exitCode: number; signal?: string }>
+  /** Terminates the process. Idempotent. */
+  kill(signal?: 'SIGTERM' | 'SIGKILL'): Promise<void>
+}
+
+/** Sandbox session that can host long-lived processes (`sandbox.spawn`). */
+export interface SpawnCapableSandboxSession extends SandboxSessionBase {
+  readonly executor: 'available'
+  spawn(command: string, opts?: SpawnOptions): Promise<SandboxProcess>
+}
+
+/** Returns true when a sandbox session can spawn long-lived processes. */
+export function isSpawnCapableSession(session: SandboxSessionBase): session is SpawnCapableSandboxSession {
+  return typeof (session as Partial<SpawnCapableSandboxSession>).spawn === 'function'
+}
+
 export type SandboxSession = SandboxSessionBase & {
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
 }
@@ -168,7 +205,7 @@ class MemorySandboxSession implements SandboxSession {
       if (!k.startsWith(root === '/' ? '/' : `${root}/`)) continue
       const relative = root === '/' ? k.slice(1) : k.slice(root.length + 1)
       if (!opts?.recursive && relative.includes('/')) continue
-      if (opts?.glob && !new RegExp(opts.glob.replaceAll('.', '\\.').replaceAll('*', '.*')).test(k)) continue
+      if (opts?.glob && !globToRegExp(opts.glob).test(k)) continue
       out.push({ name: k.split('/').at(-1) ?? '', path: k, kind: v.kind, ...(v.kind === 'file' ? { size: v.data.byteLength } : {}) })
     }
     return out.sort((a, b) => a.path.localeCompare(b.path))
@@ -266,10 +303,40 @@ export function bashSandbox(opts?: { network?: { allow?: string[]; deny?: string
   }
 }
 
+/**
+ * Translate a glob to a fully-anchored RegExp matched against the absolute
+ * path. `*`/`**` match any characters and `?` matches a single character; all
+ * other regex metacharacters are escaped to literals so a pattern can never
+ * throw a `SyntaxError` or trigger catastrophic backtracking. Anchoring both
+ * ends fixes the previous over-match (e.g. `*.ts` no longer matches `a.tsx`).
+ */
+function globToRegExp(glob: string): RegExp {
+  let out = '^'
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i] as string
+    if (char === '*') {
+      out += '.*'
+      if (glob[i + 1] === '*') i += 1
+    } else if (char === '?') {
+      out += '.'
+    } else if (/[.+^${}()|[\]\\]/.test(char)) {
+      out += `\\${char}`
+    } else {
+      out += char
+    }
+  }
+  return new RegExp(`${out}$`)
+}
+
 export function autoDetectSandbox(): Sandbox<any> {
   try {
     return bashSandbox()
-  } catch {
-    return inMemorySandbox()
+  } catch (error) {
+    // Only fall back to the no-executor sandbox when just-bash is absent.
+    // A real configuration/init error must surface, not silently downgrade.
+    if (error instanceof HarnessConfigError && (error.meta as { reason?: string } | undefined)?.reason === 'just_bash_not_installed') {
+      return inMemorySandbox()
+    }
+    throw error
   }
 }

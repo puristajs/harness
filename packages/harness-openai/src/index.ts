@@ -100,31 +100,30 @@ class OpenAiModelProvider extends BaseModelProvider {
       req.signal.throwIfAborted()
       const stream = await createChatCompletion(this.client, req, true)
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      let finishReason: TextResponse['finishReason'] = 'stop'
+      const toolState: StreamToolCallState = new Map()
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
-        const choice = chunk.choices[0]
+        // The usage chunk arrives with an empty choices array, so read it first.
+        if (chunk.usage) {
+          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+        }
+        const choice = chunk.choices?.[0]
         if (!choice) continue
         if (choice.delta?.content) {
           yield { kind: 'delta', text: choice.delta.content }
         }
         if (choice.delta?.tool_calls) {
-          for (const call of choice.delta.tool_calls) {
-            if (!call.function?.name || !call.id) continue
-            yield {
-              kind: 'tool_call',
-              call: {
-                id: call.id,
-                name: call.function.name,
-                arguments: parseToolArgs(call.function.arguments, req, 'textStream')
-              }
-            }
-          }
+          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
-        if (chunk.usage) {
-          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+        if (choice.finish_reason) {
+          finishReason = toFinishReason(choice.finish_reason)
         }
       }
-      yield { kind: 'finish', usage, finishReason: 'stop' }
+      for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
+        yield { kind: 'tool_call', call }
+      }
+      yield { kind: 'finish', usage, finishReason }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -145,34 +144,32 @@ class OpenAiModelProvider extends BaseModelProvider {
       req.signal.throwIfAborted()
       let partial = ''
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      let finishReason: TextResponse['finishReason'] = 'stop'
+      const toolState: StreamToolCallState = new Map()
       const stream = await createChatCompletion(this.client, req, true)
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
-        const choice = chunk.choices[0]
+        if (chunk.usage) {
+          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+        }
+        const choice = chunk.choices?.[0]
         if (!choice) continue
         if (choice.delta?.content) {
           partial += choice.delta.content
           yield { kind: 'partial', partial: safePartialJson(partial) }
         }
         if (choice.delta?.tool_calls) {
-          for (const call of choice.delta.tool_calls) {
-            if (!call.function?.name || !call.id) continue
-            yield {
-              kind: 'tool_call',
-              call: {
-                id: call.id,
-                name: call.function.name,
-                arguments: parseToolArgs(call.function.arguments, req, 'objectStream')
-              }
-            }
-          }
+          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
-        if (chunk.usage) {
-          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+        if (choice.finish_reason) {
+          finishReason = toFinishReason(choice.finish_reason)
         }
       }
+      for (const call of finalizeStreamToolCalls(toolState, req, 'objectStream')) {
+        yield { kind: 'tool_call', call }
+      }
       const object = parseJson(partial || '{}', req, 'objectStream') as T
-      yield { kind: 'finish', object, usage, finishReason: 'stop' }
+      yield { kind: 'finish', object, usage, finishReason }
   }
 
   protected override async doEmbed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -251,11 +248,14 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
     model: req.model,
     messages,
     stream,
+    // OpenAI only emits a usage chunk during streaming when this is set.
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
     tools: toTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
     max_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,
     top_p: req.call?.topP ?? req.defaults?.topP,
     stop: req.call?.stopSequences ?? req.defaults?.stopSequences,
+    ...(req.tools && (req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls) !== undefined ? { parallel_tool_calls: req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls } : {}),
     response_format: toResponseFormat(req),
     ...bodyOptions
   }, { ...requestOptions, signal: req.signal })
@@ -342,6 +342,36 @@ function toTools(tools: TextRequest['tools'] | ObjectRequest['tools']): any[] | 
       parameters: tool.parameters
     }
   }))
+}
+
+/**
+ * Per-index accumulator for streamed tool-call fragments. OpenAI streams a
+ * tool call across many deltas: the first carries `index`/`id`/`function.name`
+ * with partial/empty arguments, later deltas carry only `index` and argument
+ * fragments. We must concatenate by index and parse arguments once at the end.
+ */
+type StreamToolCallState = Map<number, { id?: string; name?: string; args: string }>
+
+function accumulateToolCallDeltas(state: StreamToolCallState, deltas: any[]): void {
+  for (const delta of deltas) {
+    const index = typeof delta?.index === 'number' ? delta.index : 0
+    const existing = state.get(index) ?? { args: '' }
+    if (delta?.id) existing.id = String(delta.id)
+    if (delta?.function?.name) existing.name = String(delta.function.name)
+    if (typeof delta?.function?.arguments === 'string') existing.args += delta.function.arguments
+    state.set(index, existing)
+  }
+}
+
+function finalizeStreamToolCalls(state: StreamToolCallState, req: ChatRequest, method: string): ToolCallSpec[] {
+  return [...state.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .filter(([, call]) => call.id && call.name)
+    .map(([, call]) => ({
+      id: call.id as string,
+      name: call.name as string,
+      arguments: parseToolArgs(call.args || undefined, req, method)
+    }))
 }
 
 function parseToolArgs(argumentsText: string | undefined, req: ChatRequest, method: string): JsonValue {

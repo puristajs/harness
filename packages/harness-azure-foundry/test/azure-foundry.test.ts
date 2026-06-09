@@ -75,6 +75,72 @@ describe('azureFoundry provider factory', () => {
     })
   })
 
+  it('preserves multiple application tool calls from object responses', async () => {
+    const provider = azureFoundry({
+      client: client(async () => ({
+        status: '200',
+        body: {
+          choices: [
+            {
+              message: {
+                content: '{}',
+                tool_calls: [
+                  { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
+                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
+                ]
+              },
+              finish_reason: 'tool_calls'
+            }
+          ],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
+        }
+      }))
+    })
+
+    const response = await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'use tools' }],
+      schema: { type: 'object' },
+      tools: [
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(response.toolCalls).toEqual([
+      { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+    ])
+  })
+
+  it('maps first-class parallelToolCalls to OpenAI-compatible Azure payloads', async () => {
+    const calls: Array<{ options: any }> = []
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls.push({ options })
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+          }
+        }
+      })
+    })
+
+    await provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      defaults: { parallelToolCalls: true },
+      call: { parallelToolCalls: false },
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.options.body.parallel_tool_calls).toBe(false)
+  })
+
   it('maps embeddings response', async () => {
     const provider = azureFoundry({
       client: client(async () => ({
@@ -164,5 +230,39 @@ describe('azureFoundry provider factory', () => {
         providerBody: '{"ok":'
       }
     })
+  })
+
+  it('preserves HTTP status so 429 is classified as a retriable http error', async () => {
+    const provider = azureFoundry({
+      client: client(async () => ({
+        status: 429,
+        body: { error: { message: 'rate limited', code: 'TooManyRequests' } }
+      }))
+    })
+
+    await expect(
+      provider.text!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: mockSignal()
+      })
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: true,
+      meta: { status: 429, reason: 'http_error', providerCode: 'TooManyRequests' }
+    })
+  })
+
+  it('does not set stream_options on the non-streaming path', async () => {
+    let body: any
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        body = options.body
+        return { status: 200, body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} } }
+      })
+    })
+    await provider.text!({ model: 'm', messages: [{ role: 'user', content: 'hi' }], signal: mockSignal() })
+    expect(body.stream).toBe(false)
+    expect(body.stream_options).toBeUndefined()
   })
 })

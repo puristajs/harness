@@ -208,6 +208,7 @@ export abstract class BaseModelProvider implements ModelProvider {
     const controller = new AbortController()
     const relay = () => controller.abort(req.signal.reason)
     req.signal.addEventListener('abort', relay, { once: true })
+    if (req.signal.aborted) relay()
     let rejectTimeout: ((error: OperationTimeoutError) => void) | undefined
     const timeoutPromise = new Promise<never>((_, reject) => { rejectTimeout = reject })
     const timeout = setTimeout(() => {

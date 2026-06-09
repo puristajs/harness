@@ -21,10 +21,13 @@ type AdapterCapability =
   | 'sandbox.snapshot'
   | 'sandbox.resume'
   | 'sandbox.hibernate'
+  | 'sandbox.spawn'                 // host a long-lived process (persistent MCP stdio)
   | 'runtime.checkpoint'
   | 'runtime.retry'
   | 'runtime.distributed_lock'
   | 'runtime.resume_from_checkpoint'
+  | 'runtime.workspace_checkpoint'
+  | 'workspace_store.durable'       // + workspace_store.{checkpoint,resume,abort,cleanup,inspect,retention,quota,encrypted_storage}
   | 'feedback.record'
 ```
 
@@ -76,6 +79,34 @@ Errors:
 The runtime exports `createDurableWorkflowContext` and step helpers for checkpointed code paths. Keep durable checkpoints at deterministic boundaries; do not treat live streams as recovery state.
 
 Recovery starts from the last committed checkpoint, not from the last observed stream event.
+
+### Auto-wiring through the session run loop
+Durable execution is opt-in **per workflow call**. Mark boundaries in the handler with `ctx.step(stepId, fn)` and invoke with a stable `durable.runId`:
+
+```ts
+const harness = defineHarness()
+  .runtime(inMemoryDurableRuntime())     // executable DurableRuntime
+  .workspaceStore(inMemoryDurableWorkspaceStore())  // optional
+  .models(...).agents(...)
+  .workflows({
+    job: {
+      handler: async (ctx) => {
+        const a = await ctx.step('a', () => ctx.agents.prepare(ctx.input))
+        return ctx.step('b', () => ctx.agents.finish(a))
+      },
+    },
+  })
+  .build()
+
+const session = await harness.getSession('s1')
+await session.workflows.job.prompt(input, { durable: { runId: 'job-2026-06-09' } })
+```
+
+Rules:
+- Workflow-only. `opts.durable` on an agent run throws `ValidationError`; without an executable `.runtime(...)` it throws `HarnessConfigError{reason:'durable_runtime_required'}`.
+- The harness acquires a lease for `durable.runId`, injects durable `ctx.step`, finalizes `finishRun`, and (with a workspace store) starts/resumes the workspace, writes a workspace checkpoint before each runtime checkpoint, cleans up on success when retention `cleanupMode` is `adapter_automatic`, aborts on cancellation, and leaves a non-cancel failure resumable.
+- A committed step replays its stored output on resume without re-running its body. Without `durable`, `ctx.step` is a transparent pass-through.
+- Resume across process restart needs runtime/workspace adapters that persist beyond process exit; the in-memory adapters are local/test only.
 
 ## Feedback
 Feedback is optional and application-owned. Core exports shared types and test helpers, not a production feedback store.

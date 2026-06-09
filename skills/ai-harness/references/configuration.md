@@ -76,6 +76,7 @@ Set explicit budgets for production:
   toolTimeoutMs: 120_000,
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
+  maxParallelToolCalls: 8,
   historyWindow: 20
 })
 .logger(new JsonLogger({ level: process.env.PURISTA_HARNESS_LOG_LEVEL ?? 'info' }))
@@ -91,6 +92,14 @@ The implementation creates an OpenTelemetry-backed `TelemetryShim` internally wh
 Workflow, custom-agent, and TypeScript-tool handlers receive `ctx.metrics` for
 application-owned counters, histograms, and duration measurements. Prefer this
 helper over low-level `ctx.telemetry.record*` calls.
+
+Cancellation uses `InvokeOptions.signal` and per-call `timeoutMs`.
+Timeout/cancel propagates to workflow/custom-agent handlers, model calls, tools,
+memory, and sandbox operations. Workflow and custom-agent handlers are raced
+against the signal so the run can reach a terminal state even if handler code
+does not poll the signal. Logs and spans expose normalized harness errors;
+timeout/cancel paths include `harness.error.scope` and timeout paths include
+`harness.error.timeout_ms`.
 
 ## State, Sandbox, Runtime, And Requirements
 Defaults:

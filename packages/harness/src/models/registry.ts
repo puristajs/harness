@@ -1,4 +1,4 @@
-import { ModelCapabilityError } from '../errors/index.js'
+import { ModelCapabilityError, ModelError } from '../errors/index.js'
 import {
   ATTR_GEN_AI_REQUEST_MODEL,
   ATTR_GEN_AI_RESPONSE_FINISH_REASONS,
@@ -214,7 +214,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq))
+      return withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
+        (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response)
+      )
     },
     rerank(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'rerank', req)
@@ -228,9 +230,64 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq))
+      return withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
+        (response) => validateRerankResponse(aliasKey, alias, fullReq, response)
+      )
     }
   }
+}
+
+/**
+ * Provider-neutral guard: the number of embeddings must match the number of
+ * inputs, and indices must cover every input exactly once. Protects callers
+ * that associate vectors with inputs by position.
+ */
+function validateEmbeddingResponse(
+  aliasKey: string,
+  alias: ModelAlias,
+  req: EmbeddingRequest,
+  response: EmbeddingResponse
+): EmbeddingResponse {
+  const expected = Array.isArray(req.input) ? req.input.length : 1
+  const indices = new Set(response.embeddings.map((item) => item.index))
+  const validIndices = response.embeddings.every((item) => Number.isInteger(item.index) && item.index >= 0 && item.index < expected)
+  if (response.embeddings.length !== expected || indices.size !== expected || !validIndices) {
+    throw new ModelError('Embedding response does not match the request input count.', {
+      provider: alias.provider.id,
+      model: alias.model,
+      method: 'embed',
+      reason: 'embedding_count_mismatch',
+      providerBody: { expected, received: response.embeddings.length, alias: aliasKey }
+    })
+  }
+  return response
+}
+
+/**
+ * Provider-neutral guard: every rerank result must reference a distinct, valid
+ * document index, and the count must not exceed the requested document count
+ * (or `topN` when supplied).
+ */
+function validateRerankResponse(
+  aliasKey: string,
+  alias: ModelAlias,
+  req: RerankRequest,
+  response: RerankResponse
+): RerankResponse {
+  const documentCount = req.documents.length
+  const limit = req.topN !== undefined ? Math.min(req.topN, documentCount) : documentCount
+  const indices = new Set(response.results.map((item) => item.index))
+  const validIndices = response.results.every((item) => Number.isInteger(item.index) && item.index >= 0 && item.index < documentCount)
+  if (response.results.length > limit || indices.size !== response.results.length || !validIndices) {
+    throw new ModelError('Rerank response does not map back to the request documents.', {
+      provider: alias.provider.id,
+      model: alias.model,
+      method: 'rerank',
+      reason: 'rerank_result_mismatch',
+      providerBody: { documentCount, limit, received: response.results.length, alias: aliasKey }
+    })
+  }
+  return response
 }
 
 function withModelStreamSpan<T>(
@@ -457,6 +514,7 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
     || merged.maxTokens !== undefined
     || merged.topP !== undefined
     || merged.stopSequences !== undefined
+    || merged.parallelToolCalls !== undefined
     || Object.keys(merged.providerOptions ?? {}).length > 0
   return hasTopLevel ? merged : undefined
 }

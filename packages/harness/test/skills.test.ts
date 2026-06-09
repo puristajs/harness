@@ -4,7 +4,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import { expect, it } from 'vitest'
 import { defineHarness, discoverSkills, loadSkills, mountSkillsOnce } from '../src/index.js'
-import { HarnessConfigError, SkillManifestError } from '../src/errors/index.js'
+import { SkillManifestError } from '../src/errors/index.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
@@ -152,6 +152,9 @@ it('fails before model IO when a default-loop skill agent cannot use read', asyn
     .build()
 
   const session = await harness.getSession('s1')
-  await expect(session.agents.a1.prompt('hello')).rejects.toBeInstanceOf(HarnessConfigError)
+  await expect(session.agents.a1.prompt('hello')).rejects.toMatchObject({
+    constructor: SkillManifestError,
+    meta: { reason: 'skill_read_tool_missing', agent_id: 'a1' }
+  })
   expect(model.requests).toHaveLength(0)
 })

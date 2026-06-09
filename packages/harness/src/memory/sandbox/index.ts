@@ -70,7 +70,12 @@ class SandboxMemoryAdapter implements MemoryAdapter {
         op.signal.throwIfAborted()
         const path = `${root}/${key}.json`
         if (!(await sandbox.exists(path))) return undefined
-        return JSON.parse(await sandbox.readText(path)) as T
+        const raw = await sandbox.readText(path)
+        try {
+          return JSON.parse(raw) as T
+        } catch (error) {
+          throw new StateError('Stored memory value is not valid JSON.', { op: 'memory.get', reason: 'corrupt_value' }, error)
+        }
       },
       set: async (
         key: string,

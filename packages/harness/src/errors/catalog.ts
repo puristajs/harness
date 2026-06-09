@@ -70,7 +70,14 @@ export class ModelError extends HarnessError {
       model: string
       method: string
       status?: number
-      reason?: 'http_error' | 'network' | 'unstructured_response' | 'malformed_response' | 'context_length_exceeded'
+      reason?:
+        | 'http_error'
+        | 'network'
+        | 'unstructured_response'
+        | 'malformed_response'
+        | 'context_length_exceeded'
+        | 'embedding_count_mismatch'
+        | 'rerank_result_mismatch'
       providerCode?: string
       providerType?: string
       providerParam?: string
@@ -129,7 +136,7 @@ export class SkillManifestError extends HarnessError {
   public constructor(
     message: string,
     meta: {
-      directory: string
+      directory?: string
       reason:
         | 'missing_skill_md'
         | 'invalid_frontmatter'
@@ -137,12 +144,16 @@ export class SkillManifestError extends HarnessError {
         | 'invalid_name'
         | 'name_mismatch'
         | 'directory_missing'
-        | 'collision_shadowed'
-        | 'untrusted_project_skill'
-        | 'scan_limit_reached'
         | 'reserved_name'
+        | 'skill_not_declared'
+        | 'skill_read_tool_missing'
+        | 'skill_sandbox_unsupported'
+        | 'untrusted_project_skill'
+        | 'collision_shadowed'
+        | 'scan_limit_reached'
       skill_id?: string
       source?: string
+      agent_id?: string
     },
     cause?: unknown
   ) {

@@ -39,3 +39,30 @@ it('rejects non-serializable durable step output deterministically', async () =>
 
   await expect(ctx.step('circular', async () => circular as never)).rejects.toBeInstanceOf(DurableStepError)
 })
+
+it('replays committed steps on resume without re-running side effects', async () => {
+  const runtime = inMemoryDurableRuntime()
+  const start = { runId: 'run-replay', sessionId: 'session-replay', workerId: 'worker-replay', stepId: 'initial', input: { n: 1 } }
+
+  // First attempt: run two steps, then "crash" (release the lease) after committing.
+  const lease1 = await runtime.startRun(start)
+  const ctx1 = createDurableWorkflowContext(runtime, lease1)
+  let sideEffects = 0
+  await ctx1.step('a', async () => { sideEffects += 1; return { a: true } })
+  await ctx1.step('b', async () => { sideEffects += 1; return { b: 2 } })
+  expect(sideEffects).toBe(2)
+  await lease1.release()
+
+  // Resume: a and b must replay from committed output; their fns must NOT run again.
+  const lease2 = await runtime.startRun(start)
+  expect(lease2.resumed).toBe(true)
+  const ctx2 = createDurableWorkflowContext(runtime, lease2)
+  const a = await ctx2.step('a', async () => { sideEffects += 1; return { a: false } })
+  const b = await ctx2.step('b', async () => { sideEffects += 1; return { b: 99 } })
+  const c = await ctx2.step('c', async () => { sideEffects += 1; return { c: 3 } })
+
+  expect(a).toEqual({ a: true })   // replayed original output
+  expect(b).toEqual({ b: 2 })      // replayed original output
+  expect(c).toEqual({ c: 3 })      // newly executed
+  expect(sideEffects).toBe(3)      // only step c ran on resume
+})

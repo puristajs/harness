@@ -15,6 +15,7 @@ export interface HarnessAdapterContext {
     toolTimeoutMs: number
     skillTimeoutMs: number
     modelTimeoutMs: number
+    maxParallelToolCalls: number
     historyWindow?: number
   }
 }

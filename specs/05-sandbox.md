@@ -108,6 +108,61 @@ not imply production durable replay, retention, encryption, cleanup, or quota
 support. Production durable replay requires a `DurableWorkspaceStore` and the
 `workspace.*` capabilities defined in [21-durable-workspaces](./21-durable-workspaces.md).
 
+## Optional long-lived process capability
+
+`exec` is a one-shot request/response: it sends optional `stdin`, waits for the
+command to exit, and returns the captured `stdout`/`stderr`/`exitCode`. It cannot
+keep a process alive or stream incrementally. A sandbox that can host a
+**long-lived process with streaming stdin/stdout** declares the `sandbox.spawn`
+capability and exposes a `spawn` method on its session:
+
+```ts
+interface SpawnOptions {
+  args?: readonly string[]
+  cwd?: string
+  env?: Record<string, string>
+  signal?: AbortSignal
+}
+
+interface SandboxProcess {
+  /** Writes a chunk to the process stdin. */
+  writeStdin(chunk: string): Promise<void>
+  /** Async iterator over decoded stdout chunks. Completes when the process exits. */
+  readonly stdout: AsyncIterable<string>
+  /** Async iterator over decoded stderr chunks. Completes when the process exits. */
+  readonly stderr: AsyncIterable<string>
+  /** Resolves with the exit code when the process terminates. Never rejects. */
+  readonly exit: Promise<{ exitCode: number; signal?: string }>
+  /** Terminates the process. Idempotent. */
+  kill(signal?: 'SIGTERM' | 'SIGKILL'): Promise<void>
+}
+
+interface SpawnCapableSandboxSession extends SandboxSessionBase {
+  readonly executor: 'available'
+  spawn(command: string, opts?: SpawnOptions): Promise<SandboxProcess>
+}
+```
+
+Locked behavior:
+
+- `sandbox.spawn` is an opt-in adapter capability gated by `.requires(...)` like
+  the snapshot capabilities. A session that advertises `sandbox.spawn` exposes
+  `spawn`; sessions without it expose only `exec` (or no executor).
+- A spawned process is owned by the sandbox session. `session.close()` MUST
+  terminate every process the session spawned. The host process is never the
+  spawn parent for an isolation backend — `spawn` runs inside the same isolation
+  boundary as `exec`.
+- `signal` abort terminates the process and completes the `stdout`/`stderr`
+  iterators.
+- This capability is the basis for the **persistent MCP stdio transport** in
+  [07-tools](./07-tools.md): a stateful stdio MCP server is spawned once and
+  multiplexed across calls instead of re-spawned per call. Sandboxes without
+  `sandbox.spawn` fall back to the one-shot `exec` stdio model.
+- The in-core `inMemorySandbox()` and `bashSandbox()` do **not** advertise
+  `sandbox.spawn`; isolation adapters (`@purista/harness-sandbox-docker`,
+  `-e2b`, `-microvm`) implement it. `@purista/harness/testing` ships a
+  spawn-capable reference session for contract tests.
+
 ### Auto-detect
 
 If the user calls `.sandbox()` with no argument or omits `.sandbox()` entirely, the harness auto-detects: tries `bashSandbox()` first, falls back to `inMemorySandbox()` on import failure. This auto-detect is locked in [02-harness-config](./02-harness-config.md) §`.sandbox(...)`.

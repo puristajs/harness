@@ -31,6 +31,8 @@ export interface ModelDefaults {
   maxTokens?: number
   topP?: number
   stopSequences?: string[]
+  /** Whether providers should allow the model to emit multiple independent tool calls in one turn. */
+  parallelToolCalls?: boolean
   providerOptions?: Record<string, unknown>
 }
 
@@ -40,6 +42,8 @@ export interface ModelCallOptions {
   maxTokens?: number
   topP?: number
   stopSequences?: string[]
+  /** Overrides whether providers should allow multiple tool calls in one model turn. */
+  parallelToolCalls?: boolean
   providerOptions?: Record<string, unknown>
 }
 

@@ -33,6 +33,8 @@ interface WorkflowContext<S, I, O> {
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
   metrics: Metrics
+  /** Runs `fn` as a durable step. See "Durable steps". */
+  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
 }
 ```
 
@@ -50,6 +52,30 @@ interface WorkflowContext<S, I, O> {
 
 The workflow's own input is validated by `workflow.input.parse(value)` at run start; output is validated by `workflow.output.parse(value)` after the handler returns. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
 
+## Durable steps
+
+`ctx.step(stepId, fn)` marks a JSON-serializable boundary in a workflow handler.
+Its behavior depends purely on how the workflow is invoked:
+
+- **Durable invocation** (`opts.durable` supplied and a `.runtime(...)` adapter is
+  configured — see [21-durable-workspaces](./21-durable-workspaces.md) §16.1): a
+  step committed on a prior attempt returns its stored output **without re-running
+  `fn`** or re-committing a checkpoint. A new step runs `fn`, validates that the
+  output is JSON-serializable (`DurableStepError` otherwise), commits a runtime
+  checkpoint, and — when a workspace store is configured — links a durable
+  workspace checkpoint committed before the runtime checkpoint.
+- **Ephemeral invocation** (no `opts.durable`, or no configured runtime):
+  `ctx.step(stepId, fn)` is a transparent pass-through — it simply awaits `fn` and
+  returns its value with no checkpointing.
+
+Locked rules:
+
+- `stepId` matches `/^[A-Za-z0-9_.:-]{1,128}$/`; an invalid id throws
+  `DurableStepError`.
+- A duplicate `stepId` within one run throws `DurableStepError`.
+- The same workflow body therefore runs durably or ephemerally with no code
+  change; durability is an invocation-time decision, not a handler concern.
+
 ## Parallel invocation
 
 Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSettled`. Locked rules:
@@ -64,12 +90,19 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
   - The run's `runTimeoutMs` — when elapsed, abort the controller and throw `OperationTimeoutError`. `runTimeoutMs === 0` disables the run timeout; negative values are rejected at config parse time. `InvokeOptions.timeoutMs` overrides the default for a single call (same `>0/0/<0` semantics; negative throws `ValidationError`).
   - External cancellation passed to `session.workflows[id].prompt(input, {signal})`.
 - Aborts propagate down to every active agent, model, tool, skill, and memory adapter call. Each layer translates abort into `OperationCancelledError`.
+- The harness races the workflow handler against the workflow signal. A
+  non-cooperative handler cannot block timeout/cancel finalization, but any
+  in-process work it started may keep running until that application code
+  observes `ctx.signal` or returns.
 - After `signal.aborted`, the workflow handler MUST NOT start new agent calls; doing so throws `OperationCancelledError` synchronously.
 
 ## Errors
 
-- Errors from agent calls bubble up unchanged unless caught.
-- If the workflow handler itself throws a non-`HarnessError`, the harness wraps it in `InternalError` with `cause`.
+- Errors from agent, model, and tool calls bubble up unchanged unless caught.
+- A handler error is preserved by identity (it is not re-wrapped), so failure
+  terminalization never masks the original failure. When the error is not a
+  `HarnessError`, it is persisted with code `INTERNAL_ERROR` via `serializeError`,
+  but the original error instance is what the caller receives.
 - `WorkflowNotFoundError` is thrown by the session API when a workflow id doesn't exist; never thrown from inside a handler.
 
 ## Telemetry

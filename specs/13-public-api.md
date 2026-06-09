@@ -111,6 +111,7 @@ export interface Harness<S>
 export interface Session<S>
 export interface WorkflowInvoker<S, K>
 export interface InvokeOptions
+export interface DurableInvokeOptions
 
 // Configuration shapes
 export type ModelsConfig
@@ -256,6 +257,9 @@ export interface SandboxResumeOptions
 export interface SnapshotCapableSandbox
 export interface ResumeCapableSandbox
 export interface HibernateCapableSandbox
+export interface SpawnOptions
+export interface SandboxProcess
+export interface SpawnCapableSandboxSession
 export interface ExecOptions
 export interface ExecResult
 export interface DirEntry
@@ -549,6 +553,7 @@ interface HarnessAdapterContext {
     toolTimeoutMs: number
     skillTimeoutMs: number
     modelTimeoutMs: number
+    maxParallelToolCalls: number
     historyWindow?: number
   }
 }
@@ -617,8 +622,21 @@ interface InvokeOptions {
   traceparent?: string
   tracestate?: string
   metadata?: Record<string, JsonValue>
+  durable?: DurableInvokeOptions
+}
+
+interface DurableInvokeOptions {
+  runId: string
+  workerId?: string
+  stepId?: string
+  attempt?: number
 }
 ```
+
+`durable` opts a workflow run into durable execution against the configured
+`.runtime(...)` / `.workspaceStore(...)`; see
+[21-durable-workspaces](./21-durable-workspaces.md) §16.1 and
+[11-sessions](./11-sessions.md).
 
 `traceparent`/`tracestate` follow W3C Trace Context and are propagated into the
 run span before child workflow, agent, model, tool, sandbox, and state spans are

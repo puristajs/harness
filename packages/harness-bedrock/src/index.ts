@@ -119,9 +119,11 @@ class BedrockModelProvider extends BaseModelProvider {
     req.signal.throwIfAborted()
     const response = await this.client.send(new ConverseCommand(toConverseInput(req, true) as any), { abortSignal: req.signal })
     const toolUse = response.output?.message?.content?.find((block: any) => block.toolUse?.name === 'harness_response')?.toolUse
+    const toolCalls = withoutObjectTool(extractToolCalls(response, req, 'object'))
     const object = (toolUse?.input ?? parseJson(outputText(response) || '{}', req, 'object')) as T
     return {
       object,
+      ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(response.usage?.inputTokens, response.usage?.outputTokens),
       finishReason: toFinishReason(response.stopReason),
       raw: response
@@ -176,18 +178,20 @@ function toConverseInput(req: ChatRequest, forceObject: boolean): Record<string,
     ...(req.call?.providerOptions ?? {})
   } as Record<string, unknown>
   const { system, messages } = toBedrockMessages(req.messages)
-  const tools = forceObject ? [toObjectTool(req as ObjectRequest)] : toTools(req.tools)
+  const modelTools = toTools(req.tools) ?? []
+  const tools = forceObject ? [...modelTools, toObjectTool(req as ObjectRequest)] : modelTools
+  const forceObjectTool = forceObject && modelTools.length === 0
 
   return {
     modelId: req.model,
     messages,
     ...(system.length > 0 ? { system } : {}),
-    ...(tools ? { toolConfig: { tools, ...(forceObject ? { toolChoice: { tool: { name: 'harness_response' } } } : {}) } } : {}),
+    ...(tools.length > 0 ? { toolConfig: { tools, ...(forceObjectTool ? { toolChoice: { tool: { name: 'harness_response' } } } : {}) } } : {}),
     inferenceConfig: {
-      ...(req.call?.maxTokens ?? req.defaults?.maxTokens !== undefined ? { maxTokens: req.call?.maxTokens ?? req.defaults?.maxTokens } : {}),
-      ...(req.call?.temperature ?? req.defaults?.temperature !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
-      ...(req.call?.topP ?? req.defaults?.topP !== undefined ? { topP: req.call?.topP ?? req.defaults?.topP } : {}),
-      ...(req.call?.stopSequences ?? req.defaults?.stopSequences ? { stopSequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {})
+      ...((req.call?.maxTokens ?? req.defaults?.maxTokens) !== undefined ? { maxTokens: req.call?.maxTokens ?? req.defaults?.maxTokens } : {}),
+      ...((req.call?.temperature ?? req.defaults?.temperature) !== undefined ? { temperature: req.call?.temperature ?? req.defaults?.temperature } : {}),
+      ...((req.call?.topP ?? req.defaults?.topP) !== undefined ? { topP: req.call?.topP ?? req.defaults?.topP } : {}),
+      ...((req.call?.stopSequences ?? req.defaults?.stopSequences) !== undefined ? { stopSequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {})
     },
     ...providerOptions
   }
@@ -261,6 +265,11 @@ function extractToolCalls(response: any, req: ChatRequest, method: string): Tool
     name: String(call.name),
     arguments: typeof call.input === 'string' ? parseJson(call.input, req, method) : call.input ?? {}
   }))
+}
+
+function withoutObjectTool(calls: ToolCallSpec[] | undefined): ToolCallSpec[] | undefined {
+  const filtered = calls?.filter((call) => call.name !== 'harness_response')
+  return filtered && filtered.length > 0 ? filtered : undefined
 }
 
 function parseJson(content: string, req: ChatRequest, method: string): JsonValue {

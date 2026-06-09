@@ -7,6 +7,13 @@ import type { ModelToolSpec } from '../ports/model-provider.js'
 import type { SandboxSession } from '../sandbox/index.js'
 import { ulid } from '../ulid/index.js'
 
+/** Canonical built-in tool names. Custom tool ids and skill ids must not collide with these. */
+export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']
+
+/** Per-file and total byte caps for the built-in `grep` read-and-match fallback. */
+const GREP_MAX_FILE_BYTES = 2_000_000
+const GREP_MAX_TOTAL_BYTES = 50_000_000
+
 export const BUILTIN_ALIAS_TO_CANONICAL: Record<string, BuiltinToolName> = {
   bash: 'bash', Bash: 'bash',
   read: 'read', Read: 'read',
@@ -87,9 +94,16 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
         }
         const entries = await session.list(parsed.path, { recursive: true })
         const matches: Array<{ path: string; line: number; text: string }> = []
+        let scannedBytes = 0
         for (const entry of entries) {
           if (entry.kind !== 'file') continue
-          const lines = (await session.readText(entry.path)).split('\n')
+          // Bound memory and regex work: skip individual files over the cap and
+          // stop once the total scanned size cap is reached.
+          if (entry.size !== undefined && entry.size > GREP_MAX_FILE_BYTES) continue
+          if (scannedBytes >= GREP_MAX_TOTAL_BYTES) break
+          const content = await session.readText(entry.path)
+          scannedBytes += content.length
+          const lines = content.split('\n')
           for (let i = 0; i < lines.length; i += 1) {
             const currentLine = lines[i]
             if (currentLine !== undefined && rx.test(currentLine)) matches.push({ path: entry.path, line: i + 1, text: currentLine })

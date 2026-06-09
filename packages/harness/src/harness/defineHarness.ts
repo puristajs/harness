@@ -47,7 +47,8 @@ import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import type { RunStatus } from '../models/state.js'
 import type { HarnessError } from '../errors/harness-error.js'
-import { HarnessConfigError } from '../errors/catalog.js'
+import { HarnessConfigError, SkillManifestError } from '../errors/catalog.js'
+import { BUILTIN_TOOL_NAMES } from '../tools/index.js'
 import { autoDetectSandbox, type Sandbox } from '../sandbox/index.js'
 import { createSessionHarness } from '../sessions/index.js'
 import type { ModelHandle } from '../models/registry.js'
@@ -62,7 +63,7 @@ import {
 } from '../ports/capabilities.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
-export const HARNESS_VERSION = '0.0.0'
+export { HARNESS_VERSION } from '../version.js'
 
 /** OpenTelemetry capture controls used by the harness. */
 export type TelemetryFlavor = 'dual' | 'gen_ai_only' | 'openinference_only'
@@ -87,6 +88,8 @@ export interface HarnessDefaults {
   skillTimeoutMs?: number
   /** Per-model timeout in milliseconds. Default: `300_000`. */
   modelTimeoutMs?: number
+  /** Maximum tool calls from one model response executed at the same time. Default: `8`. */
+  maxParallelToolCalls?: number
   /**
    * Max non-system messages forwarded into model calls.
    * `undefined` keeps all history, `0` keeps only system messages.
@@ -98,6 +101,18 @@ export interface HarnessDefaults {
 export interface HarnessOptions {
   /** Optional harness name for logs, telemetry, and diagnostics. Default: `agent-harness`. */
   name?: string
+}
+
+/** Durable execution opt-in for a single workflow call. */
+export interface DurableInvokeOptions {
+  /** Stable run id reused across resumes/retries. Matches `/^[A-Za-z0-9_.:-]{1,200}$/`. */
+  runId: string
+  /** Worker/process id owning the durable lease. Defaults to the harness worker id. */
+  workerId?: string
+  /** Initial durable step id label. Defaults to the workflow id. */
+  stepId?: string
+  /** Optional attempt hint; the runtime may raise it on retry. */
+  attempt?: number
 }
 
 /** Shared invoke options for workflow and agent execution. */
@@ -114,6 +129,12 @@ export interface InvokeOptions {
   tracestate?: string
   /** Scalar metadata exposed to handlers and telemetry sanitizers. */
   metadata?: Record<string, JsonValue>
+  /**
+   * Opt a workflow run into durable execution against the configured
+   * `.runtime(...)` (and optional `.workspaceStore(...)`). Workflow-only;
+   * supplying it on an agent run throws `ValidationError`.
+   */
+  durable?: DurableInvokeOptions
 }
 
 /** Canonical built-in tool names provided by the harness. */
@@ -402,6 +423,12 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
   metrics: Metrics
+  /**
+   * Runs `fn` as a durable step. Under a durable invocation the output is
+   * checkpointed and replayed on resume without re-running `fn`; otherwise it is
+   * a transparent pass-through. See spec 10 "Durable steps".
+   */
+  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
   output?: O
 }
 
@@ -711,6 +738,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (defaults.historyWindow !== undefined && defaults.historyWindow < 0) {
       throw new HarnessConfigError('historyWindow must be >= 0', { reason: 'invalid_defaults', path: 'defaults.historyWindow' })
     }
+    if (defaults.maxParallelToolCalls !== undefined && (!Number.isInteger(defaults.maxParallelToolCalls) || defaults.maxParallelToolCalls < 1)) {
+      throw new HarnessConfigError('maxParallelToolCalls must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.maxParallelToolCalls' })
+    }
     return this.clone({ defaults })
   }
 
@@ -722,6 +752,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   }
 
   public tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }> {
+    for (const id of Object.keys(tools)) {
+      if (!/^[a-z][a-z0-9_]*$/.test(id) || id.length > 64) {
+        throw new HarnessConfigError(
+          'Invalid tool id. Tool ids must match /^[a-z][a-z0-9_]*$/ and be at most 64 characters.',
+          { reason: 'invalid_tool_id', path: `tools.${id}`, id }
+        )
+      }
+    }
     return this.clone({ tools }) as unknown as HarnessBuilder<S & { tools: T }>
   }
 
@@ -759,6 +797,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (!models || Object.keys(models).length === 0) {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
     }
+    this.validateToolSkillNamespace()
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
@@ -780,12 +819,15 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       state: this.configured.state ?? new InMemoryStateStore(),
       sandbox,
       memory,
+      ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
+      ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
         toolTimeoutMs: this.configured.defaults?.toolTimeoutMs ?? 120_000,
         skillTimeoutMs: this.configured.defaults?.skillTimeoutMs ?? 60_000,
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
+        maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
         ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {})
       },
       models,
@@ -801,6 +843,45 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   private clone(patch: Partial<BuilderStateInternal>): Builder<S> {
     return new Builder(this.options, { ...this.configured, ...patch })
+  }
+
+  /**
+   * Tool ids, skill ids, and built-in tool names share one model-facing
+   * namespace (spec 08 §6). A custom tool id must not collide with a built-in
+   * tool name or a skill id, and a skill id must not collide with a built-in
+   * tool name.
+   */
+  private validateToolSkillNamespace(): void {
+    const toolIds = Object.keys(this.configured.tools ?? {})
+    const skillIds = new Set(Object.keys(this.configured.skills ?? {}))
+    const builtinNames = new Set<string>(BUILTIN_TOOL_NAMES)
+
+    for (const id of toolIds) {
+      if (builtinNames.has(id)) {
+        throw new SkillManifestError(`Custom tool id "${id}" collides with a built-in tool name.`, {
+          reason: 'reserved_name',
+          skill_id: id,
+          source: 'tool'
+        })
+      }
+      if (skillIds.has(id)) {
+        throw new SkillManifestError(`Custom tool id "${id}" collides with a skill id.`, {
+          reason: 'reserved_name',
+          skill_id: id,
+          source: 'tool'
+        })
+      }
+    }
+
+    for (const id of skillIds) {
+      if (builtinNames.has(id)) {
+        throw new SkillManifestError(`Skill id "${id}" collides with a built-in tool name.`, {
+          reason: 'reserved_name',
+          skill_id: id,
+          source: 'skill'
+        })
+      }
+    }
   }
 
   private validateAgentSkillReferences(agents: Record<string, AgentDefinition<any, any, any>>): void {

@@ -205,14 +205,29 @@ export async function loadSkills(skills: Record<string, SkillDefinition>): Promi
   return loadSkillsSync(skills)
 }
 
-async function readDirRecursive(root: string): Promise<Map<string, Uint8Array>> {
+const SKILL_MOUNT_MAX_FILES = 5_000
+const SKILL_MOUNT_MAX_BYTES = 100_000_000
+
+async function readDirRecursive(root: string, skillId: string): Promise<Map<string, Uint8Array>> {
   const files = new Map<string, Uint8Array>()
+  let totalBytes = 0
   const walk = async (dir: string): Promise<void> => {
     const entries = await fsp.readdir(dir, { withFileTypes: true })
     for (const entry of entries) {
       const abs = path.join(dir, entry.name)
-      if (entry.isDirectory()) await walk(abs)
-      else if (entry.isFile()) files.set(path.posix.normalize(path.relative(root, abs).split(path.sep).join('/')), await fsp.readFile(abs))
+      if (entry.isDirectory()) {
+        await walk(abs)
+      } else if (entry.isFile()) {
+        if (files.size >= SKILL_MOUNT_MAX_FILES) {
+          throw new SkillManifestError('Skill exceeds the mount file-count limit.', { reason: 'scan_limit_reached', skill_id: skillId, directory: root })
+        }
+        const data = await fsp.readFile(abs)
+        totalBytes += data.byteLength
+        if (totalBytes > SKILL_MOUNT_MAX_BYTES) {
+          throw new SkillManifestError('Skill exceeds the mount byte limit.', { reason: 'scan_limit_reached', skill_id: skillId, directory: root })
+        }
+        files.set(path.posix.normalize(path.relative(root, abs).split(path.sep).join('/')), data)
+      }
     }
   }
   await walk(root)
@@ -226,13 +241,13 @@ export async function mountSkillsOnce(
   skillIds: readonly string[]
 ): Promise<void> {
   if (skillIds.length > 0 && typeof session.mount !== 'function') {
-    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'invalid_frontmatter', directory: '' })
+    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'skill_sandbox_unsupported' })
   }
   for (const skillId of skillIds) {
     if (mounted.has(skillId)) continue
     const skill = skills[skillId]
     if (!skill) throw new SkillNotFoundError('Skill not found.', { skill_id: skillId })
-    const files = await readDirRecursive(skill.directory)
+    const files = await readDirRecursive(skill.directory, skillId)
     await session.mount(files, skill.mountPath)
     mounted.add(skillId)
   }

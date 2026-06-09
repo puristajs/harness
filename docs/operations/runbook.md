@@ -64,6 +64,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 |---|---|---|
 | `SessionBusyError` | Two runs started in one session. | Use distinct session IDs or wait for the current run. |
 | `OperationTimeoutError` | Run/model/tool exceeded budget. | Tune `defaults`, inspect provider/tool latency. |
+| `OperationCancelledError` | Caller or parent run aborted the operation. | Check disconnect/shutdown paths and `InvokeOptions.signal` propagation. |
 | `ValidationError` | Input/output schema mismatch. | Check Zod issues in logs and traces. |
 | `ModelError` | Provider HTTP/network/error response. | Inspect normalized metadata: status, provider type, request id, body summary. |
 | `SandboxNoExecutorError` | Command execution requested in files-only sandbox. | Use `bashSandbox()` or disable exec-backed tools. |

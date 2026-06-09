@@ -1,4 +1,6 @@
 import { McpProtocolError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
+import { isSpawnCapableSession, type SandboxProcess, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
+import { HARNESS_VERSION } from '../../version.js'
 import type { McpDiscoveredTool, McpTransportRunner, ResolvedMcpStdioTool } from './runner.js'
 import { withMcpTimeout } from './runner.js'
 
@@ -11,6 +13,16 @@ type JsonRpcResponse = {
 const protocolVersion = '2025-06-18'
 
 export function createStdioMcpTransportRunner(config: ResolvedMcpStdioTool): McpTransportRunner {
+  // A spawn-capable sandbox hosts a single long-lived server multiplexed across
+  // calls (server-side state is preserved); otherwise each call is a one-shot
+  // exec exchange (leak-free but stateless). See spec 07.
+  if (isSpawnCapableSession(config.sandbox)) {
+    return createPersistentStdioRunner(config, config.sandbox)
+  }
+  return createOneShotStdioRunner(config)
+}
+
+function createOneShotStdioRunner(config: ResolvedMcpStdioTool): McpTransportRunner {
   let installPromise: Promise<void> | undefined
 
   async function ensureInstalled(signal?: AbortSignal): Promise<void> {
@@ -41,6 +53,170 @@ export function createStdioMcpTransportRunner(config: ResolvedMcpStdioTool): Mcp
       installPromise = undefined
     }
   }
+}
+
+interface PendingRequest {
+  resolve: (response: JsonRpcResponse) => void
+  reject: (error: unknown) => void
+}
+
+/**
+ * Persistent stdio transport: spawns the server once, performs the MCP
+ * `initialize` handshake a single time, and multiplexes every subsequent
+ * request over the same pipe correlating responses by JSON-RPC id.
+ */
+function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: SpawnCapableSandboxSession): McpTransportRunner {
+  let installPromise: Promise<void> | undefined
+  let session_proc: SandboxProcess | undefined
+  let readyPromise: Promise<void> | undefined
+  let nextId = 1
+  const pending = new Map<number, PendingRequest>()
+
+  async function ensureInstalled(signal?: AbortSignal): Promise<void> {
+    if (!config.install) return
+    installPromise ??= runInstall(config, signal)
+    return installPromise
+  }
+
+  function rejectAllPending(error: unknown): void {
+    for (const request of pending.values()) request.reject(error)
+    pending.clear()
+  }
+
+  function teardown(): void {
+    session_proc = undefined
+    readyPromise = undefined
+  }
+
+  async function spawnAndInitialize(signal?: AbortSignal): Promise<void> {
+    const proc = await session.spawn(config.command, {
+      ...(config.args ? { args: config.args } : {}),
+      ...(config.env ? { env: config.env } : {}),
+      ...(signal ? { signal } : {})
+    })
+    session_proc = proc
+
+    // Consume stdout line-by-line, dispatching responses to pending requests.
+    void (async () => {
+      let buffer = ''
+      try {
+        for await (const chunk of proc.stdout) {
+          buffer += chunk
+          let newlineIndex = buffer.indexOf('\n')
+          while (newlineIndex >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim()
+            buffer = buffer.slice(newlineIndex + 1)
+            if (line.startsWith('{')) dispatchLine(line, pending)
+            newlineIndex = buffer.indexOf('\n')
+          }
+        }
+      } catch {
+        // stdout ended or aborted; exit handler performs cleanup.
+      }
+    })()
+
+    // When the process exits, fail every in-flight request and force a respawn.
+    void proc.exit.then((result) => {
+      rejectAllPending(mapStdioError(config, 'call', new Error(`MCP server exited with code ${result.exitCode}.`)))
+      if (session_proc === proc) teardown()
+    })
+
+    await writeMessage(proc, {
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: { protocolVersion, capabilities: {}, clientInfo: { name: '@purista/harness', version: HARNESS_VERSION } }
+    }, pending, 0, signal)
+    await proc.writeStdin(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`)
+  }
+
+  async function ensureReady(signal?: AbortSignal): Promise<SandboxProcess> {
+    await ensureInstalled(signal)
+    if (!readyPromise) {
+      readyPromise = spawnAndInitialize(signal).catch((error) => {
+        teardown()
+        throw error
+      })
+    }
+    await readyPromise
+    if (!session_proc) throw mapStdioError(config, 'connect', new Error('MCP server is not running.'))
+    return session_proc
+  }
+
+  async function request<T>(method: string, params: unknown, phase: 'list' | 'call', map: (value: unknown) => T, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<T> {
+    return withMcpTimeout({ ...(options?.signal ? { signal: options.signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs, scope: 'tool' }, async (signal) => {
+      const proc = await ensureReady(signal)
+      const id = ++nextId
+      try {
+        const response = await writeMessage(proc, { jsonrpc: '2.0', id, method, params }, pending, id, signal)
+        if (response.error) throw mapStdioError(config, phase, new Error(response.error.message ?? `MCP ${phase} failed.`))
+        return map(response.result)
+      } catch (error) {
+        pending.delete(id)
+        if (error instanceof OperationTimeoutError) throw error
+        if (error instanceof McpProtocolError) throw error
+        throw mapStdioError(config, phase, error)
+      }
+    })
+  }
+
+  return {
+    async listTools(options) {
+      return request<McpDiscoveredTool[]>('tools/list', {}, 'list', (value) => {
+        if (!isRecord(value) || !Array.isArray(value['tools'])) return []
+        return value['tools'] as McpDiscoveredTool[]
+      }, options)
+    },
+    async callTool(name, input, options) {
+      return request<unknown>('tools/call', { name, arguments: input }, 'call', (value) => value, options)
+    },
+    async close() {
+      const proc = session_proc
+      teardown()
+      installPromise = undefined
+      rejectAllPending(mapStdioError(config, 'call', new Error('MCP runner closed.')))
+      if (proc) await proc.kill('SIGTERM').catch(() => undefined)
+    }
+  }
+}
+
+/** Sends one JSON-RPC message and (when `id` is set) awaits the correlated response. */
+async function writeMessage(
+  proc: SandboxProcess,
+  message: { jsonrpc: '2.0'; id?: number; method: string; params: unknown },
+  pending: Map<number, PendingRequest>,
+  id: number,
+  signal?: AbortSignal
+): Promise<JsonRpcResponse> {
+  const response = new Promise<JsonRpcResponse>((resolve, reject) => {
+    pending.set(id, { resolve, reject })
+    if (signal) {
+      const onAbort = () => {
+        pending.delete(id)
+        reject(signal.reason ?? new Error('MCP request was aborted.'))
+      }
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+  })
+  await proc.writeStdin(`${JSON.stringify(message)}\n`)
+  return response
+}
+
+function dispatchLine(line: string, pending: Map<number, PendingRequest>): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (!isRecord(parsed) || !('id' in parsed)) return
+  const id = parsed['id']
+  if (typeof id !== 'number') return
+  const request = pending.get(id)
+  if (!request) return
+  pending.delete(id)
+  request.resolve(parsed as JsonRpcResponse)
 }
 
 async function runInstall(config: ResolvedMcpStdioTool, signal?: AbortSignal): Promise<void> {
@@ -77,7 +253,7 @@ async function exchange(
       params: {
         protocolVersion,
         capabilities: {},
-        clientInfo: { name: '@purista/harness', version: '0.0.0' }
+        clientInfo: { name: '@purista/harness', version: HARNESS_VERSION }
       }
     }),
     JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),

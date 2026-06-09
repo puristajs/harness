@@ -101,6 +101,31 @@ parallel user threads.
 
 A direct agent call enters the conversation loop for one configured agent. The
 agent can call models and tools until it has a validated output.
+When a model response contains multiple independent tool calls, the harness
+executes that batch concurrently and sends the results back to the next model
+call in the original tool-call order.
+To control whether the provider may emit multiple tool calls in one turn, set
+`parallelToolCalls` on the model alias defaults. Direct model calls can override
+it per call.
+To apply local backpressure when a provider returns a wide batch, set
+`maxParallelToolCalls` in harness defaults.
+
+Pass an `AbortSignal` or per-call timeout when a caller can disconnect or a run
+has a stricter SLA:
+
+```ts
+const controller = new AbortController()
+const result = await session.agents.answerer.prompt(input, {
+  signal: controller.signal,
+  timeoutMs: 30_000
+})
+```
+
+The harness propagates cancellation into workflow/custom-agent handlers, model
+calls, tools, memory, and sandbox operations. Workflow and custom-agent handlers
+are raced against the run signal so cancellation can finalize the run even if
+handler code is not cooperative, but handler code should still check
+`ctx.signal` to stop side effects promptly.
 
 ```ts
 const result = await session.agents.answerer.prompt({

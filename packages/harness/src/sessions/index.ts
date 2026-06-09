@@ -36,7 +36,11 @@ import type {
 } from '../harness/defineHarness.js'
 import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
-import type { HarnessInspection } from '../ports/capabilities.js'
+import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
+import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
+import type { DurableRuntime } from '../runtime/durable.js'
+import { HarnessConfigError } from '../errors/catalog.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
@@ -53,6 +57,8 @@ type HarnessDefinition<S extends BuilderState> = {
   state: StateStore
   sandbox: Sandbox
   memory: MemoryAdapter
+  runtime?: DurableRuntimeAdapter
+  workspaceStore?: DurableWorkspaceStore
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -72,6 +78,85 @@ const NEVER_ABORT_SIGNAL = new AbortController().signal
 
 function now(): string {
   return new Date().toISOString()
+}
+
+const STREAM_MAX_BUFFERED_EVENTS = 1024
+const STREAM_TERMINAL_EVENT_TYPES = new Set<string>(['run.finished', 'agent.finished'])
+
+/**
+ * Relay run events from an in-process run to a stream consumer.
+ *
+ * The unread events live in a bounded queue: consumed events are removed (no
+ * growing cursor over a shared array), and on overflow the oldest non-terminal
+ * unread event is dropped and counted, so a slow consumer never silently skips
+ * an unread event. Delivery is promise-notified rather than time-polled, so
+ * there is no fixed per-event latency or periodic timer.
+ */
+export async function* relayRunEvents(
+  run: (onEvent: (event: RunEvent) => Promise<void>) => Promise<unknown>
+): AsyncIterable<RunEvent> {
+  const queue: RunEvent[] = []
+  let dropped = 0
+  let liveRunId = 'unknown'
+  let done = false
+  let failure: unknown
+  let wake: (() => void) | undefined
+
+  const notify = (): void => {
+    const resolve = wake
+    wake = undefined
+    resolve?.()
+  }
+
+  const result = run((event) => {
+    if ('runId' in event) liveRunId = event.runId
+    if (queue.length >= STREAM_MAX_BUFFERED_EVENTS) {
+      const dropIndex = queue.findIndex((candidate) => !STREAM_TERMINAL_EVENT_TYPES.has(candidate.type))
+      if (dropIndex >= 0) {
+        queue.splice(dropIndex, 1)
+        dropped += 1
+      }
+    }
+    queue.push(event)
+    notify()
+    return Promise.resolve()
+  })
+    .catch((error) => {
+      failure = error
+      return undefined
+    })
+    .finally(() => {
+      done = true
+      notify()
+    })
+
+  try {
+    while (true) {
+      if (dropped > 0) {
+        const droppedCount = dropped
+        dropped = 0
+        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped: droppedCount }
+      }
+      while (queue.length > 0) {
+        yield queue.shift() as RunEvent
+        // Surface a fresh overflow notice promptly between events.
+        if (dropped > 0) break
+      }
+      if (queue.length === 0 && dropped === 0) {
+        if (done) {
+          break
+        }
+        // No await between the empty check and installing `wake`, so a producer
+        // push cannot be lost between them.
+        await new Promise<void>((resolve) => {
+          wake = resolve
+        })
+      }
+    }
+  } finally {
+    await result.catch(() => undefined)
+  }
+  if (failure) throw failure
 }
 
 function validateInvokeOptions(opts: InvokeOptions | undefined): void {
@@ -95,6 +180,12 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
+  // In-flight session-state creations, memoized so concurrent first-time callers
+  // share one sandbox open (no orphaned sessions) and one SessionState object
+  // (so the synchronous busy check/set below serializes runs correctly).
+  const sessionStateOpenings = new Map<string, Promise<SessionState>>()
+  // Stable per-harness-instance worker id used as the default durable lease owner.
+  const durableWorkerId = `worker_${ulid()}`
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
   const adapterMetrics = createMetrics(telemetry, { 'harness.name': definition.name })
@@ -110,6 +201,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
       skillTimeoutMs: definition.defaults.skillTimeoutMs ?? 60_000,
       modelTimeoutMs: definition.defaults.modelTimeoutMs ?? 300_000,
+      maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
@@ -123,26 +215,38 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return existing
     }
 
+    const createdAt = now()
     const created: SessionRecord = {
       id: sessionId,
-      createdAt: now(),
-      updatedAt: now(),
+      createdAt,
+      updatedAt: createdAt,
       runCount: 0
     }
     await definition.state.upsertSession(created)
     return created
   }
 
-  async function getSessionState(sessionId: string): Promise<SessionState> {
+  function getSessionState(sessionId: string): Promise<SessionState> {
     const existing = sessionStates.get(sessionId)
     if (existing) {
-      return existing
+      return Promise.resolve(existing)
+    }
+    const pending = sessionStateOpenings.get(sessionId)
+    if (pending) {
+      return pending
     }
 
-    const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
-    const created: SessionState = { busy: false, sandboxSession, mountedSkills: new Set<string>() }
-    sessionStates.set(sessionId, created)
-    return created
+    const opening = (async () => {
+      const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
+      const created: SessionState = { busy: false, sandboxSession, mountedSkills: new Set<string>() }
+      sessionStates.set(sessionId, created)
+      sessionStateOpenings.delete(sessionId)
+      return created
+    })()
+    // Let a failed open be retried instead of caching the rejection forever.
+    opening.catch(() => sessionStateOpenings.delete(sessionId))
+    sessionStateOpenings.set(sessionId, opening)
+    return opening
   }
 
   async function appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
@@ -229,6 +333,21 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return createMemoryFacade(memoryOptions(opts.sessionId, opts.sandboxSession, opts.signal, opts))
   }
 
+  /**
+   * Validates `opts.durable` and returns the executable durable runtime, or
+   * `undefined` for an ephemeral run. Throws before any run record is created.
+   */
+  function resolveDurableRuntime(opts: InvokeOptions | undefined): DurableRuntime | undefined {
+    if (!opts?.durable) return undefined
+    if (!DURABLE_RUN_ID_PATTERN.test(opts.durable.runId)) {
+      throw new ValidationError('Durable run id is invalid.', { where: 'invoke_options', issues: { 'durable.runId': opts.durable.runId } })
+    }
+    if (!isExecutableDurableRuntime(definition.runtime)) {
+      throw new HarnessConfigError('Durable execution requires an executable .runtime(...) adapter.', { reason: 'durable_runtime_required', path: 'runtime' })
+    }
+    return definition.runtime
+  }
+
   return {
     inspect(): HarnessInspection {
       return definition.inspection
@@ -290,14 +409,20 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               throw new ValidationError('Session history replacement failed validation.', { where: 'session_history', issues: { message } }, error)
             }
           })
-          await definition.state.clearMessages(sessionId)
-          if (parsed.length > 0) {
-            await definition.state.appendMessages(sessionId, parsed)
+          if (definition.state.replaceMessages) {
+            await definition.state.replaceMessages(sessionId, parsed)
+          } else {
+            // Non-atomic fallback for adapters without atomic replace.
+            await definition.state.clearMessages(sessionId)
+            if (parsed.length > 0) {
+              await definition.state.appendMessages(sessionId, parsed)
+            }
           }
         },
         async close(): Promise<void> {
           await definition.state.closeSession(sessionId)
           sessionStates.delete(sessionId)
+          sessionStateOpenings.delete(sessionId)
           await state.sandboxSession.close()
         }
       }
@@ -339,47 +464,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: AgentInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    const buffer: RunEvent[] = []
-    const maxBufferedEvents = 1024
-    let dropped = 0
-    let done = false
-    let failure: unknown
-    let liveRunId = 'unknown'
-    const result = runAgentCall(sessionId, agentId, agent, input, opts, (event) => {
-      if ('runId' in event) liveRunId = event.runId
-      if (buffer.length >= maxBufferedEvents) {
-        const dropIndex = buffer.findIndex((candidate) => candidate.type !== 'run.finished')
-        if (dropIndex >= 0) {
-          buffer.splice(dropIndex, 1)
-          dropped += 1
-        }
-      }
-      buffer.push(event)
-      return Promise.resolve()
-    }).catch((error) => {
-      failure = error
-      return undefined
-    }).finally(() => {
-      done = true
-    })
-
-    let cursor = 0
-    while (true) {
-      if (dropped > 0) {
-        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped }
-        dropped = 0
-      }
-      while (cursor < buffer.length) {
-        yield buffer[cursor] as RunEvent
-        cursor += 1
-      }
-      if (done) {
-        await result.catch(() => undefined)
-        if (failure) throw failure
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    yield* relayRunEvents((onEvent) => runAgentCall(sessionId, agentId, agent, input, opts, onEvent))
   }
 
   async function runAgentCall<K extends keyof NonNullable<S['agents']>>(
@@ -391,6 +476,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<AgentOutput<S, K>> {
     validateInvokeOptions(opts)
+    if (opts?.durable) {
+      throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
+    }
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
@@ -465,6 +553,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: runSignal.signal,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
           telemetry,
           emitEvent: emit,
@@ -526,47 +615,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: WorkflowInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    const buffer: RunEvent[] = []
-    const maxBufferedEvents = 1024
-    let dropped = 0
-    let done = false
-    let failure: unknown
-    let liveRunId = 'unknown'
-    const result = runWorkflowCall(sessionId, workflowId, workflow, input, opts, (event) => {
-      if ('runId' in event) liveRunId = event.runId
-      if (buffer.length >= maxBufferedEvents) {
-        const dropIndex = buffer.findIndex((candidate) => candidate.type !== 'run.finished')
-        if (dropIndex >= 0) {
-          buffer.splice(dropIndex, 1)
-          dropped += 1
-        }
-      }
-      buffer.push(event)
-      return Promise.resolve()
-    }).catch((error) => {
-      failure = error
-      return undefined
-    }).finally(() => {
-      done = true
-    })
-
-    let cursor = 0
-    while (true) {
-      if (dropped > 0) {
-        yield { type: 'stream.overflow', runId: liveRunId, at: now(), dropped }
-        dropped = 0
-      }
-      while (cursor < buffer.length) {
-        yield buffer[cursor] as RunEvent
-        cursor += 1
-      }
-      if (done) {
-        await result.catch(() => undefined)
-        if (failure) throw failure
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    yield* relayRunEvents((onEvent) => runWorkflowCall(sessionId, workflowId, workflow, input, opts, onEvent))
   }
 
   async function runWorkflowCall<K extends keyof NonNullable<S['workflows']>>(
@@ -578,6 +627,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<WorkflowOutput<S, K>> {
     validateInvokeOptions(opts)
+    const durableRuntime = resolveDurableRuntime(opts)
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
@@ -590,7 +640,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     state.busy = true
 
     const startedAt = now()
-    const runId = ulid()
+    const runId = opts?.durable ? opts.durable.runId : ulid()
     const memory = memoryFacade({
       sessionId,
       runId,
@@ -622,7 +672,22 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw error
     }
 
+    let durableBinding: DurableWorkflowBinding | undefined
     try {
+      if (durableRuntime && opts?.durable) {
+        durableBinding = await beginDurableWorkflow({
+          runtime: durableRuntime,
+          ...(definition.workspaceStore ? { workspaceStore: definition.workspaceStore } : {}),
+          durable: opts.durable,
+          defaultWorkerId: durableWorkerId,
+          sessionId,
+          workflowId,
+          input: input as JsonValue,
+          signal: runSignal.signal,
+          logger: definition.logger,
+          harnessName: definition.name
+        })
+      }
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -652,6 +717,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
+            step: durableBinding ? durableBinding.step : passthroughStep,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
@@ -689,6 +755,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
                       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+                      maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
                       logger: definition.logger,
                       telemetry,
                       emitEvent: emit,
@@ -724,6 +791,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }))
 
       const finishedAt = now()
+      if (durableBinding) {
+        await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_success' }, () => durableBinding!.finishSuccess(result as JsonValue))
+      }
       const runFinished: RunEvent = { type: 'run.finished', runId, at: finishedAt, output: result as JsonValue }
       await emit(runFinished)
       await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
@@ -734,6 +804,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finalError = normalizeRunError(error, runSignal.signal)
       const finishedAt = now()
       const serialized = serializeError(finalError)
+      if (durableBinding && finalError instanceof OperationCancelledError) {
+        await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_cancelled' }, () => durableBinding!.finishCancelled(finalError))
+      }
       const log = finalError instanceof OperationCancelledError ? definition.logger.warn.bind(definition.logger) : definition.logger.error.bind(definition.logger)
       log('Harness workflow run failed.', {
         harness: definition.name,
@@ -762,8 +835,42 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
       throw finalError
     } finally {
+      // Releases the lease for a non-cancel failure so a retry with the same run
+      // id can resume; a no-op once the run was settled (success/cancel).
+      if (durableBinding) await durableBinding.dispose()
       runSignal.cleanup()
       state.busy = false
+    }
+  }
+
+  /** Pass-through step used when a workflow runs without durable execution. */
+  function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>): Promise<T> {
+    return fn()
+  }
+
+  /**
+   * Runs a durable finalization side effect (runtime finish / workspace lifecycle)
+   * without ever masking the primary run outcome (spec 21 §16.1 step 7).
+   */
+  async function guardDurableStep(
+    args: { sessionId: string; runId: string; workflowId: string; operation: string },
+    step: () => Promise<void>
+  ): Promise<void> {
+    try {
+      await step()
+    } catch (error) {
+      telemetry.recordCounter('harness.runs.durable_errors', 1, {
+        harness: definition.name,
+        'harness.run.durable.operation': args.operation
+      })
+      definition.logger.error('Durable finalization step failed; preserving run outcome.', {
+        harness: definition.name,
+        session_id: args.sessionId,
+        run_id: args.runId,
+        workflow_id: args.workflowId,
+        operation: args.operation,
+        error: serializeError(error)
+      })
     }
   }
 
@@ -1025,6 +1132,12 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
       } as unknown as JsonValue
     case 'stream.overflow':
       return { dropped: event.dropped }
+    default: {
+      // Exhaustiveness guard: adding a RunEvent variant without updating this
+      // sanitizer becomes a compile error instead of silently persisting undefined.
+      event satisfies never
+      return {}
+    }
   }
 }
 
@@ -1051,8 +1164,9 @@ function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<Run
 
 function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController()
-  const relay = () => controller.abort(parent?.reason)
+  const relay = () => controller.abort(runAbortReason(parent?.reason))
   if (parent) parent.addEventListener('abort', relay, { once: true })
+  if (parent?.aborted) relay()
   const timeout = timeoutMs && timeoutMs > 0
     ? setTimeout(() => controller.abort(new OperationTimeoutError('Run timed out.', { scope: 'run', timeout_ms: timeoutMs })), timeoutMs)
     : undefined
@@ -1068,10 +1182,12 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
 function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined): { signal: AbortSignal; cleanup: () => void } {
   if (!secondary) return { signal: primary, cleanup: () => undefined }
   const controller = new AbortController()
-  const relayPrimary = () => controller.abort(primary.reason)
-  const relaySecondary = () => controller.abort(secondary.reason)
+  const relayPrimary = () => controller.abort(runAbortReason(primary.reason))
+  const relaySecondary = () => controller.abort(runAbortReason(secondary.reason))
   primary.addEventListener('abort', relayPrimary, { once: true })
   secondary.addEventListener('abort', relaySecondary, { once: true })
+  if (primary.aborted) relayPrimary()
+  else if (secondary.aborted) relaySecondary()
   return {
     signal: controller.signal,
     cleanup: () => {
@@ -1079,4 +1195,9 @@ function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined
       secondary.removeEventListener('abort', relaySecondary)
     }
   }
+}
+
+function runAbortReason(reason: unknown): unknown {
+  if (reason instanceof OperationCancelledError || reason instanceof OperationTimeoutError) return reason
+  return new OperationCancelledError('Run was cancelled.', { scope: 'run' }, reason)
 }

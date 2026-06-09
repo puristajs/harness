@@ -5,7 +5,7 @@ servers. The harness supports two transport modes.
 
 | Mode | Use When | Execution Boundary |
 |---|---|---|
-| `mcp_stdio` | The MCP server is a local command. | Runs through `SandboxSession.exec`. |
+| `mcp_stdio` | The MCP server is a local command. | Persistent process via `SandboxSession.spawn` when available, else one-shot `SandboxSession.exec`. |
 | `mcp_http` | The MCP server is already running remotely or sidecar-local over HTTP. | Uses HTTP; no local process launch. |
 
 ## Transport Decision
@@ -21,10 +21,23 @@ flowchart TD
 
 ## Stdio Runs In The Sandbox
 
-`mcp_stdio` commands are executed through the active `SandboxSession.exec`.
-They must not be spawned directly from the host process. This keeps filesystem,
-network, timeout, cancellation, logging, and tracing policy aligned with the
-rest of the harness.
+`mcp_stdio` runs inside the active sandbox session — never spawned directly from
+the host process. This keeps filesystem, network, timeout, cancellation,
+logging, and tracing policy aligned with the rest of the harness. The transport
+adapts to the sandbox's capabilities:
+
+- **Persistent transport** — when the session advertises `sandbox.spawn`
+  (isolation backends such as Docker/e2b/microvm), the server is spawned **once**
+  and the MCP `initialize` handshake runs a single time. Every subsequent
+  `tools/list`/`tools/call` is multiplexed over the same long-lived pipe, so
+  **server-side session state is preserved across calls**. The process is killed
+  when the runner (or sandbox session) closes. If the process dies mid-call, the
+  call fails with `McpProtocolError{phase:'call'}` and the next call re-spawns and
+  re-initializes a fresh server.
+- **One-shot fallback** — when the session has only `exec` (the in-core
+  `bashSandbox()`), each call spawns the server, runs `initialize` + the single
+  request, and exits. This is leak-free but **stateless**: stateful servers need a
+  `sandbox.spawn`-capable sandbox, the HTTP runner, or a custom adapter.
 
 If the session sandbox has `executor: 'unavailable'`, stdio MCP fails with
 `SandboxNoExecutorError`.

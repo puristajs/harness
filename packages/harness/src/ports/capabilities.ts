@@ -17,6 +17,8 @@ export type AdapterCapability =
   | 'sandbox.resume'
   /** Sandbox can snapshot and release active compute. */
   | 'sandbox.hibernate'
+  /** Sandbox can host a long-lived process with streaming stdin/stdout. */
+  | 'sandbox.spawn'
   /** Runtime can commit stable checkpoints. */
   | 'runtime.checkpoint'
   /** Runtime can retry durable boundaries. */

@@ -1,7 +1,8 @@
 import { SpanStatusCode, context, metrics, propagation, trace } from '@opentelemetry/api'
 import { ATTR_ERROR_TYPE } from '@opentelemetry/semantic-conventions'
 import { HarnessError } from '../errors/index.js'
-import { sanitizeForLog } from '../errors/redaction.js'
+import { sanitizeForLog, sanitizeProviderBody } from '../errors/redaction.js'
+import { HARNESS_VERSION } from '../version.js'
 
 /** Attributes accepted by telemetry span/metric helpers. */
 export type SpanAttrs = Record<string, string | number | boolean | string[] | undefined>
@@ -48,12 +49,16 @@ function sanitizeAttrs(attrs: SpanAttrs): Record<string, AttrValue> {
 function errorAttributes(error: unknown): SpanAttrs {
   if (error instanceof HarnessError) {
     const meta = asRecord(error.meta)
-    const providerBody = meta ? jsonAttr(sanitizeForLog(meta['providerBody'])) : undefined
+    // Content-aware redaction so prompt/message/output content in a provider
+    // body never reaches a span, independent of content-capture mode.
+    const providerBody = meta ? jsonAttr(sanitizeProviderBody(meta['providerBody'])) : undefined
     return {
       [ATTR_ERROR_TYPE]: error.code,
       'harness.error.code': error.code,
       'harness.error.category': error.category,
       'harness.error.retriable': error.retriable,
+      'harness.error.scope': stringAttr(meta?.['scope']),
+      'harness.error.timeout_ms': numberAttr(meta?.['timeout_ms']),
       'harness.error.provider': stringAttr(meta?.['provider']),
       'harness.error.model': stringAttr(meta?.['model']),
       'harness.error.model_provider_status': numberAttr(meta?.['status']),
@@ -97,8 +102,8 @@ function jsonAttr(value: unknown): string | undefined {
 
 /** OpenTelemetry-backed implementation of {@link TelemetryShim}. */
 export class OtelTelemetryShim implements TelemetryShim {
-  private readonly tracer = trace.getTracer('@purista/harness')
-  private readonly meter = metrics.getMeter('@purista/harness')
+  private readonly tracer = trace.getTracer('@purista/harness', HARNESS_VERSION)
+  private readonly meter = metrics.getMeter('@purista/harness', HARNESS_VERSION)
   private readonly histograms = new Map<string, import('@opentelemetry/api').Histogram>()
   private readonly counters = new Map<string, import('@opentelemetry/api').Counter>()
 

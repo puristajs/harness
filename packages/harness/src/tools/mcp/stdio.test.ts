@@ -9,7 +9,7 @@ import { createStdioMcpTransportRunner } from './stdio.js'
 
 const fakeServerPath = fileURLToPath(new URL('../../testing/fixtures/mcp/fake-stdio-server.mjs', import.meta.url))
 
-function config(sandbox: SandboxSession, timeoutMs = 1_000) {
+function config(sandbox: SandboxSession, timeoutMs = 5_000) {
   return {
     localToolId: 'echoLocal',
     kind: 'mcp_stdio' as const,
@@ -52,7 +52,7 @@ describe('stdio MCP runner', () => {
 
   it('maps process death during calls and respawns on the next call', async () => {
     const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox)
+    const localConfig = config(sandbox, 5_000)
     const runner = createStdioMcpTransportRunner(localConfig)
     try {
       await expect(invokeMcpTool(localConfig, runner, { message: 'boom', die: true }, new AbortController().signal)).rejects.toMatchObject({

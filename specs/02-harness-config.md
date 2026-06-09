@@ -166,6 +166,8 @@ interface HarnessDefaults {
   skillTimeoutMs?: number
   /** Per-model-call timeout in ms. Default: 300_000. */
   modelTimeoutMs?: number
+  /** Max tool calls from one model response executed concurrently. Default: 8. */
+  maxParallelToolCalls?: number
   /**
    * Maximum number of conversation messages to pass into a model call.
    * `undefined` ⇒ pass all messages. `0` ⇒ pass system messages only.
@@ -194,6 +196,11 @@ interface ModelAlias {
   providerOptions?: Record<string, unknown>
 }
 ```
+
+Use `defaults.parallelToolCalls` on a model alias to request whether the provider
+may emit multiple tool calls in one model turn. This is the ergonomic path for
+agent loops because agents reference model aliases and do not need to know
+provider-specific payload names.
 
 Each key is the alias id referenced by agents. Validation:
 
@@ -348,6 +355,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `defaults.toolTimeoutMs`             | `120_000`                            |
 | `defaults.skillTimeoutMs`            | `60_000`                             |
 | `defaults.modelTimeoutMs`            | `300_000`                            |
+| `defaults.maxParallelToolCalls`      | `8`                                  |
 | `defaults.historyWindow`             | `undefined` (pass all messages)      |
 
 ## Validation rules summary (each thrown synchronously by the originating builder method)
@@ -361,10 +369,11 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 7. `defaults.runTimeoutMs === 0` disables the run timeout. Per-call timeouts must be > 0; negative values rejected. `InvokeOptions.timeoutMs` follows the same `>0/0/<0` rules: negative throws `ValidationError`.
 8. Default-loop agents need `'object'` capability on their alias; `'tool_use'` if any custom tools or any built-in tools enabled — checked in `.agents()`.
 9. `defaults.historyWindow`: `undefined`/`0`/positive int OK; negative → `HarnessConfigError`. Same rules apply to `InvokeOptions.historyWindow` (negative throws `ValidationError{where:'invoke_options'}`).
-10. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set MUST be in `[1, 64]`.
-11. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
-12. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
-13. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
+10. `defaults.maxParallelToolCalls` must be a positive integer. `1` forces sequential local execution of a model-returned tool batch.
+11. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set MUST be in `[1, 64]`.
+12. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
+13. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
+14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
 

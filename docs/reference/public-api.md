@@ -152,12 +152,25 @@ Streaming invokers yield `RunEvent` values:
 | `agent.started` / `agent.finished` | Agent lifecycle. |
 | `tool.started` / `tool.finished` | Tool lifecycle and normalized errors. |
 | `model.message` | Persisted model message metadata. |
+| `model.delta` | Text delta from a `textStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
+| `model.object.partial` | Structured partial from an `objectStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
+| `model.object` | Final object from the default agent `object(...)` call or an opted-in `objectStream(...)` finish chunk. |
 | `run.finished` | Final output or serialized error. |
 | `stream.overflow` | Stream buffer dropped old events. |
 
-`model.object.partial`, `model.object`,
-`model.embedding.completed`, and `model.rerank.completed` are provider-neutral
-runtime events when the configured provider path supports those operations.
+`text(...)` and `object(...)` are final request-response operations and do not
+produce partial run events. `textStream(...)` and `objectStream(...)` expose
+provider chunks directly to workflow or custom agent-handler code. Those chunks
+stay private to the run by default; harness mirrors supported chunks as
+provider-neutral run events only when that model stream call passes
+`{ emitRunEvents: true }`. `model.embedding.completed` and
+`model.rerank.completed` are provider-neutral runtime events when the configured
+provider path supports those operations.
+
+Harness-emitted opted-in model stream events include generated `streamId` and
+`modelAlias`. They also include `workflowId` and `agentId` when the stream call
+is made from that scope. `streamId` is unique to the model stream invocation, so
+parallel streams can be grouped independently.
 They remain harness events, not a Vercel stream protocol.
 
 ## Run Summary
@@ -255,6 +268,14 @@ interface ModelProvider {
 Use `object` and `object_stream` for structured outputs. Use `embeddings` and
 `rerank` for retrieval workflows; storage and retrieval policy stay outside
 core.
+
+Streaming methods return provider chunks to the caller. By default those chunks
+are internal to the workflow or custom agent handler. When a public-facing model
+stream should be forwarded through `session.*.stream(...)`, pass
+`{ emitRunEvents: true }` to that specific model stream call. Application
+SSE/WebSocket adapters can then forward a single run-event stream without
+treating provider protocols as public API, while owning any UI labels or
+client-facing event names.
 
 ## Error Families
 

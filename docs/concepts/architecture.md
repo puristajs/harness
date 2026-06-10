@@ -142,8 +142,10 @@ flowchart LR
 
 ## Event And Trace Shape
 
-All streaming APIs emit run events. Applications can render these events in a
-chat UI, run inspector, logs, or tests.
+Session streaming APIs emit run events. Applications can render these events in
+a chat UI, run inspector, logs, or tests. Model stream chunks consumed inside a
+workflow or custom agent handler stay internal unless that model stream call
+opts in with `{ emitRunEvents: true }`.
 
 ```mermaid
 flowchart TD

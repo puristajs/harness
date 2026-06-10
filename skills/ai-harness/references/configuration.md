@@ -132,8 +132,19 @@ Harness stream methods return typed `RunEvent` values:
 for await (const event of session.agents.triage.stream(input)) {
   if (event.type === 'tool.started') console.log(event.toolId)
   if (event.type === 'model.delta') process.stdout.write(event.delta)
+  if (event.type === 'model.object.partial') renderDraft(event.partial)
 }
 ```
+
+`prompt(...)`, `ctx.models.alias.text(...)`, and `ctx.models.alias.object(...)`
+return final results only. Consumed `textStream(...)` and `objectStream(...)`
+chunks stay private by default. To publish a specific public-facing stream
+through `session.*.stream(...)`, pass `{ emitRunEvents: true }` to that model
+stream call. Harness-emitted model stream events include a generated `streamId`,
+`modelAlias`, and available `workflowId` / `agentId`; UI labels and client event
+names belong in the application adapter. The default
+structured agent loop uses `object(...)`, so it emits final `model.object`
+events, not text deltas.
 
 Do not treat harness streams as a client HTTP protocol. Map `RunEvent` into application-owned SSE, WebSocket, or queue events at the integration edge.
 

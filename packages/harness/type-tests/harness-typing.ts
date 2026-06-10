@@ -126,6 +126,7 @@ const _validMemoryRequirement: AdapterCapability = 'memory.persistent'
 
 const capabilityRegistry = createModelRegistry({
   textOnly: { provider, model: 'type-test-model', capabilities: ['text'] },
+  streamReady: { provider, model: 'type-test-model', capabilities: ['text_stream'] },
   embeddingReady: { provider, model: 'type-test-model', capabilities: ['text', 'embeddings'] }
 })
 
@@ -139,6 +140,11 @@ capabilityRegistry['textOnly']!.embed({ input: 'hello' }, new AbortController().
 capabilityRegistry['embeddingReady']!.embed({ input: 'hello' }, new AbortController().signal)
 // @ts-expect-error rerank is not exposed unless the alias declares the rerank capability
 capabilityRegistry['embeddingReady']!.rerank({ query: 'hello', documents: [] }, new AbortController().signal)
+capabilityRegistry['streamReady']!.textStream({ messages: [] }, new AbortController().signal, { emitRunEvents: true })
+// @ts-expect-error streamId is harness-generated and not caller-provided
+capabilityRegistry['streamReady']!.textStream({ messages: [] }, new AbortController().signal, { emitRunEvents: true, streamId: 'public-answer' })
+// @ts-expect-error app-specific stream names belong in the integration layer
+capabilityRegistry['streamReady']!.textStream({ messages: [] }, new AbortController().signal, { emitRunEvents: true, streamKey: 'public-answer' })
 
 const richCapabilityRegistry = createModelRegistry({
   visionToolModel: { provider, model: 'type-test-model', capabilities: ['text', 'tool_use', 'vision_input'] }

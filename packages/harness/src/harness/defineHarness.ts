@@ -625,18 +625,26 @@ export interface RunSummary {
   error?: SerializedError
 }
 
-/** Harness streaming events emitted from `session.workflows.<id>.stream(...)`. */
+/**
+ * Harness streaming events emitted from `session.workflows.<id>.stream(...)`.
+ *
+ * `text(...)` and `object(...)` model calls return final results and do not
+ * expose partial output. Consumed model streams are private by default.
+ * `model.delta`, `model.object.partial`, and streamed `model.object` are
+ * emitted only when that `textStream(...)` or `objectStream(...)` call passes
+ * `{ emitRunEvents: true }`.
+ */
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
   | { type: 'agent.started'; runId: string; agentId: string; at: string }
   | { type: 'agent.finished'; runId: string; agentId: string; at: string; output?: JsonValue; error?: SerializedError }
-  | { type: 'model.delta'; runId: string; agentId: string; delta: string }
+  | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
   | { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.message'; runId: string; agentId: string; message: Message }
-  | { type: 'model.object.partial'; runId: string; agentId?: string; partial: JsonValue }
-  | { type: 'model.object'; runId: string; agentId?: string; object: JsonValue; usage?: TokenUsage }
+  | { type: 'model.object.partial'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; partial: JsonValue }
+  | { type: 'model.object'; runId: string; agentId?: string; workflowId?: string; modelAlias?: string; streamId?: string; object: JsonValue; usage?: TokenUsage }
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
   | { type: 'stream.overflow'; runId: string; at: string; dropped: number }

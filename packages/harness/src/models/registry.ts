@@ -31,11 +31,18 @@ import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { JsonValue } from './json.js'
 
 export interface ModelInvokeContext {
-  harnessName: string
-  sessionId: string
-  runId: string
+  /** Harness instance name used for telemetry and run-event attribution. */
+  harnessName?: string
+  /** Session id used for telemetry and run-event attribution. */
+  sessionId?: string
+  /** Run id used for telemetry and run-event attribution. */
+  runId?: string
+  /** Workflow id when the model call belongs to a workflow run. */
   workflowId?: string
+  /** Agent id when the model call belongs to an agent run. */
   agentId?: string
+  /** Mirrors consumed stream chunks into the enclosing session `RunEvent` stream. Defaults to false. */
+  emitRunEvents?: boolean
 }
 
 interface HandleRequest {

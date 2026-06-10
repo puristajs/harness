@@ -186,7 +186,8 @@ The harness package additionally has integration tests:
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
   3. Type tests assert capability-projected handles: absent operation capabilities remove methods; absent marker capabilities reject `tools`, tool-role messages, and unsupported content parts.
   4. `FakeModelProvider` covers text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
-  5. Persisted `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
+  5. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
+  6. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
 - Adapter capability policy:
   1. `.requires(...)` fails during `build()` when required adapter capabilities are missing.
   2. `harness.inspect()` returns only data and includes effective capabilities, required capabilities, and adapter descriptors.

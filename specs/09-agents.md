@@ -221,7 +221,7 @@ record from reaching a terminal state.
   `harness.error.scope` and `harness.error.timeout_ms` when present.
 - Histogram `harness.agent.iterations` (sample of total iterations).
 - Counter `harness.permission.denials` per denied tool call.
-- RunEvents: `agent.started`, `agent.finished`, `model.delta`/`model.message`, `model.object.partial`/`model.object` where structured output streaming is used, `tool.started`/`tool.finished`.
+- RunEvents: `agent.started`, `agent.finished`, `model.object`, opt-in stream events (`model.delta`, `model.object.partial`, streamed final `model.object`) where model stream calls publish chunks, `tool.started`/`tool.finished`.
 
 ## Errors
 

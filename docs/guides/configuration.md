@@ -114,7 +114,7 @@ Capabilities gate runtime calls:
 | `text` | Plain text generation. |
 | `text_stream` | Plain text streaming. |
 | `object` | Structured object generation validated against the requested schema. |
-| `object_stream` | Structured object streaming as typed provider chunks and harness run events. |
+| `object_stream` | Structured object streaming as typed provider chunks; run events are opt-in per stream call. |
 | `tool_use` | Model tool calling. |
 | `vision_input` | Image input understanding where adapter supports it. |
 | `audio_input` | Audio input understanding where adapter supports it. |

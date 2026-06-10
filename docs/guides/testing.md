@@ -62,6 +62,16 @@ expect(events).toContain('run.started')
 expect(events).toContain('run.finished')
 ```
 
+For model streaming behavior, queue provider stream chunks and assert both
+privacy modes. A consumed `textStream(...)` / `objectStream(...)` call should
+not produce model partial run events by default. A call with
+`{ emitRunEvents: true }` should produce `model.delta` for text streams and
+`model.object.partial` plus final `model.object` for object streams. Plain
+`text(...)` / `object(...)` calls should not produce partial events. For
+public stream tests, assert the grouping metadata too: generated `streamId`
+stability per stream invocation, distinct ids across parallel streams,
+`modelAlias`, and available `workflowId` / `agentId`.
+
 ## Test Tools
 
 Call TypeScript tool handlers with a small context object and a temporary store.

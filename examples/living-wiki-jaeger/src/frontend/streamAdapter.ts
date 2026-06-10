@@ -34,7 +34,9 @@ export type StreamUpdate =
 export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
   const updates: StreamUpdate[] = []
   if (event.type === 'stream.overflow') updates.push({ kind: 'overflow', dropped: Number(event.dropped ?? 0) })
-  if (event.type === 'answer.delta' && typeof event.delta === 'string') updates.push({ kind: 'answer_delta', delta: event.delta })
+  if ((event.type === 'model.delta' || event.type === 'answer.delta') && typeof event.delta === 'string') {
+    updates.push({ kind: 'answer_delta', delta: event.delta })
+  }
 
   if (event.type === 'tool.started') {
     updates.push({

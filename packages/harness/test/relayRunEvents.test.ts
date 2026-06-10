@@ -7,7 +7,7 @@ describe('relayRunEvents', () => {
     const out: RunEvent[] = []
     for await (const event of relayRunEvents(async (onEvent) => {
       await onEvent({ type: 'run.started', runId: 'r', at: 'now' })
-      await onEvent({ type: 'model.delta', runId: 'r', agentId: 'a', delta: 'x' })
+      await onEvent({ type: 'model.delta', runId: 'r', streamId: 's', agentId: 'a', delta: 'x' })
       await onEvent({ type: 'run.finished', runId: 'r', at: 'now', output: 'done' })
       return 'done'
     })) {
@@ -22,7 +22,7 @@ describe('relayRunEvents', () => {
     for await (const event of relayRunEvents((onEvent) => {
       // Push synchronously (no await) so the producer outruns the consumer and overflows.
       for (let i = 0; i < total; i += 1) {
-        void onEvent({ type: 'model.delta', runId: 'r', agentId: 'a', delta: String(i) })
+        void onEvent({ type: 'model.delta', runId: 'r', streamId: 's', agentId: 'a', delta: String(i) })
       }
       void onEvent({ type: 'run.finished', runId: 'r', at: 'now', output: 'done' })
       return Promise.resolve('done')

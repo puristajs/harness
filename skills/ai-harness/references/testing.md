@@ -108,6 +108,15 @@ expect(events.some((event) => event.type === 'run.started')).toBe(true)
 expect(events.some((event) => event.type === 'run.finished')).toBe(true)
 ```
 
+For model streaming, queue fake provider chunks and test both privacy modes.
+Consumed `textStream(...)` / `objectStream(...)` chunks emit no run-event
+partials by default. Calls that pass `{ emitRunEvents: true }` emit
+`model.delta`, `model.object.partial`, and streamed final `model.object`.
+`text(...)` / `object(...)` final calls emit no partials. Public stream tests
+should assert grouping metadata: generated `streamId` stability per stream
+invocation, distinct ids across parallel streams, `modelAlias`, and available
+`workflowId` / `agentId`.
+
 Test stream consumers against `RunEvent`, not provider-specific HTTP/SSE chunks. HTTP/SSE mapping belongs to the application integration layer.
 
 ## Adapter Failure Tests

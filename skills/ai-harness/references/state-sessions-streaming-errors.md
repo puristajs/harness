@@ -108,6 +108,7 @@ for await (const event of session.workflows.audit.stream(input)) {
     case 'tool.started':
     case 'tool.finished':
     case 'model.message':
+    case 'model.delta':
     case 'model.object.partial':
     case 'model.object':
     case 'model.embedding.completed':
@@ -120,7 +121,16 @@ for await (const event of session.workflows.audit.stream(input)) {
 }
 ```
 
-Ordering is lifecycle order for a single run. Streams are live observation. Persisted events support audit/history inspection, but recovery should use durable checkpoints, not stream cursors.
+Ordering is lifecycle order for a single run. Streams are live observation.
+`text(...)` and `object(...)` are final request-response model calls and do not
+emit partial run events. Consumed `textStream(...)` and `objectStream(...)`
+chunks stay private by default. They emit `model.delta`,
+`model.object.partial`, and streamed final `model.object` events only when that
+specific model stream call passes `{ emitRunEvents: true }`. Harness-emitted
+model stream events include a generated `streamId`, `modelAlias`, and available
+`workflowId` / `agentId`. UI labels, semantic buckets, and client event names
+belong in the application adapter. Persisted events support audit/history
+inspection, but recovery should use durable checkpoints, not stream cursors.
 
 Do not expose `RunEvent` directly as a provider protocol unless your application owns that contract. HTTP/SSE adapters should map harness events into client-facing event shapes.
 

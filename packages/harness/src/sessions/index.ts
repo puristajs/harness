@@ -44,10 +44,22 @@ import { HarnessConfigError } from '../errors/catalog.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
+import type { TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
 import { createMetrics, createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
+
+type ModelRunContext = {
+  harnessName: string
+  sessionId: string
+  runId: string
+  workflowId?: string
+  agentId?: string
+  emitRunEvents?: boolean
+  streamId?: string
+  modelAlias?: string
+}
 
 type HarnessDefinition<S extends BuilderState> = {
   name: string
@@ -542,7 +554,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           input,
           history: await definition.state.listMessages(sessionId),
           agent,
-          models: modelRegistry,
+          models: withRunEventModelRegistry(modelRegistry, {
+            harnessName: definition.name,
+            sessionId,
+            runId,
+            agentId
+          }, emit),
           skills: resolvedSkills as Record<string, ResolvedSkill>,
           customTools: definition.tools as ToolsConfig,
           mcpRegistry,
@@ -713,7 +730,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             signal: runSignal.signal,
             runId,
             sessionId,
-            models: modelRegistry,
+            models: withRunEventModelRegistry(modelRegistry, {
+              harnessName: definition.name,
+              sessionId,
+              runId,
+              workflowId
+            }, emit),
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
@@ -744,7 +766,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       input: agentInput,
                       history: await definition.state.listMessages(sessionId),
                       agent: agent as AgentDefinition<S>,
-                      models: modelRegistry,
+                      models: withRunEventModelRegistry(modelRegistry, {
+                        harnessName: definition.name,
+                        sessionId,
+                        runId,
+                        workflowId,
+                        agentId
+                      }, emit),
                       skills: resolvedSkills as Record<string, ResolvedSkill>,
                       customTools: definition.tools as ToolsConfig,
                       mcpRegistry,
@@ -919,6 +947,138 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
     }
   }
+}
+
+function withRunEventModelRegistry<M extends Record<string, unknown>>(
+  models: M,
+  context: ModelRunContext,
+  emitEvent: (event: RunEvent) => Promise<void>
+): M {
+  return Object.fromEntries(
+    Object.entries(models).map(([alias, handle]) => [alias, withRunEventModelHandle(alias, handle, context, emitEvent)])
+  ) as M
+}
+
+function withRunEventModelHandle(
+  alias: string,
+  handle: unknown,
+  context: ModelRunContext,
+  emitEvent: (event: RunEvent) => Promise<void>
+): unknown {
+  if (!handle || typeof handle !== 'object') return handle
+  const source = handle as Record<string, unknown>
+  const wrapped: Record<string, unknown> = { ...source }
+
+  for (const method of ['text', 'object', 'embed', 'rerank'] as const) {
+    const fn = source[method]
+    if (typeof fn !== 'function') continue
+    wrapped[method] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) =>
+      fn.call(source, req, signal, mergeModelRunContext(context, ctx))
+  }
+
+  const textStream = source['textStream']
+  if (typeof textStream === 'function') {
+    wrapped['textStream'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const streamContext = modelStreamRunContext(context, ctx, alias)
+      return emitTextStreamRunEvents(
+        textStream.call(source, req, signal, streamContext) as AsyncIterable<unknown>,
+        streamContext,
+        emitEvent
+      )
+    }
+  }
+
+  const objectStream = source['objectStream']
+  if (typeof objectStream === 'function') {
+    wrapped['objectStream'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const streamContext = modelStreamRunContext(context, ctx, alias)
+      return emitObjectStreamRunEvents(
+        objectStream.call(source, req, signal, streamContext) as AsyncIterable<unknown>,
+        streamContext,
+        emitEvent
+      )
+    }
+  }
+
+  return wrapped
+}
+
+function mergeModelRunContext(context: ModelRunContext, override: Partial<ModelRunContext> | undefined): ModelRunContext {
+  return { ...context, ...(override ?? {}) }
+}
+
+function modelStreamRunContext(context: ModelRunContext, override: Partial<ModelRunContext> | undefined, alias: string): ModelRunContext {
+  const merged = mergeModelRunContext(context, override)
+  return {
+    ...merged,
+    modelAlias: alias,
+    ...(merged.emitRunEvents === true ? { streamId: `model_${ulid()}` } : {})
+  }
+}
+
+async function* emitTextStreamRunEvents(
+  stream: AsyncIterable<unknown>,
+  context: ModelRunContext,
+  emitEvent: (event: RunEvent) => Promise<void>
+): AsyncIterable<unknown> {
+  for await (const chunk of stream) {
+    if (context.emitRunEvents === true && isTextDeltaChunk(chunk)) {
+      await emitEvent({
+        type: 'model.delta',
+        runId: context.runId,
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        ...(context.modelAlias ? { modelAlias: context.modelAlias } : {}),
+        streamId: context.streamId!,
+        delta: chunk.text
+      })
+    }
+    yield chunk
+  }
+}
+
+async function* emitObjectStreamRunEvents(
+  stream: AsyncIterable<unknown>,
+  context: ModelRunContext,
+  emitEvent: (event: RunEvent) => Promise<void>
+): AsyncIterable<unknown> {
+  for await (const chunk of stream) {
+    if (context.emitRunEvents === true && isObjectPartialChunk(chunk)) {
+      await emitEvent({
+        type: 'model.object.partial',
+        runId: context.runId,
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        ...(context.modelAlias ? { modelAlias: context.modelAlias } : {}),
+        streamId: context.streamId!,
+        partial: chunk.partial
+      })
+    } else if (context.emitRunEvents === true && isObjectFinishChunk(chunk)) {
+      await emitEvent({
+        type: 'model.object',
+        runId: context.runId,
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        ...(context.modelAlias ? { modelAlias: context.modelAlias } : {}),
+        ...(context.streamId ? { streamId: context.streamId } : {}),
+        object: chunk.object,
+        ...(chunk.usage ? { usage: chunk.usage } : {})
+      })
+    }
+    yield chunk
+  }
+}
+
+function isTextDeltaChunk(chunk: unknown): chunk is { kind: 'delta'; text: string } {
+  return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'delta' && typeof (chunk as { text?: unknown }).text === 'string')
+}
+
+function isObjectPartialChunk(chunk: unknown): chunk is { kind: 'partial'; partial: JsonValue } {
+  return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'partial')
+}
+
+function isObjectFinishChunk(chunk: unknown): chunk is { kind: 'finish'; object: JsonValue; usage?: TokenUsage } {
+  return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'finish' && Object.prototype.hasOwnProperty.call(chunk, 'object'))
 }
 
 function configureHarnessAdapters(
@@ -1107,12 +1267,12 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
     case 'model.message':
       return { agentId: event.agentId, message: '[redacted]' }
     case 'model.delta':
-      return { agentId: event.agentId, delta: '[redacted]' }
+      return { ...modelStreamEventMeta(event), delta: '[redacted]' }
     case 'model.object.partial':
-      return { ...(event.agentId ? { agentId: event.agentId } : {}), partial: '[redacted]' }
+      return { ...modelStreamEventMeta(event), partial: '[redacted]' }
     case 'model.object':
       return {
-        ...(event.agentId ? { agentId: event.agentId } : {}),
+        ...modelStreamEventMeta(event),
         object: '[redacted]',
         ...(event.usage ? { usage: event.usage } : {})
       } as unknown as JsonValue
@@ -1138,6 +1298,15 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
       event satisfies never
       return {}
     }
+  }
+}
+
+function modelStreamEventMeta(event: Extract<RunEvent, { type: 'model.delta' | 'model.object.partial' | 'model.object' }>): Record<string, string> {
+  return {
+    ...(event.agentId ? { agentId: event.agentId } : {}),
+    ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+    ...(event.modelAlias ? { modelAlias: event.modelAlias } : {}),
+    ...(event.streamId ? { streamId: event.streamId } : {})
   }
 }
 

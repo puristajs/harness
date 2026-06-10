@@ -154,7 +154,10 @@ Workflow outputs can include:
 
 These artifacts are produced from typed object outputs and deterministic
 workflow code. The example observes runs with harness `RunEvent` values over
-SSE; it does not depend on a provider-specific stream protocol.
+SSE; it does not depend on a provider-specific stream protocol. The frontend
+stream adapter accepts canonical `model.delta` events from model stream calls
+that opt in with `{ emitRunEvents: true }` and the example's synthetic
+`answer.delta` fallback for default final-object agent responses.
 
 The app works without draw.io MCP. It generates local Mermaid and draw.io XML
 fallback artifacts by default.

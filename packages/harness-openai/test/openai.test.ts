@@ -567,6 +567,53 @@ describe('openai provider factory', () => {
     })
   })
 
+  it('does not send chat completions stream_options to Responses API streaming', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    async function* chunks() {
+      yield { type: 'response.output_text.delta', delta: 'hello' }
+      yield {
+        type: 'response.completed',
+        response: {
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'hello' }] }],
+          usage: { input_tokens: 3, output_tokens: 2 },
+          status: 'completed'
+        }
+      }
+    }
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async (payload: any, options: any) => {
+            calls.push({ payload, options })
+            return chunks()
+          }
+        }
+      } as any
+    })
+
+    const out: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: mockSignal()
+    })) {
+      out.push(chunk)
+    }
+
+    expect(calls[0]?.payload).toMatchObject({
+      model: 'gpt-5.5',
+      stream: true
+    })
+    expect(calls[0]?.payload.stream_options).toBeUndefined()
+    expect(out).toContainEqual({ kind: 'delta', text: 'hello' })
+    expect(out.find((chunk) => chunk.kind === 'finish')).toMatchObject({
+      usage: { totalTokens: 5 },
+      finishReason: 'stop'
+    })
+  })
+
   it('accumulates fragmented streaming tool calls, usage, and finish reason', async () => {
     let payload: any
     async function* chunks() {

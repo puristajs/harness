@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-azure-foundry",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Azure AI Foundry model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",

@@ -112,6 +112,10 @@ export abstract class BaseModelProvider implements ModelProvider {
     throw this.methodMissing('rerank')
   }
 
+  protected getLogger(): Logger | undefined {
+    return this.logger
+  }
+
   protected normalizeError(error: unknown, method: ProviderMethod, req: ProviderRequest): HarnessError {
     if (error instanceof HarnessError) return error
     if (req.signal.aborted || isAbortError(error)) {

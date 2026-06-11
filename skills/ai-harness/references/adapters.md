@@ -148,11 +148,12 @@ openai({
   apiKey: process.env.OPENAI_API_KEY!,
   baseURL: process.env.OPENAI_BASE_URL,
   organization: process.env.OPENAI_ORG,
-  project: process.env.OPENAI_PROJECT
+  project: process.env.OPENAI_PROJECT,
+  api: 'responses'
 })
 ```
 
-The OpenAI adapter supports chat-completions style text/object operations and embeddings. Declare only the capabilities the selected model and endpoint support.
+The OpenAI adapter supports chat-completions style text/object operations, Responses API text/object operations, and embeddings. `api` defaults to `chat_completions` for OpenAI-compatible endpoints. Use `api: 'responses'` for OpenAI reasoning models that require `/v1/responses` when function tools and `providerOptions.reasoning_effort` are used. On Chat Completions, `reasoning_effort` is dropped with a warning when tools are present.
 
 The adapter inherits harness logger, telemetry, and model timeout through `BaseModelProvider` unless explicit adapter options override them.
 

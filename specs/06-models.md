@@ -171,7 +171,7 @@ interface ModelCallOptions {
 type ModelMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[] }
+  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerItems?: ProviderItems }
   | { role: 'tool'; toolCallId: string; content: string }
 
 type ContentPart =
@@ -187,7 +187,32 @@ interface ToolCallSpec {
   name: string
   arguments: JsonValue
 }
+
+interface ProviderItems {
+  providerId: string                      // ModelProvider.id that produced the items
+  items: JsonValue[]                      // opaque provider wire items, replayed verbatim
+}
 ```
+
+Provider round-trip items:
+
+- Some provider APIs return stateful output items alongside tool calls that
+  the provider officially recommends passing back verbatim on the follow-up
+  request of the same turn (e.g. OpenAI Responses API reasoning items, which
+  OpenAI documents as required context for reasoning models between a
+  function call and its output).
+- Adapters for such APIs return the turn's raw output items on tool-call
+  responses as `providerItems`, tagged with their own provider id. The agent
+  loop attaches `providerItems` unchanged to the assistant tool-call message
+  of the follow-up round.
+- When building a provider request, an adapter replays `providerItems.items`
+  verbatim in place of reconstructing the assistant turn — but only when
+  `providerItems.providerId` matches its own provider id and `items` is
+  non-empty. Foreign or empty `providerItems` are ignored and the assistant
+  turn is reconstructed provider-neutrally from `content`/`toolCalls`.
+- `providerItems` are scoped to one turn's tool loop. They are not persisted
+  to session history; after the turn ends with a final response, they are
+  discarded.
 
 Content-part capability rules:
 
@@ -210,6 +235,7 @@ interface TextRequest extends BaseRequest {
 interface TextResponse {
   content: string
   toolCalls?: ToolCallSpec[]
+  providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
   raw?: unknown
@@ -217,7 +243,7 @@ interface TextResponse {
 type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
 
 type FinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'error'
 interface TokenUsage { inputTokens: number; outputTokens: number; totalTokens: number }
@@ -240,6 +266,7 @@ interface ObjectRequest<T = JsonValue> extends BaseRequest {
 interface ObjectResponse<T = JsonValue> {
   object: T
   toolCalls?: ToolCallSpec[]
+  providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
   raw?: unknown
@@ -248,7 +275,7 @@ type ObjectStreamChunk<T = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
 ```
 
 The harness validates final objects against the requested schema when a schema

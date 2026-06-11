@@ -113,7 +113,10 @@ endpoints. Set `api: 'responses'` for OpenAI reasoning models that require the
 Responses API when using function tools with `providerOptions.reasoning_effort`
 for models such as `gpt-5.5`. On the Chat Completions path, the adapter drops
 `reasoning_effort` when tools are present and emits a warning instead of
-letting the provider reject the request.
+letting the provider reject the request. On the Responses API, tool-call
+responses carry the turn's raw output items as `providerItems`; the agent loop
+replays them on the follow-up round so reasoning items reach the model again,
+as OpenAI recommends for reasoning models with manually managed state.
 
 Capabilities gate runtime calls:
 

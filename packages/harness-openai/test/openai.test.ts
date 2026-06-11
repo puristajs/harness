@@ -504,6 +504,210 @@ describe('openai provider factory', () => {
     })
   })
 
+  it('captures Responses API output items on tool-call responses as providerItems', async () => {
+    const output = [
+      { type: 'reasoning', id: 'rs_1', summary: [] },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
+    ]
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async () => ({
+            output,
+            usage: { input_tokens: 4, output_tokens: 2 },
+            status: 'completed'
+          })
+        }
+      } as any
+    })
+
+    const response = await provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'use a tool' }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(response.toolCalls).toEqual([{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }])
+    expect(response.providerItems).toEqual({ providerId: 'openai', items: output })
+  })
+
+  it('omits providerItems on Responses API responses without tool calls', async () => {
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async () => ({
+            output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'hello', annotations: [] }] }],
+            usage: { input_tokens: 4, output_tokens: 2 },
+            status: 'completed'
+          })
+        }
+      } as any
+    })
+
+    const response = await provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: mockSignal()
+    })
+
+    expect(response.providerItems).toBeUndefined()
+  })
+
+  it('replays own providerItems verbatim instead of reconstructing the assistant turn', async () => {
+    const turnItems = [
+      { type: 'reasoning', id: 'rs_1', summary: [] },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
+    ]
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async (payload: any, options: any) => {
+            calls.push({ payload, options })
+            return {
+              output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'done', annotations: [] }] }],
+              usage: { input_tokens: 4, output_tokens: 2 },
+              status: 'completed'
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'use a tool' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }],
+          providerItems: { providerId: 'openai', items: turnItems }
+        },
+        { role: 'tool', toolCallId: 'call_1', content: '{"answer":42}' }
+      ],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'use a tool' },
+      ...turnItems,
+      { type: 'function_call_output', call_id: 'call_1', output: '{"answer":42}' }
+    ])
+  })
+
+  it('ignores foreign providerItems and reconstructs the assistant turn', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async (payload: any, options: any) => {
+            calls.push({ payload, options })
+            return {
+              output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'done', annotations: [] }] }],
+              usage: { input_tokens: 4, output_tokens: 2 },
+              status: 'completed'
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'use a tool' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }],
+          providerItems: { providerId: 'anthropic', items: [{ type: 'thinking', thinking: 'hmm' }] }
+        },
+        { role: 'tool', toolCallId: 'call_1', content: '{"answer":42}' }
+      ],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'use a tool' },
+      { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"answer":42}' }
+    ])
+  })
+
+  it('reconstructs Responses API tool-call round-trip input without a function_call item id', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async (payload: any, options: any) => {
+            calls.push({ payload, options })
+            return {
+              output: [
+                {
+                  type: 'message',
+                  content: [{ type: 'output_text', text: 'done', annotations: [] }],
+                  status: 'completed',
+                  role: 'assistant'
+                }
+              ],
+              usage: { input_tokens: 4, output_tokens: 2 },
+              status: 'completed'
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'read a page' },
+        {
+          role: 'assistant',
+          content: 'Looking it up.',
+          toolCalls: [
+            { id: 'call_1', name: 'read_wiki_page', arguments: { slug: 'agent-harness' } },
+            { id: 'call_2', name: 'search_docs', arguments: { query: 'harness' } }
+          ]
+        },
+        { role: 'tool', toolCallId: 'call_1', content: '{"title":"Agent Harness"}' },
+        { role: 'tool', toolCallId: 'call_2', content: '{"hits":[]}' }
+      ],
+      tools: [
+        { name: 'read_wiki_page', description: 'Read one page.', parameters: { type: 'object' } },
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'read a page' },
+      { type: 'message', role: 'assistant', content: 'Looking it up.' },
+      { type: 'function_call', call_id: 'call_1', name: 'read_wiki_page', arguments: '{"slug":"agent-harness"}' },
+      { type: 'function_call', call_id: 'call_2', name: 'search_docs', arguments: '{"query":"harness"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"title":"Agent Harness"}' },
+      { type: 'function_call_output', call_id: 'call_2', output: '{"hits":[]}' }
+    ])
+    // The Responses API rejects `call_…` values as the `function_call` item id.
+    for (const item of calls[0]?.payload.input.filter((entry: any) => entry.type === 'function_call')) {
+      expect('id' in item).toBe(false)
+    }
+  })
+
   it('maps streamed Responses API function calls using call_id', async () => {
     async function* chunks() {
       yield {
@@ -532,7 +736,10 @@ describe('openai provider factory', () => {
       yield {
         type: 'response.completed',
         response: {
-          output: [{ type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}' }],
+          output: [
+            { type: 'reasoning', id: 'rs_1', summary: [] },
+            { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
+          ],
           usage: { input_tokens: 5, output_tokens: 2 },
           status: 'completed'
         }
@@ -563,7 +770,63 @@ describe('openai provider factory', () => {
     })
     expect(out.find((chunk) => chunk.kind === 'finish')).toMatchObject({
       usage: { totalTokens: 7 },
-      finishReason: 'tool_calls'
+      finishReason: 'tool_calls',
+      providerItems: {
+        providerId: 'openai',
+        items: [
+          { type: 'reasoning', id: 'rs_1', summary: [] },
+          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
+        ]
+      }
+    })
+  })
+
+  it('rejects streamed Responses API function calls that never carry a call_id', async () => {
+    async function* chunks() {
+      // No response.output_item.added: the only id available is the `fc_…`
+      // item id from the arguments.done event, which must never be used as
+      // the tool-call id.
+      yield {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        item_id: 'fc_1',
+        name: 'lookup',
+        arguments: '{"query":"hi"}'
+      }
+      yield {
+        type: 'response.completed',
+        response: {
+          output: [],
+          usage: { input_tokens: 5, output_tokens: 2 },
+          status: 'completed'
+        }
+      }
+    }
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => chunks() }
+      } as any
+    })
+
+    await expect(async () => {
+      for await (const _chunk of provider.textStream!({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'use a tool' }],
+        tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+        signal: mockSignal()
+      })) {
+        // consume the stream to force tool-call finalization
+      }
+    }).rejects.toMatchObject({
+      constructor: ModelError,
+      meta: {
+        provider: 'openai',
+        model: 'gpt-5.5',
+        method: 'textStream',
+        reason: 'malformed_response'
+      }
     })
   })
 

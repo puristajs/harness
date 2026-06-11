@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-anthropic",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Anthropic model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",

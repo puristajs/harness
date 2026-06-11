@@ -20,6 +20,7 @@ import type {
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
+  ProviderItems,
   RerankRequest,
   RerankResponse,
   TextRequest,
@@ -75,7 +76,7 @@ type ToolInputFor<A> = HasCapability<A, 'tool_use'> extends true ? { tools?: Mod
 type ModelMessageFor<A> =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPartFor<A>[] }
-  | ({ role: 'assistant'; content: string | ContentPartFor<A>[] } & ToolCallsFor<A>)
+  | ({ role: 'assistant'; content: string | ContentPartFor<A>[]; providerItems?: ProviderItems } & ToolCallsFor<A>)
   | (HasCapability<A, 'tool_use'> extends true ? { role: 'tool'; toolCallId: string; content: string } : never)
 type TextRequestInputFor<A> = Omit<TextRequest, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
   messages: ModelMessageFor<A>[]

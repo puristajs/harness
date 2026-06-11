@@ -145,7 +145,7 @@ When `handler` is undefined, the harness executes this algorithm:
      - Validate tool input against the tool schema. On failure, append a tool result with `error: ValidationError`.
      - Execute the tool (with timeout). On error, append the tool result with the serialized error.
      - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
-     - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order.
+     - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
    - e. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
 7. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
 

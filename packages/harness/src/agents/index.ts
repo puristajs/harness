@@ -311,7 +311,9 @@ async function runDefaultAgentInner(args: {
         timestamp: new Date().toISOString()
       }
       emitted.push(assistantMsg)
-      modelMessages.push({ role: 'assistant', content: assistantMsg.content, toolCalls })
+      // Provider round-trip items (e.g. OpenAI Responses reasoning items) stay
+      // local to the loop; they are replayed on the next round, not persisted.
+      modelMessages.push({ role: 'assistant', content: assistantMsg.content, toolCalls, ...(response.providerItems ? { providerItems: response.providerItems } : {}) })
 
       args.metrics.histogram('harness.agent.tool_batch.size', toolCalls.length, {
         'harness.agent.tool_batch.max_parallel': args.maxParallelToolCalls

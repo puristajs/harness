@@ -55,6 +55,42 @@ it('enforces maxSteps in default agent loop', async () => {
   await expect(s.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(AgentLoopBudgetError)
 })
 
+it('replays model providerItems on the next agent loop round without persisting them', async () => {
+  const model = new FakeModelProvider()
+  const providerItems = {
+    providerId: 'fake',
+    items: [{ type: 'reasoning', id: 'rs_1' }, { type: 'function_call', id: 'fc_1', call_id: 'c1' }]
+  }
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'c1', name: 'read', arguments: { path: '/workspace/a.txt' } }],
+    providerItems,
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = await defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({})
+    .skills({})
+    .agents({ a1: { model: 'fast', instructions: 'x' } })
+    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .build()
+
+  const s = await harness.getSession('s1')
+  await s.workflows.wf.prompt('hello')
+
+  const secondRound = model.requests[1] as ObjectRequest
+  const assistantTurn = secondRound.messages.find((m) => m.role === 'assistant')
+  expect(assistantTurn).toMatchObject({ role: 'assistant', providerItems })
+  const persisted = await s.history.list()
+  for (const message of persisted) {
+    expect('providerItems' in message).toBe(false)
+  }
+})
+
 it('session busy guard and memory file semantics', async () => {
   const model = new FakeModelProvider()
   model.enqueue({ object: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })

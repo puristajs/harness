@@ -54,6 +54,18 @@ export interface ToolCallSpec {
   arguments: JsonValue
 }
 
+/**
+ * Opaque provider wire items returned with a tool-call response and replayed
+ * verbatim on the follow-up request of the same turn (e.g. OpenAI Responses
+ * API reasoning items). Adapters only replay items tagged with their own
+ * provider id; foreign or empty items are ignored and the assistant turn is
+ * reconstructed provider-neutrally from `content`/`toolCalls`.
+ */
+export interface ProviderItems {
+  providerId: string
+  items: JsonValue[]
+}
+
 /** Multimodal message content part. */
 export type ContentPart =
   /** Plain text input content. */
@@ -97,7 +109,7 @@ export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
 export type ModelMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[] }
+  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerItems?: ProviderItems }
   | { role: 'tool'; toolCallId: string; content: string }
 
 /** Base request shape for all model-provider methods. */
@@ -146,6 +158,7 @@ export interface TextRequest extends BaseRequest {
 export interface TextResponse {
   content: string
   toolCalls?: ToolCallSpec[]
+  providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
   raw?: unknown
@@ -155,7 +168,7 @@ export interface TextResponse {
 export type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
 
 /** Request for object/object-stream model methods. */
 export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequest {
@@ -168,6 +181,7 @@ export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequ
 export interface ObjectResponse<T extends JsonValue = JsonValue> {
   object: T
   toolCalls?: ToolCallSpec[]
+  providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
   raw?: unknown
@@ -178,7 +192,7 @@ export type ObjectStreamChunk<T extends JsonValue = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
 
 /** Request for embedding generation. */
 export interface EmbeddingRequest {

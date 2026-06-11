@@ -177,6 +177,7 @@ export interface ModelCallOptions
 export type ModelMessage
 export type ContentPart
 export interface ToolCallSpec
+export interface ProviderItems
 export interface ModelToolSpec
 export interface TextRequest
 export interface TextResponse

@@ -43,6 +43,14 @@ the adapter drops `reasoning_effort` and emits a warning instead of sending a
 request that OpenAI rejects. Use `api: 'responses'` when you need reasoning
 effort and tool calls together.
 
+On the Responses API, tool-call responses carry the turn's raw output items
+(including reasoning items) as `providerItems`. The harness agent loop passes
+them back on the follow-up round and the adapter echoes them verbatim, as
+OpenAI recommends for reasoning models with manually managed conversation
+state. For stateless requests (`store: false`), additionally set
+`providerOptions: { store: false, include: ['reasoning.encrypted_content'] }`
+so the encrypted reasoning content rides along in the replayed items.
+
 ## Package Format
 
 This package is ESM-only and ships compiled JavaScript plus TypeScript

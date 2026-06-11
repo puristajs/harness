@@ -7,6 +7,7 @@ import type {
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
+  ProviderItems,
   TextRequest,
   TextResponse,
   TextStreamChunk,
@@ -148,9 +149,11 @@ class OpenAiModelProvider extends BaseModelProvider {
         const response = await createResponse(this.client, req, false)
         const content = extractResponsesText(response)
         const toolCalls = extractResponsesToolCalls(response, req, 'object')
+        const providerItems = toResponsesProviderItems(response.output, toolCalls)
         return {
           object: parseJson(content || '{}', req, 'object') as T,
           ...(toolCalls ? { toolCalls } : {}),
+          ...(providerItems ? { providerItems } : {}),
           usage: toResponsesUsage(response.usage),
           finishReason: toResponsesFinishReason(response),
           raw: response
@@ -441,6 +444,14 @@ function toResponsesInput(messages: ModelMessage[]): any[] {
       continue
     }
 
+    if (message.role === 'assistant' && message.providerItems?.providerId === 'openai' && message.providerItems.items.length > 0) {
+      // Echo the captured turn (reasoning, message, and function_call items)
+      // verbatim, as the Responses API expects for manually managed state.
+      // Foreign provider items fall through to provider-neutral reconstruction.
+      input.push(...message.providerItems.items)
+      continue
+    }
+
     if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
       if (typeof message.content === 'string' && message.content.length > 0) {
         input.push({
@@ -528,19 +539,35 @@ function toResponsesTools(tools: TextRequest['tools'] | ObjectRequest['tools']):
 
 function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse {
   const toolCalls = extractResponsesToolCalls(response, req, 'text')
+  const providerItems = toResponsesProviderItems(response.output, toolCalls)
   return {
     content: extractResponsesText(response),
     ...(toolCalls ? { toolCalls } : {}),
+    ...(providerItems ? { providerItems } : {}),
     usage: toResponsesUsage(response.usage),
     finishReason: toResponsesFinishReason(response),
     raw: response
   }
 }
 
+/**
+ * Captures the turn's raw Responses output items on tool-call responses so
+ * they can be replayed verbatim on the follow-up round. OpenAI requires
+ * reasoning items returned with tool calls to be passed back with the tool
+ * outputs for reasoning models; echoing `response.output` unchanged is the
+ * pattern documented in the Responses migration guide.
+ */
+function toResponsesProviderItems(output: unknown, toolCalls: ToolCallSpec[] | undefined): ProviderItems | undefined {
+  if (!toolCalls || toolCalls.length === 0) return undefined
+  if (!Array.isArray(output) || output.length === 0) return undefined
+  return { providerId: 'openai', items: output as JsonValue[] }
+}
+
 async function* streamResponsesText(client: any, req: TextRequest): AsyncIterable<TextStreamChunk> {
   const stream = await createResponse(client, req, true)
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
+  let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
   for await (const event of stream) {
@@ -556,15 +583,18 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
     } else if (event.type === 'response.completed') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
+      completedOutput = event.response?.output
     } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
       finishReason = 'error'
     }
   }
 
-  for (const call of finalizeResponsesStreamToolCalls(toolState, req, 'textStream')) {
+  const toolCalls = finalizeResponsesStreamToolCalls(toolState, req, 'textStream')
+  for (const call of toolCalls) {
     yield { kind: 'tool_call', call }
   }
-  yield { kind: 'finish', usage, finishReason }
+  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
+  yield { kind: 'finish', usage, finishReason, ...(providerItems ? { providerItems } : {}) }
 }
 
 async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: any, req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
@@ -572,6 +602,7 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
   let partial = ''
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
+  let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
   for await (const event of stream) {
@@ -588,16 +619,19 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
     } else if (event.type === 'response.completed') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
+      completedOutput = event.response?.output
     } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
       finishReason = 'error'
     }
   }
 
-  for (const call of finalizeResponsesStreamToolCalls(toolState, req, 'objectStream')) {
+  const toolCalls = finalizeResponsesStreamToolCalls(toolState, req, 'objectStream')
+  for (const call of toolCalls) {
     yield { kind: 'tool_call', call }
   }
   const object = parseJson(partial || '{}', req, 'objectStream') as T
-  yield { kind: 'finish', object, usage, finishReason }
+  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
+  yield { kind: 'finish', object, usage, finishReason, ...(providerItems ? { providerItems } : {}) }
 }
 
 function extractResponsesText(response: any): string {

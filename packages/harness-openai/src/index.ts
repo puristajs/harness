@@ -318,7 +318,6 @@ async function createResponse(client: any, req: ChatRequest, stream: boolean): P
     model: req.model,
     input: toResponsesInput(req.messages),
     stream,
-    ...(stream ? { stream_options: { include_usage: true } } : {}),
     tools: toResponsesTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
     max_output_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,

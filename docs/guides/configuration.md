@@ -62,7 +62,8 @@ flowchart LR
       apiKey: process.env.OPENAI_API_KEY!,
       baseURL: process.env.OPENAI_BASE_URL,
       organization: process.env.OPENAI_ORG,
-      project: process.env.OPENAI_PROJECT
+      project: process.env.OPENAI_PROJECT,
+      api: 'responses'
     }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     capabilities: ['object', 'tool_use'],
@@ -106,6 +107,13 @@ import { azureFoundry } from '@purista/harness-azure-foundry'
   }
 })
 ```
+
+`@purista/harness-openai` defaults to Chat Completions for OpenAI-compatible
+endpoints. Set `api: 'responses'` for OpenAI reasoning models that require the
+Responses API when using function tools with `providerOptions.reasoning_effort`
+for models such as `gpt-5.5`. On the Chat Completions path, the adapter drops
+`reasoning_effort` when tools are present and emits a warning instead of
+letting the provider reject the request.
 
 Capabilities gate runtime calls:
 

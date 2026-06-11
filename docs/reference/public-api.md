@@ -360,13 +360,21 @@ import { openai } from '@purista/harness-openai'
 
 const provider = openai({
   apiKey: process.env.OPENAI_API_KEY!,
-  baseURL: process.env.OPENAI_BASE_URL
+  baseURL: process.env.OPENAI_BASE_URL,
+  api: 'responses'
 })
 ```
 
 The adapter extends `BaseModelProvider`, inherits harness logger/telemetry, and
 normalizes provider HTTP/network errors into `ModelError` with actionable
 metadata.
+
+`api` selects the OpenAI generation surface: `chat_completions` is the default
+for OpenAI-compatible endpoints, while `responses` routes text/object calls
+through `client.responses.create()`. Use `responses` for reasoning models that
+need function tools with `providerOptions.reasoning_effort`. On
+`chat_completions`, `reasoning_effort` is dropped with a warning when tools are
+present.
 
 ## Provider Addons
 

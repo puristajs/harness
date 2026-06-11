@@ -32,7 +32,8 @@ import { openai } from '@purista/harness-openai'
       apiKey: process.env.OPENAI_API_KEY!,
       baseURL: process.env.OPENAI_BASE_URL,
       organization: process.env.OPENAI_ORG,
-      project: process.env.OPENAI_PROJECT
+      project: process.env.OPENAI_PROJECT,
+      api: 'responses'
     }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     capabilities: ['object', 'tool_use'],
@@ -46,7 +47,7 @@ import { openai } from '@purista/harness-openai'
 })
 ```
 
-Provider factory options are OpenAI SDK `ClientOptions` plus optional `client`, `harnessLogger`, `telemetry`, and `harnessTimeoutMs` for tests or adapter-level overrides.
+Provider factory options are OpenAI SDK `ClientOptions` plus optional `api`, `client`, `harnessLogger`, `telemetry`, and `harnessTimeoutMs` for tests or adapter-level overrides. `api` defaults to `chat_completions`; use `api: 'responses'` for reasoning models that need function tools with `providerOptions.reasoning_effort`, such as `gpt-5.5`. If Chat Completions receives tools plus `reasoning_effort`, the adapter drops `reasoning_effort` and logs a warning.
 
 ## Anthropic Provider
 Install and register Anthropic independently:

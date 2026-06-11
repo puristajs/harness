@@ -504,6 +504,68 @@ describe('openai provider factory', () => {
     })
   })
 
+  it('reconstructs Responses API tool-call round-trip input without a function_call item id', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async (payload: any, options: any) => {
+            calls.push({ payload, options })
+            return {
+              output: [
+                {
+                  type: 'message',
+                  content: [{ type: 'output_text', text: 'done', annotations: [] }],
+                  status: 'completed',
+                  role: 'assistant'
+                }
+              ],
+              usage: { input_tokens: 4, output_tokens: 2 },
+              status: 'completed'
+            }
+          }
+        }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'read a page' },
+        {
+          role: 'assistant',
+          content: 'Looking it up.',
+          toolCalls: [
+            { id: 'call_1', name: 'read_wiki_page', arguments: { slug: 'agent-harness' } },
+            { id: 'call_2', name: 'search_docs', arguments: { query: 'harness' } }
+          ]
+        },
+        { role: 'tool', toolCallId: 'call_1', content: '{"title":"Agent Harness"}' },
+        { role: 'tool', toolCallId: 'call_2', content: '{"hits":[]}' }
+      ],
+      tools: [
+        { name: 'read_wiki_page', description: 'Read one page.', parameters: { type: 'object' } },
+        { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }
+      ],
+      signal: mockSignal()
+    })
+
+    expect(calls[0]?.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'read a page' },
+      { type: 'message', role: 'assistant', content: 'Looking it up.' },
+      { type: 'function_call', call_id: 'call_1', name: 'read_wiki_page', arguments: '{"slug":"agent-harness"}' },
+      { type: 'function_call', call_id: 'call_2', name: 'search_docs', arguments: '{"query":"harness"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"title":"Agent Harness"}' },
+      { type: 'function_call_output', call_id: 'call_2', output: '{"hits":[]}' }
+    ])
+    // The Responses API rejects `call_…` values as the `function_call` item id.
+    for (const item of calls[0]?.payload.input.filter((entry: any) => entry.type === 'function_call')) {
+      expect('id' in item).toBe(false)
+    }
+  })
+
   it('maps streamed Responses API function calls using call_id', async () => {
     async function* chunks() {
       yield {
@@ -564,6 +626,55 @@ describe('openai provider factory', () => {
     expect(out.find((chunk) => chunk.kind === 'finish')).toMatchObject({
       usage: { totalTokens: 7 },
       finishReason: 'tool_calls'
+    })
+  })
+
+  it('rejects streamed Responses API function calls that never carry a call_id', async () => {
+    async function* chunks() {
+      // No response.output_item.added: the only id available is the `fc_…`
+      // item id from the arguments.done event, which must never be used as
+      // the tool-call id.
+      yield {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        item_id: 'fc_1',
+        name: 'lookup',
+        arguments: '{"query":"hi"}'
+      }
+      yield {
+        type: 'response.completed',
+        response: {
+          output: [],
+          usage: { input_tokens: 5, output_tokens: 2 },
+          status: 'completed'
+        }
+      }
+    }
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => chunks() }
+      } as any
+    })
+
+    await expect(async () => {
+      for await (const _chunk of provider.textStream!({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'use a tool' }],
+        tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+        signal: mockSignal()
+      })) {
+        // consume the stream to force tool-call finalization
+      }
+    }).rejects.toMatchObject({
+      constructor: ModelError,
+      meta: {
+        provider: 'openai',
+        model: 'gpt-5.5',
+        method: 'textStream',
+        reason: 'malformed_response'
+      }
     })
   })
 

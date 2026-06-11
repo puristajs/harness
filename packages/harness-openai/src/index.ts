@@ -450,9 +450,11 @@ function toResponsesInput(messages: ModelMessage[]): any[] {
         })
       }
       for (const call of message.toolCalls) {
+        // The Responses API only accepts an `fc_…` item id on `function_call`
+        // input items; the harness tool-call id is the `call_…` value, so the
+        // optional item id is omitted, mirroring `function_call_output`.
         input.push({
           type: 'function_call',
-          id: call.id,
           call_id: call.id,
           name: call.name,
           arguments: JSON.stringify(call.arguments)
@@ -644,8 +646,10 @@ function accumulateResponsesToolCallDelta(state: ResponsesStreamToolCallState, e
 function accumulateResponsesToolCallDone(state: ResponsesStreamToolCallState, event: any): void {
   const index = typeof event.output_index === 'number' ? event.output_index : 0
   const existing = state.get(index) ?? { args: '' }
-  existing.id ??= String(event.item_id)
-  existing.name = String(event.name)
+  // `event.item_id` is the `fc_…` item id, not the `call_…` id required for
+  // `function_call_output`, so the call id only ever comes from the
+  // `response.output_item.added`/`done` events.
+  if (event.name) existing.name = String(event.name)
   if (typeof event.arguments === 'string') existing.args = event.arguments
   state.set(index, existing)
 }
@@ -653,12 +657,17 @@ function accumulateResponsesToolCallDone(state: ResponsesStreamToolCallState, ev
 function finalizeResponsesStreamToolCalls(state: ResponsesStreamToolCallState, req: ChatRequest, method: string): ToolCallSpec[] {
   return [...state.entries()]
     .sort((a, b) => a[0] - b[0])
-    .filter(([, call]) => call.id && call.name)
-    .map(([, call]) => ({
-      id: call.id as string,
-      name: call.name as string,
-      arguments: parseToolArgs(call.args || undefined, req, method)
-    }))
+    .filter(([, call]) => call.name)
+    .map(([, call]) => {
+      if (!call.id) {
+        throw malformedResponseError(req, method, 'OpenAI streamed a function call without a call_id.', call, undefined)
+      }
+      return {
+        id: call.id,
+        name: call.name as string,
+        arguments: parseToolArgs(call.args || undefined, req, method)
+      }
+    })
 }
 
 /**

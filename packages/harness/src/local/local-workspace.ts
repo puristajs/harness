@@ -197,6 +197,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       const meta = await this.readMeta(opts.handle.workspaceRef)
       const replay = meta.ops?.[opts.idempotencyKey]
       if (replay) {
+        assertReplayMatches(replay, 'pause', opts.handle.runId, opts.handle.sessionId, meta.workspaceRef)
         const checkpoint = replay.result as WorkspaceCheckpoint
         recordAttrs({ 'harness.workspace.state': meta.state, 'harness.workspace.checkpoint_ref_hash': sha256Hex(checkpoint.checkpointRef) })
         return checkpoint
@@ -263,6 +264,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       const meta = await this.readMeta(opts.workspaceRef)
       const replay = meta.ops?.[opts.idempotencyKey]
       if (replay) {
+        assertReplayMatches(replay, 'resume', opts.runId, opts.sessionId, meta.workspaceRef)
         const handle = replay.result as WorkspaceHandle
         this.coordinator?.bind(opts.runId, opts.sessionId, meta.workspaceRef, this.activePath(meta.workspaceRef))
         recordAttrs({ 'harness.workspace.state': meta.state })
@@ -301,6 +303,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       const meta = await this.readMeta(opts.workspaceRef)
       const replay = meta.ops?.[opts.idempotencyKey]
       if (replay) {
+        assertReplayMatches(replay, 'abort', opts.runId, opts.sessionId, meta.workspaceRef)
         recordAttrs({ 'harness.workspace.state': 'aborted' })
         this.coordinator?.unbind(opts.runId, opts.sessionId)
         return replay.result as WorkspaceAbortResult
@@ -488,6 +491,22 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       }
     }
     return this.telemetry ? this.telemetry.span(`harness.workspace.${operation}`, merged, (span) => run(span)) : run()
+  }
+}
+
+/**
+ * Guards a persisted-op replay: a stored entry may only replay when it belongs
+ * to the same operation kind and run/session identity, otherwise the reused key
+ * is an `idempotency_conflict` (spec 21 §9, spec 22 §4).
+ */
+function assertReplayMatches(op: PersistedWorkspaceOp, kind: PersistedWorkspaceOp['kind'], runId: string, sessionId: string, workspaceRef: string): void {
+  if (op.kind !== kind || op.runId !== runId || op.sessionId !== sessionId) {
+    throw new WorkspaceError(`Workspace ${kind} idempotency key reused with a different operation or run/session.`, {
+      reason: 'idempotency_conflict',
+      workspace_ref: workspaceRef,
+      run_id: runId,
+      session_id: sessionId
+    })
   }
 }
 

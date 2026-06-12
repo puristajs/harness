@@ -182,9 +182,13 @@ Rules:
   verifying the real path (symlinks resolved) is inside `<root>/workspaces`.
 - `inspectWorkspace` reads metadata and checkpoint summaries only. It never
   returns file content.
-- Idempotency records (`idempotencyKey` → run/session identity and result) are
-  persisted in `meta.json`, so replay and `idempotency_conflict` detection
-  (spec 21 §9) survive process restarts.
+- Idempotency records (`idempotencyKey` → operation kind, run/session identity,
+  and result) are persisted in `meta.json`, so replay and `idempotency_conflict`
+  detection (spec 21 §9) survive process restarts. Replay applies to every
+  durable operation: `startWorkspace`, `pauseWorkspace`, `resumeWorkspace`, and
+  `abortWorkspace` only replay a stored result when the request's operation kind
+  and run/session identity match the record; a key reused for a different kind or
+  identity raises `WorkspaceError{meta.reason:'idempotency_conflict'}`.
 - `meta.json` writes are crash-atomic (temp file plus rename).
 - When `policy.quota.maxWorkspaceBytes` is configured, `pauseWorkspace` rejects
   oversized checkpoints with `WorkspaceQuotaExceededError`, removes the partial

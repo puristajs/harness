@@ -126,16 +126,30 @@ function now(): string {
 }
 
 const STREAM_MAX_BUFFERED_EVENTS = 1024
-const STREAM_TERMINAL_EVENT_TYPES = new Set<string>(['run.finished', 'agent.finished'])
+/**
+ * Event types that must never be dropped from the relay queue.
+ *
+ * Only `run.finished` qualifies: it occurs at most once per run and is the
+ * terminal event consumers key off to know the run is complete. `agent.finished`
+ * is emitted once per agent invocation (including every child-agent delegation
+ * call), so it can appear many times and must remain droppable to keep the
+ * queue bounded when a slow consumer falls behind during a delegation-heavy run.
+ */
+const STREAM_UNDROPPABLE_EVENT_TYPES = new Set<string>(['run.finished'])
 
 /**
  * Relay run events from an in-process run to a stream consumer.
  *
- * The unread events live in a bounded queue: consumed events are removed (no
- * growing cursor over a shared array), and on overflow the oldest non-terminal
- * unread event is dropped and counted, so a slow consumer never silently skips
- * an unread event. Delivery is promise-notified rather than time-polled, so
- * there is no fixed per-event latency or periodic timer.
+ * The unread events live in a bounded queue (cap: STREAM_MAX_BUFFERED_EVENTS):
+ * consumed events are removed (no growing cursor over a shared array), and on
+ * overflow the oldest droppable unread event is dropped and counted, so a slow
+ * consumer never silently skips an event without an accompanying
+ * `stream.overflow` notice. Only `run.finished` is undroppable; all other
+ * event types — including `agent.finished` — may be evicted under pressure.
+ * If no droppable event exists when the queue is full, the incoming event is
+ * discarded (counted) rather than growing the queue past the cap. Delivery is
+ * promise-notified rather than time-polled, so there is no fixed per-event
+ * latency or periodic timer.
  *
  * Abandoning the stream (`break` / `iterator.return()`) aborts `relaySignal`,
  * so a run wired to it is cancelled promptly instead of blocking the consumer
@@ -161,10 +175,16 @@ export async function* relayRunEvents(
   const result = run((event) => {
     if ('runId' in event) liveRunId = event.runId
     if (queue.length >= STREAM_MAX_BUFFERED_EVENTS) {
-      const dropIndex = queue.findIndex((candidate) => !STREAM_TERMINAL_EVENT_TYPES.has(candidate.type))
+      const dropIndex = queue.findIndex((candidate) => !STREAM_UNDROPPABLE_EVENT_TYPES.has(candidate.type))
       if (dropIndex >= 0) {
         queue.splice(dropIndex, 1)
         dropped += 1
+      } else {
+        // Every queued event is undroppable; discard the incoming event to keep
+        // the queue bounded rather than growing past the cap.
+        dropped += 1
+        notify()
+        return Promise.resolve()
       }
     }
     queue.push(event)

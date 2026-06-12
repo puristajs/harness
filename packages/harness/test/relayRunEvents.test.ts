@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { relayRunEvents } from '../src/sessions/index.js'
 import type { RunEvent } from '../src/harness/defineHarness.js'
 
+const STREAM_MAX_BUFFERED_EVENTS = 1024
+
 describe('relayRunEvents', () => {
   it('delivers events in order and completes', async () => {
     const out: RunEvent[] = []
@@ -44,5 +46,49 @@ describe('relayRunEvents', () => {
     }
     // Accounting balances: delivered deltas + dropped == produced deltas.
     expect(deltas.length + droppedTotal).toBe(total)
+  })
+
+  it('keeps the queue bounded and always delivers run.finished when many agent.finished events overflow the buffer', async () => {
+    // Simulate a delegation-heavy run: many agent.finished events emitted
+    // synchronously (no await) so the producer outruns the consumer.  Before
+    // the fix, agent.finished was treated as undroppable, so the queue could
+    // grow unboundedly past STREAM_MAX_BUFFERED_EVENTS.
+    const agentFinishedCount = STREAM_MAX_BUFFERED_EVENTS * 3
+    const out: RunEvent[] = []
+    let peakQueueSize = 0
+
+    for await (const event of relayRunEvents((onEvent, _signal) => {
+      // Intercept via a wrapper so we can measure the internal queue indirectly:
+      // we track output size between yields to bound our assertion.
+      for (let i = 0; i < agentFinishedCount; i += 1) {
+        void onEvent({ type: 'agent.finished', runId: 'r', agentId: `a${i}`, at: 'now', output: String(i) })
+      }
+      void onEvent({ type: 'run.finished', runId: 'r', at: 'now', output: 'done' })
+      return Promise.resolve('done')
+    })) {
+      out.push(event)
+      // The consumer is intentionally slow — we count events to verify bounds.
+      // Measure the running output length as a proxy: the real queue can never
+      // exceed cap, so the total events yielded before run.finished is bounded.
+      peakQueueSize = Math.max(peakQueueSize, out.length)
+    }
+
+    // run.finished must always be delivered regardless of overflow.
+    expect(out.at(-1)?.type).toBe('run.finished')
+
+    // stream.overflow notices must have been emitted (dropped events exist).
+    const overflow = out.filter((e) => e.type === 'stream.overflow')
+    expect(overflow.length).toBeGreaterThan(0)
+
+    // Total events yielded (excluding the overflow notices themselves) must
+    // never have exceeded the cap + 1 (the run.finished beyond the cap).  We
+    // allow one extra for run.finished which is undroppable.
+    const nonOverflow = out.filter((e) => e.type !== 'stream.overflow')
+    expect(nonOverflow.length).toBeLessThanOrEqual(STREAM_MAX_BUFFERED_EVENTS + 1)
+
+    // Accounting: dropped + delivered agent.finished == produced agent.finished.
+    const droppedTotal = overflow.reduce((sum, e) => sum + (e as { dropped: number }).dropped, 0)
+    const deliveredAgentFinished = out.filter((e) => e.type === 'agent.finished').length
+    expect(deliveredAgentFinished + droppedTotal).toBe(agentFinishedCount)
   })
 })

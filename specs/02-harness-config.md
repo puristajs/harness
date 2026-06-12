@@ -18,7 +18,7 @@ The methods MUST be called in this order, each at most once:
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .checkpoints(...)?  .requires(...)?  .defaults(...)?
   .models({...})            // REQUIRED, before tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
@@ -31,7 +31,7 @@ defineHarness(opts?)
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
-- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -124,6 +124,23 @@ Validation:
 - The method is callable at most once and only in the foundation stage after
   `.runtime(...)` and before `.requires(...)`, `.defaults(...)`, or domain
   methods.
+
+### `.checkpoints(adapter)`
+
+Pass an optional `ContextCheckpointStore`. Core treats context checkpoints as
+explicit, adapter-backed long-horizon handoff records. It does not summarize,
+rewrite, or inject prompt context automatically. The port, first-party SQLite
+store, and local durable bundle wiring are locked in
+[22-local-durable-execution](./22-local-durable-execution.md).
+
+Validation:
+
+- `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
+- `adapter.info.packageName` is non-empty.
+- `adapter.info.capabilities` contains `context_checkpoint.write`.
+- The method is callable at most once and only in the foundation stage after
+  `.workspaceStore(...)` and before `.requires(...)`, `.defaults(...)`, or
+  domain methods.
 
 ### `.requires(capabilities)`
 
@@ -366,6 +383,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `state`                              | `InMemoryStateStore`                 |
 | `sandbox`                            | auto-detect: `bashSandbox()` if `just-bash` is installed, else `inMemorySandbox()` |
 | `memory`                             | `sandboxMemory()`                    |
+| `checkpoints`                        | none                                 |
 | `logger`                             | built-in `JsonLogger`                |
 | `telemetry.flavor`                   | env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'` |
 | `telemetry.contentCaptureMode`       | env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'` |
@@ -395,6 +413,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
+16. `checkpoints.info` and context checkpoint store capabilities MUST pass the validation rules in [22-local-durable-execution](./22-local-durable-execution.md).
 
 ## `Harness<S>` returned object
 

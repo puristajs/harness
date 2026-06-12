@@ -10,7 +10,7 @@ import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationT
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelMessage, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -129,6 +129,7 @@ export async function runDefaultAgent(args: {
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
@@ -203,6 +204,7 @@ async function runDefaultAgentInner(args: {
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
@@ -237,6 +239,7 @@ async function runDefaultAgentInner(args: {
       sessionId: args.sessionId,
       history: { list: async () => args.history },
       memory: args.memory,
+      checkpoints: args.checkpoints,
       metadata: args.metadata ?? {},
       metrics: args.metrics
     }))
@@ -245,7 +248,7 @@ async function runDefaultAgentInner(args: {
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
-    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {}, metrics: args.metrics })
+    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, checkpoints: args.checkpoints, metadata: args.metadata ?? {}, metrics: args.metrics })
     : args.agent.instructions
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 

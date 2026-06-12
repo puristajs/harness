@@ -27,7 +27,22 @@ type AdapterCapability =
   | 'runtime.distributed_lock'
   | 'runtime.resume_from_checkpoint'
   | 'runtime.workspace_checkpoint'
-  | 'workspace_store.durable'       // + workspace_store.{checkpoint,resume,abort,cleanup,inspect,retention,quota,encrypted_storage}
+  | 'runtime.persistent'
+  | 'workspace_store.durable'       // lifecycle contract
+  | 'workspace_store.persistent'    // survives process exit
+  | 'workspace_store.checkpoint'
+  | 'workspace_store.resume'
+  | 'workspace_store.abort'
+  | 'workspace_store.cleanup'
+  | 'workspace_store.inspect'
+  | 'workspace_store.retention'
+  | 'workspace_store.quota'
+  | 'workspace_store.encrypted_storage'
+  | 'context_checkpoint.write'
+  | 'context_checkpoint.read'
+  | 'context_checkpoint.list'
+  | 'context_checkpoint.delete'
+  | 'context_checkpoint.persistent'
   | 'feedback.record'
 ```
 
@@ -48,6 +63,37 @@ It must not open sessions, call providers, hit the network, or mutate adapters.
 
 ## Durable Runtime
 Durable runtime is optional. Use it when a workflow needs leases, checkpoints, retry boundaries, distributed session ownership, or resume after process failure.
+
+## Local Durable Execution
+Use the built-in local bundle for low-effort durable workflows on one host:
+
+```ts
+import { localDurableExecution } from '@purista/harness'
+
+const local = localDurableExecution({ root: '.purista/harness', exec: false })
+
+const harness = defineHarness()
+  .state(local.state)
+  .runtime(local.runtime)
+  .sandbox(local.sandbox)
+  .workspaceStore(local.workspaceStore)
+  .checkpoints(local.checkpoints)
+  .requires([
+    'runtime.persistent',
+    'runtime.workspace_checkpoint',
+    'workspace_store.persistent',
+    'workspace_store.resume',
+    'context_checkpoint.persistent'
+  ])
+  .models(...)
+  .agents(...)
+  .workflows(...)
+  .build()
+```
+
+The local bundle uses built-in Node/Bun SQLite for state/runtime/context
+checkpoints and a host directory for workspace checkpoints. Host exec is off by
+default; this mode is durable local persistence, not a hardened sandbox.
 
 ```ts
 import { inMemoryDurableRuntime } from '@purista/harness'
@@ -107,7 +153,11 @@ Rules:
 - Workflow-only. `opts.durable` on an agent run throws `ValidationError`; without an executable `.runtime(...)` it throws `HarnessConfigError{reason:'durable_runtime_required'}`.
 - The harness acquires a lease for `durable.runId`, injects durable `ctx.step`, finalizes `finishRun`, and (with a workspace store) starts/resumes the workspace, writes a workspace checkpoint before each runtime checkpoint, cleans up on success when retention `cleanupMode` is `adapter_automatic`, aborts on cancellation, and leaves a non-cancel failure resumable.
 - A committed step replays its stored output on resume without re-running its body. Without `durable`, `ctx.step` is a transparent pass-through.
-- Resume across process restart needs runtime/workspace adapters that persist beyond process exit; the in-memory adapters are local/test only.
+- Resume across process restart needs `runtime.persistent` and
+  `workspace_store.persistent`; the in-memory adapters are local/test only.
+- Use `ctx.checkpoints.write(...)` for explicit long-horizon summaries or
+  handoff records. The harness does not auto-summarize or inject checkpoint
+  payloads into prompts.
 
 ## Feedback
 Feedback is optional and application-owned. Core exports shared types and test helpers, not a production feedback store.

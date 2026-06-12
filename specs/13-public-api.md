@@ -2,13 +2,13 @@
 
 **Purpose.** Single source of truth for every symbol exported from the v1 package set. The published package set includes the core package plus independent provider addons:
 
-- `@purista/harness` — harness, types, errors, in-memory adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
+- `@purista/harness` — harness, types, errors, in-memory adapters, local durable adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
 - `@purista/harness-openai` — OpenAI provider.
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
-- `@purista/harness-workspace-*` — optional durable workspace stores. Core ships only test fakes under `@purista/harness/testing`.
+- `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -59,6 +59,14 @@ export function bashSandbox(opts?: {
 
 // Memory factory (default reference adapter)
 export function sandboxMemory(): MemoryAdapter
+
+// Local durable execution factories
+export function localDurableExecution(options: LocalDurableExecutionOptions): LocalDurableExecution
+export function sqliteStateStore(options: SqliteStateStoreOptions): StateStore & { close(): Promise<void> }
+export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): DurableRuntime & { close(): Promise<void> }
+export function localDirectoryWorkspaceStore(options: LocalDirectoryWorkspaceStoreOptions): DurableWorkspaceStore
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions): Sandbox
+export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> }
 
 // Errors (every class from 15-error-catalog)
 export class HarnessError extends Error { /* see 03-foundation */ }
@@ -149,6 +157,7 @@ export interface ToolHandlerContext
 export interface Metrics
 export interface SessionMemory
 export interface MemoryFacade
+export interface ContextCheckpoints
 export interface ConversationHistory
 
 // Built-in tools and permissions
@@ -234,6 +243,19 @@ export interface WorkspaceQuotaPolicy
 export interface WorkspaceRetentionPolicy
 export interface WorkspaceEncryptionInfo
 export interface DurableReplayCheckpoint
+export interface LocalDurableExecutionOptions
+export interface LocalHostExecPolicy
+export interface LocalDurableExecution
+export interface SqliteDurableRuntimeOptions
+export interface SqliteStateStoreOptions
+export interface LocalDirectoryWorkspaceStoreOptions
+export interface LocalDirectorySandboxOptions
+export interface ContextCheckpointStore
+export interface ContextCheckpointStoreInfo
+export interface ContextCheckpoint
+export interface ContextCheckpointQuery
+export interface ContextCheckpointRef
+export interface SqliteContextCheckpointStoreOptions
 
 // Foundation
 export interface Logger
@@ -314,7 +336,8 @@ interface HarnessBuilder<S extends BuilderState> {
   sandbox(sandbox: Sandbox): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
-  workspace(adapter: DurableWorkspaceStore): HarnessBuilder<S>
+  workspaceStore(adapter: DurableWorkspaceStore): HarnessBuilder<S>
+  checkpoints(adapter: ContextCheckpointStore): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
@@ -524,7 +547,9 @@ type AdapterCapability =
   | 'runtime.resume_from_checkpoint'
   | 'runtime.workspace_checkpoint'
   | 'runtime.checkpoint_retention'
+  | 'runtime.persistent'
   | 'workspace_store.durable'
+  | 'workspace_store.persistent'
   | 'workspace_store.checkpoint'
   | 'workspace_store.resume'
   | 'workspace_store.abort'
@@ -533,11 +558,16 @@ type AdapterCapability =
   | 'workspace_store.retention'
   | 'workspace_store.quota'
   | 'workspace_store.encrypted_storage'
+  | 'context_checkpoint.write'
+  | 'context_checkpoint.read'
+  | 'context_checkpoint.list'
+  | 'context_checkpoint.delete'
+  | 'context_checkpoint.persistent'
   | 'feedback.record'
   | MemoryCapability
 
 interface AdapterInspection {
-  kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'feedback' | 'model' | 'memory'
+  kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'feedback' | 'model' | 'memory'
   id: string
   capabilities: readonly AdapterCapability[]
 }

@@ -42,6 +42,9 @@ import type {
 import { validateMemoryAdapter } from '../ports/memory.js'
 import type { DurableWorkspaceStore } from '../ports/workspace.js'
 import { validateDurableWorkspaceStore } from '../ports/workspace.js'
+import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
+import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
+import { validateContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -435,8 +438,22 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   runId: string
   history: ConversationHistory
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   metadata: Readonly<Record<string, JsonValue>>
   metrics: Metrics
+}
+
+/** Run-bound facade for explicit long-horizon context checkpoints. */
+export interface ContextCheckpoints {
+  write(input: {
+    sequence: number
+    kind: ContextCheckpoint['kind']
+    payload: JsonValue
+    metadata?: Record<string, JsonValue>
+  }): Promise<void>
+  list(query?: Omit<ContextCheckpointQuery, 'runId' | 'sessionId' | 'workflowId' | 'agentId' | 'signal'>): Promise<readonly ContextCheckpoint[]>
+  read(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<ContextCheckpoint | undefined>
+  delete(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<void>
 }
 
 /** Full context passed to workflow handlers. */
@@ -449,6 +466,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   metrics: Metrics
   /**
    * Runs `fn` as a durable step. Under a durable invocation the output is
@@ -716,6 +734,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
   workspaceStore(store: DurableWorkspaceStore): HarnessBuilder<S>
+  checkpoints(store: ContextCheckpointStore): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -742,6 +761,7 @@ type BuilderStateInternal = {
   memory?: MemoryAdapter
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
+  checkpoints?: ContextCheckpointStore
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -794,6 +814,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
     validateDurableWorkspaceStore(workspaceStore)
     return this.clone({ workspaceStore })
+  }
+
+  public checkpoints(checkpoints: ContextCheckpointStore): HarnessBuilder<S> {
+    if (this.configured.checkpoints) {
+      throw new HarnessConfigError('Context checkpoint store is already configured.', { reason: 'duplicate_adapter', path: 'checkpoints' })
+    }
+    validateContextCheckpointStore(checkpoints)
+    return this.clone({ checkpoints })
   }
 
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
@@ -872,6 +900,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
     if (this.configured.workspaceStore) validateDurableWorkspaceStore(this.configured.workspaceStore)
+    if (this.configured.checkpoints) validateContextCheckpointStore(this.configured.checkpoints)
     const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
@@ -891,6 +920,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       memory,
       ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
       ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
+      ...(this.configured.checkpoints ? { checkpoints: this.configured.checkpoints } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -1057,6 +1087,17 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         metadata: {
           packageName: this.configured.workspaceStore.info.packageName,
           policy: this.configured.workspaceStore.info.policy
+        }
+      })
+    }
+
+    if (this.configured.checkpoints) {
+      adapters.push({
+        kind: 'context_checkpoint',
+        id: this.configured.checkpoints.info.id,
+        capabilities: uniqueCapabilities(this.configured.checkpoints.info.capabilities),
+        metadata: {
+          packageName: this.configured.checkpoints.info.packageName
         }
       })
     }

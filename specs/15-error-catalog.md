@@ -25,7 +25,7 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - category: `config`
 - retriable: `false`
 - when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.runtime(...)` (`reason:'durable_runtime_required'`).
-- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'durable_runtime_required'`).
+- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
 
 ### `ValidationError`
 - code: `VALIDATION_ERROR`
@@ -149,7 +149,7 @@ tokens, raw headers, or attachments.
 - category: `state`
 - retriable: `true`
 - when: StateStore backend failure, or duplicate message id on `appendMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
-- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'`, `reason?: 'duplicate_message_id'|string`.
+- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`.
 
 ### `WorkspaceError`
 - code: `WORKSPACE_ERROR`

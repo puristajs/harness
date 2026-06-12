@@ -167,6 +167,23 @@ Locked behavior:
 
 If the user calls `.sandbox()` with no argument or omits `.sandbox()` entirely, the harness auto-detects: tries `bashSandbox()` first, falls back to `inMemorySandbox()` on import failure. This auto-detect is locked in [02-harness-config](./02-harness-config.md) §`.sandbox(...)`.
 
+## Local durable sandbox
+
+`localDirectorySandbox(...)` is a first-party host-directory sandbox used by
+`localDurableExecution(...)`; see
+[22-local-durable-execution](./22-local-durable-execution.md). It maps virtual
+`/workspace` to the active durable workspace directory selected for the current
+run. It is a persistence adapter, not a Docker/microVM security boundary.
+
+Rules:
+
+- Filesystem access is jailed by path normalization plus realpath checks.
+- Symlink escapes, relative paths, and host paths outside the configured root
+  throw `SandboxError{meta.reason:'invalid_path'}`.
+- It advertises `sandbox.fs` and `sandbox.persistent_fs`.
+- It advertises `sandbox.exec` only when host exec is explicitly enabled.
+- Host exec is disabled by default and must be documented as a trust decision.
+
 ## Adapters
 
 Packages like `@purista/harness-sandbox-docker`, `@purista/harness-sandbox-e2b`, and `@purista/harness-sandbox-microvm` implement the same capability-declared `Sandbox` port.

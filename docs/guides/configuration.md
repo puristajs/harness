@@ -38,6 +38,7 @@ flowchart LR
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
   Harness --> Workspace["durable workspace store"]
+  Harness --> Checkpoints["context checkpoint store"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -48,6 +49,7 @@ flowchart LR
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
 | Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
 | Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
+| Context checkpoints | None | Long-horizon workflows need explicit durable summaries or handoff records. |
 | Models | Required | Every agent needs a model alias. |
 | Tools | Optional | Agents need retrieval, writes, MCP, or application APIs. |
 | Skills | Optional | Agents need reusable instructions or report methods. |
@@ -218,6 +220,38 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 .sandbox(inMemorySandbox()) // file-only, no command execution
 .sandbox(bashSandbox())     // command execution through just-bash
 ```
+
+## Local Durable Bundle
+
+Use `localDurableExecution` when you want durable state, checkpointed workflows,
+workspace restore, and context checkpoints without Docker or an external
+database:
+
+```ts
+import { localDurableExecution } from '@purista/harness'
+
+const local = localDurableExecution({ root: '.purista/harness', exec: false })
+
+const harness = defineHarness()
+  .state(local.state)
+  .runtime(local.runtime)
+  .sandbox(local.sandbox)
+  .workspaceStore(local.workspaceStore)
+  .checkpoints(local.checkpoints)
+  .requires([
+    'runtime.persistent',
+    'workspace_store.persistent',
+    'context_checkpoint.persistent'
+  ])
+  .models(models)
+  .agents(agents)
+  .workflows(workflows)
+  .build()
+```
+
+Host exec is disabled by default. Keep it disabled for untrusted model/tool
+paths, or move to a Docker/microVM sandbox adapter when you need stronger
+isolation.
 
 Choose `inMemorySandbox()` when agents do not need command execution. Choose an
 executor-capable sandbox for built-in `bash`, exec-backed `grep`, and

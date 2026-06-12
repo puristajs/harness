@@ -231,6 +231,7 @@ export class StateError extends HarnessError {
       op:
         | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
         | 'clearMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
+        | 'contextCheckpointWrite' | 'contextCheckpointRead' | 'contextCheckpointList' | 'contextCheckpointDelete'
         | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
       reason?: 'duplicate_message_id' | string
       adapter?: 'memory' | string

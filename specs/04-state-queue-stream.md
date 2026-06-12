@@ -106,6 +106,12 @@ interface PersistedRunEvent {
 - `appendEvents` / `listEvents` preserve insertion order; `after` cursor is an event id; pagination is exclusive.
 - Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted regardless of telemetry span content capture until a future spec adds a dedicated persisted-event content flag.
 - `upsertSession` is idempotent: if `id` exists, `updatedAt` and `runCount` are overwritten with the supplied record.
+- `createRun` is normally insert-only. For durable workflow retries, the harness
+  acquires the durable runtime lease before calling `createRun`; if a
+  non-terminal run with the same id already exists and the new record matches
+  `sessionId`, `kind`, and `target`, `createRun` is idempotent and must not
+  reset messages, events, or committed durable checkpoints. Existing terminal
+  runs are never overwritten.
 - StateStore methods MUST throw [`StateError`](./15-error-catalog.md) on backend failure.
 
 ### In-memory default

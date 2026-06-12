@@ -1,0 +1,24 @@
+{
+  "name": "@purista/local-durable-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src --exclude 'dist/**'",
+    "start": "node dist/examples/local-durable/src/index.js",
+    "lint": "npm run typecheck"
+  },
+  "dependencies": {
+    "@purista/harness": "*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

@@ -33,6 +33,7 @@ import type {
   WorkflowInput,
   WorkflowOutput,
   BuilderState,
+  ContextCheckpoints,
   ContentCaptureMode,
   TelemetryOptions
 } from '../harness/defineHarness.js'
@@ -40,6 +41,7 @@ import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
 import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import type { ContextCheckpoint, ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import type { DurableRuntime } from '../runtime/durable.js'
 import { HarnessConfigError } from '../errors/catalog.js'
@@ -73,6 +75,7 @@ type HarnessDefinition<S extends BuilderState> = {
   memory: MemoryAdapter
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
+  checkpoints?: ContextCheckpointStore
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -237,7 +240,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
-  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig)
+  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
 
@@ -378,6 +381,61 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new HarnessConfigError('Durable execution requires an executable .runtime(...) adapter.', { reason: 'durable_runtime_required', path: 'runtime' })
     }
     return definition.runtime
+  }
+
+  function createContextCheckpoints(args: {
+    runId: string
+    sessionId: string
+    workflowId?: string
+    agentId?: string
+    signal: AbortSignal
+  }): ContextCheckpoints {
+    const store = definition.checkpoints
+    const requireStore = (): ContextCheckpointStore => {
+      if (!store) {
+        throw new ValidationError('No context checkpoint store is configured.', {
+          where: 'invoke_options',
+          issues: { reason: 'context_checkpoint_store_missing' }
+        })
+      }
+      return store
+    }
+    const baseQuery = {
+      runId: args.runId,
+      sessionId: args.sessionId,
+      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+      ...(args.agentId ? { agentId: args.agentId } : {})
+    }
+    return {
+      async write(input): Promise<void> {
+        const json = JSON.stringify(input.payload)
+        if (json === undefined) {
+          throw new ValidationError('Context checkpoint payload must be JSON-serializable.', {
+            where: 'invoke_options',
+            issues: { reason: 'non_json_context_checkpoint_payload' }
+          })
+        }
+        const checkpoint: ContextCheckpoint = {
+          ...baseQuery,
+          sequence: input.sequence,
+          kind: input.kind,
+          payload: input.payload,
+          payloadSizeBytes: Buffer.byteLength(json, 'utf8'),
+          createdAt: now(),
+          ...(input.metadata ? { metadata: input.metadata } : {})
+        }
+        await requireStore().write(checkpoint, { signal: args.signal })
+      },
+      async list(query = {}): Promise<readonly ContextCheckpoint[]> {
+        return requireStore().list({ ...baseQuery, ...query, signal: args.signal })
+      },
+      async read(ref): Promise<ContextCheckpoint | undefined> {
+        return requireStore().read({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
+      },
+      async delete(ref): Promise<void> {
+        await requireStore().delete({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
+      }
+    }
   }
 
   return {
@@ -532,6 +590,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       sandboxSession: state.sandboxSession,
       metadata: opts?.metadata ?? {}
     })
+    const checkpoints = createContextCheckpoints({ sessionId, runId, agentId, signal: runSignal.signal })
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -585,6 +644,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           mcpRegistry,
           session: state.sandboxSession,
           memory,
+          checkpoints,
           mountedSkills: state.mountedSkills,
           ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
@@ -678,14 +738,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const startedAt = now()
     const runId = opts?.durable ? opts.durable.runId : ulid()
-    const memory = memoryFacade({
-      sessionId,
-      runId,
-      workflowId,
-      signal: runSignal.signal,
-      sandboxSession: state.sandboxSession,
-      metadata: opts?.metadata ?? {}
-    })
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -702,14 +754,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
-    try {
-      await definition.state.createRun(runRecord)
-    } catch (error) {
-      state.busy = false
-      throw error
-    }
-
     let durableBinding: DurableWorkflowBinding | undefined
+    let runSandboxSession = state.sandboxSession
+    let runMountedSkills = state.mountedSkills
+    let closeRunSandbox = false
+    let runCreated = false
     try {
       if (durableRuntime && opts?.durable) {
         durableBinding = await beginDurableWorkflow({
@@ -724,6 +773,27 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           logger: definition.logger,
           harnessName: definition.name
         })
+        if (definition.workspaceStore) {
+          runSandboxSession = await definition.sandbox.open({ sessionId, runId, signal: runSignal.signal }) as SandboxSession
+          runMountedSkills = new Set<string>()
+          closeRunSandbox = true
+        }
+      }
+      const memory = memoryFacade({
+        sessionId,
+        runId,
+        workflowId,
+        signal: runSignal.signal,
+        sandboxSession: runSandboxSession,
+        metadata: opts?.metadata ?? {}
+      })
+      const checkpoints = createContextCheckpoints({ sessionId, runId, workflowId, signal: runSignal.signal })
+      try {
+        await definition.state.createRun(runRecord)
+        runCreated = true
+      } catch (error) {
+        state.busy = false
+        throw error
       }
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
@@ -764,6 +834,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
+            checkpoints,
             step: durableBinding ? durableBinding.step : passthroughStep,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
@@ -790,9 +861,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       workflowId,
                       agentId,
                       signal: agentSignal.signal,
-                      sandboxSession: state.sandboxSession,
+                      sandboxSession: runSandboxSession,
                       metadata: agentMetadata
                     })
+                    const agentCheckpoints = createContextCheckpoints({ sessionId, runId, workflowId, agentId, signal: agentSignal.signal })
                     const run = await runDefaultAgent({
                       harnessName: definition.name,
                       agentId,
@@ -816,9 +888,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       skills: resolvedSkills as Record<string, ResolvedSkill>,
                       customTools: definition.tools as ToolsConfig,
                       mcpRegistry,
-                      session: state.sandboxSession,
+                      session: runSandboxSession,
                       memory: agentMemory,
-                      mountedSkills: state.mountedSkills,
+                      checkpoints: agentCheckpoints,
+                      mountedSkills: runMountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
@@ -873,6 +946,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finalError = normalizeRunError(error, runSignal.signal)
       const finishedAt = now()
       const serialized = serializeError(finalError)
+      if (!runCreated) {
+        throw finalError
+      }
       if (durableBinding && finalError instanceof OperationCancelledError) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_cancelled' }, () => durableBinding!.finishCancelled(finalError))
       }
@@ -907,6 +983,19 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       // Releases the lease for a non-cancel failure so a retry with the same run
       // id can resume; a no-op once the run was settled (success/cancel).
       if (durableBinding) await durableBinding.dispose()
+      if (closeRunSandbox) {
+        try {
+          await runSandboxSession.close()
+        } catch (error) {
+          definition.logger.warn('Failed to close durable run sandbox.', {
+            harness: definition.name,
+            session_id: sessionId,
+            run_id: runId,
+            workflow_id: workflowId,
+            error: serializeError(error)
+          })
+        }
+      }
       runSignal.cleanup()
       state.busy = false
     }
@@ -1203,7 +1292,10 @@ function configureHarnessAdapters(
   state: StateStore,
   sandbox: Sandbox,
   memory: MemoryAdapter,
-  tools: ToolsConfig
+  tools: ToolsConfig,
+  runtime: DurableRuntimeAdapter | undefined,
+  workspaceStore: DurableWorkspaceStore | undefined,
+  checkpoints: ContextCheckpointStore | undefined
 ): void {
   const seen = new Set<unknown>()
   for (const alias of Object.values(models)) {
@@ -1212,12 +1304,16 @@ function configureHarnessAdapters(
   configureOne(state, context, seen)
   configureOne(sandbox, context, seen)
   configureOne(memory, context, seen)
+  configureOne(runtime, context, seen)
+  configureOne(workspaceStore, context, seen)
+  configureOne(checkpoints, context, seen)
   for (const tool of Object.values(tools)) {
     configureOne(tool, context, seen)
   }
 }
 
 function configureOne(adapter: unknown, context: HarnessAdapterContext, seen: Set<unknown>): void {
+  if (!adapter) return
   const configurable = adapter as Partial<HarnessContextConfigurable>
   if (!configurable.configureHarnessContext || seen.has(adapter)) return
   configurable.configureHarnessContext(context)

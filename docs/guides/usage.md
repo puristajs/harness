@@ -233,6 +233,10 @@ const result = await session.workflows.answer_with_review.prompt({
 The workflow handler owns orchestration. It can call one agent, many agents,
 tools, state, or human-review logic before returning validated output.
 
+For deeper workflow patterns, including fan-out/fan-in, durable `ctx.step(...)`
+boundaries, streaming, cancellation, and tests, see
+[Workflows](./workflows.md).
+
 ## Manage Memory And History
 
 ```ts

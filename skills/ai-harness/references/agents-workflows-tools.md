@@ -62,12 +62,28 @@ side effects stop promptly.
 
 Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`.
 
+Agents must be declared before workflows. The builder uses the previously
+registered agent keys to type `ctx.agents`; do not document or implement a
+standalone `defineWorkflow(...)` helper.
+
 `ctx.step(stepId, fn)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Durable execution is workflow-only — see `durable-feedback-operations.md`.
 
 Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the calls are independent. Propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
 The harness also races workflow handlers against `ctx.signal`, so a run can
 finish as cancelled/timed out even when handler code hangs. This is not a
 thread/process kill; cooperative cancellation is still required for cleanup.
+
+Direct model streams inside workflow handlers are private to the handler unless
+the model call opts in with `{ emitRunEvents: true }`. Workflow stream APIs emit
+typed `RunEvent` values, not provider chunks or the Vercel stream protocol.
+
+Workflow docs and examples should cover:
+- choosing workflow vs direct agent;
+- sequence and fan-out/fan-in patterns;
+- durable `ctx.step(...)` boundaries;
+- cancellation and timeout behavior;
+- streaming through `session.workflows.<id>.stream(...)`;
+- tests with fake providers, child-agent failure paths, and durable replay.
 
 ## TypeScript Tools
 Use TypeScript tools for application APIs and deterministic logic:

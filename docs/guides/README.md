@@ -2,6 +2,7 @@
 
 - Build with the harness
   - [Usage](./usage.md)
+  - [Workflows](./workflows.md)
   - [Configuration](./configuration.md)
   - [Common Scenarios And Use Cases](./common-scenarios.md)
   - [Evaluating Prompts](./evaluating-prompts.md)

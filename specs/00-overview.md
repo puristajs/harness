@@ -53,6 +53,7 @@ export const harness = defineHarness()
     handle_ticket: {
       input:  z.object({ ticket: z.string() }),
       output: z.object({ resolution: z.string() }),
+      delegation: { agents: ['triage'] },
       handler: async (ctx) => {
         const r = await ctx.agents.triage({ message: ctx.input.ticket })
         return { resolution: r.label }

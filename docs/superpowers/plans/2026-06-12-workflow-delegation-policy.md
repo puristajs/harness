@@ -4,7 +4,7 @@
 
 **Goal:** Add low-effort, safe-by-default workflow subagent delegation controls to `@purista/harness`.
 
-**Architecture:** Keep agents as leaf model loops and workflows as the local orchestrator. Add optional workflow/default delegation policy, enforce it in the existing workflow `ctx.agents` wrapper, and preserve the current zero-config DX with bounded defaults and explicit overrides.
+**Architecture:** Keep agents as leaf model loops and workflows as the local orchestrator. Add opt-in workflow/default delegation policy, enforce it in the existing workflow `ctx.agents` wrapper, and preserve low-effort DX with explicit workflow policies and bounded defaults after opt-in.
 
 **Tech Stack:** TypeScript, Zod, Vitest, `@purista/harness` builder/session/runtime APIs.
 

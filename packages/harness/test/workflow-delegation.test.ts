@@ -11,7 +11,45 @@ import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 
 describe('workflow delegation policy', () => {
-  it('enforces the safe default total child-agent call budget', async () => {
+  it('denies child-agent calls by default', async () => {
+    const model = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        guarded: {
+          input: z.string(),
+          output: z.string(),
+          handler: async (ctx) => ctx.agents.worker(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-default-deny')
+    await expect(session.workflows.guarded.prompt('work')).rejects.toMatchObject({
+      code: 'DELEGATION_POLICY_ERROR',
+      meta: expect.objectContaining({
+        reason: 'delegation_disabled',
+        workflow_id: 'guarded',
+        agent_id: 'worker'
+      })
+    })
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('enforces the opt-in total child-agent call budget', async () => {
     const model = new FakeModelProvider()
     for (let index = 0; index < 32; index += 1) {
       model.enqueue({ object: `ok-${index}`, usage, finishReason: 'stop' })
@@ -35,6 +73,7 @@ describe('workflow delegation policy', () => {
         fanout: {
           input: z.string(),
           output: z.array(z.string()),
+          delegation: {},
           handler: async (ctx) => {
             const out: string[] = []
             for (let index = 0; index < 33; index += 1) {
@@ -296,6 +335,7 @@ describe('workflow delegation policy', () => {
         traced: {
           input: z.string(),
           output: z.string(),
+          delegation: { agents: ['worker'] },
           handler: async (ctx) => ctx.agents.worker(ctx.input)
         }
       })

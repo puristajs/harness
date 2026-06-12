@@ -99,8 +99,13 @@ export interface HarnessDefaults {
   delegation?: DelegationDefaults
 }
 
-/** Safe-by-default workflow child-agent delegation budgets. */
+/** Workflow child-agent delegation defaults. Delegation is disabled unless explicitly enabled. */
 export interface DelegationDefaults {
+  /**
+   * Enable workflow child-agent calls for workflows that do not declare their
+   * own `delegation` policy. Default: `false`.
+   */
+  enabled?: boolean
   /**
    * Maximum child-agent calls one workflow run may start. Default: `32`.
    * Set per workflow with `workflow.delegation.maxChildAgentCalls`.
@@ -552,6 +557,8 @@ type WorkflowDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, 
 
 /** Policy for workflow-local child-agent delegation through `ctx.agents`. */
 export interface WorkflowDelegationPolicy<S extends BuilderState = BuilderState> {
+  /** Enable or disable child-agent calls for this workflow. A policy object without this field enables delegation. */
+  enabled?: boolean
   /** Child agent ids this workflow may call. Omit to allow all registered agents. */
   agents?: readonly (keyof NonNullable<S['agents']> & string)[]
   /** Per-run child-agent call limit. Overrides `defaults.delegation.maxChildAgentCalls`. */
@@ -1111,6 +1118,7 @@ function validateDelegationBudget(value: number | undefined, path: string, opts:
  *     summarize_ticket: {
  *       input: z.object({ ticket: z.string() }),
  *       output: z.string(),
+ *       delegation: { agents: ['summarize'] },
  *       handler: (ctx) => ctx.agents.summarize(ctx.input.ticket)
  *     }
  *   })

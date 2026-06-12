@@ -30,6 +30,7 @@ describe('emitted message id uniqueness', () => {
         wf: {
           input: z.string(),
           output: z.string(),
+          delegation: {},
           // Two agent calls in one run emit two assistant messages in the same ms.
           // Before the fix this rejected with StateError "Duplicate message id."
           handler: async (ctx) => {

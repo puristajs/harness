@@ -89,6 +89,7 @@ type SessionState = {
 }
 
 type EffectiveDelegationPolicy = {
+  enabled: boolean
   allowedAgents?: Set<string>
   maxChildAgentCalls: number
   maxParallelChildAgentCalls: number
@@ -917,15 +918,18 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   function resolveDelegationPolicy(workflow: WorkflowDefinition<S>): EffectiveDelegationPolicy {
-    const configured = (workflow.delegation ?? {}) as WorkflowDelegationPolicy<S>
+    const configured = workflow.delegation as WorkflowDelegationPolicy<S> | undefined
+    const policy = configured ?? {}
+    const enabled = configured ? policy.enabled !== false : definition.defaults.delegation?.enabled === true
     return {
-      ...(configured.agents ? { allowedAgents: new Set(configured.agents as readonly string[]) } : {}),
-      maxChildAgentCalls: configured.maxChildAgentCalls ?? definition.defaults.delegation?.maxChildAgentCalls ?? DEFAULT_MAX_CHILD_AGENT_CALLS,
-      maxParallelChildAgentCalls: configured.maxParallelChildAgentCalls ?? definition.defaults.delegation?.maxParallelChildAgentCalls ?? DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS,
-      maxDepth: configured.maxDepth ?? definition.defaults.delegation?.maxDepth ?? DEFAULT_MAX_DELEGATION_DEPTH,
-      ...(configured.modelAliases ? { modelAliases: new Set(configured.modelAliases as readonly string[]) } : {}),
+      enabled,
+      ...(policy.agents ? { allowedAgents: new Set(policy.agents as readonly string[]) } : {}),
+      maxChildAgentCalls: policy.maxChildAgentCalls ?? definition.defaults.delegation?.maxChildAgentCalls ?? DEFAULT_MAX_CHILD_AGENT_CALLS,
+      maxParallelChildAgentCalls: policy.maxParallelChildAgentCalls ?? definition.defaults.delegation?.maxParallelChildAgentCalls ?? DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS,
+      maxDepth: policy.maxDepth ?? definition.defaults.delegation?.maxDepth ?? DEFAULT_MAX_DELEGATION_DEPTH,
+      ...(policy.modelAliases ? { modelAliases: new Set(policy.modelAliases as readonly string[]) } : {}),
       agentModelAliases: new Map(
-        Object.entries(configured.agentModelAliases ?? {}).map(([agentId, aliases]) => [agentId, new Set(aliases as readonly string[])])
+        Object.entries(policy.agentModelAliases ?? {}).map(([agentId, aliases]) => [agentId, new Set(aliases as readonly string[])])
       )
     }
   }
@@ -938,6 +942,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     modelAlias: string
   }): void {
     const { policy, state, workflowId, agentId, modelAlias } = args
+    if (!policy.enabled) {
+      throw new DelegationPolicyError('Workflow child-agent delegation is disabled.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'delegation_disabled'
+      })
+    }
     if (policy.allowedAgents && !policy.allowedAgents.has(agentId)) {
       throw new DelegationPolicyError('Workflow is not allowed to invoke this child agent.', {
         workflow_id: workflowId,

@@ -58,6 +58,7 @@ export function createQuickstartHarness(provider?: ModelProvider) {
       explain_quickstart: workflow({
         input: quickstartInput,
         output: quickstartOutput,
+        delegation: { agents: ['assistant'] },
         handler: async (ctx) => {
           ctx.metrics.counter('quickstart.workflow.started', 1, { workflow: 'explain_quickstart' })
           await ctx.memory.session.write('last_topic', { topic: ctx.input.topic })

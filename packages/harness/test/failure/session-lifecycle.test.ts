@@ -63,6 +63,7 @@ it('does not emit or finish a run when createRun fails', async () => {
       wf: {
         input: z.string(),
         output: z.string(),
+        delegation: {},
         handler: async (ctx) => ctx.agents.assistant(ctx.input)
       }
     })
@@ -102,6 +103,7 @@ it.each(['finishRun', 'upsertSession'] as const)(
         wf: {
           input: z.string(),
           output: z.string(),
+          delegation: {},
           handler: async (ctx) => ctx.agents.assistant(ctx.input)
         }
       })

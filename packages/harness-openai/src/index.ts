@@ -72,6 +72,7 @@ export interface OpenAiFactoryOptions extends ClientOptions {
  *     summarize: {
  *       input: z.string(),
  *       output: z.string(),
+ *       delegation: { agents: ['assistant'] },
  *       handler: (ctx) => ctx.agents.assistant(ctx.input)
  *     }
  *   })

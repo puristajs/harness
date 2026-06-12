@@ -181,17 +181,25 @@ that operational lineage while redacting prompts and outputs.
 ## Workflow Delegation
 
 Workflows call registered agents through typed `ctx.agents.<id>(input, opts)`.
-No extra config is needed for ordinary workflows:
+Child-agent calls are disabled by default. Opt in per workflow:
 
 ```ts
-handler: async (ctx) => ctx.agents.writer(ctx.input)
+.workflows(({ workflow }) => ({
+  publish: workflow({
+    input,
+    output,
+    delegation: { agents: ['writer'] },
+    handler: async (ctx) => ctx.agents.writer(ctx.input)
+  })
+}))
 ```
 
-The harness still applies default child-agent budgets:
+If every workflow in a harness should be allowed to delegate, opt in globally:
 
 ```ts
 .defaults({
   delegation: {
+    enabled: true,
     maxChildAgentCalls: 32,
     maxParallelChildAgentCalls: 8,
     maxDepth: 1
@@ -225,6 +233,17 @@ agent's default model:
 
 Denied calls throw `DelegationPolicyError` with code
 `DELEGATION_POLICY_ERROR`.
+
+Policy fields:
+
+- `enabled`: optional workflow switch; a `delegation` object enables delegation
+  unless it sets `enabled: false`.
+- `agents`: child-agent allowlist.
+- `maxChildAgentCalls`: total calls per workflow run.
+- `maxParallelChildAgentCalls`: active calls per workflow run.
+- `maxDepth`: local delegation depth.
+- `modelAliases`: workflow-wide model alias allowlist for child calls.
+- `agentModelAliases`: per-child-agent model alias allowlists.
 
 ## Run Summary
 

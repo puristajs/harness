@@ -23,7 +23,7 @@ describe('harness cancellation propagation', () => {
       .tools({})
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
       .build()
 
     const session = await harness.getSession('s1')
@@ -142,6 +142,7 @@ describe('harness cancellation propagation', () => {
         wf: {
           input: z.string(),
           output: z.string(),
+          delegation: {},
           handler: async (ctx) => {
             const controller = new AbortController()
             controller.abort(new Error('nested stop'))
@@ -188,7 +189,7 @@ describe('harness cancellation propagation', () => {
       })
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
       .build()
 
     const session = await harness.getSession('s1')

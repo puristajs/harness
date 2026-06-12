@@ -107,6 +107,9 @@ handler: async (ctx) => {
 }
 ```
 
+Declare `delegation: { agents: ['triage'] }` on workflows that call
+`ctx.agents`.
+
 Use an application prefix such as `app.` or a service-specific namespace. Avoid
 colliding with `gen_ai.*` and `harness.*` instruments.
 

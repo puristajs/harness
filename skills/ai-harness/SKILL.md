@@ -21,7 +21,7 @@ Keep these layers separate:
 - Use `defineHarness()` as the sole construction path. Do not invent standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, or `defineModel` helpers.
 - Preserve builder inference by declaring models before agents and agents before workflows.
 - Use inline helper callbacks for agents and workflows: `.agents(({ agent }) => ({ ... }))` and `.workflows(({ workflow }) => ({ ... }))`.
-- Keep simple workflow orchestration low-effort with `ctx.agents.<id>(input)`. Add `workflow.delegation` only when a workflow needs child-agent allowlists, fan-out budgets, or per-call model alias overrides.
+- Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
@@ -80,6 +80,7 @@ const harness = defineHarness({ name: 'support-ai' })
     triage_ticket: workflow({
       input: z.object({ ticketId: z.string() }),
       output: z.object({ priority: z.string(), reason: z.string() }),
+      delegation: { agents: ['triage'] },
       handler: (ctx) => {
         ctx.metrics.counter('support.triage.started', 1)
         return ctx.metrics.duration('support.triage.duration', undefined, () => ctx.agents.triage(ctx.input))

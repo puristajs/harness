@@ -81,11 +81,13 @@ The harness also races workflow handlers against `ctx.signal`, so a run can
 finish as cancelled/timed out even when handler code hangs. This is not a
 thread/process kill; cooperative cancellation is still required for cleanup.
 
-Delegation defaults are safe for low-effort workflows: 32 child-agent calls per
-workflow run, 8 active child-agent calls at once, and depth 1. Add
+Child-agent delegation is disabled by default. Add `workflow.delegation` next to
+handlers that call `ctx.agents`; the policy object enables that workflow unless
+it sets `enabled: false`. After opt-in, defaults are 32 child-agent calls per
+workflow run, 8 active child-agent calls at once, and depth 1. Use
 `delegation.agents` for least privilege, raise/lower budgets per workflow, and
-use `agentModelAliases` or `modelAliases` before passing `{ model: 'alias' }` to
-`ctx.agents.<id>`.
+use `agentModelAliases` or `modelAliases` before passing `{ model: 'alias' }`
+to `ctx.agents.<id>`.
 
 Runtime policy violations throw `DelegationPolicyError`. Streamed and persisted
 child-agent lifecycle events include `workflowId`, `delegationCallId`,

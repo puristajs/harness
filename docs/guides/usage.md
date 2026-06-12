@@ -70,6 +70,7 @@ const harness = defineHarness({ name: 'docs-example' })
     answer_with_review: workflow({
       input: answerInput,
       output: answerOutput,
+      delegation: { agents: ['answerer'] },
       handler: async (ctx) => ctx.agents.answerer(ctx.input)
     })
   }))

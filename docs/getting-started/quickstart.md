@@ -85,7 +85,9 @@ The key rule: application code calls sessions, not provider adapters directly.
 In this flow, the workflow owns orchestration and the agent owns the model loop.
 The agent prepares messages, calls the model, handles tool calls when available,
 and returns validated output. The workflow decides when that agent is invoked
-and what happens before or after it.
+and what happens before or after it. Because workflow child-agent calls are
+disabled by default, the example workflow declares
+`delegation: { agents: ['assistant'] }`.
 
 The quickstart keeps the workflow intentionally small. For multi-agent
 orchestration, durable steps, streaming, and failure handling, continue with

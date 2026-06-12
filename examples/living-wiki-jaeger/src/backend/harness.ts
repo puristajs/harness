@@ -247,6 +247,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       ingest_source: workflow({
         input: ingestSourceInputSchema,
         output: ingestSourceOutputSchema,
+        delegation: { agents: ['source_extractor'] },
         handler: async (ctx) => {
           await store.readSource(ctx.input.sourceSlug)
           const output = await ctx.agents.source_extractor(ctx.input, { signal: ctx.signal })
@@ -260,16 +261,19 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       ask_wiki: workflow({
         input: askWikiInputSchema,
         output: askWikiOutputSchema,
+        delegation: { agents: ['wiki_answerer'] },
         handler: async (ctx) => ctx.agents.wiki_answerer(ctx.input, { signal: ctx.signal })
       }),
       lint_wiki: workflow({
         input: lintWikiInputSchema,
         output: lintWikiOutputSchema,
+        delegation: { agents: ['wiki_linter'] },
         handler: async (ctx) => ctx.agents.wiki_linter(ctx.input, { signal: ctx.signal })
       }),
       reconcile_contradiction: workflow({
         input: reconcileContradictionInputSchema,
         output: reconcileContradictionOutputSchema,
+        delegation: { agents: ['wiki_reconciler'] },
         handler: async (ctx) => {
           await store.readWikiPage(ctx.input.leftRef)
           await store.readWikiPage(ctx.input.rightRef)
@@ -281,6 +285,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       generate_research_brief: workflow({
         input: generateResearchBriefInputSchema,
         output: generateResearchBriefOutputSchema,
+        delegation: { agents: ['wiki_brief_writer'] },
         handler: async (ctx) => {
           const pages = await Promise.all(ctx.input.pageSlugs.map((slug) => store.readWikiPage(slug)))
           const output = await ctx.agents.wiki_brief_writer(ctx.input, { signal: ctx.signal })
@@ -306,6 +311,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       decision_memo: workflow({
         input: decisionMemoInputSchema,
         output: decisionMemoOutputSchema,
+        delegation: { agents: ['decision_memo_writer'] },
         handler: async (ctx) => {
           const output = await ctx.agents.decision_memo_writer(ctx.input, { signal: ctx.signal })
           const markdown = decisionMemoMarkdown(ctx.input.proposal, output)
@@ -330,6 +336,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       architecture_review: workflow({
         input: architectureReviewInputSchema,
         output: architectureReviewOutputSchema,
+        delegation: { agents: ['architecture_reviewer'] },
         handler: async (ctx) => {
           if (ctx.input.sourceSlug) await store.readSource(ctx.input.sourceSlug)
           if (ctx.input.pageSlug) await store.readWikiPage(ctx.input.pageSlug)
@@ -358,6 +365,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
       wiki_audit: workflow({
         input: wikiQualityAuditInputSchema,
         output: wikiQualityAuditOutputSchema,
+        delegation: { agents: ['wiki_auditor'] },
         handler: async (ctx) => {
           const output = await ctx.agents.wiki_auditor(ctx.input, { signal: ctx.signal })
           return {

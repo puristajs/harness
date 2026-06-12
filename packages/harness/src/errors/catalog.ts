@@ -183,6 +183,7 @@ export class DelegationPolicyError extends HarnessError {
       workflow_id: string
       agent_id: string
       reason:
+        | 'delegation_disabled'
         | 'agent_not_allowed'
         | 'max_child_agent_calls_exceeded'
         | 'max_parallel_child_agent_calls_exceeded'

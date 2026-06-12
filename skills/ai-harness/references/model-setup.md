@@ -171,6 +171,7 @@ Workflow handlers expose `ctx.agents` and `ctx.models`. Custom agent handlers ex
   retrieve_and_answer: workflow({
     input: z.object({ question: z.string() }),
     output: z.object({ answer: z.string() }),
+    delegation: { agents: ['answerer'] },
     handler: async (ctx) => {
       const embedding = await ctx.models.retrieval.embed(
         { input: ctx.input.question },

@@ -169,10 +169,11 @@ interface HarnessDefaults {
   /** Max tool calls from one model response executed concurrently. Default: 8. */
   maxParallelToolCalls?: number
   /**
-   * Workflow child-agent delegation budgets.
-   * Defaults: maxChildAgentCalls=32, maxParallelChildAgentCalls=8, maxDepth=1.
+   * Workflow child-agent delegation defaults.
+   * Delegation is disabled by default.
    */
   delegation?: {
+    enabled?: boolean
     maxChildAgentCalls?: number
     maxParallelChildAgentCalls?: number
     maxDepth?: number
@@ -191,9 +192,11 @@ interface HarnessDefaults {
 
 Note that timeout fields keep `Ms` suffixes for backwards-readable API ergonomics; OTel-exposed durations use seconds (see [14-otel-conventions](./14-otel-conventions.md)).
 
-Delegation defaults are enforced per workflow run. `maxChildAgentCalls` and
-`maxDepth` accept integers `>= 0`; `maxParallelChildAgentCalls` accepts integers
-`>= 1`. A workflow can override these values with `WorkflowDefinition.delegation`.
+Delegation defaults are enforced per workflow run after delegation is enabled.
+`enabled` defaults to `false`. `maxChildAgentCalls` and `maxDepth` accept
+integers `>= 0`; `maxParallelChildAgentCalls` accepts integers `>= 1`. A
+workflow can opt in and override these values with
+`WorkflowDefinition.delegation`.
 
 ### `.models(models)`
 

@@ -48,7 +48,7 @@ it('enforces maxSteps in default agent loop', async () => {
     .tools({})
     .skills({})
     .agents({ a1: { model: 'fast', instructions: 'x', maxSteps: 1 } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
     .build()
 
   const s = await harness.getSession('s1')
@@ -76,7 +76,7 @@ it('replays model providerItems on the next agent loop round without persisting 
     .tools({})
     .skills({})
     .agents({ a1: { model: 'fast', instructions: 'x' } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
     .build()
 
   const s = await harness.getSession('s1')
@@ -105,6 +105,7 @@ it('session busy guard and memory file semantics', async () => {
       wf: {
         input: z.string(),
         output: z.string(),
+        delegation: {},
         handler: async (ctx) => {
           await new Promise((resolve) => setTimeout(resolve, 50))
           return ctx.agents.a1(ctx.input) as Promise<string>
@@ -131,7 +132,7 @@ it('agent loop uses model capability gates', async () => {
     .tools({})
     .skills({})
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x' } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('s1')
@@ -148,7 +149,7 @@ it('passes harness logger and model timeout defaults into base model providers',
     .tools({})
     .skills({})
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('s1')
@@ -205,7 +206,7 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
     })
     .skills({})
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['ctx_tool'], builtinTools: false } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('s1')
@@ -264,7 +265,7 @@ it('executes tool calls from the same model response concurrently and preserves 
         builtinTools: false
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('parallel-tools')
@@ -326,7 +327,7 @@ it('limits parallel tool execution with maxParallelToolCalls', async () => {
         builtinTools: false
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('limited-parallel-tools')
@@ -379,7 +380,7 @@ it('uses persistent stdio MCP transport through the agent sandbox telemetry wrap
         builtinTools: false
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   try {
@@ -434,7 +435,7 @@ it('preserves sandbox spawn capability through the agent sandbox telemetry wrapp
         builtinTools: false
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   try {
@@ -477,7 +478,7 @@ it('reports static permission denials with mode_deny instead of hook_deny', asyn
         permissions: { write: 'deny' }
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('permission-denied')
@@ -515,7 +516,7 @@ it('enforces permission deny patterns before mutating built-in tools run', async
         permissions: { write: { mode: 'allow', deny: ['/workspace/blocked*'] } }
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('permission-deny-pattern')
@@ -557,7 +558,7 @@ it('bounds permission hooks with the tool timeout and lets the model recover', a
         }
       }
     })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   const s = await harness.getSession('permission-timeout')
@@ -656,7 +657,7 @@ it('serializes two same-tick prompts on a fresh session (concurrency race)', asy
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-    .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
     .build()
 
   // Fire both before any await resolves: the first must win, the second must be rejected.

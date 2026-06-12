@@ -19,6 +19,7 @@ interface WorkflowDefinition<
 }
 
 interface WorkflowDelegationPolicy<S> {
+  enabled?: boolean
   agents?: readonly (keyof S['agents'] & string)[]
   maxChildAgentCalls?: number
   maxParallelChildAgentCalls?: number
@@ -68,17 +69,24 @@ interface WorkflowContext<S, I, O> {
 ## Delegation policy
 
 Workflows may orchestrate child agents through `ctx.agents`; agents do not spawn
-other agents directly. The harness applies these safe defaults per workflow run:
+other agents directly. Child-agent delegation is disabled unless either:
+
+- the workflow declares `delegation`; or
+- `defaults.delegation.enabled` is set to `true`.
+
+A workflow-level `delegation` object enables that workflow unless it sets
+`enabled: false`. Once enabled, the harness applies these safe defaults per
+workflow run:
 
 - `maxChildAgentCalls: 32`
 - `maxParallelChildAgentCalls: 8`
 - `maxDepth: 1`
 
-`WorkflowDefinition.delegation` can override the numeric budgets, restrict the
-child agent ids with `agents`, and restrict model aliases available for
-workflow-local child-agent model overrides. `modelAliases` applies to every
-child-agent call in the workflow. `agentModelAliases` overrides that set for a
-specific child agent.
+`WorkflowDefinition.delegation` can override the numeric budgets, disable the
+workflow with `enabled: false`, restrict the child agent ids with `agents`, and
+restrict model aliases available for workflow-local child-agent model
+overrides. `modelAliases` applies to every child-agent call in the workflow.
+`agentModelAliases` overrides that set for a specific child agent.
 
 ```ts
 delegation: {

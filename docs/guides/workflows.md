@@ -57,6 +57,7 @@ const harness = defineHarness({ name: 'incident-review' })
         level: z.enum(['low', 'medium', 'high']),
         reasons: z.array(z.string())
       }),
+      delegation: { agents: ['facts', 'risk'] },
       handler: async (ctx) => {
         const facts = await ctx.agents.facts({ report: ctx.input.report })
         const risk = await ctx.agents.risk({ facts: facts.facts })
@@ -73,6 +74,7 @@ Use `Promise.all` when child agent calls are independent. Every call shares the
 workflow run id and signal; message history is appended as branches finish.
 
 ```ts
+delegation: { agents: ['security_review', 'docs_review', 'test_review'] },
 handler: async (ctx) => {
   const [security, docs, tests] = await Promise.all([
     ctx.agents.security_review(ctx.input),
@@ -90,13 +92,12 @@ payloads.
 
 ## Delegation Policy
 
-Workflow child-agent calls are enabled by default and bounded by safe defaults:
-32 child-agent calls per workflow run, 8 active child-agent calls at once, and
-one local workflow-to-agent delegation level. Keep the default for ordinary
-sequential workflows.
+Workflow child-agent calls are disabled by default. A workflow must declare
+`delegation` or the harness must opt in with `defaults.delegation.enabled: true`
+before `ctx.agents.<id>(...)` can start a child agent.
 
-Use `delegation` when a workflow should be intentionally narrow or needs a
-larger fan-out budget:
+Prefer workflow-local opt-in because it documents the orchestration contract
+next to the handler:
 
 ```ts
 .workflows(({ workflow }) => ({
@@ -124,6 +125,23 @@ Policy reference mistakes fail during builder setup. Runtime budget violations
 fail with `DelegationPolicyError` and preserve `workflow_id`, `agent_id`,
 `reason`, and the relevant limit or model alias.
 
+Settings:
+
+- `enabled`: optional workflow switch. A `delegation` object enables delegation
+  unless it sets `enabled: false`.
+- `agents`: child-agent allowlist. Omit only when the workflow may call any
+  registered agent.
+- `maxChildAgentCalls`: total child-agent calls for one workflow run. Default
+  after opt-in: `32`.
+- `maxParallelChildAgentCalls`: maximum active child-agent calls. Default after
+  opt-in: `8`.
+- `maxDepth`: local delegation depth. Default after opt-in: `1`; `0` disables
+  child-agent calls.
+- `modelAliases`: model aliases allowed for all child-agent calls in this
+  workflow.
+- `agentModelAliases`: per-agent model alias allowlists. These override
+  `modelAliases` for the named agent.
+
 ## Direct Model Work Inside Workflows
 
 Workflow handlers can call `ctx.models.<alias>` directly for deterministic
@@ -146,6 +164,7 @@ transparent pass-through unless the workflow call opts into durable execution
 and a durable runtime adapter is configured.
 
 ```ts
+delegation: { agents: ['outline', 'writer'] },
 const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input))
 const report = await ctx.step('report', () => ctx.agents.writer(outline))
 return report

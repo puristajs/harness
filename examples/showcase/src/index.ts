@@ -171,6 +171,7 @@ export function createShowcaseHarness(provider?: ModelProvider) {
         answer_policy_question: workflow({
           input: z.object({ question: z.string() }),
           output: z.object({ answer: z.string() }),
+          delegation: { agents: ['policy_assistant'] },
           handler: async (ctx) => ctx.agents.policy_assistant({ question: ctx.input.question })
         })
       }))

@@ -77,6 +77,7 @@ const harness = defineHarness()
     research: {
       input: z.object({ topic: z.string() }),
       output: z.string(),
+      delegation: { agents: ['outline', 'write'] },
       handler: async (ctx) => {
         // Each step is checkpointed; on resume it replays its stored output
         // without re-running the body.

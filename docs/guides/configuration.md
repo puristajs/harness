@@ -145,6 +145,7 @@ Capabilities gate runtime calls:
   maxParallelToolCalls: 8,
   historyWindow: 20,
   delegation: {
+    enabled: false,
     maxChildAgentCalls: 32,
     maxParallelChildAgentCalls: 8,
     maxDepth: 1
@@ -156,9 +157,21 @@ Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
 
 `defaults.delegation` controls workflow-local child-agent calls through
-`ctx.agents`. The defaults allow simple workflows without extra config while
-still bounding fan-out. A workflow can override these budgets and restrict
-which child agents or model aliases it may use.
+`ctx.agents`. Delegation is disabled by default. Prefer enabling it per
+workflow with `workflow.delegation`; use `defaults.delegation.enabled: true`
+only when every workflow in the harness should be allowed to call child agents.
+
+Delegation settings:
+
+- `enabled`: global switch for workflows without their own policy. Default:
+  `false`. A workflow-level `delegation` object enables that workflow unless it
+  sets `enabled: false`.
+- `maxChildAgentCalls`: total child-agent calls one workflow run may start.
+  Default after opt-in: `32`.
+- `maxParallelChildAgentCalls`: child-agent calls active at the same time.
+  Default after opt-in: `8`.
+- `maxDepth`: local delegation depth. Default after opt-in: `1`, which allows
+  workflow-to-agent calls. `0` disables child-agent calls.
 
 ## Skills
 
@@ -250,6 +263,9 @@ const result = await ctx.agents.answerer(ctx.input, {
 })
 ```
 
+The containing workflow still needs to opt into child-agent calls, for example
+with `delegation: { agents: ['answerer'] }`.
+
 Inside workflows, agents, and TypeScript tools, use `ctx.memory.session`,
 `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and
 `ctx.memory.tenant()`. The `user()` and `tenant()` helpers use sanitized
@@ -283,6 +299,9 @@ handler: async (ctx) => {
   })
 }
 ```
+
+Declare `delegation: { agents: ['answerer'] }` on workflows that call
+`ctx.agents`.
 
 Run cancellation uses `InvokeOptions.signal`; per-call `timeoutMs` overrides
 `defaults.runTimeoutMs`. The harness passes the active signal into workflows,

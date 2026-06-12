@@ -90,6 +90,7 @@ const harness = defineHarness()
   .models(...).agents(...)
   .workflows({
     job: {
+      delegation: { agents: ['prepare', 'finish'] },
       handler: async (ctx) => {
         const a = await ctx.step('a', () => ctx.agents.prepare(ctx.input))
         return ctx.step('b', () => ctx.agents.finish(a))

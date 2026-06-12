@@ -121,7 +121,7 @@ tokens, raw headers, or attachments.
 - category: `validation`
 - retriable: `false`
 - when: a workflow-local `ctx.agents.<id>(...)` call violates the workflow delegation policy or the effective delegation budgets.
-- meta: `workflow_id: string`, `agent_id: string`, `reason: 'agent_not_allowed'|'max_child_agent_calls_exceeded'|'max_parallel_child_agent_calls_exceeded'|'max_delegation_depth_exceeded'|'model_alias_not_allowed'`, `limit?: number`, `model_alias?: string`.
+- meta: `workflow_id: string`, `agent_id: string`, `reason: 'delegation_disabled'|'agent_not_allowed'|'max_child_agent_calls_exceeded'|'max_parallel_child_agent_calls_exceeded'|'max_delegation_depth_exceeded'|'model_alias_not_allowed'`, `limit?: number`, `model_alias?: string`.
 
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`

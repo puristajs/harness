@@ -1,14 +1,14 @@
 {
   "name": "@purista/showcase",
-  "version": "0.0.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-		"test": "vitest run src --exclude 'dist/**'",
-		"start": "node dist/examples/showcase/src/index.js",
-		"lint": "npm run typecheck"
+    "test": "vitest run src --exclude 'dist/**'",
+    "start": "node dist/examples/showcase/src/index.js",
+    "lint": "npm run typecheck"
   },
   "dependencies": {
     "@purista/harness": "*",

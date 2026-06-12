@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ToolError, ToolNotFoundError, ValidationError } from '../../errors/index.js'
-import type { McpTransportRunner } from './runner.js'
-import { getModelToolSpec, invokeMcpTool, normalizeMcpOutput } from './runner.js'
+import type { McpTransportRunner, ResolvedMcpStdioTool } from './runner.js'
+import { createMcpRunnerRegistry, getModelToolSpec, invokeMcpTool, normalizeMcpOutput } from './runner.js'
 
 function fakeRunner(result: unknown): McpTransportRunner {
   return {
@@ -103,9 +103,69 @@ describe('MCP runner facade', () => {
     await expect(invokeMcpTool(config, fakeRunner({ isError: true, content: [{ type: 'text', text: 'bad upstream' }] }), { title: 'Wiki' }, new AbortController().signal)).rejects.toBeInstanceOf(ToolError)
   })
 
+  it('includes the truncated server error content in MCP error results', async () => {
+    await expect(invokeMcpTool(config, fakeRunner({ isError: true, content: [{ type: 'text', text: 'bad upstream detail' }] }), { title: 'Wiki' }, new AbortController().signal))
+      .rejects.toThrow('bad upstream detail')
+  })
+
   it('validates normalized output before output adapters run', async () => {
     const adapter = vi.fn((value) => value)
     await expect(invokeMcpTool({ ...config, outputAdapter: adapter }, fakeRunner({ structuredContent: { ok: 'yes' } }), { title: 'Wiki' }, new AbortController().signal)).rejects.toBeInstanceOf(ValidationError)
     expect(adapter).not.toHaveBeenCalled()
+  })
+})
+
+describe('MCP runner registry', () => {
+  function stdioConfig(sandboxKey: string): ResolvedMcpStdioTool {
+    return {
+      localToolId: 'sharedTool',
+      kind: 'mcp_stdio',
+      description: 'shared stdio tool',
+      upstreamToolName: 'shared',
+      timeoutMs: 250,
+      serverKey: `sharedTool:${sandboxKey}`,
+      sandboxKey,
+      command: '/usr/bin/env',
+      sandbox: {} as never
+    }
+  }
+
+  it('keys runners by server key so sessions never share a sandbox-bound runner', async () => {
+    const registry = createMcpRunnerRegistry()
+    const sessionOne = stdioConfig('session-1')
+    const sessionTwo = stdioConfig('session-2')
+
+    expect(registry.getRunner(sessionOne)).toBe(registry.getRunner(sessionOne))
+    expect(registry.getRunner(sessionOne)).not.toBe(registry.getRunner(sessionTwo))
+    await registry.close()
+  })
+
+  it('evicts only the runners bound to the closed sandbox key', async () => {
+    const registry = createMcpRunnerRegistry()
+    const sessionOne = stdioConfig('session-1')
+    const sessionTwo = stdioConfig('session-2')
+    const before = registry.getRunner(sessionOne)
+    const survivor = registry.getRunner(sessionTwo)
+
+    await registry.closeForSandboxKey('session-1')
+
+    expect(registry.getRunner(sessionOne)).not.toBe(before)
+    expect(registry.getRunner(sessionTwo)).toBe(survivor)
+    await registry.close()
+  })
+
+  it('closes without loading transports and swallows load failures during close', async () => {
+    const registry = createMcpRunnerRegistry()
+    // Invalid sandbox: loading the stdio transport for this config throws.
+    const runner = registry.getRunner({ ...stdioConfig('session-1'), sandbox: undefined as never })
+    // close() before any call must not trigger the (failing) transport load.
+    await expect(registry.close()).resolves.toBeUndefined()
+
+    const failing = createMcpRunnerRegistry()
+    const loaded = failing.getRunner({ ...stdioConfig('session-2'), sandbox: undefined as never })
+    await expect(loaded.callTool('shared', {}, {})).rejects.toThrow()
+    // The cached load failure must not escape from registry shutdown.
+    await expect(failing.close()).resolves.toBeUndefined()
+    void runner
   })
 })

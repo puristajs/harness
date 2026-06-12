@@ -91,6 +91,32 @@ describe('inMemoryDurableRuntime', () => {
     })).rejects.toBeInstanceOf(DurableTerminalRunError)
   })
 
+  it('records failed runs as terminal but keeps them resumable', async () => {
+    const runtime = inMemoryDurableRuntime()
+    const lease = await runtime.startRun({
+      runId: 'run-failed',
+      sessionId: 'session-failed',
+      workerId: 'worker-1',
+      stepId: 'step-0',
+      input: 'payload'
+    })
+    await commitStep(runtime, lease, 1, 'step-1', 'payload')
+    await runtime.finishRun(lease.runId, { status: 'failed', error: { name: 'Error', message: 'boom' } })
+
+    // Only succeeded/cancelled block resume (spec 22 §3): a retry with the same
+    // run id re-acquires the lease and replays the committed checkpoint.
+    const retry = await runtime.startRun({
+      runId: 'run-failed',
+      sessionId: 'session-failed',
+      workerId: 'worker-2',
+      stepId: 'step-0',
+      input: 'payload'
+    })
+    expect(retry.resumed).toBe(true)
+    expect(retry.attempt).toBe(lease.attempt + 1)
+    expect(retry.checkpoint).toEqual(expect.objectContaining({ stepId: 'step-1' }))
+  })
+
   it('prevents duplicate workers from owning the same session or run', async () => {
     const runtime = inMemoryDurableRuntime()
     await runtime.startRun({

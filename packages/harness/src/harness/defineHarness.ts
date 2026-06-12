@@ -42,6 +42,9 @@ import type {
 import { validateMemoryAdapter } from '../ports/memory.js'
 import type { DurableWorkspaceStore } from '../ports/workspace.js'
 import { validateDurableWorkspaceStore } from '../ports/workspace.js'
+import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
+import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
+import { validateContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -95,6 +98,33 @@ export interface HarnessDefaults {
    * `undefined` keeps all history, `0` keeps only system messages.
    */
   historyWindow?: number
+  /** Default workflow child-agent delegation budgets. */
+  delegation?: DelegationDefaults
+}
+
+/** Workflow child-agent delegation defaults. Delegation is disabled unless explicitly enabled. */
+export interface DelegationDefaults {
+  /**
+   * Enable workflow child-agent calls for workflows that do not declare their
+   * own `delegation` policy. Default: `false`.
+   */
+  enabled?: boolean
+  /**
+   * Maximum child-agent calls one workflow run may start. Default: `32`.
+   * Set per workflow with `workflow.delegation.maxChildAgentCalls`.
+   */
+  maxChildAgentCalls?: number
+  /**
+   * Maximum child-agent calls active at the same time inside one workflow run.
+   * Default: `8`.
+   */
+  maxParallelChildAgentCalls?: number
+  /**
+   * Maximum local delegation depth. Default: `1`.
+   * Current harness workflows invoke leaf agents, so `1` allows normal
+   * workflow-to-agent calls and `0` disables child-agent delegation.
+   */
+  maxDepth?: number
 }
 
 /** Top-level harness options passed to {@link defineHarness}. */
@@ -408,20 +438,37 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   runId: string
   history: ConversationHistory
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   metadata: Readonly<Record<string, JsonValue>>
   metrics: Metrics
+}
+
+/** Run-bound facade for explicit long-horizon context checkpoints. */
+export interface ContextCheckpoints {
+  write(input: {
+    sequence: number
+    kind: ContextCheckpoint['kind']
+    payload: JsonValue
+    metadata?: Record<string, JsonValue>
+  }): Promise<void>
+  list(query?: Omit<ContextCheckpointQuery, 'runId' | 'sessionId' | 'workflowId' | 'agentId' | 'signal'>): Promise<readonly ContextCheckpoint[]>
+  read(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<ContextCheckpoint | undefined>
+  delete(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<void>
 }
 
 /** Full context passed to workflow handlers. */
 export interface WorkflowContext<S extends BuilderState, I, O> {
   input: I
-  agents: { [K in keyof NonNullable<S['agents']>]: (input: AgentInput<S, K>, opts?: InvokeOptions) => Promise<AgentOutput<S, K>> }
+  agents: { [K in keyof NonNullable<S['agents']>]: (input: AgentInput<S, K>, opts?: WorkflowAgentInvokeOptions<S, K>) => Promise<AgentOutput<S, K>> }
   models: ModelHandles<S>
+  /** Harness logger scoped for workflow handler code (spec 10 `WorkflowContext`). */
+  log: Logger
   signal: AbortSignal
   runId: string
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   metrics: Metrics
   /**
    * Runs `fn` as a durable step. Under a durable invocation the output is
@@ -431,6 +478,17 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
   output?: O
 }
+
+/** Invoke options accepted by workflow-local child-agent calls. */
+export type WorkflowAgentInvokeOptions<S extends BuilderState, K extends keyof NonNullable<S['agents']>> =
+  InvokeOptions & {
+    /**
+     * Optional model alias override for this child-agent call.
+     * The alias must exist on the harness model registry and be allowed by the
+     * workflow delegation policy.
+     */
+    model?: keyof NonNullable<S['models']> & string
+  }
 
 /** Full context passed to custom agent handlers. */
 export interface AgentContext<S extends BuilderState, I, O> extends AgentContextMinimal<S, I> {
@@ -466,6 +524,7 @@ export interface WorkflowDefinition<
 > {
   input?: I
   output?: O
+  delegation?: WorkflowDelegationPolicy<S>
   handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 
@@ -512,7 +571,26 @@ type WorkflowSchemaFields = {
 type WorkflowDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = {
   input?: I
   output?: O
+  delegation?: WorkflowDelegationPolicy<S>
   handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+}
+
+/** Policy for workflow-local child-agent delegation through `ctx.agents`. */
+export interface WorkflowDelegationPolicy<S extends BuilderState = BuilderState> {
+  /** Enable or disable child-agent calls for this workflow. A policy object without this field enables delegation. */
+  enabled?: boolean
+  /** Child agent ids this workflow may call. Omit to allow all registered agents. */
+  agents?: readonly (keyof NonNullable<S['agents']> & string)[]
+  /** Per-run child-agent call limit. Overrides `defaults.delegation.maxChildAgentCalls`. */
+  maxChildAgentCalls?: number
+  /** Per-run active child-agent call limit. Overrides `defaults.delegation.maxParallelChildAgentCalls`. */
+  maxParallelChildAgentCalls?: number
+  /** Maximum local delegation depth. Overrides `defaults.delegation.maxDepth`. */
+  maxDepth?: number
+  /** Model aliases allowed for every child-agent call in this workflow, including calls running on the agent's default `model`. */
+  modelAliases?: readonly (keyof NonNullable<S['models']> & string)[]
+  /** Per-child-agent model alias allowlists. These replace `modelAliases` for the named agent. */
+  agentModelAliases?: Partial<Record<keyof NonNullable<S['agents']> & string, readonly (keyof NonNullable<S['models']> & string)[]>>
 }
 
 type WorkflowDefinitionFor<S extends BuilderState, D> =
@@ -637,8 +715,8 @@ export interface RunSummary {
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
-  | { type: 'agent.started'; runId: string; agentId: string; at: string }
-  | { type: 'agent.finished'; runId: string; agentId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'agent.started'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
+  | { type: 'agent.finished'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
   | { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
@@ -658,6 +736,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
   workspaceStore(store: DurableWorkspaceStore): HarnessBuilder<S>
+  checkpoints(store: ContextCheckpointStore): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -684,6 +763,7 @@ type BuilderStateInternal = {
   memory?: MemoryAdapter
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
+  checkpoints?: ContextCheckpointStore
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -738,6 +818,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ workspaceStore })
   }
 
+  public checkpoints(checkpoints: ContextCheckpointStore): HarnessBuilder<S> {
+    if (this.configured.checkpoints) {
+      throw new HarnessConfigError('Context checkpoint store is already configured.', { reason: 'duplicate_adapter', path: 'checkpoints' })
+    }
+    validateContextCheckpointStore(checkpoints)
+    return this.clone({ checkpoints })
+  }
+
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
     return this.clone({ requiredCapabilities: uniqueCapabilities(capabilities) })
   }
@@ -749,6 +837,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (defaults.maxParallelToolCalls !== undefined && (!Number.isInteger(defaults.maxParallelToolCalls) || defaults.maxParallelToolCalls < 1)) {
       throw new HarnessConfigError('maxParallelToolCalls must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.maxParallelToolCalls' })
     }
+    validateDelegationBudget(defaults.delegation?.maxChildAgentCalls, 'defaults.delegation.maxChildAgentCalls', { min: 0 })
+    validateDelegationBudget(defaults.delegation?.maxParallelChildAgentCalls, 'defaults.delegation.maxParallelChildAgentCalls', { min: 1 })
+    validateDelegationBudget(defaults.delegation?.maxDepth, 'defaults.delegation.maxDepth', { min: 0 })
     return this.clone({ defaults })
   }
 
@@ -797,6 +888,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const resolved = typeof workflows === 'function'
       ? workflows({ workflow: (definition) => definition })
       : workflows
+    this.validateWorkflowDelegationPolicies(resolved)
     return this.clone({ workflows: resolved }) as unknown as HarnessBuilder<any>
   }
 
@@ -806,10 +898,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
     }
     this.validateToolSkillNamespace()
+    // Validated at build time (not in `.agents(...)`) because models may be
+    // declared later in the builder chain.
+    this.validateAgentModelAndToolReferences(models)
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
     if (this.configured.workspaceStore) validateDurableWorkspaceStore(this.configured.workspaceStore)
+    if (this.configured.checkpoints) validateContextCheckpointStore(this.configured.checkpoints)
     const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
@@ -829,6 +925,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       memory,
       ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
       ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
+      ...(this.configured.checkpoints ? { checkpoints: this.configured.checkpoints } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -836,7 +933,8 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         skillTimeoutMs: this.configured.defaults?.skillTimeoutMs ?? 60_000,
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
         maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
-        ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {})
+        ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {}),
+        ...(this.configured.defaults?.delegation ? { delegation: this.configured.defaults.delegation } : {})
       },
       models,
       tools: (this.configured.tools ?? {}) as NonNullable<S['tools']>,
@@ -892,6 +990,28 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
   }
 
+  private validateAgentModelAndToolReferences(models: ModelsConfig): void {
+    const configuredTools = new Set(Object.keys(this.configured.tools ?? {}))
+    for (const [agentId, agent] of Object.entries(this.configured.agents ?? {})) {
+      if (!(agent.model in models)) {
+        throw new HarnessConfigError('Agent references an unknown model alias.', {
+          reason: 'invalid_agent',
+          path: `agents.${agentId}.model`,
+          id: agent.model
+        })
+      }
+      for (const toolId of agent.tools ?? []) {
+        if (!configuredTools.has(toolId)) {
+          throw new HarnessConfigError('Agent references an unknown tool.', {
+            reason: 'invalid_agent',
+            path: `agents.${agentId}.tools`,
+            id: toolId
+          })
+        }
+      }
+    }
+  }
+
   private validateAgentSkillReferences(agents: Record<string, AgentDefinition<any, any, any>>): void {
     const configuredSkills = new Set(Object.keys(this.configured.skills ?? {}))
     for (const [agentId, agent] of Object.entries(agents)) {
@@ -902,6 +1022,59 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
             path: `agents.${agentId}.skills`,
             id: skillId
           })
+        }
+      }
+    }
+  }
+
+  private validateWorkflowDelegationPolicies(workflows: Record<string, WorkflowDefinition<any, any, any>>): void {
+    const configuredAgents = new Set(Object.keys(this.configured.agents ?? {}))
+    const configuredModels = new Set(Object.keys(this.configured.models ?? {}))
+
+    for (const [workflowId, workflow] of Object.entries(workflows)) {
+      const policy = workflow.delegation
+      if (!policy) continue
+
+      validateDelegationBudget(policy.maxChildAgentCalls, `workflows.${workflowId}.delegation.maxChildAgentCalls`, { min: 0 })
+      validateDelegationBudget(policy.maxParallelChildAgentCalls, `workflows.${workflowId}.delegation.maxParallelChildAgentCalls`, { min: 1 })
+      validateDelegationBudget(policy.maxDepth, `workflows.${workflowId}.delegation.maxDepth`, { min: 0 })
+
+      for (const agentId of policy.agents ?? []) {
+        if (!configuredAgents.has(agentId)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown agent.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.agents`,
+            id: agentId
+          })
+        }
+      }
+
+      for (const alias of policy.modelAliases ?? []) {
+        if (!configuredModels.has(alias)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown model alias.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.modelAliases`,
+            id: alias
+          })
+        }
+      }
+
+      for (const [agentId, aliases] of Object.entries(policy.agentModelAliases ?? {})) {
+        if (!configuredAgents.has(agentId)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown agent.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.agentModelAliases.${agentId}`,
+            id: agentId
+          })
+        }
+        for (const alias of aliases ?? []) {
+          if (!configuredModels.has(alias)) {
+            throw new HarnessConfigError('Workflow delegation policy references an unknown model alias.', {
+              reason: 'invalid_workflow',
+              path: `workflows.${workflowId}.delegation.agentModelAliases.${agentId}`,
+              id: alias
+            })
+          }
         }
       }
     }
@@ -945,6 +1118,17 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       })
     }
 
+    if (this.configured.checkpoints) {
+      adapters.push({
+        kind: 'context_checkpoint',
+        id: this.configured.checkpoints.info.id,
+        capabilities: uniqueCapabilities(this.configured.checkpoints.info.capabilities),
+        metadata: {
+          packageName: this.configured.checkpoints.info.packageName
+        }
+      })
+    }
+
     for (const [alias, model] of Object.entries(models)) {
       adapters.push({
         kind: 'model',
@@ -977,6 +1161,16 @@ function getAdapterId(adapter: unknown, fallback: string): string {
   return fallback
 }
 
+function validateDelegationBudget(value: number | undefined, path: string, opts: { min: number }): void {
+  if (value === undefined) return
+  if (!Number.isInteger(value) || value < opts.min) {
+    throw new HarnessConfigError(`${path} must be an integer >= ${opts.min}`, {
+      reason: 'invalid_defaults',
+      path
+    })
+  }
+}
+
 /**
  * Creates the chainable harness builder used to define a harness system.
  *
@@ -992,6 +1186,7 @@ function getAdapterId(adapter: unknown, fallback: string): string {
  *     summarize_ticket: {
  *       input: z.object({ ticket: z.string() }),
  *       output: z.string(),
+ *       delegation: { agents: ['summarize'] },
  *       handler: (ctx) => ctx.agents.summarize(ctx.input.ticket)
  *     }
  *   })

@@ -5,7 +5,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { SkillManifestError, SkillNotFoundError } from '../errors/index.js'
-import type { JsonValue } from '../models/json.js'
 import type {
   DiscoveredSkills,
   DiscoverSkillsOptions,
@@ -344,12 +343,4 @@ export async function discoverSkills(options: DiscoverSkillsOptions = {}): Promi
   }
 
   return { skills, diagnostics }
-}
-
-export function assertSerializable(value: unknown): asserts value is JsonValue {
-  try {
-    JSON.stringify(value)
-  } catch {
-    throw new SkillManifestError('Non-serializable value', { reason: 'invalid_frontmatter', directory: '' })
-  }
 }

@@ -1,4 +1,5 @@
 import type {
+  AdapterCallContext,
   BaseModelProviderOptions,
   ContentPart,
   EmbeddingRequest,
@@ -15,7 +16,15 @@ import type {
   TokenUsage,
   ToolCallSpec
 } from '@purista/harness'
-import { BaseModelProvider, ModelError } from '@purista/harness'
+import {
+  BaseModelProvider,
+  accumulateStreamToolCallDeltas,
+  createStreamToolCallState,
+  finalizeStreamToolCalls,
+  parseProviderJson,
+  safePartialJson,
+  toTokenUsage
+} from '@purista/harness'
 import ModelClient, { type ModelClientOptions } from '@azure-rest/ai-inference'
 import { AzureKeyCredential, type KeyCredential, type TokenCredential } from '@azure/core-auth'
 import { createSseStream } from '@azure/core-sse'
@@ -77,8 +86,9 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     return {
       content: choice?.message?.content ?? '',
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
+      usage: toTokenUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
       finishReason: toFinishReason(choice?.finish_reason),
+      outcome: toOutcome(choice?.finish_reason),
       raw: response
     }
   }
@@ -87,9 +97,10 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     req.signal.throwIfAborted()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
-    const toolState: StreamToolCallState = new Map()
+    let providerFinishReason: unknown
+    const toolState = createStreamToolCallState()
 
-    for await (const event of streamChat(this.client, req, false)) {
+    for await (const event of streamChat(this.client, req)) {
       req.signal.throwIfAborted()
       const data = parseStreamData(event, req, 'textStream')
       if (!data) continue
@@ -98,21 +109,22 @@ class AzureFoundryModelProvider extends BaseModelProvider {
           yield { kind: 'delta', text: choice.delta.content }
         }
         if (choice.delta?.tool_calls) {
-          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
+          accumulateStreamToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       if (data.usage) {
-        usage = toUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
+        usage = toTokenUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
       }
     }
 
-    for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
+    for (const call of finalizeStreamToolCalls(toolState, callContext(req, 'textStream'), MALFORMED_JSON_MESSAGE)) {
       yield { kind: 'tool_call', call }
     }
-    yield { kind: 'finish', usage, finishReason }
+    yield { kind: 'finish', usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -125,8 +137,9 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     return {
       object: parseJson(text, req, 'object') as T,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
+      usage: toTokenUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
       finishReason: toFinishReason(choice?.finish_reason),
+      outcome: toOutcome(choice?.finish_reason),
       raw: response
     }
   }
@@ -136,9 +149,10 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     let partial = ''
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
-    const toolState: StreamToolCallState = new Map()
+    let providerFinishReason: unknown
+    const toolState = createStreamToolCallState()
 
-    for await (const event of streamChat(this.client, req, true)) {
+    for await (const event of streamChat(this.client, req)) {
       req.signal.throwIfAborted()
       const data = parseStreamData(event, req, 'objectStream')
       if (!data) continue
@@ -148,22 +162,23 @@ class AzureFoundryModelProvider extends BaseModelProvider {
           yield { kind: 'partial', partial: safePartialJson(partial) }
         }
         if (choice.delta?.tool_calls) {
-          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
+          accumulateStreamToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       if (data.usage) {
-        usage = toUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
+        usage = toTokenUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
       }
     }
 
-    for (const call of finalizeStreamToolCalls(toolState, req, 'objectStream')) {
+    for (const call of finalizeStreamToolCalls(toolState, callContext(req, 'objectStream'), MALFORMED_JSON_MESSAGE)) {
       yield { kind: 'tool_call', call }
     }
     const object = parseJson(partial || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason }
+    yield { kind: 'finish', object, usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doEmbed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -188,7 +203,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
         index: item.index,
         vector: Array.isArray(item.embedding) ? item.embedding : []
       })),
-      usage: toUsage(body.usage?.prompt_tokens, 0, body.usage?.total_tokens),
+      usage: toTokenUsage(body.usage?.prompt_tokens, 0, body.usage?.total_tokens),
       raw: response
     }
   }
@@ -211,7 +226,10 @@ function createClient(options: AzureFoundryFactoryOptions): AzureFoundryClient {
   if (!auth) {
     throw new Error('Azure AI Foundry apiKey or credential is required when no client is injected.')
   }
-  return ModelClient(endpoint, auth, clientOptions) as unknown as AzureFoundryClient
+  // The harness owns retry budgets (spec 23): disable the SDK pipeline's
+  // default retries while preserving explicit user retryOptions as an escape
+  // hatch via the spread below.
+  return ModelClient(endpoint, auth, { retryOptions: { maxRetries: 0 }, ...clientOptions }) as unknown as AzureFoundryClient
 }
 
 async function postChat(client: AzureFoundryClient, req: ChatRequest, stream: boolean): Promise<any> {
@@ -241,7 +259,7 @@ async function postChat(client: AzureFoundryClient, req: ChatRequest, stream: bo
   })
 }
 
-async function* streamChat(client: AzureFoundryClient, req: ChatRequest, objectMode: boolean): AsyncIterable<unknown> {
+async function* streamChat(client: AzureFoundryClient, req: ChatRequest): AsyncIterable<unknown> {
   const response = await postChat(client, req, true)
   const nodeResponse = typeof response.asNodeStream === 'function' ? await response.asNodeStream() : response
   if (nodeResponse.status && nodeResponse.status !== '200' && nodeResponse.status !== 200) {
@@ -352,72 +370,20 @@ function extractToolCalls(toolCalls: unknown, req: ChatRequest, method: string):
     }))
 }
 
-/**
- * Per-index accumulator for streamed tool-call fragments (OpenAI-compatible
- * delta format): the first delta carries `index`/`id`/`function.name`, later
- * deltas carry only `index` and argument fragments. Concatenate by index and
- * parse arguments once at stream end.
- */
-type StreamToolCallState = Map<number, { id?: string; name?: string; args: string }>
-
-function accumulateToolCallDeltas(state: StreamToolCallState, deltas: any[]): void {
-  for (const delta of deltas) {
-    const index = typeof delta?.index === 'number' ? delta.index : 0
-    const existing = state.get(index) ?? { args: '' }
-    if (delta?.id) existing.id = String(delta.id)
-    if (delta?.function?.name) existing.name = String(delta.function.name)
-    if (typeof delta?.function?.arguments === 'string') existing.args += delta.function.arguments
-    state.set(index, existing)
-  }
-}
-
-function finalizeStreamToolCalls(state: StreamToolCallState, req: ChatRequest, method: string): ToolCallSpec[] {
-  return [...state.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .filter(([, call]) => call.id && call.name)
-    .map(([, call]) => ({
-      id: call.id as string,
-      name: call.name as string,
-      arguments: parseJson(call.args || '{}', req, method)
-    }))
-}
-
 function parseStreamData(event: unknown, req: ChatRequest, method: string): any | undefined {
   if (event === '[DONE]') return undefined
   if (typeof event === 'string') return parseJson(event, req, method)
   return event
 }
 
+const MALFORMED_JSON_MESSAGE = 'Azure AI Foundry returned malformed JSON.'
+
+function callContext(req: ChatRequest, method: string): AdapterCallContext {
+  return { provider: 'azure-foundry', model: req.model, method }
+}
+
 function parseJson(content: string, req: ChatRequest, method: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch (error) {
-    throw malformedResponseError(req, method, 'Azure AI Foundry returned malformed JSON.', content, error)
-  }
-}
-
-function malformedResponseError(req: ChatRequest, method: string, message: string, body: unknown, cause: unknown): ModelError {
-  return new ModelError(message, {
-    provider: 'azure-foundry',
-    model: req.model,
-    method,
-    reason: 'malformed_response',
-    providerBody: body
-  }, cause)
-}
-
-function safePartialJson(content: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch {
-    return { _partial: content }
-  }
-}
-
-function toUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number): TokenUsage {
-  const input = inputTokens ?? 0
-  const output = outputTokens ?? 0
-  return { inputTokens: input, outputTokens: output, totalTokens: totalTokens ?? input + output }
+  return parseProviderJson(content, callContext(req, method), MALFORMED_JSON_MESSAGE)
 }
 
 function toFinishReason(value: unknown): TextResponse['finishReason'] {
@@ -430,7 +396,28 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
       return 'tool_calls'
     case 'content_filter':
       return 'content_filter'
+    case 'function_call':
+      return 'tool_calls'
     default:
       return 'error'
+  }
+}
+
+function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
+  const finishReason = toFinishReason(value)
+  return {
+    finishReason,
+    ...(typeof value === 'string' ? { providerFinishReason: value } : {})
+  }
+}
+
+/**
+ * Stream outcome built from the tracked finish reason; `providerFinishReason`
+ * is omitted entirely when the provider never sent a finish reason.
+ */
+function streamOutcome(finishReason: TextResponse['finishReason'], providerFinishReason: unknown): NonNullable<TextResponse['outcome']> {
+  return {
+    finishReason,
+    ...(typeof providerFinishReason === 'string' ? { providerFinishReason } : {})
   }
 }

@@ -53,10 +53,13 @@ See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for
 
 ```bash
 npm run lint
-npm run typecheck
+npm run build
 npm test
 npm run test:coverage
-npm run build
+npm run test:types
+npm run test:contracts
+npm run test:integration
+npm run test:failure
 ```
 
 ## Documentation

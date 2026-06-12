@@ -5,6 +5,7 @@ import { inMemorySandbox, sandboxMemory } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
 import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { Logger } from '../src/logger/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
@@ -25,7 +26,8 @@ const provider: ModelProvider = {
 const harness = defineHarness()
   .memory(sandboxMemory())
   .models({
-    assistant: { provider, model: 'type-test-model', capabilities: ['object'] }
+    assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
+    reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
   })
   .agents(({ agent }) => ({
     planner: agent({
@@ -54,10 +56,19 @@ const harness = defineHarness()
     prepare: workflow({
       input: z.object({ task: z.string() }),
       output: z.object({ plan: z.string(), accepted: z.boolean() }),
+      delegation: {
+        agents: ['planner'],
+        agentModelAliases: { planner: ['assistant', 'reviewer'] },
+        maxChildAgentCalls: 2,
+        maxParallelChildAgentCalls: 1
+      },
       handler: async (ctx) => {
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
         const _inputExact: Expect<Equal<Input, { task: string }>> = true
+        // Spec 10 `WorkflowContext`: handlers receive the harness logger.
+        const _logIsLogger: Expect<Equal<typeof ctx.log, Logger>> = true
+        ctx.log.debug('workflow handler logging is typed')
         await ctx.memory.session.write('workflow_task', { task: ctx.input.task })
         await ctx.memory.run.write('workflow_seen', true)
         await ctx.memory.user('u1').write('workflow_user', 'ok')
@@ -65,6 +76,10 @@ const harness = defineHarness()
         const plan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 })
         type PlanOutput = typeof plan
         const _agentOutputExact: Expect<Equal<PlanOutput, { plan: string; accepted: boolean }>> = true
+        const reviewedPlan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 }, { model: 'reviewer' })
+        const _reviewedAgentOutputExact: Expect<Equal<typeof reviewedPlan, { plan: string; accepted: boolean }>> = true
+        // @ts-expect-error workflow-local agent model overrides must use configured model aliases
+        await ctx.agents.planner({ task: ctx.input.task, priority: 1 }, { model: 'missing' })
 
         return plan
       }

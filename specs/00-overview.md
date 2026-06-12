@@ -6,7 +6,7 @@
 
 ```
 Harness
-  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable runtime, durable workspace
+  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable runtime, durable workspace, context checkpoints
   ├─ Models       (alias → provider + capabilities + default settings)
   ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
   ├─ Custom tools (TS+zod, MCP stdio, MCP http)
@@ -53,6 +53,7 @@ export const harness = defineHarness()
     handle_ticket: {
       input:  z.object({ ticket: z.string() }),
       output: z.object({ resolution: z.string() }),
+      delegation: { agents: ['triage'] },
       handler: async (ctx) => {
         const r = await ctx.agents.triage({ message: ctx.input.ticket })
         return { resolution: r.label }
@@ -74,12 +75,17 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
 - Foundation: telemetry, logging, state store, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v1), and memory adapter.
 - Model registry (aliases to providers, capability-gated).
+- Provider-neutral model outcomes and bounded active retry for transient model
+  failures/rate limits, with long provider retry instructions surfaced as
+  typed deferred retry errors instead of hidden sleeps. See
+  [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 - Built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox.
 - Custom tools: inline TypeScript, MCP stdio, and MCP HTTP.
 - Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
 - Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
 - Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
 - Durable runtime checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
+- Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace store, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
 - Harness-owned AI evaluation primitives: trace-context propagation, run
@@ -114,7 +120,12 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
 | Sandbox         | An isolated FS + (optional) shell-exec environment. v1 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
+| Model outcome   | Provider-neutral finish metadata that preserves the normalized finish reason plus provider-specific finish/status details. |
+| Active retry    | A short, bounded retry performed inside the current model invocation. |
+| Deferred retry  | A long retry instruction surfaced as typed metadata for a durable runtime, queue, or application scheduler to handle later. |
 | Durable workspace | Production replay workspace state that links runtime checkpoints to persisted sandbox/workspace state through opaque references. |
+| Local durable execution | First-party adapter bundle that persists durable runtime state in SQLite and maps a sandbox `/workspace` to a durable host-directory workspace. |
+| Context checkpoint | A typed, payload-bearing handoff or summary record written explicitly by application/agent code to support long-horizon work without hidden prompt rewriting. |
 | Port            | An interface a harness depends on (state, sandbox, memory, durable runtime, durable workspace, model provider). |
 | Adapter         | A concrete implementation of a port. Core ships in-memory/default implementations plus the sandbox-backed memory reference adapter; non-core adapters live in independent packages. |
 | ULID            | Lexicographically sortable id format. Harness mints `${kind}_${ulid}`. |
@@ -130,3 +141,5 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.
 - [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
+- [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
+- [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.

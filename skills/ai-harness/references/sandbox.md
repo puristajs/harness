@@ -18,7 +18,7 @@ Keep sandbox policy explicit. Do not treat host filesystem, process execution, n
 
 ## Built-In Sandboxes
 ```ts
-import { autoDetectSandbox, bashSandbox, inMemorySandbox } from '@purista/harness'
+import { bashSandbox, inMemorySandbox } from '@purista/harness'
 
 defineHarness().sandbox(inMemorySandbox())
 defineHarness().sandbox(bashSandbox({
@@ -40,6 +40,13 @@ defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySand
 - requires optional peer dependency `just-bash`
 - creates an in-memory filesystem session with command execution delegated to `just-bash`
 - throws `HarnessConfigError` if `just-bash` is missing or has no exec surface
+
+`localDirectorySandbox({ root, exec?, coordinator? })` (part of `localDurableExecution`):
+- capabilities: `['sandbox.fs', 'sandbox.persistent_fs']` files-only (default), `['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']` when `exec` is configured — persistence is independent of exec
+- host-directory persistence with a realpath jail; symlink escapes (including dangling symlink write targets) and traversal-shaped `sessionId`/`runId` throw `SandboxError{reason:'invalid_path'}`
+- maps `/workspace` to the active durable workspace when bound through the coordinator
+- exec runs without a shell (tokenized argv); unquoted shell metacharacters are rejected when `allowCommands` is set; output capture caps at 10 MiB per stream; timeout falls back to the harness `toolTimeoutMs`; abort surfaces `OperationCancelledError{scope:'sandbox'}`
+- durable local persistence, not a hardened isolation layer — enabling `exec` is a host trust decision
 
 ## SandboxSession API
 Every sandbox session supports:

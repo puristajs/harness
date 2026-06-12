@@ -111,7 +111,8 @@ execution_semantics:
 
 | Capability | Meaning |
 | --- | --- |
-| `workspace_store.durable` | Adapter persists workspace state beyond process exit and exposes lifecycle methods. |
+| `workspace_store.durable` | Adapter implements the durable workspace lifecycle contract and exposes opaque workspace/checkpoint references. This capability alone does not guarantee process-restart persistence. |
+| `workspace_store.persistent` | Adapter persists workspace/checkpoint state beyond process exit. |
 | `workspace_store.checkpoint` | Adapter can produce stable workspace checkpoints. |
 | `workspace_store.resume` | Adapter can resume from a committed workspace checkpoint. |
 | `workspace_store.abort` | Adapter can mark active or paused workspace state aborted and stop further resumes. |
@@ -122,6 +123,7 @@ execution_semantics:
 | `workspace_store.encrypted_storage` | Adapter encrypts checkpoint payloads, snapshots, files, and metadata at rest according to reported policy. |
 | `runtime.workspace_checkpoint` | Runtime checkpoint records can carry durable workspace references. |
 | `runtime.checkpoint_retention` | Runtime adapter exposes checkpoint retention and expiry metadata. |
+| `runtime.persistent` | Runtime checkpoints, leases, and terminal run state survive process exit. |
 
 Existing `sandbox.snapshot`, `sandbox.resume`, and `sandbox.hibernate`
 capabilities continue to describe low-level sandbox session operations. They do
@@ -180,6 +182,7 @@ Default store:
   `workspace_store.abort`, `workspace_store.cleanup`,
   `workspace_store.inspect`, `workspace_store.retention`, and
   `workspace_store.quota`.
+- The in-memory store MUST NOT advertise `workspace_store.persistent`.
 - The in-memory store is not a production persistence guarantee across process
   restarts and must be documented as local/test only.
 
@@ -526,14 +529,17 @@ New error classes are added to [15-error-catalog](./15-error-catalog.md).
 
 ## 15. Observability
 
-Spans are added to [14-otel-conventions](./14-otel-conventions.md):
+Spans are added to [14-otel-conventions](./14-otel-conventions.md). All six
+workspace operations use the `harness.workspace.{operation}` span name (the
+`workspace_store.*` prefix is used only for the metric and attribute names
+listed below, exactly as spec 14 defines them):
 
 - `harness.workspace.start`
 - `harness.workspace.pause`
-- `harness.workspace_store.resume`
-- `harness.workspace_store.abort`
-- `harness.workspace_store.cleanup`
-- `harness.workspace_store.inspect`
+- `harness.workspace.resume`
+- `harness.workspace.abort`
+- `harness.workspace.cleanup`
+- `harness.workspace.inspect`
 
 Metrics:
 
@@ -550,6 +556,10 @@ Allowed span/log/metric attributes:
 - `harness.workspace.state`
 - `harness.workspace.ref_hash`
 - `harness.workspace.checkpoint_ref_hash`
+- `harness.workspace.persistent` (boolean; store survives process exit)
+- `harness.workspace.attempt` (start/pause/resume)
+- `harness.workspace.sequence` (pause only)
+- `harness.workflow.step_id` (pause only)
 - `harness.workspace_store.checkpoint_ref_hash`
 - `harness.workspace_store.cleanup.reason`
 - `harness.workspace_store.quota`
@@ -625,11 +635,14 @@ Locked behavior when `opts.durable` is present on a workflow call:
 2. **Stable run id.** The harness uses `opts.durable.runId` as the run id (instead
    of generating a fresh ULID). The same run id is used for the durable runtime
    lease, the `RunRecord`, persisted events, and the run summary.
-3. **Lease acquisition.** Inside the session serial lock, after the synchronous
-   busy check and before the workflow handler runs, the harness calls
-   `runtime.startRun({ runId, sessionId, workerId, stepId, input, attempt })` and
-   holds the returned lease for the duration of the run. `worker id` defaults to a
-   stable per-harness-instance id, overridable through `opts.durable.workerId`.
+3. **Lease acquisition before state mutation.** Inside the session serial lock,
+   after the synchronous busy check and before `StateStore.createRun`, the
+   harness calls `runtime.startRun({ runId, sessionId, workerId, stepId, input,
+   attempt })` and holds the returned lease for the duration of the run.
+   `worker id` defaults to a stable per-harness-instance id, overridable through
+   `opts.durable.workerId`. After the lease is acquired, `StateStore.createRun`
+   must be idempotent for the same durable `runId`; existing terminal run
+   records for the same durable run are not overwritten.
 4. **Durable step injection.** `ctx.step(stepId, fn)` is bound to
    `createDurableWorkflowContext(runtime, lease, ...)`. Committed steps replay
    from stored output on resume; new steps run `fn`, commit a runtime checkpoint,
@@ -676,10 +689,19 @@ invoked.
 fully supported: a crashed durable run (lease released mid-flight) re-acquires its
 lease on the next `prompt(...)` with the same `runId` and replays committed steps.
 Resume across an actual process restart additionally requires a `DurableRuntime`
-and `DurableWorkspaceStore` whose state survives process exit; the bundled
-`inMemoryDurableRuntime()` / `inMemoryDurableWorkspaceStore()` are local/test only
-and reset on process exit (§6, §18). Supplying persistent adapters is the only
-additional requirement — the run-loop wiring above is adapter-agnostic.
+advertising `runtime.persistent` and a `DurableWorkspaceStore` advertising
+`workspace_store.persistent`; the bundled `inMemoryDurableRuntime()` /
+`inMemoryDurableWorkspaceStore()` are local/test only and reset on process exit
+(§6, §18). The first-party local adapters that satisfy this are specified in
+[22-local-durable-execution](./22-local-durable-execution.md).
+
+Durable workflow calls with a workspace store MUST use a sandbox session bound
+to the active durable workspace. The existing session-level sandbox is valid for
+non-durable calls only. Implementations must acquire the durable lease and
+start/resume the workspace before opening the run sandbox, then construct
+workflow/agent memory facades against that run sandbox. This rule prevents a
+runtime checkpoint from referencing workspace state that the executing sandbox
+did not actually use.
 
 ### Builder ordering
 
@@ -717,8 +739,10 @@ defineHarness()
   .runtime(runtime)
   .workspaceStore(workspace)
   .requires([
+    'runtime.persistent',
     'runtime.workspace_checkpoint',
     'workspace_store.durable',
+    'workspace_store.persistent',
     'workspace_store.checkpoint',
     'workspace_store.resume',
     'workspace_store.cleanup',
@@ -821,7 +845,8 @@ Harness docs must add a durable workspace page or section covering:
 - Existing runtime checkpoints without workspace fields remain valid and resume
   through the existing `DurableRuntimeAdapter` behavior.
 - Release notes must state that sandbox snapshot support is not equivalent to
-  production durable workspace replay.
+  production durable workspace replay and that process-restart durability
+  requires `runtime.persistent` plus `workspace_store.persistent`.
 
 ## 22. Drift Controls
 

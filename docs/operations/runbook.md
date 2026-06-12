@@ -7,12 +7,13 @@ failure triage.
 
 ```bash
 npm run lint
-npm run typecheck
+npm run build
 npm test
+npm run test:coverage
+npm run test:types
 npm run test:contracts
 npm run test:integration
 npm run test:failure
-npm run build
 ```
 
 ## Service Readiness
@@ -66,7 +67,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 | `OperationTimeoutError` | Run/model/tool exceeded budget. | Tune `defaults`, inspect provider/tool latency. |
 | `OperationCancelledError` | Caller or parent run aborted the operation. | Check disconnect/shutdown paths and `InvokeOptions.signal` propagation. |
 | `ValidationError` | Input/output schema mismatch. | Check Zod issues in logs and traces. |
-| `ModelError` | Provider HTTP/network/error response. | Inspect normalized metadata: status, provider type, request id, body summary. |
+| `ModelError` | Provider HTTP/network/error response. | Inspect normalized metadata: status, provider type, request id, retry kind, retry-after, rate-limit summary, body summary. |
 | `SandboxNoExecutorError` | Command execution requested in files-only sandbox. | Use `bashSandbox()` or disable exec-backed tools. |
 | `McpProtocolError` | MCP list/call/protocol failure. | Check MCP command/url, schema, timeout, stderr/logs. |
 | `McpAuthError` | HTTP MCP auth failed. | Rotate/check token and auth config. |

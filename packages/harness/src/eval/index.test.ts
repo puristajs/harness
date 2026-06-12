@@ -76,6 +76,26 @@ describe('deterministic scorer helpers', () => {
     })
   })
 
+  it('compares values structurally, insensitive to object key order', () => {
+    expect(evaluateDeterministicScorer({ type: 'attribute-equality', leftPath: '/left', rightPath: '/right' }, {
+      input: null,
+      output: {
+        left: { a: 1, nested: { x: [1, { y: true }], z: null } },
+        right: { nested: { z: null, x: [1, { y: true }] }, a: 1 }
+      }
+    })).toEqual({ score: 1, passed: true })
+
+    expect(evaluateDeterministicScorer({ type: 'attribute-equality', leftPath: '/left', rightPath: '/right' }, {
+      input: null,
+      output: { left: { a: 1 }, right: { a: 1, extra: true } }
+    })).toEqual({ score: 0, passed: false, evidence: { left: { a: 1 }, right: { a: 1, extra: true } } })
+
+    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { const: { b: 2, a: 1 } } }, {
+      input: null,
+      output: { a: 1, b: 2 }
+    })).toEqual({ score: 1, passed: true })
+  })
+
   it('reports JSON Schema type, required, and additional-property issues', () => {
     const result = evaluateDeterministicScorer({
       type: 'json-schema',

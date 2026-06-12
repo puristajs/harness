@@ -163,6 +163,20 @@ Common classes:
 
 Use `isHarnessError(error)` for typed routing and `serializeError(error)` for stable API/log envelopes.
 
+`ModelError` may include provider retry metadata:
+
+- `meta.reason: 'rate_limited' | 'provider_unavailable' | 'network'`
+- `meta.retryKind: 'none' | 'active' | 'deferred'`
+- `meta.retryAfterMs`
+- `meta.retryAttempt`
+- `meta.retryMaxAttempts`
+- sanitized `meta.providerHeaders` and parsed `meta.rateLimit`
+
+When `retryKind === 'deferred'`, do not sleep inside an HTTP request or
+long-running handler. Return a typed API error, enqueue delayed work, or let a
+durable/queue integration schedule the retry. The standalone harness reports
+the metadata; application or PURISTA queue code owns long-delay scheduling.
+
 ## API Edge Mapping
 Suggested API mapping:
 - validation/config/not-found style errors: 400 or 404 depending on route semantics

@@ -15,6 +15,12 @@ Telemetry defaults to dual GenAI and OpenInference attributes with no content
 capture. `InvokeOptions.traceparent` and `tracestate` accept inbound W3C Trace
 Context so application traces can parent harness run spans.
 
+Workflows can orchestrate typed child agents with `ctx.agents.<id>(input)`.
+Child-agent calls are disabled until a workflow declares `delegation` or the
+harness opts in with `defaults.delegation.enabled: true`. Opted-in workflows get
+bounded fan-out, agent allowlists, per-agent model alias overrides, and
+lineage-rich run events.
+
 See [Evaluating Prompts](https://github.com/puristajs/harness/blob/main/docs/guides/evaluating-prompts.md)
 for the execution model, scorer limits, and privacy behavior.
 

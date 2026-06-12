@@ -46,6 +46,7 @@ the simple in-process defaults.
 | `Session<S>` | Operational context exposing `agents`, `workflows`, `history`, `memory`, `getRunSummary`, and `close`. |
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
+| `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `StateStore` | Persistence port for sessions, runs, messages, and events. |
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
@@ -173,6 +174,77 @@ is made from that scope. `streamId` is unique to the model stream invocation, so
 parallel streams can be grouped independently.
 They remain harness events, not a Vercel stream protocol.
 
+Child-agent lifecycle events emitted from workflows include `workflowId`,
+`delegationCallId`, `delegationDepth`, and `modelAlias`. Persisted payloads keep
+that operational lineage while redacting prompts and outputs.
+
+## Workflow Delegation
+
+Workflows call registered agents through typed `ctx.agents.<id>(input, opts)`.
+Child-agent calls are disabled by default. Opt in per workflow:
+
+```ts
+.workflows(({ workflow }) => ({
+  publish: workflow({
+    input,
+    output,
+    delegation: { agents: ['writer'] },
+    handler: async (ctx) => ctx.agents.writer(ctx.input)
+  })
+}))
+```
+
+If every workflow in a harness should be allowed to delegate, opt in globally:
+
+```ts
+.defaults({
+  delegation: {
+    enabled: true,
+    maxChildAgentCalls: 32,
+    maxParallelChildAgentCalls: 8,
+    maxDepth: 1
+  }
+})
+```
+
+Use a workflow-local `delegation` policy to narrow the callable agents, raise or
+lower fan-out budgets, and choose which model aliases may override a child
+agent's default model:
+
+```ts
+.workflows(({ workflow }) => ({
+  publish: workflow({
+    input: z.object({ draft: z.string() }),
+    output: z.object({ text: z.string(), approved: z.boolean() }),
+    delegation: {
+      agents: ['writer', 'reviewer'],
+      maxChildAgentCalls: 4,
+      maxParallelChildAgentCalls: 2,
+      agentModelAliases: { reviewer: ['deep'] }
+    },
+    handler: async (ctx) => {
+      const text = await ctx.agents.writer({ draft: ctx.input.draft })
+      const review = await ctx.agents.reviewer(text, { model: 'deep' })
+      return { text: text.text, approved: review.approved }
+    }
+  })
+}))
+```
+
+Denied calls throw `DelegationPolicyError` with code
+`DELEGATION_POLICY_ERROR`.
+
+Policy fields:
+
+- `enabled`: optional workflow switch; a `delegation` object enables delegation
+  unless it sets `enabled: false`.
+- `agents`: child-agent allowlist.
+- `maxChildAgentCalls`: total calls per workflow run.
+- `maxParallelChildAgentCalls`: active calls per workflow run.
+- `maxDepth`: local delegation depth.
+- `modelAliases`: workflow-wide model alias allowlist for child calls.
+- `agentModelAliases`: per-child-agent model alias allowlists.
+
 ## Run Summary
 
 ```ts
@@ -277,6 +349,14 @@ SSE/WebSocket adapters can then forward a single run-event stream without
 treating provider protocols as public API, while owning any UI labels or
 client-facing event names.
 
+Adapter authors extend `BaseModelProvider` and reuse the shared helpers
+exported from the main entry (`toTokenUsage`, `parseProviderJson`,
+`safePartialJson`, `malformedResponseError`, `redactProviderContent`,
+`withoutObjectTool`, and the `createStreamToolCallState` /
+`accumulateStreamToolCallDeltas` / `finalizeStreamToolCalls` stream tool-call
+accumulator) so error shapes and usage accounting stay identical across
+providers.
+
 ## Error Families
 
 All harness errors include `code`, `category`, `retriable`, `message`, and
@@ -353,6 +433,19 @@ The `json-schema` scorer is a deterministic subset, not a full JSON Schema
 draft implementation. It supports `type`, `const`, `enum`, object
 `properties`, object `required`, and `additionalProperties: false`.
 
+## Testing Subpath
+
+`@purista/harness/testing` ships the fakes (`FakeModelProvider`,
+`FakeStateStore`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
+`fakeSnapshotSandbox`, `fakeCapabilityAdapter`,
+`InMemoryDurableWorkspaceStore`), the port contract suites
+(`stateStoreContract`, `sandboxContract`, `modelProviderContract`,
+`loggerContract`, `memoryAdapterContract`, `durableWorkspaceStoreContract`,
+`adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
+`makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
+locked list lives in `specs/13-public-api.md`; adapter packages run the
+matching contract suites in their own test suites.
+
 ## OpenAI Adapter
 
 ```ts
@@ -368,6 +461,15 @@ const provider = openai({
 The adapter extends `BaseModelProvider`, inherits harness logger/telemetry, and
 normalizes provider HTTP/network errors into `ModelError` with actionable
 metadata.
+
+Model aliases accept `retry: true | false | ModelRetryPolicy`. Retry is enabled
+by default for short transient failures and rate limits. Long provider
+`Retry-After` values are surfaced as `ModelError` metadata with
+`retryKind:'deferred'` instead of blocking the current invocation. The
+deferred classification requires `longRetry: 'defer'`; with the default
+`longRetry: 'error'` the call fails with `retryKind:'none'`. Responses
+also keep `finishReason` plus optional `outcome` metadata with raw provider
+finish/status details.
 
 `api` selects the OpenAI generation surface: `chat_completions` is the default
 for OpenAI-compatible endpoints, while `responses` routes text/object calls

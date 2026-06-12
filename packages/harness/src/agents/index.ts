@@ -10,7 +10,7 @@ import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationT
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelMessage, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -20,6 +20,7 @@ import { BUILTIN_ALIAS_TO_CANONICAL, getBuiltinToolSpecs, invokeBuiltinTool } fr
 import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
 import { ulid } from '../ulid/index.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
+import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
 
 function stringifyInput(input: unknown): string { return typeof input === 'string' ? input : JSON.stringify(input) }
 
@@ -116,15 +117,19 @@ export async function runDefaultAgent(args: {
   runId: string
   sessionId: string
   workflowId?: string
+  delegationCallId?: string
+  delegationDepth?: number
   input: unknown
   history: Message[]
   agent: AgentDefinition<any>
+  modelAlias?: string
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
@@ -141,6 +146,8 @@ export async function runDefaultAgent(args: {
     'harness.session.id': args.sessionId,
     'harness.run.id': args.runId,
     ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
+    ...(args.delegationCallId ? { 'harness.agent.delegation_call_id': args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { 'harness.agent.delegation_depth': args.delegationDepth } : {}),
     'harness.agent.id': args.agentId,
     'gen_ai.operation.name': 'invoke_agent',
     'openinference.span.kind': 'AGENT',
@@ -148,32 +155,23 @@ export async function runDefaultAgent(args: {
     'metadata.agent_id': args.agentId,
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_AGENT_ID]: args.agentId,
-    'harness.agent.model': args.agent.model,
+    'harness.agent.model': args.modelAlias ?? args.agent.model,
+    ...(args.modelAlias && args.modelAlias !== args.agent.model ? { 'harness.agent.default_model': args.agent.model } : {}),
     'harness.agent.has_handler': args.agent.handler !== undefined,
     ...metadataSpanAttrs(args.metadata)
   }
   const metrics = createMetrics(args.telemetry, agentAttrs)
-  const execute = () => runDefaultAgentInner({ ...args, metrics })
-  return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, execute)
-}
-
-function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
-  const attrs: Record<string, string | number | boolean | undefined> = {}
-  for (const [key, value] of Object.entries(metadata ?? {})) {
-    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
-    if (typeof value === 'string') {
-      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
-      continue
+  // Spec 08 §9: the harness tracks activated skill names per run when the
+  // `read` tool loads `/skills/<name>/SKILL.md`. Only the count is emitted —
+  // skill names stay out of telemetry.
+  const activatedSkills = new Set<string>()
+  return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, async (span) => {
+    try {
+      return await runDefaultAgentInner({ ...args, metrics, activatedSkills })
+    } finally {
+      span.setAttribute('harness.agent.skills_activated', activatedSkills.size)
     }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      attrs[`harness.metadata.${key}`] = value
-      continue
-    }
-    if (typeof value === 'boolean') {
-      attrs[`harness.metadata.${key}`] = value
-    }
-  }
-  return attrs
+  })
 }
 
 async function runDefaultAgentInner(args: {
@@ -182,16 +180,21 @@ async function runDefaultAgentInner(args: {
   runId: string
   sessionId: string
   workflowId?: string
+  delegationCallId?: string
+  delegationDepth?: number
   input: unknown
   history: Message[]
   agent: AgentDefinition<any>
+  modelAlias?: string
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
+  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
+  activatedSkills: Set<string>
   historyWindow?: number
   maxSteps: number
   signal: AbortSignal
@@ -208,11 +211,11 @@ async function runDefaultAgentInner(args: {
   const outputSchema = args.agent.output ?? z.string()
   const parsedInput = parseAgentSchema(inputSchema, args.input, 'agent_input')
 
-  const model = args.models[args.agent.model]
-  if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: args.agent.model } })
+  const selectedModelAlias = args.modelAlias ?? args.agent.model
+  const model = args.models[selectedModelAlias]
+  if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
-  const activatedSkills = new Set<string>()
 
   if (args.agent.handler) {
     const handler = args.agent.handler
@@ -224,6 +227,7 @@ async function runDefaultAgentInner(args: {
       sessionId: args.sessionId,
       history: { list: async () => args.history },
       memory: args.memory,
+      checkpoints: args.checkpoints,
       metadata: args.metadata ?? {},
       metrics: args.metrics
     }))
@@ -232,7 +236,7 @@ async function runDefaultAgentInner(args: {
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
-    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {}, metrics: args.metrics })
+    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, checkpoints: args.checkpoints, metadata: args.metadata ?? {}, metrics: args.metrics })
     : args.agent.instructions
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
@@ -272,7 +276,14 @@ async function runDefaultAgentInner(args: {
   const maxSteps = Math.min(args.agent.maxSteps ?? args.maxSteps, 64)
   let steps = 0
 
-  await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString() })
+  const agentEventMeta = {
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
+    modelAlias: selectedModelAlias
+  }
+
+  await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
 
   try {
     while (true) {
@@ -296,13 +307,21 @@ async function runDefaultAgentInner(args: {
       // Emit one usage-bearing model event per model round-trip (including
       // tool-call steps) so run-summary modelCalls and tokenTotals are accurate
       // for multi-step runs.
-      await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: (response.object ?? null) as JsonValue, usage: response.usage })
+      await args.emitEvent?.({
+        type: 'model.object',
+        runId: args.runId,
+        agentId: args.agentId,
+        ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+        modelAlias: selectedModelAlias,
+        object: (response.object ?? null) as JsonValue,
+        usage: response.usage
+      })
 
       const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
       if (toolCalls.length === 0) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
         emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
-        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
+        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
         return { output: validated as JsonValue, emitted }
       }
 
@@ -320,8 +339,7 @@ async function runDefaultAgentInner(args: {
       })
       const outcomes = await runLimited(toolCalls, args.maxParallelToolCalls, (call) => executeToolCall({
         ...args,
-        enabledCustomTools,
-        activatedSkills
+        enabledCustomTools
       }, call))
       for (const outcome of outcomes) {
         emitted.push(outcome.emitted)
@@ -331,12 +349,13 @@ async function runDefaultAgentInner(args: {
     }
   } catch (error) {
     // Pair every agent.started with an agent.finished, even on error/cancel/budget.
-    await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error) })
+    await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
     throw error
   }
 }
 
-async function runLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/** Runs `fn` over `items` with bounded concurrency, preserving input order. */
+export async function runLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const concurrency = Math.max(1, Math.min(limit, items.length))
   const results = new Array<R>(items.length)
   let next = 0
@@ -344,9 +363,9 @@ async function runLimited<T, R>(items: readonly T[], limit: number, fn: (item: T
     while (true) {
       const index = next
       next += 1
-      const item = items[index]
-      if (item === undefined) return
-      results[index] = await fn(item)
+      // Index-based termination: an `undefined` element must not truncate the batch.
+      if (index >= items.length) return
+      results[index] = await fn(items[index] as T)
     }
   }
   await Promise.all(Array.from({ length: concurrency }, () => worker()))
@@ -356,7 +375,6 @@ async function runLimited<T, R>(items: readonly T[], limit: number, fn: (item: T
 async function executeToolCall(
   args: Parameters<typeof runDefaultAgentInner>[0] & {
     enabledCustomTools: Set<string>
-    activatedSkills: Set<string>
   },
   call: ToolCallSpec
 ): Promise<ToolExecutionOutcome> {
@@ -416,8 +434,17 @@ async function executeToolCall(
   } catch (error) {
     const failure = normalizeToolFailure(canonical, error, toolKind)
     if (failure instanceof OperationCancelledError) {
-      if (args.signal.aborted) throw new OperationCancelledError('Run was cancelled.', { scope: 'run' }, args.signal.reason ?? failure)
-      throw failure
+      const cancellation = args.signal.aborted
+        ? new OperationCancelledError('Run was cancelled.', { scope: 'run' }, args.signal.reason ?? failure)
+        : failure
+      // Pair tool.started with a best-effort tool.finished even on cancellation,
+      // matching the deliberate started/finished pairing policy above.
+      try {
+        await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, error: serializeError(cancellation) })
+      } catch {
+        // Best-effort: never mask the cancellation with an emit failure.
+      }
+      throw cancellation
     }
     result = { error: serializeError(failure) }
   }

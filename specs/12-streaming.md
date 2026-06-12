@@ -9,8 +9,8 @@ type RunEvent =
   | { type: 'run.started';     runId: string; at: string }
   | { type: 'run.finished';    runId: string; at: string; output?: JsonValue; error?: SerializedError }
 
-  | { type: 'agent.started';   runId: string; agentId: string; at: string }
-  | { type: 'agent.finished';  runId: string; agentId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'agent.started';   runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
+  | { type: 'agent.finished';  runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
 
   | { type: 'model.delta';     runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
   | { type: 'model.message';   runId: string; agentId: string; message: Message }
@@ -36,7 +36,7 @@ interface SerializedError {
 
 `SerializedError` is the canonical shape for error fields anywhere a `HarnessError` is exposed via persisted state or the run queue — including `RunRecord.error` (see [04-state-queue-stream](./04-state-queue-stream.md)).
 
-`at` is ISO 8601 UTC. `callId` is `tc_<ulid>` for tool calls and `sk_<ulid>` for skill calls; the same id appears in `started` and `finished`.
+`at` is ISO 8601 UTC. `callId` is `tc_<ulid>` for tool calls and `sk_<ulid>` for skill calls; the same id appears in `started` and `finished`. `delegationCallId` is `delegate_<ulid>` for workflow-local child-agent calls and appears on the matching `agent.started` / `agent.finished` pair.
 
 `text(...)` and `object(...)` are final request-response model calls and do not
 emit partial run events. Consumed `textStream(...)` and `objectStream(...)`
@@ -99,7 +99,7 @@ If a consumer's `take()` throws (e.g. consumer code rejects), the harness remove
 
 Persisted event payloads are sanitized by default. `runId`, `at`, and `type` are stored as `PersistedRunEvent` fields and are not duplicated inside `payload`.
 
-When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, stream source metadata (`streamId`, `modelAlias`, `workflowId`, `agentId`), and serialized harness errors.
+When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, stream source metadata (`streamId`, `modelAlias`, `workflowId`, `agentId`), child-agent lineage metadata (`delegationCallId`, `delegationDepth`, `parentAgentId`), and serialized harness errors.
 
 When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not StateStore audit retention.
 

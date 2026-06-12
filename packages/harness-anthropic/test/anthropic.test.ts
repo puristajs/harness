@@ -67,6 +67,35 @@ describe('anthropic provider factory', () => {
     })
   })
 
+  it('maps modern Anthropic stop reasons without losing provider detail', async () => {
+    for (const [providerReason, finishReason] of [
+      ['pause_turn', 'pause'],
+      ['refusal', 'refusal'],
+      ['model_context_window_exceeded', 'context_limit']
+    ] as const) {
+      const provider = anthropic({
+        client: {
+          messages: {
+            create: async () => ({
+              content: [{ type: 'text', text: 'status' }],
+              stop_reason: providerReason,
+              usage: { input_tokens: 1, output_tokens: 1 }
+            })
+          }
+        }
+      })
+
+      const response = await provider.text!({
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: mockSignal()
+      })
+
+      expect(response.finishReason).toBe(finishReason)
+      expect(response.outcome).toMatchObject({ finishReason, providerFinishReason: providerReason })
+    }
+  })
+
   it('applies temperature 0 and alias-default sampling params (precedence regression)', async () => {
     const calls: any[] = []
     const provider = anthropic({
@@ -258,8 +287,84 @@ describe('anthropic provider factory', () => {
         model: 'claude-sonnet-4-5',
         method: 'objectStream',
         reason: 'malformed_response',
-        providerBody: '{"ok":'
+        // Raw model output never leaks into error metadata (POR-07).
+        providerBody: { redacted: true, contentLength: '{"ok":'.length }
       }
     })
+  })
+
+  it('keeps interleaved real tool calls out of the streamed object JSON', async () => {
+    async function* chunks() {
+      yield { type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 0 } } }
+      // A real application tool call streams before the object block.
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_search', name: 'search_docs', input: {} } }
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"query":' } }
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"harness"}' } }
+      yield { type: 'content_block_stop', index: 0 }
+      // The synthetic harness_response block carries the structured object.
+      yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_obj', name: 'harness_response', input: {} } }
+      yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"ok":' } }
+      yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: 'true}' } }
+      yield { type: 'content_block_stop', index: 1 }
+      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 9 } }
+    }
+
+    const provider = anthropic({
+      client: {
+        messages: {
+          create: async () => chunks()
+        }
+      }
+    })
+
+    const received: any[] = []
+    for await (const chunk of provider.objectStream!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'object plus tool' }],
+      schema: { type: 'object' },
+      tools: [{ name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })) {
+      received.push(chunk)
+    }
+
+    const toolCalls = received.filter((chunk) => chunk.kind === 'tool_call')
+    expect(toolCalls).toEqual([
+      { kind: 'tool_call', call: { id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } } }
+    ])
+    const finish = received.at(-1)
+    expect(finish).toMatchObject({
+      kind: 'finish',
+      object: { ok: true },
+      finishReason: 'tool_calls',
+      outcome: { finishReason: 'tool_calls', providerFinishReason: 'tool_use' }
+    })
+  })
+
+  it('omits providerFinishReason from stream outcomes when the provider never sent one', async () => {
+    async function* chunks() {
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } }
+    }
+
+    const provider = anthropic({
+      client: {
+        messages: {
+          create: async () => chunks()
+        }
+      }
+    })
+
+    const received: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: mockSignal()
+    })) {
+      received.push(chunk)
+    }
+
+    const finish = received.at(-1)
+    expect(finish.kind).toBe('finish')
+    expect(finish.outcome.providerFinishReason).toBeUndefined()
   })
 })

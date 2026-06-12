@@ -49,7 +49,7 @@ export class InMemoryStateStore implements StateStore {
   }
 
   public async appendMessages(sessionId: string, messages: Message[]): Promise<void> {
-    return this.withMessageLock(sessionId, async () => {
+    return this.withMessageLock(sessionId, 'appendMessages', async () => {
       const current = this.messages.get(sessionId) ?? []
       const ids = new Set(current.map((msg) => msg.id))
       for (const message of messages) {
@@ -81,17 +81,17 @@ export class InMemoryStateStore implements StateStore {
   }
 
   public async clearMessages(sessionId: string): Promise<void> {
-    return this.withMessageLock(sessionId, async () => {
+    return this.withMessageLock(sessionId, 'clearMessages', async () => {
       this.messages.delete(sessionId)
     })
   }
 
   public async replaceMessages(sessionId: string, messages: Message[]): Promise<void> {
-    return this.withMessageLock(sessionId, async () => {
+    return this.withMessageLock(sessionId, 'replaceMessages', async () => {
       const ids = new Set<string>()
       for (const message of messages) {
         if (ids.has(message.id)) {
-          throw new StateError('Duplicate message id.', { op: 'appendMessages', reason: 'duplicate_message_id' })
+          throw new StateError('Duplicate message id.', { op: 'replaceMessages', reason: 'duplicate_message_id' })
         }
         ids.add(message.id)
       }
@@ -164,7 +164,7 @@ export class InMemoryStateStore implements StateStore {
     this.messageLocks.clear()
   }
 
-  private async withMessageLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  private async withMessageLock<T>(sessionId: string, op: 'appendMessages' | 'clearMessages' | 'replaceMessages', fn: () => Promise<T>): Promise<T> {
     let lock = this.messageLocks.get(sessionId)
     if (!lock) {
       lock = new Mutex()
@@ -175,7 +175,7 @@ export class InMemoryStateStore implements StateStore {
       return await lock.lock(fn)
     } catch (error) {
       if (error instanceof StateError) throw error
-      throw new StateError('State store operation failed.', { op: 'appendMessages' }, error)
+      throw new StateError('State store operation failed.', { op }, error)
     }
   }
 }

@@ -190,6 +190,7 @@ Use workflows for orchestration:
   review_incident: workflow({
     input: z.object({ incident: z.string() }),
     output: z.object({ summary: z.string(), needsReview: z.boolean() }),
+    delegation: { agents: ['incident_writer'] },
     handler: async (ctx) => {
       const summary = await ctx.agents.incident_writer({ incident: ctx.input.incident })
       return { ...summary, needsReview: true }

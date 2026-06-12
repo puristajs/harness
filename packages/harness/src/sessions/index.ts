@@ -8,6 +8,7 @@ import {
   HarnessError,
   SessionBusyError,
   ValidationError,
+  DelegationPolicyError,
   serializeError
 } from '../errors/index.js'
 import { ulid } from '../ulid/index.js'
@@ -28,9 +29,11 @@ import type {
   SkillDefinition,
   ToolsConfig,
   WorkflowDefinition,
+  WorkflowDelegationPolicy,
   WorkflowInput,
   WorkflowOutput,
   BuilderState,
+  ContextCheckpoints,
   ContentCaptureMode,
   TelemetryOptions
 } from '../harness/defineHarness.js'
@@ -38,6 +41,7 @@ import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
 import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import type { ContextCheckpoint, ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import type { DurableRuntime } from '../runtime/durable.js'
 import { HarnessConfigError } from '../errors/catalog.js'
@@ -48,6 +52,8 @@ import type { TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
 import { createMetrics, createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
+import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
+import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 
 type ModelRunContext = {
@@ -71,6 +77,7 @@ type HarnessDefinition<S extends BuilderState> = {
   memory: MemoryAdapter
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
+  checkpoints?: ContextCheckpointStore
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -86,26 +93,70 @@ type SessionState = {
   mountedSkills: Set<string>
 }
 
+type EffectiveDelegationPolicy = {
+  enabled: boolean
+  allowedAgents?: Set<string>
+  maxChildAgentCalls: number
+  maxParallelChildAgentCalls: number
+  maxDepth: number
+  modelAliases?: Set<string>
+  agentModelAliases: Map<string, Set<string>>
+}
+
+type DelegationRunState = {
+  totalChildAgentCalls: number
+  activeChildAgentCalls: number
+  /** In-flight child-agent call promises, settled before the run terminalizes. */
+  inFlightChildCalls: Set<Promise<unknown>>
+}
+
 const NEVER_ABORT_SIGNAL = new AbortController().signal
+const DEFAULT_MAX_CHILD_AGENT_CALLS = 32
+const DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS = 8
+const DEFAULT_MAX_DELEGATION_DEPTH = 1
+/**
+ * Workflows invoke leaf agents directly, so every child-agent call runs at
+ * depth 1 (spec 10 "Delegation policy": `maxDepth` default `1`, `0` disables
+ * child-agent delegation).
+ */
+const CHILD_DELEGATION_DEPTH = 1
 
 function now(): string {
   return new Date().toISOString()
 }
 
 const STREAM_MAX_BUFFERED_EVENTS = 1024
-const STREAM_TERMINAL_EVENT_TYPES = new Set<string>(['run.finished', 'agent.finished'])
+/**
+ * Event types that must never be dropped from the relay queue.
+ *
+ * Only `run.finished` qualifies: it occurs at most once per run and is the
+ * terminal event consumers key off to know the run is complete. `agent.finished`
+ * is emitted once per agent invocation (including every child-agent delegation
+ * call), so it can appear many times and must remain droppable to keep the
+ * queue bounded when a slow consumer falls behind during a delegation-heavy run.
+ */
+const STREAM_UNDROPPABLE_EVENT_TYPES = new Set<string>(['run.finished'])
 
 /**
  * Relay run events from an in-process run to a stream consumer.
  *
- * The unread events live in a bounded queue: consumed events are removed (no
- * growing cursor over a shared array), and on overflow the oldest non-terminal
- * unread event is dropped and counted, so a slow consumer never silently skips
- * an unread event. Delivery is promise-notified rather than time-polled, so
- * there is no fixed per-event latency or periodic timer.
+ * The unread events live in a bounded queue (cap: STREAM_MAX_BUFFERED_EVENTS):
+ * consumed events are removed (no growing cursor over a shared array), and on
+ * overflow the oldest droppable unread event is dropped and counted, so a slow
+ * consumer never silently skips an event without an accompanying
+ * `stream.overflow` notice. Only `run.finished` is undroppable; all other
+ * event types — including `agent.finished` — may be evicted under pressure.
+ * If no droppable event exists when the queue is full, the incoming event is
+ * discarded (counted) rather than growing the queue past the cap. Delivery is
+ * promise-notified rather than time-polled, so there is no fixed per-event
+ * latency or periodic timer.
+ *
+ * Abandoning the stream (`break` / `iterator.return()`) aborts `relaySignal`,
+ * so a run wired to it is cancelled promptly instead of blocking the consumer
+ * until the run finishes on its own.
  */
 export async function* relayRunEvents(
-  run: (onEvent: (event: RunEvent) => Promise<void>) => Promise<unknown>
+  run: (onEvent: (event: RunEvent) => Promise<void>, relaySignal: AbortSignal) => Promise<unknown>
 ): AsyncIterable<RunEvent> {
   const queue: RunEvent[] = []
   let dropped = 0
@@ -113,6 +164,7 @@ export async function* relayRunEvents(
   let done = false
   let failure: unknown
   let wake: (() => void) | undefined
+  const relayController = new AbortController()
 
   const notify = (): void => {
     const resolve = wake
@@ -123,16 +175,22 @@ export async function* relayRunEvents(
   const result = run((event) => {
     if ('runId' in event) liveRunId = event.runId
     if (queue.length >= STREAM_MAX_BUFFERED_EVENTS) {
-      const dropIndex = queue.findIndex((candidate) => !STREAM_TERMINAL_EVENT_TYPES.has(candidate.type))
+      const dropIndex = queue.findIndex((candidate) => !STREAM_UNDROPPABLE_EVENT_TYPES.has(candidate.type))
       if (dropIndex >= 0) {
         queue.splice(dropIndex, 1)
         dropped += 1
+      } else {
+        // Every queued event is undroppable; discard the incoming event to keep
+        // the queue bounded rather than growing past the cap.
+        dropped += 1
+        notify()
+        return Promise.resolve()
       }
     }
     queue.push(event)
     notify()
     return Promise.resolve()
-  })
+  }, relayController.signal)
     .catch((error) => {
       failure = error
       return undefined
@@ -166,6 +224,9 @@ export async function* relayRunEvents(
       }
     }
   } finally {
+    // Cancel the run before awaiting it so an abandoned stream does not block
+    // `iterator.return()` until the run finishes or times out.
+    relayController.abort(new OperationCancelledError('Run event stream was abandoned by the consumer.', { scope: 'run' }))
     await result.catch(() => undefined)
   }
   if (failure) throw failure
@@ -217,7 +278,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
-  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig)
+  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
 
@@ -360,6 +421,61 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return definition.runtime
   }
 
+  function createContextCheckpoints(args: {
+    runId: string
+    sessionId: string
+    workflowId?: string
+    agentId?: string
+    signal: AbortSignal
+  }): ContextCheckpoints {
+    const store = definition.checkpoints
+    const requireStore = (): ContextCheckpointStore => {
+      if (!store) {
+        throw new ValidationError('No context checkpoint store is configured.', {
+          where: 'invoke_options',
+          issues: { reason: 'context_checkpoint_store_missing' }
+        })
+      }
+      return store
+    }
+    const baseQuery = {
+      runId: args.runId,
+      sessionId: args.sessionId,
+      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+      ...(args.agentId ? { agentId: args.agentId } : {})
+    }
+    return {
+      async write(input): Promise<void> {
+        const json = JSON.stringify(input.payload)
+        if (json === undefined) {
+          throw new ValidationError('Context checkpoint payload must be JSON-serializable.', {
+            where: 'invoke_options',
+            issues: { reason: 'non_json_context_checkpoint_payload' }
+          })
+        }
+        const checkpoint: ContextCheckpoint = {
+          ...baseQuery,
+          sequence: input.sequence,
+          kind: input.kind,
+          payload: input.payload,
+          payloadSizeBytes: Buffer.byteLength(json, 'utf8'),
+          createdAt: now(),
+          ...(input.metadata ? { metadata: input.metadata } : {})
+        }
+        await requireStore().write(checkpoint, { signal: args.signal })
+      },
+      async list(query = {}): Promise<readonly ContextCheckpoint[]> {
+        return requireStore().list({ ...baseQuery, ...query, signal: args.signal })
+      },
+      async read(ref): Promise<ContextCheckpoint | undefined> {
+        return requireStore().read({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
+      },
+      async delete(ref): Promise<void> {
+        await requireStore().delete({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
+      }
+    }
+  }
+
   return {
     inspect(): HarnessInspection {
       return definition.inspection
@@ -432,9 +548,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }
         },
         async close(): Promise<void> {
+          if (state.busy) {
+            throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
+          }
           await definition.state.closeSession(sessionId)
           sessionStates.delete(sessionId)
           sessionStateOpenings.delete(sessionId)
+          await mcpRegistry.closeForSandboxKey(sessionId)
           await state.sandboxSession.close()
         }
       }
@@ -476,7 +596,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: AgentInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    yield* relayRunEvents((onEvent) => runAgentCall(sessionId, agentId, agent, input, opts, onEvent))
+    yield* relayRunEvents((onEvent, relaySignal) => {
+      const combined = combineSignals(relaySignal, opts?.signal)
+      return runAgentCall(sessionId, agentId, agent, input, { ...opts, signal: combined.signal }, onEvent)
+        .finally(() => combined.cleanup())
+    })
   }
 
   async function runAgentCall<K extends keyof NonNullable<S['agents']>>(
@@ -495,47 +619,46 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
+    // Busy check precedes createRunSignal so an early SessionBusyError cannot
+    // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
     state.busy = true
+    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
     const runId = ulid()
-    const memory = memoryFacade({
-      sessionId,
-      runId,
-      agentId,
-      signal: runSignal.signal,
-      sandboxSession: state.sandboxSession,
-      metadata: opts?.metadata ?? {}
-    })
-    const runRecord: RunRecord = {
-      id: runId,
-      sessionId,
-      kind: 'agent',
-      target: agentId,
-      startedAt,
-      status: 'running',
-      input: input as JsonValue
-    }
-
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
       await onEvent?.(event)
       await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
+    let runCreated = false
     try {
+      const memory = memoryFacade({
+        sessionId,
+        runId,
+        agentId,
+        signal: runSignal.signal,
+        sandboxSession: state.sandboxSession,
+        metadata: opts?.metadata ?? {}
+      })
+      const checkpoints = createContextCheckpoints({ sessionId, runId, agentId, signal: runSignal.signal })
+      const runRecord: RunRecord = {
+        id: runId,
+        sessionId,
+        kind: 'agent',
+        target: agentId,
+        startedAt,
+        status: 'running',
+        input: input as JsonValue
+      }
       await definition.state.createRun(runRecord)
-    } catch (error) {
-      state.busy = false
-      throw error
-    }
+      runCreated = true
 
-    try {
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.agent_prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -565,6 +688,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           mcpRegistry,
           session: state.sandboxSession,
           memory,
+          checkpoints,
           mountedSkills: state.mountedSkills,
           ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
@@ -590,6 +714,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return result as AgentOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
+      if (!runCreated) {
+        throw finalError
+      }
       const finishedAt = now()
       const serialized = serializeError(finalError)
       const log = finalError instanceof OperationCancelledError ? definition.logger.warn.bind(definition.logger) : definition.logger.error.bind(definition.logger)
@@ -632,7 +759,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: WorkflowInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    yield* relayRunEvents((onEvent) => runWorkflowCall(sessionId, workflowId, workflow, input, opts, onEvent))
+    yield* relayRunEvents((onEvent, relaySignal) => {
+      const combined = combineSignals(relaySignal, opts?.signal)
+      return runWorkflowCall(sessionId, workflowId, workflow, input, { ...opts, signal: combined.signal }, onEvent)
+        .finally(() => combined.cleanup())
+    })
   }
 
   async function runWorkflowCall<K extends keyof NonNullable<S['workflows']>>(
@@ -649,23 +780,17 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
+    // Busy check precedes createRunSignal so an early SessionBusyError cannot
+    // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
     state.busy = true
+    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
     const runId = opts?.durable ? opts.durable.runId : ulid()
-    const memory = memoryFacade({
-      sessionId,
-      runId,
-      workflowId,
-      signal: runSignal.signal,
-      sandboxSession: state.sandboxSession,
-      metadata: opts?.metadata ?? {}
-    })
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -682,14 +807,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
-    try {
-      await definition.state.createRun(runRecord)
-    } catch (error) {
-      state.busy = false
-      throw error
-    }
-
     let durableBinding: DurableWorkflowBinding | undefined
+    let runSandboxSession = state.sandboxSession
+    let runMountedSkills = state.mountedSkills
+    let closeRunSandbox = false
+    let runCreated = false
+    const delegationState: DelegationRunState = {
+      totalChildAgentCalls: 0,
+      activeChildAgentCalls: 0,
+      inFlightChildCalls: new Set<Promise<unknown>>()
+    }
     try {
       if (durableRuntime && opts?.durable) {
         durableBinding = await beginDurableWorkflow({
@@ -704,7 +831,23 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           logger: definition.logger,
           harnessName: definition.name
         })
+        if (definition.workspaceStore) {
+          runSandboxSession = await definition.sandbox.open({ sessionId, runId, signal: runSignal.signal }) as SandboxSession
+          runMountedSkills = new Set<string>()
+          closeRunSandbox = true
+        }
       }
+      const memory = memoryFacade({
+        sessionId,
+        runId,
+        workflowId,
+        signal: runSignal.signal,
+        sandboxSession: runSandboxSession,
+        metadata: opts?.metadata ?? {}
+      })
+      const checkpoints = createContextCheckpoints({ sessionId, runId, workflowId, signal: runSignal.signal })
+      await definition.state.createRun(runRecord)
+      runCreated = true
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -721,12 +864,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.run.id': runId,
           'harness.workflow.id': workflowId
         })
+        const delegationPolicy = resolveDelegationPolicy(workflow)
 
         const workflowArgs = {
           workflowId,
           workflow,
           input,
           ctx: {
+            log: definition.logger,
             signal: runSignal.signal,
             runId,
             sessionId,
@@ -739,13 +884,48 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
+            checkpoints,
             step: durableBinding ? durableBinding.step : passthroughStep,
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
-                async (agentInput: unknown, agentOpts?: InvokeOptions) => {
-                  const agentSignal = combineSignals(runSignal.signal, agentOpts?.signal)
-                  try {
+                async (agentInput: unknown, agentOpts?: InvokeOptions & { model?: string }) => {
+                  // Spec 10 "Cancellation": starting a child-agent call after
+                  // abort throws OperationCancelledError synchronously, before
+                  // policy checks run or budgets are consumed.
+                  if (runSignal.signal.aborted) {
+                    throw abortError(runSignal.signal, 'run', 'Run was cancelled.')
+                  }
+                  if (agentOpts?.signal?.aborted) {
+                    throw new OperationCancelledError('Child-agent call was cancelled before start.', { scope: 'run' }, agentOpts.signal.reason)
+                  }
+                  validateInvokeOptions(agentOpts)
+                  if (agentOpts?.durable) {
+                    throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
+                  }
+                  // An unknown per-call model alias is an invoke-option mistake;
+                  // it must not pass the delegation gate or consume call budget.
+                  if (agentOpts?.model !== undefined && !(agentOpts.model in (definition.models as ModelsConfig))) {
+                    throw new ValidationError('Unknown model alias for child-agent call.', { where: 'invoke_options', issues: { model: agentOpts.model } })
+                  }
+                  const selectedModelAlias = agentOpts?.model ?? (agent as AgentDefinition<S>).model
+                  assertDelegationAllowed({
+                    policy: delegationPolicy,
+                    state: delegationState,
+                    workflowId,
+                    agentId,
+                    modelAlias: selectedModelAlias
+                  })
+                  // Compose signals before consuming budget so a composition
+                  // failure can never leak an active delegation slot.
+                  const combinedSignal = combineSignals(runSignal.signal, agentOpts?.signal)
+                  const agentSignal = agentOpts?.timeoutMs !== undefined
+                    ? createRunSignal(combinedSignal.signal, agentOpts.timeoutMs)
+                    : combinedSignal
+                  delegationState.totalChildAgentCalls += 1
+                  delegationState.activeChildAgentCalls += 1
+                  const delegationCallId = `delegate_${ulid()}`
+                  const childCall = (async () => {
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
                     const agentMetadata = { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
                     const agentMemory = memoryFacade({
@@ -754,31 +934,37 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       workflowId,
                       agentId,
                       signal: agentSignal.signal,
-                      sandboxSession: state.sandboxSession,
+                      sandboxSession: runSandboxSession,
                       metadata: agentMetadata
                     })
+                    const agentCheckpoints = createContextCheckpoints({ sessionId, runId, workflowId, agentId, signal: agentSignal.signal })
                     const run = await runDefaultAgent({
                       harnessName: definition.name,
                       agentId,
                       runId,
                       sessionId,
                       workflowId,
+                      delegationCallId,
+                      delegationDepth: CHILD_DELEGATION_DEPTH,
                       input: agentInput,
                       history: await definition.state.listMessages(sessionId),
                       agent: agent as AgentDefinition<S>,
+                      modelAlias: selectedModelAlias,
                       models: withRunEventModelRegistry(modelRegistry, {
                         harnessName: definition.name,
                         sessionId,
                         runId,
                         workflowId,
-                        agentId
+                        agentId,
+                        modelAlias: selectedModelAlias
                       }, emit),
                       skills: resolvedSkills as Record<string, ResolvedSkill>,
                       customTools: definition.tools as ToolsConfig,
                       mcpRegistry,
-                      session: state.sandboxSession,
+                      session: runSandboxSession,
                       memory: agentMemory,
-                      mountedSkills: state.mountedSkills,
+                      checkpoints: agentCheckpoints,
+                      mountedSkills: runMountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
@@ -793,8 +979,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       await definition.state.appendMessages(sessionId, run.emitted)
                     }
                     return run.output
+                  })()
+                  delegationState.inFlightChildCalls.add(childCall)
+                  try {
+                    return await childCall
                   } finally {
+                    delegationState.inFlightChildCalls.delete(childCall)
+                    delegationState.activeChildAgentCalls -= 1
                     agentSignal.cleanup()
+                    if (agentSignal !== combinedSignal) combinedSignal.cleanup()
                   }
                 }
               ])
@@ -818,6 +1011,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           } as Parameters<typeof runWorkflow<S>>[0]))
       }))
 
+      // A resolved handler may still have child-agent calls in flight; settle
+      // them before terminalizing so no run events trail run.finished.
+      if (delegationState.inFlightChildCalls.size > 0) {
+        await Promise.allSettled([...delegationState.inFlightChildCalls])
+      }
       const finishedAt = now()
       if (durableBinding) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_success' }, () => durableBinding!.finishSuccess(result as JsonValue))
@@ -830,8 +1028,18 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return result as WorkflowOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
+      // A handler rejection mid-Promise.all must not orphan in-flight child
+      // agents: cancel them through the run signal and await settlement before
+      // run.finished is emitted and the session busy lock is released.
+      if (delegationState.inFlightChildCalls.size > 0) {
+        runSignal.abort(finalError)
+        await Promise.allSettled([...delegationState.inFlightChildCalls])
+      }
       const finishedAt = now()
       const serialized = serializeError(finalError)
+      if (!runCreated) {
+        throw finalError
+      }
       if (durableBinding && finalError instanceof OperationCancelledError) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_cancelled' }, () => durableBinding!.finishCancelled(finalError))
       }
@@ -866,6 +1074,19 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       // Releases the lease for a non-cancel failure so a retry with the same run
       // id can resume; a no-op once the run was settled (success/cancel).
       if (durableBinding) await durableBinding.dispose()
+      if (closeRunSandbox) {
+        try {
+          await runSandboxSession.close()
+        } catch (error) {
+          definition.logger.warn('Failed to close durable run sandbox.', {
+            harness: definition.name,
+            session_id: sessionId,
+            run_id: runId,
+            workflow_id: workflowId,
+            error: serializeError(error)
+          })
+        }
+      }
       runSignal.cleanup()
       state.busy = false
     }
@@ -874,6 +1095,80 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   /** Pass-through step used when a workflow runs without durable execution. */
   function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>): Promise<T> {
     return fn()
+  }
+
+  function resolveDelegationPolicy(workflow: WorkflowDefinition<S>): EffectiveDelegationPolicy {
+    const configured = workflow.delegation as WorkflowDelegationPolicy<S> | undefined
+    const policy = configured ?? {}
+    const enabled = configured ? policy.enabled !== false : definition.defaults.delegation?.enabled === true
+    return {
+      enabled,
+      ...(policy.agents ? { allowedAgents: new Set(policy.agents as readonly string[]) } : {}),
+      maxChildAgentCalls: policy.maxChildAgentCalls ?? definition.defaults.delegation?.maxChildAgentCalls ?? DEFAULT_MAX_CHILD_AGENT_CALLS,
+      maxParallelChildAgentCalls: policy.maxParallelChildAgentCalls ?? definition.defaults.delegation?.maxParallelChildAgentCalls ?? DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS,
+      maxDepth: policy.maxDepth ?? definition.defaults.delegation?.maxDepth ?? DEFAULT_MAX_DELEGATION_DEPTH,
+      ...(policy.modelAliases ? { modelAliases: new Set(policy.modelAliases as readonly string[]) } : {}),
+      agentModelAliases: new Map(
+        Object.entries(policy.agentModelAliases ?? {}).map(([agentId, aliases]) => [agentId, new Set(aliases as readonly string[])])
+      )
+    }
+  }
+
+  function assertDelegationAllowed(args: {
+    policy: EffectiveDelegationPolicy
+    state: DelegationRunState
+    workflowId: string
+    agentId: string
+    modelAlias: string
+  }): void {
+    const { policy, state, workflowId, agentId, modelAlias } = args
+    if (!policy.enabled) {
+      throw new DelegationPolicyError('Workflow child-agent delegation is disabled.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'delegation_disabled'
+      })
+    }
+    if (policy.allowedAgents && !policy.allowedAgents.has(agentId)) {
+      throw new DelegationPolicyError('Workflow is not allowed to invoke this child agent.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'agent_not_allowed'
+      })
+    }
+    if (CHILD_DELEGATION_DEPTH > policy.maxDepth) {
+      throw new DelegationPolicyError('Workflow child-agent delegation depth exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_delegation_depth_exceeded',
+        limit: policy.maxDepth
+      })
+    }
+    if (state.totalChildAgentCalls >= policy.maxChildAgentCalls) {
+      throw new DelegationPolicyError('Workflow child-agent call budget exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_child_agent_calls_exceeded',
+        limit: policy.maxChildAgentCalls
+      })
+    }
+    if (state.activeChildAgentCalls >= policy.maxParallelChildAgentCalls) {
+      throw new DelegationPolicyError('Workflow parallel child-agent call budget exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_parallel_child_agent_calls_exceeded',
+        limit: policy.maxParallelChildAgentCalls
+      })
+    }
+    const allowedModels = policy.agentModelAliases.get(agentId) ?? policy.modelAliases
+    if (allowedModels && !allowedModels.has(modelAlias)) {
+      throw new DelegationPolicyError('Workflow is not allowed to invoke this child agent with the selected model alias.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'model_alias_not_allowed',
+        model_alias: modelAlias
+      })
+    }
   }
 
   /**
@@ -1087,7 +1382,10 @@ function configureHarnessAdapters(
   state: StateStore,
   sandbox: Sandbox,
   memory: MemoryAdapter,
-  tools: ToolsConfig
+  tools: ToolsConfig,
+  runtime: DurableRuntimeAdapter | undefined,
+  workspaceStore: DurableWorkspaceStore | undefined,
+  checkpoints: ContextCheckpointStore | undefined
 ): void {
   const seen = new Set<unknown>()
   for (const alias of Object.values(models)) {
@@ -1096,12 +1394,16 @@ function configureHarnessAdapters(
   configureOne(state, context, seen)
   configureOne(sandbox, context, seen)
   configureOne(memory, context, seen)
+  configureOne(runtime, context, seen)
+  configureOne(workspaceStore, context, seen)
+  configureOne(checkpoints, context, seen)
   for (const tool of Object.values(tools)) {
     configureOne(tool, context, seen)
   }
 }
 
 function configureOne(adapter: unknown, context: HarnessAdapterContext, seen: Set<unknown>): void {
+  if (!adapter) return
   const configurable = adapter as Partial<HarnessContextConfigurable>
   if (!configurable.configureHarnessContext || seen.has(adapter)) return
   configurable.configureHarnessContext(context)
@@ -1148,25 +1450,6 @@ function resolveContentCaptureMode(options: TelemetryOptions | undefined): Conte
   if (envValue === 'false') return 'NO_CONTENT'
   if (envValue === 'NO_CONTENT' || envValue === 'SPAN_ONLY' || envValue === 'EVENT_ONLY' || envValue === 'SPAN_AND_EVENT') return envValue
   return 'NO_CONTENT'
-}
-
-function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
-  const attrs: Record<string, string | number | boolean | undefined> = {}
-  for (const [key, value] of Object.entries(metadata ?? {})) {
-    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
-    if (typeof value === 'string') {
-      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
-      continue
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      attrs[`harness.metadata.${key}`] = value
-      continue
-    }
-    if (typeof value === 'boolean') {
-      attrs[`harness.metadata.${key}`] = value
-    }
-  }
-  return attrs
 }
 
 function isValidTraceparent(traceparent: string): boolean {
@@ -1247,10 +1530,10 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         ...(event.error ? { error: event.error } : {})
       } as unknown as JsonValue
     case 'agent.started':
-      return { agentId: event.agentId }
+      return agentRunEventMeta(event)
     case 'agent.finished':
       return {
-        agentId: event.agentId,
+        ...agentRunEventMeta(event),
         ...(event.output !== undefined ? { output: '[redacted]' } : {}),
         ...(event.error ? { error: event.error } : {})
       } as unknown as JsonValue
@@ -1310,6 +1593,17 @@ function modelStreamEventMeta(event: Extract<RunEvent, { type: 'model.delta' | '
   }
 }
 
+function agentRunEventMeta(event: Extract<RunEvent, { type: 'agent.started' | 'agent.finished' }>): Record<string, JsonValue> {
+  return {
+    agentId: event.agentId,
+    ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+    ...(event.parentAgentId ? { parentAgentId: event.parentAgentId } : {}),
+    ...(event.delegationCallId ? { delegationCallId: event.delegationCallId } : {}),
+    ...(event.delegationDepth !== undefined ? { delegationDepth: event.delegationDepth } : {}),
+    ...(event.modelAlias ? { modelAlias: event.modelAlias } : {})
+  }
+}
+
 function isJsonRecord(value: unknown): value is Record<string, JsonValue> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -1331,7 +1625,7 @@ function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<Run
   }
 }
 
-function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void } {
+function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void; abort: (reason: unknown) => void } {
   const controller = new AbortController()
   const relay = () => controller.abort(runAbortReason(parent?.reason))
   if (parent) parent.addEventListener('abort', relay, { once: true })
@@ -1341,6 +1635,8 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
     : undefined
   return {
     signal: controller.signal,
+    /** Harness-initiated abort, e.g. to cancel in-flight child-agent calls. */
+    abort: (reason: unknown) => controller.abort(runAbortReason(reason)),
     cleanup: () => {
       if (timeout) clearTimeout(timeout)
       if (parent) parent.removeEventListener('abort', relay)

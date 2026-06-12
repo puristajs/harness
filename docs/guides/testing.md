@@ -17,13 +17,13 @@ flowchart TD
 
 ```bash
 npm run lint
-npm run typecheck
+npm run build
 npm test
 npm run test:coverage
+npm run test:types
 npm run test:contracts
 npm run test:integration
 npm run test:failure
-npm run build
 ```
 
 `npm run test:coverage` enforces the harness package coverage gate. The current

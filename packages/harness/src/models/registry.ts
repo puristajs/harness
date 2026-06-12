@@ -30,6 +30,7 @@ import type {
 } from '../ports/model-provider.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { JsonValue } from './json.js'
+import { pumpStreamThroughSpan } from './stream-pump.js'
 
 export interface ModelInvokeContext {
   /** Harness instance name used for telemetry and run-event attribution. */
@@ -218,7 +219,7 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         model: alias.model,
         input: req.input,
         ...(req.dimensions !== undefined ? { dimensions: req.dimensions } : {}),
-        ...(req.call ? { call: req.call } : {}),
+        ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
@@ -234,7 +235,7 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         query: req.query,
         documents: req.documents,
         ...(req.topN !== undefined ? { topN: req.topN } : {}),
-        ...(req.call ? { call: req.call } : {}),
+        ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
@@ -309,7 +310,7 @@ function withModelStreamSpan<T>(
   if (!options.telemetry) return fn()
   const started = Date.now()
   const attrs = modelSpanAttrs(options, aliasKey, alias, method, ctx)
-  return streamWithTelemetry(options.telemetry, `chat ${alias.model}`, attrs, async function* (span) {
+  return pumpStreamThroughSpan(options.telemetry, `chat ${alias.model}`, attrs, async function* (span) {
     let lastUsage: { inputTokens: number; outputTokens: number; totalTokens: number } | undefined
     let lastFinishReason: string | undefined
     for await (const chunk of fn()) {
@@ -333,46 +334,6 @@ function withModelStreamSpan<T>(
     if (lastFinishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [lastFinishReason])
     options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
   })
-}
-
-async function* streamWithTelemetry<T>(
-  telemetry: TelemetryShim,
-  name: string,
-  attrs: SpanAttrs,
-  iterate: (span: Parameters<TelemetryShim['span']>[2] extends (span: infer S) => Promise<unknown> ? S : never) => AsyncIterable<T>
-): AsyncIterable<T> {
-  const queue: T[] = []
-  let done = false
-  let failure: unknown
-  let notify: (() => void) | undefined
-  const wake = () => {
-    notify?.()
-    notify = undefined
-  }
-  const producer = telemetry.span(name, attrs, async (span) => {
-    for await (const chunk of iterate(span as never)) {
-      queue.push(chunk)
-      wake()
-    }
-  }).catch((error) => {
-    failure = error
-  }).finally(() => {
-    done = true
-    wake()
-  })
-
-  while (!done || queue.length > 0) {
-    const next = queue.shift()
-    if (next !== undefined) {
-      yield next
-      continue
-    }
-    if (failure) throw failure
-    await new Promise<void>((resolve) => { notify = resolve })
-  }
-
-  await producer
-  if (failure) throw failure
 }
 
 async function withModelSpan<T>(
@@ -509,10 +470,13 @@ function methodMissing(alias: string, method: string): ModelCapabilityError {
 
 /** Merges alias defaults with per-call overrides. */
 function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['defaults'] | undefined {
-  const merged: ModelAlias['defaults'] = {
+  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
+  const merged: NonNullable<ModelAlias['defaults']> = {
     ...(alias.defaults ?? {}),
     ...(call ?? {}),
+    ...(retry !== undefined ? { retry } : {}),
     providerOptions: {
+      ...(alias.providerOptions ?? {}),
       ...(alias.defaults?.providerOptions ?? {}),
       ...(call?.providerOptions ?? {})
     }
@@ -523,6 +487,29 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
     || merged.topP !== undefined
     || merged.stopSequences !== undefined
     || merged.parallelToolCalls !== undefined
+    || merged.retry !== undefined
+    || Object.keys(merged.providerOptions ?? {}).length > 0
+  return hasTopLevel ? merged : undefined
+}
+
+function mergeCallOptions(alias: ModelAlias, call?: ModelCallOptions): ModelCallOptions | undefined {
+  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
+  const merged: ModelCallOptions = {
+    ...(call ?? {}),
+    ...(retry !== undefined ? { retry } : {}),
+    providerOptions: {
+      ...(alias.providerOptions ?? {}),
+      ...(alias.defaults?.providerOptions ?? {}),
+      ...(call?.providerOptions ?? {})
+    }
+  }
+  const hasTopLevel =
+    merged.temperature !== undefined
+    || merged.maxTokens !== undefined
+    || merged.topP !== undefined
+    || merged.stopSequences !== undefined
+    || merged.parallelToolCalls !== undefined
+    || merged.retry !== undefined
     || Object.keys(merged.providerOptions ?? {}).length > 0
   return hasTopLevel ? merged : undefined
 }

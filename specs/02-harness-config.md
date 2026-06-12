@@ -18,7 +18,7 @@ The methods MUST be called in this order, each at most once:
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .checkpoints(...)?  .requires(...)?  .defaults(...)?
   .models({...})            // REQUIRED, before tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
@@ -31,7 +31,7 @@ defineHarness(opts?)
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
-- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -125,6 +125,23 @@ Validation:
   `.runtime(...)` and before `.requires(...)`, `.defaults(...)`, or domain
   methods.
 
+### `.checkpoints(adapter)`
+
+Pass an optional `ContextCheckpointStore`. Core treats context checkpoints as
+explicit, adapter-backed long-horizon handoff records. It does not summarize,
+rewrite, or inject prompt context automatically. The port, first-party SQLite
+store, and local durable bundle wiring are locked in
+[22-local-durable-execution](./22-local-durable-execution.md).
+
+Validation:
+
+- `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
+- `adapter.info.packageName` is non-empty.
+- `adapter.info.capabilities` contains `context_checkpoint.write`.
+- The method is callable at most once and only in the foundation stage after
+  `.workspaceStore(...)` and before `.requires(...)`, `.defaults(...)`, or
+  domain methods.
+
 ### `.requires(capabilities)`
 
 Declares adapter capabilities required by this harness definition:
@@ -169,6 +186,16 @@ interface HarnessDefaults {
   /** Max tool calls from one model response executed concurrently. Default: 8. */
   maxParallelToolCalls?: number
   /**
+   * Workflow child-agent delegation defaults.
+   * Delegation is disabled by default.
+   */
+  delegation?: {
+    enabled?: boolean
+    maxChildAgentCalls?: number
+    maxParallelChildAgentCalls?: number
+    maxDepth?: number
+  }
+  /**
    * Maximum number of conversation messages to pass into a model call.
    * `undefined` ⇒ pass all messages. `0` ⇒ pass system messages only.
    * Negative values rejected at the builder call with `HarnessConfigError`.
@@ -182,6 +209,12 @@ interface HarnessDefaults {
 
 Note that timeout fields keep `Ms` suffixes for backwards-readable API ergonomics; OTel-exposed durations use seconds (see [14-otel-conventions](./14-otel-conventions.md)).
 
+Delegation defaults are enforced per workflow run after delegation is enabled.
+`enabled` defaults to `false`. `maxChildAgentCalls` and `maxDepth` accept
+integers `>= 0`; `maxParallelChildAgentCalls` accepts integers `>= 1`. A
+workflow can opt in and override these values with
+`WorkflowDefinition.delegation`.
+
 ### `.models(models)`
 
 ```ts
@@ -192,6 +225,8 @@ interface ModelAlias {
   model: string
   capabilities: readonly ModelCapability[]
   defaults?: ModelDefaults
+  /** Provider-neutral retry behavior. Default: true. */
+  retry?: ModelRetrySetting
   /** Free-form provider-specific options, passed to the provider unchanged. */
   providerOptions?: Record<string, unknown>
 }
@@ -201,6 +236,11 @@ Use `defaults.parallelToolCalls` on a model alias to request whether the provide
 may emit multiple tool calls in one model turn. This is the ergonomic path for
 agent loops because agents reference model aliases and do not need to know
 provider-specific payload names.
+
+Use alias `retry`, `defaults.retry`, or per-call `call.retry` to control
+provider-neutral model retry. Defaults are safe for short transient outages and
+rate limits; long provider retry instructions are surfaced as typed deferred
+retry errors. See [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
 Each key is the alias id referenced by agents. Validation:
 
@@ -350,6 +390,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | `state`                              | `InMemoryStateStore`                 |
 | `sandbox`                            | auto-detect: `bashSandbox()` if `just-bash` is installed, else `inMemorySandbox()` |
 | `memory`                             | `sandboxMemory()`                    |
+| `checkpoints`                        | none                                 |
 | `logger`                             | built-in `JsonLogger`                |
 | `telemetry.flavor`                   | env `PURISTA_TELEMETRY_FLAVOR`, else `'dual'` |
 | `telemetry.contentCaptureMode`       | env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'` |
@@ -379,6 +420,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
+16. `checkpoints.info` and context checkpoint store capabilities MUST pass the validation rules in [22-local-durable-execution](./22-local-durable-execution.md).
 
 ## `Harness<S>` returned object
 

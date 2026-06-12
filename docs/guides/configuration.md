@@ -38,6 +38,7 @@ flowchart LR
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
   Harness --> Workspace["durable workspace store"]
+  Harness --> Checkpoints["context checkpoint store"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
@@ -48,6 +49,7 @@ flowchart LR
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
 | Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
 | Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
+| Context checkpoints | None | Long-horizon workflows need explicit durable summaries or handoff records. |
 | Models | Required | Every agent needs a model alias. |
 | Tools | Optional | Agents need retrieval, writes, MCP, or application APIs. |
 | Skills | Optional | Agents need reusable instructions or report methods. |
@@ -67,7 +69,8 @@ flowchart LR
     }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     capabilities: ['object', 'tool_use'],
-    defaults: { maxTokens: 1200 }
+    defaults: { maxTokens: 1200 },
+    retry: true
   }
 })
 ```
@@ -133,6 +136,42 @@ Capabilities gate runtime calls:
 | `embeddings` | Embedding vector generation for retrieval workflows. |
 | `rerank` | Document reranking for retrieval workflows. |
 
+## Model Retry And Outcomes
+
+Model retry is enabled by default. The harness retries short transient provider
+failures and rate limits with bounded backoff, but it does not sleep for long
+provider `Retry-After` windows. `longRetry` decides what happens instead:
+`'error'` (the default) fails immediately with `retryKind: 'none'`, while
+`'defer'` returns a typed `ModelError` with `retryKind: 'deferred'` and the
+provider-supplied `retryAfterMs` so an API can fail fast and a worker/queue can
+schedule a later retry. With `'defer'`, `maxDeferredDelayMs` caps how long a
+provider wait may be before it degrades to `retryKind: 'none'`.
+
+```ts
+.models({
+  assistant: {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+    capabilities: ['object', 'tool_use'],
+    retry: {
+      maxAttempts: 3,
+      maxActiveElapsedMs: 60_000,
+      maxActiveDelayMs: 20_000,
+      respectRetryAfter: true,
+      longRetry: 'error'
+    }
+  }
+})
+```
+
+Use `retry: false` for tests, strict request/response APIs, or provider calls
+where any automatic retry is undesirable. Per-call `call.retry` overrides the
+alias policy.
+
+Model responses keep a simple `finishReason` and may include `outcome` with the
+raw provider finish/status reason. Use `finishReason` for normal application
+flow and `outcome` for operations or provider-specific handling.
+
 ## Defaults
 
 ```ts
@@ -143,12 +182,35 @@ Capabilities gate runtime calls:
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
   maxParallelToolCalls: 8,
-  historyWindow: 20
+  historyWindow: 20,
+  delegation: {
+    enabled: false,
+    maxChildAgentCalls: 32,
+    maxParallelChildAgentCalls: 8,
+    maxDepth: 1
+  }
 })
 ```
 
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
+
+`defaults.delegation` controls workflow-local child-agent calls through
+`ctx.agents`. Delegation is disabled by default. Prefer enabling it per
+workflow with `workflow.delegation`; use `defaults.delegation.enabled: true`
+only when every workflow in the harness should be allowed to call child agents.
+
+Delegation settings:
+
+- `enabled`: global switch for workflows without their own policy. Default:
+  `false`. A workflow-level `delegation` object enables that workflow unless it
+  sets `enabled: false`.
+- `maxChildAgentCalls`: total child-agent calls one workflow run may start.
+  Default after opt-in: `32`.
+- `maxParallelChildAgentCalls`: child-agent calls active at the same time.
+  Default after opt-in: `8`.
+- `maxDepth`: local delegation depth. Default after opt-in: `1`, which allows
+  workflow-to-agent calls. `0` disables child-agent calls.
 
 ## Skills
 
@@ -196,6 +258,38 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 .sandbox(bashSandbox())     // command execution through just-bash
 ```
 
+## Local Durable Bundle
+
+Use `localDurableExecution` when you want durable state, checkpointed workflows,
+workspace restore, and context checkpoints without Docker or an external
+database:
+
+```ts
+import { localDurableExecution } from '@purista/harness'
+
+const local = localDurableExecution({ root: '.purista/harness', exec: false })
+
+const harness = defineHarness()
+  .state(local.state)
+  .runtime(local.runtime)
+  .sandbox(local.sandbox)
+  .workspaceStore(local.workspaceStore)
+  .checkpoints(local.checkpoints)
+  .requires([
+    'runtime.persistent',
+    'workspace_store.persistent',
+    'context_checkpoint.persistent'
+  ])
+  .models(models)
+  .agents(agents)
+  .workflows(workflows)
+  .build()
+```
+
+Host exec is disabled by default. Keep it disabled for untrusted model/tool
+paths, or move to a Docker/microVM sandbox adapter when you need stronger
+isolation.
+
 Choose `inMemorySandbox()` when agents do not need command execution. Choose an
 executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
@@ -240,6 +334,9 @@ const result = await ctx.agents.answerer(ctx.input, {
 })
 ```
 
+The containing workflow still needs to opt into child-agent calls, for example
+with `delegation: { agents: ['answerer'] }`.
+
 Inside workflows, agents, and TypeScript tools, use `ctx.memory.session`,
 `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and
 `ctx.memory.tenant()`. The `user()` and `tenant()` helpers use sanitized
@@ -273,6 +370,9 @@ handler: async (ctx) => {
   })
 }
 ```
+
+Declare `delegation: { agents: ['answerer'] }` on workflows that call
+`ctx.agents`.
 
 Run cancellation uses `InvokeOptions.signal`; per-call `timeoutMs` overrides
 `defaults.runTimeoutMs`. The harness passes the active signal into workflows,

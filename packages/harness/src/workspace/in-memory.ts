@@ -18,6 +18,16 @@ import type {
 } from '../ports/workspace.js'
 
 type WorkspaceLifecycle = 'active' | 'paused' | 'aborted' | 'cleanup_pending' | 'cleaned'
+type WorkspaceOpKind = 'pause' | 'resume' | 'abort' | 'cleanup'
+
+/** Idempotency record keyed by `idempotencyKey`; carries identity so replays validate kind + run/session (spec 21 §9). */
+interface StoredOpResult {
+  kind: WorkspaceOpKind
+  runId: string
+  sessionId: string
+  workspaceRef: string
+  result: WorkspaceCheckpoint | WorkspaceHandle | WorkspaceAbortResult | WorkspaceCleanupResult
+}
 
 interface StoredWorkspace {
   workspaceRef: string
@@ -62,7 +72,7 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
   public readonly capabilities = this.info.capabilities
   private readonly workspaces = new Map<string, StoredWorkspace>()
   private readonly startKeys = new Map<string, { workspaceRef: string; runId: string; sessionId: string }>()
-  private readonly opResults = new Map<string, unknown>()
+  private readonly opResults = new Map<string, StoredOpResult>()
   private nextId = 1
 
   public configureHarnessContext(): void {}
@@ -118,8 +128,11 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
 
   public async pauseWorkspace(opts: WorkspacePauseOptions): Promise<WorkspaceCheckpoint> {
     throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceCheckpoint | undefined
-    if (replay) return replay
+    const replay = this.opResults.get(opts.idempotencyKey)
+    if (replay) {
+      assertReplayMatches(replay, 'pause', opts.handle.runId, opts.handle.sessionId)
+      return replay.result as WorkspaceCheckpoint
+    }
 
     const workspace = this.requireLiveWorkspace(opts.handle.workspaceRef)
 
@@ -163,14 +176,17 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
       }
     }
     workspace.checkpoints.push(checkpoint)
-    this.opResults.set(opts.idempotencyKey, checkpoint)
+    this.opResults.set(opts.idempotencyKey, { kind: 'pause', runId: opts.handle.runId, sessionId: opts.handle.sessionId, workspaceRef: workspace.workspaceRef, result: checkpoint })
     return checkpoint
   }
 
   public async resumeWorkspace(opts: WorkspaceResumeOptions): Promise<WorkspaceHandle> {
     throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceHandle | undefined
-    if (replay) return replay
+    const replay = this.opResults.get(opts.idempotencyKey)
+    if (replay) {
+      assertReplayMatches(replay, 'resume', opts.runId, opts.sessionId)
+      return replay.result as WorkspaceHandle
+    }
 
     const workspace = this.workspaces.get(opts.workspaceRef)
     if (!workspace || workspace.state === 'cleaned') {
@@ -192,14 +208,17 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
     workspace.attempt = opts.attempt
     workspace.updatedAt = new Date().toISOString()
     const handle = this.toHandle(workspace)
-    this.opResults.set(opts.idempotencyKey, handle)
+    this.opResults.set(opts.idempotencyKey, { kind: 'resume', runId: opts.runId, sessionId: opts.sessionId, workspaceRef: workspace.workspaceRef, result: handle })
     return handle
   }
 
   public async abortWorkspace(opts: WorkspaceAbortOptions): Promise<WorkspaceAbortResult> {
     throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceAbortResult | undefined
-    if (replay) return replay
+    const replay = this.opResults.get(opts.idempotencyKey)
+    if (replay) {
+      assertReplayMatches(replay, 'abort', opts.runId, opts.sessionId)
+      return replay.result as WorkspaceAbortResult
+    }
 
     const workspace = this.workspaces.get(opts.workspaceRef)
     if (!workspace || workspace.state === 'cleaned') {
@@ -210,14 +229,14 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
     workspace.updatedAt = abortedAt
     const cleanupEligibleAt = expiryFor('aborted', abortedAt)
     const result: WorkspaceAbortResult = { workspaceRef: opts.workspaceRef, state: 'aborted', abortedAt, ...(cleanupEligibleAt ? { cleanupEligibleAt } : {}) }
-    this.opResults.set(opts.idempotencyKey, result)
+    this.opResults.set(opts.idempotencyKey, { kind: 'abort', runId: opts.runId, sessionId: opts.sessionId, workspaceRef: opts.workspaceRef, result })
     return result
   }
 
   public async cleanupWorkspace(opts: WorkspaceCleanupOptions): Promise<WorkspaceCleanupResult> {
     throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceCleanupResult | undefined
-    if (replay) return replay
+    const replay = this.opResults.get(opts.idempotencyKey)
+    if (replay) return replay.result as WorkspaceCleanupResult
 
     const workspace = this.workspaces.get(opts.workspaceRef)
     const completedAt = new Date().toISOString()
@@ -225,17 +244,21 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
     // terminal cleaned result rather than throwing.
     if (!workspace || workspace.state === 'cleaned') {
       const result: WorkspaceCleanupResult = { workspaceRef: opts.workspaceRef, state: 'cleaned', completedAt, deletedBytes: 0, deletedFiles: 0 }
-      this.opResults.set(opts.idempotencyKey, result)
+      this.opResults.set(opts.idempotencyKey, { kind: 'cleanup', runId: workspace?.runId ?? '', sessionId: workspace?.sessionId ?? '', workspaceRef: opts.workspaceRef, result })
       return result
     }
     const deletedBytes = workspace.bytes
     const deletedFiles = workspace.checkpoints.length
+    const { runId, sessionId } = workspace
     workspace.state = 'cleaned'
     workspace.updatedAt = completedAt
     workspace.checkpoints = []
     workspace.bytes = 0
+    // A cleaned workspace keeps only its slim terminal record; idempotency
+    // entries referencing it are evicted so the store does not grow unbounded.
+    this.evictWorkspaceOps(opts.workspaceRef)
     const result: WorkspaceCleanupResult = { workspaceRef: opts.workspaceRef, state: 'cleaned', completedAt, deletedBytes, deletedFiles }
-    this.opResults.set(opts.idempotencyKey, result)
+    this.opResults.set(opts.idempotencyKey, { kind: 'cleanup', runId, sessionId, workspaceRef: opts.workspaceRef, result })
     return result
   }
 
@@ -290,6 +313,15 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
     return found.workspaceRef
   }
 
+  private evictWorkspaceOps(workspaceRef: string): void {
+    for (const [key, entry] of this.startKeys) {
+      if (entry.workspaceRef === workspaceRef) this.startKeys.delete(key)
+    }
+    for (const [key, value] of this.opResults) {
+      if (value.workspaceRef === workspaceRef) this.opResults.delete(key)
+    }
+  }
+
   private requireLiveWorkspace(workspaceRef: string): StoredWorkspace {
     const workspace = this.workspaces.get(workspaceRef)
     if (!workspace || workspace.state === 'cleaned') {
@@ -299,6 +331,22 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
       throw new WorkspaceError('Workspace was aborted.', { reason: 'aborted', workspace_ref: workspaceRef })
     }
     return workspace
+  }
+}
+
+/**
+ * Guards a persisted-op replay: a stored entry may only replay when it belongs
+ * to the same operation kind and run/session identity, otherwise the reused key
+ * is an `idempotency_conflict` (spec 21 §9).
+ */
+function assertReplayMatches(op: StoredOpResult, kind: WorkspaceOpKind, runId: string, sessionId: string): void {
+  if (op.kind !== kind || op.runId !== runId || op.sessionId !== sessionId) {
+    throw new WorkspaceError(`Workspace ${kind} idempotency key reused with a different operation or run/session.`, {
+      reason: 'idempotency_conflict',
+      workspace_ref: op.workspaceRef,
+      run_id: runId,
+      session_id: sessionId
+    })
   }
 }
 

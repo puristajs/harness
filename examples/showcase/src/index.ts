@@ -58,6 +58,14 @@ class ScriptedObjectProvider implements ModelProvider {
       }
     }
 
+    if (req.messages.some((message) => JSON.stringify(message).includes('Approve incident summaries'))) {
+      return {
+        object: { approved: true, note: 'Summary is ready to send.' } as unknown as T,
+        usage: { inputTokens: 8, outputTokens: 4, totalTokens: 12 },
+        finishReason: 'stop'
+      }
+    }
+
     return {
       object: { summary: 'Impact is limited; validate logs and assign an owner.' } as unknown as T,
       usage: { inputTokens: 10, outputTokens: 7, totalTokens: 17 },
@@ -84,6 +92,11 @@ export function createShowcaseHarness(provider?: ModelProvider) {
           provider: modelProvider,
           model,
           capabilities: ['object', 'tool_use']
+        },
+        deepReview: {
+          provider: modelProvider,
+          model,
+          capabilities: ['object']
         }
       })
       .tools({
@@ -125,17 +138,40 @@ export function createShowcaseHarness(provider?: ModelProvider) {
             'Use policy_lookup before answering policy questions.',
             'Return JSON matching { "answer": string }.'
           ].join('\n')
+        }),
+        incident_reviewer: agent({
+          model: 'structured',
+          input: z.object({ summary: z.string() }),
+          output: z.object({ approved: z.boolean(), note: z.string() }),
+          builtinTools: false,
+          instructions: [
+            'Approve incident summaries before they are sent.',
+            'Return JSON matching { "approved": boolean, "note": string }.'
+          ].join('\n')
         })
       }))
       .workflows(({ workflow }) => ({
         summarize_incident: workflow({
           input: z.object({ incident: z.string() }),
           output: z.object({ summary: z.string() }),
-          handler: async (ctx) => ctx.agents.incident_writer({ incident: ctx.input.incident })
+          delegation: {
+            agents: ['incident_writer', 'incident_reviewer'],
+            maxChildAgentCalls: 2,
+            maxParallelChildAgentCalls: 1,
+            agentModelAliases: {
+              incident_reviewer: ['deepReview']
+            }
+          },
+          handler: async (ctx) => {
+            const draft = await ctx.agents.incident_writer({ incident: ctx.input.incident })
+            await ctx.agents.incident_reviewer(draft, { model: 'deepReview' })
+            return draft
+          }
         }),
         answer_policy_question: workflow({
           input: z.object({ question: z.string() }),
           output: z.object({ answer: z.string() }),
+          delegation: { agents: ['policy_assistant'] },
           handler: async (ctx) => ctx.agents.policy_assistant({ question: ctx.input.question })
         })
       }))

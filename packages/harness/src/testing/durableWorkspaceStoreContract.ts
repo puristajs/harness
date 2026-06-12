@@ -32,6 +32,83 @@ export function durableWorkspaceStoreContract(make: () => DurableWorkspaceStore 
       })
     })
 
+    it('replays pause and resume results for repeated idempotency keys', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      const checkpoint = await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
+      const replayedCheckpoint = await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
+      expect(replayedCheckpoint.checkpointRef).toBe(checkpoint.checkpointRef)
+      expect(replayedCheckpoint.committedAt).toBe(checkpoint.committedAt)
+
+      const resumed = await adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, sessionId: 's', runId: 'r2', attempt: 2, idempotencyKey: 'resume', signal })
+      const replayedResume = await adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, sessionId: 's', runId: 'r2', attempt: 2, idempotencyKey: 'resume', signal })
+      expect(replayedResume.workspaceRef).toBe(resumed.workspaceRef)
+      expect(replayedResume.startedAt).toBe(resumed.startedAt)
+    })
+
+    it('conflicts when pause reuses a key under a different run/session', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'op', signal })
+      const otherHandle = { ...handle, runId: 'r2', sessionId: 's2' }
+      await expect(adapter.pauseWorkspace({ handle: otherHandle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'op', signal })).rejects.toMatchObject({
+        constructor: WorkspaceError,
+        meta: { reason: 'idempotency_conflict' }
+      })
+    })
+
+    it('conflicts when resume reuses a key under a different run/session', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      await adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, sessionId: 's', runId: 'r2', attempt: 2, idempotencyKey: 'op', signal })
+      await expect(adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, sessionId: 's3', runId: 'r3', attempt: 2, idempotencyKey: 'op', signal })).rejects.toMatchObject({
+        constructor: WorkspaceError,
+        meta: { reason: 'idempotency_conflict' }
+      })
+    })
+
+    it('conflicts when abort reuses a key under a different run/session', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      await adapter.abortWorkspace?.({ workspaceRef: handle.workspaceRef, runId: 'r', sessionId: 's', reason: 'cancelled', idempotencyKey: 'op', signal })
+      await expect(adapter.abortWorkspace?.({ workspaceRef: handle.workspaceRef, runId: 'r2', sessionId: 's2', reason: 'cancelled', idempotencyKey: 'op', signal })).rejects.toMatchObject({
+        constructor: WorkspaceError,
+        meta: { reason: 'idempotency_conflict' }
+      })
+    })
+
+    it('conflicts when a key crosses operation kinds (pause then resume)', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'shared', signal })
+      await expect(adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'shared', signal })).rejects.toMatchObject({
+        constructor: WorkspaceError,
+        meta: { reason: 'idempotency_conflict' }
+      })
+    })
+
+    it('inspects a workspace through one of its checkpoint refs', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      const checkpoint = await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
+      const inspection = await adapter.inspectWorkspace?.({ checkpointRef: checkpoint.checkpointRef, signal })
+      expect(inspection?.workspaceRef).toBe(handle.workspaceRef)
+      expect(inspection?.checkpoints.map((item) => item.checkpointRef)).toContain(checkpoint.checkpointRef)
+    })
+
+    it('rejects pause on an aborted workspace and replays the abort result', async () => {
+      const adapter = await make()
+      const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
+      const aborted = await adapter.abortWorkspace?.({ workspaceRef: handle.workspaceRef, runId: 'r', sessionId: 's', reason: 'cancelled', idempotencyKey: 'abort', signal })
+      const abortedAgain = await adapter.abortWorkspace?.({ workspaceRef: handle.workspaceRef, runId: 'r', sessionId: 's', reason: 'cancelled', idempotencyKey: 'abort', signal })
+      expect(abortedAgain?.state).toBe('aborted')
+      expect(abortedAgain?.abortedAt).toBe(aborted?.abortedAt)
+      await expect(adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })).rejects.toMatchObject({
+        constructor: WorkspaceError,
+        meta: { reason: 'aborted' }
+      })
+    })
+
     it('blocks resume after abort and is idempotent on repeated cleanup', async () => {
       const adapter = await make()
       const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })

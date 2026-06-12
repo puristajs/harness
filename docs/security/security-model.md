@@ -41,6 +41,8 @@ Recommended defaults:
 - for skill-backed agents, enable `builtinTools: ['read']` so skills can be
   loaded without enabling mutation or command execution;
 - allow only explicit custom tools;
+- for workflows, use `delegation.agents` and model alias allowlists when only
+  specific child agents or review models should be reachable;
 - use `inMemorySandbox()` for file-only use cases;
 - use executor-capable sandbox only for trusted workloads that require command
   execution or `mcp_stdio`;

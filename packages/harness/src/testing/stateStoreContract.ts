@@ -112,6 +112,36 @@ export function stateStoreContract(make: () => StateStore | Promise<StateStore>)
       ])
     })
 
+    it('replaceMessages atomically replaces the history when supported', async () => {
+      const store = await make()
+      if (!store.replaceMessages) return
+      await store.appendMessages(session.id, [m1 as Message])
+      await store.replaceMessages(session.id, [m2 as Message, m3 as Message])
+      await expect(store.listMessages(session.id)).resolves.toEqual([m2, m3])
+    })
+
+    it('getRun returns undefined for an unknown id', async () => {
+      const store = await make()
+      await expect(store.getRun('missing')).resolves.toBeUndefined()
+    })
+
+    it('listRuns honors limit', async () => {
+      const store = await make()
+      await store.createRun(run)
+      await store.createRun({ ...run, id: 'run_2', startedAt: '2026-01-01T00:00:05.000Z' })
+      await expect(store.listRuns(session.id, { limit: 1 })).resolves.toEqual([
+        expect.objectContaining({ id: 'run_2' })
+      ])
+    })
+
+    it('listEvents honors limit', async () => {
+      const store = await make()
+      await store.appendEvents(run.id, [event, { ...event, id: '01EVT2' }])
+      await expect(store.listEvents(run.id, { limit: 1 })).resolves.toEqual([
+        expect.objectContaining({ id: '01EVT' })
+      ])
+    })
+
     it('duplicate message id throws StateError', async () => {
       const store = await make()
       await store.appendMessages(session.id, [m1 as Message])

@@ -132,9 +132,13 @@ Adapter mapping checklist:
 - implement streaming as `AsyncIterable<TextStreamChunk>` / `AsyncIterable<ObjectStreamChunk>` when supported
 - implement embeddings and rerank only when the provider API has first-class support
 - map token usage and finish reason
+- preserve provider-specific finish/status details in `outcome`
 - pass `req.signal` to SDK calls when supported
 - pass `req.call.providerOptions` through to provider-specific SDK options
-- normalize provider errors to `ModelError` / `ModelCapabilityError` through `BaseModelProvider` behavior
+- let `BaseModelProvider` own retry, timeouts, provider error normalization,
+  active/deferred retry classification, and retry telemetry
+- disable hidden official-SDK retry by default when the SDK exposes a stable
+  option, unless the user explicitly passes provider-specific retry options
 - expose `genAiSystem` for OpenTelemetry semantic conventions
 - implement `close()` when the provider owns sockets, child processes, or clients needing shutdown
 

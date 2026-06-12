@@ -163,6 +163,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; hangWo
       wf: {
         input: z.string(),
         output: z.object({ answer: z.string() }),
+        delegation: {},
         handler: async (ctx: any) => {
           if (opts.hangWorkflow) return new Promise<never>(() => undefined)
           await ctx.memory.session.write('workflow_topic', { value: ctx.input })

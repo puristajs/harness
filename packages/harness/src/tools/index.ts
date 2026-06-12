@@ -14,6 +14,20 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ['bash', 'read', '
 const GREP_MAX_FILE_BYTES = 2_000_000
 const GREP_MAX_TOTAL_BYTES = 50_000_000
 
+/** Maximum accepted length for a model-supplied `grep` pattern. */
+const GREP_MAX_PATTERN_LENGTH = 1_000
+
+/**
+ * Matches a quantified group whose (paren-free) body contains an unbounded
+ * quantifier — the classic catastrophic-backtracking shapes such as `(x+)+`,
+ * `(x*)*`, or `(a+b){2,}`. The check is intentionally syntactic and
+ * conservative. Residual risk: ambiguous alternations like `(a|a)+` and
+ * quantifiers nested deeper than one group level still pass; the byte caps
+ * above bound the scanned input but cannot prevent a stalled event loop for
+ * adversarial patterns beyond this check.
+ */
+const GREP_NESTED_UNBOUNDED_QUANTIFIER = /\((?:[^()\\]|\\.)*(?:[*+]|\{\d+,\})(?:[^()\\]|\\.)*\)(?:[*+]|\{\d+,\})/
+
 export const BUILTIN_ALIAS_TO_CANONICAL: Record<string, BuiltinToolName> = {
   bash: 'bash', Bash: 'bash',
   read: 'read', Read: 'read',
@@ -73,7 +87,8 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
         const content = await session.readText(parsed.path)
         const count = content.split(parsed.old_string).length - 1
         if (count !== 1) throw new ValidationError('edit requires exactly one match', { where: 'tool_input', issues: { path: parsed.path, matches: count } })
-        await session.write(parsed.path, content.replace(parsed.old_string, parsed.new_string))
+        // Replacer function so `$&`, `$$`, `` $` `` etc. in new_string are written literally.
+        await session.write(parsed.path, content.replace(parsed.old_string, () => parsed.new_string))
         return { replaced: 1 }
       }
       case 'glob': {
@@ -83,6 +98,18 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
       }
       case 'grep': {
         const parsed = schemas.grep.input.parse(input)
+        if (parsed.pattern.length > GREP_MAX_PATTERN_LENGTH) {
+          throw new ValidationError('grep pattern exceeds the maximum supported length', {
+            where: 'tool_input',
+            issues: [{ path: 'pattern', message: `Pattern must be at most ${GREP_MAX_PATTERN_LENGTH} characters.` }]
+          })
+        }
+        if (GREP_NESTED_UNBOUNDED_QUANTIFIER.test(parsed.pattern)) {
+          throw new ValidationError('grep pattern contains a nested unbounded quantifier', {
+            where: 'tool_input',
+            issues: [{ path: 'pattern', message: 'Patterns like (x+)+ can cause catastrophic backtracking and are rejected.' }]
+          })
+        }
         let rx: RegExp
         try {
           rx = new RegExp(parsed.pattern)

@@ -73,11 +73,18 @@ export class ModelError extends HarnessError {
       reason?:
         | 'http_error'
         | 'network'
+        | 'rate_limited'
+        | 'provider_unavailable'
         | 'unstructured_response'
         | 'malformed_response'
         | 'context_length_exceeded'
         | 'embedding_count_mismatch'
         | 'rerank_result_mismatch'
+      retryKind?: 'none' | 'active' | 'deferred'
+      retryAfterMs?: number
+      retryAttempt?: number
+      retryMaxAttempts?: number
+      rateLimit?: unknown
       providerCode?: string
       providerType?: string
       providerParam?: string
@@ -90,7 +97,11 @@ export class ModelError extends HarnessError {
   ) {
     const retriable =
       meta.reason === 'network'
+      || meta.reason === 'rate_limited'
+      || meta.reason === 'provider_unavailable'
       || meta.status === 429
+      || meta.status === 408
+      || meta.status === 409
       || (typeof meta.status === 'number' && meta.status >= 500)
     super({ code: 'MODEL_ERROR', category: 'model', retriable, message, meta, cause })
   }
@@ -126,7 +137,7 @@ export class ToolNotFoundError extends HarnessError {
 
 /** Skill id was not found in configured skill set. */
 export class SkillNotFoundError extends HarnessError {
-  public constructor(message: string, meta: { skill_id: string }, cause?: unknown) {
+  public constructor(message: string, meta: { skill_id: string; agent_id?: string }, cause?: unknown) {
     super({ code: 'SKILL_NOT_FOUND', category: 'skill', retriable: false, message, meta, cause })
   }
 }
@@ -175,6 +186,29 @@ export class AgentLoopBudgetError extends HarnessError {
   }
 }
 
+/** Workflow child-agent delegation was denied or exceeded a configured budget. */
+export class DelegationPolicyError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      workflow_id: string
+      agent_id: string
+      reason:
+        | 'delegation_disabled'
+        | 'agent_not_allowed'
+        | 'max_child_agent_calls_exceeded'
+        | 'max_parallel_child_agent_calls_exceeded'
+        | 'max_delegation_depth_exceeded'
+        | 'model_alias_not_allowed'
+      limit?: number
+      model_alias?: string
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'DELEGATION_POLICY_ERROR', category: 'validation', retriable: false, message, meta, cause })
+  }
+}
+
 /** Session attempted to invoke unknown workflow id. */
 export class WorkflowNotFoundError extends HarnessError {
   public constructor(message: string, meta: { workflow_id: string }, cause?: unknown) {
@@ -207,7 +241,8 @@ export class StateError extends HarnessError {
     meta: {
       op:
         | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
-        | 'clearMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
+        | 'clearMessages' | 'replaceMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
+        | 'contextCheckpointWrite' | 'contextCheckpointRead' | 'contextCheckpointList' | 'contextCheckpointDelete'
         | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
       reason?: 'duplicate_message_id' | string
       adapter?: 'memory' | string

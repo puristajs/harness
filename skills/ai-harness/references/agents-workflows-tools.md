@@ -14,7 +14,8 @@ Use an agent when the unit of work is one typed model loop: answer, classify, ex
 
 Use a workflow when the application needs orchestration: multiple agents, fan-out, review, deterministic checks, retries, writes, or RAG steps using embeddings/rerank.
 
-Agents do not spawn agents. Workflows orchestrate agents through `ctx.agents`.
+Agents do not spawn agents. Workflows orchestrate agents through `ctx.agents`
+with per-run delegation budgets and optional allowlists.
 
 ## Agent Pattern
 ```ts
@@ -52,15 +53,22 @@ side effects stop promptly.
   answer_with_review: workflow({
     input: z.object({ question: z.string() }),
     output: z.object({ answer: z.string(), approved: z.boolean() }),
+    delegation: {
+      agents: ['answerer', 'reviewer'],
+      maxChildAgentCalls: 2,
+      maxParallelChildAgentCalls: 1,
+      agentModelAliases: { reviewer: ['deep_review'] }
+    },
     handler: async (ctx) => {
       const draft = await ctx.agents.answerer({ question: ctx.input.question })
-      return { answer: draft.answer, approved: false }
+      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+      return { answer: draft.answer, approved: review.approved }
     }
   })
 }))
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
 
 Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
@@ -72,6 +80,21 @@ Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the call
 The harness also races workflow handlers against `ctx.signal`, so a run can
 finish as cancelled/timed out even when handler code hangs. This is not a
 thread/process kill; cooperative cancellation is still required for cleanup.
+
+Child-agent delegation is disabled by default. Add `workflow.delegation` next to
+handlers that call `ctx.agents`; the policy object enables that workflow unless
+it sets `enabled: false`. After opt-in, defaults are 32 child-agent calls per
+workflow run, 8 active child-agent calls at once, and depth 1. Use
+`delegation.agents` for least privilege and raise/lower budgets per workflow.
+`modelAliases` restricts every child-agent call in the workflow — including
+calls that run on the agent's default `model` — and `agentModelAliases`
+replaces that set for the named agent; configure one of them before passing
+`{ model: 'alias' }` to `ctx.agents.<id>`.
+
+Runtime policy violations throw `DelegationPolicyError`. Streamed and persisted
+child-agent lifecycle events include `workflowId`, `delegationCallId`,
+`delegationDepth`, and `modelAlias`; persisted payloads keep lineage metadata
+but redact prompts and outputs.
 
 Direct model streams inside workflow handlers are private to the handler unless
 the model call opts in with `{ emitRunEvents: true }`. Workflow stream APIs emit

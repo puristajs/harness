@@ -45,3 +45,33 @@ it('grep converts invalid regex patterns into tool input validation errors', asy
   })
   await expect(invokeBuiltinTool('grep', { pattern: '[', path: '/workspace' }, session)).rejects.toBeInstanceOf(ValidationError)
 })
+
+it('grep rejects oversized patterns and nested unbounded quantifiers before compiling', async () => {
+  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  await session.write('/workspace/a.txt', 'abab')
+
+  await expect(invokeBuiltinTool('grep', { pattern: 'a'.repeat(1_001), path: '/workspace' }, session)).rejects.toMatchObject({
+    meta: { where: 'tool_input' }
+  })
+  for (const pattern of ['(a+)+$', '(x*)*', '(a+b){2,}!']) {
+    await expect(invokeBuiltinTool('grep', { pattern, path: '/workspace' }, session)).rejects.toBeInstanceOf(ValidationError)
+  }
+
+  // Bounded or non-nested quantifiers stay accepted.
+  const result = await invokeBuiltinTool('grep', { pattern: '(ab)+', path: '/workspace', maxResults: 5 }, session) as { matches: unknown[] }
+  expect(result.matches.length).toBe(1)
+})
+
+it('edit writes new_string literally when it contains regex replacement patterns', async () => {
+  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  await session.write('/workspace/file.txt', 'price = OLD;')
+
+  const result = await invokeBuiltinTool('edit', {
+    path: '/workspace/file.txt',
+    old_string: 'OLD',
+    new_string: '$& and $$ and $` stay literal'
+  }, session)
+
+  expect(result).toEqual({ replaced: 1 })
+  expect(await session.readText('/workspace/file.txt')).toBe('price = $& and $$ and $` stay literal;')
+})

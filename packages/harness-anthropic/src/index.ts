@@ -1,4 +1,5 @@
 import type {
+  AdapterCallContext,
   BaseModelProviderOptions,
   ContentPart,
   JsonValue,
@@ -13,7 +14,13 @@ import type {
   TokenUsage,
   ToolCallSpec
 } from '@purista/harness'
-import { BaseModelProvider, ModelError } from '@purista/harness'
+import {
+  BaseModelProvider,
+  parseProviderJson,
+  safePartialJson,
+  toTokenUsage,
+  withoutObjectTool
+} from '@purista/harness'
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 
 export interface AnthropicFactoryOptions extends ClientOptions {
@@ -62,8 +69,9 @@ class AnthropicModelProvider extends BaseModelProvider {
     return {
       content: response.content?.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('') ?? '',
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(response.usage?.input_tokens, response.usage?.output_tokens),
+      usage: toTokenUsage(response.usage?.input_tokens, response.usage?.output_tokens),
       finishReason: toFinishReason(response.stop_reason),
+      outcome: toOutcome(response.stop_reason),
       raw: response
     }
   }
@@ -71,19 +79,21 @@ class AnthropicModelProvider extends BaseModelProvider {
   protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
     req.signal.throwIfAborted()
     const stream = await createMessage(this.client, req, true)
-    const toolState = new Map<number, { id: string; name: string; input: string }>()
+    const toolState = new Map<number, StreamToolBlockState>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown
 
     for await (const event of stream) {
       req.signal.throwIfAborted()
       if (event.type === 'message_start') {
-        usage = toUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
+        usage = toTokenUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
       } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
         toolState.set(event.index, {
           id: String(event.content_block.id),
           name: String(event.content_block.name),
-          input: JSON.stringify(event.content_block.input ?? {})
+          input: '',
+          startInput: event.content_block.input
         })
       } else if (event.type === 'content_block_delta') {
         if (event.delta?.type === 'text_delta') {
@@ -95,16 +105,19 @@ class AnthropicModelProvider extends BaseModelProvider {
       } else if (event.type === 'content_block_stop') {
         const state = toolState.get(event.index)
         if (state) {
-          yield { kind: 'tool_call', call: { id: state.id, name: state.name, arguments: parseJson(state.input, req, 'textStream') } }
+          yield { kind: 'tool_call', call: { id: state.id, name: state.name, arguments: parseJson(toolBlockInputJson(state), req, 'textStream') } }
           toolState.delete(event.index)
         }
       } else if (event.type === 'message_delta') {
-        finishReason = toFinishReason(event.delta?.stop_reason)
-        usage = toUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
+        if (event.delta?.stop_reason) {
+          providerFinishReason = event.delta.stop_reason
+          finishReason = toFinishReason(providerFinishReason)
+        }
+        usage = toTokenUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
       }
     }
 
-    yield { kind: 'finish', usage, finishReason }
+    yield { kind: 'finish', usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -116,8 +129,9 @@ class AnthropicModelProvider extends BaseModelProvider {
     return {
       object,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(response.usage?.input_tokens, response.usage?.output_tokens),
+      usage: toTokenUsage(response.usage?.input_tokens, response.usage?.output_tokens),
       finishReason: toFinishReason(response.stop_reason),
+      outcome: toOutcome(response.stop_reason),
       raw: response
     }
   }
@@ -127,32 +141,85 @@ class AnthropicModelProvider extends BaseModelProvider {
     const stream = await createMessage(this.client, req, true, true)
     let text = ''
     let objectInput = ''
+    let objectBlockIndex: number | undefined
+    let objectStartInput: unknown
+    const toolState = new Map<number, StreamToolBlockState>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown
 
     for await (const event of stream) {
       req.signal.throwIfAborted()
       if (event.type === 'message_start') {
-        usage = toUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
-      } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use' && event.content_block.name === 'harness_response') {
-        objectInput = JSON.stringify(event.content_block.input ?? {})
+        usage = toTokenUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
+      } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+        // Only the synthetic `harness_response` block carries the structured
+        // object; other tool blocks are real tool calls and must not bleed
+        // into the object JSON (parity with the OpenAI/Azure adapters).
+        if (event.content_block.name === 'harness_response' && objectBlockIndex === undefined) {
+          objectBlockIndex = event.index
+          objectStartInput = event.content_block.input
+        } else {
+          toolState.set(event.index, {
+            id: String(event.content_block.id),
+            name: String(event.content_block.name),
+            input: '',
+            startInput: event.content_block.input
+          })
+        }
       } else if (event.type === 'content_block_delta') {
         if (event.delta?.type === 'text_delta') {
           text += event.delta.text
           yield { kind: 'partial', partial: safePartialJson(text) }
         } else if (event.delta?.type === 'input_json_delta') {
-          objectInput += event.delta.partial_json
-          yield { kind: 'partial', partial: safePartialJson(objectInput) }
+          if (event.index === objectBlockIndex) {
+            objectInput += event.delta.partial_json
+            yield { kind: 'partial', partial: safePartialJson(objectInput) }
+          } else {
+            const state = toolState.get(event.index)
+            if (state) state.input += event.delta.partial_json
+          }
+        }
+      } else if (event.type === 'content_block_stop') {
+        const state = toolState.get(event.index)
+        if (state) {
+          yield { kind: 'tool_call', call: { id: state.id, name: state.name, arguments: parseJson(toolBlockInputJson(state), req, 'objectStream') } }
+          toolState.delete(event.index)
         }
       } else if (event.type === 'message_delta') {
-        finishReason = toFinishReason(event.delta?.stop_reason)
-        usage = toUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
+        if (event.delta?.stop_reason) {
+          providerFinishReason = event.delta.stop_reason
+          finishReason = toFinishReason(providerFinishReason)
+        }
+        usage = toTokenUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
       }
     }
 
-    const object = parseJson(objectInput || text || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason }
+    const objectSource = objectInput
+      || (objectStartInput !== undefined ? JSON.stringify(objectStartInput) : '')
+      || text
+      || '{}'
+    const object = parseJson(objectSource, req, 'objectStream') as T
+    yield { kind: 'finish', object, usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
+}
+
+/**
+ * Streamed tool-use block accumulator. Anthropic sends the block's `input` as
+ * an empty placeholder on `content_block_start` and streams the real JSON via
+ * `input_json_delta` fragments; `startInput` is only used when no fragments
+ * arrive (complete input delivered up front).
+ */
+interface StreamToolBlockState {
+  id: string
+  name: string
+  input: string
+  startInput?: unknown
+}
+
+function toolBlockInputJson(state: StreamToolBlockState): string {
+  if (state.input) return state.input
+  return JSON.stringify(state.startInput ?? {})
 }
 
 export type AnthropicClient = {
@@ -165,7 +232,7 @@ type ChatRequest = TextRequest | ObjectRequest
 
 function toClientOptions(options: AnthropicFactoryOptions): ClientOptions {
   const { client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
-  return clientOptions
+  return { maxRetries: 0, ...clientOptions }
 }
 
 async function createMessage(client: AnthropicClient, req: ChatRequest, stream: boolean, forceObject = false): Promise<any> {
@@ -269,41 +336,14 @@ function extractToolCalls(response: any, req: ChatRequest, method: string): Tool
   }))
 }
 
-function withoutObjectTool(calls: ToolCallSpec[] | undefined): ToolCallSpec[] | undefined {
-  const filtered = calls?.filter((call) => call.name !== 'harness_response')
-  return filtered && filtered.length > 0 ? filtered : undefined
+const MALFORMED_JSON_MESSAGE = 'Anthropic returned malformed structured JSON.'
+
+function callContext(req: ChatRequest, method: string): AdapterCallContext {
+  return { provider: 'anthropic', model: req.model, method }
 }
 
 function parseJson(content: string, req: ChatRequest, method: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch (error) {
-    throw malformedResponseError(req, method, 'Anthropic returned malformed structured JSON.', content, error)
-  }
-}
-
-function malformedResponseError(req: ChatRequest, method: string, message: string, body: unknown, cause: unknown): ModelError {
-  return new ModelError(message, {
-    provider: 'anthropic',
-    model: req.model,
-    method,
-    reason: 'malformed_response',
-    providerBody: body
-  }, cause)
-}
-
-function safePartialJson(content: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch {
-    return { _partial: content }
-  }
-}
-
-function toUsage(inputTokens?: number, outputTokens?: number): TokenUsage {
-  const input = inputTokens ?? 0
-  const output = outputTokens ?? 0
-  return { inputTokens: input, outputTokens: output, totalTokens: input + output }
+  return parseProviderJson(content, callContext(req, method), MALFORMED_JSON_MESSAGE)
 }
 
 function toFinishReason(value: unknown): TextResponse['finishReason'] {
@@ -315,7 +355,32 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
       return 'length'
     case 'tool_use':
       return 'tool_calls'
+    case 'pause_turn':
+      return 'pause'
+    case 'refusal':
+      return 'refusal'
+    case 'model_context_window_exceeded':
+      return 'context_limit'
     default:
       return 'error'
+  }
+}
+
+function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
+  const finishReason = toFinishReason(value)
+  return {
+    finishReason,
+    ...(typeof value === 'string' ? { providerFinishReason: value } : {})
+  }
+}
+
+/**
+ * Stream outcome built from the tracked finish reason; `providerFinishReason`
+ * is omitted entirely when the provider never sent a stop reason.
+ */
+function streamOutcome(finishReason: TextResponse['finishReason'], providerFinishReason: unknown): NonNullable<TextResponse['outcome']> {
+  return {
+    finishReason,
+    ...(typeof providerFinishReason === 'string' ? { providerFinishReason } : {})
   }
 }

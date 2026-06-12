@@ -5,6 +5,12 @@ import { defineHarness, inMemorySandbox } from '../src/index.js'
 import { OperationCancelledError, OperationTimeoutError } from '../src/errors/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
+/**
+ * Sentinel for "the prompt must settle well before this". Generous (2 s vs the
+ * 5 ms run timeout under test) so a loaded CI machine cannot win the race.
+ */
+const SENTINEL_TIMEOUT_MS = 2_000
+
 describe('harness cancellation propagation', () => {
   it('propagates invoke aborts into model calls', async () => {
     const controller = new AbortController()
@@ -23,7 +29,7 @@ describe('harness cancellation propagation', () => {
       .tools({})
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
       .build()
 
     const session = await harness.getSession('s1')
@@ -93,7 +99,7 @@ describe('harness cancellation propagation', () => {
     const session = await harness.getSession('s1')
     const result = await Promise.race([
       session.workflows.wf.prompt('x').then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100))
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
     ])
     expect(result).toBeInstanceOf(OperationTimeoutError)
   })
@@ -119,7 +125,7 @@ describe('harness cancellation propagation', () => {
     const session = await harness.getSession('s1')
     const result = await Promise.race([
       session.agents.a1.prompt('x').then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100))
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
     ])
     expect(result).toBeInstanceOf(OperationTimeoutError)
   })
@@ -142,6 +148,7 @@ describe('harness cancellation propagation', () => {
         wf: {
           input: z.string(),
           output: z.string(),
+          delegation: {},
           handler: async (ctx) => {
             const controller = new AbortController()
             controller.abort(new Error('nested stop'))
@@ -188,7 +195,7 @@ describe('harness cancellation propagation', () => {
       })
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
       .build()
 
     const session = await harness.getSession('s1')
@@ -198,9 +205,114 @@ describe('harness cancellation propagation', () => {
 
     const result = await Promise.race([
       prompt.then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100))
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
     ])
     expect(result).toBeInstanceOf(OperationCancelledError)
     expect(result).toMatchObject({ meta: { scope: 'run' } })
+  })
+
+  it('aborts the run when a consumer abandons the event stream', async () => {
+    let modelAborted = false
+    let markModelStarted!: () => void
+    const modelStarted = new Promise<void>((resolve) => {
+      markModelStarted = resolve
+    })
+    const model = {
+      id: 'hanging',
+      genAiSystem: 'hanging',
+      async object(req: { signal: AbortSignal }) {
+        markModelStarted()
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => {
+            modelAborted = true
+            reject(req.signal.reason)
+          }
+          if (req.signal.aborted) return onAbort()
+          req.signal.addEventListener('abort', onAbort, { once: true })
+        })
+      }
+    }
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
+      .workflows({})
+      .build()
+
+    const session = await harness.getSession('s-abandoned-stream')
+    for await (const event of session.agents.a1.stream('x')) {
+      if (event.type === 'run.started') {
+        await modelStarted
+        break
+      }
+    }
+
+    // Breaking out of the stream must abort the in-flight run; iterator.return()
+    // (run inside the for-await break) settles only after the run finished.
+    expect(modelAborted).toBe(true)
+    // The session busy lock was released, so busy-guarded operations succeed.
+    await session.clearHistory()
+  })
+
+  it('emits a paired tool.finished when a tool call is cancelled', async () => {
+    const controller = new AbortController()
+    const model = new FakeModelProvider()
+    model.enqueue({
+      object: {},
+      toolCalls: [{ id: 'call_hang', name: 'hang', arguments: {} }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: 'tool_calls'
+    })
+
+    let markToolStarted!: () => void
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve
+    })
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+      .tools({
+        hang: {
+          kind: 'ts',
+          description: 'Never resolves; cancelled through the run signal.',
+          input: z.object({}),
+          output: z.object({ ok: z.boolean() }),
+          handler: async () => {
+            markToolStarted()
+            return new Promise<never>(() => undefined)
+          }
+        }
+      })
+      .skills({})
+      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
+      .workflows({})
+      .build()
+
+    const session = await harness.getSession('s-tool-finished-pairing')
+    void toolStarted.then(() => controller.abort(new Error('stop')))
+
+    const events: Array<{ type: string; toolId?: string; callId?: string; error?: { code?: string } }> = []
+    let failure: unknown
+    try {
+      for await (const event of session.agents.a1.stream('x', { signal: controller.signal })) {
+        events.push(event as (typeof events)[number])
+      }
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(OperationCancelledError)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool.started', toolId: 'hang', callId: 'call_hang' }),
+      expect.objectContaining({
+        type: 'tool.finished',
+        toolId: 'hang',
+        callId: 'call_hang',
+        error: expect.objectContaining({ code: 'OPERATION_CANCELLED' })
+      })
+    ]))
   })
 })

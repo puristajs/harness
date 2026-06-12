@@ -4,9 +4,9 @@
 
 ## Framework
 
-- Vitest `^2`. Node test environment (`environment: 'node'`).
+- Vitest `^4`. Node test environment (`environment: 'node'`).
 - Coverage provider: `v8`. Reporters: `text`, `lcov`, `json-summary`.
-- Each package has `vitest.config.ts` extending a shared base config available under `@purista/harness/testing` (re-exported from the testing subpath).
+- Each package owns its `vitest.config.ts` with the settings above; no shared base config is exported.
 
 ## Coverage gates (CI-enforced)
 
@@ -22,46 +22,11 @@ CI fails if any gate is unmet.
 
 ## `@purista/harness/testing` exports
 
-```ts
-// Fakes
-export class FakeModelProvider implements ModelProvider     // configurable scripted responses
-export class FakeStateStore extends InMemoryStateStore       // exposes inspection helpers
-export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
-export class FakeLogger implements Logger                    // captures log records in memory
-export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
-
-// Contract suites — each is a Vitest test factory
-export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
-export function sandboxContract(
-  make: () => Sandbox | Promise<Sandbox>,
-  opts: { executor: 'available' | 'unavailable' }
-): void
-export function modelProviderContract(
-  make: () => ModelProvider,
-  opts: { capabilities: ModelCapability[] }
-): void
-export function loggerContract(make: () => Logger): void
-export function memoryAdapterContract(
-  make: () => MemoryAdapter | Promise<MemoryAdapter>,
-  opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
-): void
-export function durableWorkspaceStoreContract(
-  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
-): void
-
-// Helpers
-export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness(); returns a fresh builder
-export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
-export type DeterministicScorerDefinition
-export interface ScorerTarget
-export interface ScorerResult
-export function evaluateDeterministicScorer(
-  definition: DeterministicScorerDefinition,
-  target: ScorerTarget
-): ScorerResult
-```
+The authoritative testing-subpath export list (fakes, contract suites, and
+helpers) is locked in [13-public-api](./13-public-api.md). Adapter packages
+must run the matching contract suite against every port implementation they
+ship; first-party model provider packages run `modelProviderContract` against
+their adapter wired to an offline fake client.
 
 There is no `streamContract` — streaming is internal to the harness; see "Streaming generator" in the core test catalog below.
 
@@ -95,6 +60,11 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 
 ### ModelProvider
 
+The shared `modelProviderContract` suite covers the capability/shape/abort
+basics (1–3, 5, 7–9, 12); the base-provider unit tests and each adapter's own
+test suite cover the scripted tool-use, capability-gate, and error/retry items
+(4, 6, 10, 11).
+
 1. Each claimed method exists on the provider.
 2. `text`/`object`/`embed`/`rerank` honor `signal`.
 3. `textStream` and `objectStream` propagate abort and provider failures.
@@ -105,6 +75,11 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 8. Embedding output count matches input count and vectors honor requested dimensions when provided.
 9. Rerank result ids and indexes point back to submitted documents and results are sorted descending by score.
 10. Provider maps a "context length exceeded" response to `ModelError{meta.reason:'context_length_exceeded'}`.
+11. Provider errors preserve sanitized retry metadata: `retryAfterMs`,
+    `retryKind`, `retryAttempt`, `retryMaxAttempts`, safe `providerHeaders`,
+    and parsed `rateLimit` when headers are present.
+12. Provider finish/stop/status reasons map to the normalized `FinishReason`
+    union and preserve raw provider reason/status in `outcome`.
 
 ### Logger
 
@@ -173,6 +148,12 @@ The harness package additionally has integration tests:
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
 - `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
 - Durable workspace integration: `.workspaceStore(custom)` registers a durable workspace store; `.requires(['workspace_store.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, runtime checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
+- Local durable execution: `localDurableExecution({ root })` wires `.runtime(...)`, `.sandbox(...)`, `.workspaceStore(...)`, and `.checkpoints(...)`; a workflow writes a file under `/workspace`, commits a durable step, rebuilds the bundle/harness from the same root/database, retries with the same durable `runId`, reads the file, and proves the committed step was not re-run.
+- SQLite durable runtime: fresh run, retry, process-style rebuild, active lease conflict, stale lease takeover after `leaseTtlMs`, checkpoint idempotency, checkpoint conflict, terminal-run retry rejection, JSON serialization rejection, cancellation, WAL/busy timeout setup, and `close()`.
+- Local directory workspace store: start/pause/resume/abort/cleanup/inspect, idempotency conflict, missing checkpoint, expired/aborted/cleaned resume rejection, orphan inspection, realpath cleanup guard, and quota metadata.
+- Local directory sandbox: read/write/list/stat/remove/mount, files-only default, disabled exec behavior, enabled exec behavior, command allow-list, cwd jailing, symlink escape prevention, timeout, minimal env, and close.
+- Context checkpoint store: write/read/list/delete, process-style rebuild, ordering by sequence, kind filtering, payload JSON serialization rejection, delete idempotency, capability gates, and OTel/log privacy.
+- Durable run state ordering: durable lease acquisition happens before `StateStore.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.
@@ -186,15 +167,22 @@ The harness package additionally has integration tests:
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
   3. Type tests assert capability-projected handles: absent operation capabilities remove methods; absent marker capabilities reject `tools`, tool-role messages, and unsupported content parts.
   4. `FakeModelProvider` covers text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
-  5. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
-  6. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
+  5. Active model retry succeeds after a short retriable failure; `retry:false`
+     throws after one attempt; long provider `Retry-After` produces
+     `ModelError{meta.retryKind:'deferred'}` without sleeping; streaming retry
+     happens only before the first yielded chunk.
+  6. First-party adapters disable hidden official-SDK retries by default where
+     supported and allow explicit SDK retry options as provider-specific escape
+     hatches.
+  7. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
+  8. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
 - Adapter capability policy:
   1. `.requires(...)` fails during `build()` when required adapter capabilities are missing.
   2. `harness.inspect()` returns only data and includes effective capabilities, required capabilities, and adapter descriptors.
   3. `inMemorySandbox()` type tests assert files-only sessions do not expose `exec`.
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
-- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*` spans and metrics.
+- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.runtime.*`, `harness.context_checkpoint.*`, and `harness.local_sandbox.open` spans and metrics.
 - Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
 - Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
 - Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.

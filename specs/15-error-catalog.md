@@ -116,6 +116,13 @@ tokens, raw headers, or attachments.
 - when: default loop iterations > `agentMaxIterations`.
 - meta: `agent_id: string`, `reason: 'iterations_exceeded'`, `limit: number`.
 
+### `DelegationPolicyError`
+- code: `DELEGATION_POLICY_ERROR`
+- category: `validation`
+- retriable: `false`
+- when: a workflow-local `ctx.agents.<id>(...)` call violates the workflow delegation policy or the effective delegation budgets.
+- meta: `workflow_id: string`, `agent_id: string`, `reason: 'agent_not_allowed'|'max_child_agent_calls_exceeded'|'max_parallel_child_agent_calls_exceeded'|'max_delegation_depth_exceeded'|'model_alias_not_allowed'`, `limit?: number`, `model_alias?: string`.
+
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`
 - category: `validation`

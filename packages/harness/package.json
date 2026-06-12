@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness",
-  "version": "1.2.6",
+  "version": "1.3.0",
   "description": "Self-hosted enterprise agent harness for typed tools, agents, workflows, state, sandboxing, and telemetry.",
   "type": "module",
   "main": "dist/index.js",

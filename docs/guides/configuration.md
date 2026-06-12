@@ -143,12 +143,22 @@ Capabilities gate runtime calls:
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
   maxParallelToolCalls: 8,
-  historyWindow: 20
+  historyWindow: 20,
+  delegation: {
+    maxChildAgentCalls: 32,
+    maxParallelChildAgentCalls: 8,
+    maxDepth: 1
+  }
 })
 ```
 
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
+
+`defaults.delegation` controls workflow-local child-agent calls through
+`ctx.agents`. The defaults allow simple workflows without extra config while
+still bounding fan-out. A workflow can override these budgets and restrict
+which child agents or model aliases it may use.
 
 ## Skills
 

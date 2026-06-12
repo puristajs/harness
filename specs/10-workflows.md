@@ -14,7 +14,17 @@ interface WorkflowDefinition<
 > {
   input?: I                              // default: z.string()
   output?: O                             // default: z.string()
+  delegation?: WorkflowDelegationPolicy<S>
   handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // REQUIRED
+}
+
+interface WorkflowDelegationPolicy<S> {
+  agents?: readonly (keyof S['agents'] & string)[]
+  maxChildAgentCalls?: number
+  maxParallelChildAgentCalls?: number
+  maxDepth?: number
+  modelAliases?: readonly (keyof S['models'] & string)[]
+  agentModelAliases?: Partial<Record<keyof S['agents'] & string, readonly (keyof S['models'] & string)[]>>
 }
 ```
 
@@ -25,7 +35,7 @@ A workflow MUST provide `handler`. There is no default workflow loop.
 ```ts
 interface WorkflowContext<S, I, O> {
   input: I
-  agents: { [K in keyof S['agents']]: (input: AgentInput<S, K>, opts?: InvokeOptions) => Promise<AgentOutput<S, K>> }
+  agents: { [K in keyof S['agents']]: (input: AgentInput<S, K>, opts?: InvokeOptions & { model?: keyof S['models'] & string }) => Promise<AgentOutput<S, K>> }
   log: Logger
   signal: AbortSignal
   runId: string
@@ -40,7 +50,8 @@ interface WorkflowContext<S, I, O> {
 
 `AgentInput<S, K>` and `AgentOutput<S, K>` are derived from the agent's `input`/`output` Zod schemas (or default to `string` when omitted), mirroring the `WorkflowInput`/`WorkflowOutput` derivation in [13-public-api](./13-public-api.md).
 
-- All registered agents are reachable from `agents`. Workflows are not scoped to a subset.
+- All registered agents are typed on `agents`. `WorkflowDefinition.delegation`
+  can restrict which agents a workflow may call at runtime.
 - Embedders that wrap a workflow definition outside a direct
   `defineHarness().agents(...).workflows(...)` chain MUST register the intended
   harness-local agent definitions before registering the workflow. Otherwise
@@ -53,6 +64,38 @@ interface WorkflowContext<S, I, O> {
   - Validates the agent's output. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_output'}.
   - Returns the validated output.
   - Errors are thrown directly (not wrapped) to allow the workflow to handle them.
+
+## Delegation policy
+
+Workflows may orchestrate child agents through `ctx.agents`; agents do not spawn
+other agents directly. The harness applies these safe defaults per workflow run:
+
+- `maxChildAgentCalls: 32`
+- `maxParallelChildAgentCalls: 8`
+- `maxDepth: 1`
+
+`WorkflowDefinition.delegation` can override the numeric budgets, restrict the
+child agent ids with `agents`, and restrict model aliases available for
+workflow-local child-agent model overrides. `modelAliases` applies to every
+child-agent call in the workflow. `agentModelAliases` overrides that set for a
+specific child agent.
+
+```ts
+delegation: {
+  agents: ['planner', 'reviewer'],
+  maxChildAgentCalls: 4,
+  maxParallelChildAgentCalls: 2,
+  agentModelAliases: { reviewer: ['deep_review'] }
+}
+```
+
+`ctx.agents.reviewer(input, { model: 'deep_review' })` runs the reviewer agent
+with that configured model alias for this call only; the agent definition's
+default `model` remains unchanged.
+
+Builder validation rejects unknown agent ids, unknown model aliases, and invalid
+numeric budgets. Runtime violations throw
+[`DelegationPolicyError`](./15-error-catalog.md).
 
 The workflow's own input is validated by `workflow.input.parse(value)` at run start; output is validated by `workflow.output.parse(value)` after the handler returns. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
 
@@ -114,6 +157,8 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
 - Span `harness.workflow.run`, attributes `harness.workflow.id`, `harness.session.id`, `harness.run.id`.
 - Histogram `harness.run.duration` (unit `s`, recorded on workflow finish) with attributes `harness.workflow.id`, `harness.session.id`, `error.type` (when error).
 - RunEvents emitted: `run.started`, `agent.started`/`agent.finished` per child agent, `run.finished`.
+  Child-agent lifecycle events include `workflowId`, `delegationCallId`,
+  `delegationDepth`, and `modelAlias`.
 
 ## Cross-references
 

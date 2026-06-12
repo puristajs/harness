@@ -175,6 +175,28 @@ export class AgentLoopBudgetError extends HarnessError {
   }
 }
 
+/** Workflow child-agent delegation was denied or exceeded a configured budget. */
+export class DelegationPolicyError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      workflow_id: string
+      agent_id: string
+      reason:
+        | 'agent_not_allowed'
+        | 'max_child_agent_calls_exceeded'
+        | 'max_parallel_child_agent_calls_exceeded'
+        | 'max_delegation_depth_exceeded'
+        | 'model_alias_not_allowed'
+      limit?: number
+      model_alias?: string
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'DELEGATION_POLICY_ERROR', category: 'validation', retriable: false, message, meta, cause })
+  }
+}
+
 /** Session attempted to invoke unknown workflow id. */
 export class WorkflowNotFoundError extends HarnessError {
   public constructor(message: string, meta: { workflow_id: string }, cause?: unknown) {

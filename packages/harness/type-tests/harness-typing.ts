@@ -25,7 +25,8 @@ const provider: ModelProvider = {
 const harness = defineHarness()
   .memory(sandboxMemory())
   .models({
-    assistant: { provider, model: 'type-test-model', capabilities: ['object'] }
+    assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
+    reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
   })
   .agents(({ agent }) => ({
     planner: agent({
@@ -54,6 +55,12 @@ const harness = defineHarness()
     prepare: workflow({
       input: z.object({ task: z.string() }),
       output: z.object({ plan: z.string(), accepted: z.boolean() }),
+      delegation: {
+        agents: ['planner'],
+        agentModelAliases: { planner: ['assistant', 'reviewer'] },
+        maxChildAgentCalls: 2,
+        maxParallelChildAgentCalls: 1
+      },
       handler: async (ctx) => {
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
@@ -65,6 +72,10 @@ const harness = defineHarness()
         const plan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 })
         type PlanOutput = typeof plan
         const _agentOutputExact: Expect<Equal<PlanOutput, { plan: string; accepted: boolean }>> = true
+        const reviewedPlan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 }, { model: 'reviewer' })
+        const _reviewedAgentOutputExact: Expect<Equal<typeof reviewedPlan, { plan: string; accepted: boolean }>> = true
+        // @ts-expect-error workflow-local agent model overrides must use configured model aliases
+        await ctx.agents.planner({ task: ctx.input.task, priority: 1 }, { model: 'missing' })
 
         return plan
       }

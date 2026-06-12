@@ -27,7 +27,7 @@ should read.
 | Sandbox | Aligned | Files-only and executor-capable paths are covered. |
 | Models and provider adapters | Aligned | Capability gates, provider error normalization, and object-mode application tool-call preservation are covered. |
 | Direct agents | Aligned | `session.agents.<id>.prompt/stream` is canonical. |
-| Workflows | Aligned | Optional orchestration with typed `ctx.agents`. |
+| Workflows | Aligned | Optional orchestration with typed `ctx.agents`, delegation budgets, allowlists, and child-agent lineage events. |
 | TypeScript tools | Aligned | Zod input/output validation and tool spans. |
 | MCP tools | Aligned | Stdio/HTTP success and failure paths have focused tests. |
 | Skills | Aligned | `SKILL.md` frontmatter validation and mounting are implemented. |

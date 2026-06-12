@@ -46,6 +46,7 @@ the simple in-process defaults.
 | `Session<S>` | Operational context exposing `agents`, `workflows`, `history`, `memory`, `getRunSummary`, and `close`. |
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
+| `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `StateStore` | Persistence port for sessions, runs, messages, and events. |
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
@@ -172,6 +173,58 @@ Harness-emitted opted-in model stream events include generated `streamId` and
 is made from that scope. `streamId` is unique to the model stream invocation, so
 parallel streams can be grouped independently.
 They remain harness events, not a Vercel stream protocol.
+
+Child-agent lifecycle events emitted from workflows include `workflowId`,
+`delegationCallId`, `delegationDepth`, and `modelAlias`. Persisted payloads keep
+that operational lineage while redacting prompts and outputs.
+
+## Workflow Delegation
+
+Workflows call registered agents through typed `ctx.agents.<id>(input, opts)`.
+No extra config is needed for ordinary workflows:
+
+```ts
+handler: async (ctx) => ctx.agents.writer(ctx.input)
+```
+
+The harness still applies default child-agent budgets:
+
+```ts
+.defaults({
+  delegation: {
+    maxChildAgentCalls: 32,
+    maxParallelChildAgentCalls: 8,
+    maxDepth: 1
+  }
+})
+```
+
+Use a workflow-local `delegation` policy to narrow the callable agents, raise or
+lower fan-out budgets, and choose which model aliases may override a child
+agent's default model:
+
+```ts
+.workflows(({ workflow }) => ({
+  publish: workflow({
+    input: z.object({ draft: z.string() }),
+    output: z.object({ text: z.string(), approved: z.boolean() }),
+    delegation: {
+      agents: ['writer', 'reviewer'],
+      maxChildAgentCalls: 4,
+      maxParallelChildAgentCalls: 2,
+      agentModelAliases: { reviewer: ['deep'] }
+    },
+    handler: async (ctx) => {
+      const text = await ctx.agents.writer({ draft: ctx.input.draft })
+      const review = await ctx.agents.reviewer(text, { model: 'deep' })
+      return { text: text.text, approved: review.approved }
+    }
+  })
+}))
+```
+
+Denied calls throw `DelegationPolicyError` with code
+`DELEGATION_POLICY_ERROR`.
 
 ## Run Summary
 

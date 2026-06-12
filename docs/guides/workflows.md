@@ -88,6 +88,42 @@ Use `Promise.allSettled` when a workflow can return partial results. Convert
 failures into your output schema instead of leaking raw provider or tool
 payloads.
 
+## Delegation Policy
+
+Workflow child-agent calls are enabled by default and bounded by safe defaults:
+32 child-agent calls per workflow run, 8 active child-agent calls at once, and
+one local workflow-to-agent delegation level. Keep the default for ordinary
+sequential workflows.
+
+Use `delegation` when a workflow should be intentionally narrow or needs a
+larger fan-out budget:
+
+```ts
+.workflows(({ workflow }) => ({
+  answer_with_review: workflow({
+    input: z.object({ question: z.string() }),
+    output: z.object({ answer: z.string(), approved: z.boolean() }),
+    delegation: {
+      agents: ['answerer', 'reviewer'],
+      maxChildAgentCalls: 4,
+      maxParallelChildAgentCalls: 2,
+      agentModelAliases: {
+        reviewer: ['deep_review']
+      }
+    },
+    handler: async (ctx) => {
+      const draft = await ctx.agents.answerer({ question: ctx.input.question })
+      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+      return { answer: draft.answer, approved: review.approved }
+    }
+  })
+}))
+```
+
+Policy reference mistakes fail during builder setup. Runtime budget violations
+fail with `DelegationPolicyError` and preserve `workflow_id`, `agent_id`,
+`reason`, and the relevant limit or model alias.
+
 ## Direct Model Work Inside Workflows
 
 Workflow handlers can call `ctx.models.<alias>` directly for deterministic

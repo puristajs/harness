@@ -116,9 +116,13 @@ export async function runDefaultAgent(args: {
   runId: string
   sessionId: string
   workflowId?: string
+  parentAgentId?: string
+  delegationCallId?: string
+  delegationDepth?: number
   input: unknown
   history: Message[]
   agent: AgentDefinition<any>
+  modelAlias?: string
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
@@ -141,6 +145,9 @@ export async function runDefaultAgent(args: {
     'harness.session.id': args.sessionId,
     'harness.run.id': args.runId,
     ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
+    ...(args.parentAgentId ? { 'harness.agent.parent_id': args.parentAgentId } : {}),
+    ...(args.delegationCallId ? { 'harness.agent.delegation_call_id': args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { 'harness.agent.delegation_depth': args.delegationDepth } : {}),
     'harness.agent.id': args.agentId,
     'gen_ai.operation.name': 'invoke_agent',
     'openinference.span.kind': 'AGENT',
@@ -148,7 +155,8 @@ export async function runDefaultAgent(args: {
     'metadata.agent_id': args.agentId,
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_AGENT_ID]: args.agentId,
-    'harness.agent.model': args.agent.model,
+    'harness.agent.model': args.modelAlias ?? args.agent.model,
+    ...(args.modelAlias && args.modelAlias !== args.agent.model ? { 'harness.agent.default_model': args.agent.model } : {}),
     'harness.agent.has_handler': args.agent.handler !== undefined,
     ...metadataSpanAttrs(args.metadata)
   }
@@ -182,9 +190,13 @@ async function runDefaultAgentInner(args: {
   runId: string
   sessionId: string
   workflowId?: string
+  parentAgentId?: string
+  delegationCallId?: string
+  delegationDepth?: number
   input: unknown
   history: Message[]
   agent: AgentDefinition<any>
+  modelAlias?: string
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
@@ -208,8 +220,9 @@ async function runDefaultAgentInner(args: {
   const outputSchema = args.agent.output ?? z.string()
   const parsedInput = parseAgentSchema(inputSchema, args.input, 'agent_input')
 
-  const model = args.models[args.agent.model]
-  if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: args.agent.model } })
+  const selectedModelAlias = args.modelAlias ?? args.agent.model
+  const model = args.models[selectedModelAlias]
+  if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
   const activatedSkills = new Set<string>()
@@ -272,7 +285,15 @@ async function runDefaultAgentInner(args: {
   const maxSteps = Math.min(args.agent.maxSteps ?? args.maxSteps, 64)
   let steps = 0
 
-  await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString() })
+  const agentEventMeta = {
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    ...(args.parentAgentId ? { parentAgentId: args.parentAgentId } : {}),
+    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
+    modelAlias: selectedModelAlias
+  }
+
+  await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
 
   try {
     while (true) {
@@ -296,13 +317,21 @@ async function runDefaultAgentInner(args: {
       // Emit one usage-bearing model event per model round-trip (including
       // tool-call steps) so run-summary modelCalls and tokenTotals are accurate
       // for multi-step runs.
-      await args.emitEvent?.({ type: 'model.object', runId: args.runId, agentId: args.agentId, object: (response.object ?? null) as JsonValue, usage: response.usage })
+      await args.emitEvent?.({
+        type: 'model.object',
+        runId: args.runId,
+        agentId: args.agentId,
+        ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+        modelAlias: selectedModelAlias,
+        object: (response.object ?? null) as JsonValue,
+        usage: response.usage
+      })
 
       const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
       if (toolCalls.length === 0) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
         emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
-        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue })
+        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
         return { output: validated as JsonValue, emitted }
       }
 
@@ -331,7 +360,7 @@ async function runDefaultAgentInner(args: {
     }
   } catch (error) {
     // Pair every agent.started with an agent.finished, even on error/cancel/budget.
-    await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error) })
+    await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
     throw error
   }
 }

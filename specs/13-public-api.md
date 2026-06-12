@@ -75,6 +75,7 @@ export class SkillNotFoundError extends HarnessError {}
 export class SkillManifestError extends HarnessError {}
 export class AgentNotFoundError extends HarnessError {}
 export class AgentLoopBudgetError extends HarnessError {}
+export class DelegationPolicyError extends HarnessError {}
 export class WorkflowNotFoundError extends HarnessError {}
 export class SessionNotFoundError extends HarnessError {}
 export class SessionBusyError extends HarnessError {}
@@ -133,9 +134,12 @@ export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
 export type WorkflowsConfig<S>
 export interface WorkflowDefinition<S, I, O>
+export interface WorkflowDelegationPolicy<S>
+export type WorkflowAgentInvokeOptions<S, K>
 
 // Defaults
 export interface HarnessDefaults
+export interface DelegationDefaults
 
 // Inside-handler context types
 export interface AgentContext<S, I, O>

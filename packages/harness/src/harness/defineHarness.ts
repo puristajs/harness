@@ -95,6 +95,28 @@ export interface HarnessDefaults {
    * `undefined` keeps all history, `0` keeps only system messages.
    */
   historyWindow?: number
+  /** Default workflow child-agent delegation budgets. */
+  delegation?: DelegationDefaults
+}
+
+/** Safe-by-default workflow child-agent delegation budgets. */
+export interface DelegationDefaults {
+  /**
+   * Maximum child-agent calls one workflow run may start. Default: `32`.
+   * Set per workflow with `workflow.delegation.maxChildAgentCalls`.
+   */
+  maxChildAgentCalls?: number
+  /**
+   * Maximum child-agent calls active at the same time inside one workflow run.
+   * Default: `8`.
+   */
+  maxParallelChildAgentCalls?: number
+  /**
+   * Maximum local delegation depth. Default: `1`.
+   * Current harness workflows invoke leaf agents, so `1` allows normal
+   * workflow-to-agent calls and `0` disables child-agent delegation.
+   */
+  maxDepth?: number
 }
 
 /** Top-level harness options passed to {@link defineHarness}. */
@@ -415,7 +437,7 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
 /** Full context passed to workflow handlers. */
 export interface WorkflowContext<S extends BuilderState, I, O> {
   input: I
-  agents: { [K in keyof NonNullable<S['agents']>]: (input: AgentInput<S, K>, opts?: InvokeOptions) => Promise<AgentOutput<S, K>> }
+  agents: { [K in keyof NonNullable<S['agents']>]: (input: AgentInput<S, K>, opts?: WorkflowAgentInvokeOptions<S, K>) => Promise<AgentOutput<S, K>> }
   models: ModelHandles<S>
   signal: AbortSignal
   runId: string
@@ -431,6 +453,17 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
   output?: O
 }
+
+/** Invoke options accepted by workflow-local child-agent calls. */
+export type WorkflowAgentInvokeOptions<S extends BuilderState, K extends keyof NonNullable<S['agents']>> =
+  InvokeOptions & {
+    /**
+     * Optional model alias override for this child-agent call.
+     * The alias must exist on the harness model registry and be allowed by the
+     * workflow delegation policy.
+     */
+    model?: keyof NonNullable<S['models']> & string
+  }
 
 /** Full context passed to custom agent handlers. */
 export interface AgentContext<S extends BuilderState, I, O> extends AgentContextMinimal<S, I> {
@@ -466,6 +499,7 @@ export interface WorkflowDefinition<
 > {
   input?: I
   output?: O
+  delegation?: WorkflowDelegationPolicy<S>
   handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 
@@ -512,7 +546,24 @@ type WorkflowSchemaFields = {
 type WorkflowDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = {
   input?: I
   output?: O
+  delegation?: WorkflowDelegationPolicy<S>
   handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+}
+
+/** Policy for workflow-local child-agent delegation through `ctx.agents`. */
+export interface WorkflowDelegationPolicy<S extends BuilderState = BuilderState> {
+  /** Child agent ids this workflow may call. Omit to allow all registered agents. */
+  agents?: readonly (keyof NonNullable<S['agents']> & string)[]
+  /** Per-run child-agent call limit. Overrides `defaults.delegation.maxChildAgentCalls`. */
+  maxChildAgentCalls?: number
+  /** Per-run active child-agent call limit. Overrides `defaults.delegation.maxParallelChildAgentCalls`. */
+  maxParallelChildAgentCalls?: number
+  /** Maximum local delegation depth. Overrides `defaults.delegation.maxDepth`. */
+  maxDepth?: number
+  /** Model aliases allowed for every child-agent call in this workflow. */
+  modelAliases?: readonly (keyof NonNullable<S['models']> & string)[]
+  /** Per-child-agent model alias allowlists. These override `modelAliases` for the named agent. */
+  agentModelAliases?: Partial<Record<keyof NonNullable<S['agents']> & string, readonly (keyof NonNullable<S['models']> & string)[]>>
 }
 
 type WorkflowDefinitionFor<S extends BuilderState, D> =
@@ -637,8 +688,8 @@ export interface RunSummary {
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
-  | { type: 'agent.started'; runId: string; agentId: string; at: string }
-  | { type: 'agent.finished'; runId: string; agentId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'agent.started'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
+  | { type: 'agent.finished'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
   | { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
@@ -749,6 +800,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (defaults.maxParallelToolCalls !== undefined && (!Number.isInteger(defaults.maxParallelToolCalls) || defaults.maxParallelToolCalls < 1)) {
       throw new HarnessConfigError('maxParallelToolCalls must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.maxParallelToolCalls' })
     }
+    validateDelegationBudget(defaults.delegation?.maxChildAgentCalls, 'defaults.delegation.maxChildAgentCalls', { min: 0 })
+    validateDelegationBudget(defaults.delegation?.maxParallelChildAgentCalls, 'defaults.delegation.maxParallelChildAgentCalls', { min: 1 })
+    validateDelegationBudget(defaults.delegation?.maxDepth, 'defaults.delegation.maxDepth', { min: 0 })
     return this.clone({ defaults })
   }
 
@@ -797,6 +851,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const resolved = typeof workflows === 'function'
       ? workflows({ workflow: (definition) => definition })
       : workflows
+    this.validateWorkflowDelegationPolicies(resolved)
     return this.clone({ workflows: resolved }) as unknown as HarnessBuilder<any>
   }
 
@@ -836,7 +891,8 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         skillTimeoutMs: this.configured.defaults?.skillTimeoutMs ?? 60_000,
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
         maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
-        ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {})
+        ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {}),
+        ...(this.configured.defaults?.delegation ? { delegation: this.configured.defaults.delegation } : {})
       },
       models,
       tools: (this.configured.tools ?? {}) as NonNullable<S['tools']>,
@@ -902,6 +958,59 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
             path: `agents.${agentId}.skills`,
             id: skillId
           })
+        }
+      }
+    }
+  }
+
+  private validateWorkflowDelegationPolicies(workflows: Record<string, WorkflowDefinition<any, any, any>>): void {
+    const configuredAgents = new Set(Object.keys(this.configured.agents ?? {}))
+    const configuredModels = new Set(Object.keys(this.configured.models ?? {}))
+
+    for (const [workflowId, workflow] of Object.entries(workflows)) {
+      const policy = workflow.delegation
+      if (!policy) continue
+
+      validateDelegationBudget(policy.maxChildAgentCalls, `workflows.${workflowId}.delegation.maxChildAgentCalls`, { min: 0 })
+      validateDelegationBudget(policy.maxParallelChildAgentCalls, `workflows.${workflowId}.delegation.maxParallelChildAgentCalls`, { min: 1 })
+      validateDelegationBudget(policy.maxDepth, `workflows.${workflowId}.delegation.maxDepth`, { min: 0 })
+
+      for (const agentId of policy.agents ?? []) {
+        if (!configuredAgents.has(agentId)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown agent.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.agents`,
+            id: agentId
+          })
+        }
+      }
+
+      for (const alias of policy.modelAliases ?? []) {
+        if (!configuredModels.has(alias)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown model alias.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.modelAliases`,
+            id: alias
+          })
+        }
+      }
+
+      for (const [agentId, aliases] of Object.entries(policy.agentModelAliases ?? {})) {
+        if (!configuredAgents.has(agentId)) {
+          throw new HarnessConfigError('Workflow delegation policy references an unknown agent.', {
+            reason: 'invalid_workflow',
+            path: `workflows.${workflowId}.delegation.agentModelAliases.${agentId}`,
+            id: agentId
+          })
+        }
+        for (const alias of aliases ?? []) {
+          if (!configuredModels.has(alias)) {
+            throw new HarnessConfigError('Workflow delegation policy references an unknown model alias.', {
+              reason: 'invalid_workflow',
+              path: `workflows.${workflowId}.delegation.agentModelAliases.${agentId}`,
+              id: alias
+            })
+          }
         }
       }
     }
@@ -975,6 +1084,16 @@ function getAdapterId(adapter: unknown, fallback: string): string {
     return (adapter as { id: string }).id
   }
   return fallback
+}
+
+function validateDelegationBudget(value: number | undefined, path: string, opts: { min: number }): void {
+  if (value === undefined) return
+  if (!Number.isInteger(value) || value < opts.min) {
+    throw new HarnessConfigError(`${path} must be an integer >= ${opts.min}`, {
+      reason: 'invalid_defaults',
+      path
+    })
+  }
 }
 
 /**

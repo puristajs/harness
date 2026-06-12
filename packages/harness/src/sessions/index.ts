@@ -8,6 +8,7 @@ import {
   HarnessError,
   SessionBusyError,
   ValidationError,
+  DelegationPolicyError,
   serializeError
 } from '../errors/index.js'
 import { ulid } from '../ulid/index.js'
@@ -28,6 +29,7 @@ import type {
   SkillDefinition,
   ToolsConfig,
   WorkflowDefinition,
+  WorkflowDelegationPolicy,
   WorkflowInput,
   WorkflowOutput,
   BuilderState,
@@ -86,7 +88,24 @@ type SessionState = {
   mountedSkills: Set<string>
 }
 
+type EffectiveDelegationPolicy = {
+  allowedAgents?: Set<string>
+  maxChildAgentCalls: number
+  maxParallelChildAgentCalls: number
+  maxDepth: number
+  modelAliases?: Set<string>
+  agentModelAliases: Map<string, Set<string>>
+}
+
+type DelegationRunState = {
+  totalChildAgentCalls: number
+  activeChildAgentCalls: number
+}
+
 const NEVER_ABORT_SIGNAL = new AbortController().signal
+const DEFAULT_MAX_CHILD_AGENT_CALLS = 32
+const DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS = 8
+const DEFAULT_MAX_DELEGATION_DEPTH = 1
 
 function now(): string {
   return new Date().toISOString()
@@ -721,6 +740,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.run.id': runId,
           'harness.workflow.id': workflowId
         })
+        const delegationPolicy = resolveDelegationPolicy(workflow)
+        const delegationState: DelegationRunState = {
+          totalChildAgentCalls: 0,
+          activeChildAgentCalls: 0
+        }
 
         const workflowArgs = {
           workflowId,
@@ -743,7 +767,18 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
-                async (agentInput: unknown, agentOpts?: InvokeOptions) => {
+                async (agentInput: unknown, agentOpts?: InvokeOptions & { model?: string }) => {
+                  const selectedModelAlias = agentOpts?.model ?? (agent as AgentDefinition<S>).model
+                  assertDelegationAllowed({
+                    policy: delegationPolicy,
+                    state: delegationState,
+                    workflowId,
+                    agentId,
+                    modelAlias: selectedModelAlias
+                  })
+                  delegationState.totalChildAgentCalls += 1
+                  delegationState.activeChildAgentCalls += 1
+                  const delegationCallId = `delegate_${ulid()}`
                   const agentSignal = combineSignals(runSignal.signal, agentOpts?.signal)
                   try {
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
@@ -763,15 +798,19 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       runId,
                       sessionId,
                       workflowId,
+                      delegationCallId,
+                      delegationDepth: 1,
                       input: agentInput,
                       history: await definition.state.listMessages(sessionId),
                       agent: agent as AgentDefinition<S>,
+                      modelAlias: selectedModelAlias,
                       models: withRunEventModelRegistry(modelRegistry, {
                         harnessName: definition.name,
                         sessionId,
                         runId,
                         workflowId,
-                        agentId
+                        agentId,
+                        modelAlias: selectedModelAlias
                       }, emit),
                       skills: resolvedSkills as Record<string, ResolvedSkill>,
                       customTools: definition.tools as ToolsConfig,
@@ -794,6 +833,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                     }
                     return run.output
                   } finally {
+                    delegationState.activeChildAgentCalls -= 1
                     agentSignal.cleanup()
                   }
                 }
@@ -874,6 +914,71 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   /** Pass-through step used when a workflow runs without durable execution. */
   function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>): Promise<T> {
     return fn()
+  }
+
+  function resolveDelegationPolicy(workflow: WorkflowDefinition<S>): EffectiveDelegationPolicy {
+    const configured = (workflow.delegation ?? {}) as WorkflowDelegationPolicy<S>
+    return {
+      ...(configured.agents ? { allowedAgents: new Set(configured.agents as readonly string[]) } : {}),
+      maxChildAgentCalls: configured.maxChildAgentCalls ?? definition.defaults.delegation?.maxChildAgentCalls ?? DEFAULT_MAX_CHILD_AGENT_CALLS,
+      maxParallelChildAgentCalls: configured.maxParallelChildAgentCalls ?? definition.defaults.delegation?.maxParallelChildAgentCalls ?? DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS,
+      maxDepth: configured.maxDepth ?? definition.defaults.delegation?.maxDepth ?? DEFAULT_MAX_DELEGATION_DEPTH,
+      ...(configured.modelAliases ? { modelAliases: new Set(configured.modelAliases as readonly string[]) } : {}),
+      agentModelAliases: new Map(
+        Object.entries(configured.agentModelAliases ?? {}).map(([agentId, aliases]) => [agentId, new Set(aliases as readonly string[])])
+      )
+    }
+  }
+
+  function assertDelegationAllowed(args: {
+    policy: EffectiveDelegationPolicy
+    state: DelegationRunState
+    workflowId: string
+    agentId: string
+    modelAlias: string
+  }): void {
+    const { policy, state, workflowId, agentId, modelAlias } = args
+    if (policy.allowedAgents && !policy.allowedAgents.has(agentId)) {
+      throw new DelegationPolicyError('Workflow is not allowed to invoke this child agent.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'agent_not_allowed'
+      })
+    }
+    const childDepth = 1
+    if (childDepth > policy.maxDepth) {
+      throw new DelegationPolicyError('Workflow child-agent delegation depth exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_delegation_depth_exceeded',
+        limit: policy.maxDepth
+      })
+    }
+    if (state.totalChildAgentCalls >= policy.maxChildAgentCalls) {
+      throw new DelegationPolicyError('Workflow child-agent call budget exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_child_agent_calls_exceeded',
+        limit: policy.maxChildAgentCalls
+      })
+    }
+    if (state.activeChildAgentCalls >= policy.maxParallelChildAgentCalls) {
+      throw new DelegationPolicyError('Workflow parallel child-agent call budget exceeded.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'max_parallel_child_agent_calls_exceeded',
+        limit: policy.maxParallelChildAgentCalls
+      })
+    }
+    const allowedModels = policy.agentModelAliases.get(agentId) ?? policy.modelAliases
+    if (allowedModels && !allowedModels.has(modelAlias)) {
+      throw new DelegationPolicyError('Workflow is not allowed to invoke this child agent with the selected model alias.', {
+        workflow_id: workflowId,
+        agent_id: agentId,
+        reason: 'model_alias_not_allowed',
+        model_alias: modelAlias
+      })
+    }
   }
 
   /**
@@ -1247,10 +1352,10 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         ...(event.error ? { error: event.error } : {})
       } as unknown as JsonValue
     case 'agent.started':
-      return { agentId: event.agentId }
+      return agentRunEventMeta(event)
     case 'agent.finished':
       return {
-        agentId: event.agentId,
+        ...agentRunEventMeta(event),
         ...(event.output !== undefined ? { output: '[redacted]' } : {}),
         ...(event.error ? { error: event.error } : {})
       } as unknown as JsonValue
@@ -1307,6 +1412,17 @@ function modelStreamEventMeta(event: Extract<RunEvent, { type: 'model.delta' | '
     ...(event.workflowId ? { workflowId: event.workflowId } : {}),
     ...(event.modelAlias ? { modelAlias: event.modelAlias } : {}),
     ...(event.streamId ? { streamId: event.streamId } : {})
+  }
+}
+
+function agentRunEventMeta(event: Extract<RunEvent, { type: 'agent.started' | 'agent.finished' }>): Record<string, JsonValue> {
+  return {
+    agentId: event.agentId,
+    ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+    ...(event.parentAgentId ? { parentAgentId: event.parentAgentId } : {}),
+    ...(event.delegationCallId ? { delegationCallId: event.delegationCallId } : {}),
+    ...(event.delegationDepth !== undefined ? { delegationDepth: event.delegationDepth } : {}),
+    ...(event.modelAlias ? { modelAlias: event.modelAlias } : {})
   }
 }
 

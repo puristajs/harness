@@ -232,7 +232,7 @@ describe('azureFoundry provider factory', () => {
     })
   })
 
-  it('preserves HTTP status so 429 is classified as a retriable http error', async () => {
+  it('preserves HTTP status so 429 is classified as a retriable rate-limit error', async () => {
     const provider = azureFoundry({
       client: client(async () => ({
         status: 429,
@@ -244,12 +244,13 @@ describe('azureFoundry provider factory', () => {
       provider.text!({
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: 'hi' }],
+        defaults: { retry: false },
         signal: mockSignal()
       })
     ).rejects.toMatchObject({
       constructor: ModelError,
       retriable: true,
-      meta: { status: 429, reason: 'http_error', providerCode: 'TooManyRequests' }
+      meta: { status: 429, reason: 'rate_limited', providerCode: 'TooManyRequests' }
     })
   })
 

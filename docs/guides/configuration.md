@@ -69,7 +69,8 @@ flowchart LR
     }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     capabilities: ['object', 'tool_use'],
-    defaults: { maxTokens: 1200 }
+    defaults: { maxTokens: 1200 },
+    retry: true
   }
 })
 ```
@@ -134,6 +135,38 @@ Capabilities gate runtime calls:
 | `file_input` | File input understanding where adapter supports it. |
 | `embeddings` | Embedding vector generation for retrieval workflows. |
 | `rerank` | Document reranking for retrieval workflows. |
+
+## Model Retry And Outcomes
+
+Model retry is enabled by default. The harness retries short transient provider
+failures and rate limits with bounded backoff, but it does not sleep for long
+provider `Retry-After` windows. Long waits are returned as typed `ModelError`
+metadata so an API can fail fast and a worker/queue can schedule a later retry.
+
+```ts
+.models({
+  assistant: {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+    capabilities: ['object', 'tool_use'],
+    retry: {
+      maxAttempts: 3,
+      maxActiveElapsedMs: 60_000,
+      maxActiveDelayMs: 20_000,
+      respectRetryAfter: true,
+      longRetry: 'error'
+    }
+  }
+})
+```
+
+Use `retry: false` for tests, strict request/response APIs, or provider calls
+where any automatic retry is undesirable. Per-call `call.retry` overrides the
+alias policy.
+
+Model responses keep a simple `finishReason` and may include `outcome` with the
+raw provider finish/status reason. Use `finishReason` for normal application
+flow and `outcome` for operations or provider-specific handling.
 
 ## Defaults
 

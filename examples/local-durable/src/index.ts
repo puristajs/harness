@@ -25,7 +25,7 @@ export async function createLocalDurableHarness(root?: string) {
     .workspaceStore(local.workspaceStore)
     .checkpoints(local.checkpoints)
     .requires(['runtime.persistent', 'workspace_store.persistent', 'context_checkpoint.persistent'])
-    .models({ noop: { provider, model: 'noop', capabilities: ['object'] } })
+    .models({ noop: { provider, model: 'noop', capabilities: ['object'], retry: false } })
     .tools({})
     .skills({})
     .agents({ noop: { model: 'noop', instructions: 'No model call is needed.', builtinTools: false } })

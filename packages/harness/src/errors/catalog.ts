@@ -73,11 +73,18 @@ export class ModelError extends HarnessError {
       reason?:
         | 'http_error'
         | 'network'
+        | 'rate_limited'
+        | 'provider_unavailable'
         | 'unstructured_response'
         | 'malformed_response'
         | 'context_length_exceeded'
         | 'embedding_count_mismatch'
         | 'rerank_result_mismatch'
+      retryKind?: 'none' | 'active' | 'deferred'
+      retryAfterMs?: number
+      retryAttempt?: number
+      retryMaxAttempts?: number
+      rateLimit?: unknown
       providerCode?: string
       providerType?: string
       providerParam?: string
@@ -90,7 +97,11 @@ export class ModelError extends HarnessError {
   ) {
     const retriable =
       meta.reason === 'network'
+      || meta.reason === 'rate_limited'
+      || meta.reason === 'provider_unavailable'
       || meta.status === 429
+      || meta.status === 408
+      || meta.status === 409
       || (typeof meta.status === 'number' && meta.status >= 500)
     super({ code: 'MODEL_ERROR', category: 'model', retriable, message, meta, cause })
   }

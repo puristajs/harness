@@ -58,9 +58,17 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 ### `ModelError`
 - code: `MODEL_ERROR`
 - category: `model`
-- retriable: dynamic — `true` for HTTP 5xx, network errors, HTTP 429; `false` for 4xx (except 429).
+- retriable: dynamic — `true` for network errors, HTTP 408/409/429,
+  `reason:'rate_limited'`, `reason:'provider_unavailable'`, and HTTP 5xx;
+  `false` for other 4xx/provider validation failures.
 - when: Provider failed, or harness detected a structurally invalid response (e.g. default loop expecting `object` in an `ObjectResponse` and finding none, embedding count mismatch, rerank result id mismatch).
-- meta: `provider: string`, `model: string`, `method: string`, `status?: number`, `reason?: 'http_error'|'network'|'unstructured_response'|'malformed_response'|'context_length_exceeded'|'embedding_count_mismatch'|'rerank_result_mismatch'`.
+- meta: `provider: string`, `model: string`, `method: string`, `status?: number`,
+  `reason?: 'http_error'|'network'|'rate_limited'|'provider_unavailable'|'unstructured_response'|'malformed_response'|'context_length_exceeded'|'embedding_count_mismatch'|'rerank_result_mismatch'`,
+  `retryKind?: 'none'|'active'|'deferred'`, `retryAfterMs?: number`,
+  `retryAttempt?: number`, `retryMaxAttempts?: number`, `rateLimit?: unknown`,
+  `providerCode?: string`, `providerType?: string`, `providerParam?: string`,
+  `providerRequestId?: string`, `providerMessage?: string`,
+  `providerBody?: unknown`, `providerHeaders?: Record<string,string>`.
 
 ### `ModelCapabilityError`
 - code: `MODEL_CAPABILITY_ERROR`

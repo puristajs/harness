@@ -70,6 +70,7 @@ class BedrockModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(response.usage?.inputTokens, response.usage?.outputTokens),
       finishReason: toFinishReason(response.stopReason),
+      outcome: toOutcome(response.stopReason),
       raw: response
     }
   }
@@ -80,6 +81,7 @@ class BedrockModelProvider extends BaseModelProvider {
     const toolState = new Map<number, { id: string; name: string; input: string }>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'end_turn'
 
     for await (const event of response.stream ?? []) {
       req.signal.throwIfAborted()
@@ -108,11 +110,12 @@ class BedrockModelProvider extends BaseModelProvider {
         usage = toUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
       }
       if (event.messageStop?.stopReason) {
-        finishReason = toFinishReason(event.messageStop.stopReason)
+        providerFinishReason = event.messageStop.stopReason
+        finishReason = toFinishReason(providerFinishReason)
       }
     }
 
-    yield { kind: 'finish', usage, finishReason }
+    yield { kind: 'finish', usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -126,6 +129,7 @@ class BedrockModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(response.usage?.inputTokens, response.usage?.outputTokens),
       finishReason: toFinishReason(response.stopReason),
+      outcome: toOutcome(response.stopReason),
       raw: response
     }
   }
@@ -137,6 +141,7 @@ class BedrockModelProvider extends BaseModelProvider {
     let objectInput = ''
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'end_turn'
 
     for await (const event of response.stream ?? []) {
       req.signal.throwIfAborted()
@@ -152,12 +157,13 @@ class BedrockModelProvider extends BaseModelProvider {
         usage = toUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
       }
       if (event.messageStop?.stopReason) {
-        finishReason = toFinishReason(event.messageStop.stopReason)
+        providerFinishReason = event.messageStop.stopReason
+        finishReason = toFinishReason(providerFinishReason)
       }
     }
 
     const object = parseJson(objectInput || text || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason }
+    yield { kind: 'finish', object, usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 }
 
@@ -169,7 +175,7 @@ type ChatRequest = TextRequest | ObjectRequest
 
 function toClientOptions(options: BedrockFactoryOptions): BedrockRuntimeClientConfig {
   const { client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
-  return clientOptions
+  return { maxAttempts: 1, ...clientOptions }
 }
 
 function toConverseInput(req: ChatRequest, forceObject: boolean): Record<string, unknown> {
@@ -316,7 +322,20 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
     case 'content_filtered':
     case 'guardrail_intervened':
       return 'content_filter'
+    case 'malformed_model_output':
+    case 'malformed_tool_use':
+      return 'malformed'
+    case 'model_context_window_exceeded':
+      return 'context_limit'
     default:
       return 'error'
+  }
+}
+
+function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
+  const finishReason = toFinishReason(value)
+  return {
+    finishReason,
+    ...(typeof value === 'string' ? { providerFinishReason: value } : {})
   }
 }

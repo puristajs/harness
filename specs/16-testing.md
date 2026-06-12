@@ -105,6 +105,11 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 8. Embedding output count matches input count and vectors honor requested dimensions when provided.
 9. Rerank result ids and indexes point back to submitted documents and results are sorted descending by score.
 10. Provider maps a "context length exceeded" response to `ModelError{meta.reason:'context_length_exceeded'}`.
+11. Provider errors preserve sanitized retry metadata: `retryAfterMs`,
+    `retryKind`, `retryAttempt`, `retryMaxAttempts`, safe `providerHeaders`,
+    and parsed `rateLimit` when headers are present.
+12. Provider finish/stop/status reasons map to the normalized `FinishReason`
+    union and preserve raw provider reason/status in `outcome`.
 
 ### Logger
 
@@ -192,8 +197,15 @@ The harness package additionally has integration tests:
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
   3. Type tests assert capability-projected handles: absent operation capabilities remove methods; absent marker capabilities reject `tools`, tool-role messages, and unsupported content parts.
   4. `FakeModelProvider` covers text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
-  5. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
-  6. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
+  5. Active model retry succeeds after a short retriable failure; `retry:false`
+     throws after one attempt; long provider `Retry-After` produces
+     `ModelError{meta.retryKind:'deferred'}` without sleeping; streaming retry
+     happens only before the first yielded chunk.
+  6. First-party adapters disable hidden official-SDK retries by default where
+     supported and allow explicit SDK retry options as provider-specific escape
+     hatches.
+  7. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
+  8. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
 - Adapter capability policy:
   1. `.requires(...)` fails during `build()` when required adapter capabilities are missing.
   2. `harness.inspect()` returns only data and includes effective capabilities, required capabilities, and adapter descriptors.

@@ -441,6 +441,13 @@ The adapter extends `BaseModelProvider`, inherits harness logger/telemetry, and
 normalizes provider HTTP/network errors into `ModelError` with actionable
 metadata.
 
+Model aliases accept `retry: true | false | ModelRetryPolicy`. Retry is enabled
+by default for short transient failures and rate limits. Long provider
+`Retry-After` values are surfaced as `ModelError` metadata with
+`retryKind:'deferred'` instead of blocking the current invocation. Responses
+also keep `finishReason` plus optional `outcome` metadata with raw provider
+finish/status details.
+
 `api` selects the OpenAI generation surface: `chat_completions` is the default
 for OpenAI-compatible endpoints, while `responses` routes text/object calls
 through `client.responses.create()`. Use `responses` for reasoning models that

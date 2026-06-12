@@ -558,6 +558,38 @@ describe('openai provider factory', () => {
     expect(response.providerItems).toBeUndefined()
   })
 
+  it('maps Responses API incomplete details into length outcome metadata', async () => {
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async () => ({
+            output: [{ type: 'message', role: 'assistant', status: 'incomplete', content: [{ type: 'output_text', text: '{"ok":true}', annotations: [] }] }],
+            incomplete_details: { reason: 'max_output_tokens' },
+            usage: { input_tokens: 4, output_tokens: 2 },
+            status: 'incomplete'
+          })
+        }
+      } as any
+    })
+
+    const response = await provider.object!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: { type: 'object' },
+      signal: mockSignal()
+    })
+
+    expect(response.finishReason).toBe('length')
+    expect(response.outcome).toMatchObject({
+      finishReason: 'length',
+      providerStatus: 'incomplete',
+      providerFinishReason: 'incomplete',
+      details: { incompleteDetails: { reason: 'max_output_tokens' } }
+    })
+  })
+
   it('replays own providerItems verbatim instead of reconstructing the assistant turn', async () => {
     const turnItems = [
       { type: 'reasoning', id: 'rs_1', summary: [] },

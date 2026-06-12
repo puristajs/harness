@@ -394,6 +394,9 @@ prompt/completion/tool content never appears regardless of content-capture mode.
 | `harness.error.model_provider_status` | number |
 | `harness.error.model_provider_code` / `_type` / `_param` / `_request_id` / `_message` | string |
 | `harness.error.model_provider_body` | string (content-redacted JSON) |
+| `harness.error.model_retry_kind` | string |
+| `harness.error.model_retry_after_ms` | number |
+| `harness.error.model_retry_attempt` / `_max_attempts` | number |
 
 Call `recordException(err)` for the thrown error. Span status is `ERROR` on
 failure and `OK` on success.
@@ -422,6 +425,8 @@ aggregating metrics.
 | Instrument | Type | Unit | Attributes |
 | --- | --- | --- | --- |
 | `harness.agent.iterations` | Histogram | `1` | `harness.agent.id`, `harness.session.id`, `harness.run.id` |
+| `harness.model.retries` | Counter | `1` | `model.provider`, `model.method`, `gen_ai.request.model`, `harness.model.retry.reason` |
+| `harness.model.retry.delay` | Histogram | `s` | `model.provider`, `model.method`, `gen_ai.request.model` |
 | `harness.tool.duration` | Histogram | `s` | `gen_ai.tool.name`, `harness.tool.type`, `harness.run.id`, `harness.session.id` |
 | `harness.run.duration` | Histogram | `s` | `harness.workflow.id`, `harness.session.id`, `error.type` |
 | `harness.run.errors` | Counter | `1` | `harness.workflow.id`, `error.type` |

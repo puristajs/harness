@@ -75,6 +75,10 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
 - Foundation: telemetry, logging, state store, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v1), and memory adapter.
 - Model registry (aliases to providers, capability-gated).
+- Provider-neutral model outcomes and bounded active retry for transient model
+  failures/rate limits, with long provider retry instructions surfaced as
+  typed deferred retry errors instead of hidden sleeps. See
+  [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 - Built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox.
 - Custom tools: inline TypeScript, MCP stdio, and MCP HTTP.
 - Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
@@ -116,6 +120,9 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
 | Sandbox         | An isolated FS + (optional) shell-exec environment. v1 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
+| Model outcome   | Provider-neutral finish metadata that preserves the normalized finish reason plus provider-specific finish/status details. |
+| Active retry    | A short, bounded retry performed inside the current model invocation. |
+| Deferred retry  | A long retry instruction surfaced as typed metadata for a durable runtime, queue, or application scheduler to handle later. |
 | Durable workspace | Production replay workspace state that links runtime checkpoints to persisted sandbox/workspace state through opaque references. |
 | Local durable execution | First-party adapter bundle that persists durable runtime state in SQLite and maps a sandbox `/workspace` to a durable host-directory workspace. |
 | Context checkpoint | A typed, payload-bearing handoff or summary record written explicitly by application/agent code to support long-horizon work without hidden prompt rewriting. |
@@ -135,3 +142,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
 - [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
+- [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.

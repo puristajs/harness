@@ -174,6 +174,12 @@ export interface ResolvedSkill
 
 // Models
 export interface ModelDefaults
+export type ModelRetrySetting
+export interface ModelRetryPolicy
+export interface ModelRetryOnPolicy
+export type ModelRetryKind
+export interface ModelOutcome
+export interface ModelRateLimitInfo
 export interface ModelProvider
 export abstract class BaseModelProvider
 export interface BaseModelProviderOptions

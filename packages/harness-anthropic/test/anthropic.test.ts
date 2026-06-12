@@ -67,6 +67,35 @@ describe('anthropic provider factory', () => {
     })
   })
 
+  it('maps modern Anthropic stop reasons without losing provider detail', async () => {
+    for (const [providerReason, finishReason] of [
+      ['pause_turn', 'pause'],
+      ['refusal', 'refusal'],
+      ['model_context_window_exceeded', 'context_limit']
+    ] as const) {
+      const provider = anthropic({
+        client: {
+          messages: {
+            create: async () => ({
+              content: [{ type: 'text', text: 'status' }],
+              stop_reason: providerReason,
+              usage: { input_tokens: 1, output_tokens: 1 }
+            })
+          }
+        }
+      })
+
+      const response = await provider.text!({
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: mockSignal()
+      })
+
+      expect(response.finishReason).toBe(finishReason)
+      expect(response.outcome).toMatchObject({ finishReason, providerFinishReason: providerReason })
+    }
+  })
+
   it('applies temperature 0 and alias-default sampling params (precedence regression)', async () => {
     const calls: any[] = []
     const provider = anthropic({

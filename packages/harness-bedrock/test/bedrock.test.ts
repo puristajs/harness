@@ -65,6 +65,33 @@ describe('bedrock provider factory', () => {
     })
   })
 
+  it('maps Bedrock malformed and context stop reasons without losing provider detail', async () => {
+    for (const [providerReason, finishReason] of [
+      ['malformed_model_output', 'malformed'],
+      ['malformed_tool_use', 'malformed'],
+      ['model_context_window_exceeded', 'context_limit']
+    ] as const) {
+      const provider = bedrock({
+        client: {
+          send: async () => ({
+            output: { message: { content: [{ text: 'status' }] } },
+            stopReason: providerReason,
+            usage: { inputTokens: 1, outputTokens: 1 }
+          })
+        }
+      })
+
+      const response = await provider.text!({
+        model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: mockSignal()
+      })
+
+      expect(response.finishReason).toBe(finishReason)
+      expect(response.outcome).toMatchObject({ finishReason, providerFinishReason: providerReason })
+    }
+  })
+
   it('applies temperature 0 and alias-default sampling params (precedence regression)', async () => {
     const calls: any[] = []
     const provider = bedrock({

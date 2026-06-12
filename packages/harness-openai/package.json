@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-openai",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "OpenAI model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",

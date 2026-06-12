@@ -218,7 +218,7 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         model: alias.model,
         input: req.input,
         ...(req.dimensions !== undefined ? { dimensions: req.dimensions } : {}),
-        ...(req.call ? { call: req.call } : {}),
+        ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
@@ -234,7 +234,7 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         query: req.query,
         documents: req.documents,
         ...(req.topN !== undefined ? { topN: req.topN } : {}),
-        ...(req.call ? { call: req.call } : {}),
+        ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
@@ -509,10 +509,13 @@ function methodMissing(alias: string, method: string): ModelCapabilityError {
 
 /** Merges alias defaults with per-call overrides. */
 function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['defaults'] | undefined {
-  const merged: ModelAlias['defaults'] = {
+  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
+  const merged: NonNullable<ModelAlias['defaults']> = {
     ...(alias.defaults ?? {}),
     ...(call ?? {}),
+    ...(retry !== undefined ? { retry } : {}),
     providerOptions: {
+      ...(alias.providerOptions ?? {}),
       ...(alias.defaults?.providerOptions ?? {}),
       ...(call?.providerOptions ?? {})
     }
@@ -523,6 +526,29 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
     || merged.topP !== undefined
     || merged.stopSequences !== undefined
     || merged.parallelToolCalls !== undefined
+    || merged.retry !== undefined
+    || Object.keys(merged.providerOptions ?? {}).length > 0
+  return hasTopLevel ? merged : undefined
+}
+
+function mergeCallOptions(alias: ModelAlias, call?: ModelCallOptions): ModelCallOptions | undefined {
+  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
+  const merged: ModelCallOptions = {
+    ...(call ?? {}),
+    ...(retry !== undefined ? { retry } : {}),
+    providerOptions: {
+      ...(alias.providerOptions ?? {}),
+      ...(alias.defaults?.providerOptions ?? {}),
+      ...(call?.providerOptions ?? {})
+    }
+  }
+  const hasTopLevel =
+    merged.temperature !== undefined
+    || merged.maxTokens !== undefined
+    || merged.topP !== undefined
+    || merged.stopSequences !== undefined
+    || merged.parallelToolCalls !== undefined
+    || merged.retry !== undefined
     || Object.keys(merged.providerOptions ?? {}).length > 0
   return hasTopLevel ? merged : undefined
 }

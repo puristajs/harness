@@ -2,7 +2,8 @@
 
 **Purpose.** Defines the model alias config, the `ModelProvider` port with full
 TS signatures, provider feature descriptors, capability declaration and
-enforcement, and `ModelDefaults`.
+enforcement, and `ModelDefaults`. Provider outcome and retry semantics are
+locked in [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
 ## Capabilities (closed enum)
 
@@ -44,6 +45,7 @@ interface ModelAlias {
   model: string
   capabilities: readonly ModelCapability[]
   defaults?: ModelDefaults
+  retry?: ModelRetrySetting             // default true
   /** Free-form provider-specific options, passed to the provider unchanged. */
   providerOptions?: Record<string, unknown>
 }
@@ -54,6 +56,7 @@ interface ModelDefaults {
   topP?: number                 // 0..1
   stopSequences?: string[]
   parallelToolCalls?: boolean   // provider-level preference for multi-tool-call turns
+  retry?: ModelRetrySetting     // default true
   /** Provider-specific knobs. Use this for reasoning effort, etc. */
   providerOptions?: Record<string, unknown>
 }
@@ -108,6 +111,12 @@ constructor options and per-call provider options through to the official SDK
 instead of recreating provider-specific features in harness code. The adapter's
 main responsibility is mapping between harness-neutral request/response shapes
 and the provider SDK's request/response shapes.
+
+`BaseModelProvider` owns provider-neutral retry budgets, active/deferred retry
+classification, provider error normalization, and retry telemetry. First-party
+adapters disable hidden official-SDK retries by default where the SDK supports
+that because long `Retry-After` sleeps must be visible to harness policy. Users
+may still pass explicit SDK retry options through provider factory options.
 
 ```ts
 interface ModelProvider {
@@ -165,6 +174,7 @@ interface ModelCallOptions {
   topP?: number
   stopSequences?: string[]
   parallelToolCalls?: boolean             // request provider-level multi-tool-call behavior
+  retry?: ModelRetrySetting
   providerOptions?: Record<string, unknown>
 }
 
@@ -238,14 +248,25 @@ interface TextResponse {
   providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
+  outcome?: ModelOutcome
   raw?: unknown
 }
 type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
 
-type FinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'error'
+type FinishReason =
+  | 'stop'
+  | 'length'
+  | 'context_limit'
+  | 'tool_calls'
+  | 'content_filter'
+  | 'refusal'
+  | 'pause'
+  | 'malformed'
+  | 'cancelled'
+  | 'error'
 interface TokenUsage { inputTokens: number; outputTokens: number; totalTokens: number }
 
 interface ModelToolSpec {
@@ -269,14 +290,20 @@ interface ObjectResponse<T = JsonValue> {
   providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
+  outcome?: ModelOutcome
   raw?: unknown
 }
 type ObjectStreamChunk<T = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
 ```
+
+`finishReason` is the simple normalized result. `outcome` preserves
+provider-specific finish/status data and retry metadata for operational handling
+without leaking content. Full mapping rules are in
+[23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
 The harness validates final objects against the requested schema when a schema
 validator is available in core. Provider packages may use stricter native schema

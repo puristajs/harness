@@ -25,6 +25,80 @@ export type ModelCapability =
   /** Document reranking. */
   | 'rerank'
 
+/** Provider-neutral retry setting used by model aliases and per-call overrides. */
+export type ModelRetrySetting = boolean | ModelRetryPolicy
+
+/** Transient failure classes that can be retried by the harness. */
+export interface ModelRetryOnPolicy {
+  /** Retry transport-level/network failures. Default: `true`. */
+  network?: boolean
+  /** Retry model call timeouts. Default: `true`. */
+  timeout?: boolean
+  /** Retry HTTP 429/rate-limit failures. Default: `true`. */
+  rateLimit?: boolean
+  /** Retry HTTP 5xx/provider-unavailable failures. Default: `true`. */
+  serverError?: boolean
+}
+
+/**
+ * Provider-neutral retry policy.
+ *
+ * The harness actively retries only inside `maxActiveElapsedMs` and
+ * `maxActiveDelayMs`. Longer provider retry instructions are reported as
+ * deferred retry errors unless a future scheduler integration handles them.
+ */
+export interface ModelRetryPolicy {
+  /** Total active attempts including the first call. Default: `3`. */
+  maxAttempts?: number
+  /** Maximum wall-clock time spent in active retries. Default: `60_000`. */
+  maxActiveElapsedMs?: number
+  /** Maximum single active sleep. Default: `20_000`. */
+  maxActiveDelayMs?: number
+  /** Optional cap for deferred retry metadata. Default: unlimited. */
+  maxDeferredDelayMs?: number
+  /** Honor provider Retry-After/reset headers when present. Default: `true`. */
+  respectRetryAfter?: boolean
+  /** Base delay for exponential jitter when no provider delay exists. Default: `500`. */
+  minDelayMs?: number
+  /** Maximum computed backoff delay. Default: `8_000`. */
+  maxDelayMs?: number
+  /** Retryable failure classes. Omitted fields default to `true`. */
+  retryOn?: ModelRetryOnPolicy
+  /** Long retry handling. Default: `error`. */
+  longRetry?: 'error' | 'defer'
+}
+
+/** Normalized retry classification for provider failures. */
+export type ModelRetryKind = 'none' | 'active' | 'deferred'
+
+/** Structured provider outcome metadata preserved across adapters. */
+export interface ModelOutcome {
+  /** Normalized finish reason. */
+  finishReason: FinishReason
+  /** Raw provider finish/stop/status reason when available. */
+  providerFinishReason?: string
+  /** Raw provider status when it carries outcome semantics. */
+  providerStatus?: string
+  /** Whether the outcome is eligible for retry under policy. */
+  retryable?: boolean
+  /** Active/deferred retry classification when relevant. */
+  retryKind?: ModelRetryKind
+  /** Provider-suggested or computed retry delay. */
+  retryAfterMs?: number
+  /** Parsed provider rate-limit metadata. */
+  rateLimit?: ModelRateLimitInfo
+  /** Extra provider-specific structured outcome details. */
+  details?: Record<string, JsonValue>
+}
+
+/** Parsed, provider-neutral rate-limit metadata. */
+export interface ModelRateLimitInfo {
+  scope?: 'requests' | 'input_tokens' | 'output_tokens' | 'tokens' | 'unknown'
+  limit?: number
+  remaining?: number
+  resetAt?: string
+}
+
 /** Default generation parameters applied per alias. */
 export interface ModelDefaults {
   temperature?: number
@@ -33,6 +107,8 @@ export interface ModelDefaults {
   stopSequences?: string[]
   /** Whether providers should allow the model to emit multiple independent tool calls in one turn. */
   parallelToolCalls?: boolean
+  /** Alias-level retry behavior inherited by model calls. Default: `true`. */
+  retry?: ModelRetrySetting
   providerOptions?: Record<string, unknown>
 }
 
@@ -44,6 +120,8 @@ export interface ModelCallOptions {
   stopSequences?: string[]
   /** Overrides whether providers should allow multiple tool calls in one model turn. */
   parallelToolCalls?: boolean
+  /** Per-call retry override. Default: alias retry setting, then `true`. */
+  retry?: ModelRetrySetting
   providerOptions?: Record<string, unknown>
 }
 
@@ -135,10 +213,20 @@ export type FinishReason =
   'stop'
   /** Token budget reached. */
   | 'length'
+  /** Context window reached before a valid answer could be produced. */
+  | 'context_limit'
   /** Model requested tool calls. */
   | 'tool_calls'
   /** Provider content filter interrupted generation. */
   | 'content_filter'
+  /** Provider/model refused the requested output. */
+  | 'refusal'
+  /** Provider asked the caller to resume/continue later. */
+  | 'pause'
+  /** Provider produced malformed output or malformed tool use. */
+  | 'malformed'
+  /** Cooperative cancellation interrupted generation. */
+  | 'cancelled'
   /** Provider or adapter error fallback. */
   | 'error'
 
@@ -161,6 +249,7 @@ export interface TextResponse {
   providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
+  outcome?: ModelOutcome
   raw?: unknown
 }
 
@@ -168,7 +257,7 @@ export interface TextResponse {
 export type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
 
 /** Request for object/object-stream model methods. */
 export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequest {
@@ -184,6 +273,7 @@ export interface ObjectResponse<T extends JsonValue = JsonValue> {
   providerItems?: ProviderItems
   usage: TokenUsage
   finishReason: FinishReason
+  outcome?: ModelOutcome
   raw?: unknown
 }
 
@@ -192,7 +282,7 @@ export type ObjectStreamChunk<T extends JsonValue = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; providerItems?: ProviderItems }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
 
 /** Request for embedding generation. */
 export interface EmbeddingRequest {
@@ -270,5 +360,7 @@ export interface ModelAlias {
   model: string
   capabilities: readonly ModelCapability[]
   defaults?: ModelDefaults
+  /** Alias-level retry behavior. Default: `true`. */
+  retry?: ModelRetrySetting
   providerOptions?: Record<string, unknown>
 }

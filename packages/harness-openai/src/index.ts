@@ -119,6 +119,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       const stream = await createChatCompletion(this.client, req, true, this.getLogger())
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
+      let providerFinishReason: unknown = 'stop'
       const toolState: StreamToolCallState = new Map()
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
@@ -135,13 +136,14 @@ class OpenAiModelProvider extends BaseModelProvider {
           accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
         yield { kind: 'tool_call', call }
       }
-      yield { kind: 'finish', usage, finishReason }
+      yield { kind: 'finish', usage, finishReason, outcome: toOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -152,13 +154,14 @@ class OpenAiModelProvider extends BaseModelProvider {
         const toolCalls = extractResponsesToolCalls(response, req, 'object')
         const providerItems = toResponsesProviderItems(response.output, toolCalls)
         return {
-          object: parseJson(content || '{}', req, 'object') as T,
-          ...(toolCalls ? { toolCalls } : {}),
-          ...(providerItems ? { providerItems } : {}),
-          usage: toResponsesUsage(response.usage),
-          finishReason: toResponsesFinishReason(response),
-          raw: response
-        }
+        object: parseJson(content || '{}', req, 'object') as T,
+        ...(toolCalls ? { toolCalls } : {}),
+        ...(providerItems ? { providerItems } : {}),
+        usage: toResponsesUsage(response.usage),
+        finishReason: toResponsesFinishReason(response),
+        outcome: toResponsesOutcome(response),
+        raw: response
+      }
       }
       const response = await createChatCompletion(this.client, req, false, this.getLogger())
       const textContent = response.choices[0]?.message?.content ?? '{}'
@@ -168,6 +171,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         ...(toolCalls ? { toolCalls } : {}),
         usage: toUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
         finishReason: toFinishReason(response.choices[0]?.finish_reason),
+        outcome: toOutcome(toFinishReason(response.choices[0]?.finish_reason), response.choices[0]?.finish_reason),
         raw: response
       }
   }
@@ -177,6 +181,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       let partial = ''
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
+      let providerFinishReason: unknown = 'stop'
       const toolState: StreamToolCallState = new Map()
       if (this.options.api === 'responses') {
         yield * streamResponsesObject<T>(this.client, req)
@@ -198,14 +203,15 @@ class OpenAiModelProvider extends BaseModelProvider {
           accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       for (const call of finalizeStreamToolCalls(toolState, req, 'objectStream')) {
         yield { kind: 'tool_call', call }
       }
       const object = parseJson(partial || '{}', req, 'objectStream') as T
-      yield { kind: 'finish', object, usage, finishReason }
+      yield { kind: 'finish', object, usage, finishReason, outcome: toOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doEmbed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -246,16 +252,19 @@ export type OpenAiClient = {
 
 function toClientOptions(options: OpenAiFactoryOptions): ClientOptions {
   const { api: _api, client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
-  return clientOptions
+  return { maxRetries: 0, ...clientOptions }
 }
 
 function mapChatTextResponse(response: any, req: TextRequest): TextResponse {
   const toolCalls = extractChatToolCalls(response, req, 'text')
+  const providerFinishReason = response.choices[0]?.finish_reason
+  const finishReason = toFinishReason(providerFinishReason)
   return {
     content: response.choices[0]?.message?.content ?? '',
     ...(toolCalls ? { toolCalls } : {}),
     usage: toUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
-    finishReason: toFinishReason(response.choices[0]?.finish_reason),
+    finishReason,
+    outcome: toOutcome(finishReason, providerFinishReason),
     raw: response
   }
 }
@@ -547,6 +556,7 @@ function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse
     ...(providerItems ? { providerItems } : {}),
     usage: toResponsesUsage(response.usage),
     finishReason: toResponsesFinishReason(response),
+    outcome: toResponsesOutcome(response),
     raw: response
   }
 }
@@ -568,6 +578,7 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
   const stream = await createResponse(client, req, true)
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
+  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop', 'completed')
   let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
@@ -584,9 +595,12 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
     } else if (event.type === 'response.completed') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
+      outcome = toResponsesOutcome(event.response)
       completedOutput = event.response?.output
     } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
-      finishReason = 'error'
+      usage = toResponsesUsage(event.response?.usage)
+      finishReason = toResponsesFinishReason(event.response)
+      outcome = toResponsesOutcome(event.response)
     }
   }
 
@@ -595,7 +609,7 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
     yield { kind: 'tool_call', call }
   }
   const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', usage, finishReason, ...(providerItems ? { providerItems } : {}) }
+  yield { kind: 'finish', usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
 }
 
 async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: any, req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
@@ -603,6 +617,7 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
   let partial = ''
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
+  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop', 'completed')
   let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
@@ -620,9 +635,12 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
     } else if (event.type === 'response.completed') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
+      outcome = toResponsesOutcome(event.response)
       completedOutput = event.response?.output
     } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
-      finishReason = 'error'
+      usage = toResponsesUsage(event.response?.usage)
+      finishReason = toResponsesFinishReason(event.response)
+      outcome = toResponsesOutcome(event.response)
     }
   }
 
@@ -632,7 +650,7 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
   }
   const object = parseJson(partial || '{}', req, 'objectStream') as T
   const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', object, usage, finishReason, ...(providerItems ? { providerItems } : {}) }
+  yield { kind: 'finish', object, usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
 }
 
 function extractResponsesText(response: any): string {
@@ -791,6 +809,8 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
     case 'tool_calls':
     case 'content_filter':
       return value
+    case 'function_call':
+      return 'tool_calls'
     default:
       return 'error'
   }
@@ -799,6 +819,9 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
 function toResponsesFinishReason(response: any): TextResponse['finishReason'] {
   if (!response) return 'error'
   if ((response.output ?? []).some((item: any) => item?.type === 'function_call')) return 'tool_calls'
+  const incompleteReason = response.incomplete_details?.reason
+  if (incompleteReason === 'max_output_tokens') return 'length'
+  if (incompleteReason === 'content_filter') return 'content_filter'
   switch (response.status) {
     case 'completed':
       return 'stop'
@@ -806,5 +829,28 @@ function toResponsesFinishReason(response: any): TextResponse['finishReason'] {
       return 'length'
     default:
       return response.error ? 'error' : 'stop'
+  }
+}
+
+function toOutcome(finishReason: TextResponse['finishReason'], providerFinishReason?: unknown, details?: Record<string, JsonValue>): NonNullable<TextResponse['outcome']> {
+  return {
+    finishReason,
+    ...(typeof providerFinishReason === 'string' ? { providerFinishReason } : {}),
+    ...(details ? { details } : {})
+  }
+}
+
+function toResponsesOutcome(response: any): NonNullable<TextResponse['outcome']> {
+  const finishReason = toResponsesFinishReason(response)
+  const details = response?.incomplete_details || response?.error
+    ? {
+        ...(response.incomplete_details ? { incompleteDetails: response.incomplete_details as JsonValue } : {}),
+        ...(response.error ? { error: response.error as JsonValue } : {})
+      }
+    : undefined
+  return {
+    finishReason,
+    ...(typeof response?.status === 'string' ? { providerStatus: response.status, providerFinishReason: response.status } : {}),
+    ...(details ? { details } : {})
   }
 }

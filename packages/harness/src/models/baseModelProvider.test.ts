@@ -9,7 +9,9 @@ import type { HarnessAdapterContext } from '../ports/harness-context.js'
 
 class TestProvider extends BaseModelProvider {
   public error: unknown
+  public errors: unknown[] = []
   public delayMs = 0
+  public calls = 0
 
   constructor(opts: { timeoutMs?: number; telemetry?: TelemetryShim; logger?: Logger } = {}) {
     super({ id: 'test', genAiSystem: 'test', ...opts })
@@ -19,6 +21,9 @@ class TestProvider extends BaseModelProvider {
     if (this.delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.delayMs))
     }
+    this.calls += 1
+    const nextError = this.errors.shift()
+    if (nextError) throw nextError
     if (this.error) throw this.error
     return {
       object: { ok: true } as unknown as T,
@@ -60,6 +65,7 @@ describe('BaseModelProvider', () => {
     await expect(provider.object({
       model: 'm',
       messages: [],
+      defaults: { retry: false },
       schema: {},
       signal: new AbortController().signal
     })).rejects.toMatchObject({
@@ -82,9 +88,68 @@ describe('BaseModelProvider', () => {
     await expect(provider.object({
       model: 'm',
       messages: [],
+      defaults: { retry: false },
       schema: {},
       signal: new AbortController().signal
     })).rejects.toBeInstanceOf(OperationTimeoutError)
+  })
+
+  it('actively retries short retriable model failures', async () => {
+    const provider = new TestProvider()
+    provider.errors.push(Object.assign(new Error('temporary'), { status: 503, error: { message: 'try again' } }))
+
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      defaults: { retry: { maxAttempts: 2, minDelayMs: 1, maxDelayMs: 1, maxActiveDelayMs: 10, maxActiveElapsedMs: 1000 } },
+      schema: {},
+      signal: new AbortController().signal
+    })).resolves.toMatchObject({
+      object: { ok: true },
+      finishReason: 'stop'
+    })
+    expect(provider.calls).toBe(2)
+  })
+
+  it('turns long provider Retry-After into a deferred retry error instead of sleeping', async () => {
+    const provider = new TestProvider()
+    provider.error = Object.assign(new Error('rate limited'), {
+      status: 429,
+      error: { message: 'too many requests' },
+      headers: { 'retry-after': '3600', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-remaining-requests': '0' }
+    })
+
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      defaults: { retry: { maxAttempts: 2, maxActiveDelayMs: 10, maxActiveElapsedMs: 1000 } },
+      schema: {},
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      meta: {
+        reason: 'rate_limited',
+        retryKind: 'deferred',
+        retryAfterMs: 3_600_000,
+        rateLimit: { scope: 'requests', limit: 100, remaining: 0 }
+      }
+    })
+    expect(provider.calls).toBe(1)
+  })
+
+  it('honors retry false by throwing immediately', async () => {
+    const provider = new TestProvider()
+    provider.error = Object.assign(new Error('temporary'), { status: 503 })
+
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      defaults: { retry: false },
+      schema: {},
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      meta: { status: 503, retryAttempt: 1, retryMaxAttempts: 1 }
+    })
+    expect(provider.calls).toBe(1)
   })
 
   it('records safe telemetry attributes and token counters', async () => {
@@ -123,6 +188,7 @@ describe('BaseModelProvider', () => {
     await expect(provider.object({
       model: 'm',
       messages: [],
+      defaults: { retry: false },
       schema: {},
       signal: new AbortController().signal
     })).rejects.toBeInstanceOf(ModelError)
@@ -163,6 +229,7 @@ describe('BaseModelProvider', () => {
       await provider.object({
         model: 'm',
         messages: [],
+        defaults: { retry: false },
         schema: {},
         signal: new AbortController().signal
       })
@@ -198,6 +265,7 @@ describe('BaseModelProvider', () => {
     await expect(provider.object({
       model: 'm',
       messages: [],
+      defaults: { retry: false },
       schema: {},
       signal: new AbortController().signal
     })).rejects.toBeInstanceOf(OperationTimeoutError)

@@ -225,6 +225,8 @@ interface ModelAlias {
   model: string
   capabilities: readonly ModelCapability[]
   defaults?: ModelDefaults
+  /** Provider-neutral retry behavior. Default: true. */
+  retry?: ModelRetrySetting
   /** Free-form provider-specific options, passed to the provider unchanged. */
   providerOptions?: Record<string, unknown>
 }
@@ -234,6 +236,11 @@ Use `defaults.parallelToolCalls` on a model alias to request whether the provide
 may emit multiple tool calls in one model turn. This is the ergonomic path for
 agent loops because agents reference model aliases and do not need to know
 provider-specific payload names.
+
+Use alias `retry`, `defaults.retry`, or per-call `call.retry` to control
+provider-neutral model retry. Defaults are safe for short transient outages and
+rate limits; long provider retry instructions are surfaced as typed deferred
+retry errors. See [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
 Each key is the alias id referenced by agents. Validation:
 

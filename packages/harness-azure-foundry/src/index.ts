@@ -79,6 +79,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
       finishReason: toFinishReason(choice?.finish_reason),
+      outcome: toOutcome(choice?.finish_reason),
       raw: response
     }
   }
@@ -87,6 +88,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     req.signal.throwIfAborted()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'stop'
     const toolState: StreamToolCallState = new Map()
 
     for await (const event of streamChat(this.client, req, false)) {
@@ -101,7 +103,8 @@ class AzureFoundryModelProvider extends BaseModelProvider {
           accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       if (data.usage) {
@@ -112,7 +115,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
       yield { kind: 'tool_call', call }
     }
-    yield { kind: 'finish', usage, finishReason }
+    yield { kind: 'finish', usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -127,6 +130,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
       finishReason: toFinishReason(choice?.finish_reason),
+      outcome: toOutcome(choice?.finish_reason),
       raw: response
     }
   }
@@ -136,6 +140,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     let partial = ''
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'stop'
     const toolState: StreamToolCallState = new Map()
 
     for await (const event of streamChat(this.client, req, true)) {
@@ -151,7 +156,8 @@ class AzureFoundryModelProvider extends BaseModelProvider {
           accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
-          finishReason = toFinishReason(choice.finish_reason)
+          providerFinishReason = choice.finish_reason
+          finishReason = toFinishReason(providerFinishReason)
         }
       }
       if (data.usage) {
@@ -163,7 +169,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
       yield { kind: 'tool_call', call }
     }
     const object = parseJson(partial || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason }
+    yield { kind: 'finish', object, usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 
   protected override async doEmbed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -430,7 +436,17 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
       return 'tool_calls'
     case 'content_filter':
       return 'content_filter'
+    case 'function_call':
+      return 'tool_calls'
     default:
       return 'error'
+  }
+}
+
+function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
+  const finishReason = toFinishReason(value)
+  return {
+    finishReason,
+    ...(typeof value === 'string' ? { providerFinishReason: value } : {})
   }
 }

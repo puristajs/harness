@@ -64,6 +64,7 @@ class AnthropicModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(response.usage?.input_tokens, response.usage?.output_tokens),
       finishReason: toFinishReason(response.stop_reason),
+      outcome: toOutcome(response.stop_reason),
       raw: response
     }
   }
@@ -74,6 +75,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     const toolState = new Map<number, { id: string; name: string; input: string }>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'end_turn'
 
     for await (const event of stream) {
       req.signal.throwIfAborted()
@@ -99,12 +101,15 @@ class AnthropicModelProvider extends BaseModelProvider {
           toolState.delete(event.index)
         }
       } else if (event.type === 'message_delta') {
-        finishReason = toFinishReason(event.delta?.stop_reason)
+        if (event.delta?.stop_reason) {
+          providerFinishReason = event.delta.stop_reason
+          finishReason = toFinishReason(providerFinishReason)
+        }
         usage = toUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
       }
     }
 
-    yield { kind: 'finish', usage, finishReason }
+    yield { kind: 'finish', usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
@@ -118,6 +123,7 @@ class AnthropicModelProvider extends BaseModelProvider {
       ...(toolCalls ? { toolCalls } : {}),
       usage: toUsage(response.usage?.input_tokens, response.usage?.output_tokens),
       finishReason: toFinishReason(response.stop_reason),
+      outcome: toOutcome(response.stop_reason),
       raw: response
     }
   }
@@ -129,6 +135,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     let objectInput = ''
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
+    let providerFinishReason: unknown = 'end_turn'
 
     for await (const event of stream) {
       req.signal.throwIfAborted()
@@ -145,13 +152,16 @@ class AnthropicModelProvider extends BaseModelProvider {
           yield { kind: 'partial', partial: safePartialJson(objectInput) }
         }
       } else if (event.type === 'message_delta') {
-        finishReason = toFinishReason(event.delta?.stop_reason)
+        if (event.delta?.stop_reason) {
+          providerFinishReason = event.delta.stop_reason
+          finishReason = toFinishReason(providerFinishReason)
+        }
         usage = toUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
       }
     }
 
     const object = parseJson(objectInput || text || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason }
+    yield { kind: 'finish', object, usage, finishReason, outcome: toOutcome(providerFinishReason) }
   }
 }
 
@@ -165,7 +175,7 @@ type ChatRequest = TextRequest | ObjectRequest
 
 function toClientOptions(options: AnthropicFactoryOptions): ClientOptions {
   const { client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
-  return clientOptions
+  return { maxRetries: 0, ...clientOptions }
 }
 
 async function createMessage(client: AnthropicClient, req: ChatRequest, stream: boolean, forceObject = false): Promise<any> {
@@ -315,7 +325,21 @@ function toFinishReason(value: unknown): TextResponse['finishReason'] {
       return 'length'
     case 'tool_use':
       return 'tool_calls'
+    case 'pause_turn':
+      return 'pause'
+    case 'refusal':
+      return 'refusal'
+    case 'model_context_window_exceeded':
+      return 'context_limit'
     default:
       return 'error'
+  }
+}
+
+function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
+  const finishReason = toFinishReason(value)
+  return {
+    finishReason,
+    ...(typeof value === 'string' ? { providerFinishReason: value } : {})
   }
 }

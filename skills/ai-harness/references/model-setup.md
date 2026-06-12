@@ -37,6 +37,7 @@ import { openai } from '@purista/harness-openai'
     }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     capabilities: ['object', 'tool_use'],
+    retry: true,
     defaults: {
       maxTokens: 1200,
       temperature: 0.2,
@@ -119,12 +120,19 @@ Each `.models(...)` entry is a `ModelAlias`:
   provider: modelProvider,
   model: 'provider-model-name',
   capabilities: ['text', 'object'] as const,
+  retry: true,
   defaults: {
     temperature: 0.2,
     maxTokens: 1200,
     topP: 0.9,
     stopSequences: ['</final>'],
     parallelToolCalls: true,
+    retry: {
+      maxAttempts: 3,
+      maxActiveElapsedMs: 60_000,
+      maxActiveDelayMs: 20_000,
+      respectRetryAfter: true
+    },
     providerOptions: {}
   },
   providerOptions: {}
@@ -132,6 +140,17 @@ Each `.models(...)` entry is a `ModelAlias`:
 ```
 
 `defaults` are merged with per-call `call` options. Use `parallelToolCalls` on the alias for agent-loop defaults and direct model call overrides when needed. `call.providerOptions` overrides or extends `defaults.providerOptions` for provider-specific escape hatches.
+
+`retry` accepts `true`, `false`, or a policy object. The default is `true`.
+The harness retries short transient provider failures and rate limits inside
+bounded active budgets. It does not sleep for long provider `Retry-After`
+windows; those surface as `ModelError` metadata with `retryKind:'deferred'` and
+`retryAfterMs` so queues, durable workers, or application schedulers can decide
+what to do. Per-call `call.retry` overrides alias and default retry settings.
+
+Model responses include `finishReason` for common control flow and may include
+`outcome` for provider-specific finish/status details. Use `outcome` for
+operations and provider-specific routing, not for prompt/output content.
 
 ## Capabilities
 Capabilities are enforced at type level and runtime:

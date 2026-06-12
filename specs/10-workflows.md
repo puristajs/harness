@@ -41,6 +41,10 @@ interface WorkflowContext<S, I, O> {
 `AgentInput<S, K>` and `AgentOutput<S, K>` are derived from the agent's `input`/`output` Zod schemas (or default to `string` when omitted), mirroring the `WorkflowInput`/`WorkflowOutput` derivation in [13-public-api](./13-public-api.md).
 
 - All registered agents are reachable from `agents`. Workflows are not scoped to a subset.
+- Embedders that wrap a workflow definition outside a direct
+  `defineHarness().agents(...).workflows(...)` chain MUST register the intended
+  harness-local agent definitions before registering the workflow. Otherwise
+  `ctx.agents` is empty or missing the referenced agent keys at runtime.
 - `ctx.memory` exposes run/session/user/tenant memory scopes as defined in [20-memory-adapters](./20-memory-adapters.md). Workflow contexts do not expose `ctx.memory.agent` because no single agent id owns the workflow run.
 - Each `agents[id](input)` call:
   - Validates `input` against the agent's `input` schema. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_input'}.

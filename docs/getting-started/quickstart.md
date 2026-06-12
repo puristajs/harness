@@ -87,6 +87,10 @@ The agent prepares messages, calls the model, handles tool calls when available,
 and returns validated output. The workflow decides when that agent is invoked
 and what happens before or after it.
 
+The quickstart keeps the workflow intentionally small. For multi-agent
+orchestration, durable steps, streaming, and failure handling, continue with
+[Workflows](../guides/workflows.md).
+
 ## Direct Agent Alternative
 
 When you do not need application orchestration, call the agent's LLM

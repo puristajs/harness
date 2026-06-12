@@ -334,6 +334,9 @@ Validation:
 - Workflow ids match `/^[a-z][a-z0-9_]*$/`, ≤64 chars; reserved prefixes rejected.
 - Workflow ids may not collide with reserved Session member names: `'memory' | 'history' | 'close' | 'id' | 'workflows' | 'clearHistory' | 'replaceHistory'`. Violation → `HarnessConfigError`.
 - `ctx.agents[k]` is typed by the registered agent keys.
+- A wrapper package that accepts a workflow definition and local agent
+  definitions must apply the same order as the builder: register agents first,
+  then workflows, so handler `ctx.agents` matches runtime availability.
 
 ### `.build()`
 

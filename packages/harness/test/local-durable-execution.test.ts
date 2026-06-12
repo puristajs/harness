@@ -1,15 +1,19 @@
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 import {
   defineHarness,
+  DurableRunLeaseError,
+  DurableStepError,
+  DurableTerminalRunError,
   localDirectorySandbox,
   localDirectoryWorkspaceStore,
   localDurableExecution,
   sqliteDurableRuntime
 } from '../src/index.js'
+import type { JsonValue } from '../src/index.js'
 import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
@@ -19,7 +23,7 @@ async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'purista-harness-'))
 }
 
-function configureForTelemetry(adapter: unknown, telemetry: RecordingTelemetry): void {
+function configureForTelemetry(adapter: unknown, telemetry: RecordingTelemetry, overrides: { toolTimeoutMs?: number } = {}): void {
   const configurable = adapter as { configureHarnessContext?: (context: HarnessAdapterContext) => void }
   configurable.configureHarnessContext?.({
     harnessName: 'local-durable-test',
@@ -34,7 +38,7 @@ function configureForTelemetry(adapter: unknown, telemetry: RecordingTelemetry):
     defaults: {
       agentMaxIterations: 4,
       runTimeoutMs: 60_000,
-      toolTimeoutMs: 10_000,
+      toolTimeoutMs: overrides.toolTimeoutMs ?? 10_000,
       skillTimeoutMs: 10_000,
       modelTimeoutMs: 60_000,
       maxParallelToolCalls: 8
@@ -234,8 +238,8 @@ describe('local durable execution', () => {
     await local.checkpoints.list({ runId: 'run-otel', sessionId: 'session-otel', kind: 'summary' })
     await local.checkpoints.delete({ runId: 'run-otel', sessionId: 'session-otel', sequence: 1, kind: 'summary' })
     await local.runtime.finishRun('run-otel', { status: 'succeeded', output: { ok: true } })
-    await local.workspaceStore.inspectWorkspace({ workspaceRef: handle.workspaceRef })
-    await local.workspaceStore.cleanupWorkspace({ workspaceRef: handle.workspaceRef })
+    await local.workspaceStore.inspectWorkspace?.({ workspaceRef: handle.workspaceRef })
+    await local.workspaceStore.cleanupWorkspace({ workspaceRef: handle.workspaceRef, reason: 'manual', idempotencyKey: 'cleanup-otel' })
     await local.close()
 
     const spanNames = telemetry.spans.map((span) => span.name)
@@ -245,7 +249,7 @@ describe('local durable execution', () => {
       'harness.runtime.checkpoint',
       'harness.runtime.finish',
       'harness.workspace.start',
-      'harness.workspace.checkpoint',
+      'harness.workspace.pause',
       'harness.workspace.inspect',
       'harness.workspace.cleanup',
       'harness.local_sandbox.open',
@@ -259,9 +263,30 @@ describe('local durable execution', () => {
     expect(telemetry.metrics.map((metric) => metric.name)).toEqual(expect.arrayContaining([
       'harness.runtime.operations',
       'harness.workspace.operations',
+      'harness.workspace.bytes',
       'harness.local_sandbox.operations',
       'harness.context_checkpoint.operations'
     ]))
+
+    const sha256Pattern = /^[0-9a-f]{64}$/
+    const runtimeStart = telemetry.spans.find((span) => span.name === 'harness.runtime.start')
+    expect(runtimeStart?.attrs['harness.runtime.resumed']).toBe(false)
+    expect(runtimeStart?.attrs['harness.runtime.attempt']).toBe(1)
+    const workspaceStart = telemetry.spans.find((span) => span.name === 'harness.workspace.start')
+    expect(workspaceStart?.attrs['harness.workspace.state']).toBe('active')
+    expect(workspaceStart?.attrs['harness.workspace.ref_hash']).toMatch(sha256Pattern)
+    const workspacePause = telemetry.spans.find((span) => span.name === 'harness.workspace.pause')
+    expect(workspacePause?.attrs['harness.workspace.checkpoint_ref_hash']).toMatch(sha256Pattern)
+    const workspaceCleanup = telemetry.spans.find((span) => span.name === 'harness.workspace.cleanup')
+    expect(workspaceCleanup?.attrs['harness.workspace_store.cleanup.reason']).toBe('manual')
+    const sandboxOpen = telemetry.spans.find((span) => span.name === 'harness.local_sandbox.open')
+    expect(sandboxOpen?.attrs['harness.sandbox.adapter']).toBe('local_directory_sandbox')
+    expect(sandboxOpen?.attrs['harness.sandbox.exec_enabled']).toBe(false)
+    expect(sandboxOpen?.attrs['harness.workspace.ref_hash']).toMatch(sha256Pattern)
+    const checkpointWrite = telemetry.spans.find((span) => span.name === 'harness.context_checkpoint.write')
+    expect(checkpointWrite?.attrs['harness.context_checkpoint.ref_hash']).toMatch(sha256Pattern)
+    const checkpointList = telemetry.spans.find((span) => span.name === 'harness.context_checkpoint.list')
+    expect(checkpointList?.attrs['harness.context_checkpoint.result_count']).toBe(1)
 
     const telemetryJson = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics })
     expect(telemetryJson).not.toContain(root)
@@ -315,6 +340,411 @@ describe('local durable execution', () => {
     })
     await expect(enabled.exec?.('node -e "process.stdout.write(process.cwd())"')).resolves.toMatchObject({
       exitCode: 0
+    })
+  })
+})
+
+describe('sqlite durable runtime (spec 22 §3/§8)', () => {
+  async function tempFile(): Promise<string> {
+    return join(await tempRoot(), 'runtime.sqlite')
+  }
+
+  const start = (runtime: ReturnType<typeof sqliteDurableRuntime>, workerId: string, runId = 'run-1', sessionId = 'session-1') =>
+    runtime.startRun({ runId, sessionId, workerId, stepId: 'step-a', input: { ok: true } })
+
+  it('renews the lease for a same-worker retry within the TTL', async () => {
+    const runtime = sqliteDurableRuntime({ file: await tempFile() })
+    const first = await start(runtime, 'worker-1')
+    const retry = await start(runtime, 'worker-1')
+    expect(retry.attempt).toBe(first.attempt + 1)
+    expect(retry.leaseId).not.toBe(first.leaseId)
+    await runtime.close()
+  })
+
+  it('rejects another worker while the lease is active and allows takeover after expiry', async () => {
+    let nowMs = 1_700_000_000_000
+    const runtime = sqliteDurableRuntime({ file: await tempFile(), leaseTtlMs: 1_000, now: () => nowMs })
+    await start(runtime, 'worker-1')
+    await expect(start(runtime, 'worker-2')).rejects.toBeInstanceOf(DurableRunLeaseError)
+    nowMs += 1_500
+    const takeover = await start(runtime, 'worker-2')
+    expect(takeover.workerId).toBe('worker-2')
+    await runtime.close()
+  })
+
+  it('renews the lease on every owner checkpoint so long runs are not taken over', async () => {
+    let nowMs = 1_700_000_000_000
+    const runtime = sqliteDurableRuntime({ file: await tempFile(), leaseTtlMs: 1_000, now: () => nowMs })
+    const lease = await start(runtime, 'worker-1')
+    nowMs += 800
+    await runtime.commitCheckpoint({
+      runId: lease.runId,
+      sessionId: lease.sessionId,
+      workerId: lease.workerId,
+      leaseId: lease.leaseId,
+      stepId: 'step-a',
+      input: lease.start.input,
+      attempt: lease.attempt,
+      sequence: 1,
+      output: { value: 1 }
+    })
+    // Past the original expiry but inside the renewed window: still owned.
+    nowMs += 400
+    await expect(start(runtime, 'worker-2')).rejects.toBeInstanceOf(DurableRunLeaseError)
+    // Past the renewed expiry: takeover succeeds and the stale lease loses write access.
+    nowMs += 1_000
+    await start(runtime, 'worker-2')
+    await expect(runtime.commitCheckpoint({
+      runId: lease.runId,
+      sessionId: lease.sessionId,
+      workerId: lease.workerId,
+      leaseId: lease.leaseId,
+      stepId: 'step-b',
+      input: lease.start.input,
+      attempt: lease.attempt,
+      sequence: 2,
+      output: { value: 2 }
+    })).rejects.toBeInstanceOf(DurableRunLeaseError)
+    await runtime.close()
+  })
+
+  it('replays idempotent checkpoints and rejects conflicting payloads', async () => {
+    const runtime = sqliteDurableRuntime({ file: await tempFile() })
+    const lease = await start(runtime, 'worker-1')
+    const checkpoint = {
+      runId: lease.runId,
+      sessionId: lease.sessionId,
+      workerId: lease.workerId,
+      leaseId: lease.leaseId,
+      stepId: 'step-a',
+      input: lease.start.input,
+      attempt: lease.attempt,
+      sequence: 1,
+      output: { value: 1 }
+    }
+    await runtime.commitCheckpoint(checkpoint)
+    await expect(runtime.commitCheckpoint(checkpoint)).resolves.toBeUndefined()
+    await expect(runtime.commitCheckpoint({ ...checkpoint, output: { value: 2 } })).rejects.toMatchObject({
+      code: 'WORKSPACE_ERROR',
+      meta: { reason: 'checkpoint_conflict' }
+    })
+    await runtime.close()
+  })
+
+  it('rejects resume of succeeded and cancelled runs but keeps failed runs resumable', async () => {
+    const runtime = sqliteDurableRuntime({ file: await tempFile() })
+
+    const succeeded = await start(runtime, 'worker-1', 'run-success', 'session-success')
+    await runtime.finishRun(succeeded.runId, { status: 'succeeded', output: { ok: true } })
+    await expect(start(runtime, 'worker-1', 'run-success', 'session-success')).rejects.toBeInstanceOf(DurableTerminalRunError)
+
+    const cancelled = await start(runtime, 'worker-1', 'run-cancelled', 'session-cancelled')
+    await runtime.finishRun(cancelled.runId, { status: 'cancelled', error: { name: 'OperationCancelledError', message: 'stop' } })
+    await expect(start(runtime, 'worker-1', 'run-cancelled', 'session-cancelled')).rejects.toBeInstanceOf(DurableTerminalRunError)
+
+    const failed = await start(runtime, 'worker-1', 'run-failed', 'session-failed')
+    await runtime.commitCheckpoint({
+      runId: failed.runId,
+      sessionId: failed.sessionId,
+      workerId: failed.workerId,
+      leaseId: failed.leaseId,
+      stepId: 'step-a',
+      input: failed.start.input,
+      attempt: failed.attempt,
+      sequence: 1,
+      output: { value: 1 }
+    })
+    // finishRun('failed') records the terminal status and error and releases the
+    // lease, but the run stays resumable for a retry with the same run id.
+    await runtime.finishRun(failed.runId, { status: 'failed', error: { name: 'Error', message: 'boom' } })
+    const resumed = await start(runtime, 'worker-2', 'run-failed', 'session-failed')
+    expect(resumed.resumed).toBe(true)
+    expect(resumed.attempt).toBe(failed.attempt + 1)
+    expect(resumed.checkpoint?.output).toEqual({ value: 1 })
+    await runtime.close()
+  })
+
+  it('rejects non-serializable checkpoints before any SQLite write', async () => {
+    const runtime = sqliteDurableRuntime({ file: await tempFile() })
+    const lease = await start(runtime, 'worker-1')
+    const cyclic: Record<string, unknown> = {}
+    cyclic['self'] = cyclic
+    await expect(runtime.commitCheckpoint({
+      runId: lease.runId,
+      sessionId: lease.sessionId,
+      workerId: lease.workerId,
+      leaseId: lease.leaseId,
+      stepId: 'step-a',
+      input: lease.start.input,
+      attempt: lease.attempt,
+      sequence: 1,
+      output: cyclic as unknown as JsonValue
+    })).rejects.toBeInstanceOf(DurableStepError)
+    await expect(runtime.loadCheckpoint(lease.runId)).resolves.toBeUndefined()
+    await runtime.close()
+  })
+
+  it('serializes concurrent transactions across two sessions on one connection', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const runFor = async (index: number): Promise<void> => {
+      const sessionId = `session-${index}`
+      const runId = `run-${index}`
+      const lease = await local.runtime.startRun({ runId, sessionId, workerId: 'worker-1', stepId: 'step-a', input: { index } })
+      for (let sequence = 1; sequence <= 5; sequence += 1) {
+        await local.runtime.commitCheckpoint({
+          runId,
+          sessionId,
+          workerId: lease.workerId,
+          leaseId: lease.leaseId,
+          stepId: `step-${sequence}`,
+          input: lease.start.input,
+          attempt: lease.attempt,
+          sequence,
+          output: { sequence }
+        })
+        await local.state.appendMessages(sessionId, [{
+          id: `${runId}-msg-${sequence}`,
+          sessionId,
+          role: 'assistant',
+          content: `step ${sequence}`,
+          timestamp: new Date().toISOString()
+        }])
+      }
+      await local.runtime.finishRun(runId, { status: 'succeeded', output: { done: true } })
+    }
+    await Promise.all([runFor(1), runFor(2), runFor(3)])
+    await expect(local.state.listMessages('session-1')).resolves.toHaveLength(5)
+    await expect(local.state.listMessages('session-3')).resolves.toHaveLength(5)
+    await local.close()
+  })
+
+  it('close is idempotent', async () => {
+    const runtime = sqliteDurableRuntime({ file: await tempFile() })
+    await runtime.close()
+    await expect(runtime.close()).resolves.toBeUndefined()
+  })
+
+  it('cancels context checkpoint operations with OperationCancelledError', async () => {
+    const local = localDurableExecution({ root: await tempRoot() })
+    const aborted = AbortSignal.abort()
+    const checkpoint = {
+      runId: 'run-cancel',
+      sessionId: 'session-cancel',
+      sequence: 1,
+      kind: 'summary' as const,
+      payload: { ok: true },
+      payloadSizeBytes: 11,
+      createdAt: new Date().toISOString()
+    }
+    await expect(local.checkpoints.write(checkpoint, { signal: aborted })).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+      meta: { scope: 'workspace' }
+    })
+    await expect(local.checkpoints.list({ runId: 'run-cancel', signal: aborted })).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED'
+    })
+    await local.close()
+  })
+})
+
+describe('local workspace store hardening (spec 22 §4/§8)', () => {
+  const signal = new AbortController().signal
+
+  it('rejects traversal-shaped workspace refs on every operation', async () => {
+    const root = await tempRoot()
+    const store = localDirectoryWorkspaceStore({ root })
+    const traversal = '../../tmp/victim'
+    await expect(store.resumeWorkspace({ workspaceRef: traversal, runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'resume', signal })).rejects.toMatchObject({
+      code: 'WORKSPACE_ERROR',
+      meta: { reason: 'invalid_reference' }
+    })
+    await expect(store.abortWorkspace({ workspaceRef: traversal, runId: 'r', sessionId: 's', reason: 'cancelled', idempotencyKey: 'abort', signal })).rejects.toMatchObject({
+      meta: { reason: 'invalid_reference' }
+    })
+    await expect(store.cleanupWorkspace({ workspaceRef: traversal, reason: 'manual', idempotencyKey: 'cleanup', signal })).rejects.toMatchObject({
+      meta: { reason: 'invalid_reference' }
+    })
+    await expect(store.inspectWorkspace?.({ workspaceRef: traversal, signal })).rejects.toMatchObject({
+      meta: { reason: 'invalid_reference' }
+    })
+  })
+
+  it('cleanup refuses to follow a workspace symlink outside the store root', async () => {
+    const root = await tempRoot()
+    const outside = await tempRoot()
+    const store = localDirectoryWorkspaceStore({ root })
+    // Materialize the store root, then plant a symlink that "looks like" a ref.
+    await store.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start', signal })
+    await symlink(outside, join(root, 'workspaces', 'workspace_FAKE'))
+    await expect(store.cleanupWorkspace({ workspaceRef: 'workspace_FAKE', reason: 'manual', idempotencyKey: 'cleanup', signal })).rejects.toMatchObject({
+      code: 'WORKSPACE_ERROR',
+      meta: { reason: 'invalid_reference' }
+    })
+    await expect(stat(outside)).resolves.toBeDefined()
+  })
+
+  it('persists idempotency replay and conflicts across store rebuilds', async () => {
+    const root = await tempRoot()
+    const first = localDirectoryWorkspaceStore({ root })
+    const handle = await first.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start-key', signal })
+
+    const second = localDirectoryWorkspaceStore({ root })
+    const replayed = await second.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start-key', signal })
+    expect(replayed.workspaceRef).toBe(handle.workspaceRef)
+    await expect(second.startWorkspace({ runId: 'other-run', sessionId: 'other-session', attempt: 1, idempotencyKey: 'start-key', signal })).rejects.toMatchObject({
+      code: 'WORKSPACE_ERROR',
+      meta: { reason: 'idempotency_conflict' }
+    })
+  })
+
+  it('enforces a configured maxWorkspaceBytes quota on pause', async () => {
+    const root = await tempRoot()
+    const store = localDirectoryWorkspaceStore({ root, policy: { quota: { maxWorkspaceBytes: 8 } } })
+    const handle = await store.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start', signal })
+    await writeFile(join(root, 'workspaces', handle.workspaceRef, 'active', 'workspace', 'big.txt'), 'way more than eight bytes')
+    await expect(store.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })).rejects.toMatchObject({
+      code: 'WORKSPACE_QUOTA_EXCEEDED',
+      meta: { quota: 'maxWorkspaceBytes' }
+    })
+  })
+})
+
+describe('local sandbox hardening (spec 22 §5/§8)', () => {
+  it('blocks shell-metacharacter bypasses of the exec allow-list', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }).open({
+      runId: 'run-bypass',
+      sessionId: 'session-bypass'
+    })
+    const probe = join(root, 'bypass-proof.txt')
+    for (const command of [
+      `node -v; touch ${probe}`,
+      `node -v | touch ${probe}`,
+      `node -v && touch ${probe}`,
+      `node -v $(touch ${probe})`,
+      'node -v `touch /tmp/x`',
+      `node -v > ${probe}`
+    ]) {
+      await expect(session.exec(command)).rejects.toMatchObject({
+        code: 'SANDBOX_ERROR',
+        meta: { reason: 'exec_failed' }
+      })
+    }
+    await expect(stat(probe)).rejects.toThrow()
+  })
+
+  it('runs commands without a shell so expansions and substitutions stay literal', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }).open({
+      runId: 'run-argv',
+      sessionId: 'session-argv'
+    })
+    const result = await session.exec('node -e "process.stdout.write(process.argv[1])" literal-$HOME')
+    expect(result.stdout).toBe('literal-$HOME')
+  })
+
+  it('blocks dangling-symlink write escapes', async () => {
+    const root = await tempRoot()
+    const outsideRoot = await tempRoot()
+    const danglingTarget = join(outsideRoot, 'does-not-exist-yet.txt')
+
+    const sandbox = localDirectorySandbox({ root, exec: false })
+    const session = await sandbox.open({ runId: 'run-dangling', sessionId: 'session-dangling' })
+    await symlink(danglingTarget, join(root, 'sessions', 'session-dangling', 'run-dangling', 'workspace', 'dangling.txt'))
+
+    await expect(session.write('/workspace/dangling.txt', 'escape')).rejects.toMatchObject({
+      code: 'SANDBOX_ERROR',
+      meta: { reason: 'invalid_path' }
+    })
+    await expect(stat(danglingTarget)).rejects.toThrow()
+  })
+
+  it('rejects aborted exec with OperationCancelledError and signal-killed exec as failure', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: {} }).open({
+      runId: 'run-abort',
+      sessionId: 'session-abort'
+    })
+
+    const controller = new AbortController()
+    const pending = session.exec('node -e "setTimeout(() => {}, 30000)"', { signal: controller.signal })
+    setTimeout(() => controller.abort(), 50)
+    await expect(pending).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+      meta: { scope: 'sandbox' }
+    })
+
+    await expect(session.exec('node -e "process.kill(process.pid, \'SIGKILL\')"')).rejects.toMatchObject({
+      code: 'SANDBOX_ERROR',
+      meta: { reason: 'exec_failed' }
+    })
+  })
+
+  it('rejects session and run ids containing path segments', async () => {
+    const root = await tempRoot()
+    const sandbox = localDirectorySandbox({ root, exec: false })
+    await expect(sandbox.open({ runId: 'run-ok', sessionId: '../escape' })).rejects.toMatchObject({
+      code: 'SANDBOX_ERROR',
+      meta: { reason: 'invalid_path' }
+    })
+    await expect(sandbox.open({ runId: '..', sessionId: 'session-ok' })).rejects.toMatchObject({
+      code: 'SANDBOX_ERROR',
+      meta: { reason: 'invalid_path' }
+    })
+  })
+
+  it('falls back to the configured harness toolTimeoutMs for exec', async () => {
+    const root = await tempRoot()
+    const sandbox = localDirectorySandbox({ root, exec: {} })
+    configureForTelemetry(sandbox, new RecordingTelemetry(), { toolTimeoutMs: 200 })
+    const session = await sandbox.open({ runId: 'run-timeout', sessionId: 'session-timeout' })
+    await expect(session.exec('node -e "setTimeout(() => {}, 30000)"')).rejects.toMatchObject({
+      code: 'OPERATION_TIMEOUT',
+      meta: { scope: 'sandbox_run', timeout_ms: 200 }
+    })
+  })
+
+  it('caps captured exec output and appends a truncation marker', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 30_000 } }).open({
+      runId: 'run-cap',
+      sessionId: 'session-cap'
+    })
+    const result = await session.exec('node -e "process.stdout.write(Buffer.alloc(11 * 1024 * 1024, 97))"')
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.length).toBeLessThanOrEqual(10 * 1024 * 1024 + 100)
+    expect(result.stdout.endsWith('[truncated: local sandbox capture limit reached]')).toBe(true)
+  })
+
+  it('supports mount, glob list, stat, and remove inside the jail', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: false }).open({
+      runId: 'run-fs',
+      sessionId: 'session-fs'
+    })
+    await session.mount(new Map<string, string>([
+      ['a.txt', 'alpha'],
+      ['b.log', 'beta']
+    ]), '/workspace/mounted')
+    const txtEntries = await session.list('/workspace/mounted', { glob: '*.txt' })
+    expect(txtEntries.map((entry) => entry.name)).toEqual(['a.txt'])
+    await expect(session.stat('/workspace/mounted/a.txt')).resolves.toMatchObject({ kind: 'file', size: 5 })
+    await session.remove('/workspace/mounted', { recursive: true })
+    await expect(session.exists('/workspace/mounted')).resolves.toBe(false)
+  })
+
+  it('jails exec cwd to the sandbox root', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }).open({
+      runId: 'run-cwd',
+      sessionId: 'session-cwd'
+    })
+    const result = await session.exec('node -e "process.stdout.write(process.cwd())"', { cwd: '/workspace/../workspace' })
+    expect(result.stdout.endsWith('/workspace')).toBe(true)
+    await expect(session.exec('node -v', { cwd: '/missing' })).rejects.toMatchObject({
+      code: 'SANDBOX_ERROR',
+      meta: { reason: 'fs_failed' }
     })
   })
 })

@@ -11,7 +11,7 @@ This repository defines a self-hosted enterprise agent harness. It is lower-leve
 - Interfaces and ports: `specs/04-state-queue-stream.md`, `specs/05-sandbox.md`, `specs/06-models.md`, `specs/07-tools.md`
 - Failure handling: `specs/15-error-catalog.md`
 - Test strategy: `specs/16-testing.md`
-- Plans and tickets: `plans/`
+- Plans, reviews, and tickets: `plans/` (review findings and implementation plans live here, not under `docs/`)
 - Implementation conventions: `.agent/IMPLEMENTATION.md`
 
 Use `specs/` and `plans/` as the only approved definition sources. Historical
@@ -29,16 +29,17 @@ review material and previous implementation code are not source of truth.
 ## Expected Commands
 
 - `npm run lint`
-- `npm run typecheck`
+- `npm run build`
 - `npm test`
+- `npm run test:coverage`
+- `npm run test:types`
 - `npm run test:contracts`
 - `npm run test:integration`
 - `npm run test:failure`
-- `npm run build`
 
 ## Implementation Rules
 
 - Follow each ticket's `write_scope` and `read_scope`.
 - Do not invent missing contracts, interfaces, data models, or failure behavior during implementation.
-- If a ticket depends on missing definition work, update `plans/definition-readiness-report.md` or add a gap report under `plans/` instead of guessing.
+- If a ticket depends on missing definition work, flag it in `specs/.readiness-report.yaml` or add a gap report under `plans/` instead of guessing.
 - Preserve timeout, retry, idempotency, cleanup, DLQ/manual-intervention, backpressure, and telemetry behavior from specs.

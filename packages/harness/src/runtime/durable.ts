@@ -140,6 +140,15 @@ export function isTerminalRunStatus(status: DurableRunStatus): status is Durable
   return status === 'succeeded' || status === 'failed' || status === 'cancelled'
 }
 
+/**
+ * Returns true when a durable run status blocks resume. A `failed` run is
+ * terminal for reporting but stays resumable by a retry with the same run id
+ * (spec 22 §3); only `succeeded` and `cancelled` reject `startRun`.
+ */
+export function isResumeBlockingRunStatus(status: DurableRunStatus): boolean {
+  return status === 'succeeded' || status === 'cancelled'
+}
+
 interface RunState {
   readonly start: DurableRunStart
   status: DurableRunStatus
@@ -157,7 +166,8 @@ interface LeaseState {
   readonly workerId: string
 }
 
-class AsyncMutex {
+/** Internal in-process FIFO mutex shared by durable runtime implementations. */
+export class AsyncMutex {
   private current = Promise.resolve()
 
   public async lock<T>(fn: () => Promise<T>): Promise<T> {
@@ -196,8 +206,10 @@ class InMemoryDurableRuntime implements DurableRuntime {
   public async startRun(record: DurableRunStart): Promise<DurableRunLease> {
     return this.withSessionLock(record.sessionId, async () => {
       const current = this.runs.get(record.runId)
-      if (current && isTerminalRunStatus(current.status)) {
-        throw new DurableTerminalRunError(record.runId, current.status)
+      // Only succeeded/cancelled block resume; a failed run is recorded
+      // terminal but stays resumable for a retry with the same run id.
+      if (current && isResumeBlockingRunStatus(current.status)) {
+        throw new DurableTerminalRunError(record.runId, current.status as DurableTerminalRunStatus)
       }
 
       this.assertNoConflictingLease(record)
@@ -211,6 +223,8 @@ class InMemoryDurableRuntime implements DurableRuntime {
 
       if (current) {
         state.attempt += 1
+        state.status = 'running'
+        delete state.finished
       }
 
       this.runs.set(record.runId, state)

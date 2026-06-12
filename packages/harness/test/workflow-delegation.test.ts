@@ -1,14 +1,34 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   DelegationPolicyError,
+  HarnessConfigError,
   InMemoryStateStore,
+  OperationCancelledError,
+  OperationTimeoutError,
+  ValidationError,
   defineHarness,
   inMemorySandbox
 } from '../src/index.js'
+import type { Logger, RunEvent } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+
+/** Model provider whose calls hang until the request signal aborts. */
+function hangingProvider(onStarted?: () => void) {
+  return {
+    id: 'hanging',
+    genAiSystem: 'hanging',
+    async object(req: { signal: AbortSignal }) {
+      onStarted?.()
+      return new Promise((_resolve, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+        if (req.signal.aborted) reject(req.signal.reason)
+      })
+    }
+  }
+}
 
 describe('workflow delegation policy', () => {
   it('denies child-agent calls by default', async () => {
@@ -386,4 +406,658 @@ describe('workflow delegation policy', () => {
       })
     ]))
   })
+
+  it('enables delegation via defaults for workflows without a policy', async () => {
+    const model = new FakeModelProvider()
+    model.enqueue({ object: 'ok', usage, finishReason: 'stop' })
+
+    const harness = defineHarness()
+      .defaults({ delegation: { enabled: true } })
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        open: {
+          input: z.string(),
+          output: z.string(),
+          handler: async (ctx) => ctx.agents.worker(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-defaults-enabled')
+    await expect(session.workflows.open.prompt('work')).resolves.toBe('ok')
+    expect(model.requests).toHaveLength(1)
+  })
+
+  it('lets a workflow disable delegation despite harness-wide enablement', async () => {
+    const model = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .defaults({ delegation: { enabled: true } })
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        sealed: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { enabled: false },
+          handler: async (ctx) => ctx.agents.worker(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-workflow-disabled')
+    await expect(session.workflows.sealed.prompt('work')).rejects.toMatchObject({
+      code: 'DELEGATION_POLICY_ERROR',
+      meta: expect.objectContaining({ reason: 'delegation_disabled', workflow_id: 'sealed' })
+    })
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('denies child-agent calls when maxDepth is 0', async () => {
+    const model = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        shallow: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { maxDepth: 0 },
+          handler: async (ctx) => ctx.agents.worker(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-max-depth-zero')
+    await expect(session.workflows.shallow.prompt('work')).rejects.toMatchObject({
+      code: 'DELEGATION_POLICY_ERROR',
+      meta: expect.objectContaining({
+        reason: 'max_delegation_depth_exceeded',
+        workflow_id: 'shallow',
+        agent_id: 'worker',
+        limit: 0
+      })
+    })
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('applies workflow-wide modelAliases to default-model child-agent calls', async () => {
+    const fast = new FakeModelProvider()
+    const deep = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({
+        fast: { provider: fast, model: 'fake-fast', capabilities: ['object'] },
+        deep: { provider: deep, model: 'fake-deep', capabilities: ['object'] }
+      })
+      .tools({})
+      .skills({})
+      .agents({
+        writer: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Write.'
+        }
+      })
+      .workflows({
+        restricted: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { modelAliases: ['deep'] },
+          // No per-call override: the agent's default alias `fast` is selected.
+          handler: async (ctx) => ctx.agents.writer(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-default-model-denied')
+    await expect(session.workflows.restricted.prompt('work')).rejects.toMatchObject({
+      code: 'DELEGATION_POLICY_ERROR',
+      meta: expect.objectContaining({
+        reason: 'model_alias_not_allowed',
+        workflow_id: 'restricted',
+        agent_id: 'writer',
+        model_alias: 'fast'
+      })
+    })
+    expect(fast.requests).toHaveLength(0)
+    expect(deep.requests).toHaveLength(0)
+  })
+
+  it('allows default-model child-agent calls when the default alias is listed', async () => {
+    const fast = new FakeModelProvider()
+    fast.enqueue({ object: 'fast answer', usage, finishReason: 'stop' })
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: fast, model: 'fake-fast', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        writer: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Write.'
+        }
+      })
+      .workflows({
+        permitted: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { modelAliases: ['fast'] },
+          handler: async (ctx) => ctx.agents.writer(ctx.input)
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-default-model-allowed')
+    await expect(session.workflows.permitted.prompt('work')).resolves.toBe('fast answer')
+    expect(fast.requests).toHaveLength(1)
+  })
+
+  it('rejects invalid delegation policies and defaults at build time', () => {
+    const model = new FakeModelProvider()
+    const base = () => defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+    const workflowWith = (delegation: Record<string, unknown>) => () => base().workflows({
+      wf: {
+        input: z.string(),
+        output: z.string(),
+        delegation: delegation as never,
+        handler: async (ctx) => ctx.agents.worker(ctx.input)
+      }
+    })
+
+    expectConfigError(workflowWith({ agents: ['ghost'] }), { reason: 'invalid_workflow', path: 'workflows.wf.delegation.agents', id: 'ghost' })
+    expectConfigError(workflowWith({ modelAliases: ['ghost_alias'] }), { reason: 'invalid_workflow', path: 'workflows.wf.delegation.modelAliases', id: 'ghost_alias' })
+    expectConfigError(workflowWith({ agentModelAliases: { ghost: ['fast'] } }), { reason: 'invalid_workflow', path: 'workflows.wf.delegation.agentModelAliases.ghost', id: 'ghost' })
+    expectConfigError(workflowWith({ agentModelAliases: { worker: ['ghost_alias'] } }), { reason: 'invalid_workflow', path: 'workflows.wf.delegation.agentModelAliases.worker', id: 'ghost_alias' })
+    expectConfigError(workflowWith({ maxChildAgentCalls: -1 }), { path: 'workflows.wf.delegation.maxChildAgentCalls' })
+    expectConfigError(workflowWith({ maxChildAgentCalls: 1.5 }), { path: 'workflows.wf.delegation.maxChildAgentCalls' })
+    expectConfigError(workflowWith({ maxParallelChildAgentCalls: 0 }), { path: 'workflows.wf.delegation.maxParallelChildAgentCalls' })
+    expectConfigError(workflowWith({ maxDepth: -1 }), { path: 'workflows.wf.delegation.maxDepth' })
+
+    expectConfigError(() => defineHarness().defaults({ delegation: { maxParallelChildAgentCalls: 0 } }), { path: 'defaults.delegation.maxParallelChildAgentCalls' })
+    expectConfigError(() => defineHarness().defaults({ delegation: { maxDepth: -1 } }), { path: 'defaults.delegation.maxDepth' })
+    expectConfigError(() => defineHarness().defaults({ delegation: { maxChildAgentCalls: -1 } }), { path: 'defaults.delegation.maxChildAgentCalls' })
+  })
+
+  it('aborts in-flight child agents when the handler rejects mid-parallel', async () => {
+    let firstStarted!: () => void
+    const firstCallStarted = new Promise<void>((resolve) => { firstStarted = resolve })
+    let abortedReason: unknown
+    const slow = hangingProvider(() => firstStarted())
+    const slowWithCapture = {
+      ...slow,
+      async object(req: { signal: AbortSignal }) {
+        return (slow.object(req) as Promise<unknown>).catch((reason: unknown) => {
+          abortedReason = reason
+          throw reason
+        })
+      }
+    }
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ slow: { provider: slowWithCapture, model: 'fake-slow', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'slow',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        guarded: {
+          input: z.string(),
+          output: z.array(z.string()),
+          delegation: { maxParallelChildAgentCalls: 1 },
+          handler: async (ctx) => {
+            const first = ctx.agents.worker(`${ctx.input}-1`)
+            await firstCallStarted
+            const second = ctx.agents.worker(`${ctx.input}-2`)
+            return Promise.all([first, second])
+          }
+        },
+        plain: {
+          input: z.string(),
+          output: z.string(),
+          handler: async (ctx) => ctx.input
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-mid-parallel')
+    const events: RunEvent[] = []
+    let failure: unknown
+    try {
+      for await (const event of session.workflows.guarded.stream('work')) {
+        events.push(event)
+      }
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toMatchObject({
+      code: 'DELEGATION_POLICY_ERROR',
+      meta: expect.objectContaining({
+        reason: 'max_parallel_child_agent_calls_exceeded',
+        workflow_id: 'guarded',
+        limit: 1
+      })
+    })
+    // The orphan-prevention contract: the in-flight sibling is aborted and
+    // settled before the run terminalizes, so run.finished is the last event.
+    expect(abortedReason).toBeDefined()
+    expect(events.at(-1)?.type).toBe('run.finished')
+    // The session busy lock was released only after settlement.
+    await expect(session.workflows.plain.prompt('after')).resolves.toBe('after')
+  })
+
+  it('frees parallel slots for sequential child-agent calls', async () => {
+    const model = new FakeModelProvider()
+    model.enqueue({ object: 'one', usage, finishReason: 'stop' })
+    model.enqueue({ object: 'two', usage, finishReason: 'stop' })
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        serial: {
+          input: z.string(),
+          output: z.array(z.string()),
+          delegation: { maxParallelChildAgentCalls: 1 },
+          handler: async (ctx) => [
+            await ctx.agents.worker(`${ctx.input}-1`),
+            await ctx.agents.worker(`${ctx.input}-2`)
+          ]
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-slot-reuse')
+    await expect(session.workflows.serial.prompt('work')).resolves.toEqual(['one', 'two'])
+  })
+
+  it('rejects unknown per-call model aliases without consuming call budget', async () => {
+    const model = new FakeModelProvider()
+    model.enqueue({ object: 'ok', usage, finishReason: 'stop' })
+    let aliasFailure: unknown
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        budgeted: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { maxChildAgentCalls: 1 },
+          handler: async (ctx) => {
+            try {
+              await ctx.agents.worker(ctx.input, { model: 'ghost_alias' as never })
+            } catch (error) {
+              aliasFailure = error
+            }
+            // The failed alias call must not have consumed the single-call budget.
+            return ctx.agents.worker(ctx.input)
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-unknown-alias')
+    await expect(session.workflows.budgeted.prompt('work')).resolves.toBe('ok')
+    expect(aliasFailure).toBeInstanceOf(ValidationError)
+    expect(aliasFailure).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      meta: expect.objectContaining({ where: 'invoke_options', issues: { model: 'ghost_alias' } })
+    })
+    expect(model.requests).toHaveLength(1)
+  })
+
+  it('rejects durable child-agent invoke options', async () => {
+    const model = new FakeModelProvider()
+    let durableFailure: unknown
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          delegation: {},
+          handler: async (ctx) => {
+            try {
+              await ctx.agents.worker(ctx.input, { durable: { runId: 'durable_run' } } as never)
+            } catch (error) {
+              durableFailure = error
+            }
+            return 'done'
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-durable-denied')
+    await expect(session.workflows.wf.prompt('work')).resolves.toBe('done')
+    expect(durableFailure).toBeInstanceOf(ValidationError)
+    expect(durableFailure).toMatchObject({
+      meta: expect.objectContaining({ where: 'invoke_options', issues: { durable: 'agent_run' } })
+    })
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('validates child-agent invoke options', async () => {
+    const model = new FakeModelProvider()
+    let optionFailure: unknown
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          delegation: {},
+          handler: async (ctx) => {
+            try {
+              await ctx.agents.worker(ctx.input, { historyWindow: -1 })
+            } catch (error) {
+              optionFailure = error
+            }
+            return 'done'
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-invalid-options')
+    await expect(session.workflows.wf.prompt('work')).resolves.toBe('done')
+    expect(optionFailure).toBeInstanceOf(ValidationError)
+    expect(optionFailure).toMatchObject({
+      meta: expect.objectContaining({ where: 'invoke_options', issues: { historyWindow: -1 } })
+    })
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('honors per-call timeoutMs for child-agent calls', async () => {
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ slow: { provider: hangingProvider(), model: 'fake-slow', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'slow',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          delegation: {},
+          handler: async (ctx) => {
+            try {
+              await ctx.agents.worker(ctx.input, { timeoutMs: 25 })
+              return 'no-timeout'
+            } catch (error) {
+              return error instanceof OperationTimeoutError ? 'timed-out' : `unexpected:${String((error as { code?: string }).code)}`
+            }
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-child-timeout')
+    await expect(session.workflows.wf.prompt('work')).resolves.toBe('timed-out')
+  })
+
+  it('throws cancellation before policy checks once the run signal aborts', async () => {
+    const model = new FakeModelProvider()
+    const controller = new AbortController()
+    let handlerEntered!: () => void
+    const entered = new Promise<void>((resolve) => { handlerEntered = resolve })
+    let observed: unknown
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        // maxDepth 0 would throw DelegationPolicyError if policy checks ran
+        // first; the cancellation check must win.
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { maxDepth: 0 },
+          handler: async (ctx) => {
+            handlerEntered()
+            await new Promise<void>((resolve) => ctx.signal.addEventListener('abort', () => resolve(), { once: true }))
+            try {
+              await ctx.agents.worker(ctx.input)
+            } catch (error) {
+              observed = error
+            }
+            throw observed
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-post-abort')
+    const prompt = session.workflows.wf.prompt('work', { signal: controller.signal })
+    await entered
+    controller.abort()
+    await expect(prompt).rejects.toBeInstanceOf(OperationCancelledError)
+    await vi.waitFor(() => expect(observed).toBeDefined())
+    expect(observed).toBeInstanceOf(OperationCancelledError)
+    expect(observed).not.toBeInstanceOf(DelegationPolicyError)
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('throws cancellation before policy checks for pre-aborted per-call signals', async () => {
+    const model = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          builtinTools: false,
+          instructions: 'Return the input.'
+        }
+      })
+      .workflows({
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          delegation: { maxDepth: 0 },
+          handler: async (ctx) => {
+            const aborted = new AbortController()
+            aborted.abort(new Error('stop-child'))
+            try {
+              await ctx.agents.worker(ctx.input, { signal: aborted.signal })
+              return 'no-throw'
+            } catch (error) {
+              return error instanceof OperationCancelledError && !(error instanceof DelegationPolicyError) ? 'cancelled' : 'wrong'
+            }
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-pre-aborted-call')
+    await expect(session.workflows.wf.prompt('work')).resolves.toBe('cancelled')
+    expect(model.requests).toHaveLength(0)
+  })
+
+  it('wires ctx.log to the harness logger', async () => {
+    const lines: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = []
+    const logger: Logger = {
+      trace: (msg, fields) => { lines.push({ level: 'trace', msg, ...(fields ? { fields } : {}) }) },
+      debug: (msg, fields) => { lines.push({ level: 'debug', msg, ...(fields ? { fields } : {}) }) },
+      info: (msg, fields) => { lines.push({ level: 'info', msg, ...(fields ? { fields } : {}) }) },
+      warn: (msg, fields) => { lines.push({ level: 'warn', msg, ...(fields ? { fields } : {}) }) },
+      error: (msg, fields) => { lines.push({ level: 'error', msg, ...(fields ? { fields } : {}) }) },
+      fatal: (msg, fields) => { lines.push({ level: 'fatal', msg, ...(fields ? { fields } : {}) }) },
+      child: () => logger
+    }
+    const model = new FakeModelProvider()
+
+    const harness = defineHarness()
+      .logger(logger)
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({})
+      .workflows({
+        wf: {
+          input: z.string(),
+          output: z.string(),
+          handler: async (ctx) => {
+            ctx.log.info('workflow handler log line', { step: 'start' })
+            return ctx.input
+          }
+        }
+      })
+      .build()
+
+    const session = await harness.getSession('s-ctx-log')
+    await expect(session.workflows.wf.prompt('hello')).resolves.toBe('hello')
+    expect(lines).toEqual(expect.arrayContaining([
+      { level: 'info', msg: 'workflow handler log line', fields: { step: 'start' } }
+    ]))
+  })
 })
+
+function expectConfigError(fn: () => unknown, meta: Record<string, unknown>): void {
+  let thrown: unknown
+  try {
+    fn()
+  } catch (error) {
+    thrown = error
+  }
+  expect(thrown).toBeInstanceOf(HarnessConfigError)
+  expect(thrown).toMatchObject({ meta: expect.objectContaining(meta) })
+}

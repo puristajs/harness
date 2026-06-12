@@ -2,11 +2,24 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
-import { expect, it } from 'vitest'
-import { defineHarness, discoverSkills, loadSkills, mountSkillsOnce } from '../src/index.js'
+import { afterEach, expect, it } from 'vitest'
+import { defineHarness, discoverSkills } from '../src/index.js'
+import { loadSkills, mountSkillsOnce } from '../src/skills/index.js'
 import { SkillManifestError } from '../src/errors/index.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+
+const tempDirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
+})
+
+async function makeTempRoot(prefix: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix))
+  tempDirs.push(dir)
+  return dir
+}
 
 async function makeSkill(root: string, name: string, frontmatter?: string, body = 'Use this skill for tests.') {
   const dir = path.join(root, name)
@@ -16,7 +29,7 @@ async function makeSkill(root: string, name: string, frontmatter?: string, body 
 }
 
 it('parses strict SKILL.md YAML frontmatter and preserves optional fields', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'demo-skill', `---
 name: demo-skill
 description: |
@@ -44,7 +57,7 @@ body`)
 })
 
 it('rejects invalid strict frontmatter without exposing skill body content', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'bad-skill', `---
 name: Bad Skill
 description: Use this invalid skill when testing failures.
@@ -56,7 +69,7 @@ SECRET_SKILL_BODY`)
 })
 
 it('supports lenient scalar repair and reports diagnostics', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'lenient-skill', `---
 name: lenient-skill
 description: Use this skill when: scalar values contain colons
@@ -69,7 +82,7 @@ body`)
 })
 
 it('discovers trusted project skills and skips untrusted project roots', async () => {
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'project-skills-'))
+  const projectRoot = await makeTempRoot('project-skills-')
   const dir = await makeSkill(path.join(projectRoot, '.agents', 'skills'), 'incident-skill')
 
   const untrusted = await discoverSkills({ projectRoot, includeProjectAgentsDir: true })
@@ -81,7 +94,7 @@ it('discovers trusted project skills and skips untrusted project roots', async (
 })
 
 it('reports discovery collisions without merging skill directories', async () => {
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'project-skills-'))
+  const projectRoot = await makeTempRoot('project-skills-')
   await makeSkill(path.join(projectRoot, '.agents', 'skills'), 'shared-skill')
   await makeSkill(path.join(projectRoot, '.codex', 'skills'), 'shared-skill')
 
@@ -98,7 +111,7 @@ it('reports discovery collisions without merging skill directories', async () =>
 })
 
 it('mounts skill directories to /skills/<name> once per session', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'example-skill')
   await fs.mkdir(path.join(dir, 'scripts'))
   await fs.writeFile(path.join(dir, 'scripts', 'run.sh'), 'echo hi')
@@ -115,7 +128,7 @@ it('mounts skill directories to /skills/<name> once per session', async () => {
 })
 
 it('runs a direct harness agent through compact catalog and read-tool activation', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'answer-skill', undefined, 'Always answer with "skill used".')
   const model = new FakeModelProvider()
   model.enqueue({
@@ -140,7 +153,7 @@ it('runs a direct harness agent through compact catalog and read-tool activation
 })
 
 it('fails before model IO when a default-loop skill agent cannot use read', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skills-'))
+  const root = await makeTempRoot('skills-')
   const dir = await makeSkill(root, 'read-required')
   const model = new FakeModelProvider()
 

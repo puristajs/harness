@@ -67,6 +67,32 @@ export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): Dura
 export function localDirectoryWorkspaceStore(options: LocalDirectoryWorkspaceStoreOptions): DurableWorkspaceStore
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): Sandbox
 export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> }
+export class SqliteHarnessStorage    // shared SQLite backend behind the sqlite* factories
+
+// Durable runtime (in-memory reference + durable workflow context)
+export function inMemoryDurableRuntime(options?: InMemoryDurableRuntimeOptions): DurableRuntime
+export function createDurableWorkflowContext(options: DurableWorkflowContextOptions): DurableWorkflowContext
+export function isTerminalRunStatus(status: DurableRunStatus): boolean
+export function isResumeBlockingRunStatus(status: DurableRunStatus): boolean
+export class DurableStepError extends Error {}
+export class DurableRunLeaseError extends Error {}
+export class DurableTerminalRunError extends Error {}
+
+// Durable workspace in-memory reference store (also re-exported from /testing)
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
+
+// Shared model-adapter helpers (consumed by first-party provider packages)
+export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number): TokenUsage
+export function redactProviderContent(body: unknown): unknown
+export function malformedResponseError(ctx: AdapterCallContext, message: string, body: unknown, cause: unknown): ModelError
+export function parseProviderJson(content: string, ctx: AdapterCallContext, message: string): JsonValue
+export function safePartialJson(content: string): JsonValue
+export function withoutObjectTool(calls: ToolCallSpec[] | undefined): ToolCallSpec[] | undefined
+export function createStreamToolCallState(): StreamToolCallState
+export function accumulateStreamToolCallDeltas(state: StreamToolCallState, deltas: unknown[]): void
+export function finalizeStreamToolCalls(state: StreamToolCallState, ctx: AdapterCallContext, malformedMessage: string): ToolCallSpec[]
+export function sanitizeProviderMessage(message: string): string
 
 // Errors (every class from 15-error-catalog)
 export class HarnessError extends Error { /* see 03-foundation */ }
@@ -100,6 +126,7 @@ export class InternalError extends HarnessError {}
 // Utilities
 export function ulid(): string                                 // monotonic ULID
 export function isHarnessError(value: unknown): value is HarnessError
+export function serializeError(error: unknown): SerializedError
 export const HARNESS_VERSION: string                            // semver of the package
 ```
 
@@ -118,7 +145,12 @@ export type BuilderState
 // Harness + handle types
 export interface Harness<S>
 export interface Session<S>
+export interface AgentInvoker<S, K>
 export interface WorkflowInvoker<S, K>
+export type AgentInput<S, K>
+export type AgentOutput<S, K>
+export type WorkflowInput<S, K>
+export type WorkflowOutput<S, K>
 export interface InvokeOptions
 export interface DurableInvokeOptions
 
@@ -140,8 +172,10 @@ export interface DiscoveredSkills
 export function discoverSkills(options?: DiscoverSkillsOptions): Promise<DiscoveredSkills>
 export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
+export interface AgentDefinitionHelpers<S>
 export type WorkflowsConfig<S>
 export interface WorkflowDefinition<S, I, O>
+export interface WorkflowDefinitionHelpers<S>
 export interface WorkflowDelegationPolicy<S>
 export type WorkflowAgentInvokeOptions<S, K>
 
@@ -155,6 +189,8 @@ export interface AgentContextMinimal<S, I>
 export interface WorkflowContext<S, I, O>
 export interface ToolHandlerContext
 export interface Metrics
+export type SpanAttrs
+export interface TelemetryShim
 export interface SessionMemory
 export interface MemoryFacade
 export interface ContextCheckpoints
@@ -187,6 +223,10 @@ export interface HarnessAdapterContext
 export interface HarnessContextConfigurable
 export type ModelCapability
 export type ModelHandles
+export type ModelHandle
+export interface ModelInvokeContext
+export interface AdapterCallContext
+export type StreamToolCallState
 export interface ModelProviderInfo
 export interface ModelFeatureSet
 export type ContentPartKind
@@ -234,6 +274,7 @@ export interface MemorySearchResult
 export interface DurableWorkspaceStore
 export interface DurableWorkspaceStoreInfo
 export interface DurableWorkspacePolicy
+export type WorkspaceLifecycleState
 export interface WorkspaceStartOptions
 export interface WorkspaceHandle
 export interface WorkspacePauseOptions
@@ -252,6 +293,9 @@ export interface DurableReplayCheckpoint
 export interface LocalDurableExecutionOptions
 export interface LocalHostExecPolicy
 export interface LocalDurableExecution
+export type LocalDurableSandbox
+export type LocalFilesOnlySandboxCapabilities
+export type LocalExecSandboxCapabilities
 export interface SqliteDurableRuntimeOptions
 export interface SqliteStateStoreOptions
 export interface LocalDirectoryWorkspaceStoreOptions
@@ -262,6 +306,23 @@ export interface ContextCheckpoint
 export interface ContextCheckpointQuery
 export interface ContextCheckpointRef
 export interface SqliteContextCheckpointStoreOptions
+
+// Durable runtime
+export interface DurableRuntime
+export interface DurableRunLease
+export interface DurableRunStart
+export type DurableRunStatus
+export type DurableActiveRunStatus
+export type DurableTerminalRunStatus
+export interface RunCheckpoint
+export interface DurableStepCommit
+export interface DurableWorkflowContext
+export interface DurableWorkflowContextOptions
+export interface InMemoryDurableRuntimeOptions
+
+// Feedback
+export interface FeedbackRecord
+export type FeedbackTarget
 
 // Foundation
 export interface Logger
@@ -347,7 +408,9 @@ interface HarnessBuilder<S extends BuilderState> {
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
-  // Domain — each must be called exactly once before .build(), in this order:
+  // Domain — `.models()` must be called exactly once before `.build()`;
+  // `.tools()`, `.skills()`, `.agents()`, and `.workflows()` are optional and
+  // may each be called at most once, in this order:
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
   tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
@@ -362,7 +425,7 @@ interface HarnessBuilder<S extends BuilderState> {
 }
 ```
 
-The builder type omits already-set or out-of-order methods so that incorrect chains fail at the type level. Behavioral ordering rules and validation are described in [02-harness-config](./02-harness-config.md).
+The builder type omits already-set or out-of-order methods so that incorrect chains fail at the type level. At runtime, `.build()` fails with `HarnessConfigError{reason:'missing_models'}` when `.models()` was never called; the other domain methods may be omitted. Behavioral ordering rules and validation are described in [02-harness-config](./02-harness-config.md).
 
 ### `Harness<S>` and `Session<S>` (locked)
 
@@ -778,12 +841,21 @@ Locked canonical → alias map (the harness normalizes alias dispatch to canonic
 ```ts
 // Fakes
 export class FakeModelProvider implements ModelProvider     // configurable scripted responses
-export class FakeStateStore extends InMemoryStateStore       // exposes inspection helpers
+export class FakeStateStore extends InMemoryStateStore       // records invoked operations (`ops`, `opCount`, `resetOps`)
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
-export class FakeLogger implements Logger                    // captures log records in memory
+export class FakeLogger implements Logger                    // captures log records in memory (`records`)
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
+export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore   // also a main-entry export
+export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore        // also a main-entry export
+export function fakeCapabilityAdapter(
+  capabilities: readonly AdapterCapability[],
+  opts?: { id?: string }
+): FakeCapabilityAdapter
+export function fakeSnapshotSandbox(): Sandbox               // snapshot/resume/hibernate-capable in-memory sandbox
+export type FakeStateStoreOp
+export interface FakeSandboxOptions
+export interface FakeLogRecord
+export interface FakeCapabilityAdapter
 
 // Contract suites — each is a Vitest test factory
 export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
@@ -803,10 +875,13 @@ export function memoryAdapterContract(
 export function durableWorkspaceStoreContract(
   make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
 ): void
+export function adapterCapabilitiesContract(make: () => AdapterCapabilities | Promise<AdapterCapabilities>): void
+export function sandboxSnapshotContract(make: () => Sandbox | Promise<Sandbox>): void
 
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness() returning a fresh builder
 export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
+export function createInMemoryFeedbackRecorder(): { record(...): FeedbackRecord; list(target?: FeedbackTarget): readonly FeedbackRecord[]; clear(): void }
 
 // AI eval test helpers
 export type DeterministicScorerDefinition
@@ -840,11 +915,13 @@ export interface ScorerResult {
 ```
 
 The fake adapters and contract suites are only reachable via
-`@purista/harness/testing`. `evaluateDeterministicScorer` and its deterministic
-scorer types are main-entry runtime exports and are also re-exported by the
-testing subpath for test ergonomics.
+`@purista/harness/testing`, with two deliberate overlaps:
+`evaluateDeterministicScorer` (plus its deterministic scorer types) and
+`InMemoryDurableWorkspaceStore`/`inMemoryDurableWorkspaceStore` are main-entry
+exports re-exported by the testing subpath for ergonomics.
 Implementation agents must add a CI test that verifies the actual exports of
-each entry against the lists above.
+each entry against the lists above
+(`packages/harness/test/public-api.test.ts`).
 
 ## `@purista/harness-openai` package
 

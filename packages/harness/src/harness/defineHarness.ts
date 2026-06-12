@@ -461,6 +461,8 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   input: I
   agents: { [K in keyof NonNullable<S['agents']>]: (input: AgentInput<S, K>, opts?: WorkflowAgentInvokeOptions<S, K>) => Promise<AgentOutput<S, K>> }
   models: ModelHandles<S>
+  /** Harness logger scoped for workflow handler code (spec 10 `WorkflowContext`). */
+  log: Logger
   signal: AbortSignal
   runId: string
   sessionId: string
@@ -585,9 +587,9 @@ export interface WorkflowDelegationPolicy<S extends BuilderState = BuilderState>
   maxParallelChildAgentCalls?: number
   /** Maximum local delegation depth. Overrides `defaults.delegation.maxDepth`. */
   maxDepth?: number
-  /** Model aliases allowed for every child-agent call in this workflow. */
+  /** Model aliases allowed for every child-agent call in this workflow, including calls running on the agent's default `model`. */
   modelAliases?: readonly (keyof NonNullable<S['models']> & string)[]
-  /** Per-child-agent model alias allowlists. These override `modelAliases` for the named agent. */
+  /** Per-child-agent model alias allowlists. These replace `modelAliases` for the named agent. */
   agentModelAliases?: Partial<Record<keyof NonNullable<S['agents']> & string, readonly (keyof NonNullable<S['models']> & string)[]>>
 }
 
@@ -896,6 +898,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
     }
     this.validateToolSkillNamespace()
+    // Validated at build time (not in `.agents(...)`) because models may be
+    // declared later in the builder chain.
+    this.validateAgentModelAndToolReferences(models)
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
@@ -981,6 +986,28 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
           skill_id: id,
           source: 'skill'
         })
+      }
+    }
+  }
+
+  private validateAgentModelAndToolReferences(models: ModelsConfig): void {
+    const configuredTools = new Set(Object.keys(this.configured.tools ?? {}))
+    for (const [agentId, agent] of Object.entries(this.configured.agents ?? {})) {
+      if (!(agent.model in models)) {
+        throw new HarnessConfigError('Agent references an unknown model alias.', {
+          reason: 'invalid_agent',
+          path: `agents.${agentId}.model`,
+          id: agent.model
+        })
+      }
+      for (const toolId of agent.tools ?? []) {
+        if (!configuredTools.has(toolId)) {
+          throw new HarnessConfigError('Agent references an unknown tool.', {
+            reason: 'invalid_agent',
+            path: `agents.${agentId}.tools`,
+            id: toolId
+          })
+        }
       }
     }
   }

@@ -18,9 +18,11 @@ and adapter acceptance criteria. This spec extends [06-models](./06-models.md),
   adapters MUST disable provider SDK retries by default where the official SDK
   exposes a stable option. Users may still pass explicit SDK retry options as
   provider-specific escape hatches.
-- POR-04: Long provider retry instructions are classified as deferred retry
-  metadata and surfaced as typed model errors unless a future scheduler/durable
-  integration explicitly handles them.
+- POR-04: Long provider retry instructions never sleep inside an active
+  invocation. With the default `longRetry: 'error'` they fail immediately with
+  `retryKind: 'none'`; with `longRetry: 'defer'` they are classified as
+  deferred retry metadata and surfaced as typed model errors unless a future
+  scheduler/durable integration explicitly handles them.
 - POR-05: Streaming retries are allowed only before the first user-visible
   stream chunk has been yielded. After a delta/tool/partial chunk is emitted,
   failures MUST surface as errors without replaying hidden duplicate output.
@@ -110,6 +112,12 @@ Eligible active retry failures:
 - HTTP 429 / `ModelError{reason:'rate_limited'}`
 - HTTP 5xx / `ModelError{reason:'provider_unavailable'}`
 
+Base-enforced timeouts MUST normalize as `OperationTimeoutError{scope:'model'}`
+even when the provider SDK surfaces the timeout abort as a generic abort/
+cancellation error. This applies to streaming as well, so a stream timeout
+before the first chunk stays retry-eligible. Arming the timeout MUST NOT leave
+an unhandled promise rejection when the operation outlives the timeout.
+
 Non-retry failures include validation, permissions, unsupported capabilities,
 auth/4xx request errors other than 408/409/429, context length errors,
 refusal/content-filter outcomes, malformed structured JSON after a provider
@@ -127,8 +135,13 @@ The harness retries actively only when all are true:
 - `delayMs <= maxActiveDelayMs`
 - `elapsedMs + delayMs <= maxActiveElapsedMs`
 
-If a provider-supplied retry delay exceeds the active budget and is not above
-`maxDeferredDelayMs`, the final `ModelError` MUST include:
+When the next delay exceeds the active budget, the call fails without
+sleeping. `longRetry` selects the failure classification:
+
+- `longRetry: 'error'` (default): the final `ModelError` uses
+  `retryKind: 'none'`.
+- `longRetry: 'defer'`: when the delay is provider-supplied and not above
+  `maxDeferredDelayMs`, the final `ModelError` MUST include:
 
 ```ts
 {
@@ -140,8 +153,12 @@ If a provider-supplied retry delay exceeds the active budget and is not above
 }
 ```
 
-If no provider delay exists or the delay exceeds `maxDeferredDelayMs`, the final
-error uses `retryKind:'none'`.
+With `longRetry: 'defer'`, if no provider delay exists or the delay exceeds
+`maxDeferredDelayMs`, the final error uses `retryKind:'none'`.
+
+A final error's `retryAfterMs` always carries the provider-supplied delay of a
+deferred classification. The harness MUST NOT report synthetic backoff delays
+as `retryAfterMs`.
 
 ## Provider SDK boundary
 
@@ -152,9 +169,9 @@ but the harness owns retry budgets. Therefore:
   explicitly passes a different SDK option.
 - Bedrock sets SDK `maxAttempts: 1` unless the user explicitly passes AWS retry
   options.
-- Azure passes official REST client options through; provider retry behavior
-  that cannot be disabled remains a transport detail, but final failures still
-  normalize through `BaseModelProvider`.
+- Azure sets SDK pipeline `retryOptions: { maxRetries: 0 }` unless the user
+  explicitly passes different `retryOptions`; final failures still normalize
+  through `BaseModelProvider`.
 
 This boundary prevents hidden long sleeps from SDK `Retry-After` handling while
 preserving provider SDK support for auth, transport, request typing, and user
@@ -188,7 +205,14 @@ Adapters MUST map at least:
 | Bedrock Converse | `model_context_window_exceeded` | `context_limit` |
 
 Unknown successful provider finish/status values map to `error` and preserve
-the raw value in `outcome.providerFinishReason` when available.
+the raw value in `outcome.providerFinishReason` when available. Adapters MUST
+omit `outcome.providerFinishReason` when the provider never sent a finish
+reason; fabricated placeholder values are not allowed.
+
+OpenAI Responses results with `status: 'failed'` (or an `error` payload on a
+non-streaming result) are genuine provider failures and MUST surface as a
+normalized `ModelError` — not as a `finish` outcome — so base retry and error
+normalization apply. `incomplete` remains a finish outcome.
 
 ## Error and header metadata
 
@@ -207,8 +231,10 @@ Sensitive headers such as `authorization`, `proxy-authorization`, `api-key`,
 `x-api-key`, `openai-api-key`, and `*-api-key` MUST be omitted entirely.
 
 `Retry-After` parsing supports seconds and HTTP dates. `retry-after-ms` is
-milliseconds. Rate-limit parsing SHOULD recognize common OpenAI/Azure and
-Anthropic request-limit headers.
+milliseconds. Rate-limit parsing SHOULD recognize the OpenAI/Azure
+`x-ratelimit-*` and Anthropic `anthropic-ratelimit-*` request and token header
+families; when multiple buckets are present, the exhausted bucket
+(`remaining === 0`) determines `rateLimit.scope`.
 
 ## Observability
 
@@ -226,9 +252,14 @@ No model content or sensitive provider headers may be emitted.
 
 - Active retry succeeds after a short transient 5xx/429/network failure.
 - `retry:false` throws after one attempt.
-- Long provider `Retry-After` produces a deferred retry `ModelError` without
-  sleeping.
-- Streaming retries occur only before the first yielded chunk.
+- Long provider `Retry-After` never sleeps: the default `longRetry: 'error'`
+  fails immediately with `retryKind:'none'`; `longRetry: 'defer'` produces a
+  deferred retry `ModelError` carrying the provider-supplied `retryAfterMs`.
+- With `longRetry: 'defer'`, a provider delay above `maxDeferredDelayMs`
+  produces `retryKind:'none'`.
+- Streaming retries occur only before the first yielded chunk; a base-enforced
+  stream timeout normalizes as `OperationTimeoutError{scope:'model'}`.
+- Abort during a backoff sleep surfaces `OperationCancelledError`.
 - OpenAI, Anthropic, Bedrock, and Azure adapters map all tabled finish reasons.
 - Sanitized errors and telemetry include retry metadata and omit sensitive
   headers/content.

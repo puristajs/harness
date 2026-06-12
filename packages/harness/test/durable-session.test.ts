@@ -1,3 +1,6 @@
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 import {
@@ -5,11 +8,28 @@ import {
   inMemoryDurableRuntime,
   inMemoryDurableWorkspaceStore,
   inMemorySandbox,
+  localDirectoryWorkspaceStore,
   type DurableRuntime,
   type DurableWorkspaceStore
 } from '../src/index.js'
+import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
+import type { Logger } from '../src/logger/logger.js'
+import { beginDurableWorkflow } from '../src/runtime/sessionDurable.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { HarnessConfigError, ValidationError } from '../src/errors/index.js'
+import { HarnessConfigError, ValidationError, WorkspaceError } from '../src/errors/index.js'
+
+function noopLogger(): Logger {
+  const logger: Logger = {
+    trace: () => undefined,
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+    fatal: () => undefined,
+    child: () => logger
+  }
+  return logger
+}
 
 function buildHarness(opts: { runtime?: DurableRuntime; workspaceStore?: DurableWorkspaceStore; effects: Record<string, number> } ) {
   const model = new FakeModelProvider()
@@ -112,6 +132,71 @@ describe('durable workflow auto-wiring', () => {
     const session = await harness.getSession('bad-run-id')
 
     await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'bad run id!' } })).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('releases the lease when the workspace phase fails after startRun', async () => {
+    const runtime = inMemoryDurableRuntime()
+    const failingStore = inMemoryDurableWorkspaceStore()
+    const originalStart = failingStore.startWorkspace.bind(failingStore)
+    failingStore.startWorkspace = async () => {
+      throw new WorkspaceError('Workspace backend down.', { reason: 'backend_failure' })
+    }
+
+    await expect(beginDurableWorkflow({
+      runtime,
+      workspaceStore: failingStore,
+      durable: { runId: 'run-lease-leak' },
+      defaultWorkerId: 'worker-1',
+      sessionId: 'session-lease-leak',
+      workflowId: 'wf',
+      input: { ok: true },
+      signal: new AbortController().signal,
+      logger: noopLogger(),
+      harnessName: 'test'
+    })).rejects.toMatchObject({ code: 'WORKSPACE_ERROR' })
+
+    // The lease must have been released: another worker can acquire the run
+    // immediately instead of waiting for the lease TTL.
+    failingStore.startWorkspace = originalStart
+    const binding = await beginDurableWorkflow({
+      runtime,
+      workspaceStore: failingStore,
+      durable: { runId: 'run-lease-leak' },
+      defaultWorkerId: 'worker-2',
+      sessionId: 'session-lease-leak',
+      workflowId: 'wf',
+      input: { ok: true },
+      signal: new AbortController().signal,
+      logger: noopLogger(),
+      harnessName: 'test'
+    })
+    expect(binding.runId).toBe('run-lease-leak')
+    await binding.dispose()
+  })
+
+  it('unbinds the local workspace coordinator when the durable binding is disposed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'purista-durable-binding-'))
+    const coordinator = createLocalWorkspaceCoordinator()
+    const workspaceStore = localDirectoryWorkspaceStore({ root, coordinator })
+    const runtime = inMemoryDurableRuntime()
+
+    const binding = await beginDurableWorkflow({
+      runtime,
+      workspaceStore,
+      durable: { runId: 'run-binding' },
+      defaultWorkerId: 'worker-1',
+      sessionId: 'session-binding',
+      workflowId: 'wf',
+      input: { ok: true },
+      signal: new AbortController().signal,
+      logger: noopLogger(),
+      harnessName: 'test'
+    })
+    expect(coordinator.get('run-binding', 'session-binding')).toBeDefined()
+
+    await binding.finishSuccess({ done: true })
+    await binding.dispose()
+    expect(coordinator.get('run-binding', 'session-binding')).toBeUndefined()
   })
 
   it('rejects durable execution on agent runs', async () => {

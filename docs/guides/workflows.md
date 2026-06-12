@@ -137,10 +137,19 @@ Settings:
   opt-in: `8`.
 - `maxDepth`: local delegation depth. Default after opt-in: `1`; `0` disables
   child-agent calls.
-- `modelAliases`: model aliases allowed for all child-agent calls in this
-  workflow.
-- `agentModelAliases`: per-agent model alias allowlists. These override
+- `modelAliases`: model aliases allowed for every child-agent call in this
+  workflow — including calls that run on the agent's default `model`. An agent
+  whose selected alias (default or per-call override) is outside the list fails
+  with `DelegationPolicyError`.
+- `agentModelAliases`: per-agent model alias allowlists. These replace
   `modelAliases` for the named agent.
+
+Per-call options on `ctx.agents.<id>(input, opts)` are validated like session
+invoke options: `timeoutMs` bounds the single child-agent call, `signal`
+composes with the workflow run signal, and invalid values (negative
+`historyWindow`/`timeoutMs`, or `durable`, which only applies to workflow runs)
+throw `ValidationError`. After the run signal aborts, starting a child-agent
+call throws `OperationCancelledError` before any policy check or budget use.
 
 ## Direct Model Work Inside Workflows
 
@@ -156,6 +165,10 @@ const embedding = await ctx.models.retrieval.embed(
 
 Storage, retrieval policy, authorization, and writes remain application code.
 The harness owns provider calls, cancellation, validation, and telemetry.
+
+Use `ctx.log` for handler-level logging; it is the harness logger, so workflow
+log lines carry the configured logger fields and follow the redaction rules.
+Never log prompts, model outputs, or other content payloads.
 
 ## Durable Steps
 

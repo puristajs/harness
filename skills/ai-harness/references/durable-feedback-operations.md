@@ -93,7 +93,14 @@ const harness = defineHarness()
 
 The local bundle uses built-in Node/Bun SQLite for state/runtime/context
 checkpoints and a host directory for workspace checkpoints. Host exec is off by
-default; this mode is durable local persistence, not a hardened sandbox.
+default; this mode is durable local persistence, not a hardened sandbox. When
+exec is enabled, commands run without a shell (tokenized argv), unquoted shell
+metacharacters are rejected under an `allowCommands` allow-list, output capture
+is capped at 10 MiB per stream, and the timeout falls back to the harness
+`toolTimeoutMs`. Files-only mode advertises
+`['sandbox.fs', 'sandbox.persistent_fs']`; exec adds `sandbox.exec`. Leases are
+renewed on every owner checkpoint, so runs longer than `leaseTtlMs` keep their
+lease.
 
 ```ts
 import { inMemoryDurableRuntime } from '@purista/harness'
@@ -118,8 +125,8 @@ Durable runtime concepts:
 
 Errors:
 - `DurableRunLeaseError` when a run/session is already owned or lease metadata does not match
-- `DurableTerminalRunError` when attempting to resume a terminal run
-- `DurableStepError` when a durable step fails
+- `DurableTerminalRunError` when attempting to resume a `succeeded` or `cancelled` run — a `failed` run is recorded terminal with its sanitized error but stays resumable by a retry with the same `runId`
+- `DurableStepError` when a durable step fails or a checkpoint payload is not JSON-serializable
 
 ## Durable Workflow Context
 The runtime exports `createDurableWorkflowContext` and step helpers for checkpointed code paths. Keep durable checkpoints at deterministic boundaries; do not treat live streams as recovery state.

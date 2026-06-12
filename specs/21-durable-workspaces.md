@@ -529,14 +529,17 @@ New error classes are added to [15-error-catalog](./15-error-catalog.md).
 
 ## 15. Observability
 
-Spans are added to [14-otel-conventions](./14-otel-conventions.md):
+Spans are added to [14-otel-conventions](./14-otel-conventions.md). All six
+workspace operations use the `harness.workspace.{operation}` span name (the
+`workspace_store.*` prefix is used only for the metric and attribute names
+listed below, exactly as spec 14 defines them):
 
 - `harness.workspace.start`
 - `harness.workspace.pause`
-- `harness.workspace_store.resume`
-- `harness.workspace_store.abort`
-- `harness.workspace_store.cleanup`
-- `harness.workspace_store.inspect`
+- `harness.workspace.resume`
+- `harness.workspace.abort`
+- `harness.workspace.cleanup`
+- `harness.workspace.inspect`
 
 Metrics:
 
@@ -553,6 +556,10 @@ Allowed span/log/metric attributes:
 - `harness.workspace.state`
 - `harness.workspace.ref_hash`
 - `harness.workspace.checkpoint_ref_hash`
+- `harness.workspace.persistent` (boolean; store survives process exit)
+- `harness.workspace.attempt` (start/pause/resume)
+- `harness.workspace.sequence` (pause only)
+- `harness.workflow.step_id` (pause only)
 - `harness.workspace_store.checkpoint_ref_hash`
 - `harness.workspace_store.cleanup.reason`
 - `harness.workspace_store.quota`

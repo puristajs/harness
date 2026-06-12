@@ -16,23 +16,30 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
   let connected: Promise<{ client: SdkClient; transport: SdkTransport }> | undefined
 
   async function connect(options?: { signal?: AbortSignal; timeoutMs?: number }) {
-    connected ??= (async () => {
-      const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([
-        import('@modelcontextprotocol/sdk/client/index.js'),
-        import('@modelcontextprotocol/sdk/client/streamableHttp.js')
-      ])
-      const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-        requestInit: { headers: buildHeaders(config.headers, config.auth) }
+    if (!connected) {
+      const promise = (async () => {
+        const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([
+          import('@modelcontextprotocol/sdk/client/index.js'),
+          import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+        ])
+        const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+          requestInit: { headers: buildHeaders(config.headers, config.auth) }
+        })
+        const client = new Client({ name: `purista-harness-${config.localToolId}`, version: '0.0.0' }) as SdkClient
+        try {
+          await client.connect(transport, toSdkOptions(options))
+        } catch (error) {
+          throw mapHttpError(config, 'connect', error)
+        }
+        return { client, transport }
+      })()
+      // Never cache a rejected connection (import or connect failure); the
+      // next call must retry from scratch.
+      void promise.catch(() => {
+        if (connected === promise) connected = undefined
       })
-      const client = new Client({ name: `purista-harness-${config.localToolId}`, version: '0.0.0' }) as SdkClient
-      try {
-        await client.connect(transport, toSdkOptions(options))
-      } catch (error) {
-        connected = undefined
-        throw mapHttpError(config, 'connect', error)
-      }
-      return { client, transport }
-    })()
+      connected = promise
+    }
     return connected
   }
 
@@ -62,8 +69,9 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
       if (!connected) return
       const current = await connected.catch(() => undefined)
       connected = undefined
-      await current?.transport.close()
-      await current?.client.close()
+      if (!current) return
+      // Client first per SDK guidance; close both even when one throws.
+      await Promise.allSettled([current.client.close(), current.transport.close()])
     }
   }
 }
@@ -94,7 +102,8 @@ function mapHttpError(config: ResolvedMcpHttpTool, phase: 'connect' | 'list' | '
   return new McpProtocolError('MCP HTTP transport failed.', { tool_id: config.localToolId, transport: 'http', phase }, error)
 }
 
-function statusFromError(error: unknown): number | undefined {
+/** Exported for tests. Extracts an HTTP status from structured fields or explicit status phrasing only. */
+export function statusFromError(error: unknown): number | undefined {
   if (typeof error === 'object' && error !== null) {
     const maybe = error as { status?: unknown; code?: unknown; cause?: unknown }
     if (typeof maybe.status === 'number') return maybe.status
@@ -104,7 +113,9 @@ function statusFromError(error: unknown): number | undefined {
   }
   if (error instanceof Error) {
     if (/unauthorized/i.test(error.message)) return 401
-    const match = /\b(401|403|4\d\d|5\d\d)\b/.exec(error.message)
+    // Only trust explicit "HTTP 503" / "status: 503" phrasing — a bare number
+    // in a message (e.g. "took 401ms") must not classify as an HTTP status.
+    const match = /HTTP (\d{3})/.exec(error.message) ?? /status[: ] ?(\d{3})/i.exec(error.message)
     if (match?.[1]) return Number(match[1])
   }
   return undefined

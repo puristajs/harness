@@ -1,4 +1,5 @@
 import type {
+  AdapterCallContext,
   BaseModelProviderOptions,
   EmbeddingRequest,
   EmbeddingResponse,
@@ -15,7 +16,18 @@ import type {
   TokenUsage,
   JsonValue
 } from '@purista/harness'
-import { BaseModelProvider, ModelError } from '@purista/harness'
+import {
+  BaseModelProvider,
+  ModelError,
+  accumulateStreamToolCallDeltas,
+  createStreamToolCallState,
+  finalizeStreamToolCalls,
+  malformedResponseError,
+  parseProviderJson,
+  safePartialJson,
+  sanitizeProviderMessage,
+  toTokenUsage
+} from '@purista/harness'
 import OpenAI, { type ClientOptions } from 'openai'
 
 /**
@@ -104,6 +116,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
         const response = await createResponse(this.client, req, false)
+        throwIfResponsesFailure(response, req, 'text')
         return mapResponsesTextResponse(response, req)
       }
       const response = await createChatCompletion(this.client, req, false, this.getLogger())
@@ -119,13 +132,13 @@ class OpenAiModelProvider extends BaseModelProvider {
       const stream = await createChatCompletion(this.client, req, true, this.getLogger())
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
-      let providerFinishReason: unknown = 'stop'
-      const toolState: StreamToolCallState = new Map()
+      let providerFinishReason: unknown
+      const toolState = createStreamToolCallState()
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
         // The usage chunk arrives with an empty choices array, so read it first.
         if (chunk.usage) {
-          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+          usage = toTokenUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
         }
         const choice = chunk.choices?.[0]
         if (!choice) continue
@@ -133,14 +146,14 @@ class OpenAiModelProvider extends BaseModelProvider {
           yield { kind: 'delta', text: choice.delta.content }
         }
         if (choice.delta?.tool_calls) {
-          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
+          accumulateStreamToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
           providerFinishReason = choice.finish_reason
           finishReason = toFinishReason(providerFinishReason)
         }
       }
-      for (const call of finalizeStreamToolCalls(toolState, req, 'textStream')) {
+      for (const call of finalizeStreamToolCalls(toolState, callContext(req, 'textStream'), MALFORMED_TOOL_ARGS_MESSAGE)) {
         yield { kind: 'tool_call', call }
       }
       yield { kind: 'finish', usage, finishReason, outcome: toOutcome(finishReason, providerFinishReason) }
@@ -150,6 +163,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
         const response = await createResponse(this.client, req, false)
+        throwIfResponsesFailure(response, req, 'object')
         const content = extractResponsesText(response)
         const toolCalls = extractResponsesToolCalls(response, req, 'object')
         const providerItems = toResponsesProviderItems(response.output, toolCalls)
@@ -169,7 +183,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       return {
         object: parseJson(textContent, req, 'object') as T,
         ...(toolCalls ? { toolCalls } : {}),
-        usage: toUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
+        usage: toTokenUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
         finishReason: toFinishReason(response.choices[0]?.finish_reason),
         outcome: toOutcome(toFinishReason(response.choices[0]?.finish_reason), response.choices[0]?.finish_reason),
         raw: response
@@ -181,8 +195,8 @@ class OpenAiModelProvider extends BaseModelProvider {
       let partial = ''
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
-      let providerFinishReason: unknown = 'stop'
-      const toolState: StreamToolCallState = new Map()
+      let providerFinishReason: unknown
+      const toolState = createStreamToolCallState()
       if (this.options.api === 'responses') {
         yield * streamResponsesObject<T>(this.client, req)
         return
@@ -191,7 +205,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
         if (chunk.usage) {
-          usage = toUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+          usage = toTokenUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
         }
         const choice = chunk.choices?.[0]
         if (!choice) continue
@@ -200,14 +214,14 @@ class OpenAiModelProvider extends BaseModelProvider {
           yield { kind: 'partial', partial: safePartialJson(partial) }
         }
         if (choice.delta?.tool_calls) {
-          accumulateToolCallDeltas(toolState, choice.delta.tool_calls)
+          accumulateStreamToolCallDeltas(toolState, choice.delta.tool_calls)
         }
         if (choice.finish_reason) {
           providerFinishReason = choice.finish_reason
           finishReason = toFinishReason(providerFinishReason)
         }
       }
-      for (const call of finalizeStreamToolCalls(toolState, req, 'objectStream')) {
+      for (const call of finalizeStreamToolCalls(toolState, callContext(req, 'objectStream'), MALFORMED_TOOL_ARGS_MESSAGE)) {
         yield { kind: 'tool_call', call }
       }
       const object = parseJson(partial || '{}', req, 'objectStream') as T
@@ -229,7 +243,7 @@ class OpenAiModelProvider extends BaseModelProvider {
 
     return {
       embeddings: response.data.map((item: any) => ({ index: item.index, vector: item.embedding })),
-      usage: toUsage(response.usage?.prompt_tokens, 0),
+      usage: toTokenUsage(response.usage?.prompt_tokens, 0),
       raw: response
     }
   }
@@ -262,7 +276,7 @@ function mapChatTextResponse(response: any, req: TextRequest): TextResponse {
   return {
     content: response.choices[0]?.message?.content ?? '',
     ...(toolCalls ? { toolCalls } : {}),
-    usage: toUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
+    usage: toTokenUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
     finishReason,
     outcome: toOutcome(finishReason, providerFinishReason),
     raw: response
@@ -578,7 +592,7 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
   const stream = await createResponse(client, req, true)
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
-  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop', 'completed')
+  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop')
   let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
@@ -597,7 +611,11 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
       finishReason = toResponsesFinishReason(event.response)
       outcome = toResponsesOutcome(event.response)
       completedOutput = event.response?.output
-    } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
+    } else if (event.type === 'response.failed') {
+      // A genuine provider failure must surface as an error so base retry and
+      // normalization apply, matching the chat-completions path.
+      throw responsesFailureError(event.response, req, 'textStream')
+    } else if (event.type === 'response.incomplete') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
       outcome = toResponsesOutcome(event.response)
@@ -617,7 +635,7 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
   let partial = ''
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
-  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop', 'completed')
+  let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop')
   let completedOutput: unknown
   const toolState: ResponsesStreamToolCallState = new Map()
 
@@ -637,7 +655,11 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
       finishReason = toResponsesFinishReason(event.response)
       outcome = toResponsesOutcome(event.response)
       completedOutput = event.response?.output
-    } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
+    } else if (event.type === 'response.failed') {
+      // A genuine provider failure must surface as an error so base retry and
+      // normalization apply, matching the chat-completions path.
+      throw responsesFailureError(event.response, req, 'objectStream')
+    } else if (event.type === 'response.incomplete') {
       usage = toResponsesUsage(event.response?.usage)
       finishReason = toResponsesFinishReason(event.response)
       outcome = toResponsesOutcome(event.response)
@@ -713,7 +735,7 @@ function finalizeResponsesStreamToolCalls(state: ResponsesStreamToolCallState, r
     .filter(([, call]) => call.name)
     .map(([, call]) => {
       if (!call.id) {
-        throw malformedResponseError(req, method, 'OpenAI streamed a function call without a call_id.', call, undefined)
+        throw malformedResponseError(callContext(req, method), 'OpenAI streamed a function call without a call_id.', call, undefined)
       }
       return {
         id: call.id,
@@ -723,83 +745,52 @@ function finalizeResponsesStreamToolCalls(state: ResponsesStreamToolCallState, r
     })
 }
 
+const MALFORMED_TOOL_ARGS_MESSAGE = 'OpenAI returned malformed tool-call argument JSON.'
+const MALFORMED_OBJECT_MESSAGE = 'OpenAI returned malformed structured object JSON.'
+
+function callContext(req: ChatRequest, method: string): AdapterCallContext {
+  return { provider: 'openai', model: req.model, method }
+}
+
+/** Throws when a non-streaming Responses result reports a provider failure. */
+function throwIfResponsesFailure(response: any, req: ChatRequest, method: string): void {
+  if (response?.status === 'failed' || response?.error) {
+    throw responsesFailureError(response, req, method)
+  }
+}
+
 /**
- * Per-index accumulator for streamed tool-call fragments. OpenAI streams a
- * tool call across many deltas: the first carries `index`/`id`/`function.name`
- * with partial/empty arguments, later deltas carry only `index` and argument
- * fragments. We must concatenate by index and parse arguments once at the end.
+ * Maps a failed Responses-API result into a `ModelError` so the base
+ * provider's retry classification and normalization apply.
  */
-type StreamToolCallState = Map<number, { id?: string; name?: string; args: string }>
-
-function accumulateToolCallDeltas(state: StreamToolCallState, deltas: any[]): void {
-  for (const delta of deltas) {
-    const index = typeof delta?.index === 'number' ? delta.index : 0
-    const existing = state.get(index) ?? { args: '' }
-    if (delta?.id) existing.id = String(delta.id)
-    if (delta?.function?.name) existing.name = String(delta.function.name)
-    if (typeof delta?.function?.arguments === 'string') existing.args += delta.function.arguments
-    state.set(index, existing)
-  }
-}
-
-function finalizeStreamToolCalls(state: StreamToolCallState, req: ChatRequest, method: string): ToolCallSpec[] {
-  return [...state.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .filter(([, call]) => call.id && call.name)
-    .map(([, call]) => ({
-      id: call.id as string,
-      name: call.name as string,
-      arguments: parseToolArgs(call.args || undefined, req, method)
-    }))
-}
-
-function parseToolArgs(argumentsText: string | undefined, req: ChatRequest, method: string): JsonValue {
-  if (!argumentsText) return {}
-  try {
-    return JSON.parse(argumentsText)
-  } catch (error) {
-    throw malformedResponseError(req, method, 'OpenAI returned malformed tool-call argument JSON.', argumentsText, error)
-  }
-}
-
-function parseJson(content: string, req: ChatRequest, method: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch (error) {
-    throw malformedResponseError(req, method, 'OpenAI returned malformed structured object JSON.', content, error)
-  }
-}
-
-function malformedResponseError(req: ChatRequest, method: string, message: string, body: unknown, cause: unknown): ModelError {
-  return new ModelError(message, {
+function responsesFailureError(response: any, req: ChatRequest, method: string): ModelError {
+  const providerCode = typeof response?.error?.code === 'string' ? response.error.code : undefined
+  const rawMessage = typeof response?.error?.message === 'string' ? response.error.message : undefined
+  const reason = providerCode === 'rate_limit_exceeded'
+    ? 'rate_limited'
+    : providerCode === 'server_error'
+      ? 'provider_unavailable'
+      : 'http_error'
+  return new ModelError('OpenAI reported a failed response.', {
     provider: 'openai',
     model: req.model,
     method,
-    reason: 'malformed_response',
-    providerBody: body
-  }, cause)
+    reason,
+    ...(providerCode ? { providerCode } : {}),
+    ...(rawMessage ? { providerMessage: sanitizeProviderMessage(rawMessage) } : {})
+  })
 }
 
-function safePartialJson(content: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch {
-    return { _partial: content }
-  }
+function parseToolArgs(argumentsText: string | undefined, req: ChatRequest, method: string): JsonValue {
+  return parseProviderJson(argumentsText || '{}', callContext(req, method), MALFORMED_TOOL_ARGS_MESSAGE)
 }
 
-function toUsage(inputTokens?: number, outputTokens?: number): TokenUsage {
-  const input = inputTokens ?? 0
-  const output = outputTokens ?? 0
-  return {
-    inputTokens: input,
-    outputTokens: output,
-    totalTokens: input + output
-  }
+function parseJson(content: string, req: ChatRequest, method: string): JsonValue {
+  return parseProviderJson(content, callContext(req, method), MALFORMED_OBJECT_MESSAGE)
 }
 
 function toResponsesUsage(usage: any): TokenUsage {
-  return toUsage(usage?.input_tokens, usage?.output_tokens)
+  return toTokenUsage(usage?.input_tokens, usage?.output_tokens)
 }
 
 function toFinishReason(value: unknown): TextResponse['finishReason'] {

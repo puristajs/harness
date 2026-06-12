@@ -137,7 +137,7 @@ export class ToolNotFoundError extends HarnessError {
 
 /** Skill id was not found in configured skill set. */
 export class SkillNotFoundError extends HarnessError {
-  public constructor(message: string, meta: { skill_id: string }, cause?: unknown) {
+  public constructor(message: string, meta: { skill_id: string; agent_id?: string }, cause?: unknown) {
     super({ code: 'SKILL_NOT_FOUND', category: 'skill', retriable: false, message, meta, cause })
   }
 }
@@ -241,7 +241,7 @@ export class StateError extends HarnessError {
     meta: {
       op:
         | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
-        | 'clearMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
+        | 'clearMessages' | 'replaceMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
         | 'contextCheckpointWrite' | 'contextCheckpointRead' | 'contextCheckpointList' | 'contextCheckpointDelete'
         | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
       reason?: 'duplicate_message_id' | string

@@ -227,9 +227,34 @@ describe('azureFoundry provider factory', () => {
         provider: 'azure-foundry',
         method: 'object',
         reason: 'malformed_response',
-        providerBody: '{"ok":'
+        // Raw model output never leaks into error metadata (POR-07).
+        providerBody: { redacted: true, contentLength: '{"ok":'.length }
       }
     })
+  })
+
+  it('omits providerFinishReason from stream outcomes when the provider never sent one', async () => {
+    const provider = azureFoundry({
+      client: client(async () => ({
+        status: 200,
+        // A plain array takes the non-SSE event path in streamChat.
+        body: [{ choices: [{ delta: { content: 'hello' } }] }]
+      }))
+    })
+
+    const received: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: mockSignal()
+    })) {
+      received.push(chunk)
+    }
+
+    expect(received[0]).toEqual({ kind: 'delta', text: 'hello' })
+    const finish = received.at(-1)
+    expect(finish.kind).toBe('finish')
+    expect(finish.outcome.providerFinishReason).toBeUndefined()
   })
 
   it('preserves HTTP status so 429 is classified as a retriable rate-limit error', async () => {

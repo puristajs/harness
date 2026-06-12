@@ -12,12 +12,24 @@ type JsonRpcResponse = {
 
 const protocolVersion = '2025-06-18'
 
-export function createStdioMcpTransportRunner(config: ResolvedMcpStdioTool): McpTransportRunner {
+/** Maximum number of recent stderr characters retained to enrich failure messages. */
+const STDERR_TAIL_LIMIT = 8_192
+/** How long `close()` waits for a SIGTERM'd server before escalating to SIGKILL. */
+const DEFAULT_CLOSE_GRACE_MS = 2_000
+
+export interface StdioRunnerHooks {
+  /** Invoked whenever the persistent server process is discarded (exit, handshake failure, close). */
+  onReset?: () => void
+  /** Grace period before SIGKILL escalation on close (test override). */
+  closeGraceMs?: number
+}
+
+export function createStdioMcpTransportRunner(config: ResolvedMcpStdioTool, hooks: StdioRunnerHooks = {}): McpTransportRunner {
   // A spawn-capable sandbox hosts a single long-lived server multiplexed across
   // calls (server-side state is preserved); otherwise each call is a one-shot
   // exec exchange (leak-free but stateless). See spec 07.
   if (isSpawnCapableSession(config.sandbox)) {
-    return createPersistentStdioRunner(config, config.sandbox)
+    return createPersistentStdioRunner(config, config.sandbox, hooks)
   }
   return createOneShotStdioRunner(config)
 }
@@ -27,7 +39,14 @@ function createOneShotStdioRunner(config: ResolvedMcpStdioTool): McpTransportRun
 
   async function ensureInstalled(signal?: AbortSignal): Promise<void> {
     if (!config.install) return
-    installPromise ??= runInstall(config, signal)
+    if (!installPromise) {
+      const promise = runInstall(config, signal)
+      // A transient/aborted install failure must not poison later calls.
+      void promise.catch(() => {
+        if (installPromise === promise) installPromise = undefined
+      })
+      installPromise = promise
+    }
     return installPromise
   }
 
@@ -65,16 +84,25 @@ interface PendingRequest {
  * `initialize` handshake a single time, and multiplexes every subsequent
  * request over the same pipe correlating responses by JSON-RPC id.
  */
-function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: SpawnCapableSandboxSession): McpTransportRunner {
+function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: SpawnCapableSandboxSession, hooks: StdioRunnerHooks = {}): McpTransportRunner {
   let installPromise: Promise<void> | undefined
-  let session_proc: SandboxProcess | undefined
+  let serverProcess: SandboxProcess | undefined
   let readyPromise: Promise<void> | undefined
+  let stderrTail = ''
   let nextId = 1
   const pending = new Map<number, PendingRequest>()
+  const closeGraceMs = hooks.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS
 
   async function ensureInstalled(signal?: AbortSignal): Promise<void> {
     if (!config.install) return
-    installPromise ??= runInstall(config, signal)
+    if (!installPromise) {
+      const promise = runInstall(config, signal)
+      // A transient/aborted install failure must not poison later calls.
+      void promise.catch(() => {
+        if (installPromise === promise) installPromise = undefined
+      })
+      installPromise = promise
+    }
     return installPromise
   }
 
@@ -84,8 +112,14 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
   }
 
   function teardown(): void {
-    session_proc = undefined
+    serverProcess = undefined
     readyPromise = undefined
+    hooks.onReset?.()
+  }
+
+  function stderrSuffix(): string {
+    const tail = stderrTail.trim()
+    return tail ? ` stderr: ${tail}` : ''
   }
 
   async function spawnAndInitialize(signal?: AbortSignal): Promise<void> {
@@ -94,7 +128,8 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       ...(config.env ? { env: config.env } : {}),
       ...(signal ? { signal } : {})
     })
-    session_proc = proc
+    serverProcess = proc
+    stderrTail = ''
 
     // Consume stdout line-by-line, dispatching responses to pending requests.
     void (async () => {
@@ -115,19 +150,41 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       }
     })()
 
+    // Drain stderr so the child never blocks on a full pipe; keep only a small
+    // tail to enrich failure messages.
+    void (async () => {
+      try {
+        for await (const chunk of proc.stderr) {
+          stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT)
+        }
+      } catch {
+        // stderr ended or aborted; exit handler performs cleanup.
+      }
+    })()
+
     // When the process exits, fail every in-flight request and force a respawn.
     void proc.exit.then((result) => {
-      rejectAllPending(mapStdioError(config, 'call', new Error(`MCP server exited with code ${result.exitCode}.`)))
-      if (session_proc === proc) teardown()
+      rejectAllPending(mapStdioError(config, 'call', new Error(`MCP server exited with code ${result.exitCode}.${stderrSuffix()}`)))
+      if (serverProcess === proc) teardown()
     })
 
-    await writeMessage(proc, {
-      jsonrpc: '2.0',
-      id: 0,
-      method: 'initialize',
-      params: { protocolVersion, capabilities: {}, clientInfo: { name: '@purista/harness', version: HARNESS_VERSION } }
-    }, pending, 0, signal)
-    await proc.writeStdin(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`)
+    try {
+      const initResponse = await writeMessage(proc, {
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion, capabilities: {}, clientInfo: { name: '@purista/harness', version: HARNESS_VERSION } }
+      }, pending, 0, signal)
+      if (initResponse.error) {
+        throw mapStdioError(config, 'connect', new Error(initResponse.error.message ?? 'MCP initialize failed.'))
+      }
+      await proc.writeStdin(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`)
+    } catch (error) {
+      // Never leave an orphaned server behind a failed handshake.
+      pending.delete(0)
+      await terminateProcess(proc, closeGraceMs)
+      throw error
+    }
   }
 
   async function ensureReady(signal?: AbortSignal): Promise<SandboxProcess> {
@@ -139,8 +196,8 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       })
     }
     await readyPromise
-    if (!session_proc) throw mapStdioError(config, 'connect', new Error('MCP server is not running.'))
-    return session_proc
+    if (!serverProcess) throw mapStdioError(config, 'connect', new Error('MCP server is not running.'))
+    return serverProcess
   }
 
   async function request<T>(method: string, params: unknown, phase: 'list' | 'call', map: (value: unknown) => T, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<T> {
@@ -171,12 +228,30 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       return request<unknown>('tools/call', { name, arguments: input }, 'call', (value) => value, options)
     },
     async close() {
-      const proc = session_proc
+      const proc = serverProcess
       teardown()
       installPromise = undefined
       rejectAllPending(mapStdioError(config, 'call', new Error('MCP runner closed.')))
-      if (proc) await proc.kill('SIGTERM').catch(() => undefined)
+      if (proc) await terminateProcess(proc, closeGraceMs)
     }
+  }
+}
+
+/** SIGTERMs a server process and escalates to SIGKILL when it ignores the grace window. */
+async function terminateProcess(proc: SandboxProcess, graceMs: number): Promise<void> {
+  await proc.kill('SIGTERM').catch(() => undefined)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const exited = await Promise.race([
+    proc.exit.then(() => true),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), graceMs)
+      timer.unref?.()
+    })
+  ])
+  if (timer) clearTimeout(timer)
+  if (!exited) {
+    await proc.kill('SIGKILL').catch(() => undefined)
+    await proc.exit
   }
 }
 
@@ -199,7 +274,15 @@ async function writeMessage(
       else signal.addEventListener('abort', onAbort, { once: true })
     }
   })
-  await proc.writeStdin(`${JSON.stringify(message)}\n`)
+  try {
+    await proc.writeStdin(`${JSON.stringify(message)}\n`)
+  } catch (error) {
+    // Drop the orphaned pending entry and mark its promise handled so a later
+    // rejectAllPending/abort cannot surface an unhandled rejection.
+    pending.delete(id)
+    void response.catch(() => undefined)
+    throw error
+  }
   return response
 }
 
@@ -272,7 +355,8 @@ async function exchange(
     }
     return parseResponses(result.stdout)
   } catch (error) {
-    if (error instanceof OperationTimeoutError) throw mapStdioError(config, calls[0]?.method === 'tools/list' ? 'list' : 'call', error)
+    // Timeouts propagate unwrapped — consistent with the persistent runner.
+    if (error instanceof OperationTimeoutError) throw error
     throw mapStdioError(config, calls[0]?.method === 'tools/list' ? 'list' : 'call', error)
   }
 }

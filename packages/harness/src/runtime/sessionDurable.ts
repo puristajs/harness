@@ -74,27 +74,44 @@ export async function beginDurableWorkflow(args: {
 
   let handle: WorkspaceHandle | undefined
   if (workspaceStore) {
-    const priorReplay = lease.checkpoint?.replay
-    if (lease.resumed && priorReplay?.workspaceRef) {
-      handle = await workspaceStore.resumeWorkspace({
-        workspaceRef: priorReplay.workspaceRef,
-        ...(priorReplay.checkpointRef ? { checkpointRef: priorReplay.checkpointRef } : {}),
-        runId: lease.runId,
-        sessionId,
-        attempt: lease.attempt,
-        idempotencyKey: `${lease.runId}:${lease.attempt}:resume`,
-        signal
-      })
-    } else {
-      handle = await workspaceStore.startWorkspace({
-        runId: lease.runId,
-        sessionId,
-        workflowId,
-        workerId,
-        attempt: lease.attempt,
-        idempotencyKey: `${lease.runId}:start`,
-        signal
-      })
+    try {
+      const priorReplay = lease.checkpoint?.replay
+      if (lease.resumed && priorReplay?.workspaceRef) {
+        handle = await workspaceStore.resumeWorkspace({
+          workspaceRef: priorReplay.workspaceRef,
+          ...(priorReplay.checkpointRef ? { checkpointRef: priorReplay.checkpointRef } : {}),
+          runId: lease.runId,
+          sessionId,
+          attempt: lease.attempt,
+          idempotencyKey: `${lease.runId}:${lease.attempt}:resume`,
+          signal
+        })
+      } else {
+        handle = await workspaceStore.startWorkspace({
+          runId: lease.runId,
+          sessionId,
+          workflowId,
+          workerId,
+          attempt: lease.attempt,
+          idempotencyKey: `${lease.runId}:start`,
+          signal
+        })
+      }
+    } catch (workspaceError) {
+      // The caller never receives the binding when the workspace phase fails,
+      // so release the acquired lease here or it stays locked for the TTL.
+      try {
+        await lease.release()
+      } catch (releaseError) {
+        logger.warn('Failed to release durable lease after workspace failure.', {
+          harness: harnessName,
+          session_id: sessionId,
+          run_id: lease.runId,
+          workflow_id: workflowId,
+          error: serializeError(releaseError)
+        })
+      }
+      throw workspaceError
     }
   }
 
@@ -131,6 +148,12 @@ export async function beginDurableWorkflow(args: {
   const ctx = createDurableWorkflowContext(runtime, lease, onStepCommit ? { onStepCommit } : {})
   const autoCleanup = workspaceStore?.info.policy.retention?.cleanupMode === 'adapter_automatic'
   let settled = false
+  // Stores that bind run sandboxes to active workspaces (localDirectoryWorkspaceStore)
+  // expose an unbind hook so the binding never outlives the durable run.
+  const releaseRunBinding = (): void => {
+    const candidate = workspaceStore as { releaseRunBinding?: (runId: string, sessionId: string) => void } | undefined
+    candidate?.releaseRunBinding?.(lease.runId, sessionId)
+  }
 
   return {
     runId: lease.runId,
@@ -162,6 +185,7 @@ export async function beginDurableWorkflow(args: {
       }
     },
     async dispose(): Promise<void> {
+      releaseRunBinding()
       if (settled) return
       try {
         await lease.release()

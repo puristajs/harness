@@ -31,8 +31,8 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - code: `VALIDATION_ERROR`
 - category: `validation`
 - retriable: `false`
-- when: Zod or JSON Schema parse failure on tool/agent/workflow/MCP input/output, memory key, memory value, model request/response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
-- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_request'|'model_response'|'memory_key'|'memory_value'|'message'|'session_history'|'invoke_options'|'eval_input'`, `issues: unknown`.
+- when: Zod or JSON Schema parse failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
+- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`, `issues: unknown`.
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
@@ -156,8 +156,8 @@ tokens, raw headers, or attachments.
 - code: `STATE_ERROR`
 - category: `state`
 - retriable: `true`
-- when: StateStore backend failure, or duplicate message id on `appendMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
-- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`.
+- when: StateStore, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
+- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
 
 ### `WorkspaceError`
 - code: `WORKSPACE_ERROR`
@@ -185,14 +185,14 @@ tokens, raw headers, or attachments.
 - category: `timeout`
 - retriable: `true`
 - when: any timed budget elapsed.
-- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'|'workspace'`, `timeout_ms: number`.
+- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'|'memory'|'workspace'`, `timeout_ms: number`.
 
 ### `OperationCancelledError`
 - code: `OPERATION_CANCELLED`
 - category: `cancelled`
 - retriable: `false`
 - when: AbortSignal aborted (including pre-aborted signals at entry points).
-- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'workspace'`.
+- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'`.
 
 ### `McpProtocolError`
 - code: `MCP_PROTOCOL_ERROR`

@@ -20,7 +20,7 @@ export interface ScorerResult {
 	evidence?: JsonValue
 }
 
-export interface PromptCandidate<I = unknown> {
+export interface PromptCandidate {
 	id: string
 	prompt: string
 	metadata?: Record<string, JsonValue>
@@ -42,10 +42,10 @@ export interface CandidateScore {
 }
 
 export interface EvaluatePromptCandidatesInput<I = unknown> {
-	candidates: PromptCandidate<I>[]
+	candidates: PromptCandidate[]
 	items: EvaluationItem<I>[]
 	scorer: (target: ScorerTarget, signal: AbortSignal) => Promise<ScorerResult>
-	runCandidate: (candidate: PromptCandidate<I>, item: EvaluationItem<I>, signal: AbortSignal) => Promise<unknown>
+	runCandidate: (candidate: PromptCandidate, item: EvaluationItem<I>, signal: AbortSignal) => Promise<unknown>
 	signal: AbortSignal
 }
 
@@ -214,8 +214,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+/** Structural deep equality, insensitive to object key order. */
 function deepEqual(a: unknown, b: unknown): boolean {
-	return JSON.stringify(a) === JSON.stringify(b)
+	if (Object.is(a, b)) return true
+	if (Array.isArray(a) || Array.isArray(b)) {
+		if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+		return a.every((entry, index) => deepEqual(entry, b[index]))
+	}
+	if (isRecord(a) && isRecord(b)) {
+		const keysA = Object.keys(a)
+		if (keysA.length !== Object.keys(b).length) return false
+		return keysA.every((key) => Object.hasOwn(b, key) && deepEqual(a[key], b[key]))
+	}
+	return false
 }
 
 function toJsonValue(value: unknown): JsonValue {

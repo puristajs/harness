@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 export default defineConfig({
   resolve: {
     alias: {
+      '@purista/harness/testing': fileURLToPath(new URL('../harness/src/testing/index.ts', import.meta.url)),
       '@purista/harness': fileURLToPath(new URL('../harness/src/index.ts', import.meta.url))
     }
   },

@@ -140,8 +140,12 @@ Capabilities gate runtime calls:
 
 Model retry is enabled by default. The harness retries short transient provider
 failures and rate limits with bounded backoff, but it does not sleep for long
-provider `Retry-After` windows. Long waits are returned as typed `ModelError`
-metadata so an API can fail fast and a worker/queue can schedule a later retry.
+provider `Retry-After` windows. `longRetry` decides what happens instead:
+`'error'` (the default) fails immediately with `retryKind: 'none'`, while
+`'defer'` returns a typed `ModelError` with `retryKind: 'deferred'` and the
+provider-supplied `retryAfterMs` so an API can fail fast and a worker/queue can
+schedule a later retry. With `'defer'`, `maxDeferredDelayMs` caps how long a
+provider wait may be before it degrades to `retryKind: 'none'`.
 
 ```ts
 .models({

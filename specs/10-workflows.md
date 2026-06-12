@@ -84,9 +84,13 @@ workflow run:
 
 `WorkflowDefinition.delegation` can override the numeric budgets, disable the
 workflow with `enabled: false`, restrict the child agent ids with `agents`, and
-restrict model aliases available for workflow-local child-agent model
-overrides. `modelAliases` applies to every child-agent call in the workflow.
-`agentModelAliases` overrides that set for a specific child agent.
+restrict the model aliases child-agent calls may run with. `modelAliases`
+applies to **every** child-agent call in the workflow — both calls that use the
+agent's default `model` and calls passing a per-call `{ model }` override. A
+workflow with `modelAliases: ['cheap']` cannot invoke an agent whose selected
+alias (default or override) is not in that list; the call throws
+`DelegationPolicyError{reason:'model_alias_not_allowed'}`. `agentModelAliases`
+replaces that set for the named child agent.
 
 ```ts
 delegation: {

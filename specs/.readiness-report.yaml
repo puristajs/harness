@@ -105,5 +105,24 @@ semantic_judge_gate:
   reviewer: "Codex spec-architect semantic review"
   uncertainty: low
 deterministic_check:
-  command: "rg -n \"TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort\" specs/21-durable-workspaces.md"
+  command: "rg -n \"TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort\" specs/10-workflows.md specs/21-durable-workspaces.md specs/22-local-durable-execution.md specs/23-provider-outcomes-and-retry.md"
   status: passed
+follow_up_waves:
+  - id: "2026-06-12-delegation-local-durable-provider-retry"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-06-12"
+      approver: "repo owner (interactive review session)"
+    scope:
+      specs:
+        - specs/10-workflows.md
+        - specs/22-local-durable-execution.md
+        - specs/23-provider-outcomes-and-retry.md
+    summary:
+      updated_at: "2026-06-12"
+      purpose: "Approve the workflow delegation opt-in rewrite, the local durable execution bundle (SQLite runtime, host-directory workspaces/sandbox, context checkpoints), and the provider outcomes and retry contract."
+    confirmed_decisions:
+      - "Workflow child-agent delegation is opt-in per workflow or via harness delegation defaults."
+      - "Local durable execution ships in core behind built-in Node SQLite; no new runtime dependencies."
+      - "Provider retry policy is harness-owned; first-party adapters disable hidden SDK retries by default."

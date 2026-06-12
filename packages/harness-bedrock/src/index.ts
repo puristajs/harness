@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
 import type {
+  AdapterCallContext,
   BaseModelProviderOptions,
   ContentPart,
   JsonValue,
@@ -14,7 +15,13 @@ import type {
   TokenUsage,
   ToolCallSpec
 } from '@purista/harness'
-import { BaseModelProvider, ModelError } from '@purista/harness'
+import {
+  BaseModelProvider,
+  parseProviderJson,
+  safePartialJson,
+  toTokenUsage,
+  withoutObjectTool
+} from '@purista/harness'
 import {
   BedrockRuntimeClient,
   ConverseCommand,
@@ -63,12 +70,13 @@ class BedrockModelProvider extends BaseModelProvider {
 
   protected override async doText(req: TextRequest): Promise<TextResponse> {
     req.signal.throwIfAborted()
-    const response = await this.client.send(new ConverseCommand(toConverseInput(req, false) as any), { abortSignal: req.signal })
+    const { input, requestOptions } = toConverseRequest(req, false)
+    const response = await this.client.send(new ConverseCommand(input as any), { ...requestOptions, abortSignal: req.signal })
     const toolCalls = extractToolCalls(response, req, 'text')
     return {
       content: outputText(response),
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(response.usage?.inputTokens, response.usage?.outputTokens),
+      usage: toTokenUsage(response.usage?.inputTokens, response.usage?.outputTokens),
       finishReason: toFinishReason(response.stopReason),
       outcome: toOutcome(response.stopReason),
       raw: response
@@ -77,11 +85,12 @@ class BedrockModelProvider extends BaseModelProvider {
 
   protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
     req.signal.throwIfAborted()
-    const response = await this.client.send(new ConverseStreamCommand(toConverseInput(req, false) as any), { abortSignal: req.signal })
+    const { input, requestOptions } = toConverseRequest(req, false)
+    const response = await this.client.send(new ConverseStreamCommand(input as any), { ...requestOptions, abortSignal: req.signal })
     const toolState = new Map<number, { id: string; name: string; input: string }>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
-    let providerFinishReason: unknown = 'end_turn'
+    let providerFinishReason: unknown
 
     for await (const event of response.stream ?? []) {
       req.signal.throwIfAborted()
@@ -107,7 +116,7 @@ class BedrockModelProvider extends BaseModelProvider {
         }
       }
       if (event.metadata?.usage) {
-        usage = toUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
+        usage = toTokenUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
       }
       if (event.messageStop?.stopReason) {
         providerFinishReason = event.messageStop.stopReason
@@ -115,19 +124,20 @@ class BedrockModelProvider extends BaseModelProvider {
       }
     }
 
-    yield { kind: 'finish', usage, finishReason, outcome: toOutcome(providerFinishReason) }
+    yield { kind: 'finish', usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
 
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
     req.signal.throwIfAborted()
-    const response = await this.client.send(new ConverseCommand(toConverseInput(req, true) as any), { abortSignal: req.signal })
+    const { input, requestOptions } = toConverseRequest(req, true)
+    const response = await this.client.send(new ConverseCommand(input as any), { ...requestOptions, abortSignal: req.signal })
     const toolUse = response.output?.message?.content?.find((block: any) => block.toolUse?.name === 'harness_response')?.toolUse
     const toolCalls = withoutObjectTool(extractToolCalls(response, req, 'object'))
     const object = (toolUse?.input ?? parseJson(outputText(response) || '{}', req, 'object')) as T
     return {
       object,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toUsage(response.usage?.inputTokens, response.usage?.outputTokens),
+      usage: toTokenUsage(response.usage?.inputTokens, response.usage?.outputTokens),
       finishReason: toFinishReason(response.stopReason),
       outcome: toOutcome(response.stopReason),
       raw: response
@@ -136,12 +146,15 @@ class BedrockModelProvider extends BaseModelProvider {
 
   protected override async *doObjectStream<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
     req.signal.throwIfAborted()
-    const response = await this.client.send(new ConverseStreamCommand(toConverseInput(req, true) as any), { abortSignal: req.signal })
+    const { input, requestOptions } = toConverseRequest(req, true)
+    const response = await this.client.send(new ConverseStreamCommand(input as any), { ...requestOptions, abortSignal: req.signal })
     let text = ''
     let objectInput = ''
+    let objectBlockIndex: number | undefined
+    const toolState = new Map<number, { id: string; name: string; input: string }>()
     let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let finishReason: TextResponse['finishReason'] = 'stop'
-    let providerFinishReason: unknown = 'end_turn'
+    let providerFinishReason: unknown
 
     for await (const event of response.stream ?? []) {
       req.signal.throwIfAborted()
@@ -149,12 +162,40 @@ class BedrockModelProvider extends BaseModelProvider {
         text += event.contentBlockDelta.delta.text
         yield { kind: 'partial', partial: safePartialJson(text) }
       }
+      if (event.contentBlockStart?.start?.toolUse) {
+        // Only the synthetic `harness_response` block carries the structured
+        // object; other tool blocks are real tool calls and must not bleed
+        // into the object JSON (parity with the OpenAI/Azure adapters).
+        const blockIndex = event.contentBlockStart.contentBlockIndex ?? 0
+        if (event.contentBlockStart.start.toolUse.name === 'harness_response' && objectBlockIndex === undefined) {
+          objectBlockIndex = blockIndex
+        } else {
+          toolState.set(blockIndex, {
+            id: String(event.contentBlockStart.start.toolUse.toolUseId),
+            name: String(event.contentBlockStart.start.toolUse.name),
+            input: ''
+          })
+        }
+      }
       if (event.contentBlockDelta?.delta?.toolUse?.input) {
-        objectInput += event.contentBlockDelta.delta.toolUse.input
-        yield { kind: 'partial', partial: safePartialJson(objectInput) }
+        const blockIndex = event.contentBlockDelta.contentBlockIndex ?? 0
+        const state = toolState.get(blockIndex)
+        if (state) {
+          state.input += event.contentBlockDelta.delta.toolUse.input
+        } else {
+          objectInput += event.contentBlockDelta.delta.toolUse.input
+          yield { kind: 'partial', partial: safePartialJson(objectInput) }
+        }
+      }
+      if (event.contentBlockStop) {
+        const state = toolState.get(event.contentBlockStop.contentBlockIndex ?? 0)
+        if (state) {
+          yield { kind: 'tool_call', call: { id: state.id, name: state.name, arguments: parseJson(state.input || '{}', req, 'objectStream') } }
+          toolState.delete(event.contentBlockStop.contentBlockIndex ?? 0)
+        }
       }
       if (event.metadata?.usage) {
-        usage = toUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
+        usage = toTokenUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
       }
       if (event.messageStop?.stopReason) {
         providerFinishReason = event.messageStop.stopReason
@@ -163,7 +204,7 @@ class BedrockModelProvider extends BaseModelProvider {
     }
 
     const object = parseJson(objectInput || text || '{}', req, 'objectStream') as T
-    yield { kind: 'finish', object, usage, finishReason, outcome: toOutcome(providerFinishReason) }
+    yield { kind: 'finish', object, usage, finishReason, outcome: streamOutcome(finishReason, providerFinishReason) }
   }
 }
 
@@ -178,17 +219,23 @@ function toClientOptions(options: BedrockFactoryOptions): BedrockRuntimeClientCo
   return { maxAttempts: 1, ...clientOptions }
 }
 
-function toConverseInput(req: ChatRequest, forceObject: boolean): Record<string, unknown> {
+/**
+ * Builds the Converse request body and extracts `requestOptions`, which are
+ * per-request SDK transport options (mirroring the other adapters) and must
+ * not leak into the Converse request body.
+ */
+function toConverseRequest(req: ChatRequest, forceObject: boolean): { input: Record<string, unknown>; requestOptions?: Record<string, unknown> } {
   const providerOptions = {
     ...(req.defaults?.providerOptions ?? {}),
     ...(req.call?.providerOptions ?? {})
-  } as Record<string, unknown>
+  } as Record<string, unknown> & { requestOptions?: Record<string, unknown> }
+  const { requestOptions, ...bodyOptions } = providerOptions
   const { system, messages } = toBedrockMessages(req.messages)
   const modelTools = toTools(req.tools) ?? []
   const tools = forceObject ? [...modelTools, toObjectTool(req as ObjectRequest)] : modelTools
   const forceObjectTool = forceObject && modelTools.length === 0
 
-  return {
+  const input = {
     modelId: req.model,
     messages,
     ...(system.length > 0 ? { system } : {}),
@@ -199,8 +246,9 @@ function toConverseInput(req: ChatRequest, forceObject: boolean): Record<string,
       ...((req.call?.topP ?? req.defaults?.topP) !== undefined ? { topP: req.call?.topP ?? req.defaults?.topP } : {}),
       ...((req.call?.stopSequences ?? req.defaults?.stopSequences) !== undefined ? { stopSequences: req.call?.stopSequences ?? req.defaults?.stopSequences } : {})
     },
-    ...providerOptions
+    ...bodyOptions
   }
+  return { input, ...(requestOptions ? { requestOptions } : {}) }
 }
 
 function toBedrockMessages(messages: ModelMessage[]): { system: any[]; messages: any[] } {
@@ -273,41 +321,14 @@ function extractToolCalls(response: any, req: ChatRequest, method: string): Tool
   }))
 }
 
-function withoutObjectTool(calls: ToolCallSpec[] | undefined): ToolCallSpec[] | undefined {
-  const filtered = calls?.filter((call) => call.name !== 'harness_response')
-  return filtered && filtered.length > 0 ? filtered : undefined
+const MALFORMED_JSON_MESSAGE = 'Amazon Bedrock returned malformed structured JSON.'
+
+function callContext(req: ChatRequest, method: string): AdapterCallContext {
+  return { provider: 'bedrock', model: req.model, method }
 }
 
 function parseJson(content: string, req: ChatRequest, method: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch (error) {
-    throw malformedResponseError(req, method, 'Amazon Bedrock returned malformed structured JSON.', content, error)
-  }
-}
-
-function malformedResponseError(req: ChatRequest, method: string, message: string, body: unknown, cause: unknown): ModelError {
-  return new ModelError(message, {
-    provider: 'bedrock',
-    model: req.model,
-    method,
-    reason: 'malformed_response',
-    providerBody: body
-  }, cause)
-}
-
-function safePartialJson(content: string): JsonValue {
-  try {
-    return JSON.parse(content)
-  } catch {
-    return { _partial: content }
-  }
-}
-
-function toUsage(inputTokens?: number, outputTokens?: number): TokenUsage {
-  const input = inputTokens ?? 0
-  const output = outputTokens ?? 0
-  return { inputTokens: input, outputTokens: output, totalTokens: input + output }
+  return parseProviderJson(content, callContext(req, method), MALFORMED_JSON_MESSAGE)
 }
 
 function toFinishReason(value: unknown): TextResponse['finishReason'] {
@@ -337,5 +358,16 @@ function toOutcome(value: unknown): NonNullable<TextResponse['outcome']> {
   return {
     finishReason,
     ...(typeof value === 'string' ? { providerFinishReason: value } : {})
+  }
+}
+
+/**
+ * Stream outcome built from the tracked finish reason; `providerFinishReason`
+ * is omitted entirely when the provider never sent a stop reason.
+ */
+function streamOutcome(finishReason: TextResponse['finishReason'], providerFinishReason: unknown): NonNullable<TextResponse['outcome']> {
+  return {
+    finishReason,
+    ...(typeof providerFinishReason === 'string' ? { providerFinishReason } : {})
   }
 }

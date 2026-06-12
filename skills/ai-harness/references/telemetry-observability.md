@@ -13,7 +13,7 @@
 Use this reference when wiring OpenTelemetry, logs, privacy gates, or adapter context propagation.
 
 ## Runtime Setup
-The harness exports `OtelTelemetryShim` and `createTelemetryShim`, but applications own OpenTelemetry SDK/exporter setup.
+The harness wires its internal OpenTelemetry shim automatically; applications own OpenTelemetry SDK/exporter setup.
 
 Typical Node setup:
 

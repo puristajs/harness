@@ -59,6 +59,13 @@ virtual `/workspace` to the active durable workspace. Host command execution is
 disabled by default; enabling `exec` is a trust decision because this adapter is
 a host-directory persistence adapter, not a Docker or microVM isolation layer.
 
+When `exec` is enabled, commands never run through a shell: the command line is
+tokenized and spawned as an argv array, unquoted shell metacharacters are
+rejected when `allowCommands` is configured, captured output is capped at
+10 MiB per stream, and the per-command timeout falls back to the harness
+`toolTimeoutMs`. Files-only mode (`exec: false`) advertises
+`['sandbox.fs', 'sandbox.persistent_fs']`; enabling `exec` adds `sandbox.exec`.
+
 ## Configuration Shape
 
 ```ts
@@ -144,7 +151,10 @@ const result = await session.workflows.research.prompt(
 Behavior (see [spec 21 §16.1](../../specs/21-durable-workspaces.md)):
 
 - The harness acquires a runtime lease for `durable.runId`, injects a durable
-  `ctx.step`, and finalizes the runtime (`finishRun`) on success/cancel.
+  `ctx.step`, and finalizes the runtime (`finishRun`) on success/cancel. A
+  terminal `failed` status is recorded with its sanitized error and releases the
+  lease, but only `succeeded` and `cancelled` block resume — a failed run stays
+  resumable by a retry with the same `runId`.
 - With a workspace store configured, it starts (or resumes) the durable
   workspace, writes a workspace checkpoint before each runtime checkpoint, and —
   when the store's retention `cleanupMode` is `adapter_automatic` — cleans up on

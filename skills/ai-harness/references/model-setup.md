@@ -131,7 +131,8 @@ Each `.models(...)` entry is a `ModelAlias`:
       maxAttempts: 3,
       maxActiveElapsedMs: 60_000,
       maxActiveDelayMs: 20_000,
-      respectRetryAfter: true
+      respectRetryAfter: true,
+      longRetry: 'error'
     },
     providerOptions: {}
   },
@@ -143,10 +144,13 @@ Each `.models(...)` entry is a `ModelAlias`:
 
 `retry` accepts `true`, `false`, or a policy object. The default is `true`.
 The harness retries short transient provider failures and rate limits inside
-bounded active budgets. It does not sleep for long provider `Retry-After`
-windows; those surface as `ModelError` metadata with `retryKind:'deferred'` and
-`retryAfterMs` so queues, durable workers, or application schedulers can decide
-what to do. Per-call `call.retry` overrides alias and default retry settings.
+bounded active budgets. It never sleeps for long provider `Retry-After`
+windows: with the default `longRetry: 'error'` those fail immediately with
+`retryKind:'none'`; with `longRetry: 'defer'` they surface as `ModelError`
+metadata with `retryKind:'deferred'` and the provider-supplied `retryAfterMs`
+so queues, durable workers, or application schedulers can decide what to do
+(`maxDeferredDelayMs` caps the deferred window). Per-call `call.retry`
+overrides alias and default retry settings.
 
 Model responses include `finishReason` for common control flow and may include
 `outcome` for provider-specific finish/status details. Use `outcome` for

@@ -4,9 +4,9 @@
 
 ## Framework
 
-- Vitest `^2`. Node test environment (`environment: 'node'`).
+- Vitest `^4`. Node test environment (`environment: 'node'`).
 - Coverage provider: `v8`. Reporters: `text`, `lcov`, `json-summary`.
-- Each package has `vitest.config.ts` extending a shared base config available under `@purista/harness/testing` (re-exported from the testing subpath).
+- Each package owns its `vitest.config.ts` with the settings above; no shared base config is exported.
 
 ## Coverage gates (CI-enforced)
 
@@ -22,46 +22,11 @@ CI fails if any gate is unmet.
 
 ## `@purista/harness/testing` exports
 
-```ts
-// Fakes
-export class FakeModelProvider implements ModelProvider     // configurable scripted responses
-export class FakeStateStore extends InMemoryStateStore       // exposes inspection helpers
-export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
-export class FakeLogger implements Logger                    // captures log records in memory
-export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
-
-// Contract suites — each is a Vitest test factory
-export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
-export function sandboxContract(
-  make: () => Sandbox | Promise<Sandbox>,
-  opts: { executor: 'available' | 'unavailable' }
-): void
-export function modelProviderContract(
-  make: () => ModelProvider,
-  opts: { capabilities: ModelCapability[] }
-): void
-export function loggerContract(make: () => Logger): void
-export function memoryAdapterContract(
-  make: () => MemoryAdapter | Promise<MemoryAdapter>,
-  opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
-): void
-export function durableWorkspaceStoreContract(
-  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
-): void
-
-// Helpers
-export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness(); returns a fresh builder
-export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
-export type DeterministicScorerDefinition
-export interface ScorerTarget
-export interface ScorerResult
-export function evaluateDeterministicScorer(
-  definition: DeterministicScorerDefinition,
-  target: ScorerTarget
-): ScorerResult
-```
+The authoritative testing-subpath export list (fakes, contract suites, and
+helpers) is locked in [13-public-api](./13-public-api.md). Adapter packages
+must run the matching contract suite against every port implementation they
+ship; first-party model provider packages run `modelProviderContract` against
+their adapter wired to an offline fake client.
 
 There is no `streamContract` — streaming is internal to the harness; see "Streaming generator" in the core test catalog below.
 
@@ -94,6 +59,11 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 7. Optional snapshot/resume/hibernate adapters pass the sandbox snapshot contract: snapshot ids are stable, resumed sessions can read prior files, unknown snapshots throw `SandboxError`, and hibernation closes the active session after snapshotting.
 
 ### ModelProvider
+
+The shared `modelProviderContract` suite covers the capability/shape/abort
+basics (1–3, 5, 7–9, 12); the base-provider unit tests and each adapter's own
+test suite cover the scripted tool-use, capability-gate, and error/retry items
+(4, 6, 10, 11).
 
 1. Each claimed method exists on the provider.
 2. `text`/`object`/`embed`/`rerank` honor `signal`.

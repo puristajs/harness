@@ -5,6 +5,7 @@ import { inMemorySandbox, sandboxMemory } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
 import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { Logger } from '../src/logger/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
@@ -65,6 +66,9 @@ const harness = defineHarness()
         type Input = typeof ctx.input
         const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
         const _inputExact: Expect<Equal<Input, { task: string }>> = true
+        // Spec 10 `WorkflowContext`: handlers receive the harness logger.
+        const _logIsLogger: Expect<Equal<typeof ctx.log, Logger>> = true
+        ctx.log.debug('workflow handler logging is typed')
         await ctx.memory.session.write('workflow_task', { task: ctx.input.task })
         await ctx.memory.run.write('workflow_seen', true)
         await ctx.memory.user('u1').write('workflow_user', 'ok')

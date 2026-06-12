@@ -38,8 +38,11 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Coverage
+        run: npm run test:coverage
+
+      - name: Type tests
+        run: npm run test:types
 
       - name: Contracts
         run: npm run test:contracts
@@ -86,6 +89,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Coverage
+        run: npm run test:coverage
+
+      - name: Type tests
+        run: npm run test:types
+
       - name: Contracts
         run: npm run test:contracts
 
@@ -94,9 +103,6 @@ jobs:
 
       - name: Failure tests
         run: npm run test:failure
-
-      - name: Typecheck
-        run: npm run typecheck
 
       - name: Verify package contents
         run: |

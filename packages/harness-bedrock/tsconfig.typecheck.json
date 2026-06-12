@@ -4,8 +4,16 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
-      "@purista/harness": ["../harness/src/index.ts"]
+      "@purista/harness/testing": [
+        "../harness/src/testing/index.ts"
+      ],
+      "@purista/harness": [
+        "../harness/src/index.ts"
+      ]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts"
+  ]
 }

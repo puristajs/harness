@@ -44,8 +44,9 @@ export interface ModelRetryOnPolicy {
  * Provider-neutral retry policy.
  *
  * The harness actively retries only inside `maxActiveElapsedMs` and
- * `maxActiveDelayMs`. Longer provider retry instructions are reported as
- * deferred retry errors unless a future scheduler integration handles them.
+ * `maxActiveDelayMs`. Longer provider retry instructions fail fast with
+ * `retryKind: 'none'` by default; `longRetry: 'defer'` classifies them as
+ * deferred retry errors carrying the provider-supplied `retryAfterMs`.
  */
 export interface ModelRetryPolicy {
   /** Total active attempts including the first call. Default: `3`. */
@@ -54,7 +55,7 @@ export interface ModelRetryPolicy {
   maxActiveElapsedMs?: number
   /** Maximum single active sleep. Default: `20_000`. */
   maxActiveDelayMs?: number
-  /** Optional cap for deferred retry metadata. Default: unlimited. */
+  /** Optional cap for deferred retry classification with `longRetry: 'defer'`. Default: unlimited. */
   maxDeferredDelayMs?: number
   /** Honor provider Retry-After/reset headers when present. Default: `true`. */
   respectRetryAfter?: boolean
@@ -64,7 +65,12 @@ export interface ModelRetryPolicy {
   maxDelayMs?: number
   /** Retryable failure classes. Omitted fields default to `true`. */
   retryOn?: ModelRetryOnPolicy
-  /** Long retry handling. Default: `error`. */
+  /**
+   * Handling for provider-instructed delays beyond `maxActiveDelayMs`:
+   * `'error'` fails immediately with `retryKind: 'none'`; `'defer'` fails with
+   * `retryKind: 'deferred'` plus the provider-supplied `retryAfterMs` so a
+   * queue/scheduler can retry later. Default: `'error'`.
+   */
   longRetry?: 'error' | 'defer'
 }
 

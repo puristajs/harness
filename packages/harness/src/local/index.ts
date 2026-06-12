@@ -1,14 +1,19 @@
 import { resolve } from 'node:path'
-import type { Sandbox } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
 import type { DurableRuntime } from '../runtime/durable.js'
 import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { createLocalWorkspaceCoordinator, localDirectoryWorkspaceStore } from './local-workspace.js'
-import { localDirectorySandbox, type LocalHostExecPolicy } from './local-sandbox.js'
+import { localDirectorySandbox, type LocalDurableSandbox, type LocalHostExecPolicy } from './local-sandbox.js'
 import { SqliteHarnessStorage, type SqliteDurableRuntimeOptions, type SqliteContextCheckpointStoreOptions, type SqliteStateStoreOptions, sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore } from './sqlite-storage.js'
 
-export type { LocalHostExecPolicy, LocalDirectorySandboxOptions } from './local-sandbox.js'
+export type {
+  LocalHostExecPolicy,
+  LocalDirectorySandboxOptions,
+  LocalDurableSandbox,
+  LocalFilesOnlySandboxCapabilities,
+  LocalExecSandboxCapabilities
+} from './local-sandbox.js'
 export type { LocalDirectoryWorkspaceStoreOptions } from './local-workspace.js'
 export type { SqliteDurableRuntimeOptions, SqliteContextCheckpointStoreOptions, SqliteStateStoreOptions } from './sqlite-storage.js'
 export { localDirectorySandbox } from './local-sandbox.js'
@@ -33,7 +38,8 @@ export interface LocalDurableExecutionOptions {
 export interface LocalDurableExecution {
   state: StateStore
   runtime: DurableRuntime
-  sandbox: Sandbox
+  /** Files-only by default; advertises `sandbox.exec` only when `exec` is configured (spec 22 §2). */
+  sandbox: LocalDurableSandbox
   workspaceStore: DurableWorkspaceStore
   checkpoints: ContextCheckpointStore
   close(): Promise<void>

@@ -234,6 +234,9 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
     workspace.updatedAt = completedAt
     workspace.checkpoints = []
     workspace.bytes = 0
+    // A cleaned workspace keeps only its slim terminal record; idempotency
+    // entries referencing it are evicted so the store does not grow unbounded.
+    this.evictWorkspaceOps(opts.workspaceRef)
     const result: WorkspaceCleanupResult = { workspaceRef: opts.workspaceRef, state: 'cleaned', completedAt, deletedBytes, deletedFiles }
     this.opResults.set(opts.idempotencyKey, result)
     return result
@@ -288,6 +291,16 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
       throw new WorkspaceError('Workspace checkpoint not found.', { reason: 'invalid_reference', checkpoint_ref: checkpointRef })
     }
     return found.workspaceRef
+  }
+
+  private evictWorkspaceOps(workspaceRef: string): void {
+    for (const [key, entry] of this.startKeys) {
+      if (entry.workspaceRef === workspaceRef) this.startKeys.delete(key)
+    }
+    for (const [key, value] of this.opResults) {
+      const ref = (value as { workspaceRef?: string } | undefined)?.workspaceRef
+      if (ref === workspaceRef) this.opResults.delete(key)
+    }
   }
 
   private requireLiveWorkspace(workspaceRef: string): StoredWorkspace {

@@ -52,6 +52,8 @@ import type { TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
 import { createMetrics, createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
+import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
+import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 
 type ModelRunContext = {
@@ -104,12 +106,20 @@ type EffectiveDelegationPolicy = {
 type DelegationRunState = {
   totalChildAgentCalls: number
   activeChildAgentCalls: number
+  /** In-flight child-agent call promises, settled before the run terminalizes. */
+  inFlightChildCalls: Set<Promise<unknown>>
 }
 
 const NEVER_ABORT_SIGNAL = new AbortController().signal
 const DEFAULT_MAX_CHILD_AGENT_CALLS = 32
 const DEFAULT_MAX_PARALLEL_CHILD_AGENT_CALLS = 8
 const DEFAULT_MAX_DELEGATION_DEPTH = 1
+/**
+ * Workflows invoke leaf agents directly, so every child-agent call runs at
+ * depth 1 (spec 10 "Delegation policy": `maxDepth` default `1`, `0` disables
+ * child-agent delegation).
+ */
+const CHILD_DELEGATION_DEPTH = 1
 
 function now(): string {
   return new Date().toISOString()
@@ -126,9 +136,13 @@ const STREAM_TERMINAL_EVENT_TYPES = new Set<string>(['run.finished', 'agent.fini
  * unread event is dropped and counted, so a slow consumer never silently skips
  * an unread event. Delivery is promise-notified rather than time-polled, so
  * there is no fixed per-event latency or periodic timer.
+ *
+ * Abandoning the stream (`break` / `iterator.return()`) aborts `relaySignal`,
+ * so a run wired to it is cancelled promptly instead of blocking the consumer
+ * until the run finishes on its own.
  */
 export async function* relayRunEvents(
-  run: (onEvent: (event: RunEvent) => Promise<void>) => Promise<unknown>
+  run: (onEvent: (event: RunEvent) => Promise<void>, relaySignal: AbortSignal) => Promise<unknown>
 ): AsyncIterable<RunEvent> {
   const queue: RunEvent[] = []
   let dropped = 0
@@ -136,6 +150,7 @@ export async function* relayRunEvents(
   let done = false
   let failure: unknown
   let wake: (() => void) | undefined
+  const relayController = new AbortController()
 
   const notify = (): void => {
     const resolve = wake
@@ -155,7 +170,7 @@ export async function* relayRunEvents(
     queue.push(event)
     notify()
     return Promise.resolve()
-  })
+  }, relayController.signal)
     .catch((error) => {
       failure = error
       return undefined
@@ -189,6 +204,9 @@ export async function* relayRunEvents(
       }
     }
   } finally {
+    // Cancel the run before awaiting it so an abandoned stream does not block
+    // `iterator.return()` until the run finishes or times out.
+    relayController.abort(new OperationCancelledError('Run event stream was abandoned by the consumer.', { scope: 'run' }))
     await result.catch(() => undefined)
   }
   if (failure) throw failure
@@ -510,9 +528,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }
         },
         async close(): Promise<void> {
+          if (state.busy) {
+            throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
+          }
           await definition.state.closeSession(sessionId)
           sessionStates.delete(sessionId)
           sessionStateOpenings.delete(sessionId)
+          await mcpRegistry.closeForSandboxKey(sessionId)
           await state.sandboxSession.close()
         }
       }
@@ -554,7 +576,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: AgentInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    yield* relayRunEvents((onEvent) => runAgentCall(sessionId, agentId, agent, input, opts, onEvent))
+    yield* relayRunEvents((onEvent, relaySignal) => {
+      const combined = combineSignals(relaySignal, opts?.signal)
+      return runAgentCall(sessionId, agentId, agent, input, { ...opts, signal: combined.signal }, onEvent)
+        .finally(() => combined.cleanup())
+    })
   }
 
   async function runAgentCall<K extends keyof NonNullable<S['agents']>>(
@@ -573,48 +599,46 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
+    // Busy check precedes createRunSignal so an early SessionBusyError cannot
+    // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
     state.busy = true
+    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
     const runId = ulid()
-    const memory = memoryFacade({
-      sessionId,
-      runId,
-      agentId,
-      signal: runSignal.signal,
-      sandboxSession: state.sandboxSession,
-      metadata: opts?.metadata ?? {}
-    })
-    const checkpoints = createContextCheckpoints({ sessionId, runId, agentId, signal: runSignal.signal })
-    const runRecord: RunRecord = {
-      id: runId,
-      sessionId,
-      kind: 'agent',
-      target: agentId,
-      startedAt,
-      status: 'running',
-      input: input as JsonValue
-    }
-
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
       await onEvent?.(event)
       await appendEvents(runId, [{ id: ulid(), runId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
     }
 
+    let runCreated = false
     try {
+      const memory = memoryFacade({
+        sessionId,
+        runId,
+        agentId,
+        signal: runSignal.signal,
+        sandboxSession: state.sandboxSession,
+        metadata: opts?.metadata ?? {}
+      })
+      const checkpoints = createContextCheckpoints({ sessionId, runId, agentId, signal: runSignal.signal })
+      const runRecord: RunRecord = {
+        id: runId,
+        sessionId,
+        kind: 'agent',
+        target: agentId,
+        startedAt,
+        status: 'running',
+        input: input as JsonValue
+      }
       await definition.state.createRun(runRecord)
-    } catch (error) {
-      state.busy = false
-      throw error
-    }
+      runCreated = true
 
-    try {
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.agent_prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -670,6 +694,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return result as AgentOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
+      if (!runCreated) {
+        throw finalError
+      }
       const finishedAt = now()
       const serialized = serializeError(finalError)
       const log = finalError instanceof OperationCancelledError ? definition.logger.warn.bind(definition.logger) : definition.logger.error.bind(definition.logger)
@@ -712,7 +739,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     input: WorkflowInput<S, K>,
     opts?: InvokeOptions
   ): AsyncIterable<RunEvent> {
-    yield* relayRunEvents((onEvent) => runWorkflowCall(sessionId, workflowId, workflow, input, opts, onEvent))
+    yield* relayRunEvents((onEvent, relaySignal) => {
+      const combined = combineSignals(relaySignal, opts?.signal)
+      return runWorkflowCall(sessionId, workflowId, workflow, input, { ...opts, signal: combined.signal }, onEvent)
+        .finally(() => combined.cleanup())
+    })
   }
 
   async function runWorkflowCall<K extends keyof NonNullable<S['workflows']>>(
@@ -729,12 +760,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
+    // Busy check precedes createRunSignal so an early SessionBusyError cannot
+    // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
     if (state.busy) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
     }
     state.busy = true
+    const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
     const runId = opts?.durable ? opts.durable.runId : ulid()
@@ -759,6 +792,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     let runMountedSkills = state.mountedSkills
     let closeRunSandbox = false
     let runCreated = false
+    const delegationState: DelegationRunState = {
+      totalChildAgentCalls: 0,
+      activeChildAgentCalls: 0,
+      inFlightChildCalls: new Set<Promise<unknown>>()
+    }
     try {
       if (durableRuntime && opts?.durable) {
         durableBinding = await beginDurableWorkflow({
@@ -788,13 +826,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         metadata: opts?.metadata ?? {}
       })
       const checkpoints = createContextCheckpoints({ sessionId, runId, workflowId, signal: runSignal.signal })
-      try {
-        await definition.state.createRun(runRecord)
-        runCreated = true
-      } catch (error) {
-        state.busy = false
-        throw error
-      }
+      await definition.state.createRun(runRecord)
+      runCreated = true
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -812,16 +845,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.workflow.id': workflowId
         })
         const delegationPolicy = resolveDelegationPolicy(workflow)
-        const delegationState: DelegationRunState = {
-          totalChildAgentCalls: 0,
-          activeChildAgentCalls: 0
-        }
 
         const workflowArgs = {
           workflowId,
           workflow,
           input,
           ctx: {
+            log: definition.logger,
             signal: runSignal.signal,
             runId,
             sessionId,
@@ -840,6 +870,24 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
                 async (agentInput: unknown, agentOpts?: InvokeOptions & { model?: string }) => {
+                  // Spec 10 "Cancellation": starting a child-agent call after
+                  // abort throws OperationCancelledError synchronously, before
+                  // policy checks run or budgets are consumed.
+                  if (runSignal.signal.aborted) {
+                    throw abortError(runSignal.signal, 'run', 'Run was cancelled.')
+                  }
+                  if (agentOpts?.signal?.aborted) {
+                    throw new OperationCancelledError('Child-agent call was cancelled before start.', { scope: 'run' }, agentOpts.signal.reason)
+                  }
+                  validateInvokeOptions(agentOpts)
+                  if (agentOpts?.durable) {
+                    throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
+                  }
+                  // An unknown per-call model alias is an invoke-option mistake;
+                  // it must not pass the delegation gate or consume call budget.
+                  if (agentOpts?.model !== undefined && !(agentOpts.model in (definition.models as ModelsConfig))) {
+                    throw new ValidationError('Unknown model alias for child-agent call.', { where: 'invoke_options', issues: { model: agentOpts.model } })
+                  }
                   const selectedModelAlias = agentOpts?.model ?? (agent as AgentDefinition<S>).model
                   assertDelegationAllowed({
                     policy: delegationPolicy,
@@ -848,11 +896,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                     agentId,
                     modelAlias: selectedModelAlias
                   })
+                  // Compose signals before consuming budget so a composition
+                  // failure can never leak an active delegation slot.
+                  const combinedSignal = combineSignals(runSignal.signal, agentOpts?.signal)
+                  const agentSignal = agentOpts?.timeoutMs !== undefined
+                    ? createRunSignal(combinedSignal.signal, agentOpts.timeoutMs)
+                    : combinedSignal
                   delegationState.totalChildAgentCalls += 1
                   delegationState.activeChildAgentCalls += 1
                   const delegationCallId = `delegate_${ulid()}`
-                  const agentSignal = combineSignals(runSignal.signal, agentOpts?.signal)
-                  try {
+                  const childCall = (async () => {
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
                     const agentMetadata = { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
                     const agentMemory = memoryFacade({
@@ -872,7 +925,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       sessionId,
                       workflowId,
                       delegationCallId,
-                      delegationDepth: 1,
+                      delegationDepth: CHILD_DELEGATION_DEPTH,
                       input: agentInput,
                       history: await definition.state.listMessages(sessionId),
                       agent: agent as AgentDefinition<S>,
@@ -906,9 +959,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       await definition.state.appendMessages(sessionId, run.emitted)
                     }
                     return run.output
+                  })()
+                  delegationState.inFlightChildCalls.add(childCall)
+                  try {
+                    return await childCall
                   } finally {
+                    delegationState.inFlightChildCalls.delete(childCall)
                     delegationState.activeChildAgentCalls -= 1
                     agentSignal.cleanup()
+                    if (agentSignal !== combinedSignal) combinedSignal.cleanup()
                   }
                 }
               ])
@@ -932,6 +991,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           } as Parameters<typeof runWorkflow<S>>[0]))
       }))
 
+      // A resolved handler may still have child-agent calls in flight; settle
+      // them before terminalizing so no run events trail run.finished.
+      if (delegationState.inFlightChildCalls.size > 0) {
+        await Promise.allSettled([...delegationState.inFlightChildCalls])
+      }
       const finishedAt = now()
       if (durableBinding) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_success' }, () => durableBinding!.finishSuccess(result as JsonValue))
@@ -944,6 +1008,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return result as WorkflowOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
+      // A handler rejection mid-Promise.all must not orphan in-flight child
+      // agents: cancel them through the run signal and await settlement before
+      // run.finished is emitted and the session busy lock is released.
+      if (delegationState.inFlightChildCalls.size > 0) {
+        runSignal.abort(finalError)
+        await Promise.allSettled([...delegationState.inFlightChildCalls])
+      }
       const finishedAt = now()
       const serialized = serializeError(finalError)
       if (!runCreated) {
@@ -1045,8 +1116,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         reason: 'agent_not_allowed'
       })
     }
-    const childDepth = 1
-    if (childDepth > policy.maxDepth) {
+    if (CHILD_DELEGATION_DEPTH > policy.maxDepth) {
       throw new DelegationPolicyError('Workflow child-agent delegation depth exceeded.', {
         workflow_id: workflowId,
         agent_id: agentId,
@@ -1362,25 +1432,6 @@ function resolveContentCaptureMode(options: TelemetryOptions | undefined): Conte
   return 'NO_CONTENT'
 }
 
-function metadataSpanAttrs(metadata: Readonly<Record<string, JsonValue>> | undefined): Record<string, string | number | boolean | undefined> {
-  const attrs: Record<string, string | number | boolean | undefined> = {}
-  for (const [key, value] of Object.entries(metadata ?? {})) {
-    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(key)) continue
-    if (typeof value === 'string') {
-      if (value.length <= 256) attrs[`harness.metadata.${key}`] = value
-      continue
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      attrs[`harness.metadata.${key}`] = value
-      continue
-    }
-    if (typeof value === 'boolean') {
-      attrs[`harness.metadata.${key}`] = value
-    }
-  }
-  return attrs
-}
-
 function isValidTraceparent(traceparent: string): boolean {
   const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(traceparent)
   if (!match) return false
@@ -1554,7 +1605,7 @@ function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<Run
   }
 }
 
-function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void } {
+function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void; abort: (reason: unknown) => void } {
   const controller = new AbortController()
   const relay = () => controller.abort(runAbortReason(parent?.reason))
   if (parent) parent.addEventListener('abort', relay, { once: true })
@@ -1564,6 +1615,8 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
     : undefined
   return {
     signal: controller.signal,
+    /** Harness-initiated abort, e.g. to cancel in-flight child-agent calls. */
+    abort: (reason: unknown) => controller.abort(runAbortReason(reason)),
     cleanup: () => {
       if (timeout) clearTimeout(timeout)
       if (parent) parent.removeEventListener('abort', relay)

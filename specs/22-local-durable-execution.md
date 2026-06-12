@@ -52,7 +52,13 @@ interface LocalHostExecPolicy {
 interface LocalDurableExecution {
   state: StateStore
   runtime: DurableRuntime
-  sandbox: Sandbox<readonly ['sandbox.fs'] | readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']>
+  /**
+   * Workspace persistence is independent of exec: files-only mode advertises
+   * `['sandbox.fs', 'sandbox.persistent_fs']`; enabling `exec` adds `sandbox.exec`.
+   */
+  sandbox:
+    | Sandbox<readonly ['sandbox.fs', 'sandbox.persistent_fs']>
+    | Sandbox<readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']>
   workspaceStore: DurableWorkspaceStore
   checkpoints: ContextCheckpointStore
   close(): Promise<void>
@@ -117,21 +123,35 @@ Rules:
 - Schema version is the v1 local schema above. The adapter creates missing
   tables and indexes during construction before returning.
 - WAL mode is enabled for file databases. `busy_timeout` is at least `5000ms`.
-- Every public runtime method runs inside a SQLite transaction.
-- `startRun` reuses a non-terminal run with the same `runId`, increments the
-  attempt, and returns committed checkpoints ordered by `sequence`.
-- A lease blocks other workers until `expiresAt`. A retry by the same worker may
-  renew the lease. A retry by another worker may take over only after
-  `expiresAt`.
+- Every public runtime method runs inside a SQLite transaction. Transaction
+  entry is serialized by an in-process mutex (one open transaction per
+  connection); `withSessionLock` is a per-session in-process mutex matching the
+  in-memory runtime.
+- `startRun` reuses a run with the same `runId` unless its status blocks resume,
+  increments the attempt, and returns committed checkpoints ordered by
+  `sequence`.
+- A lease blocks other workers until `expiresAt`. A retry by the same worker
+  renews the lease (upsert on `run_id`). A retry by another worker may take over
+  only after `expiresAt`. Expired-lease deletion is scoped to the contested run
+  and session; unrelated leases are never deleted by another start.
+- Every successful `commitCheckpoint` by the owning lease renews `expiresAt`
+  (heartbeat), so runs longer than the lease TTL keep their lease.
 - `release()` deletes only the matching `leaseId`; stale release calls are
   idempotent.
 - `commitCheckpoint` requires the active matching lease and is idempotent for
   the same `(runId, stepId, sequence, attempt, output, replay)`. Conflicting
   payloads throw `WorkspaceError{meta.reason:'checkpoint_conflict'}`.
-- `finishRun` marks the run terminal, stores terminal output/error, and releases
-  active matching leases.
+- `finishRun` records the terminal status (`succeeded`, `failed`, or
+  `cancelled`) with sanitized output/error on the durable run and releases
+  active matching leases. Only `succeeded` and `cancelled` block a later
+  `startRun` (`DurableTerminalRunError`); a `failed` run remains resumable by a
+  retry with the same `runId`.
 - JSON payloads are serialized once before storage. Non-serializable values are
-  rejected before SQLite writes.
+  rejected with `DurableStepError` before any SQLite write.
+- `SqliteDurableRuntimeOptions.now` optionally injects an epoch-millisecond
+  clock (default `Date.now`) so lease TTL behavior is testable without real
+  waits.
+- `close()` is idempotent.
 
 ## 4. Workspace Store
 
@@ -150,15 +170,26 @@ Rules:
 Rules:
 
 - `workspaceRef` and `checkpointRef` are opaque ids. They are not host paths.
+  Refs always match `^workspace_[A-Z0-9]+$` and are validated before any path
+  construction; anything else throws
+  `WorkspaceError{meta.reason:'invalid_reference'}`.
 - `startWorkspace` creates or reuses `active/`.
 - `pauseWorkspace` copies `active/` into a new checkpoint directory before the
   runtime checkpoint is committed.
 - `resumeWorkspace` restores the requested checkpoint directory into `active/`.
 - `abortWorkspace` updates metadata and blocks future resume.
 - `cleanupWorkspace` deletes only the addressed workspace directory after
-  verifying the real path is inside `<root>/workspaces`.
+  verifying the real path (symlinks resolved) is inside `<root>/workspaces`.
 - `inspectWorkspace` reads metadata and checkpoint summaries only. It never
   returns file content.
+- Idempotency records (`idempotencyKey` → run/session identity and result) are
+  persisted in `meta.json`, so replay and `idempotency_conflict` detection
+  (spec 21 §9) survive process restarts.
+- `meta.json` writes are crash-atomic (temp file plus rename).
+- When `policy.quota.maxWorkspaceBytes` is configured, `pauseWorkspace` rejects
+  oversized checkpoints with `WorkspaceQuotaExceededError`, removes the partial
+  checkpoint copy, and emits the `harness.workspace_store.quota.exceeded`
+  counter.
 - The default local store reports `encryptedAtRest:false` and
   `cleanupMode:'manual_only'`; applications that require encryption or automatic
   cleanup must provide another adapter or explicit policy metadata.
@@ -189,13 +220,37 @@ Sandbox filesystem rules:
 - `/workspace` maps to the durable active directory.
 - Reads, writes, removes, lists, stats, mounts, and exec `cwd` resolve through a
   realpath jail. `..`, symlink escapes, and paths outside the sandbox root throw
+  `SandboxError{meta.reason:'invalid_path'}`. Write targets whose final path
+  component is a symlink (including dangling symlinks) are rejected before any
+  write.
+- `sessionId` and `runId` used for non-durable sandbox roots must be safe path
+  segments (no separators, no `.`/`..`); anything else throws
   `SandboxError{meta.reason:'invalid_path'}`.
 - `exec:false` is the default and produces a files-only session with
-  `executor:'unavailable'`.
-- When `exec` is enabled, the sandbox advertises `sandbox.exec` and
-  `sandbox.persistent_fs`. Commands run with `cwd` defaulting to `/workspace`,
-  a minimal environment, the configured `env`, timeout enforcement, and optional
-  command allow-list.
+  `executor:'unavailable'` and capabilities
+  `['sandbox.fs', 'sandbox.persistent_fs']` — workspace persistence is
+  independent of host execution.
+- When `exec` is enabled, the sandbox advertises
+  `['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']`. Commands run with
+  `cwd` defaulting to `/workspace`, a minimal environment, the configured `env`,
+  timeout enforcement (falling back to the harness `toolTimeoutMs`), and the
+  optional command allow-list.
+
+Sandbox exec hardening rules:
+
+- Commands never run through a shell. The command line is tokenized (single and
+  double quotes group arguments; no expansion, substitution, or redirection) and
+  spawned as an argv array.
+- When `allowCommands` is configured, unquoted shell metacharacters
+  (``; | & < > ` $ ( )`` and newlines) are rejected with
+  `SandboxError{meta.reason:'exec_failed'}` so the allow-list cannot be
+  bypassed.
+- Captured stdout/stderr are capped at 10 MiB each; truncated output ends with a
+  truncation marker.
+- Aborting the exec signal rejects with
+  `OperationCancelledError{meta.scope:'sandbox'}`. A signal-killed process
+  (`exitCode === null`) rejects with `SandboxError{meta.reason:'exec_failed'}`
+  carrying the terminating signal in the message.
 
 ## 6. Context Checkpoints
 
@@ -255,10 +310,16 @@ The local adapters emit the workspace spans from
 | Span | Required attributes |
 | --- | --- |
 | `harness.runtime.start` | runtime adapter, run id, session id, resumed, attempt |
+| `harness.runtime.load_checkpoint` | runtime adapter, run id |
 | `harness.runtime.checkpoint` | runtime adapter, run id, step id, sequence, attempt |
-| `harness.runtime.finish` | runtime adapter, run id, status |
-| `harness.context_checkpoint.write` | adapter, run id, kind, sequence, payload bytes |
-| `harness.local_sandbox.open` | sandbox adapter, run id, session id, exec enabled |
+| `harness.runtime.finish` | runtime adapter, run id, run status (`harness.run.status`) |
+| `harness.context_checkpoint.write` | adapter, run id, kind, sequence, ref hash, payload bytes |
+| `harness.context_checkpoint.list` | adapter, query attributes, limit, result count |
+| `harness.local_sandbox.open` | sandbox adapter, run id, session id, exec enabled, workspace ref hash when bound |
+
+Local sandbox spans use the `harness.local_sandbox.{operation}` span/metric
+names with `harness.sandbox.*` attribute keys exactly as defined in
+[14-otel-conventions](./14-otel-conventions.md).
 
 Raw file paths, workspace refs, checkpoint refs, prompts, completions, tool
 arguments, tool results, and context checkpoint payloads are never emitted in

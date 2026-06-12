@@ -68,7 +68,7 @@ side effects stop promptly.
 }))
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
 
 Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
@@ -85,9 +85,11 @@ Child-agent delegation is disabled by default. Add `workflow.delegation` next to
 handlers that call `ctx.agents`; the policy object enables that workflow unless
 it sets `enabled: false`. After opt-in, defaults are 32 child-agent calls per
 workflow run, 8 active child-agent calls at once, and depth 1. Use
-`delegation.agents` for least privilege, raise/lower budgets per workflow, and
-use `agentModelAliases` or `modelAliases` before passing `{ model: 'alias' }`
-to `ctx.agents.<id>`.
+`delegation.agents` for least privilege and raise/lower budgets per workflow.
+`modelAliases` restricts every child-agent call in the workflow — including
+calls that run on the agent's default `model` — and `agentModelAliases`
+replaces that set for the named agent; configure one of them before passing
+`{ model: 'alias' }` to `ctx.agents.<id>`.
 
 Runtime policy violations throw `DelegationPolicyError`. Streamed and persisted
 child-agent lifecycle events include `workflowId`, `delegationCallId`,

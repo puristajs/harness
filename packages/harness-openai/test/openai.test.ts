@@ -184,7 +184,7 @@ describe('openai provider factory', () => {
         model: 'gpt-4.1-mini',
         method: 'object',
         reason: 'malformed_response',
-        providerBody: '{"ok":'
+        providerBody: { redacted: true, contentLength: 6 }
       }
     })
   })
@@ -221,7 +221,7 @@ describe('openai provider factory', () => {
         model: 'gpt-4.1-mini',
         method: 'objectStream',
         reason: 'malformed_response',
-        providerBody: '{"ok":'
+        providerBody: { redacted: true, contentLength: 6 }
       }
     })
   })
@@ -268,7 +268,7 @@ describe('openai provider factory', () => {
         model: 'gpt-4.1-mini',
         method: 'text',
         reason: 'malformed_response',
-        providerBody: '{"query":'
+        providerBody: { redacted: true, contentLength: 9 }
       }
     })
   })
@@ -587,6 +587,85 @@ describe('openai provider factory', () => {
       providerStatus: 'incomplete',
       providerFinishReason: 'incomplete',
       details: { incompleteDetails: { reason: 'max_output_tokens' } }
+    })
+  })
+
+  it('throws ModelError for failed non-streaming Responses API results', async () => {
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async () => ({
+            output: [],
+            status: 'failed',
+            error: { code: 'server_error', message: 'The model failed to generate a response.' },
+            usage: { input_tokens: 4, output_tokens: 0 }
+          })
+        }
+      } as any
+    })
+
+    await expect(
+      provider.text!({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'hi' }],
+        defaults: { retry: false },
+        signal: mockSignal()
+      })
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: true,
+      meta: {
+        provider: 'openai',
+        method: 'text',
+        reason: 'provider_unavailable',
+        providerCode: 'server_error',
+        providerMessage: 'The model failed to generate a response.'
+      }
+    })
+  })
+
+  it('throws ModelError when a streamed Responses API run emits response.failed', async () => {
+    async function* chunks() {
+      yield { type: 'response.output_text.delta', delta: '{"ok":' }
+      yield {
+        type: 'response.failed',
+        response: {
+          status: 'failed',
+          error: { code: 'rate_limit_exceeded', message: 'Rate limit reached.' },
+          usage: { input_tokens: 4, output_tokens: 1 }
+        }
+      }
+    }
+
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => chunks() }
+      } as any
+    })
+
+    await expect(async () => {
+      for await (const _chunk of provider.objectStream!({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: { type: 'object' },
+        defaults: { retry: false },
+        signal: mockSignal()
+      })) {
+        // consume until the failure event surfaces
+      }
+    }).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: true,
+      meta: {
+        provider: 'openai',
+        method: 'objectStream',
+        reason: 'rate_limited',
+        providerCode: 'rate_limit_exceeded'
+      }
     })
   })
 

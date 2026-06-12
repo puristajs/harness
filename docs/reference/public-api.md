@@ -349,6 +349,14 @@ SSE/WebSocket adapters can then forward a single run-event stream without
 treating provider protocols as public API, while owning any UI labels or
 client-facing event names.
 
+Adapter authors extend `BaseModelProvider` and reuse the shared helpers
+exported from the main entry (`toTokenUsage`, `parseProviderJson`,
+`safePartialJson`, `malformedResponseError`, `redactProviderContent`,
+`withoutObjectTool`, and the `createStreamToolCallState` /
+`accumulateStreamToolCallDeltas` / `finalizeStreamToolCalls` stream tool-call
+accumulator) so error shapes and usage accounting stay identical across
+providers.
+
 ## Error Families
 
 All harness errors include `code`, `category`, `retriable`, `message`, and
@@ -425,6 +433,19 @@ The `json-schema` scorer is a deterministic subset, not a full JSON Schema
 draft implementation. It supports `type`, `const`, `enum`, object
 `properties`, object `required`, and `additionalProperties: false`.
 
+## Testing Subpath
+
+`@purista/harness/testing` ships the fakes (`FakeModelProvider`,
+`FakeStateStore`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
+`fakeSnapshotSandbox`, `fakeCapabilityAdapter`,
+`InMemoryDurableWorkspaceStore`), the port contract suites
+(`stateStoreContract`, `sandboxContract`, `modelProviderContract`,
+`loggerContract`, `memoryAdapterContract`, `durableWorkspaceStoreContract`,
+`adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
+`makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
+locked list lives in `specs/13-public-api.md`; adapter packages run the
+matching contract suites in their own test suites.
+
 ## OpenAI Adapter
 
 ```ts
@@ -444,7 +465,9 @@ metadata.
 Model aliases accept `retry: true | false | ModelRetryPolicy`. Retry is enabled
 by default for short transient failures and rate limits. Long provider
 `Retry-After` values are surfaced as `ModelError` metadata with
-`retryKind:'deferred'` instead of blocking the current invocation. Responses
+`retryKind:'deferred'` instead of blocking the current invocation. The
+deferred classification requires `longRetry: 'defer'`; with the default
+`longRetry: 'error'` the call fails with `retryKind:'none'`. Responses
 also keep `finishReason` plus optional `outcome` metadata with raw provider
 finish/status details.
 

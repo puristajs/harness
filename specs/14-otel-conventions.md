@@ -108,7 +108,7 @@ Every harness-created span carries when available:
 | Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
 | Durable runtime operation | `harness.runtime.{operation}` | `harness.*` |
 | Context checkpoint operation | `harness.context_checkpoint.{operation}` | `harness.*` |
-| Local sandbox open | `harness.local_sandbox.open` | `harness.*` |
+| Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
 
 ## GenAI operations
 
@@ -273,6 +273,10 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 | `harness.workspace.state` | string | lifecycle state returned by the adapter |
 | `harness.workspace.ref_hash` | string | SHA-256 hex of `workspaceRef` |
 | `harness.workspace.checkpoint_ref_hash` | string | SHA-256 hex of `checkpointRef` when available |
+| `harness.workspace.persistent` | boolean | store survives process exit |
+| `harness.workspace.attempt` | integer | start/pause/resume only |
+| `harness.workspace.sequence` | integer | pause only |
+| `harness.workflow.step_id` | string | pause only |
 | `harness.workspace_store.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
 | `harness.workspace_store.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
 | `harness.workspace_store.quota` | string | quota id when a quota is checked or exceeded |
@@ -295,7 +299,7 @@ checkpoint records; spans, metrics, and logs emit only hashes.
 
 ### `harness.runtime.{operation}`
 
-Operation is one of `start`, `checkpoint`, or `finish`.
+Operation is one of `start`, `load_checkpoint`, `checkpoint`, or `finish`.
 
 | Key | Type |
 | --- | --- |
@@ -307,6 +311,7 @@ Operation is one of `start`, `checkpoint`, or `finish`.
 | `harness.runtime.sequence` | integer, checkpoint only |
 | `harness.runtime.step_id` | string, checkpoint only |
 | `harness.run.id` | string |
+| `harness.run.status` | string, finish only |
 | `harness.session.id` | string |
 | `error.type` | string, failure only |
 
@@ -320,7 +325,9 @@ Operation is one of `write`, `read`, `list`, or `delete`.
 | `harness.context_checkpoint.operation` | string |
 | `harness.context_checkpoint.kind` | string, when available |
 | `harness.context_checkpoint.ref_hash` | string, when available |
+| `harness.context_checkpoint.sequence` | integer, when available |
 | `harness.context_checkpoint.result_count` | integer, list only |
+| `harness.context_checkpoint.limit` | integer, list only |
 | `harness.context_checkpoint.payload_size_bytes` | integer, write only |
 | `harness.run.id` | string, when available |
 | `harness.session.id` | string, when available |
@@ -330,15 +337,26 @@ Operation is one of `write`, `read`, `list`, or `delete`.
 
 Context checkpoint payload content is never emitted by core.
 
-### `harness.local_sandbox.open`
+### `harness.local_sandbox.{operation}`
+
+Operation is one of `open`, `read`, `read_text`, `write`, `remove`, `list`,
+`stat`, `exists`, `mount`, or `exec`. All attribute keys use the
+`harness.sandbox.*` namespace.
 
 | Key | Type |
 | --- | --- |
 | `harness.sandbox.adapter` | string |
+| `harness.sandbox.operation` | string |
 | `harness.sandbox.exec_enabled` | boolean |
-| `harness.workspace.ref_hash` | string, when bound to a durable workspace |
-| `harness.run.id` | string |
-| `harness.session.id` | string |
+| `harness.sandbox.write_bytes` | integer, write only |
+| `harness.sandbox.recursive` | boolean, list/remove only |
+| `harness.sandbox.has_glob` | boolean, list only |
+| `harness.sandbox.file_count` | integer, mount only |
+| `harness.sandbox.has_cwd` | boolean, exec only |
+| `harness.sandbox.has_stdin` | boolean, exec only |
+| `harness.workspace.ref_hash` | string, open only, when bound to a durable workspace |
+| `harness.run.id` | string, open only |
+| `harness.session.id` | string, open only |
 | `error.type` | string, failure only |
 
 ### `harness.state.op`
@@ -445,6 +463,8 @@ aggregating metrics.
 | `harness.runtime.operations` | Counter | `1` | `harness.runtime.adapter`, `harness.runtime.operation`, `error.type` |
 | `harness.context_checkpoint.operation.duration` | Histogram | `s` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
 | `harness.context_checkpoint.operations` | Counter | `1` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
+| `harness.local_sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
+| `harness.local_sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 
 No `_ms` instruments exist.
 

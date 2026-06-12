@@ -1,7 +1,7 @@
 import { SpanStatusCode, context, metrics, propagation, trace } from '@opentelemetry/api'
 import { ATTR_ERROR_TYPE } from '@opentelemetry/semantic-conventions'
 import { HarnessError } from '../errors/index.js'
-import { sanitizeForLog, sanitizeProviderBody } from '../errors/redaction.js'
+import { sanitizeProviderBody } from '../errors/redaction.js'
 import { HARNESS_VERSION } from '../version.js'
 
 /** Attributes accepted by telemetry span/metric helpers. */
@@ -115,11 +115,7 @@ export class OtelTelemetryShim implements TelemetryShim {
         return result
       } catch (error) {
         span.setAttributes(sanitizeAttrs(errorAttributes(error)))
-        const recordedError = error instanceof HarnessError
-          ? new Error(error.message)
-          : error instanceof Error
-            ? new Error(error.message)
-            : new Error(String(error))
+        const recordedError = new Error(error instanceof Error ? error.message : String(error))
         span.recordException(recordedError)
         span.setStatus({ code: SpanStatusCode.ERROR, message: recordedError.message })
         throw error

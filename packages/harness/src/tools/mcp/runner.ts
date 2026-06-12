@@ -22,6 +22,8 @@ export interface ResolvedMcpTool {
   upstreamToolName: string
   timeoutMs: number
   serverKey: string
+  /** Sandbox binding key (session id) used to evict session-scoped runners. */
+  sandboxKey?: string
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
 }
@@ -59,6 +61,8 @@ export interface McpTransportRunner {
 
 export interface McpRunnerRegistry {
   getRunner(config: ResolvedMcpToolConfig): McpTransportRunner
+  /** Closes and evicts every runner bound to the given sandbox key (e.g. when a session closes). */
+  closeForSandboxKey(sandboxKey: string): Promise<void>
   close(): Promise<void>
 }
 
@@ -75,13 +79,20 @@ const discoveredCache = new WeakMap<McpTransportRunner, Promise<McpDiscoveredToo
 
 export async function getMcpToolSpecs(tools: ToolsConfig, allowlist: Iterable<string>, ctx: McpFacadeContext = {}): Promise<ModelToolSpec[]> {
   const allowed = new Set(allowlist)
-  const registry = ctx.registry ?? createMcpRunnerRegistry()
-  const specs = await Promise.all(Object.entries(tools).map(async ([toolId, tool]) => {
-    if (!allowed.has(toolId) || !isMcpToolDefinition(tool)) return undefined
-    const config = resolveMcpTool(toolId, tool, ctx)
-    return getResolvedModelToolSpec(config, registry.getRunner(config), ctx.signal, ctx.warn)
-  }))
-  return specs.filter((spec): spec is ModelToolSpec => spec !== undefined)
+  // An ad-hoc registry can spawn persistent server processes; it must be
+  // closed before returning so direct library callers do not leak processes.
+  const localRegistry = ctx.registry ? undefined : createMcpRunnerRegistry()
+  const registry = ctx.registry ?? localRegistry as McpRunnerRegistry
+  try {
+    const specs = await Promise.all(Object.entries(tools).map(async ([toolId, tool]) => {
+      if (!allowed.has(toolId) || !isMcpToolDefinition(tool)) return undefined
+      const config = resolveMcpTool(toolId, tool, ctx)
+      return getResolvedModelToolSpec(config, registry.getRunner(config), ctx.signal, ctx.warn)
+    }))
+    return specs.filter((spec): spec is ModelToolSpec => spec !== undefined)
+  } finally {
+    await localRegistry?.close()
+  }
 }
 
 export async function invokeMcpTool(toolId: string, tool: ToolDefinition, input: unknown, ctx: McpFacadeContext): Promise<JsonValue>
@@ -95,9 +106,16 @@ export async function invokeMcpTool(
   if (typeof first === 'string') {
     if (!isMcpToolDefinition(second)) throw new ToolNotFoundError('Tool is not an MCP tool.', { tool_id: first, where: 'registry' })
     const ctx = isAbortSignal(fourth) ? { signal: fourth } : fourth ?? {}
-    const registry = ctx.registry ?? createMcpRunnerRegistry()
+    // An ad-hoc registry can spawn persistent server processes; it must be
+    // closed before returning so direct library callers do not leak processes.
+    const localRegistry = ctx.registry ? undefined : createMcpRunnerRegistry()
+    const registry = ctx.registry ?? localRegistry as McpRunnerRegistry
     const config = resolveMcpTool(first, second, ctx)
-    return invokeResolvedMcpTool(config, registry.getRunner(config), input, ctx.signal, ctx.warn)
+    try {
+      return await invokeResolvedMcpTool(config, registry.getRunner(config), input, ctx.signal, ctx.warn)
+    } finally {
+      await localRegistry?.close()
+    }
   }
   return invokeResolvedMcpTool(first, second as McpTransportRunner, input, isAbortSignal(fourth) ? fourth : fourth?.signal, isAbortSignal(fourth) ? undefined : fourth?.warn)
 }
@@ -107,20 +125,34 @@ export async function getModelToolSpec(config: ResolvedMcpToolConfig, runner: Mc
 }
 
 export function createMcpRunnerRegistry(): McpRunnerRegistry {
-  const runners = new Map<string, McpTransportRunner>()
+  const runners = new Map<string, { runner: McpTransportRunner; sandboxKey?: string }>()
   return {
     getRunner(config) {
-      const existing = runners.get(config.localToolId)
-      if (existing) return existing
+      // Keyed by serverKey: a stdio runner binds a concrete sandbox session, so
+      // two sessions must never share one runner even for the same tool id.
+      const key = config.serverKey || config.localToolId
+      const existing = runners.get(key)
+      if (existing) return existing.runner
       const runner = config.kind === 'mcp_stdio'
         ? createDynamicStdioRunner(config)
         : createDynamicHttpRunner(config)
-      runners.set(config.localToolId, runner)
+      runners.set(key, { runner, ...(config.sandboxKey !== undefined ? { sandboxKey: config.sandboxKey } : {}) })
       return runner
     },
+    async closeForSandboxKey(sandboxKey) {
+      const evicted: McpTransportRunner[] = []
+      for (const [key, entry] of runners) {
+        if (entry.sandboxKey === sandboxKey) {
+          runners.delete(key)
+          evicted.push(entry.runner)
+        }
+      }
+      await Promise.all(evicted.map((runner) => runner.close()))
+    },
     async close() {
-      await Promise.all([...runners.values()].map((runner) => runner.close()))
+      const open = [...runners.values()].map((entry) => entry.runner)
       runners.clear()
+      await Promise.all(open.map((runner) => runner.close()))
     }
   }
 }
@@ -152,7 +184,7 @@ async function invokeResolvedMcpTool(config: ResolvedMcpToolConfig, runner: McpT
   const validatedInput = validateMcpJsonSchema({ toolId: config.localToolId, where: 'mcp_input', schema: tool.inputSchema, value: adaptedInput, ...(warn ? { warn } : {}) })
   const result = await runner.callTool(config.upstreamToolName, validatedInput, { ...(signal ? { signal } : {}), timeoutMs: config.timeoutMs })
   if (isRecord(result) && result.isError === true) {
-    throw new ToolError('MCP tool returned an error.', { tool_id: config.localToolId, tool_kind: config.kind })
+    throw new ToolError(`MCP tool returned an error.${describeMcpErrorResult(result)}`, { tool_id: config.localToolId, tool_kind: config.kind })
   }
   const normalized = normalizeMcpOutput(result)
   const validatedOutput = tool.outputSchema
@@ -203,6 +235,7 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
       ...base,
       kind: 'mcp_stdio',
       serverKey: `${toolId}:${ctx.sandboxKey ?? 'sandbox'}`,
+      sandboxKey: ctx.sandboxKey ?? 'sandbox',
       command: tool.command,
       ...(tool.args ? { args: tool.args } : {}),
       ...(tool.env ? { env: tool.env } : {}),
@@ -225,10 +258,15 @@ export function isMcpToolDefinition(tool: ToolDefinition | McpTransportRunner): 
 
 function createDynamicStdioRunner(config: ResolvedMcpStdioTool): McpTransportRunner {
   let runnerPromise: Promise<McpTransportRunner> | undefined
-  return dynamicRunner(() => {
-    runnerPromise ??= import('./stdio.js').then((module) => module.createStdioMcpTransportRunner(config))
+  const runner: McpTransportRunner = dynamicRunner(() => {
+    runnerPromise ??= import('./stdio.js').then((module) => module.createStdioMcpTransportRunner(config, {
+      // A respawned server may expose a different tool list; drop the memoized
+      // discovery whenever the persistent server process is discarded.
+      onReset: () => { discoveredCache.delete(runner) }
+    }))
     return runnerPromise
-  })
+  }, () => runnerPromise)
+  return runner
 }
 
 function createDynamicHttpRunner(config: ResolvedMcpHttpTool): McpTransportRunner {
@@ -236,15 +274,31 @@ function createDynamicHttpRunner(config: ResolvedMcpHttpTool): McpTransportRunne
   return dynamicRunner(() => {
     runnerPromise ??= import('./http.js').then((module) => module.createHttpMcpTransportRunner(config))
     return runnerPromise
-  })
+  }, () => runnerPromise)
 }
 
-function dynamicRunner(load: () => Promise<McpTransportRunner>): McpTransportRunner {
+function dynamicRunner(load: () => Promise<McpTransportRunner>, peek: () => Promise<McpTransportRunner> | undefined): McpTransportRunner {
   return {
     async listTools(options) { return (await load()).listTools(options) },
     async callTool(name, input, options) { return (await load()).callTool(name, input, options) },
-    async close() { await (await load()).close() }
+    async close() {
+      // Never trigger a fresh transport load just to close it, and never let
+      // an earlier load failure escape from registry shutdown.
+      const pending = peek()
+      if (!pending) return
+      const loaded = await pending.catch(() => undefined)
+      await loaded?.close()
+    }
   }
+}
+
+/** Renders a short, truncated description of an MCP `isError` result for error messages. */
+function describeMcpErrorResult(result: unknown): string {
+  const normalized = normalizeMcpOutput(result)
+  if (normalized === null) return ''
+  const text = typeof normalized === 'string' ? normalized : JSON.stringify(normalized)
+  if (!text) return ''
+  return ` ${text.slice(0, 512)}${text.length > 512 ? '…' : ''}`
 }
 
 function normalizeContentBlock(block: unknown): JsonValue {

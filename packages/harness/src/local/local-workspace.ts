@@ -4,6 +4,8 @@ import { ulid } from '../ulid/index.js'
 import { OperationCancelledError, WorkspaceError } from '../errors/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
+import type { HarnessAdapterContext } from '../ports/harness-context.js'
+import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type {
   DurableWorkspacePolicy,
   DurableWorkspaceStore,
@@ -74,6 +76,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
   private readonly root: string
   private readonly coordinator: LocalWorkspaceCoordinator | undefined
   private readonly opResults = new Map<string, unknown>()
+  private telemetry: TelemetryShim | undefined
 
   public constructor(options: LocalDirectoryWorkspaceStoreOptions) {
     this.root = resolve(options.root, 'workspaces')
@@ -107,131 +110,166 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
     this.capabilities = this.info.capabilities
   }
 
-  public configureHarnessContext(): void {}
+  public configureHarnessContext(context: HarnessAdapterContext): void {
+    this.telemetry = context.telemetry
+  }
 
   public async startWorkspace(opts: WorkspaceStartOptions): Promise<WorkspaceHandle> {
-    throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceHandle | undefined
-    if (replay) return replay
-    const existing = await this.findByRun(opts.runId)
-    const meta = existing ?? {
-      workspaceRef: `workspace_${ulid()}`,
-      state: 'active' as const,
-      runId: opts.runId,
-      sessionId: opts.sessionId,
-      attempt: opts.attempt,
-      createdAt: now(),
-      updatedAt: now(),
-      ...(opts.metadata ? { metadata: opts.metadata } : {}),
-      checkpoints: []
-    }
-    meta.state = 'active'
-    meta.runId = opts.runId
-    meta.sessionId = opts.sessionId
-    meta.attempt = opts.attempt
-    meta.updatedAt = now()
-    await mkdir(this.activePath(meta.workspaceRef), { recursive: true })
-    await mkdir(join(this.activePath(meta.workspaceRef), 'workspace'), { recursive: true })
-    await this.writeMeta(meta)
-    this.coordinator?.bind(opts.runId, opts.sessionId, meta.workspaceRef, this.activePath(meta.workspaceRef))
-    const handle = toHandle(meta)
-    this.opResults.set(opts.idempotencyKey, handle)
-    return handle
+    return this.workspaceSpan('start', {
+      'harness.run.id': opts.runId,
+      'harness.session.id': opts.sessionId,
+      'harness.workspace.attempt': opts.attempt
+    }, async () => {
+      throwIfAborted(opts.signal)
+      const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceHandle | undefined
+      if (replay) return replay
+      const existing = await this.findByRun(opts.runId)
+      const meta = existing ?? {
+        workspaceRef: `workspace_${ulid()}`,
+        state: 'active' as const,
+        runId: opts.runId,
+        sessionId: opts.sessionId,
+        attempt: opts.attempt,
+        createdAt: now(),
+        updatedAt: now(),
+        ...(opts.metadata ? { metadata: opts.metadata } : {}),
+        checkpoints: []
+      }
+      meta.state = 'active'
+      meta.runId = opts.runId
+      meta.sessionId = opts.sessionId
+      meta.attempt = opts.attempt
+      meta.updatedAt = now()
+      await mkdir(this.activePath(meta.workspaceRef), { recursive: true })
+      await mkdir(join(this.activePath(meta.workspaceRef), 'workspace'), { recursive: true })
+      await this.writeMeta(meta)
+      this.coordinator?.bind(opts.runId, opts.sessionId, meta.workspaceRef, this.activePath(meta.workspaceRef))
+      const handle = toHandle(meta)
+      this.opResults.set(opts.idempotencyKey, handle)
+      return handle
+    })
   }
 
   public async pauseWorkspace(opts: WorkspacePauseOptions): Promise<WorkspaceCheckpoint> {
-    throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceCheckpoint | undefined
-    if (replay) return replay
-    const meta = await this.readMeta(opts.handle.workspaceRef)
-    if (meta.state === 'aborted' || meta.state === 'cleaned') throw new WorkspaceError('Workspace cannot be checkpointed.', { reason: meta.state === 'aborted' ? 'aborted' : 'not_found', workspace_ref: meta.workspaceRef })
-    const checkpointRef = `checkpoint_${opts.sequence}_${ulid()}`
-    const checkpointPath = this.checkpointPath(meta.workspaceRef, checkpointRef)
-    await rm(checkpointPath, { recursive: true, force: true })
-    await mkdir(dirname(checkpointPath), { recursive: true })
-    await cp(this.activePath(meta.workspaceRef), checkpointPath, { recursive: true, force: true })
-    const sizeBytes = await directorySize(checkpointPath)
-    const checkpoint: WorkspaceCheckpoint = {
-      workspaceRef: meta.workspaceRef,
-      checkpointRef,
-      snapshotRef: checkpointRef,
-      runId: meta.runId,
-      sessionId: meta.sessionId,
-      stepId: opts.stepId,
-      sequence: opts.sequence,
-      attempt: opts.attempt,
-      committedAt: now(),
-      sizeBytes,
-      metadata: { reason: opts.reason }
-    }
-    meta.state = 'paused'
-    meta.updatedAt = checkpoint.committedAt
-    meta.checkpoints.push(checkpoint)
-    await this.writeMeta(meta)
-    this.opResults.set(opts.idempotencyKey, checkpoint)
-    return checkpoint
+    return this.workspaceSpan('checkpoint', {
+      'harness.run.id': opts.handle.runId,
+      'harness.session.id': opts.handle.sessionId,
+      'harness.workspace.attempt': opts.attempt,
+      'harness.workspace.sequence': opts.sequence,
+      'harness.workflow.step_id': opts.stepId
+    }, async () => {
+      throwIfAborted(opts.signal)
+      const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceCheckpoint | undefined
+      if (replay) return replay
+      const meta = await this.readMeta(opts.handle.workspaceRef)
+      if (meta.state === 'aborted' || meta.state === 'cleaned') throw new WorkspaceError('Workspace cannot be checkpointed.', { reason: meta.state === 'aborted' ? 'aborted' : 'not_found', workspace_ref: meta.workspaceRef })
+      const checkpointRef = `checkpoint_${opts.sequence}_${ulid()}`
+      const checkpointPath = this.checkpointPath(meta.workspaceRef, checkpointRef)
+      await rm(checkpointPath, { recursive: true, force: true })
+      await mkdir(dirname(checkpointPath), { recursive: true })
+      await cp(this.activePath(meta.workspaceRef), checkpointPath, { recursive: true, force: true })
+      const sizeBytes = await directorySize(checkpointPath)
+      const checkpoint: WorkspaceCheckpoint = {
+        workspaceRef: meta.workspaceRef,
+        checkpointRef,
+        snapshotRef: checkpointRef,
+        runId: meta.runId,
+        sessionId: meta.sessionId,
+        stepId: opts.stepId,
+        sequence: opts.sequence,
+        attempt: opts.attempt,
+        committedAt: now(),
+        sizeBytes,
+        metadata: { reason: opts.reason }
+      }
+      meta.state = 'paused'
+      meta.updatedAt = checkpoint.committedAt
+      meta.checkpoints.push(checkpoint)
+      await this.writeMeta(meta)
+      this.opResults.set(opts.idempotencyKey, checkpoint)
+      return checkpoint
+    })
   }
 
   public async resumeWorkspace(opts: WorkspaceResumeOptions): Promise<WorkspaceHandle> {
-    throwIfAborted(opts.signal)
-    const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceHandle | undefined
-    if (replay) return replay
-    const meta = await this.readMeta(opts.workspaceRef)
-    if (meta.state === 'aborted') throw new WorkspaceError('Workspace was aborted.', { reason: 'aborted', workspace_ref: opts.workspaceRef })
-    if (meta.state === 'cleaned') throw new WorkspaceError('Workspace was cleaned.', { reason: 'not_found', workspace_ref: opts.workspaceRef })
-    const checkpoint = opts.checkpointRef ? meta.checkpoints.find((item) => item.checkpointRef === opts.checkpointRef) : meta.checkpoints.at(-1)
-    if (opts.checkpointRef && !checkpoint) throw new WorkspaceError('Workspace checkpoint not found.', { reason: 'missing_checkpoint', workspace_ref: opts.workspaceRef, checkpoint_ref: opts.checkpointRef })
-    if (checkpoint) {
-      await rm(this.activePath(meta.workspaceRef), { recursive: true, force: true })
-      await cp(this.checkpointPath(meta.workspaceRef, checkpoint.checkpointRef), this.activePath(meta.workspaceRef), { recursive: true, force: true })
-    }
-    await mkdir(join(this.activePath(meta.workspaceRef), 'workspace'), { recursive: true })
-    meta.state = 'active'
-    meta.runId = opts.runId
-    meta.sessionId = opts.sessionId
-    meta.attempt = opts.attempt
-    meta.updatedAt = now()
-    await this.writeMeta(meta)
-    this.coordinator?.bind(opts.runId, opts.sessionId, meta.workspaceRef, this.activePath(meta.workspaceRef))
-    const handle = toHandle(meta)
-    this.opResults.set(opts.idempotencyKey, handle)
-    return handle
+    return this.workspaceSpan('resume', {
+      'harness.run.id': opts.runId,
+      'harness.session.id': opts.sessionId,
+      'harness.workspace.attempt': opts.attempt,
+      'harness.workspace.has_checkpoint_ref': Boolean(opts.checkpointRef)
+    }, async () => {
+      throwIfAborted(opts.signal)
+      const replay = this.opResults.get(opts.idempotencyKey) as WorkspaceHandle | undefined
+      if (replay) return replay
+      const meta = await this.readMeta(opts.workspaceRef)
+      if (meta.state === 'aborted') throw new WorkspaceError('Workspace was aborted.', { reason: 'aborted', workspace_ref: opts.workspaceRef })
+      if (meta.state === 'cleaned') throw new WorkspaceError('Workspace was cleaned.', { reason: 'not_found', workspace_ref: opts.workspaceRef })
+      const checkpoint = opts.checkpointRef ? meta.checkpoints.find((item) => item.checkpointRef === opts.checkpointRef) : meta.checkpoints.at(-1)
+      if (opts.checkpointRef && !checkpoint) throw new WorkspaceError('Workspace checkpoint not found.', { reason: 'missing_checkpoint', workspace_ref: opts.workspaceRef, checkpoint_ref: opts.checkpointRef })
+      if (checkpoint) {
+        await rm(this.activePath(meta.workspaceRef), { recursive: true, force: true })
+        await cp(this.checkpointPath(meta.workspaceRef, checkpoint.checkpointRef), this.activePath(meta.workspaceRef), { recursive: true, force: true })
+      }
+      await mkdir(join(this.activePath(meta.workspaceRef), 'workspace'), { recursive: true })
+      meta.state = 'active'
+      meta.runId = opts.runId
+      meta.sessionId = opts.sessionId
+      meta.attempt = opts.attempt
+      meta.updatedAt = now()
+      await this.writeMeta(meta)
+      this.coordinator?.bind(opts.runId, opts.sessionId, meta.workspaceRef, this.activePath(meta.workspaceRef))
+      const handle = toHandle(meta)
+      this.opResults.set(opts.idempotencyKey, handle)
+      return handle
+    })
   }
 
   public async abortWorkspace(opts: WorkspaceAbortOptions): Promise<WorkspaceAbortResult> {
-    throwIfAborted(opts.signal)
-    const meta = await this.readMeta(opts.workspaceRef)
-    meta.state = 'aborted'
-    meta.updatedAt = now()
-    await this.writeMeta(meta)
-    this.coordinator?.unbind(opts.runId, opts.sessionId)
-    return { workspaceRef: opts.workspaceRef, state: 'aborted', abortedAt: meta.updatedAt }
+    return this.workspaceSpan('abort', {
+      'harness.run.id': opts.runId,
+      'harness.session.id': opts.sessionId
+    }, async () => {
+      throwIfAborted(opts.signal)
+      const meta = await this.readMeta(opts.workspaceRef)
+      meta.state = 'aborted'
+      meta.updatedAt = now()
+      await this.writeMeta(meta)
+      this.coordinator?.unbind(opts.runId, opts.sessionId)
+      return { workspaceRef: opts.workspaceRef, state: 'aborted', abortedAt: meta.updatedAt }
+    })
   }
 
   public async cleanupWorkspace(opts: WorkspaceCleanupOptions): Promise<WorkspaceCleanupResult> {
-    throwIfAborted(opts.signal)
-    const root = this.workspacePath(opts.workspaceRef)
-    await assertInside(this.root, root)
-    await rm(root, { recursive: true, force: true })
-    return { workspaceRef: opts.workspaceRef, state: 'cleaned', completedAt: now() }
+    return this.workspaceSpan('cleanup', {}, async () => {
+      throwIfAborted(opts.signal)
+      const root = this.workspacePath(opts.workspaceRef)
+      await assertInside(this.root, root)
+      await rm(root, { recursive: true, force: true })
+      return { workspaceRef: opts.workspaceRef, state: 'cleaned', completedAt: now() }
+    })
   }
 
   public async inspectWorkspace(opts: WorkspaceInspectionOptions): Promise<WorkspaceInspection> {
-    throwIfAborted(opts.signal)
-    const workspaceRef = opts.workspaceRef ?? await this.findRefByCheckpoint(opts.checkpointRef)
-    const meta = await this.readMeta(workspaceRef)
-    return {
-      workspaceRef: meta.workspaceRef,
-      state: meta.state,
-      checkpoints: meta.checkpoints,
-      ...(meta.checkpoints.at(-1) ? { currentCheckpointRef: meta.checkpoints.at(-1)!.checkpointRef } : {}),
-      ...(this.info.policy.retention ? { retention: this.info.policy.retention } : {}),
-      ...(this.info.policy.quota ? { quota: this.info.policy.quota } : {}),
-      ...(this.info.policy.encryption ? { encryption: this.info.policy.encryption } : {}),
-      createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
-      ...(meta.metadata ? { metadata: meta.metadata } : {})
-    }
+    return this.workspaceSpan('inspect', {
+      'harness.workspace.has_workspace_ref': Boolean(opts.workspaceRef),
+      'harness.workspace.has_checkpoint_ref': Boolean(opts.checkpointRef)
+    }, async () => {
+      throwIfAborted(opts.signal)
+      const workspaceRef = opts.workspaceRef ?? await this.findRefByCheckpoint(opts.checkpointRef)
+      const meta = await this.readMeta(workspaceRef)
+      return {
+        workspaceRef: meta.workspaceRef,
+        state: meta.state,
+        checkpoints: meta.checkpoints,
+        ...(meta.checkpoints.at(-1) ? { currentCheckpointRef: meta.checkpoints.at(-1)!.checkpointRef } : {}),
+        ...(this.info.policy.retention ? { retention: this.info.policy.retention } : {}),
+        ...(this.info.policy.quota ? { quota: this.info.policy.quota } : {}),
+        ...(this.info.policy.encryption ? { encryption: this.info.policy.encryption } : {}),
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        ...(meta.metadata ? { metadata: meta.metadata } : {})
+      }
+    })
   }
 
   private workspacePath(workspaceRef: string): string { return join(this.root, workspaceRef) }
@@ -275,6 +313,26 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       } catch {}
     }
     throw new WorkspaceError('Workspace checkpoint not found.', { reason: 'missing_checkpoint', checkpoint_ref: checkpointRef })
+  }
+
+  private async workspaceSpan<T>(operation: string, attrs: SpanAttrs, fn: () => Promise<T>): Promise<T> {
+    const spanAttrs: SpanAttrs = {
+      'harness.workspace.adapter': this.info.id,
+      'harness.workspace.operation': operation,
+      'harness.workspace.persistent': true,
+      ...attrs
+    }
+    const started = Date.now()
+    const run = async (): Promise<T> => {
+      try {
+        const result = await fn()
+        this.telemetry?.recordCounter('harness.workspace.operations', 1, spanAttrs)
+        return result
+      } finally {
+        this.telemetry?.recordHistogram('harness.workspace.operation.duration', (Date.now() - started) / 1000, spanAttrs)
+      }
+    }
+    return this.telemetry ? this.telemetry.span(`harness.workspace.${operation}`, spanAttrs, run) : run()
   }
 }
 

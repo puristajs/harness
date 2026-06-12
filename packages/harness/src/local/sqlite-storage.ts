@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { StateError, WorkspaceError } from '../errors/index.js'
+import { HarnessConfigError, StateError, WorkspaceError } from '../errors/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message, PersistedRunEvent, RunRecord, RunStatus, SerializedError, SessionRecord } from '../models/state.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
@@ -67,10 +67,23 @@ function openBuiltinSqlite(file: string): SqlDatabase {
   const versions = (globalThis as { process?: { versions?: Record<string, string> } }).process?.versions
   const runtime = versions?.['bun'] ? 'bun' : 'node'
   const moduleName = runtime === 'bun' ? 'bun:sqlite' : 'node:sqlite'
-  const loaded = require(moduleName) as { Database?: new(file: string) => unknown; DatabaseSync?: new(file: string) => unknown }
+  let loaded: { Database?: new(file: string) => unknown; DatabaseSync?: new(file: string) => unknown }
+  try {
+    loaded = require(moduleName) as { Database?: new(file: string) => unknown; DatabaseSync?: new(file: string) => unknown }
+  } catch (error) {
+    throw new HarnessConfigError('Built-in SQLite driver is unavailable.', {
+      reason: 'sqlite_unavailable',
+      path: 'localDurableExecution.databaseFile',
+      id: runtime
+    }, error)
+  }
   const Database = loaded.DatabaseSync ?? loaded.Database
   if (!Database) {
-    throw new StateError('Built-in SQLite driver is unavailable.', { op: 'createRun', reason: 'sqlite_unavailable' })
+    throw new HarnessConfigError('Built-in SQLite driver is unavailable.', {
+      reason: 'sqlite_unavailable',
+      path: 'localDurableExecution.databaseFile',
+      id: runtime
+    })
   }
   const raw = new Database(file) as {
     exec(sql: string): void
@@ -224,7 +237,13 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
   }
 
   public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
-    this.transaction(() => {
+    return this.runtimeSpan('finish', {
+      'harness.runtime.adapter': this.id,
+      'harness.runtime.operation': 'finish',
+      'harness.runtime.persistent': true,
+      'harness.run.id': runId,
+      'harness.run.status': patch.status
+    }, async () => { this.transaction(() => {
       this.db.prepare('update harness_runs set status = coalesce(?, status), finished_at = coalesce(?, finished_at), output_json = coalesce(?, output_json), error_json = coalesce(?, error_json) where id = ?')
         .run(patch.status ?? null, patch.finishedAt ?? null, stringify(patch.output), stringify(patch.error), runId)
       if (patch.status && patch.status !== 'failed') {
@@ -232,7 +251,7 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
           .run(patch.status, stringify(patch.output), stringify(patch.error), patch.finishedAt ?? now(), runId)
         this.db.prepare('delete from harness_durable_leases where run_id = ?').run(runId)
       }
-    })
+    }) })
   }
 
   public async getRun(runId: string): Promise<RunRecord | undefined> {
@@ -295,8 +314,15 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
   }
 
   public async loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined> {
-    const row = this.db.prepare('select * from harness_durable_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
-    return row ? this.rowToCheckpoint(row) : undefined
+    return this.runtimeSpan('load_checkpoint', {
+      'harness.runtime.adapter': this.id,
+      'harness.runtime.operation': 'load_checkpoint',
+      'harness.runtime.persistent': true,
+      'harness.run.id': runId
+    }, async () => {
+      const row = this.db.prepare('select * from harness_durable_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
+      return row ? this.rowToCheckpoint(row) : undefined
+    })
   }
 
   public async commitCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
@@ -346,36 +372,59 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
   }
 
   public async list(query: ContextCheckpointQuery): Promise<readonly ContextCheckpoint[]> {
-    throwIfAborted(query.signal)
-    const clauses: string[] = []
-    const params: SqlValue[] = []
-    for (const [column, value] of [
-      ['run_id', query.runId],
-      ['session_id', query.sessionId],
-      ['workflow_id', query.workflowId],
-      ['agent_id', query.agentId],
-      ['kind', query.kind]
-    ] as const) {
-      if (value !== undefined) {
-        clauses.push(`${column} = ?`)
-        params.push(value)
+    return this.contextSpan('list', {
+      'harness.context_checkpoint.limit': query.limit ?? 100,
+      ...(query.kind ? { 'harness.context_checkpoint.kind': query.kind } : {}),
+      ...(query.runId ? { 'harness.run.id': query.runId } : {}),
+      ...(query.sessionId ? { 'harness.session.id': query.sessionId } : {}),
+      ...(query.workflowId ? { 'harness.workflow.id': query.workflowId } : {}),
+      ...(query.agentId ? { 'harness.agent.id': query.agentId } : {})
+    }, async () => {
+      throwIfAborted(query.signal)
+      const clauses: string[] = []
+      const params: SqlValue[] = []
+      for (const [column, value] of [
+        ['run_id', query.runId],
+        ['session_id', query.sessionId],
+        ['workflow_id', query.workflowId],
+        ['agent_id', query.agentId],
+        ['kind', query.kind]
+      ] as const) {
+        if (value !== undefined) {
+          clauses.push(`${column} = ?`)
+          params.push(value)
+        }
       }
-    }
-    const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : ''
-    const limit = query.limit ?? 100
-    const rows = this.db.prepare(`select * from harness_context_checkpoints ${where} order by sequence asc limit ?`).all(...params, limit)
-    return rows.map((row) => this.rowToContextCheckpoint(row))
+      const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : ''
+      const limit = query.limit ?? 100
+      const rows = this.db.prepare(`select * from harness_context_checkpoints ${where} order by sequence asc limit ?`).all(...params, limit)
+      return rows.map((row) => this.rowToContextCheckpoint(row))
+    })
   }
 
   public async read(ref: ContextCheckpointRef): Promise<ContextCheckpoint | undefined> {
-    const row = this.db.prepare('select * from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
-      .get(ref.runId, ref.sessionId, ref.sequence, ref.kind)
-    return row ? this.rowToContextCheckpoint(row) : undefined
+    return this.contextSpan('read', {
+      'harness.context_checkpoint.kind': ref.kind,
+      'harness.context_checkpoint.sequence': ref.sequence,
+      'harness.run.id': ref.runId,
+      'harness.session.id': ref.sessionId
+    }, async () => {
+      const row = this.db.prepare('select * from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
+        .get(ref.runId, ref.sessionId, ref.sequence, ref.kind)
+      return row ? this.rowToContextCheckpoint(row) : undefined
+    })
   }
 
   public async delete(ref: ContextCheckpointRef): Promise<void> {
-    this.db.prepare('delete from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
-      .run(ref.runId, ref.sessionId, ref.sequence, ref.kind)
+    return this.contextSpan('delete', {
+      'harness.context_checkpoint.kind': ref.kind,
+      'harness.context_checkpoint.sequence': ref.sequence,
+      'harness.run.id': ref.runId,
+      'harness.session.id': ref.sessionId
+    }, async () => {
+      this.db.prepare('delete from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
+        .run(ref.runId, ref.sessionId, ref.sequence, ref.kind)
+    })
   }
 
   public async close(): Promise<void> {

@@ -30,7 +30,7 @@ interface LocalDurableExecutionOptions {
   root: string
   /** SQLite database file. Default: `${root}/runtime.sqlite`. */
   databaseFile?: string
-  /** Stable worker id for durable run leases. Default: generated per harness instance. */
+  /** Reserved for future bundle-level lease policies. Per-run workerId remains in DurableInvokeOptions. */
   workerId?: string
   /** Host command execution policy. Default: `false`. */
   exec?: false | LocalHostExecPolicy
@@ -108,15 +108,14 @@ Schema tables:
 
 | Table | Purpose |
 | --- | --- |
-| `harness_runtime_runs` | durable run start, status, attempt, input JSON, terminal output/error |
-| `harness_runtime_checkpoints` | ordered durable step checkpoints and optional replay refs |
-| `harness_runtime_leases` | run/session ownership with `leaseId`, `workerId`, `expiresAt` |
-| `harness_runtime_meta` | schema version and migration marker |
+| `harness_durable_runs` | durable run start, status, attempt, input JSON, terminal output/error |
+| `harness_durable_checkpoints` | ordered durable step checkpoints and optional replay refs |
+| `harness_durable_leases` | run/session ownership with `leaseId`, `workerId`, `expiresAt` |
 
 Rules:
 
-- Schema version is `1`. The adapter creates and migrates tables during
-  construction before returning.
+- Schema version is the v1 local schema above. The adapter creates missing
+  tables and indexes during construction before returning.
 - WAL mode is enabled for file databases. `busy_timeout` is at least `5000ms`.
 - Every public runtime method runs inside a SQLite transaction.
 - `startRun` reuses a non-terminal run with the same `runId`, increments the

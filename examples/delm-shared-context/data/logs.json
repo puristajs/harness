@@ -1,0 +1,30 @@
+{
+  "taskId": "logs-investigation",
+  "source": "checkout-api logs",
+  "records": [
+    {
+      "id": "log-001",
+      "title": "Timeouts begin after deploy",
+      "content": "14:03-14:18 UTC checkout-api emits 431 payment_authorization_timeout errors for eu-west card checkout. The same error appears 7 times in the previous hour.",
+      "verified": true
+    },
+    {
+      "id": "log-002",
+      "title": "Error path includes payment provider call",
+      "content": "Stack traces show the timeout occurs while waiting for PaymentProvider.authorize, after the checkout service changed the provider request deadline.",
+      "verified": true
+    },
+    {
+      "id": "log-003",
+      "title": "No matching inventory or fraud errors",
+      "content": "The same time window has no increase in inventory_reservation_failed, fraud_declined, or address_validation_failed errors.",
+      "verified": true
+    },
+    {
+      "id": "log-004",
+      "title": "Deployment marker",
+      "content": "Checkout service deployment checkout-api@2026.06.16.1400 completed at 14:01 UTC and changed PAYMENT_AUTHORIZATION_TIMEOUT_MS from 1500 to 800.",
+      "verified": true
+    }
+  ]
+}

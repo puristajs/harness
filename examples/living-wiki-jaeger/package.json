@@ -21,7 +21,7 @@
     "@hono/node-server": "^2.0.4",
     "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
     "@opentelemetry/resources": "^2.7.1",
-    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.219.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "@purista/harness": "*",
     "@purista/harness-openai": "*",

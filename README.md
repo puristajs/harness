@@ -45,7 +45,10 @@ The `examples/quickstart` workspace is the recommended starting point.
 multiple workflows with the OpenAI adapter. `examples/living-wiki-jaeger`
 demonstrates a local file-backed research workspace with direct typed agent
 invocation, optional typed workflows, SSE run observation, review gates,
-artifacts, MCP, and Jaeger tracing.
+artifacts, MCP, and Jaeger tracing. `examples/delm-shared-context` uses the
+OpenAI adapter by default to demonstrate a DeLM-inspired decentralized
+shared-context pattern with task claiming, admission-gated compact entries,
+evidence unfolding, and durable checkpoints.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
 
@@ -94,5 +97,6 @@ npm run test:failure
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.
 - `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, SSE, artifacts, MCP, and Jaeger.
+- `examples/delm-shared-context/` — DeLM-inspired shared-context coordination example for parallel worker workflows.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

@@ -1,0 +1,30 @@
+{
+  "taskId": "metrics-scope",
+  "source": "checkout metrics dashboard",
+  "records": [
+    {
+      "id": "metric-001",
+      "title": "EU card authorization spike",
+      "content": "EU card authorization failure rate rose from 0.3% to 12.8% after 14:00 UTC. US card checkout remains 0.4%; wallet checkout remains 0.5%.",
+      "verified": true
+    },
+    {
+      "id": "metric-002",
+      "title": "Latency near provider deadline",
+      "content": "p95 payment authorization latency in eu-west is 1170ms. The deployed checkout client timeout is 800ms.",
+      "verified": true
+    },
+    {
+      "id": "metric-003",
+      "title": "Revenue impact estimate",
+      "content": "Estimated failed checkout value is 18,400 EUR over the first 18 minutes. Customer support tickets mention card authorization timeout but not wallet payment failures.",
+      "verified": true
+    },
+    {
+      "id": "metric-004",
+      "title": "Recovery objective",
+      "content": "Incident response target is to reduce EU card authorization failures below 1% within 20 minutes while avoiding full checkout rollback if a narrower mitigation is verified.",
+      "verified": true
+    }
+  ]
+}

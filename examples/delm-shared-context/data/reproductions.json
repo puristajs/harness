@@ -1,0 +1,30 @@
+{
+  "taskId": "timeout-fix",
+  "source": "reproduction harness",
+  "records": [
+    {
+      "id": "repro-001",
+      "title": "800ms timeout reproduces failure",
+      "content": "EU card checkout reproduction against the payment sandbox times out with an 800ms payment authorization deadline.",
+      "verified": true
+    },
+    {
+      "id": "repro-002",
+      "title": "1500ms timeout passes",
+      "content": "The same reproduction completes authorization in 1170ms when the deadline is raised to 1500ms.",
+      "verified": true
+    },
+    {
+      "id": "repro-003",
+      "title": "US card checkout remains healthy",
+      "content": "US card checkout reproduction completes in 430ms with either timeout value, matching the metrics that scope the impact to EU card authorization.",
+      "verified": true
+    },
+    {
+      "id": "repro-004",
+      "title": "Wallet checkout unaffected",
+      "content": "Wallet checkout bypasses PaymentProvider.authorize and succeeds in the reproduction harness without changing the timeout.",
+      "verified": true
+    }
+  ]
+}

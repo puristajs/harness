@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-azure-foundry",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Azure AI Foundry model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,12 +45,12 @@
     "@azure/core-sse": "^2.3.0"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.9"
   },
   "peerDependencies": {
-    "@purista/harness": "^1.5.0"
+    "@purista/harness": "^1.5.1"
   },
   "engines": {
     "node": ">=24.15.0"

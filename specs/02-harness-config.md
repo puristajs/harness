@@ -338,6 +338,8 @@ interface AgentDefinition<
   permissions?: AgentPermissions
   onPermission?: OnPermission
   maxSteps?: number                           // default 16, max 64
+  prepareStep?: AgentPrepareStep<S, z.infer<I>>
+  stopWhen?: AgentStopWhen<S, z.infer<I>>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 ```

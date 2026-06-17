@@ -159,9 +159,10 @@ The harness package additionally has integration tests:
   1. `stream()` yields `run.started` first and `run.finished` last.
   2. Slow consumers do not pace the producer; bounded queues emit sanitized overflow notifications when non-terminal live events are dropped.
   3. Events emitted before consumer attaches are not replayed.
-  4. Consumer `take()` throwing logs `STREAM_SUBSCRIBER_FAILED` and removes the subscription; the run continues.
-  5. Per-run total ordering matches the rules in [12-streaming](./12-streaming.md).
-  6. Persistence: every emitted event is written to `state.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
+  4. Breaking out of a stream iterator detaches that consumer but does not cancel the underlying run; explicit `opts.signal` cancellation still aborts the run.
+  5. Consumer `take()` throwing logs `STREAM_SUBSCRIBER_FAILED` and removes the subscription; the run continues.
+  6. Per-run total ordering matches the rules in [12-streaming](./12-streaming.md).
+  7. Persistence: every emitted event is written to `state.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
 - Provider runtime parity:
   1. Missing `object`, `object_stream`, `embeddings`, or `rerank` capability fails before provider I/O.
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.

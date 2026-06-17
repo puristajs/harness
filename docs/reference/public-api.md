@@ -143,6 +143,24 @@ MCP HTTP tools:
 - call a remote streamable HTTP MCP endpoint;
 - support `none`, `bearer`, `oauth2`, `api_key`, and `basic` auth.
 
+## Agent Loop Controls
+
+Default-loop agents may declare `prepareStep` and `stopWhen`.
+
+```ts
+prepareStep: ({ step }) => step === 0
+  ? { model: 'planner', activeTools: ['search'] }
+  : { model: 'writer', activeTools: [] },
+stopWhen: ({ step }) => step >= 2
+```
+
+`prepareStep` receives the current step number, selected model alias, messages,
+tool specs, history, memory, metadata, checkpoints, and metrics. It may return
+per-call overrides for `model`, `instructions`, `activeTools`, `messages`, and
+model `call` options. `stopWhen` runs after a model response and before tool
+execution; if it returns `true`, the response object is validated as the final
+agent output.
+
 ## Run Events
 
 Streaming invokers yield `RunEvent` values:
@@ -244,6 +262,19 @@ Policy fields:
 - `maxDepth`: local delegation depth.
 - `modelAliases`: workflow-wide model alias allowlist for child calls.
 - `agentModelAliases`: per-child-agent model alias allowlists.
+
+## Durable Step Retry
+
+Workflow handlers can retry transient step failures before checkpoint commit:
+
+```ts
+await ctx.step('fetch-context', fetchContext, {
+  retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
+})
+```
+
+`retry: true` uses three total attempts with exponential backoff. Replayed
+durable steps return the committed output and never re-run the step function.
 
 ## Run Summary
 

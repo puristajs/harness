@@ -64,6 +64,7 @@ import {
   type DurableRuntimeAdapter,
   type HarnessInspection
 } from '../ports/capabilities.js'
+import type { DurableStepOptions } from '../runtime/steps.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
 export { HARNESS_VERSION } from '../version.js'
@@ -443,6 +444,48 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   metrics: Metrics
 }
 
+/** Context passed before each default agent loop model call. */
+export interface AgentPrepareStepContext<S extends BuilderState, I> extends AgentContextMinimal<S, I> {
+  /** Zero-based model-call step in the default loop. */
+  step: number
+  /** Model alias selected for this step before overrides are applied. */
+  model: keyof NonNullable<S['models']> & string
+  /** Messages that would be sent to the model for this step. */
+  messages: readonly ModelMessage[]
+  /** Model-facing tools that would be available for this step. */
+  tools: readonly ModelToolSpec[]
+}
+
+/** Per-step overrides returned from `AgentDefinition.prepareStep`. */
+export interface AgentPrepareStepResult<S extends BuilderState> {
+  /** Optional model alias override for this model call. */
+  model?: keyof NonNullable<S['models']> & string
+  /** Optional instruction override for this model call only. */
+  instructions?: string
+  /** Optional model-facing tool names to keep active for this model call. */
+  activeTools?: readonly string[]
+  /** Optional message override for this model call only. */
+  messages?: readonly ModelMessage[]
+  /** Optional generation settings for this model call only. */
+  call?: ModelCallOptions
+}
+
+/** Context passed after a default agent loop model call to decide whether to stop. */
+export interface AgentStopWhenContext<S extends BuilderState, I> extends AgentPrepareStepContext<S, I> {
+  /** Raw provider-normalized object response from the current model call. */
+  response: ObjectResponse<JsonValue>
+  /** Tool calls requested by the current model response. */
+  toolCalls: readonly ToolCallSpec[]
+}
+
+/** Hook used to prepare each model call in the default agent loop. */
+export type AgentPrepareStep<S extends BuilderState, I> =
+  (ctx: AgentPrepareStepContext<S, I>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
+
+/** Hook used to stop the default loop after a model call. */
+export type AgentStopWhen<S extends BuilderState, I> =
+  (ctx: AgentStopWhenContext<S, I>) => boolean | Promise<boolean>
+
 /** Run-bound facade for explicit long-horizon context checkpoints. */
 export interface ContextCheckpoints {
   write(input: {
@@ -475,7 +518,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
    * checkpointed and replayed on resume without re-running `fn`; otherwise it is
    * a transparent pass-through. See spec 10 "Durable steps".
    */
-  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
+  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>, options?: DurableStepOptions): Promise<T>
   output?: O
 }
 
@@ -513,6 +556,24 @@ export interface AgentDefinition<
   permissions?: AgentPermissions
   onPermission?: OnPermission
   maxSteps?: number
+  /**
+   * Optional hook for per-round loop control in the default agent loop.
+   *
+   * @example
+   * ```ts
+   * prepareStep: ({ step }) => step === 0 ? { activeTools: ['lookup'] } : {}
+   * ```
+   */
+  prepareStep?: AgentPrepareStep<S, z.infer<I>>
+  /**
+   * Optional hook that can stop the default loop after a model call.
+   *
+   * @example
+   * ```ts
+   * stopWhen: ({ step }) => step >= 2
+   * ```
+   */
+  stopWhen?: AgentStopWhen<S, z.infer<I>>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 
@@ -544,6 +605,8 @@ type AgentDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O e
   permissions?: AgentPermissions
   onPermission?: OnPermission
   maxSteps?: number
+  prepareStep?: AgentPrepareStep<S, z.infer<I>>
+  stopWhen?: AgentStopWhen<S, z.infer<I>>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 

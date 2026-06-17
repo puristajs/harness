@@ -643,9 +643,10 @@ Locked behavior when `opts.durable` is present on a workflow call:
    `opts.durable.workerId`. After the lease is acquired, `StateStore.createRun`
    must be idempotent for the same durable `runId`; existing terminal run
    records for the same durable run are not overwritten.
-4. **Durable step injection.** `ctx.step(stepId, fn)` is bound to
+4. **Durable step injection.** `ctx.step(stepId, fn, options?)` is bound to
    `createDurableWorkflowContext(runtime, lease, ...)`. Committed steps replay
-   from stored output on resume; new steps run `fn`, commit a runtime checkpoint,
+   from stored output on resume; new steps run `fn` with any short
+   `options.retry` policy before checkpoint commit, commit a runtime checkpoint,
    and (when a workspace store is configured) link a durable workspace checkpoint.
 5. **Workspace lifecycle (only when `.workspaceStore(...)` is configured).**
    - Fresh run (`lease.resumed === false`): `startWorkspace` with idempotency key
@@ -681,9 +682,9 @@ Locked behavior when `opts.durable` is present on a workflow call:
 
 `ctx.step(...)` is **always** present on `WorkflowContext`. Without a durable
 invocation (no `opts.durable`, or a workflow run without a configured runtime) it
-is a transparent pass-through that simply awaits `fn` with no checkpointing, so
-the same workflow body runs durably or ephemerally depending only on how it is
-invoked.
+is a transparent pass-through with no checkpointing. Short `options.retry`
+policies still apply, so the same workflow body runs durably or ephemerally
+depending only on how it is invoked.
 
 **Cross-process restart.** Within a single process / harness instance, resume is
 fully supported: a crashed durable run (lease released mid-flight) re-acquires its

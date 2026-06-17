@@ -28,7 +28,7 @@
 		"ci": "npm run lint && npm run build && npm test && npm run test:coverage && npm run test:types && npm run test:contracts && npm run test:integration && npm run test:failure"
 	},
 	"allowScripts": {
-		"esbuild@0.28.0": true,
+		"esbuild@0.28.1": true,
 		"node-liblzma": false,
 		"protobufjs": false,
 		"@mongodb-js/zstd": false,

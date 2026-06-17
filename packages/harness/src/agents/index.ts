@@ -12,7 +12,7 @@ import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
-import type { ModelMessage, ToolCallSpec } from '../ports/model-provider.js'
+import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
 import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/index.js'
 import { buildSkillIndex, mountSkillsOnce } from '../skills/index.js'
@@ -212,8 +212,7 @@ async function runDefaultAgentInner(args: {
   const parsedInput = parseAgentSchema(inputSchema, args.input, 'agent_input')
 
   const selectedModelAlias = args.modelAlias ?? args.agent.model
-  const model = args.models[selectedModelAlias]
-  if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
+  if (!args.models[selectedModelAlias]) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
 
@@ -260,6 +259,7 @@ async function runDefaultAgentInner(args: {
     })
   const mcpSpecs = args.mcpRegistry ? await getMcpToolSpecs(args.customTools, enabledCustomTools, { registry: args.mcpRegistry, signal: args.signal, toolTimeoutMs: args.toolTimeoutMs, sandbox: args.session, sandboxKey: args.sessionId }) : []
   const customSpecs = [...tsCustomSpecs, ...mcpSpecs]
+  const allToolSpecs = [...builtinSpecs, ...customSpecs]
 
   const nonSystem = args.history.filter((m) => m.role !== 'system')
   const system = args.history.filter((m) => m.role === 'system')
@@ -289,19 +289,41 @@ async function runDefaultAgentInner(args: {
     while (true) {
       if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
       if (steps >= maxSteps) throw new AgentLoopBudgetError('Agent loop budget exceeded.', { agent_id: args.agentId, reason: 'iterations_exceeded', limit: maxSteps })
+      const prepared = await args.agent.prepareStep?.({
+        input: parsedInput,
+        runId: args.runId,
+        sessionId: args.sessionId,
+        history: { list: async () => args.history },
+        memory: args.memory,
+        checkpoints: args.checkpoints,
+        metadata: args.metadata ?? {},
+        metrics: args.metrics,
+        step: steps,
+        model: selectedModelAlias,
+        messages: modelMessages,
+        tools: allToolSpecs
+      })
+      const stepModelAlias = prepared?.model ?? selectedModelAlias
+      const model = args.models[stepModelAlias]
+      if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: stepModelAlias } })
+      const stepTools = filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId)
+      const stepMessages = prepared?.messages ? [...prepared.messages] : modelMessages
+      const stepInstructions = prepared?.instructions ?? instructions
       const response = await model.object({
         messages: [
-          { role: 'system', content: instructions },
-          ...modelMessages
+          { role: 'system', content: stepInstructions },
+          ...stepMessages
         ],
-        tools: [...builtinSpecs, ...customSpecs],
-        schema: z.toJSONSchema(outputSchema) as JsonValue
+        tools: stepTools,
+        schema: z.toJSONSchema(outputSchema) as JsonValue,
+        ...(prepared?.call ? { call: prepared.call as ModelCallOptions } : {})
       }, args.signal, {
         harnessName: args.harnessName,
         sessionId: args.sessionId,
         runId: args.runId,
         ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-        agentId: args.agentId
+        agentId: args.agentId,
+        modelAlias: stepModelAlias
       })
 
       // Emit one usage-bearing model event per model round-trip (including
@@ -312,12 +334,18 @@ async function runDefaultAgentInner(args: {
         runId: args.runId,
         agentId: args.agentId,
         ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-        modelAlias: selectedModelAlias,
+        modelAlias: stepModelAlias,
         object: (response.object ?? null) as JsonValue,
         usage: response.usage
       })
 
       const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
+      if (await shouldStopAgentLoop(args, parsedInput, stepModelAlias, steps, modelMessages, allToolSpecs, response as ObjectResponse<JsonValue>, toolCalls)) {
+        const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
+        emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+        await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
+        return { output: validated as JsonValue, emitted }
+      }
       if (toolCalls.length === 0) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
         emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
@@ -352,6 +380,50 @@ async function runDefaultAgentInner(args: {
     await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
     throw error
   }
+}
+
+function filterActiveTools(tools: readonly ModelToolSpec[], activeTools: readonly string[] | undefined, agentId: string): ModelToolSpec[] {
+  if (!activeTools) return [...tools]
+  const requested = new Set(activeTools)
+  const filtered = tools.filter((tool) => requested.has(tool.name))
+  if (filtered.length !== requested.size) {
+    const available = new Set(tools.map((tool) => tool.name))
+    const unknown = [...requested].filter((name) => !available.has(name))
+    throw new ValidationError('prepareStep referenced an unknown active tool.', {
+      where: 'agent_input',
+      issues: { agentId, activeTools: unknown }
+    })
+  }
+  return filtered
+}
+
+async function shouldStopAgentLoop(
+  args: Parameters<typeof runDefaultAgentInner>[0],
+  input: unknown,
+  selectedModelAlias: string,
+  step: number,
+  messages: readonly ModelMessage[],
+  tools: readonly ModelToolSpec[],
+  response: ObjectResponse<JsonValue>,
+  toolCalls: readonly ToolCallSpec[]
+): Promise<boolean> {
+  if (!args.agent.stopWhen) return false
+  return args.agent.stopWhen({
+    input,
+    runId: args.runId,
+    sessionId: args.sessionId,
+    history: { list: async () => args.history },
+    memory: args.memory,
+    checkpoints: args.checkpoints,
+    metadata: args.metadata ?? {},
+    metrics: args.metrics,
+    step,
+    model: selectedModelAlias,
+    messages,
+    tools,
+    response,
+    toolCalls
+  })
 }
 
 /** Runs `fn` over `items` with bounded concurrency, preserving input order. */

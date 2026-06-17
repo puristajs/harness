@@ -134,7 +134,7 @@ The runtime exports `createDurableWorkflowContext` and step helpers for checkpoi
 Recovery starts from the last committed checkpoint, not from the last observed stream event.
 
 ### Auto-wiring through the session run loop
-Durable execution is opt-in **per workflow call**. Mark boundaries in the handler with `ctx.step(stepId, fn)` and invoke with a stable `durable.runId`:
+Durable execution is opt-in **per workflow call**. Mark boundaries in the handler with `ctx.step(stepId, fn, options?)` and invoke with a stable `durable.runId`:
 
 ```ts
 const harness = defineHarness()
@@ -145,7 +145,9 @@ const harness = defineHarness()
     job: {
       delegation: { agents: ['prepare', 'finish'] },
       handler: async (ctx) => {
-        const a = await ctx.step('a', () => ctx.agents.prepare(ctx.input))
+        const a = await ctx.step('a', () => ctx.agents.prepare(ctx.input), {
+          retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
+        })
         return ctx.step('b', () => ctx.agents.finish(a))
       },
     },
@@ -159,12 +161,16 @@ await session.workflows.job.prompt(input, { durable: { runId: 'job-2026-06-09' }
 Rules:
 - Workflow-only. `opts.durable` on an agent run throws `ValidationError`; without an executable `.runtime(...)` it throws `HarnessConfigError{reason:'durable_runtime_required'}`.
 - The harness acquires a lease for `durable.runId`, injects durable `ctx.step`, finalizes `finishRun`, and (with a workspace store) starts/resumes the workspace, writes a workspace checkpoint before each runtime checkpoint, cleans up on success when retention `cleanupMode` is `adapter_automatic`, aborts on cancellation, and leaves a non-cancel failure resumable.
-- A committed step replays its stored output on resume without re-running its body. Without `durable`, `ctx.step` is a transparent pass-through.
+- `options.retry` retries a step body before checkpoint commit. A committed step replays its stored output on resume without re-running its body or retry policy. Without `durable`, `ctx.step` is a transparent pass-through that still honors short retry options.
 - Resume across process restart needs `runtime.persistent` and
   `workspace_store.persistent`; the in-memory adapters are local/test only.
 - Use `ctx.checkpoints.write(...)` for explicit long-horizon summaries or
   handoff records. The harness does not auto-summarize or inject checkpoint
   payloads into prompts.
+- For long-running workflows that may outlive a deployment, include an
+  application `workflowVersion` in input or metadata, keep step outputs
+  backward-compatible, and chain a new durable run when a major migration needs
+  a new code path.
 
 ## Feedback
 Feedback is optional and application-owned. Core exports shared types and test helpers, not a production feedback store.

@@ -5,6 +5,26 @@ import type { RunEvent } from '../src/harness/defineHarness.js'
 const STREAM_MAX_BUFFERED_EVENTS = 1024
 
 describe('relayRunEvents', () => {
+  it('does not abort the run signal when the stream consumer stops reading', async () => {
+    let relaySignal: AbortSignal | undefined
+    let runFinished = false
+
+    const iterator = relayRunEvents(async (onEvent, signal) => {
+      relaySignal = signal
+      await onEvent({ type: 'run.started', runId: 'r', at: 'now' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      runFinished = true
+      await onEvent({ type: 'run.finished', runId: 'r', at: 'later', output: 'done' })
+    })[Symbol.asyncIterator]()
+
+    expect((await iterator.next()).value?.type).toBe('run.started')
+    await iterator.return?.()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(relaySignal?.aborted).toBe(false)
+    expect(runFinished).toBe(true)
+  })
+
   it('delivers events in order and completes', async () => {
     const out: RunEvent[] = []
     for await (const event of relayRunEvents(async (onEvent) => {

@@ -122,6 +122,11 @@ for await (const event of session.workflows.audit.stream(input)) {
 ```
 
 Ordering is lifecycle order for a single run. Streams are live observation.
+Breaking out of a `stream(...)` iterator detaches that consumer only; it does
+not cancel the underlying run. Pass `opts.signal` when the application intends
+to cancel the run, and use `StateStore.listEvents(runId)` for persisted audit
+history after live observation ends.
+
 `text(...)` and `object(...)` are final request-response model calls and do not
 emit partial run events. Consumed `textStream(...)` and `objectStream(...)`
 chunks stay private by default. They emit `model.delta`,

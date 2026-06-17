@@ -55,6 +55,89 @@ it('enforces maxSteps in default agent loop', async () => {
   await expect(s.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(AgentLoopBudgetError)
 })
 
+it('lets prepareStep switch model aliases and restrict active tools', async () => {
+  const primary = new FakeModelProvider()
+  const fallback = new FakeModelProvider()
+  fallback.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = await defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({
+      primary: { provider: primary, model: 'primary-model', capabilities: ['object', 'tool_use'] },
+      fallback: { provider: fallback, model: 'fallback-model', capabilities: ['object'] }
+    })
+    .tools({
+      lookup: {
+        description: 'Lookup a value.',
+        input: z.object({ id: z.string() }),
+        output: z.object({ value: z.string() }),
+        handler: async (_ctx, input) => ({ value: input.id })
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'primary',
+        instructions: 'x',
+        tools: ['lookup'],
+        builtinTools: false,
+        prepareStep: ({ step }) => step === 0 ? { model: 'fallback', activeTools: [] } : {}
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .build()
+
+  const s = await harness.getSession('s-prepare-step')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+
+  expect(primary.requests).toHaveLength(0)
+  expect(fallback.requests).toHaveLength(1)
+  expect((fallback.requests[0] as ObjectRequest).model).toBe('fallback-model')
+  expect((fallback.requests[0] as ObjectRequest).tools).toEqual([])
+})
+
+it('lets stopWhen end the default loop without executing requested tools', async () => {
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: 'done',
+    toolCalls: [{ id: 'call-1', name: 'lookup', arguments: { id: 'ignored' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  let toolCalls = 0
+
+  const harness = await defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      lookup: {
+        description: 'Lookup a value.',
+        input: z.object({ id: z.string() }),
+        output: z.object({ value: z.string() }),
+        handler: async (_ctx, input) => {
+          toolCalls += 1
+          return { value: input.id }
+        }
+      }
+    })
+    .skills({})
+    .agents({
+      a1: {
+        model: 'fast',
+        instructions: 'x',
+        tools: ['lookup'],
+        builtinTools: false,
+        stopWhen: ({ step, toolCalls }) => step === 0 && toolCalls.length > 0
+      }
+    })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .build()
+
+  const s = await harness.getSession('s-stop-when')
+  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
+  expect(toolCalls).toBe(0)
+})
+
 it('replays model providerItems on the next agent loop round without persisting them', async () => {
   const model = new FakeModelProvider()
   const providerItems = {

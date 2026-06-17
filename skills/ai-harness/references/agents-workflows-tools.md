@@ -38,6 +38,8 @@ Default agent loop requirements:
 - output is validated after the model returns
 - multiple tool calls returned by the same model response execute concurrently up to `defaults.maxParallelToolCalls`, with results returned to the next model call in the original call order
 - `maxSteps` defaults from harness defaults and must stay bounded
+- `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
+- `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
 
 Use a custom `handler` only when the default loop is the wrong execution model.
 
@@ -74,7 +76,7 @@ Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
 standalone `defineWorkflow(...)` helper.
 
-`ctx.step(stepId, fn)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Durable execution is workflow-only — see `durable-feedback-operations.md`.
+`ctx.step(stepId, fn, options?)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Use `options.retry` for short active retries before checkpoint commit. Durable execution is workflow-only — see `durable-feedback-operations.md`.
 
 Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the calls are independent. Propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
 The harness also races workflow handlers against `ctx.signal`, so a run can
@@ -102,8 +104,9 @@ typed `RunEvent` values, not provider chunks or the Vercel stream protocol.
 
 Workflow docs and examples should cover:
 - choosing workflow vs direct agent;
-- sequence and fan-out/fan-in patterns;
+- sequence, routing, fan-out/fan-in, and evaluator-optimizer patterns;
 - durable `ctx.step(...)` boundaries;
+- long-running workflow version boundaries for runs that may outlive one deploy;
 - cancellation and timeout behavior;
 - streaming through `session.workflows.<id>.stream(...)`;
 - tests with fake providers, child-agent failure paths, and durable replay.

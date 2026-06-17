@@ -66,3 +66,22 @@ it('replays committed steps on resume without re-running side effects', async ()
   expect(c).toEqual({ c: 3 })      // newly executed
   expect(sideEffects).toBe(3)      // only step c ran on resume
 })
+
+it('retries transient durable step failures before committing a checkpoint', async () => {
+  const { runtime, ctx } = await createContext()
+  let attempts = 0
+
+  const output = await ctx.step('retryable', async () => {
+    attempts += 1
+    if (attempts < 3) {
+      throw new Error('temporary')
+    }
+    return { ok: true }
+  }, { retry: { maxAttempts: 3, minDelayMs: 0 } })
+
+  const checkpoint = await runtime.loadCheckpoint('run-step')
+  expect(output).toEqual({ ok: true })
+  expect(attempts).toBe(3)
+  expect(checkpoint?.stepId).toBe('retryable')
+  expect(checkpoint?.output).toEqual({ ok: true })
+})

@@ -173,6 +173,11 @@ export function discoverSkills(options?: DiscoverSkillsOptions): Promise<Discove
 export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
 export interface AgentDefinitionHelpers<S>
+export interface AgentPrepareStepContext<S, I>
+export interface AgentPrepareStepResult<S>
+export interface AgentStopWhenContext<S, I>
+export type AgentPrepareStep<S, I>
+export type AgentStopWhen<S, I>
 export type WorkflowsConfig<S>
 export interface WorkflowDefinition<S, I, O>
 export interface WorkflowDefinitionHelpers<S>
@@ -316,6 +321,9 @@ export type DurableActiveRunStatus
 export type DurableTerminalRunStatus
 export interface RunCheckpoint
 export interface DurableStepCommit
+export interface DurableStepOptions
+export interface DurableStepRetryPolicy
+export type DurableStepRetrySetting
 export interface DurableWorkflowContext
 export interface DurableWorkflowContextOptions
 export interface InMemoryDurableRuntimeOptions

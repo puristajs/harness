@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 
 import { defineHarness, inMemorySandbox } from '../src/index.js'
-import { OperationCancelledError, OperationTimeoutError } from '../src/errors/index.js'
+import { OperationCancelledError, OperationTimeoutError, SessionBusyError } from '../src/errors/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 /**
@@ -211,11 +211,16 @@ describe('harness cancellation propagation', () => {
     expect(result).toMatchObject({ meta: { scope: 'run' } })
   })
 
-  it('aborts the run when a consumer abandons the event stream', async () => {
+  it('keeps the run alive when a consumer abandons the event stream until the caller aborts it', async () => {
+    const controller = new AbortController()
     let modelAborted = false
     let markModelStarted!: () => void
     const modelStarted = new Promise<void>((resolve) => {
       markModelStarted = resolve
+    })
+    let markModelAborted!: () => void
+    const modelAbortSeen = new Promise<void>((resolve) => {
+      markModelAborted = resolve
     })
     const model = {
       id: 'hanging',
@@ -225,6 +230,7 @@ describe('harness cancellation propagation', () => {
         return new Promise((_resolve, reject) => {
           const onAbort = () => {
             modelAborted = true
+            markModelAborted()
             reject(req.signal.reason)
           }
           if (req.signal.aborted) return onAbort()
@@ -242,17 +248,29 @@ describe('harness cancellation propagation', () => {
       .build()
 
     const session = await harness.getSession('s-abandoned-stream')
-    for await (const event of session.agents.a1.stream('x')) {
+    for await (const event of session.agents.a1.stream('x', { signal: controller.signal })) {
       if (event.type === 'run.started') {
         await modelStarted
         break
       }
     }
 
-    // Breaking out of the stream must abort the in-flight run; iterator.return()
-    // (run inside the for-await break) settles only after the run finished.
-    expect(modelAborted).toBe(true)
-    // The session busy lock was released, so busy-guarded operations succeed.
+    // Breaking out of the stream only detaches this consumer; explicit caller
+    // cancellation is required to stop the underlying run.
+    expect(modelAborted).toBe(false)
+    await expect(session.clearHistory()).rejects.toBeInstanceOf(SessionBusyError)
+
+    controller.abort()
+    await modelAbortSeen
+    for (let i = 0; i < 20; i += 1) {
+      try {
+        await session.clearHistory()
+        return
+      } catch (error) {
+        if (!(error instanceof SessionBusyError)) throw error
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    }
     await session.clearHistory()
   })
 

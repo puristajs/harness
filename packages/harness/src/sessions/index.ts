@@ -44,6 +44,7 @@ import type { DurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpoint, ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import type { DurableRuntime } from '../runtime/durable.js'
+import { runStepWithRetry, type DurableStepOptions } from '../runtime/steps.js'
 import { HarnessConfigError } from '../errors/catalog.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
 import type { StateStore } from '../ports/state.js'
@@ -151,9 +152,9 @@ const STREAM_UNDROPPABLE_EVENT_TYPES = new Set<string>(['run.finished'])
  * promise-notified rather than time-polled, so there is no fixed per-event
  * latency or periodic timer.
  *
- * Abandoning the stream (`break` / `iterator.return()`) aborts `relaySignal`,
- * so a run wired to it is cancelled promptly instead of blocking the consumer
- * until the run finishes on its own.
+ * Abandoning the stream (`break` / `iterator.return()`) only detaches that
+ * consumer. It does not abort `relaySignal`; callers must pass `opts.signal`
+ * when they intend to cancel the underlying run.
  */
 export async function* relayRunEvents(
   run: (onEvent: (event: RunEvent) => Promise<void>, relaySignal: AbortSignal) => Promise<unknown>
@@ -165,6 +166,7 @@ export async function* relayRunEvents(
   let failure: unknown
   let wake: (() => void) | undefined
   const relayController = new AbortController()
+  let completedNormally = false
 
   const notify = (): void => {
     const resolve = wake
@@ -214,6 +216,7 @@ export async function* relayRunEvents(
       }
       if (queue.length === 0 && dropped === 0) {
         if (done) {
+          completedNormally = true
           break
         }
         // No await between the empty check and installing `wake`, so a producer
@@ -224,10 +227,11 @@ export async function* relayRunEvents(
       }
     }
   } finally {
-    // Cancel the run before awaiting it so an abandoned stream does not block
-    // `iterator.return()` until the run finishes or times out.
-    relayController.abort(new OperationCancelledError('Run event stream was abandoned by the consumer.', { scope: 'run' }))
-    await result.catch(() => undefined)
+    if (completedNormally) {
+      await result.catch(() => undefined)
+    } else {
+      void result.catch(() => undefined)
+    }
   }
   if (failure) throw failure
 }
@@ -1093,8 +1097,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   /** Pass-through step used when a workflow runs without durable execution. */
-  function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>): Promise<T> {
-    return fn()
+  function passthroughStep<T extends JsonValue>(_stepId: string, fn: () => Promise<T>, options: DurableStepOptions = {}): Promise<T> {
+    return runStepWithRetry(fn, options.retry)
   }
 
   function resolveDelegationPolicy(workflow: WorkflowDefinition<S>): EffectiveDelegationPolicy {

@@ -182,6 +182,35 @@ invocation. Use `streamId` to aggregate chunks from one stream invocation, and
 map producer ids to UI labels or client event names in your SSE/WebSocket
 adapter.
 
+## Tune The Default Agent Loop
+
+Use `prepareStep` when an agent needs small per-round adjustments without a
+custom handler:
+
+```ts
+agents: {
+  answerer: {
+    model: 'reasoning',
+    instructions: 'Answer with citations.',
+    tools: ['search'],
+    prepareStep: ({ step }) => step === 0
+      ? { activeTools: ['search'] }
+      : { activeTools: [] }
+  }
+}
+```
+
+`prepareStep` can switch to another configured model alias, narrow the active
+tool list, override instructions or messages for one model call, and pass
+per-call model options. Use `stopWhen` to end after a known model response:
+
+```ts
+stopWhen: ({ step, toolCalls }) => step >= 2 || toolCalls.some((call) => call.name === 'finalize')
+```
+
+Keep business orchestration in workflows. Loop controls are for bounded local
+generation policy, not for replacing workflow state machines.
+
 ## Use Provider Runtime Capabilities
 
 Declare the model operations each alias may use. Structured outputs use the

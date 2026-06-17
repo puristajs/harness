@@ -27,6 +27,8 @@ interface AgentDefinition<
   onPermission?: OnPermission
 
   maxSteps?: number                                             // default 16, max 64
+  prepareStep?: (ctx: AgentPrepareStepContext<S, z.infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
+  stopWhen?: (ctx: AgentStopWhenContext<S, z.infer<I>>) => boolean | Promise<boolean>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // escape hatch
 }
 
@@ -136,18 +138,35 @@ When `handler` is undefined, the harness executes this algorithm:
    - Built-in tools per `builtinTools` rule, filtered by sandbox executor availability.
 5. **Build initial messages**: prior conversation history (capped by effective `historyWindow`) + the current user input as `Message{role:'user', content: stringify(input)}`. `stringify` is `String(input)` if a string, else `JSON.stringify(input)`.
 6. **Loop** up to `maxSteps`:
-   - a. Call `models[model].object(messages, tools, schema=outputSchema)`.
-   - b. If response has no tool calls and includes structured `object` matching the output schema: validate; return.
-   - c. If response has no tool calls and no valid `object`: throw `ModelError{reason:'unstructured_response'}`.
-   - d. Execute the tool calls returned by that model response as one parallel batch, capped by `defaults.maxParallelToolCalls`:
+   - a. If `prepareStep` is configured, call it with the zero-based `step`, selected model alias, current `messages`, and full model-facing tool list. Its result may override the model alias, instruction text, active tool names, model messages, and model call options for this model call only.
+   - b. Call `models[stepModel].object(messages, tools, schema=outputSchema)`.
+   - c. Emit `model.object` with the model alias used for this step.
+   - d. If `stopWhen` returns `true`, validate `response.object` against the output schema and return without executing requested tool calls.
+   - e. If response has no tool calls and includes structured `object` matching the output schema: validate; return.
+   - f. If response has no tool calls and no valid `object`: throw `ModelError{reason:'unstructured_response'}`.
+   - g. Execute the tool calls returned by that model response as one parallel batch, capped by `defaults.maxParallelToolCalls`:
      - Resolve canonical tool name (alias → canonical).
      - Check permissions. On `'deny'`, append a tool result message `{role:'tool', content: JSON.stringify({error:'PERMISSION_DENIED'})}` and continue (does NOT throw — the model can adapt).
      - Validate tool input against the tool schema. On failure, append a tool result with `error: ValidationError`.
      - Execute the tool (with timeout). On error, append the tool result with the serialized error.
      - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
      - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
-   - e. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
+   - h. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
 7. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
+
+### Loop controls
+
+`prepareStep` and `stopWhen` customize the built-in loop without requiring a full
+custom handler. Use them for bounded routing decisions: switch to a cheaper
+model after the first call, temporarily disable tools, pass per-call model
+options, or stop after a known tool-call marker. They must not hide business
+orchestration that belongs in a workflow handler.
+
+`prepareStep.activeTools` is a list of model-facing tool names from the already
+resolved tool set. Unknown names throw `ValidationError{where:'agent_input'}`.
+`prepareStep.model` must reference a configured model alias. `stopWhen` runs
+after a model response and before tool execution; when it returns `true`, the
+response object must satisfy the agent output schema.
 
 ### Output schema conversion
 

@@ -131,9 +131,11 @@ const harness = defineHarness()
       handler: async (ctx) => {
         // Each step is checkpointed; on resume it replays its stored output
         // without re-running the body.
-        const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input.topic))
-        const draft = await ctx.step('draft', () => ctx.agents.write(outline))
-        return draft
+                  const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input.topic), {
+                    retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
+                  })
+                  const draft = await ctx.step('draft', () => ctx.agents.write(outline))
+                  return draft
       },
     },
   })
@@ -160,11 +162,21 @@ Behavior (see [spec 21 §16.1](../../specs/21-durable-workspaces.md)):
   when the store's retention `cleanupMode` is `adapter_automatic` — cleans up on
   terminal success. Cancellation aborts the workspace; a non-cancel failure
   leaves it resumable for a retry with the same `runId`.
-- Without `durable`, `ctx.step(fn)` is a transparent pass-through, so the same
-  workflow body runs ephemerally with no code change.
+- `ctx.step(..., { retry })` retries the step body before checkpoint commit.
+  Replayed committed steps return the stored output without re-running the body
+  or retry policy.
+- Without `durable`, `ctx.step(...)` is a transparent pass-through that still
+  honors short retry options, so the same workflow body runs ephemerally with no
+  code change.
 - Supplying `durable` without an executable `.runtime(...)` throws
   `HarnessConfigError{reason:'durable_runtime_required'}`; supplying it on an
   agent run throws `ValidationError`.
+
+For workflows that may outlive one deployment, include an application
+`workflowVersion` in workflow input or invoke metadata, keep durable step output
+schemas backward-compatible, and start a new durable run when a major migration
+needs a new code path. Store the previous run id in metadata so audit and UI
+views can link the logical process across versions.
 
 Resume across an actual process restart additionally requires
 `runtime.persistent` and `workspace_store.persistent`. The in-memory adapters

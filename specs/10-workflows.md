@@ -113,7 +113,7 @@ The workflow's own input is validated by `workflow.input.parse(value)` at run st
 
 ## Durable steps
 
-`ctx.step(stepId, fn)` marks a JSON-serializable boundary in a workflow handler.
+`ctx.step(stepId, fn, options?)` marks a JSON-serializable boundary in a workflow handler.
 Its behavior depends purely on how the workflow is invoked:
 
 - **Durable invocation** (`opts.durable` supplied and a `.runtime(...)` adapter is
@@ -132,8 +132,31 @@ Locked rules:
 - `stepId` matches `/^[A-Za-z0-9_.:-]{1,128}$/`; an invalid id throws
   `DurableStepError`.
 - A duplicate `stepId` within one run throws `DurableStepError`.
+- `options.retry` retries `fn` before any checkpoint is committed. `true`
+  means three total attempts with exponential backoff. A policy object can set
+  `maxAttempts`, `minDelayMs`, `maxDelayMs`, `backoff`, and `shouldRetry`.
+  Committed replayed steps never re-run retry logic.
 - The same workflow body therefore runs durably or ephemerally with no code
   change; durability is an invocation-time decision, not a handler concern.
+
+## Long-running workflow versions
+
+The harness does not own deployment pinning, HTTP workers, or queues. Long-lived
+applications should treat explicit step outputs and workflow return values as
+versioned migration boundaries:
+
+- include an application `workflowVersion` in invoke metadata or workflow input
+  when a run may outlive one deployment;
+- keep each durable step output schema backward-compatible, or migrate it in the
+  next step before handing it to an agent;
+- prefer chaining a new durable run with a new `runId` when a workflow needs to
+  self-upgrade after a major code change;
+- store the old run id in the new run metadata so UI and audit views can link
+  the logical process across runs.
+
+This is an application pattern, not a core scheduler feature. Core guarantees
+only stable durable checkpoints, state-store run/event history, cancellation,
+and typed workflow boundaries.
 
 ## Parallel invocation
 

@@ -183,6 +183,16 @@ const report = await ctx.step('report', () => ctx.agents.writer(outline))
 return report
 ```
 
+Retry transient step failures before a checkpoint is committed:
+
+```ts
+const enriched = await ctx.step(
+  'enrich',
+  () => ctx.agents.enricher(ctx.input),
+  { retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 } }
+)
+```
+
 Invoke durably with a stable run id:
 
 ```ts
@@ -193,6 +203,65 @@ await session.workflows.research_report.prompt(input, {
 
 Durable execution is workflow-only. Direct agent calls reject durable invoke
 options.
+
+## Workflow Patterns
+
+Use plain TypeScript control flow and keep each external or agent boundary
+schema-validated.
+
+Sequential chain:
+
+```ts
+const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input))
+const draft = await ctx.step('draft', () => ctx.agents.writer(outline))
+return ctx.step('review', () => ctx.agents.reviewer(draft))
+```
+
+Routing:
+
+```ts
+const route = ctx.input.kind === 'incident' ? 'incident_triage' : 'general_answer'
+return route === 'incident_triage'
+  ? ctx.agents.incident_triage(ctx.input)
+  : ctx.agents.general_answer(ctx.input)
+```
+
+Fan-out/fan-in:
+
+```ts
+const [legal, support, product] = await Promise.all([
+  ctx.agents.legal_review(ctx.input),
+  ctx.agents.support_review(ctx.input),
+  ctx.agents.product_review(ctx.input)
+])
+return ctx.agents.summarizer({ legal, support, product })
+```
+
+Evaluator-optimizer:
+
+```ts
+let draft = await ctx.agents.writer(ctx.input)
+for (let round = 0; round < 3; round += 1) {
+  const review = await ctx.agents.reviewer(draft)
+  if (review.approved) return draft
+  draft = await ctx.agents.writer({ ...ctx.input, feedback: review.feedback })
+}
+return draft
+```
+
+## Long-running Versions
+
+The harness does not pin deployments or run a scheduler. For workflows that can
+outlive one deploy, make version boundaries explicit in your application:
+
+- include `workflowVersion` in workflow input or invoke `metadata`;
+- keep durable step output schemas backward-compatible;
+- use `ctx.step` names as stable migration boundaries;
+- for major upgrades, start a new durable run with a new `runId` and include the
+  previous run id in metadata for audit/UI linking.
+
+This keeps the harness core neutral while giving operations and UI code a clear
+way to explain which version produced each durable step.
 
 ## Streaming Workflow Runs
 

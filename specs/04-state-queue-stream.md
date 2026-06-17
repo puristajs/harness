@@ -124,10 +124,11 @@ interface PersistedRunEvent {
 
 ## In-process run-event streaming
 
-The harness exposes per-run streaming via `Session.workflows[id].stream(...)`. Internally:
+The harness exposes per-run streaming via `Session.agents[id].stream(...)` and `Session.workflows[id].stream(...)`. Internally:
 
 - Each run owns an in-process bounded queue. The harness's run-loop appends `RunEvent` values to the queue without waiting for slow consumers.
 - `stream()` returns an `AsyncIterable<RunEvent>` reading from that queue.
+- Breaking out of a stream iterator detaches that consumer only. It does not cancel the run; pass `opts.signal` for explicit run cancellation.
 - Overflow: consumer slowness may drop oldest non-terminal live events and emit `stream.overflow`. See [12-streaming](./12-streaming.md) for full ordering, overflow, and persistence semantics.
 - Persistence-of-events for audit goes through `StateStore.appendEvents` inside the run lifecycle; there is no separate persistence span and no separate stream port.
 

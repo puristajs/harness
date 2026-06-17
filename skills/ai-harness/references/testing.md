@@ -118,6 +118,8 @@ invocation, distinct ids across parallel streams, `modelAlias`, and available
 `workflowId` / `agentId`.
 
 Test stream consumers against `RunEvent`, not provider-specific HTTP/SSE chunks. HTTP/SSE mapping belongs to the application integration layer.
+Breaking out of a stream iterator should not abort the run; test cancellation
+through an explicit `AbortSignal` when run termination is expected.
 
 ## Adapter Failure Tests
 Provider adapters should cover:

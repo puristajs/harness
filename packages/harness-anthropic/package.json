@@ -40,7 +40,7 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.2"
+    "@anthropic-ai/sdk": "^0.105.0"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.9",

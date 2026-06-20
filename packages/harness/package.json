@@ -70,7 +70,7 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/context-async-hooks": "^2.8.0",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.1.9",
     "just-bash": "^3.0.1",
     "typescript": "^6.0.3",

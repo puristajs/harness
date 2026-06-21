@@ -181,6 +181,8 @@ When `retryKind === 'deferred'`, do not sleep inside an HTTP request or
 long-running handler. Return a typed API error, enqueue delayed work, or let a
 durable/queue integration schedule the retry. The standalone harness reports
 the metadata; application or PURISTA queue code owns long-delay scheduling.
+Invalid model retry policies throw `HarnessConfigError` with
+`reason:'invalid_model_retry_policy'` before provider execution.
 
 ## API Edge Mapping
 Suggested API mapping:

@@ -1,5 +1,6 @@
 import { ModelCapabilityError, ModelError, OperationCancelledError, OperationTimeoutError, HarnessError, sanitizeForLog, sanitizeProviderBody, sanitizeProviderMessage } from '../errors/index.js'
 import { redactProviderContent } from '../models/adapter-utils.js'
+import { validateModelRetrySetting } from '../models/retry-policy.js'
 import { pumpStreamThroughSpan } from '../models/stream-pump.js'
 import type { Span } from '@opentelemetry/api'
 import type { Logger } from '../logger/index.js'
@@ -544,6 +545,7 @@ function sanitizeJsonLike(value: unknown): unknown {
 
 function resolveRetryPolicy(req: ProviderRequest): ResolvedRetryPolicy {
   const setting = req.call?.retry ?? ('defaults' in req ? req.defaults?.retry : undefined) ?? true
+  validateModelRetrySetting(setting)
   if (setting === false) {
     return { ...DEFAULT_RETRY_POLICY, maxAttempts: 1 }
   }
@@ -581,10 +583,12 @@ function retryDecision(
   policy: ResolvedRetryPolicy,
   attempt: number,
   startedAt: number
-): { action: 'retry'; delayMs: number; reason: string } | { action: 'fail'; retryKind: 'none' | 'deferred'; delayMs?: number } {
-  if (attempt >= policy.maxAttempts) return { action: 'fail', retryKind: 'none' }
+): { action: 'retry'; delayMs: number; reason: string } | { action: 'fail'; retryKind: 'none' | 'active' | 'deferred'; delayMs?: number } {
   const reason = retryReason(error, policy)
   if (!reason) return { action: 'fail', retryKind: 'none' }
+  if (attempt >= policy.maxAttempts) {
+    return { action: 'fail', retryKind: attempt > 1 ? 'active' : 'none' }
+  }
   const providerDelay = policy.respectRetryAfter ? retryAfterFromError(error) : undefined
   const delayMs = providerDelay ?? computedBackoffMs(policy, attempt)
   const elapsed = Date.now() - startedAt
@@ -625,7 +629,7 @@ function computedBackoffMs(policy: ResolvedRetryPolicy, attempt: number): number
   return Math.max(0, Math.floor(base * jitter))
 }
 
-function decorateRetryMeta(error: HarnessError, retryKind: 'none' | 'deferred', attempt: number, maxAttempts: number, delayMs: number | undefined): HarnessError {
+function decorateRetryMeta(error: HarnessError, retryKind: 'none' | 'active' | 'deferred', attempt: number, maxAttempts: number, delayMs: number | undefined): HarnessError {
   if (!(error instanceof ModelError)) return error
   const meta = {
     ...(error.meta ?? {}),

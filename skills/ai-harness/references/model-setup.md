@@ -150,7 +150,12 @@ windows: with the default `longRetry: 'error'` those fail immediately with
 metadata with `retryKind:'deferred'` and the provider-supplied `retryAfterMs`
 so queues, durable workers, or application schedulers can decide what to do
 (`maxDeferredDelayMs` caps the deferred window). Per-call `call.retry`
-overrides alias and default retry settings.
+overrides alias and default retry settings. Retry policies are runtime
+validated: invalid attempt counts, negative budgets, unknown `longRetry`
+values, or non-boolean `retryOn` entries fail with `HarnessConfigError` before
+provider execution.
+Final errors after exhausted active attempts carry `retryKind:'active'` plus
+attempt metadata, without inventing a synthetic `retryAfterMs`.
 
 Model responses include `finishReason` for common control flow and may include
 `outcome` for provider-specific finish/status details. Use `outcome` for

@@ -1,6 +1,6 @@
 {
   "name": "@purista/delm-shared-context-example",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "type": "module",
   "scripts": {

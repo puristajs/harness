@@ -240,6 +240,25 @@ it('passes harness logger and model timeout defaults into base model providers',
   expect(logs.join('')).toContain('Model provider call failed.')
 })
 
+it('validates model retry policies at alias registration time', () => {
+  const model = new FakeModelProvider()
+
+  expect(() => defineHarness()
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'], retry: { maxAttempts: 0 } } }))
+    .toThrow(HarnessConfigError)
+
+  expect(() => defineHarness()
+    .models({
+      fast: {
+        provider: model,
+        model: 'fake',
+        capabilities: ['object'],
+        defaults: { retry: { maxActiveDelayMs: -1 } }
+      }
+    }))
+    .toThrow(HarnessConfigError)
+})
+
 it('passes harness context into state, sandbox, and tool adapters', async () => {
   const model = new FakeModelProvider()
   model.enqueue({ object: {}, toolCalls: [{ id: 'call-1', name: 'ctx_tool', arguments: { value: 'x' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })

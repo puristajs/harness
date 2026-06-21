@@ -221,6 +221,7 @@ export interface ModelRetryOnPolicy
 export type ModelRetryKind
 export interface ModelOutcome
 export interface ModelRateLimitInfo
+// Invalid model retry policy values throw HarnessConfigError before provider execution.
 export interface ModelProvider
 export abstract class BaseModelProvider
 export interface BaseModelProviderOptions

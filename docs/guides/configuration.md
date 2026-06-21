@@ -145,7 +145,9 @@ provider `Retry-After` windows. `longRetry` decides what happens instead:
 `'defer'` returns a typed `ModelError` with `retryKind: 'deferred'` and the
 provider-supplied `retryAfterMs` so an API can fail fast and a worker/queue can
 schedule a later retry. With `'defer'`, `maxDeferredDelayMs` caps how long a
-provider wait may be before it degrades to `retryKind: 'none'`.
+provider wait may be before it degrades to `retryKind: 'none'`. If active
+retries were attempted and then exhausted, the final error reports
+`retryKind: 'active'` with attempt metadata.
 
 ```ts
 .models({
@@ -166,7 +168,10 @@ provider wait may be before it degrades to `retryKind: 'none'`.
 
 Use `retry: false` for tests, strict request/response APIs, or provider calls
 where any automatic retry is undesirable. Per-call `call.retry` overrides the
-alias policy.
+alias policy. Retry policies are validated at runtime for JavaScript and
+generated config users: invalid attempt counts, negative budgets, unknown
+`longRetry` values, or non-boolean `retryOn` entries fail with
+`HarnessConfigError` before a provider call starts.
 
 Model responses keep a simple `finishReason` and may include `outcome` with the
 raw provider finish/status reason. Use `finishReason` for normal application

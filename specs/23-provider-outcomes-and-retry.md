@@ -104,6 +104,15 @@ Retry setting precedence:
 `text`, `object`, `embed`, `rerank`, `textStream`, and `objectStream`.
 Adapters MUST NOT implement independent retry loops.
 
+Retry policies are runtime-validated because applications may load harness
+configuration from JavaScript, JSON, generated code, or environment-derived
+objects. Invalid alias-level or `defaults.retry` policies MUST throw
+`HarnessConfigError{reason:'invalid_model_retry_policy'}` during `.models(...)`.
+Invalid per-call `call.retry` policies MUST throw the same error before any
+provider operation starts. Numeric budgets MUST be finite integers; `maxAttempts`
+MUST be `>= 1`; delay and elapsed budgets MUST be `>= 0`; `longRetry` MUST be
+`'error'` or `'defer'`; every `retryOn.*` value MUST be boolean when supplied.
+
 Eligible active retry failures:
 
 - network/transport failures normalized as `ModelError{reason:'network'}`
@@ -134,6 +143,11 @@ The harness retries actively only when all are true:
 - failure class is enabled by `retryOn`
 - `delayMs <= maxActiveDelayMs`
 - `elapsedMs + delayMs <= maxActiveElapsedMs`
+
+When an eligible transient failure exhausts active attempts after at least one
+retry was performed, the final `ModelError` MUST use `retryKind: 'active'` with
+`retryAttempt` and `retryMaxAttempts`. This means the harness already spent its
+active retry budget; it MUST NOT include a synthetic `retryAfterMs`.
 
 When the next delay exceeds the active budget, the call fails without
 sleeping. `longRetry` selects the failure classification:
@@ -251,7 +265,10 @@ No model content or sensitive provider headers may be emitted.
 ## Acceptance
 
 - Active retry succeeds after a short transient 5xx/429/network failure.
+- Exhausted active retries surface `retryKind:'active'` with attempt metadata.
 - `retry:false` throws after one attempt.
+- Invalid retry policy values fail fast with `HarnessConfigError` before a
+  provider call starts.
 - Long provider `Retry-After` never sleeps: the default `longRetry: 'error'`
   fails immediately with `retryKind:'none'`; `longRetry: 'defer'` produces a
   deferred retry `ModelError` carrying the provider-supplied `retryAfterMs`.

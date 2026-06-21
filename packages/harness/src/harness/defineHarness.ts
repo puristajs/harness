@@ -48,6 +48,7 @@ import { validateContextCheckpointStore } from '../ports/context-checkpoints.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
+import { validateModelRetrySetting } from '../models/retry-policy.js'
 import type { RunStatus } from '../models/state.js'
 import type { HarnessError } from '../errors/harness-error.js'
 import { HarnessConfigError, SkillManifestError } from '../errors/catalog.js'
@@ -909,6 +910,10 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   public models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }> {
     if (Object.keys(models).length === 0) {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
+    }
+    for (const [alias, config] of Object.entries(models)) {
+      validateModelRetrySetting(config.retry, `models.${alias}.retry`)
+      validateModelRetrySetting(config.defaults?.retry, `models.${alias}.defaults.retry`)
     }
     return this.clone({ models }) as unknown as HarnessBuilder<S & { models: M }>
   }

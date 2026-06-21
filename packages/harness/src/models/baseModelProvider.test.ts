@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ModelError, OperationCancelledError, OperationTimeoutError, serializeError } from '../errors/index.js'
+import { HarnessConfigError, ModelError, OperationCancelledError, OperationTimeoutError, serializeError } from '../errors/index.js'
 import { JsonLogger, type Logger } from '../logger/index.js'
 import { BaseModelProvider } from '../ports/base-model-provider.js'
 import type { ObjectRequest, ObjectResponse, TextRequest, TextStreamChunk } from '../ports/model-provider.js'
@@ -147,6 +147,30 @@ describe('BaseModelProvider', () => {
     })).resolves.toMatchObject({
       object: { ok: true },
       finishReason: 'stop'
+    })
+    expect(provider.calls).toBe(2)
+  })
+
+  it('marks final errors as active when active retry attempts are exhausted', async () => {
+    const provider = new TestProvider()
+    provider.errors.push(
+      Object.assign(new Error('temporary 1'), { status: 503, error: { message: 'try again' } }),
+      Object.assign(new Error('temporary 2'), { status: 503, error: { message: 'still down' } })
+    )
+
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      defaults: { retry: { maxAttempts: 2, minDelayMs: 1, maxDelayMs: 1, maxActiveDelayMs: 10, maxActiveElapsedMs: 1000 } },
+      schema: {},
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      meta: {
+        reason: 'provider_unavailable',
+        retryKind: 'active',
+        retryAttempt: 2,
+        retryMaxAttempts: 2
+      }
     })
     expect(provider.calls).toBe(2)
   })
@@ -408,6 +432,31 @@ describe('BaseModelProvider', () => {
       meta: { status: 503, retryAttempt: 1, retryMaxAttempts: 1 }
     })
     expect(provider.calls).toBe(1)
+  })
+
+  it('rejects invalid per-call retry policies before provider execution', async () => {
+    const provider = new TestProvider()
+
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      call: { retry: { maxAttempts: 0 } },
+      schema: {},
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      meta: {
+        reason: 'invalid_model_retry_policy',
+        path: 'model.retry.maxAttempts'
+      }
+    })
+    await expect(provider.object({
+      model: 'm',
+      messages: [],
+      call: { retry: { retryOn: { rateLimit: 'yes' as unknown as boolean } } },
+      schema: {},
+      signal: new AbortController().signal
+    })).rejects.toBeInstanceOf(HarnessConfigError)
+    expect(provider.calls).toBe(0)
   })
 
   it('records safe telemetry attributes and token counters', async () => {

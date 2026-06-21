@@ -125,6 +125,7 @@ through an explicit `AbortSignal` when run termination is expected.
 Provider adapters should cover:
 - provider 4xx and 5xx mapping
 - rate-limit/network retry metadata
+- invalid retry policy values fail before provider execution
 - context-length exceeded as non-retriable
 - malformed provider responses
 - missing provider operation for a declared capability

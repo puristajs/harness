@@ -228,6 +228,34 @@ Deliverables:
 
 Exit: AI eval core tests in [19-ai-eval-core](./19-ai-eval-core.md) green.
 
+## Post-1.5 reliability hardening — Provider retry DX
+
+Problem:
+- Provider errors and retry behavior are already normalized in
+  [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md), but
+  JavaScript/generated config users can still supply impossible retry budgets.
+- Exhausted active retries should be distinguishable from non-retryable errors
+  so API edges, queues, and runbooks can route failures with less inference.
+
+Deliverables:
+- Runtime validation for alias-level, default, and per-call model retry
+  policies. Invalid values fail with
+  `HarnessConfigError{reason:'invalid_model_retry_policy'}` before provider
+  execution.
+- Final transient errors that already consumed active retry attempts report
+  `retryKind:'active'`, `retryAttempt`, and `retryMaxAttempts`; they do not
+  invent `retryAfterMs`.
+- Docs, public API notes, specs, and the `ai-harness` skill catalog describe
+  the validation and retry-kind semantics.
+
+Tests:
+- Invalid alias-level and `defaults.retry` policies fail during `.models(...)`.
+- Invalid per-call `call.retry` fails before a provider call starts.
+- Exhausted active retry attempts produce `retryKind:'active'`.
+
+Exit: focused provider/base harness tests, typecheck, lint, skill/knowledge
+audits, and full CI are green.
+
 ## CI
 
 - Single GitHub Actions workflow: matrix over Node 20 and 22.

@@ -500,7 +500,11 @@ by default for short transient failures and rate limits. Long provider
 deferred classification requires `longRetry: 'defer'`; with the default
 `longRetry: 'error'` the call fails with `retryKind:'none'`. Responses
 also keep `finishReason` plus optional `outcome` metadata with raw provider
-finish/status details.
+finish/status details. Alias-level and per-call retry policies are runtime
+validated; invalid numeric budgets, `longRetry` values, or `retryOn` entries
+throw `HarnessConfigError` before provider execution.
+When the harness actively retried and exhausted `maxAttempts`, the final
+`ModelError` carries `retryKind:'active'` plus attempt metadata.
 
 `api` selects the OpenAI generation surface: `chat_completions` is the default
 for OpenAI-compatible endpoints, while `responses` routes text/object calls

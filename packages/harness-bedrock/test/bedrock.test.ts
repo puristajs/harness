@@ -13,7 +13,12 @@ describe('bedrock provider factory', () => {
         send: async () => ({
           output: { message: { content: [{ text: 'hello' }] } },
           stopReason: 'end_turn',
-          usage: { inputTokens: 4, outputTokens: 2 }
+          usage: {
+            inputTokens: 4,
+            outputTokens: 2,
+            cacheReadInputTokens: 3,
+            cacheWriteInputTokens: 1
+          }
         })
       }
     })
@@ -28,7 +33,13 @@ describe('bedrock provider factory', () => {
     })
 
     expect(response.content).toBe('hello')
-    expect(response.usage.totalTokens).toBe(6)
+    expect(response.usage).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+      cachedInputTokens: 3,
+      cacheCreationInputTokens: 1
+    })
     expect(response.finishReason).toBe('stop')
   })
 

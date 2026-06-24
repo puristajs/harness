@@ -21,7 +21,13 @@ describe('azureFoundry provider factory', () => {
         status: '200',
         body: {
           choices: [{ message: { content: 'hello' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }
+          usage: {
+            prompt_tokens: 4,
+            completion_tokens: 2,
+            total_tokens: 6,
+            prompt_tokens_details: { cached_tokens: 3 },
+            completion_tokens_details: { reasoning_tokens: 1 }
+          }
         }
       }))
     })
@@ -36,7 +42,13 @@ describe('azureFoundry provider factory', () => {
     })
 
     expect(response.content).toBe('hello')
-    expect(response.usage.totalTokens).toBe(6)
+    expect(response.usage).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+      cachedInputTokens: 3,
+      reasoningTokens: 1
+    })
     expect(response.finishReason).toBe('stop')
   })
 

@@ -267,7 +267,14 @@ type FinishReason =
   | 'malformed'
   | 'cancelled'
   | 'error'
-interface TokenUsage { inputTokens: number; outputTokens: number; totalTokens: number }
+interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cachedInputTokens?: number
+  cacheCreationInputTokens?: number
+  reasoningTokens?: number
+}
 
 interface ModelToolSpec {
   name: string

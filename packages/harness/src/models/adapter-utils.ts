@@ -17,11 +17,37 @@ export interface AdapterCallContext {
   method: string
 }
 
+export interface TokenUsageDetails {
+  /** Input tokens served from a provider-managed prompt/context cache. */
+  cachedInputTokens?: number
+  /** Input tokens written to a provider-managed prompt/context cache. */
+  cacheCreationInputTokens?: number
+  /** Output tokens used for hidden reasoning or extended thinking. */
+  reasoningTokens?: number
+}
+
 /** Builds normalized token usage from optional provider token counts. */
-export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number): TokenUsage {
+export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number, details: TokenUsageDetails = {}): TokenUsage {
   const input = inputTokens ?? 0
   const output = outputTokens ?? 0
-  return { inputTokens: input, outputTokens: output, totalTokens: totalTokens ?? input + output }
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: totalTokens ?? input + output,
+    ...optionalTokenUsageDetails(details)
+  }
+}
+
+function optionalTokenUsageDetails(details: TokenUsageDetails): TokenUsageDetails {
+  return {
+    ...(isTokenCount(details.cachedInputTokens) ? { cachedInputTokens: details.cachedInputTokens } : {}),
+    ...(isTokenCount(details.cacheCreationInputTokens) ? { cacheCreationInputTokens: details.cacheCreationInputTokens } : {}),
+    ...(isTokenCount(details.reasoningTokens) ? { reasoningTokens: details.reasoningTokens } : {})
+  }
+}
+
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
 /**

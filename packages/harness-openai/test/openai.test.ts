@@ -19,7 +19,12 @@ describe('openai provider factory', () => {
                   finish_reason: 'stop'
                 }
               ],
-              usage: { prompt_tokens: 4, completion_tokens: 2 }
+              usage: {
+                prompt_tokens: 4,
+                completion_tokens: 2,
+                prompt_tokens_details: { cached_tokens: 3 },
+                completion_tokens_details: { reasoning_tokens: 1 }
+              }
             })
           }
         }
@@ -36,7 +41,13 @@ describe('openai provider factory', () => {
     })
 
     expect(response.content).toBe('hello')
-    expect(response.usage.totalTokens).toBe(6)
+    expect(response.usage).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+      cachedInputTokens: 3,
+      reasoningTokens: 1
+    })
     expect(response.finishReason).toBe('stop')
   })
 
@@ -466,7 +477,12 @@ describe('openai provider factory', () => {
                   role: 'assistant'
                 }
               ],
-              usage: { input_tokens: 4, output_tokens: 2 },
+              usage: {
+                input_tokens: 4,
+                output_tokens: 2,
+                input_tokens_details: { cached_tokens: 3 },
+                output_tokens_details: { reasoning_tokens: 1 }
+              },
               status: 'completed'
             }
           }
@@ -487,7 +503,11 @@ describe('openai provider factory', () => {
     })
 
     expect(response.object).toEqual({ ok: true })
-    expect(response.usage.totalTokens).toBe(6)
+    expect(response.usage).toMatchObject({
+      totalTokens: 6,
+      cachedInputTokens: 3,
+      reasoningTokens: 1
+    })
     expect(calls[0]?.payload).toMatchObject({
       model: 'gpt-5.5',
       reasoning: { effort: 'medium' },

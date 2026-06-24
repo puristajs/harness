@@ -339,7 +339,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const run = await definition.state.getRun(runId)
     if (!run) return undefined
     const events = await definition.state.listEvents(runId)
-    const tokenTotals = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+    const tokenTotals: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let modelCalls = 0
     let toolCalls = 0
     let agentCalls = 0
@@ -354,6 +354,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         tokenTotals.inputTokens += payload['usage'].inputTokens
         tokenTotals.outputTokens += payload['usage'].outputTokens
         tokenTotals.totalTokens += payload['usage'].totalTokens
+        addOptionalTokenCounts(tokenTotals, payload['usage'])
       }
     }
 
@@ -1612,11 +1613,23 @@ function isJsonRecord(value: unknown): value is Record<string, JsonValue> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isTokenUsage(value: unknown): value is { inputTokens: number; outputTokens: number; totalTokens: number } {
+function isTokenUsage(value: unknown): value is TokenUsage {
   return isJsonRecord(value)
     && typeof value['inputTokens'] === 'number'
     && typeof value['outputTokens'] === 'number'
     && typeof value['totalTokens'] === 'number'
+}
+
+function addOptionalTokenCounts(total: TokenUsage, usage: TokenUsage): void {
+  if (typeof usage.cachedInputTokens === 'number' && Number.isFinite(usage.cachedInputTokens)) {
+    total.cachedInputTokens = (total.cachedInputTokens ?? 0) + usage.cachedInputTokens
+  }
+  if (typeof usage.cacheCreationInputTokens === 'number' && Number.isFinite(usage.cacheCreationInputTokens)) {
+    total.cacheCreationInputTokens = (total.cacheCreationInputTokens ?? 0) + usage.cacheCreationInputTokens
+  }
+  if (typeof usage.reasoningTokens === 'number' && Number.isFinite(usage.reasoningTokens)) {
+    total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
+  }
 }
 
 function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<RunSummary['error']> {

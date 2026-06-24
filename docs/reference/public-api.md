@@ -283,8 +283,9 @@ const summary = await session.getRunSummary(runId)
 ```
 
 `getRunSummary` reads the configured `StateStore` and returns status, start and
-finish timestamps, model/tool/agent call counts, token totals, and any
-serialized run error. It does not require an OpenTelemetry backend.
+finish timestamps, model/tool/agent call counts, token totals, optional
+cache/reasoning token details when providers report them, and any serialized
+run error. It does not require an OpenTelemetry backend.
 
 Persisted event payloads are redacted even when telemetry content capture is
 enabled. Usage counts and operational metadata remain available for summaries
@@ -328,8 +329,10 @@ outcomes, or workflow step durations. The helper records through the harness
 OpenTelemetry meter and adds the active harness/session/run attributes.
 
 Token usage remains on model spans using GenAI and OpenInference attributes.
-The harness also emits token usage metrics so aggregate usage can remain
-available even when trace storage samples or drops spans.
+When providers report them, cache-read, cache-creation, and reasoning token
+details stay on the `TokenUsage` object and span attributes. The harness also
+emits token usage metrics so aggregate usage can remain available even when
+trace storage samples or drops spans.
 
 ## Memory
 

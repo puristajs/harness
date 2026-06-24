@@ -138,7 +138,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         req.signal.throwIfAborted()
         // The usage chunk arrives with an empty choices array, so read it first.
         if (chunk.usage) {
-          usage = toTokenUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+          usage = toChatUsage(chunk.usage)
         }
         const choice = chunk.choices?.[0]
         if (!choice) continue
@@ -183,7 +183,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       return {
         object: parseJson(textContent, req, 'object') as T,
         ...(toolCalls ? { toolCalls } : {}),
-        usage: toTokenUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
+        usage: toChatUsage(response.usage),
         finishReason: toFinishReason(response.choices[0]?.finish_reason),
         outcome: toOutcome(toFinishReason(response.choices[0]?.finish_reason), response.choices[0]?.finish_reason),
         raw: response
@@ -205,7 +205,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
         if (chunk.usage) {
-          usage = toTokenUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+          usage = toChatUsage(chunk.usage)
         }
         const choice = chunk.choices?.[0]
         if (!choice) continue
@@ -276,7 +276,7 @@ function mapChatTextResponse(response: any, req: TextRequest): TextResponse {
   return {
     content: response.choices[0]?.message?.content ?? '',
     ...(toolCalls ? { toolCalls } : {}),
-    usage: toTokenUsage(response.usage?.prompt_tokens, response.usage?.completion_tokens),
+    usage: toChatUsage(response.usage),
     finishReason,
     outcome: toOutcome(finishReason, providerFinishReason),
     raw: response
@@ -790,7 +790,17 @@ function parseJson(content: string, req: ChatRequest, method: string): JsonValue
 }
 
 function toResponsesUsage(usage: any): TokenUsage {
-  return toTokenUsage(usage?.input_tokens, usage?.output_tokens)
+  return toTokenUsage(usage?.input_tokens, usage?.output_tokens, usage?.total_tokens, {
+    cachedInputTokens: usage?.input_tokens_details?.cached_tokens,
+    reasoningTokens: usage?.output_tokens_details?.reasoning_tokens
+  })
+}
+
+function toChatUsage(usage: any): TokenUsage {
+  return toTokenUsage(usage?.prompt_tokens, usage?.completion_tokens, usage?.total_tokens, {
+    cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens,
+    reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens
+  })
 }
 
 function toFinishReason(value: unknown): TextResponse['finishReason'] {

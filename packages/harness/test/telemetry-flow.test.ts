@@ -244,9 +244,13 @@ it('records GenAI token usage as histogram samples while keeping token counts on
     'gen_ai.usage.input_tokens': 1,
     'gen_ai.usage.output_tokens': 2,
     'gen_ai.usage.total_tokens': 3,
+    'gen_ai.usage.cache_read.input_tokens': 1,
+    'gen_ai.usage.reasoning.output_tokens': 1,
     'llm.token_count.prompt': 1,
     'llm.token_count.completion': 2,
-    'llm.token_count.total': 3
+    'llm.token_count.total': 3,
+    'llm.token_count.prompt_details.cache_read': 1,
+    'llm.token_count.completion_details.reasoning': 1
   })
 })
 

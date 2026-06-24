@@ -23,6 +23,17 @@ describe('adapter-utils', () => {
     expect(toTokenUsage()).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 })
   })
 
+  it('toTokenUsage preserves optional provider usage details', () => {
+    expect(toTokenUsage(8, 4, undefined, { cachedInputTokens: 6, cacheCreationInputTokens: 3, reasoningTokens: 2 })).toEqual({
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      cachedInputTokens: 6,
+      cacheCreationInputTokens: 3,
+      reasoningTokens: 2
+    })
+  })
+
   it('redactProviderContent collapses raw strings into a safe descriptor', () => {
     expect(redactProviderContent('raw model output')).toEqual({ redacted: true, contentLength: 16 })
   })

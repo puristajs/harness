@@ -14,7 +14,12 @@ describe('anthropic provider factory', () => {
           create: async () => ({
             content: [{ type: 'text', text: 'hello' }],
             stop_reason: 'end_turn',
-            usage: { input_tokens: 4, output_tokens: 2 }
+            usage: {
+              input_tokens: 4,
+              output_tokens: 2,
+              cache_read_input_tokens: 3,
+              cache_creation_input_tokens: 1
+            }
           })
         }
       }
@@ -30,7 +35,13 @@ describe('anthropic provider factory', () => {
     })
 
     expect(response.content).toBe('hello')
-    expect(response.usage.totalTokens).toBe(6)
+    expect(response.usage).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+      cachedInputTokens: 3,
+      cacheCreationInputTokens: 1
+    })
     expect(response.finishReason).toBe('stop')
   })
 

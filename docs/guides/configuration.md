@@ -360,9 +360,10 @@ context content in any mode. Memory content is omitted by default and follows
 the bounded memory-facade capture policy when non-`NO_CONTENT` modes are enabled.
 
 Model token usage is attached to model spans using both GenAI and OpenInference
-attributes. The harness also emits metrics through the configured OpenTelemetry
-meter so aggregate usage and durations remain available even when a production
-trace backend samples or drops spans.
+attributes. Optional cache-read, cache-creation, and reasoning token details are
+included when provider adapters report them. The harness also emits metrics
+through the configured OpenTelemetry meter so aggregate usage and durations
+remain available even when a production trace backend samples or drops spans.
 
 Application code can add its own metrics from workflow, custom-agent, and
 TypeScript-tool handlers:

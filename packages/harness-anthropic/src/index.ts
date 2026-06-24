@@ -69,7 +69,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     return {
       content: response.content?.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('') ?? '',
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(response.usage?.input_tokens, response.usage?.output_tokens),
+      usage: toAnthropicUsage(response.usage),
       finishReason: toFinishReason(response.stop_reason),
       outcome: toOutcome(response.stop_reason),
       raw: response
@@ -87,7 +87,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     for await (const event of stream) {
       req.signal.throwIfAborted()
       if (event.type === 'message_start') {
-        usage = toTokenUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
+        usage = toAnthropicUsage(event.message?.usage)
       } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
         toolState.set(event.index, {
           id: String(event.content_block.id),
@@ -113,7 +113,7 @@ class AnthropicModelProvider extends BaseModelProvider {
           providerFinishReason = event.delta.stop_reason
           finishReason = toFinishReason(providerFinishReason)
         }
-        usage = toTokenUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
+        usage = toAnthropicUsage({ ...fromTokenUsage(usage), output_tokens: event.usage?.output_tokens ?? usage.outputTokens })
       }
     }
 
@@ -129,7 +129,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     return {
       object,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(response.usage?.input_tokens, response.usage?.output_tokens),
+      usage: toAnthropicUsage(response.usage),
       finishReason: toFinishReason(response.stop_reason),
       outcome: toOutcome(response.stop_reason),
       raw: response
@@ -151,7 +151,7 @@ class AnthropicModelProvider extends BaseModelProvider {
     for await (const event of stream) {
       req.signal.throwIfAborted()
       if (event.type === 'message_start') {
-        usage = toTokenUsage(event.message?.usage?.input_tokens, event.message?.usage?.output_tokens)
+        usage = toAnthropicUsage(event.message?.usage)
       } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
         // Only the synthetic `harness_response` block carries the structured
         // object; other tool blocks are real tool calls and must not bleed
@@ -191,7 +191,7 @@ class AnthropicModelProvider extends BaseModelProvider {
           providerFinishReason = event.delta.stop_reason
           finishReason = toFinishReason(providerFinishReason)
         }
-        usage = toTokenUsage(usage.inputTokens, event.usage?.output_tokens ?? usage.outputTokens)
+        usage = toAnthropicUsage({ ...fromTokenUsage(usage), output_tokens: event.usage?.output_tokens ?? usage.outputTokens })
       }
     }
 
@@ -229,6 +229,22 @@ export type AnthropicClient = {
 }
 
 type ChatRequest = TextRequest | ObjectRequest
+
+function toAnthropicUsage(usage: any): TokenUsage {
+  return toTokenUsage(usage?.input_tokens, usage?.output_tokens, undefined, {
+    cachedInputTokens: usage?.cache_read_input_tokens,
+    cacheCreationInputTokens: usage?.cache_creation_input_tokens
+  })
+}
+
+function fromTokenUsage(usage: TokenUsage): Record<string, number | undefined> {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    cache_read_input_tokens: usage.cachedInputTokens,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens
+  }
+}
 
 function toClientOptions(options: AnthropicFactoryOptions): ClientOptions {
   const { client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options

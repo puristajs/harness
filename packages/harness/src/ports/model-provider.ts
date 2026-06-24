@@ -208,9 +208,18 @@ export interface BaseRequest {
 
 /** Token usage accounting normalized across providers. */
 export interface TokenUsage {
+  /** Input tokens charged or consumed by the provider, including cached input tokens when the provider reports them in the aggregate. */
   inputTokens: number
+  /** Output tokens charged or consumed by the provider, including reasoning output tokens when the provider reports them in the aggregate. */
   outputTokens: number
+  /** Provider-reported total tokens, or `inputTokens + outputTokens` when the provider omits a total. */
   totalTokens: number
+  /** Input tokens served from a provider-managed prompt/context cache. */
+  cachedInputTokens?: number
+  /** Input tokens written to a provider-managed prompt/context cache. */
+  cacheCreationInputTokens?: number
+  /** Output tokens used for hidden reasoning or extended thinking. */
+  reasoningTokens?: number
 }
 
 /** Normalized finish reasons from model providers. */

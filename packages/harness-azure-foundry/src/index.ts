@@ -86,7 +86,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     return {
       content: choice?.message?.content ?? '',
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
+      usage: toOpenAiCompatibleUsage(body.usage),
       finishReason: toFinishReason(choice?.finish_reason),
       outcome: toOutcome(choice?.finish_reason),
       raw: response
@@ -117,7 +117,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
         }
       }
       if (data.usage) {
-        usage = toTokenUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
+        usage = toOpenAiCompatibleUsage(data.usage)
       }
     }
 
@@ -137,7 +137,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
     return {
       object: parseJson(text, req, 'object') as T,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(body.usage?.prompt_tokens, body.usage?.completion_tokens, body.usage?.total_tokens),
+      usage: toOpenAiCompatibleUsage(body.usage),
       finishReason: toFinishReason(choice?.finish_reason),
       outcome: toOutcome(choice?.finish_reason),
       raw: response
@@ -170,7 +170,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
         }
       }
       if (data.usage) {
-        usage = toTokenUsage(data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens)
+        usage = toOpenAiCompatibleUsage(data.usage)
       }
     }
 
@@ -203,7 +203,7 @@ class AzureFoundryModelProvider extends BaseModelProvider {
         index: item.index,
         vector: Array.isArray(item.embedding) ? item.embedding : []
       })),
-      usage: toTokenUsage(body.usage?.prompt_tokens, 0, body.usage?.total_tokens),
+      usage: toOpenAiCompatibleUsage(body.usage, 0),
       raw: response
     }
   }
@@ -377,6 +377,13 @@ function parseStreamData(event: unknown, req: ChatRequest, method: string): any 
 }
 
 const MALFORMED_JSON_MESSAGE = 'Azure AI Foundry returned malformed JSON.'
+
+function toOpenAiCompatibleUsage(usage: any, fallbackOutputTokens?: number): TokenUsage {
+  return toTokenUsage(usage?.prompt_tokens, usage?.completion_tokens ?? fallbackOutputTokens, usage?.total_tokens, {
+    cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens,
+    reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens
+  })
+}
 
 function callContext(req: ChatRequest, method: string): AdapterCallContext {
   return { provider: 'azure-foundry', model: req.model, method }

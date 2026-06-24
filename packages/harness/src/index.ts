@@ -99,7 +99,7 @@ export {
   toTokenUsage,
   withoutObjectTool
 } from './models/adapter-utils.js'
-export type { AdapterCallContext, StreamToolCallState } from './models/adapter-utils.js'
+export type { AdapterCallContext, StreamToolCallState, TokenUsageDetails } from './models/adapter-utils.js'
 
 // Adapter capabilities and context
 export type {

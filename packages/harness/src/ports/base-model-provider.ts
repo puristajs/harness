@@ -17,7 +17,8 @@ import type {
   RerankResponse,
   TextRequest,
   TextResponse,
-  TextStreamChunk
+  TextStreamChunk,
+  TokenUsage
 } from './model-provider.js'
 import type { JsonValue } from '../models/json.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
@@ -343,12 +344,21 @@ export abstract class BaseModelProvider implements ModelProvider {
   }
 
   private recordUsage(method: ProviderMethod, model: string, result: unknown): void {
-    const usage = (result as { usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }).usage
+    const usage = (result as { usage?: TokenUsage }).usage
     if (!usage) return
     const attrs = { 'gen_ai.system': this.genAiSystem, 'gen_ai.request.model': model, 'model.provider': this.id, 'model.method': method }
     this.telemetry?.recordCounter('harness.model.tokens.input', usage.inputTokens, attrs)
     this.telemetry?.recordCounter('harness.model.tokens.output', usage.outputTokens, attrs)
     this.telemetry?.recordCounter('harness.model.tokens.total', usage.totalTokens, attrs)
+    if (usage.cachedInputTokens !== undefined) {
+      this.telemetry?.recordCounter('harness.model.tokens.cache_read_input', usage.cachedInputTokens, attrs)
+    }
+    if (usage.cacheCreationInputTokens !== undefined) {
+      this.telemetry?.recordCounter('harness.model.tokens.cache_creation_input', usage.cacheCreationInputTokens, attrs)
+    }
+    if (usage.reasoningTokens !== undefined) {
+      this.telemetry?.recordCounter('harness.model.tokens.reasoning_output', usage.reasoningTokens, attrs)
+    }
   }
 }
 

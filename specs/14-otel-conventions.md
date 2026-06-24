@@ -177,8 +177,9 @@ Span: `{operation} {request.model}`
 | Input tokens | `gen_ai.usage.input_tokens` | `llm.token_count.prompt` | |
 | Output tokens | `gen_ai.usage.output_tokens` | `llm.token_count.completion` | |
 | Total tokens | derived sum, not a GenAI attribute | `llm.token_count.total` | |
-| Cached input tokens | `gen_ai.input.usage.details.cache_read_tokens` | `llm.token_count.prompt_details.cache_read` | |
-| Reasoning tokens | `gen_ai.output.usage.details.reasoning_tokens` | `llm.token_count.completion_details.reasoning` | |
+| Cache read input tokens | `gen_ai.usage.cache_read.input_tokens` | `llm.token_count.prompt_details.cache_read` | |
+| Cache creation input tokens | `gen_ai.usage.cache_creation.input_tokens` | | |
+| Reasoning output tokens | `gen_ai.usage.reasoning.output_tokens` | `llm.token_count.completion_details.reasoning` | |
 | Alias | | | `harness.model.alias` |
 | Method | | | `harness.model.method` |
 
@@ -425,9 +426,13 @@ All durations are seconds. Token counts use unit `{token}`.
 
 Token usage is always attached to model spans when the provider returns usage:
 GenAI keys use `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and
-`gen_ai.usage.total_tokens`; OpenInference keys use
-`llm.token_count.prompt`, `llm.token_count.completion`, and
-`llm.token_count.total`. Metrics are emitted in addition to those span
+`gen_ai.usage.total_tokens`; provider detail fields additionally use
+`gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.cache_creation.input_tokens`, and
+`gen_ai.usage.reasoning.output_tokens` when present. OpenInference keys use
+`llm.token_count.prompt`, `llm.token_count.completion`,
+`llm.token_count.total`, and available prompt/completion detail fields.
+Metrics are emitted in addition to those span
 attributes because production backends may sample or drop spans while still
 aggregating metrics.
 

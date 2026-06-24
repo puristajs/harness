@@ -76,7 +76,7 @@ class BedrockModelProvider extends BaseModelProvider {
     return {
       content: outputText(response),
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(response.usage?.inputTokens, response.usage?.outputTokens),
+      usage: toBedrockUsage(response.usage),
       finishReason: toFinishReason(response.stopReason),
       outcome: toOutcome(response.stopReason),
       raw: response
@@ -116,7 +116,7 @@ class BedrockModelProvider extends BaseModelProvider {
         }
       }
       if (event.metadata?.usage) {
-        usage = toTokenUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
+        usage = toBedrockUsage(event.metadata.usage)
       }
       if (event.messageStop?.stopReason) {
         providerFinishReason = event.messageStop.stopReason
@@ -137,7 +137,7 @@ class BedrockModelProvider extends BaseModelProvider {
     return {
       object,
       ...(toolCalls ? { toolCalls } : {}),
-      usage: toTokenUsage(response.usage?.inputTokens, response.usage?.outputTokens),
+      usage: toBedrockUsage(response.usage),
       finishReason: toFinishReason(response.stopReason),
       outcome: toOutcome(response.stopReason),
       raw: response
@@ -195,7 +195,7 @@ class BedrockModelProvider extends BaseModelProvider {
         }
       }
       if (event.metadata?.usage) {
-        usage = toTokenUsage(event.metadata.usage.inputTokens, event.metadata.usage.outputTokens)
+        usage = toBedrockUsage(event.metadata.usage)
       }
       if (event.messageStop?.stopReason) {
         providerFinishReason = event.messageStop.stopReason
@@ -213,6 +213,13 @@ export type BedrockClient = {
 }
 
 type ChatRequest = TextRequest | ObjectRequest
+
+function toBedrockUsage(usage: any): TokenUsage {
+  return toTokenUsage(usage?.inputTokens, usage?.outputTokens, usage?.totalTokens, {
+    cachedInputTokens: usage?.cacheReadInputTokens,
+    cacheCreationInputTokens: usage?.cacheWriteInputTokens
+  })
+}
 
 function toClientOptions(options: BedrockFactoryOptions): BedrockRuntimeClientConfig {
   const { client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options

@@ -9,7 +9,7 @@ describe('Session.getRunSummary', () => {
     const provider = new FakeModelProvider()
     provider.enqueueObject({
       object: { label: 'ok' },
-      usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 },
+      usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 2, cacheCreationInputTokens: 1, reasoningTokens: 3 },
       finishReason: 'stop'
     })
 
@@ -44,7 +44,7 @@ describe('Session.getRunSummary', () => {
       runId,
       sessionId: 'user:1',
       status: 'succeeded',
-      tokenTotals: { inputTokens: 3, outputTokens: 4, totalTokens: 7 },
+      tokenTotals: { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 2, cacheCreationInputTokens: 1, reasoningTokens: 3 },
       modelCalls: 1,
       toolCalls: 0,
       agentCalls: 1

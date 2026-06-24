@@ -106,7 +106,7 @@ class FlowModelProvider implements ModelProvider {
     }
     return {
       object: { answer: 'Policy says yes.' },
-      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cachedInputTokens: 1, reasoningTokens: 1 },
       finishReason: 'stop'
     }
   }

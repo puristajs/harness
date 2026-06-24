@@ -4,8 +4,11 @@ import {
   ATTR_GEN_AI_RESPONSE_FINISH_REASONS,
   ATTR_GEN_AI_SYSTEM,
   ATTR_GEN_AI_TOKEN_TYPE,
+  ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
+  ATTR_GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
   ATTR_GEN_AI_USAGE_INPUT_TOKENS,
   ATTR_GEN_AI_USAGE_OUTPUT_TOKENS,
+  ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
   GEN_AI_TOKEN_TYPE_VALUE_INPUT,
   GEN_AI_TOKEN_TYPE_VALUE_OUTPUT
 } from '@opentelemetry/semantic-conventions/incubating'
@@ -26,6 +29,7 @@ import type {
   TextRequest,
   TextResponse,
   TextStreamChunk,
+  TokenUsage,
   ToolCallSpec
 } from '../ports/model-provider.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
@@ -311,7 +315,7 @@ function withModelStreamSpan<T>(
   const started = Date.now()
   const attrs = modelSpanAttrs(options, aliasKey, alias, method, ctx)
   return pumpStreamThroughSpan(options.telemetry, `chat ${alias.model}`, attrs, async function* (span) {
-    let lastUsage: { inputTokens: number; outputTokens: number; totalTokens: number } | undefined
+    let lastUsage: TokenUsage | undefined
     let lastFinishReason: string | undefined
     for await (const chunk of fn()) {
       const current = chunk as { usage?: typeof lastUsage; finishReason?: string }
@@ -320,16 +324,8 @@ function withModelStreamSpan<T>(
       yield chunk
     }
     if (lastUsage) {
-      span.setAttributes({
-        [ATTR_GEN_AI_USAGE_INPUT_TOKENS]: lastUsage.inputTokens,
-        [ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: lastUsage.outputTokens,
-        'gen_ai.usage.total_tokens': lastUsage.totalTokens,
-        'llm.token_count.prompt': lastUsage.inputTokens,
-        'llm.token_count.completion': lastUsage.outputTokens,
-        'llm.token_count.total': lastUsage.totalTokens
-      })
-      options.telemetry?.recordHistogram('gen_ai.client.token.usage', lastUsage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
-      options.telemetry?.recordHistogram('gen_ai.client.token.usage', lastUsage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
+      span.setAttributes(tokenUsageSpanAttrs(lastUsage))
+      recordTokenUsageMetrics(options.telemetry, attrs, lastUsage)
     }
     if (lastFinishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [lastFinishReason])
     options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
@@ -350,24 +346,43 @@ async function withModelSpan<T>(
 
   return options.telemetry.span(`chat ${alias.model}`, attrs, async (span) => {
     const result = await fn()
-    const usage = (result as { usage?: { inputTokens: number; outputTokens: number; totalTokens: number }; finishReason?: string }).usage
+    const usage = (result as { usage?: TokenUsage; finishReason?: string }).usage
     const finishReason = (result as { finishReason?: string }).finishReason
     if (usage) {
-      span.setAttributes({
-        [ATTR_GEN_AI_USAGE_INPUT_TOKENS]: usage.inputTokens,
-        [ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: usage.outputTokens,
-        'gen_ai.usage.total_tokens': usage.totalTokens,
-        'llm.token_count.prompt': usage.inputTokens,
-        'llm.token_count.completion': usage.outputTokens,
-        'llm.token_count.total': usage.totalTokens
-      })
-      options.telemetry?.recordHistogram('gen_ai.client.token.usage', usage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
-      options.telemetry?.recordHistogram('gen_ai.client.token.usage', usage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
+      span.setAttributes(tokenUsageSpanAttrs(usage))
+      recordTokenUsageMetrics(options.telemetry, attrs, usage)
     }
     if (finishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [finishReason])
     options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
     return result
   })
+}
+
+function tokenUsageSpanAttrs(usage: TokenUsage): SpanAttrs {
+  return {
+    [ATTR_GEN_AI_USAGE_INPUT_TOKENS]: usage.inputTokens,
+    [ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: usage.outputTokens,
+    'gen_ai.usage.total_tokens': usage.totalTokens,
+    'llm.token_count.prompt': usage.inputTokens,
+    'llm.token_count.completion': usage.outputTokens,
+    'llm.token_count.total': usage.totalTokens,
+    ...(usage.cachedInputTokens !== undefined ? {
+      [ATTR_GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS]: usage.cachedInputTokens,
+      'llm.token_count.prompt_details.cache_read': usage.cachedInputTokens
+    } : {}),
+    ...(usage.cacheCreationInputTokens !== undefined ? {
+      [ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS]: usage.cacheCreationInputTokens
+    } : {}),
+    ...(usage.reasoningTokens !== undefined ? {
+      [ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS]: usage.reasoningTokens,
+      'llm.token_count.completion_details.reasoning': usage.reasoningTokens
+    } : {})
+  }
+}
+
+function recordTokenUsageMetrics(telemetry: TelemetryShim | undefined, attrs: SpanAttrs, usage: TokenUsage): void {
+  telemetry?.recordHistogram('gen_ai.client.token.usage', usage.inputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_INPUT })
+  telemetry?.recordHistogram('gen_ai.client.token.usage', usage.outputTokens, { ...attrs, [ATTR_GEN_AI_TOKEN_TYPE]: GEN_AI_TOKEN_TYPE_VALUE_OUTPUT })
 }
 
 function modelSpanAttrs(

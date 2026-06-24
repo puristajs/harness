@@ -83,7 +83,7 @@ export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
 export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
 
 // Shared model-adapter helpers (consumed by first-party provider packages)
-export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number): TokenUsage
+export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number, details?: TokenUsageDetails): TokenUsage
 export function redactProviderContent(body: unknown): unknown
 export function malformedResponseError(ctx: AdapterCallContext, message: string, body: unknown, cause: unknown): ModelError
 export function parseProviderJson(content: string, ctx: AdapterCallContext, message: string): JsonValue
@@ -258,6 +258,7 @@ export interface RerankResponse
 export interface RerankDocument
 export interface RerankResult
 export interface TokenUsage
+export interface TokenUsageDetails
 export type FinishReason
 
 // Memory
@@ -773,6 +774,9 @@ interface RunSummary {
   error?: SerializedError
 }
 ```
+
+`RunSummary.tokenTotals` includes the optional `TokenUsage` detail fields when
+one or more completed model events reported them.
 
 `Session.getRunSummary(runId)` derives this from the configured `StateStore`; it
 does not inspect OTel spans.

@@ -71,6 +71,7 @@ Prefer extending `BaseModelProvider`:
 ```ts
 import {
   BaseModelProvider,
+  toTokenUsage,
   type EmbeddingRequest,
   type EmbeddingResponse,
   type ModelProvider,
@@ -96,7 +97,11 @@ class CustomProvider extends BaseModelProvider {
     const response = await this.options.client.generateText(req)
     return {
       content: response.text,
-      usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens, totalTokens: response.totalTokens },
+      usage: toTokenUsage(response.inputTokens, response.outputTokens, response.totalTokens, {
+        cachedInputTokens: response.cachedInputTokens,
+        cacheCreationInputTokens: response.cacheCreationInputTokens,
+        reasoningTokens: response.reasoningTokens
+      }),
       finishReason: 'stop',
       raw: response
     }
@@ -132,6 +137,7 @@ Adapter mapping checklist:
 - implement streaming as `AsyncIterable<TextStreamChunk>` / `AsyncIterable<ObjectStreamChunk>` when supported
 - implement embeddings and rerank only when the provider API has first-class support
 - map token usage and finish reason
+- preserve optional cache-read, cache-creation, and reasoning token details
 - preserve provider-specific finish/status details in `outcome`
 - pass `req.signal` to SDK calls when supported
 - pass `req.call.providerOptions` through to provider-specific SDK options

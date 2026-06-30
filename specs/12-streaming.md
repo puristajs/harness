@@ -19,9 +19,10 @@ type RunEvent =
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
 
-  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string }
-  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string }
-  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; decision: 'approved'|'rejected'; approverId?: string; reason?: string }
+  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
+  | { type: 'policy.exposure'; runId: string; agentId: string; toolId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceExposureEffect; enforced: boolean; step: number; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
+  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string }
+  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; decision: 'approved'|'rejected'; approverId?: string; reason?: string }
 
   | { type: 'tool.started';    runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished';   runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
@@ -79,7 +80,7 @@ Each `prompt`/`stream` invocation creates an internal async generator. Events ar
 5. For each agent call, `agent.started` precedes `agent.finished`.
 6. `model.delta` events for a given `streamId` are yielded in provider chunk order.
 7. `model.object.partial` events for a given `streamId` are yielded in provider chunk order; a streamed `model.object` is yielded at most once for the final object AFTER all partials for that `streamId`.
-8. When governance is configured, `policy.evaluated` and approval events for a tool call precede `tool.started`. A denied policy or rejected approval may emit `tool.finished` with a serialized error without emitting `tool.started`, because the side-effecting tool never began.
+8. When governance exposure is configured, `policy.exposure` events may precede a model call and never include tool input or output. When execution governance is configured, `policy.evaluated` and approval events for a tool call precede `tool.started`. A denied policy or rejected approval may emit `tool.finished` with a serialized error without emitting `tool.started`, because the side-effecting tool never began.
 
 No ordering is guaranteed *across* runs (only within a run).
 

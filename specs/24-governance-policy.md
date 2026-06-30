@@ -1,6 +1,6 @@
 # Governance policy
 
-**Purpose.** Defines the optional policy-driven governance layer for tool calls. Governance is not required for ordinary harness use. When configured, it evaluates typed policy rules after agent permissions and tool allowlists, but before side-effecting tool execution.
+**Purpose.** Defines the optional policy-driven governance layer for model-facing tool exposure and tool-call execution. Governance is not required for ordinary harness use. When configured, exposure rules can hide tools before a model step, and execution policies evaluate typed rules after agent permissions and tool allowlists, but before side-effecting tool execution.
 
 ## Goals
 
@@ -8,7 +8,8 @@
 - Reuse the builder type system: native policy predicates receive the selected TypeScript tool's parsed Zod input.
 - Support external ecosystems: policy engines such as OPA, Cedar, Eve-style controls, or product-specific rule stores adapt through `GovernancePolicyEvaluator`.
 - Preserve existing security layers: built-in permissions remain the coarse built-in-tool gate; governance is a business/domain policy gate.
-- Emit observable policy and approval events without persisting raw tool input.
+- Emit observable policy, exposure, and approval events without persisting raw tool input.
+- Keep policy evidence replayable by emitting stable decision ids, optional policy versions, and approval ids.
 
 ## Builder surface
 
@@ -19,13 +20,25 @@ defineHarness()
   .models(...)
   .tools(...)
   .agents(...)
-  .governance(({ native, rule, adapter }) => ({
+  .governance(({ native, rule, exposureRule, adapter }) => ({
     mode: 'enforce',
     defaultEffect: 'allow',
+    exposure: {
+      id: 'tenant-tool-exposure',
+      rules: [
+        exposureRule({
+          id: 'hide-transfers-for-readonly-tenants',
+          effect: 'hide',
+          tools: ['transfer_funds'],
+          when: ({ metadata }) => metadata.plan === 'readonly'
+        })
+      ]
+    },
     approval: { request: async (req) => ({ decision: 'approved', approverId: 'ops' }) },
     policies: [
       native({
         id: 'bank-transfer-policy',
+        version: '2026-06-30',
         rules: [
           rule({
             id: 'large-transfer-approval',
@@ -43,6 +56,8 @@ defineHarness()
 
 `rule(...)` narrows `ctx.input` from the selected tool id. For MCP and built-in tools, `ctx.input` is JSON-compatible raw input. For TypeScript tools, `ctx.input` is the parsed Zod input and validation failure occurs before policy evaluation.
 
+`exposureRule(...)` narrows `ctx.toolId` from the selected tool id. Exposure rules do not receive tool input because no tool call exists yet; they are for per-agent, per-session, per-workflow, per-step, or metadata-driven capability shaping.
+
 ## Config
 
 ```ts
@@ -50,7 +65,8 @@ interface GovernanceConfig<S> {
   enabled?: boolean
   mode?: 'enforce' | 'shadow'
   defaultEffect?: 'allow' | 'deny'
-  policies: readonly GovernancePolicyDefinition<S>[]
+  policies?: readonly GovernancePolicyDefinition<S>[]
+  exposure?: GovernanceToolExposurePolicy<S>
   approval?: GovernanceApprovalProvider
   audit?: GovernanceAuditSink
 }
@@ -60,9 +76,28 @@ Defaults:
 
 - `enabled`: `true` when `.governance(...)` is configured.
 - `mode`: `'enforce'`.
-- `defaultEffect`: `'deny'` when governance is configured and no policy returns a decision.
+- `defaultEffect`: `'deny'` when execution policies are configured and no policy returns a decision.
 
-`mode: 'shadow'` evaluates and emits decisions but never blocks or requests approval. Use it for rollout, drift checks, and migration from another policy ecosystem.
+`mode: 'shadow'` evaluates and emits decisions but never hides tools, blocks calls, or requests approval. Use it for rollout, drift checks, and migration from another policy ecosystem.
+
+At least one of `policies` or `exposure.rules` must be present when governance is enabled. A config with only exposure rules does not apply execution `defaultEffect` to later tool calls.
+
+## Tool exposure
+
+Exposure runs after `prepareStep.activeTools` filtering and before the model call. It can remove tools from the `tools` array sent to the provider:
+
+```ts
+interface GovernanceToolExposurePolicy<S> {
+  id?: string
+  version?: string
+  defaultEffect?: 'expose' | 'hide'
+  rules?: readonly GovernanceToolExposureRule<S>[]
+}
+```
+
+Rules use `effect: 'hide' | 'expose'`, with `hide` winning when multiple rules match. In `mode: 'shadow'`, matching hide decisions emit `policy.exposure` but do not remove the tool.
+
+The runtime rejects provider tool calls whose tool name was not exposed for the current step. This protects against provider bugs or stale model-side tool state.
 
 ## Effects and precedence
 
@@ -101,6 +136,7 @@ Policy denial and rejected approval are recoverable default-loop tool errors. Th
 ```ts
 interface GovernancePolicyEvaluator<S> {
   id: string
+  version?: string
   evaluate(ctx: GovernanceContext<S>): GovernanceDecision | readonly GovernanceDecision[] | undefined | Promise<...>
 }
 ```
@@ -117,27 +153,30 @@ interface GovernanceApprovalProvider {
 }
 ```
 
-Approval runs under the tool timeout and cancellation signal. If approval is required but no provider is configured, the tool is denied with `reason: 'approval_unavailable'`.
+Approval requests include a stable `approvalId`, `callId`, and all matching `require_approval` decisions. Approval runs under the tool timeout and cancellation signal. If approval is required but no provider is configured, the tool is denied with `reason: 'approval_unavailable'`.
 
 ## Events and privacy
 
 Governance emits:
 
 - `policy.evaluated`
+- `policy.exposure`
 - `approval.requested`
 - `approval.finished`
 
-Persisted payloads include ids, effect, enforcement mode, decision, approver id, and reason. They do not include raw tool input or tool output.
+Persisted payloads include ids, `decisionId`, optional `policyVersion`, rule id, effect, enforcement mode, approval id, decision, approver id, reason, risk level, and tags. They do not include raw tool input or tool output.
 
 ## Validation
 
 `build()` rejects:
 
-- empty governance policy arrays;
+- governance config without execution policies or exposure rules;
 - duplicate policy ids;
 - native policies without rules;
 - duplicate native rule ids within one policy;
 - native rules referencing unknown tool ids;
+- duplicate exposure rule ids;
+- exposure rules referencing unknown tool ids;
 - adapter policies without an `evaluate` function.
 
 ## Example

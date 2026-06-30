@@ -236,6 +236,97 @@ describe('governance policies', () => {
     ]))
   })
 
+  it('can hide tools before the model call without requiring execution policies', async () => {
+    const model = new FakeModelProvider()
+    model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+      .tools(bankTools())
+      .agents({
+        banker: {
+          model: 'fast',
+          input: z.string(),
+          output: z.string(),
+          instructions: 'Transfer funds.',
+          tools: ['transfer_funds'],
+          builtinTools: false
+        }
+      })
+      .governance(({ exposureRule }) => ({
+        exposure: {
+          id: 'tenant-tool-exposure',
+          rules: [
+            exposureRule({
+              id: 'hide-transfers',
+              effect: 'hide',
+              tools: ['transfer_funds'],
+              reason: 'Tenant cannot use transfer tools.',
+              riskLevel: 'high',
+              tags: ['tenant-policy']
+            })
+          ]
+        }
+      }))
+      .build()
+
+    const session = await harness.getSession('policy-exposure')
+    const events = []
+    for await (const event of session.agents.banker.stream('transfer')) {
+      events.push(event)
+    }
+
+    const firstRequest = model.requests[0] as ObjectRequest
+    expect(firstRequest.tools).toEqual([])
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'policy.exposure',
+        effect: 'hide',
+        enforced: true,
+        policyId: 'tenant-tool-exposure',
+        ruleId: 'hide-transfers',
+        toolId: 'transfer_funds',
+        reason: 'Tenant cannot use transfer tools.',
+        riskLevel: 'high',
+        tags: ['tenant-policy'],
+        decisionId: expect.stringContaining('tenant-tool-exposure')
+      })
+    ]))
+  })
+
+  it('records shadow exposure decisions without hiding tools', async () => {
+    const model = new FakeModelProvider()
+    model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+      .tools(bankTools())
+      .agents({ banker: { model: 'fast', input: z.string(), output: z.string(), instructions: 'Transfer funds.', tools: ['transfer_funds'], builtinTools: false } })
+      .governance(({ exposureRule }) => ({
+        mode: 'shadow',
+        exposure: {
+          rules: [
+            exposureRule({ id: 'hide-transfers', effect: 'hide', tools: ['transfer_funds'] })
+          ]
+        }
+      }))
+      .build()
+
+    const session = await harness.getSession('policy-exposure-shadow')
+    const events = []
+    for await (const event of session.agents.banker.stream('transfer')) {
+      events.push(event)
+    }
+
+    const firstRequest = model.requests[0] as ObjectRequest
+    expect(firstRequest.tools?.map((tool) => tool.name)).toContain('transfer_funds')
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'policy.exposure', effect: 'hide', enforced: false, toolId: 'transfer_funds' })
+    ]))
+  })
+
   it('validates policy tool references at build time', () => {
     const model = new FakeModelProvider()
 
@@ -253,6 +344,24 @@ describe('governance policies', () => {
             ]
           })
         ]
+      }))
+      .build()).toThrow(/unknown tool/i)
+  })
+
+  it('validates exposure tool references at build time', () => {
+    const model = new FakeModelProvider()
+
+    expect(() => defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools(bankTools())
+      .agents({ banker: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['transfer_funds'], builtinTools: false } })
+      .governance(({ exposureRule }) => ({
+        exposure: {
+          rules: [
+            exposureRule({ id: 'missing-tool', effect: 'hide', tools: ['wire_money'] })
+          ]
+        }
       }))
       .build()).toThrow(/unknown tool/i)
   })

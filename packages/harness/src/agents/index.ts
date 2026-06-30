@@ -10,7 +10,7 @@ import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationT
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernancePolicyEvaluator, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, GovernanceToolExposureContext, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -308,7 +308,7 @@ async function runDefaultAgentInner(args: {
       const stepModelAlias = prepared?.model ?? selectedModelAlias
       const model = args.models[stepModelAlias]
       if (!model) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: stepModelAlias } })
-      const stepTools = filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId)
+      const stepTools = await applyGovernanceToolExposure(args, filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId), steps)
       const stepMessages = prepared?.messages ? [...prepared.messages] : modelMessages
       const stepInstructions = prepared?.instructions ?? instructions
       const response = await model.object({
@@ -342,6 +342,7 @@ async function runDefaultAgentInner(args: {
       })
 
       const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
+      ensureToolCallsWereExposed(toolCalls, stepTools)
       if (await shouldStopAgentLoop(args, parsedInput, stepModelAlias, steps, modelMessages, allToolSpecs, response as ObjectResponse<JsonValue>, toolCalls)) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
         emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
@@ -397,6 +398,162 @@ function filterActiveTools(tools: readonly ModelToolSpec[], activeTools: readonl
     })
   }
   return filtered
+}
+
+async function applyGovernanceToolExposure(
+  args: Parameters<typeof runDefaultAgentInner>[0],
+  tools: readonly ModelToolSpec[],
+  step: number
+): Promise<ModelToolSpec[]> {
+  const governance = args.governance
+  const exposure = governance?.exposure
+  if (!governance || governance.enabled === false || !exposure) return [...tools]
+
+  const rules = exposure.rules ?? []
+  const defaultEffect = exposure.defaultEffect ?? 'expose'
+  if (rules.length === 0 && defaultEffect === 'expose') return [...tools]
+
+  const enforced = governance.mode !== 'shadow'
+  const policyId = exposure.id ?? 'governance.exposure'
+  const policyVersion = exposure.version
+  const visible: ModelToolSpec[] = []
+
+  for (const tool of tools) {
+    const decisions = await evaluateGovernanceExposureRules({
+      args,
+      defaultEffect,
+      policyId,
+      ...(policyVersion ? { policyVersion } : {}),
+      rules,
+      step,
+      toolId: tool.name
+    })
+    const winner = strongestGovernanceExposureDecision(decisions)
+    const shouldHide = enforced && winner.effect === 'hide'
+
+    for (const decision of decisions) {
+      if (decision.ruleId !== 'default' || decision.effect === 'hide') {
+        await args.emitEvent?.({
+          type: 'policy.exposure',
+          runId: args.runId,
+          agentId: args.agentId,
+          toolId: tool.name,
+          decisionId: decision.decisionId,
+          policyId: decision.policyId,
+          ...(decision.policyVersion ? { policyVersion: decision.policyVersion } : {}),
+          ...(decision.ruleId && decision.ruleId !== 'default' ? { ruleId: decision.ruleId } : {}),
+          effect: decision.effect,
+          enforced: enforced && winner.effect === 'hide' && decision.effect === 'hide',
+          step,
+          ...(decision.message ? { message: decision.message } : {}),
+          ...(decision.reason ? { reason: decision.reason } : {}),
+          ...(decision.riskLevel ? { riskLevel: decision.riskLevel } : {}),
+          ...(decision.tags ? { tags: decision.tags } : {})
+        })
+      }
+    }
+
+    if (!shouldHide) visible.push(tool)
+  }
+
+  return visible
+}
+
+type GovernanceExposureDecision = {
+  decisionId: string
+  effect: GovernanceExposureEffect
+  policyId: string
+  policyVersion?: string
+  ruleId?: string
+  message?: string
+  reason?: string
+  riskLevel?: GovernanceDecision['riskLevel']
+  tags?: readonly string[]
+  metadata?: Record<string, JsonValue>
+}
+
+async function evaluateGovernanceExposureRules(input: {
+  args: Parameters<typeof runDefaultAgentInner>[0]
+  defaultEffect: GovernanceExposureEffect
+  policyId: string
+  policyVersion?: string
+  rules: NonNullable<NonNullable<GovernanceConfig<any>['exposure']>['rules']>
+  step: number
+  toolId: string
+}): Promise<GovernanceExposureDecision[]> {
+  const { args, defaultEffect, policyId, policyVersion, rules, step, toolId } = input
+  const ctx: GovernanceToolExposureContext = {
+    toolId,
+    agentId: args.agentId,
+    runId: args.runId,
+    sessionId: args.sessionId,
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    step,
+    metadata: args.metadata ?? {}
+  }
+  const decisions: GovernanceExposureDecision[] = []
+
+  for (const rule of rules) {
+    if (rule.tools && !rule.tools.includes(toolId as never)) continue
+    let matched = false
+    try {
+      matched = rule.when ? await rule.when(ctx as never) : true
+    } catch (error) {
+      throw new PolicyEvaluationError('Governance exposure predicate failed.', {
+        tool_name: toolId,
+        agent_id: args.agentId,
+        policy_id: policyId,
+        rule_id: rule.id,
+        reason: 'predicate_failed'
+      }, error)
+    }
+    if (!matched) continue
+    decisions.push({
+      decisionId: createGovernanceDecisionId(args.runId, `step-${step}`, policyId, rule.id, decisions.length),
+      effect: rule.effect,
+      policyId,
+      ...(policyVersion ? { policyVersion } : {}),
+      ruleId: rule.id,
+      ...(rule.message ? { message: rule.message } : {}),
+      ...(rule.reason ? { reason: rule.reason } : {}),
+      ...(rule.riskLevel ? { riskLevel: rule.riskLevel } : {}),
+      ...(rule.tags ? { tags: rule.tags } : {}),
+      ...(rule.metadata ? { metadata: rule.metadata } : {})
+    })
+  }
+
+  if (decisions.length > 0) return decisions
+
+  return [{
+    decisionId: createGovernanceDecisionId(args.runId, `step-${step}`, policyId, 'default', 0),
+    effect: defaultEffect,
+    policyId,
+    ...(policyVersion ? { policyVersion } : {}),
+    ruleId: 'default',
+    message: defaultEffect === 'hide'
+      ? 'No exposure rule matched; governance exposure default hides the tool.'
+      : 'No exposure rule matched; governance exposure default exposes the tool.'
+  }]
+}
+
+function strongestGovernanceExposureDecision(decisions: readonly GovernanceExposureDecision[]): GovernanceExposureDecision {
+  return [...decisions].sort((left, right) => governanceExposureRank(right.effect) - governanceExposureRank(left.effect))[0] as GovernanceExposureDecision
+}
+
+function governanceExposureRank(effect: GovernanceExposureEffect): number {
+  return effect === 'hide' ? 2 : 1
+}
+
+function ensureToolCallsWereExposed(toolCalls: readonly ToolCallSpec[], tools: readonly ModelToolSpec[]): void {
+  const available = new Set(tools.map((tool) => tool.name))
+  for (const call of toolCalls) {
+    if (!available.has(call.name)) {
+      throw new ToolNotFoundError('Model requested a tool that was not exposed for this step.', {
+        tool_id: call.name,
+        where: 'model_response'
+      })
+    }
+  }
 }
 
 async function shouldStopAgentLoop(
@@ -552,31 +709,42 @@ async function enforceGovernance(
 ): Promise<void> {
   const governance = args.governance
   if (!governance || governance.enabled === false) return
+  if ((governance.policies ?? []).length === 0) return
 
   const decisions = await evaluateGovernance(args, governance, toolId, input)
   const defaultEffect = governance.defaultEffect ?? 'deny'
   if (decisions.length === 0 && defaultEffect === 'allow') return
   const effectiveDecisions = decisions.length > 0
     ? decisions
-    : [{ effect: 'deny' as const, policyId: 'governance.default', message: 'No governance policy allowed the tool call.' }]
-  const winner = strongestGovernanceDecision(effectiveDecisions)
+    : [{ effect: 'deny' as const, policyId: 'governance.default', ruleId: 'default', message: 'No governance policy allowed the tool call.' }]
+  const materializedDecisions: Array<GovernanceDecision & { decisionId: string }> = effectiveDecisions.map((decision, index) => ({
+    ...decision,
+    decisionId: decision.decisionId ?? createGovernanceDecisionId(args.runId, callId, decision.policyId, decision.ruleId, index)
+  }))
+  const winner = strongestGovernanceDecision(materializedDecisions)
   const enforced = governance.mode !== 'shadow'
 
-  for (const decision of effectiveDecisions) {
+  for (const decision of materializedDecisions) {
     await args.emitEvent?.({
       type: 'policy.evaluated',
       runId: args.runId,
       agentId: args.agentId,
       toolId,
       callId,
+      decisionId: decision.decisionId,
       policyId: decision.policyId,
+      ...(decision.policyVersion ? { policyVersion: decision.policyVersion } : {}),
       ...(decision.ruleId ? { ruleId: decision.ruleId } : {}),
       effect: decision.effect,
       enforced: enforced && (decision.effect === 'deny' || decision.effect === 'require_approval'),
-      ...(decision.message ? { message: decision.message } : {})
+      ...(decision.message ? { message: decision.message } : {}),
+      ...(decision.reason ? { reason: decision.reason } : {}),
+      ...(decision.riskLevel ? { riskLevel: decision.riskLevel } : {}),
+      ...(decision.tags ? { tags: decision.tags } : {})
     })
     await governance.audit?.record(decision, {
       toolId,
+      callId,
       agentId: args.agentId,
       runId: args.runId,
       sessionId: args.sessionId,
@@ -612,18 +780,24 @@ async function enforceGovernance(
     })
   }
 
-  const approvalDecisions = effectiveDecisions.filter((decision) => decision.effect === 'require_approval')
+  const approvalDecisions = materializedDecisions.filter((decision) => decision.effect === 'require_approval')
+  const approvalId = `${winner.decisionId}:approval`
   await args.emitEvent?.({
     type: 'approval.requested',
     runId: args.runId,
     agentId: args.agentId,
     toolId,
     callId,
+    approvalId,
+    decisionId: winner.decisionId,
     policyId: winner.policyId,
+    ...(winner.policyVersion ? { policyVersion: winner.policyVersion } : {}),
     ...(winner.ruleId ? { ruleId: winner.ruleId } : {})
   })
   const approval = await withToolSignal(args.signal, args.toolTimeoutMs, () => governance.approval!.request({
+    approvalId,
     toolId,
+    callId,
     agentId: args.agentId,
     runId: args.runId,
     sessionId: args.sessionId,
@@ -637,7 +811,10 @@ async function enforceGovernance(
     agentId: args.agentId,
     toolId,
     callId,
+    approvalId,
+    decisionId: winner.decisionId,
     policyId: winner.policyId,
+    ...(winner.policyVersion ? { policyVersion: winner.policyVersion } : {}),
     ...(winner.ruleId ? { ruleId: winner.ruleId } : {}),
     decision: approval.decision,
     ...(approval.approverId ? { approverId: approval.approverId } : {}),
@@ -673,7 +850,7 @@ async function evaluateGovernance(
   }
   const decisions: GovernanceDecision[] = []
 
-  for (const policy of governance.policies) {
+  for (const policy of governance.policies ?? []) {
     if ('kind' in policy && policy.kind === 'native') {
       decisions.push(...await evaluateNativePolicy(policy, ctx, args.agentId))
       continue
@@ -691,7 +868,11 @@ async function evaluateGovernance(
             reason: 'invalid_decision'
           })
         }
-        decisions.push({ ...decision, policyId: decision.policyId ?? policy.id })
+        decisions.push({
+          ...decision,
+          policyId: decision.policyId ?? policy.id,
+          ...(!decision.policyVersion && policy.version ? { policyVersion: policy.version } : {})
+        })
       }
     } catch (error) {
       if (error instanceof PolicyEvaluationError) throw error
@@ -727,16 +908,20 @@ async function evaluateNativePolicy(policy: NativePolicyDefinition, ctx: Governa
     decisions.push({
       effect: rule.effect,
       policyId: policy.id,
+      ...(policy.version ? { policyVersion: policy.version } : {}),
       ruleId: rule.id,
       ...(rule.message ? { message: rule.message } : {}),
+      ...(rule.reason ? { reason: rule.reason } : {}),
+      ...(rule.riskLevel ? { riskLevel: rule.riskLevel } : {}),
+      ...(rule.tags ? { tags: rule.tags } : {}),
       ...(rule.metadata ? { metadata: rule.metadata } : {})
     })
   }
   return decisions
 }
 
-function strongestGovernanceDecision(decisions: readonly GovernanceDecision[]): GovernanceDecision {
-  return [...decisions].sort((left, right) => governanceRank(right.effect) - governanceRank(left.effect))[0] as GovernanceDecision
+function strongestGovernanceDecision<T extends GovernanceDecision>(decisions: readonly T[]): T {
+  return [...decisions].sort((left, right) => governanceRank(right.effect) - governanceRank(left.effect))[0] as T
 }
 
 function governanceRank(effect: GovernanceEffect): number {
@@ -748,6 +933,21 @@ function governanceRank(effect: GovernanceEffect): number {
 
 function isGovernanceEffect(effect: unknown): effect is GovernanceEffect {
   return effect === 'allow' || effect === 'audit' || effect === 'require_approval' || effect === 'deny'
+}
+
+function createGovernanceDecisionId(runId: string, callId: string, policyId: string, ruleId: string | undefined, index: number): string {
+  return [
+    'gvd',
+    sanitizeDecisionIdPart(runId),
+    sanitizeDecisionIdPart(callId),
+    sanitizeDecisionIdPart(policyId),
+    sanitizeDecisionIdPart(ruleId ?? 'policy'),
+    String(index)
+  ].join(':')
+}
+
+function sanitizeDecisionIdPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 160)
 }
 
 function resolveToolKind(toolId: string, tool: ToolsConfig[string] | undefined): ToolKind {

@@ -211,7 +211,8 @@ interface HarnessDefaults {
 
 ### `.governance(config)`
 
-Configures an optional policy-driven governance layer for tool calls. See
+Configures an optional policy-driven governance layer for model-facing tool
+exposure and tool calls. See
 [24-governance-policy](./24-governance-policy.md) for the complete contract.
 
 ```ts
@@ -219,9 +220,14 @@ defineHarness()
   .models(...)
   .tools(...)
   .agents(...)
-  .governance(({ native, rule, adapter }) => ({
+  .governance(({ native, rule, exposureRule, adapter }) => ({
     mode: 'enforce',
     defaultEffect: 'allow',
+    exposure: {
+      rules: [
+        exposureRule({ id: 'hide-transfers', effect: 'hide', tools: ['transfer_funds'] })
+      ]
+    },
     policies: [
       native({
         id: 'bank-transfer-policy',
@@ -241,11 +247,13 @@ defineHarness()
 
 Validation:
 
-- `policies` must be non-empty when governance is enabled.
+- at least one execution policy or exposure rule must be configured when governance is enabled.
 - policy ids are unique.
 - native policies have at least one rule.
 - native rule ids are unique within a policy.
 - native `tools` references point at configured custom tools or built-in tool names.
+- exposure rule ids are unique.
+- exposure `tools` references point at configured custom tools or built-in tool names.
 - adapter policies expose an `evaluate` function.
 
 Note that timeout fields keep `Ms` suffixes for backwards-readable API ergonomics; OTel-exposed durations use seconds (see [14-otel-conventions](./14-otel-conventions.md)).

@@ -118,7 +118,7 @@ interface ToolHandlerContext {
 Behavior:
 
 - Input is validated with `input.parse` before the handler runs. Failure throws [`ValidationError`](./15-error-catalog.md) (`category: 'validation'`, `retriable: false`).
-- If `.governance(...)` is configured, policy evaluation runs after input validation and before the handler runs. Policy denial or rejected approval returns a recoverable `PolicyDeniedError` tool result to the model.
+- If `.governance(...).exposure` is configured, exposure rules can hide tools before the model call. If execution `policies` are configured, policy evaluation runs after input validation and before the handler runs. Policy denial or rejected approval returns a recoverable `PolicyDeniedError` tool result to the model.
 - Output is validated with `output.parse` after the handler returns. Failure throws `ValidationError`.
 - The `sandbox` exposed to the handler is the same `SandboxSession` the agent loop opened. Backend-internal policy (network deny lists, etc.) applies.
 - Per-call timeout: `defaults.toolTimeoutMs`. On timeout: `OperationTimeoutError`.

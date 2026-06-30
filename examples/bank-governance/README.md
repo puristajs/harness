@@ -16,3 +16,5 @@ npm run start --workspace @purista/bank-governance-example
 ```
 
 The key integration point is `.governance(({ native, rule }) => ...)` in `src/index.ts`. The `rule(...)` helper receives the typed `transfer_funds` tool input, so policy predicates can use `input.amount` and `input.balance` without manual casts.
+
+Governance also supports optional `exposureRule(...)` entries for hiding tools before a model step; this example keeps the model-facing tool set stable and demonstrates execution-time deny and approval policies.

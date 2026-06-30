@@ -1565,18 +1565,42 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         agentId: event.agentId,
         toolId: event.toolId,
         callId: event.callId,
+        decisionId: event.decisionId,
         policyId: event.policyId,
+        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
         ...(event.ruleId ? { ruleId: event.ruleId } : {}),
         effect: event.effect,
         enforced: event.enforced,
-        ...(event.message ? { message: event.message } : {})
+        ...(event.message ? { message: event.message } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.riskLevel ? { riskLevel: event.riskLevel } : {}),
+        ...(event.tags ? { tags: event.tags } : {})
+      } as unknown as JsonValue
+    case 'policy.exposure':
+      return {
+        agentId: event.agentId,
+        toolId: event.toolId,
+        decisionId: event.decisionId,
+        policyId: event.policyId,
+        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
+        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
+        effect: event.effect,
+        enforced: event.enforced,
+        step: event.step,
+        ...(event.message ? { message: event.message } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.riskLevel ? { riskLevel: event.riskLevel } : {}),
+        ...(event.tags ? { tags: event.tags } : {})
       } as unknown as JsonValue
     case 'approval.requested':
       return {
         agentId: event.agentId,
         toolId: event.toolId,
         callId: event.callId,
+        approvalId: event.approvalId,
+        decisionId: event.decisionId,
         policyId: event.policyId,
+        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
         ...(event.ruleId ? { ruleId: event.ruleId } : {})
       } as unknown as JsonValue
     case 'approval.finished':
@@ -1584,7 +1608,10 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         agentId: event.agentId,
         toolId: event.toolId,
         callId: event.callId,
+        approvalId: event.approvalId,
+        decisionId: event.decisionId,
         policyId: event.policyId,
+        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
         ...(event.ruleId ? { ruleId: event.ruleId } : {}),
         decision: event.decision,
         ...(event.approverId ? { approverId: event.approverId } : {}),

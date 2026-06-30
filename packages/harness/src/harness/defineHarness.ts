@@ -497,6 +497,12 @@ export type GovernanceMode = 'enforce' | 'shadow'
 /** Policy effects supported by the built-in governance evaluator. */
 export type GovernanceEffect = 'allow' | 'audit' | 'require_approval' | 'deny'
 
+/** Policy decision for model-facing tool exposure before a model step. */
+export type GovernanceExposureEffect = 'expose' | 'hide'
+
+/** Optional risk severity attached to policy decisions for audit and review UX. */
+export type GovernanceRiskLevel = 'critical' | 'high' | 'medium' | 'low'
+
 /** Tool ids policy rules may target. Includes configured custom tools and built-in tools. */
 export type GovernanceToolId<S extends BuilderState> = (keyof NonNullable<S['tools']> & string) | BuiltinToolName
 
@@ -523,17 +529,68 @@ export interface GovernanceContext<S extends BuilderState = BuilderState, K exte
 
 /** Decision returned by a policy adapter or native policy rule. */
 export interface GovernanceDecision {
+  decisionId?: string
   effect: GovernanceEffect
   policyId: string
+  policyVersion?: string
   ruleId?: string
   message?: string
+  reason?: string
+  riskLevel?: GovernanceRiskLevel
+  tags?: readonly string[]
   metadata?: Record<string, JsonValue>
 }
 
 /** External policy adapter contract for OPA, Cedar, Eve-compatible engines, or bespoke evaluators. */
 export interface GovernancePolicyEvaluator<S extends BuilderState = BuilderState> {
   id: string
+  version?: string
   evaluate(ctx: GovernanceContext<S>): GovernanceDecision | readonly GovernanceDecision[] | undefined | Promise<GovernanceDecision | readonly GovernanceDecision[] | undefined>
+}
+
+/** Context passed to tool-exposure policy rules before the model sees a step's tool list. */
+export interface GovernanceToolExposureContext<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> {
+  /** Canonical tool id whose model exposure is under evaluation. */
+  toolId: K
+  /** Current agent id. */
+  agentId: string
+  /** Current run id. */
+  runId: string
+  /** Current session id. */
+  sessionId: string
+  /** Current workflow id when the agent is invoked from a workflow. */
+  workflowId?: string
+  /** Zero-based default-loop model step. */
+  step: number
+  /** Scalar invocation metadata. */
+  metadata: Readonly<Record<string, JsonValue>>
+}
+
+/** Native tool-exposure rule scoped to one or more tool ids. */
+export interface GovernanceToolExposureRuleForTool<S extends BuilderState, K extends GovernanceToolId<S>> {
+  id: string
+  description?: string
+  effect: GovernanceExposureEffect
+  tools?: readonly K[]
+  when?: (ctx: GovernanceToolExposureContext<S, K>) => boolean | Promise<boolean>
+  message?: string
+  reason?: string
+  riskLevel?: GovernanceRiskLevel
+  tags?: readonly string[]
+  metadata?: Record<string, JsonValue>
+}
+
+/** Native tool-exposure rule union with context narrowed by the selected tool id. */
+export type GovernanceToolExposureRule<S extends BuilderState> = {
+  [K in GovernanceToolId<S>]: GovernanceToolExposureRuleForTool<S, K>
+}[GovernanceToolId<S>]
+
+/** Optional pre-model tool-exposure policy. */
+export interface GovernanceToolExposurePolicy<S extends BuilderState = BuilderState> {
+  id?: string
+  version?: string
+  defaultEffect?: GovernanceExposureEffect
+  rules?: readonly GovernanceToolExposureRule<S>[]
 }
 
 /** Native TypeScript policy rule scoped to one or more tool ids. */
@@ -544,6 +601,9 @@ export interface NativePolicyRuleForTool<S extends BuilderState, K extends Gover
   tools?: readonly K[]
   when?: (ctx: GovernanceContext<S, K>) => boolean | Promise<boolean>
   message?: string
+  reason?: string
+  riskLevel?: GovernanceRiskLevel
+  tags?: readonly string[]
   metadata?: Record<string, JsonValue>
 }
 
@@ -556,6 +616,7 @@ export type NativePolicyRule<S extends BuilderState> = {
 export interface NativePolicyDefinition<S extends BuilderState = BuilderState> {
   kind: 'native'
   id: string
+  version?: string
   description?: string
   rules: readonly NativePolicyRule<S>[]
 }
@@ -566,7 +627,9 @@ export type GovernancePolicyDefinition<S extends BuilderState = BuilderState> =
 
 /** Approval request emitted when the winning policy effect is `require_approval`. */
 export interface GovernanceApprovalRequest {
+  approvalId: string
   toolId: string
+  callId: string
   agentId: string
   runId: string
   sessionId: string
@@ -585,9 +648,21 @@ export interface GovernanceApprovalProvider {
   request(request: GovernanceApprovalRequest): Promise<GovernanceApprovalResult>
 }
 
+/** Context passed to governance audit sinks for every evaluated execution policy decision. */
+export interface GovernanceAuditContext {
+  toolId: string
+  callId: string
+  agentId: string
+  runId: string
+  sessionId: string
+  workflowId?: string
+  metadata: Readonly<Record<string, JsonValue>>
+  enforced: boolean
+}
+
 /** Optional audit sink for policy decisions. */
 export interface GovernanceAuditSink {
-  record(decision: GovernanceDecision, ctx: Omit<GovernanceApprovalRequest, 'decisions'> & { enforced: boolean }): Promise<void>
+  record(decision: GovernanceDecision, ctx: GovernanceAuditContext): Promise<void>
 }
 
 /** Optional policy-driven governance layer. Omitted config leaves the harness behavior unchanged. */
@@ -595,13 +670,15 @@ export interface GovernanceConfig<S extends BuilderState = BuilderState> {
   enabled?: boolean
   mode?: GovernanceMode
   defaultEffect?: 'allow' | 'deny'
-  policies: readonly GovernancePolicyDefinition<S>[]
+  policies?: readonly GovernancePolicyDefinition<S>[]
+  exposure?: GovernanceToolExposurePolicy<S>
   approval?: GovernanceApprovalProvider
   audit?: GovernanceAuditSink
 }
 
 export interface GovernanceDefinitionHelpers<S extends BuilderState> {
   rule<const K extends GovernanceToolId<S>>(definition: NativePolicyRuleForTool<S, K>): NativePolicyRuleForTool<S, K>
+  exposureRule<const K extends GovernanceToolId<S>>(definition: GovernanceToolExposureRuleForTool<S, K>): GovernanceToolExposureRuleForTool<S, K>
   native<const P extends Omit<NativePolicyDefinition<S>, 'kind'>>(definition: P): P & { kind: 'native' }
   adapter<const P extends GovernancePolicyEvaluator<S>>(definition: P): P
 }
@@ -901,9 +978,10 @@ export type RunEvent =
   | { type: 'agent.started'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
   | { type: 'agent.finished'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
-  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string }
-  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string }
-  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; decision: 'approved' | 'rejected'; approverId?: string; reason?: string }
+  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
+  | { type: 'policy.exposure'; runId: string; agentId: string; toolId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceExposureEffect; enforced: boolean; step: number; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
+  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string }
+  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; decision: 'approved' | 'rejected'; approverId?: string; reason?: string }
   | { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.message'; runId: string; agentId: string; message: Message }
@@ -1090,6 +1168,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
     const helpers: GovernanceDefinitionHelpers<S> = {
       rule: (definition) => definition,
+      exposureRule: (definition) => definition,
       native: (definition) => ({ ...definition, kind: 'native' }),
       adapter: (definition) => definition
     }
@@ -1290,13 +1369,15 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   private validateGovernancePolicies(): void {
     const governance = this.configured.governance
     if (!governance || governance.enabled === false) return
-    if (!Array.isArray(governance.policies) || governance.policies.length === 0) {
-      throw new HarnessConfigError('Governance requires at least one policy.', { reason: 'invalid_governance', path: 'governance.policies' })
+    const policies = governance.policies ?? []
+    const exposureRules = governance.exposure?.rules ?? []
+    if (policies.length === 0 && exposureRules.length === 0) {
+      throw new HarnessConfigError('Governance requires at least one execution policy or exposure rule.', { reason: 'invalid_governance', path: 'governance' })
     }
 
     const configuredTools = new Set<string>([...BUILTIN_TOOL_NAMES, ...Object.keys(this.configured.tools ?? {})])
     const policyIds = new Set<string>()
-    for (const [policyIndex, policy] of governance.policies.entries()) {
+    for (const [policyIndex, policy] of policies.entries()) {
       if (!policy.id || typeof policy.id !== 'string') {
         throw new HarnessConfigError('Governance policy id is required.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.id` })
       }
@@ -1330,6 +1411,32 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         }
       } else if (typeof (policy as GovernancePolicyEvaluator<any>).evaluate !== 'function') {
         throw new HarnessConfigError('Governance adapter policies require an evaluate function.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.evaluate`, id: policy.id })
+      }
+    }
+
+    if (governance.exposure) {
+      const exposure = governance.exposure
+      if (exposure.defaultEffect !== undefined && exposure.defaultEffect !== 'expose' && exposure.defaultEffect !== 'hide') {
+        throw new HarnessConfigError('Governance exposure defaultEffect must be "expose" or "hide".', { reason: 'invalid_governance', path: 'governance.exposure.defaultEffect' })
+      }
+      const exposureRuleIds = new Set<string>()
+      for (const [ruleIndex, rule] of exposureRules.entries()) {
+        if (!rule.id || typeof rule.id !== 'string') {
+          throw new HarnessConfigError('Governance exposure rule id is required.', { reason: 'invalid_governance', path: `governance.exposure.rules.${ruleIndex}.id` })
+        }
+        if (exposureRuleIds.has(rule.id)) {
+          throw new HarnessConfigError('Governance exposure rule ids must be unique.', { reason: 'invalid_governance', path: `governance.exposure.rules.${ruleIndex}.id`, id: rule.id })
+        }
+        exposureRuleIds.add(rule.id)
+        for (const toolId of rule.tools ?? []) {
+          if (!configuredTools.has(toolId)) {
+            throw new HarnessConfigError('Governance exposure rule references an unknown tool.', {
+              reason: 'invalid_governance',
+              path: `governance.exposure.rules.${ruleIndex}.tools`,
+              id: toolId
+            })
+          }
+        }
       }
     }
   }

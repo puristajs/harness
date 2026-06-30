@@ -151,17 +151,28 @@ Use [MCP Tools](./mcp-tools.md) for exact stdio/HTTP setup. Summary:
 Governance is optional. Omit `.governance(...)` for normal harnesses that do
 not need domain policy checks.
 
-Use it when tool calls need business rules, approval gates, or integration with
-an external policy engine:
+Use it when tool visibility or tool calls need business rules, approval gates,
+or integration with an external policy engine:
 
 ```ts
-.governance(({ native, rule, adapter }) => ({
+.governance(({ native, rule, exposureRule, adapter }) => ({
   defaultEffect: 'allow',
+  exposure: {
+    id: 'tenant-tool-exposure',
+    rules: [
+      exposureRule({
+        id: 'hide-transfers-for-readonly-tenants',
+        effect: 'hide',
+        tools: ['transfer_funds'],
+        when: ({ metadata }) => metadata.plan === 'readonly'
+      })
+    ]
+  },
   approval: {
-    request: async ({ decisions }) => ({
+    request: async ({ approvalId, decisions }) => ({
       decision: 'approved',
       approverId: 'ops',
-      reason: decisions.map((decision) => decision.ruleId).join(',')
+      reason: `${approvalId}:${decisions.map((decision) => decision.ruleId).join(',')}`
     })
   },
   policies: [
@@ -185,8 +196,9 @@ an external policy engine:
 ```
 
 Native `rule(...)` predicates receive the selected TypeScript tool's parsed
-input. Adapter policies are the integration point for OPA, Cedar, Eve-style
-controls, or product-specific policy services.
+input. `exposureRule(...)` predicates run before the model call and can hide
+tools without seeing tool input. Adapter policies are the integration point for
+OPA, Cedar, Eve-style controls, or product-specific policy services.
 
 ## Add Skills
 

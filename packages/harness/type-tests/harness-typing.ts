@@ -129,6 +129,52 @@ const harness = defineHarness()
   }))
   .build()
 
+defineHarness()
+  .models({
+    assistant: { provider, model: 'type-test-model', capabilities: ['object', 'tool_use'] }
+  })
+  .tools({
+    transfer_funds: {
+      description: 'Transfer funds.',
+      input: z.object({ amount: z.number(), balance: z.number() }),
+      output: z.object({ ok: z.boolean() }),
+      handler: async () => ({ ok: true })
+    }
+  })
+  .agents(({ agent }) => ({
+    banker: agent({
+      model: 'assistant',
+      input: z.string(),
+      output: z.string(),
+      tools: ['transfer_funds'],
+      builtinTools: false,
+      instructions: 'Transfer funds.'
+    })
+  }))
+  .governance(({ exposureRule }) => ({
+    exposure: {
+      rules: [
+        exposureRule({
+          id: 'hide-transfers',
+          effect: 'hide',
+          tools: ['transfer_funds'],
+          when: (ctx) => {
+            type ToolId = typeof ctx.toolId
+            const _toolIdExact: Expect<Equal<ToolId, 'transfer_funds'>> = true
+            return ctx.step >= 0
+          }
+        }),
+        exposureRule({
+          id: 'bad-exposure-tool',
+          effect: 'hide',
+          // @ts-expect-error governance exposure rules must reference known tools
+          tools: ['missing_tool']
+        })
+      ]
+    }
+  }))
+  .build()
+
 type PrepareInput = typeof harness.$infer.workflows.prepare.input
 type PrepareOutput = typeof harness.$infer.workflows.prepare.output
 type PlannerInput = typeof harness.$infer.agents.planner.input

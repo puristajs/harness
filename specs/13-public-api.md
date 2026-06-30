@@ -190,10 +190,16 @@ export type WorkflowAgentInvokeOptions<S, K>
 export interface GovernanceConfig<S>
 export type GovernanceMode
 export type GovernanceEffect
+export type GovernanceExposureEffect
+export type GovernanceRiskLevel
 export type GovernanceToolId<S>
 export interface GovernanceContext<S, K>
 export interface GovernanceDecision
 export interface GovernancePolicyEvaluator<S>
+export interface GovernanceToolExposureContext<S, K>
+export interface GovernanceToolExposurePolicy<S>
+export type GovernanceToolExposureRule<S>
+export interface GovernanceToolExposureRuleForTool<S, K>
 export interface NativePolicyDefinition<S>
 export type NativePolicyRule<S>
 export interface NativePolicyRuleForTool<S, K>
@@ -202,6 +208,7 @@ export interface GovernanceDefinitionHelpers<S>
 export interface GovernanceApprovalProvider
 export interface GovernanceApprovalRequest
 export type GovernanceApprovalResult
+export interface GovernanceAuditContext
 export interface GovernanceAuditSink
 export type ToolInput<S, K>
 

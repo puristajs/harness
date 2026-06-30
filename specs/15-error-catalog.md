@@ -41,6 +41,20 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - when: An agent's permission policy denied a tool call (mode `'deny'`, an `'ask'` hook returned `'deny'`, or the hook itself failed). Recoverable in the loop: the harness informs the model via a tool result message and continues the run.
 - meta: `tool_name: string`, `agent_id: string`, `reason?: 'mode_deny'|'hook_deny'|'hook_failed'`.
 
+### `PolicyDeniedError`
+- code: `POLICY_DENIED`
+- category: `permission`
+- retriable: `false`
+- when: configured governance denied a tool call, rejected required approval, or required approval without an approval provider. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run.
+- meta: `tool_name: string`, `agent_id: string`, `policy_id: string`, `rule_id?: string`, `effect: 'deny'|'require_approval'`, `reason?: 'policy_deny'|'approval_rejected'|'approval_unavailable'`.
+
+### `PolicyEvaluationError`
+- code: `POLICY_EVALUATION_ERROR`
+- category: `permission`
+- retriable: `false`
+- when: a native governance predicate throws, an external policy adapter throws, or an adapter returns an invalid decision effect.
+- meta: `tool_name: string`, `agent_id: string`, `policy_id?: string`, `rule_id?: string`, `reason: 'adapter_failed'|'predicate_failed'|'invalid_decision'`.
+
 ### `SandboxError`
 - code: `SANDBOX_ERROR`
 - category: `sandbox`

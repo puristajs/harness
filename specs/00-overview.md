@@ -83,6 +83,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Custom tools: inline TypeScript, MCP stdio, and MCP HTTP.
 - Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
 - Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
+- Optional policy-driven governance for tool calls, including typed native rules, external policy adapters, shadow rollout, audit events, and approval gates. See [24-governance-policy](./24-governance-policy.md).
 - Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
 - Durable runtime checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
 - Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace store, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
@@ -97,7 +98,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No HTTP server, RPC layer, gateway, or deployable service.
 - No worker process; no daemon; no scheduler.
 - No definition bundle format, signed catalog, or remote loading.
-- No approval lifecycle, policy engine, or governance hooks.
+- No hosted approval lifecycle, policy-language runtime, policy bundle store, or governance UI. Core owns only the optional tool-call governance hook and adapter contract in [24-governance-policy](./24-governance-policy.md).
 - No multi-tenant authentication, billing, or quota engine.
 - No time-travel debugger or visual replay UI. Durable workspace replay is an adapter contract for resumable execution state, not a debugger product.
 - No production/SaaS example apps. Spec-approved private examples may exist
@@ -143,3 +144,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
 - [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
 - [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.
+- [24-governance-policy](./24-governance-policy.md) — optional tool-call governance, approvals, and external policy adapters.

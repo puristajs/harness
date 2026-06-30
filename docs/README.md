@@ -69,6 +69,7 @@ flowchart TD
 | `packages/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
 | `examples/quickstart` | Smallest typed harness example. |
 | `examples/showcase` | Skills, TypeScript tools, and multiple workflows. |
+| `examples/bank-governance` | Optional typed governance policies, approvals, shadow-ready events, and blocked tool calls. |
 | `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, review gates, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
 | `specs/` | Approved technical specifications. Use specs for implementation detail, not first-time onboarding. |
 
@@ -83,8 +84,9 @@ flowchart LR
   AgentCall --> Agent
   Agent --> Model["Model provider adapter"]
   Agent --> Tools["Built-in, TS, MCP tools"]
+  Tools --> Governance["Optional governance"]
   Agent --> Skills["Mounted skills"]
-  Tools --> Sandbox["Sandbox session"]
+  Governance --> Sandbox["Sandbox session"]
   Session --> State["State store"]
   Session --> Telemetry["Logs + OpenTelemetry"]
 ```

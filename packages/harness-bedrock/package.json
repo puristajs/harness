@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-bedrock",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Amazon Bedrock model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,7 +48,7 @@
     "vitest": "^4.1.9"
   },
   "peerDependencies": {
-    "@purista/harness": "^1.6.0"
+    "@purista/harness": "^1.7.0"
   },
   "engines": {
     "node": ">=24.15.0"

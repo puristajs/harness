@@ -118,6 +118,7 @@ interface ToolHandlerContext {
 Behavior:
 
 - Input is validated with `input.parse` before the handler runs. Failure throws [`ValidationError`](./15-error-catalog.md) (`category: 'validation'`, `retriable: false`).
+- If `.governance(...)` is configured, policy evaluation runs after input validation and before the handler runs. Policy denial or rejected approval returns a recoverable `PolicyDeniedError` tool result to the model.
 - Output is validated with `output.parse` after the handler returns. Failure throws `ValidationError`.
 - The `sandbox` exposed to the handler is the same `SandboxSession` the agent loop opened. Backend-internal policy (network deny lists, etc.) applies.
 - Per-call timeout: `defaults.toolTimeoutMs`. On timeout: `OperationTimeoutError`.
@@ -209,6 +210,8 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 | `ToolNotFoundError`    | tool id not in registry / not allowed for the agent      | no        |
 | `ValidationError`      | input or output schema mismatch                          | no        |
 | `PermissionDeniedError`| permission policy denied the call (per-call; recoverable)| no        |
+| `PolicyDeniedError`    | governance policy or approval denied the call (recoverable)| no      |
+| `PolicyEvaluationError`| governance adapter or predicate failed                   | no        |
 | `ToolError`            | handler threw a non-harness error                        | as cause  |
 | `SandboxNoExecutorError`| `bash` invoked when sandbox executor is unavailable     | no        |
 | `McpProtocolError`     | MCP connection/list/call protocol failure                | yes       |
@@ -217,6 +220,8 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 | `OperationCancelledError` | agent run aborted                                     | no        |
 
 ## Cross-references
+
+- [24-governance-policy](./24-governance-policy.md) — optional policy, approval, shadow mode, and external adapter governance for tool calls.
 
 - [05-sandbox](./05-sandbox.md) — sandbox port and the FS+exec surface that built-in tools layer on.
 - [09-agents](./09-agents.md) — agent context `tools`, default loop, permissions.

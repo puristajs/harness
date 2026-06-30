@@ -47,6 +47,9 @@ the simple in-process defaults.
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
 | `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
+| `GovernanceConfig` | Optional policy layer for tool-call deny, audit, shadow mode, and approvals. |
+| `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
+| `GovernanceDecision` | Normalized policy decision returned by native rules or adapters. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `StateStore` | Persistence port for sessions, runs, messages, and events. |
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |

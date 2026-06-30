@@ -1,5 +1,5 @@
 {
-  "name": "@purista/showcase",
+  "name": "@purista/bank-governance-example",
   "version": "1.7.0",
   "private": true,
   "type": "module",
@@ -7,12 +7,11 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src --exclude 'dist/**'",
-    "start": "node dist/examples/showcase/src/index.js",
+    "start": "node dist/examples/bank-governance/src/index.js",
     "lint": "npm run typecheck"
   },
   "dependencies": {
     "@purista/harness": "*",
-    "@purista/harness-openai": "*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

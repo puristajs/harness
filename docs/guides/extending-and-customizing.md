@@ -146,6 +146,48 @@ Use [MCP Tools](./mcp-tools.md) for exact stdio/HTTP setup. Summary:
 - `mcp_http` calls a remote MCP endpoint;
 - both validate schemas and normalize outputs.
 
+## Add Governance Policies
+
+Governance is optional. Omit `.governance(...)` for normal harnesses that do
+not need domain policy checks.
+
+Use it when tool calls need business rules, approval gates, or integration with
+an external policy engine:
+
+```ts
+.governance(({ native, rule, adapter }) => ({
+  defaultEffect: 'allow',
+  approval: {
+    request: async ({ decisions }) => ({
+      decision: 'approved',
+      approverId: 'ops',
+      reason: decisions.map((decision) => decision.ruleId).join(',')
+    })
+  },
+  policies: [
+    native({
+      id: 'bank-transfer-policy',
+      rules: [
+        rule({
+          id: 'large-transfer-approval',
+          effect: 'require_approval',
+          tools: ['transfer_funds'],
+          when: ({ input }) => input.amount > 1_000
+        })
+      ]
+    }),
+    adapter({
+      id: 'external-policy-engine',
+      evaluate: async (ctx) => undefined
+    })
+  ]
+}))
+```
+
+Native `rule(...)` predicates receive the selected TypeScript tool's parsed
+input. Adapter policies are the integration point for OPA, Cedar, Eve-style
+controls, or product-specific policy services.
+
 ## Add Skills
 
 A skill directory contains `SKILL.md` with frontmatter:

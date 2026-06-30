@@ -99,6 +99,8 @@ export class HarnessError extends Error { /* see 03-foundation */ }
 export class HarnessConfigError extends HarnessError {}
 export class ValidationError extends HarnessError {}
 export class PermissionDeniedError extends HarnessError {}
+export class PolicyDeniedError extends HarnessError {}
+export class PolicyEvaluationError extends HarnessError {}
 export class SandboxError extends HarnessError {}
 export class SandboxNoExecutorError extends HarnessError {}
 export class ModelError extends HarnessError {}
@@ -183,6 +185,25 @@ export interface WorkflowDefinition<S, I, O>
 export interface WorkflowDefinitionHelpers<S>
 export interface WorkflowDelegationPolicy<S>
 export type WorkflowAgentInvokeOptions<S, K>
+
+// Optional governance
+export interface GovernanceConfig<S>
+export type GovernanceMode
+export type GovernanceEffect
+export type GovernanceToolId<S>
+export interface GovernanceContext<S, K>
+export interface GovernanceDecision
+export interface GovernancePolicyEvaluator<S>
+export interface NativePolicyDefinition<S>
+export type NativePolicyRule<S>
+export interface NativePolicyRuleForTool<S, K>
+export type GovernancePolicyDefinition<S>
+export interface GovernanceDefinitionHelpers<S>
+export interface GovernanceApprovalProvider
+export interface GovernanceApprovalRequest
+export type GovernanceApprovalResult
+export interface GovernanceAuditSink
+export type ToolInput<S, K>
 
 // Defaults
 export interface HarnessDefaults

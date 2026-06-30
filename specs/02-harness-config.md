@@ -1,6 +1,6 @@
 # Harness configuration
 
-**Purpose.** Defines the synchronous `defineHarness()` chainable builder, every method's input shape, defaults, and validation rules. Invalid inputs throw [`HarnessConfigError`](./15-error-catalog.md) synchronously at the call site of the offending builder method. See also second-stage validators in [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md), [09-agents](./09-agents.md), and [10-workflows](./10-workflows.md).
+**Purpose.** Defines the synchronous `defineHarness()` chainable builder, every method's input shape, defaults, and validation rules. Invalid inputs throw [`HarnessConfigError`](./15-error-catalog.md) synchronously at the call site of the offending builder method. See also second-stage validators in [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md), [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), and [24-governance-policy](./24-governance-policy.md).
 
 ## Signature
 
@@ -24,6 +24,7 @@ defineHarness(opts?)
   .skills({...})?           // before agents
   .agents({...})            // before workflows
   .workflows({...})?
+  .governance({...})?       // optional policy layer
   .build()
 ```
 
@@ -32,6 +33,7 @@ defineHarness(opts?)
 - `agents()` MUST be called before `workflows()`.
 - Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
 - `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.governance(...)` is optional. If omitted, tool execution behavior is unchanged and no user needs to configure policies.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -206,6 +208,45 @@ interface HarnessDefaults {
   historyWindow?: number
 }
 ```
+
+### `.governance(config)`
+
+Configures an optional policy-driven governance layer for tool calls. See
+[24-governance-policy](./24-governance-policy.md) for the complete contract.
+
+```ts
+defineHarness()
+  .models(...)
+  .tools(...)
+  .agents(...)
+  .governance(({ native, rule, adapter }) => ({
+    mode: 'enforce',
+    defaultEffect: 'allow',
+    policies: [
+      native({
+        id: 'bank-transfer-policy',
+        rules: [
+          rule({
+            id: 'large-transfer-approval',
+            effect: 'require_approval',
+            tools: ['transfer_funds'],
+            when: ({ input }) => input.amount > 1_000
+          })
+        ]
+      })
+    ]
+  }))
+  .build()
+```
+
+Validation:
+
+- `policies` must be non-empty when governance is enabled.
+- policy ids are unique.
+- native policies have at least one rule.
+- native rule ids are unique within a policy.
+- native `tools` references point at configured custom tools or built-in tool names.
+- adapter policies expose an `evaluate` function.
 
 Note that timeout fields keep `Ms` suffixes for backwards-readable API ergonomics; OTel-exposed durations use seconds (see [14-otel-conventions](./14-otel-conventions.md)).
 

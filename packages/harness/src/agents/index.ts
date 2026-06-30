@@ -6,11 +6,11 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE
 } from '@opentelemetry/semantic-conventions/incubating'
-import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, SkillManifestError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
+import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, PolicyDeniedError, PolicyEvaluationError, SkillManifestError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, ModelHandles, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernancePolicyEvaluator, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -126,6 +126,7 @@ export async function runDefaultAgent(args: {
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
+  governance?: GovernanceConfig<any>
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
@@ -189,6 +190,7 @@ async function runDefaultAgentInner(args: {
   models: Record<string, any>
   skills: Record<string, ResolvedSkill>
   customTools: ToolsConfig
+  governance?: GovernanceConfig<any>
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
@@ -458,13 +460,14 @@ async function executeToolCall(
 
   try {
     if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
-    await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
     result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool) ? { server: canonical, upstreamTool: tool.tool, transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http' } : undefined, async () => {
       const permission = await withToolSignal(args.signal, args.toolTimeoutMs, () => checkPermission(args.agentId, args.runId, args.sessionId, args.agent, canonical, input))
       if (permission.decision === 'deny') {
         throw new PermissionDeniedError('Permission denied.', { tool_name: canonical, agent_id: args.agentId, reason: permission.reason })
       }
       if (canonical in BUILTIN_ALIAS_TO_CANONICAL) {
+        await enforceGovernance(args, canonical, input, call.id)
+        await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
         const output = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeBuiltinTool(canonical, input, withSandboxTelemetry(args, canonical), signal))
         if (canonical === 'read') markSkillActivation(input, args.skills, args.activatedSkills)
         return { output }
@@ -476,12 +479,16 @@ async function executeToolCall(
       if (isMcpToolDefinition(tool)) {
         if (!args.mcpRegistry) throw new ToolNotFoundError('MCP registry is not available.', { tool_id: canonical, where: 'registry' })
         const registry = args.mcpRegistry
+        await enforceGovernance(args, canonical, input, call.id)
+        await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
         return { output: await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeMcpTool(canonical, tool, input, { registry, signal, toolTimeoutMs: args.toolTimeoutMs, sandbox: withSandboxTelemetry(args, canonical), sandboxKey: args.sessionId })) }
       }
       if (tool.kind && tool.kind !== 'ts') {
         throw new ValidationError('Unsupported tool kind.', { where: 'tool_input', issues: { toolId: canonical, kind: tool.kind } })
       }
       const parsed = tool.input.parse(input)
+      await enforceGovernance(args, canonical, parsed, call.id)
+      await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
       const out = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => tool.handler({
         signal,
         sandbox: withSandboxTelemetry(args, canonical),
@@ -535,6 +542,212 @@ async function executeToolCall(
     emitted: toolMessage,
     modelMessage: { role: 'tool', toolCallId: call.id, content: JSON.stringify(result.output ?? result.error ?? {}) }
   }
+}
+
+async function enforceGovernance(
+  args: Parameters<typeof runDefaultAgentInner>[0],
+  toolId: string,
+  input: unknown,
+  callId: string
+): Promise<void> {
+  const governance = args.governance
+  if (!governance || governance.enabled === false) return
+
+  const decisions = await evaluateGovernance(args, governance, toolId, input)
+  const defaultEffect = governance.defaultEffect ?? 'deny'
+  if (decisions.length === 0 && defaultEffect === 'allow') return
+  const effectiveDecisions = decisions.length > 0
+    ? decisions
+    : [{ effect: 'deny' as const, policyId: 'governance.default', message: 'No governance policy allowed the tool call.' }]
+  const winner = strongestGovernanceDecision(effectiveDecisions)
+  const enforced = governance.mode !== 'shadow'
+
+  for (const decision of effectiveDecisions) {
+    await args.emitEvent?.({
+      type: 'policy.evaluated',
+      runId: args.runId,
+      agentId: args.agentId,
+      toolId,
+      callId,
+      policyId: decision.policyId,
+      ...(decision.ruleId ? { ruleId: decision.ruleId } : {}),
+      effect: decision.effect,
+      enforced: enforced && (decision.effect === 'deny' || decision.effect === 'require_approval'),
+      ...(decision.message ? { message: decision.message } : {})
+    })
+    await governance.audit?.record(decision, {
+      toolId,
+      agentId: args.agentId,
+      runId: args.runId,
+      sessionId: args.sessionId,
+      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+      metadata: args.metadata ?? {},
+      enforced
+    })
+  }
+
+  if (!enforced) return
+
+  if (winner.effect === 'deny') {
+    throw new PolicyDeniedError(winner.message ?? 'Tool call denied by governance policy.', {
+      tool_name: toolId,
+      agent_id: args.agentId,
+      policy_id: winner.policyId,
+      ...(winner.ruleId ? { rule_id: winner.ruleId } : {}),
+      effect: winner.effect,
+      reason: 'policy_deny'
+    })
+  }
+
+  if (winner.effect !== 'require_approval') return
+
+  if (!governance.approval) {
+    throw new PolicyDeniedError('Tool call requires approval, but no approval provider is configured.', {
+      tool_name: toolId,
+      agent_id: args.agentId,
+      policy_id: winner.policyId,
+      ...(winner.ruleId ? { rule_id: winner.ruleId } : {}),
+      effect: winner.effect,
+      reason: 'approval_unavailable'
+    })
+  }
+
+  const approvalDecisions = effectiveDecisions.filter((decision) => decision.effect === 'require_approval')
+  await args.emitEvent?.({
+    type: 'approval.requested',
+    runId: args.runId,
+    agentId: args.agentId,
+    toolId,
+    callId,
+    policyId: winner.policyId,
+    ...(winner.ruleId ? { ruleId: winner.ruleId } : {})
+  })
+  const approval = await withToolSignal(args.signal, args.toolTimeoutMs, () => governance.approval!.request({
+    toolId,
+    agentId: args.agentId,
+    runId: args.runId,
+    sessionId: args.sessionId,
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    decisions: approvalDecisions,
+    metadata: args.metadata ?? {}
+  }))
+  await args.emitEvent?.({
+    type: 'approval.finished',
+    runId: args.runId,
+    agentId: args.agentId,
+    toolId,
+    callId,
+    policyId: winner.policyId,
+    ...(winner.ruleId ? { ruleId: winner.ruleId } : {}),
+    decision: approval.decision,
+    ...(approval.approverId ? { approverId: approval.approverId } : {}),
+    ...(approval.reason ? { reason: approval.reason } : {})
+  })
+
+  if (approval.decision === 'rejected') {
+    throw new PolicyDeniedError(approval.reason ?? 'Tool call approval was rejected.', {
+      tool_name: toolId,
+      agent_id: args.agentId,
+      policy_id: winner.policyId,
+      ...(winner.ruleId ? { rule_id: winner.ruleId } : {}),
+      effect: winner.effect,
+      reason: 'approval_rejected'
+    })
+  }
+}
+
+async function evaluateGovernance(
+  args: Parameters<typeof runDefaultAgentInner>[0],
+  governance: GovernanceConfig<any>,
+  toolId: string,
+  input: unknown
+): Promise<GovernanceDecision[]> {
+  const ctx: GovernanceContext = {
+    toolId,
+    input: input as JsonValue,
+    agentId: args.agentId,
+    runId: args.runId,
+    sessionId: args.sessionId,
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    metadata: args.metadata ?? {}
+  }
+  const decisions: GovernanceDecision[] = []
+
+  for (const policy of governance.policies) {
+    if ('kind' in policy && policy.kind === 'native') {
+      decisions.push(...await evaluateNativePolicy(policy, ctx, args.agentId))
+      continue
+    }
+
+    try {
+      const result = await (policy as GovernancePolicyEvaluator).evaluate(ctx)
+      const normalized = Array.isArray(result) ? result : result ? [result] : []
+      for (const decision of normalized) {
+        if (!isGovernanceEffect(decision.effect)) {
+          throw new PolicyEvaluationError('Governance policy returned an invalid effect.', {
+            tool_name: toolId,
+            agent_id: args.agentId,
+            policy_id: policy.id,
+            reason: 'invalid_decision'
+          })
+        }
+        decisions.push({ ...decision, policyId: decision.policyId ?? policy.id })
+      }
+    } catch (error) {
+      if (error instanceof PolicyEvaluationError) throw error
+      throw new PolicyEvaluationError('Governance policy adapter failed.', {
+        tool_name: toolId,
+        agent_id: args.agentId,
+        policy_id: policy.id,
+        reason: 'adapter_failed'
+      }, error)
+    }
+  }
+
+  return decisions
+}
+
+async function evaluateNativePolicy(policy: NativePolicyDefinition, ctx: GovernanceContext, agentId: string): Promise<GovernanceDecision[]> {
+  const decisions: GovernanceDecision[] = []
+  for (const rule of policy.rules) {
+    if (rule.tools && !rule.tools.includes(ctx.toolId as never)) continue
+    let matched = false
+    try {
+      matched = rule.when ? await rule.when(ctx as never) : true
+    } catch (error) {
+      throw new PolicyEvaluationError('Governance policy predicate failed.', {
+        tool_name: ctx.toolId,
+        agent_id: agentId,
+        policy_id: policy.id,
+        rule_id: rule.id,
+        reason: 'predicate_failed'
+      }, error)
+    }
+    if (!matched) continue
+    decisions.push({
+      effect: rule.effect,
+      policyId: policy.id,
+      ruleId: rule.id,
+      ...(rule.message ? { message: rule.message } : {}),
+      ...(rule.metadata ? { metadata: rule.metadata } : {})
+    })
+  }
+  return decisions
+}
+
+function strongestGovernanceDecision(decisions: readonly GovernanceDecision[]): GovernanceDecision {
+  return [...decisions].sort((left, right) => governanceRank(right.effect) - governanceRank(left.effect))[0] as GovernanceDecision
+}
+
+function governanceRank(effect: GovernanceEffect): number {
+  if (effect === 'deny') return 4
+  if (effect === 'require_approval') return 3
+  if (effect === 'audit') return 2
+  return 1
+}
+
+function isGovernanceEffect(effect: unknown): effect is GovernanceEffect {
+  return effect === 'allow' || effect === 'audit' || effect === 'require_approval' || effect === 'deny'
 }
 
 function resolveToolKind(toolId: string, tool: ToolsConfig[string] | undefined): ToolKind {

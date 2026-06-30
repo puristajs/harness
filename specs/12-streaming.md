@@ -19,6 +19,10 @@ type RunEvent =
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
 
+  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string }
+  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string }
+  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; policyId: string; ruleId?: string; decision: 'approved'|'rejected'; approverId?: string; reason?: string }
+
   | { type: 'tool.started';    runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished';   runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
 
@@ -75,6 +79,7 @@ Each `prompt`/`stream` invocation creates an internal async generator. Events ar
 5. For each agent call, `agent.started` precedes `agent.finished`.
 6. `model.delta` events for a given `streamId` are yielded in provider chunk order.
 7. `model.object.partial` events for a given `streamId` are yielded in provider chunk order; a streamed `model.object` is yielded at most once for the final object AFTER all partials for that `streamId`.
+8. When governance is configured, `policy.evaluated` and approval events for a tool call precede `tool.started`. A denied policy or rejected approval may emit `tool.finished` with a serialized error without emitting `tool.started`, because the side-effecting tool never began.
 
 No ordering is guaranteed *across* runs (only within a run).
 
@@ -101,6 +106,8 @@ Persisted event payloads are sanitized by default. `runId`, `at`, and `type` are
 
 When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, stream source metadata (`streamId`, `modelAlias`, `workflowId`, `agentId`), child-agent lineage metadata (`delegationCallId`, `delegationDepth`, `parentAgentId`), and serialized harness errors.
 
+Governance event payloads may include `policyId`, `ruleId`, `effect`, `enforced`, approval `decision`, `approverId`, and `reason`. They MUST NOT include raw tool input or tool output.
+
 When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not StateStore audit retention.
 
 ## Persistence
@@ -112,3 +119,4 @@ Every `RunEvent` is also written to `state.appendEvents(runId, [event])` from in
 - [04-state-queue-stream](./04-state-queue-stream.md) — `StateStore` and event persistence.
 - [11-sessions](./11-sessions.md) — `Session` API.
 - [14-otel-conventions](./14-otel-conventions.md).
+- [24-governance-policy](./24-governance-policy.md).

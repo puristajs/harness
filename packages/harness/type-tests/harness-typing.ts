@@ -29,6 +29,14 @@ const harness = defineHarness()
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
     reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
   })
+  .tools({
+    transfer_funds: {
+      description: 'Transfer funds between accounts.',
+      input: z.object({ amount: z.number(), balance: z.number() }),
+      output: z.object({ approved: z.boolean() }),
+      handler: async () => ({ approved: true })
+    }
+  })
   .agents(({ agent }) => ({
     planner: agent({
       model: 'assistant',
@@ -90,6 +98,34 @@ const harness = defineHarness()
       // @ts-expect-error workflow handlers must return the sibling output schema type
       handler: async (ctx) => ctx.input.task
     })
+  }))
+  .governance(({ native, rule }) => ({
+    defaultEffect: 'allow',
+    policies: [
+      native({
+        id: 'typed-bank-policy',
+        rules: [
+          rule({
+            id: 'insufficient-funds',
+            effect: 'deny',
+            tools: ['transfer_funds'],
+            when: (ctx) => {
+              type Input = typeof ctx.input
+              const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
+              const _inputExact: Expect<Equal<Input, { amount: number; balance: number }>> = true
+              return ctx.input.balance < ctx.input.amount
+            }
+          }),
+          rule({
+            id: 'bad-field',
+            effect: 'deny',
+            tools: ['transfer_funds'],
+            // @ts-expect-error governance predicates use the selected tool input schema
+            when: (ctx) => ctx.input.currency === 'EUR'
+          })
+        ]
+      })
+    ]
   }))
   .build()
 

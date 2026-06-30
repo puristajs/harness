@@ -35,6 +35,7 @@ import type {
   BuilderState,
   ContextCheckpoints,
   ContentCaptureMode,
+  GovernanceConfig,
   TelemetryOptions
 } from '../harness/defineHarness.js'
 import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
@@ -85,6 +86,7 @@ type HarnessDefinition<S extends BuilderState> = {
   skills: NonNullable<S['skills']>
   agents: NonNullable<S['agents']>
   workflows: NonNullable<S['workflows']>
+  governance?: GovernanceConfig<S>
   inspection: HarnessInspection
 }
 
@@ -690,6 +692,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }, emit),
           skills: resolvedSkills as Record<string, ResolvedSkill>,
           customTools: definition.tools as ToolsConfig,
+          ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
           mcpRegistry,
           session: state.sandboxSession,
           memory,
@@ -965,6 +968,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       }, emit),
                       skills: resolvedSkills as Record<string, ResolvedSkill>,
                       customTools: definition.tools as ToolsConfig,
+                      ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
                       mcpRegistry,
                       session: runSandboxSession,
                       memory: agentMemory,
@@ -1556,6 +1560,36 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
       return { agentId: event.agentId, message: '[redacted]' }
     case 'model.delta':
       return { ...modelStreamEventMeta(event), delta: '[redacted]' }
+    case 'policy.evaluated':
+      return {
+        agentId: event.agentId,
+        toolId: event.toolId,
+        callId: event.callId,
+        policyId: event.policyId,
+        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
+        effect: event.effect,
+        enforced: event.enforced,
+        ...(event.message ? { message: event.message } : {})
+      } as unknown as JsonValue
+    case 'approval.requested':
+      return {
+        agentId: event.agentId,
+        toolId: event.toolId,
+        callId: event.callId,
+        policyId: event.policyId,
+        ...(event.ruleId ? { ruleId: event.ruleId } : {})
+      } as unknown as JsonValue
+    case 'approval.finished':
+      return {
+        agentId: event.agentId,
+        toolId: event.toolId,
+        callId: event.callId,
+        policyId: event.policyId,
+        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
+        decision: event.decision,
+        ...(event.approverId ? { approverId: event.approverId } : {}),
+        ...(event.reason ? { reason: event.reason } : {})
+      } as unknown as JsonValue
     case 'model.object.partial':
       return { ...modelStreamEventMeta(event), partial: '[redacted]' }
     case 'model.object':

@@ -151,28 +151,30 @@ defineHarness()
       instructions: 'Transfer funds.'
     })
   }))
-  .governance(({ exposureRule }) => ({
-    exposure: {
-      rules: [
-        exposureRule({
-          id: 'hide-transfers',
-          effect: 'hide',
-          tools: ['transfer_funds'],
-          when: (ctx) => {
-            type ToolId = typeof ctx.toolId
-            const _toolIdExact: Expect<Equal<ToolId, 'transfer_funds'>> = true
-            return ctx.step >= 0
-          }
-        }),
-        exposureRule({
-          id: 'bad-exposure-tool',
-          effect: 'hide',
-          // @ts-expect-error governance exposure rules must reference known tools
-          tools: ['missing_tool']
-        })
-      ]
+  .governance(({ exposureRule }) => {
+    exposureRule({
+      id: 'bad-exposure-tool',
+      effect: 'hide',
+      // @ts-expect-error governance exposure rules must reference known tools
+      tools: ['missing_tool']
+    })
+    return {
+      exposure: {
+        rules: [
+          exposureRule({
+            id: 'hide-transfers',
+            effect: 'hide',
+            tools: ['transfer_funds'],
+            when: (ctx) => {
+              type ToolId = typeof ctx.toolId
+              const _toolIdExact: Expect<Equal<ToolId, 'transfer_funds'>> = true
+              return ctx.step >= 0
+            }
+          })
+        ]
+      }
     }
-  }))
+  })
   .build()
 
 type PrepareInput = typeof harness.$infer.workflows.prepare.input

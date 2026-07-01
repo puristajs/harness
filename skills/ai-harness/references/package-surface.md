@@ -37,6 +37,7 @@ Main core entry exports:
 - sandbox factories and sandbox types
 - `sandboxMemory()` memory adapter
 - MCP tool support
+- governance types for optional exposure policy, execution policy, approvals, audit sinks, and policy events
 - `defineHarness` and builder/session/agent/workflow types
 
 OpenAI entry exports:
@@ -82,7 +83,7 @@ Use these files as the implementation source of truth:
 |---|---|
 | Builder/public types | `packages/harness/src/harness/defineHarness.ts` |
 | Session lifecycle/memory/history | `packages/harness/src/sessions/index.ts` |
-| Agent loop/tools/permissions | `packages/harness/src/agents/index.ts` |
+| Agent loop/tools/permissions/governance | `packages/harness/src/agents/index.ts` |
 | Workflow invocation | `packages/harness/src/workflows/index.ts` |
 | Models/capability gates | `packages/harness/src/models/registry.ts`, `ports/model-provider.ts`, `ports/base-model-provider.ts` |
 | State port/default | `ports/state.ts`, `state/in-memory.ts`, `models/state.ts` |
@@ -113,6 +114,7 @@ When docs and source disagree, verify source before teaching behavior. Known che
 - the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `contentCaptureMode`, while application SDK/exporter bootstrapping is external
 - default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` is safer for file-only agents
 - harness streams are `RunEvent`, not an HTTP/SSE wire protocol
+- governance is optional; exposure-only configs are valid and do not imply execution default-deny
 - feedback has exported types and testing recorder, but no production store in core
 
 ## Boundary Rules

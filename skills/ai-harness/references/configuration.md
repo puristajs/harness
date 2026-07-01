@@ -5,6 +5,7 @@
 - Builder Order
 - Model Setup
 - Sessions
+- Optional Governance
 - Defaults, Logs, And Telemetry
 - State, Sandbox, Runtime, And Requirements
 - Streaming
@@ -42,10 +43,12 @@ defineHarness({ name: 'app-name' })
   .skills(...)
   .agents(({ agent }) => ({ ... }))
   .workflows(({ workflow }) => ({ ... }))
+  .governance(...)
   .build()
 ```
 
 Models must exist before agents reference them. Agents must exist before workflows call them. Tools and skills must exist before agents allowlist them.
+Governance is optional and should be added only when the app needs policy-driven exposure, execution decisions, approvals, audits, or an external policy engine.
 
 ## Model Setup
 Read `model-setup.md` when adding or changing providers, capabilities, embeddings, rerank, multimodal input, or per-call options. Keep this file focused on the harness graph and runtime wiring.
@@ -65,6 +68,16 @@ for await (const event of session.workflows.review.stream(input)) {
 Sessions provide `agents`, `workflows`, `memory`, `history`, `clearHistory`, `replaceHistory`, and `close`.
 
 Use stable, tenant-safe session ids. One session has one active run at a time; use separate session ids for parallel user threads.
+
+## Optional Governance
+Use `.governance(...)` after agents/workflows when policy is needed. Ordinary
+harness apps should omit it.
+
+Governance can contain `exposure` rules, execution `policies`, or both. Exposure
+rules shape the provider-visible tool list before each model step. Execution
+policies evaluate a concrete tool call before handler execution. See
+`agents-workflows-tools.md` for typed `exposureRule(...)`, `rule(...)`,
+approval, audit, and external adapter patterns.
 
 ## Defaults, Logs, And Telemetry
 Set explicit budgets for production:

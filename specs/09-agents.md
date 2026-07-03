@@ -75,6 +75,11 @@ interface ConversationHistory {
 
 Agents do not spawn other agents. Multi-agent orchestration is performed only inside workflow handlers via `WorkflowContext.agents`.
 
+Governance policy is optional and configured at the harness builder level after
+agents/workflows are declared. Agents do not wrap tools individually. When
+configured, governance sees typed agent/tool/run context and evaluates tool
+decisions through the lifecycle in [24-governance-policy](./24-governance-policy.md).
+
 ## Permissions
 
 ### Per-tool permission
@@ -148,7 +153,12 @@ When `handler` is undefined, the harness executes this algorithm:
      - Resolve canonical tool name (alias → canonical).
      - Check permissions. On `'deny'`, append a tool result message `{role:'tool', content: JSON.stringify({error:'PERMISSION_DENIED'})}` and continue (does NOT throw — the model can adapt).
      - Validate tool input against the tool schema. On failure, append a tool result with `error: ValidationError`.
+     - If governance is configured, evaluate `phase:'pre'` policy. Enforced
+       denial or failed approval appends a tool result message
+       `{error:'POLICY_DENIED'}` and continues without invoking the tool.
      - Execute the tool (with timeout). On error, append the tool result with the serialized error.
+     - If governance is configured, evaluate `phase:'post'` policy for audit
+       and visibility after output validation or error serialization.
      - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
      - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
    - h. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
@@ -236,6 +246,10 @@ record from reaching a terminal state.
 - Span `harness.agent.iteration` per default-loop iteration; attribute `harness.iteration.index`.
 - Span `chat {request.model}` or equivalent provider operation per model call. Attributes follow the active telemetry flavor in [14-otel-conventions](./14-otel-conventions.md).
 - Span `execute_tool {tool.name}` per tool call. Attributes follow the active telemetry flavor; for permission-gated calls, attributes `harness.permission.mode` and `harness.permission.decision` are always present.
+- When governance is configured, policy evaluation spans/attributes and
+  `policy.evaluated` events follow [14-otel-conventions](./14-otel-conventions.md)
+  and [24-governance-policy](./24-governance-policy.md). Tool input/output
+  content remains redacted by default.
 - Error spans include safe `harness.error.*` attributes, including
   `harness.error.scope` and `harness.error.timeout_ms` when present.
 - Histogram `harness.agent.iterations` (sample of total iterations).
@@ -251,6 +265,8 @@ record from reaching a terminal state.
 | `ValidationError`      | input/output schema mismatch                               |
 | `ToolNotFoundError`    | model returned tool call for unknown name                  |
 | `PermissionDeniedError`| `'deny'` mode or hook failure (per call; recoverable)      |
+| `PolicyDeniedError`    | optional governance denied a tool call or approval failed (recoverable in default loop) |
+| `PolicyEvaluationError`| optional governance evaluator failed or returned an invalid decision |
 | `ModelError`           | provider failure                                           |
 | `OperationTimeoutError`| per-call or run timeout                                    |
 | `OperationCancelledError` | aborted                                                 |

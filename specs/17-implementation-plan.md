@@ -170,6 +170,34 @@ Deliverables:
 
 Exit: workflow tests green.
 
+## Phase 12b — Optional governance policy
+
+Deliverables:
+- `packages/harness/src/policy/` with the core `PolicyEvaluator` port,
+  native policy evaluator, approval adapter contract, audit sink contract, and
+  sanitized audit record helpers from [24-governance-policy](./24-governance-policy.md).
+- Late builder `.governance(...)` stage typed against the already declared
+  tools, agents, workflows, and model aliases.
+- Tool-call integration in the default loop and typed tool invocation path:
+  permission check first, input validation second, `phase:'pre'` policy third,
+  tool invocation, then `phase:'post'` policy.
+- `PolicyDeniedError` and `PolicyEvaluationError` from
+  [15-error-catalog](./15-error-catalog.md).
+- `policy.evaluated`, `approval.requested`, and `approval.finished` run events.
+- Testing helpers/fakes for native policies, approval adapters, audit sinks, and
+  addon evaluator contract tests.
+
+Tests:
+- No `.governance(...)` behavior remains byte-for-byte compatible at the public
+  API level.
+- Unknown policy references fail at the type level and at builder validation.
+- Default `deny` and explicit `allow` fallthrough behavior.
+- Shadow mode, approval paths, policy denial recovery, evaluator failure
+  fail-closed/fail-open semantics, and audit/event redaction.
+
+Exit: governance tests, type tests, public API diff, and no-content telemetry
+fixtures green.
+
 ## Phase 13 — Public API + builder + `$infer` + testing subpath
 
 Deliverables:
@@ -206,7 +234,7 @@ Deliverables:
 - The example exercises the loop end-to-end: model asks for the skill, calls `read /skills/<name>/SKILL.md`, follows instructions, calls `bash`, returns final answer.
 - A focused structured object or multimodal example using only `@purista/harness` and provider packages.
 - A focused embeddings or reranking example using only `@purista/harness` and provider packages.
-- A short integration note explaining how `@purista/ai` consumes `RunEvent` directly instead of introducing a second internal AI protocol.
+- A short integration note explaining how PURISTA `@purista/core` attached agents consume `RunEvent` directly instead of introducing a second internal AI protocol.
 
 Constraints:
 - The quickstart example MUST import only from `@purista/harness` and `@purista/harness-openai`.

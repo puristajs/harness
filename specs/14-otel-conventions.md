@@ -101,6 +101,7 @@ Every harness-created span carries when available:
 | Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
+| Policy evaluation | `harness.policy.evaluate` | OpenInference `GUARDRAIL` in `dual`/`openinference_only` |
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
@@ -140,10 +141,12 @@ The harness emits:
 | `EMBEDDING` | Embedding model call |
 | `RERANKER` | Rerank model call |
 | `TOOL` | Tool call |
+| `GUARDRAIL` | Optional governance policy evaluation |
 | `EVALUATOR` | Prompt candidate evaluation helper |
 
-The harness does not emit `RETRIEVER`, `GUARDRAIL`, or `PROMPT` in v1 because
-core has no retrieval store, guardrail engine, or prompt store.
+The harness does not emit `RETRIEVER` or `PROMPT` in v1 because core has no
+retrieval store or prompt store. `GUARDRAIL` is emitted only when optional
+governance is configured.
 
 ## Agent span attributes
 
@@ -212,6 +215,33 @@ Span: `execute_tool {tool.name}`
 
 Tool calls are represented as separate child spans. The harness must not use
 only OpenInference indexed tool-call attributes on a parent LLM span.
+
+## Governance policy span attributes
+
+Span: `harness.policy.evaluate`
+
+Emitted only when `.governance(...)` is configured.
+
+| Key | Type |
+| --- | --- |
+| `openinference.span.kind` | string, `GUARDRAIL` in `dual`/`openinference_only` |
+| `harness.policy.engine` | string |
+| `harness.policy.name` | string |
+| `harness.policy.version` | string |
+| `harness.policy.rule_id` | string |
+| `harness.policy.effect` | string, one of `allow`, `deny`, `require_approval`, `audit` |
+| `harness.policy.phase` | string, `pre` or `post` |
+| `harness.policy.enforced` | boolean |
+| `harness.policy.mode` | string, `enforce` or `shadow` |
+| `harness.policy.risk_level` | string |
+| `harness.tool.id` | string |
+| `harness.agent.id` | string |
+| `harness.session.id` | string |
+| `harness.run.id` | string |
+| `error.type` | string, failure only |
+
+Policy spans never emit raw policy input, tool input, tool output, prompts,
+completion content, approval comments, headers, credentials, or sandbox output.
 
 ## Evaluator span attributes
 
@@ -455,6 +485,9 @@ aggregating metrics.
 | `harness.run.errors` | Counter | `1` | `harness.workflow.id`, `error.type` |
 | `harness.events.persist_errors` | Counter | `1` | `harness.session.id`, `harness.run.id` |
 | `harness.permission.denials` | Counter | `1` | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id` |
+| `harness.policy.evaluations` | Counter | `1` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
+| `harness.policy.denials` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id` |
+| `harness.approval.requests` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id`, `harness.approval.status` |
 | `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
 | `harness.memory.operation.duration` | Histogram | `s` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `error.type` |
 | `harness.memory.operations` | Counter | `1` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `harness.memory.hit`, `error.type` |
@@ -490,6 +523,8 @@ Every harness-emitted log line carries when applicable:
 | `agent_id` | active agent |
 | `workflow_id` | active workflow |
 | `tool_id` | active tool |
+| `policy_name` | active governance policy |
+| `policy_rule_id` | active governance rule |
 | `trace_id` | active OTel trace |
 | `span_id` | active OTel span |
 | `duration_seconds` | operation duration |

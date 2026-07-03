@@ -9,6 +9,7 @@
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 - `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
+- `@purista/harness-policy-*` — optional governance policy adapters. Core exports the policy port and native policy types, but OPA/AGT/Eve/Cedar engines live outside core.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -238,6 +239,27 @@ export interface PermissionContext
 export type PermissionDecision
 export type OnPermission
 
+// Governance policy
+export interface GovernanceConfig<S>
+export interface GovernanceDefinitionHelpers<S>
+export type GovernanceMode
+export type GovernanceEffect
+export interface PolicyEvaluator<S>
+export interface PolicyEvaluatorInfo
+export type PolicyCapability
+export interface PolicyDecision
+export interface PolicyEvaluationContext<S>
+export type GovernanceToolId<S>
+export interface NativePolicy<S>
+export interface NativePolicyConfig<S>
+export interface NativePolicyRule<S, T>
+export interface NativeRuleContext<S, T>
+export interface GovernanceApprovalAdapter
+export interface GovernanceApprovalRequest
+export type GovernanceApprovalDecision
+export interface GovernanceAuditSink
+export interface GovernanceAuditRecord
+
 // Resolved skill (after frontmatter parse)
 export interface ResolvedSkill
 
@@ -458,6 +480,9 @@ interface HarnessBuilder<S extends BuilderState> {
   workflows<const W extends WorkflowsConfig<S & { agents: any }>>(
     workflows: W
   ): HarnessBuilder<S & { workflows: W }>
+  governance(
+    config: GovernanceConfig<S> | ((helpers: GovernanceDefinitionHelpers<S>) => GovernanceConfig<S>)
+  ): HarnessBuilder<S & { governance: GovernanceConfig<S> }>
 
   build(): Harness<S>
 }
@@ -517,6 +542,7 @@ type InferTypes<S extends BuilderState> = {
   skills: keyof S['skills']
   agents: { [K in keyof S['agents']]: { input: AgentInput<S, K>; output: AgentOutput<S, K> } }
   workflows: { [K in keyof S['workflows']]: { input: WorkflowInput<S, K>; output: WorkflowOutput<S, K> } }
+  governance: S extends { governance: infer G } ? G : undefined
 }
 ```
 

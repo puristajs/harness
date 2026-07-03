@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" role="img" aria-labelledby="title desc">
+  <title id="title">@purista/harness logic-level architecture</title>
+  <desc id="desc">Logic-level diagram of @purista/harness showing model provider adapters, model aliases and capabilities, sessions, direct agent calls, workflow orchestration, delegation policy, agent loop outside the sandbox, tool execution through sandbox and MCP, skills mounted into the sandbox, state stores, memory, durable workflow runtime, workspace store, and telemetry.</desc>
+  <defs>
+    <style>
+      text {
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        fill: #152231;
+      }
+      .title { font-size: 34px; font-weight: 780; }
+      .subtitle { font-size: 16px; fill: #526273; }
+      .section { font-size: 13px; font-weight: 780; letter-spacing: 1.5px; fill: #42586d; }
+      .boxTitle { font-size: 18px; font-weight: 760; }
+      .boxSub { font-size: 13px; fill: #526273; }
+      .small { font-size: 12px; fill: #627486; }
+      .tiny { font-size: 11px; fill: #718191; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 12px; fill: #253544; }
+      .page { fill: #edf3f6; }
+      .outside { fill: #fff9f6; stroke: #e4a391; stroke-width: 1.45; }
+      .harness { fill: #f4f9ff; stroke: #83add8; stroke-width: 2.4; }
+      .card { fill: #ffffff; stroke: #c9d7e4; stroke-width: 1.35; }
+      .blue { fill: #ffffff; stroke: #94b4d8; stroke-width: 1.55; }
+      .yellow { fill: #fffdf3; stroke: #dac56d; stroke-width: 1.45; }
+      .green { fill: #f6fbf4; stroke: #a5c9a0; stroke-width: 1.45; }
+      .red { fill: #fff8f6; stroke: #e29d8b; stroke-width: 1.35; }
+      .pill { fill: #edf5fc; stroke: #bed2e5; stroke-width: 1; }
+      .greenPill { fill: #edf8eb; stroke: #bdd8b8; stroke-width: 1; }
+      .yellowPill { fill: #fff8dd; stroke: #dec978; stroke-width: 1; }
+      .whitePill { fill: #ffffff; stroke: #ccd8e3; stroke-width: 1; }
+      .line { stroke: #d8e2eb; stroke-width: 1; }
+      .arrow { fill: none; stroke: #5d7892; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .softArrow { fill: none; stroke: #879aac; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#softArrow); }
+      .dashArrow { fill: none; stroke: #879aac; stroke-width: 1.75; stroke-dasharray: 7 7; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#softArrow); }
+      .loopArrow { fill: none; stroke: #2870b6; stroke-width: 2.55; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#blueArrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#5d7892"/>
+    </marker>
+    <marker id="softArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#879aac"/>
+    </marker>
+    <marker id="blueArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#2870b6"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#24384a" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect class="page" width="1600" height="1180"/>
+
+  <text x="54" y="64" class="title">@purista/harness logic-level architecture</text>
+  <text x="54" y="94" class="subtitle">Provider adapters supply models; model aliases expose capabilities; workflows orchestrate agents; agent loops run in harness and use sandboxed capabilities for tools and skills.</text>
+
+  <!-- Outside world -->
+  <rect x="56" y="124" width="300" height="92" rx="16" class="outside" filter="url(#shadow)"/>
+  <text x="82" y="156" class="section">APPLICATION EDGE</text>
+  <text x="82" y="183" class="mono">HTTP / worker / CLI</text>
+  <text x="82" y="204" class="small">auth, tenant, product policy</text>
+
+  <rect x="446" y="124" width="760" height="92" rx="16" class="outside" filter="url(#shadow)"/>
+  <text x="474" y="156" class="section">EXTERNAL PROVIDERS AND BACKENDS</text>
+  <text x="474" y="184" class="small">OpenAI, Anthropic, Bedrock, Azure AI, databases, remote sandboxes, MCP HTTP servers, telemetry collectors</text>
+
+  <!-- Harness boundary -->
+  <rect x="44" y="252" width="1512" height="868" rx="24" class="harness" filter="url(#shadow)"/>
+  <text x="76" y="286" class="section">@PURISTA/HARNESS</text>
+  <text x="76" y="314" class="boxSub">one in-process runtime boundary: configuration, execution, model registry, agent loops, workflow orchestration, tool runners, sandbox sessions, stores, telemetry</text>
+
+  <!-- Definition and models -->
+  <rect x="76" y="348" width="330" height="238" rx="14" class="card"/>
+  <text x="104" y="382" class="boxTitle">Definition registry</text>
+  <text x="104" y="407" class="mono">defineHarness().build()</text>
+  <line x1="104" y1="426" x2="378" y2="426" class="line"/>
+  <text x="110" y="454" class="small">foundation: state, sandbox, memory, runtime</text>
+  <text x="110" y="476" class="small">domain: models, tools, skills</text>
+  <text x="110" y="498" class="small">execution: agents, workflows</text>
+  <text x="110" y="520" class="small">guards: requires(...), defaults, permissions</text>
+  <rect x="110" y="542" width="220" height="28" rx="14" class="pill"/>
+  <text x="145" y="561" class="mono">synchronous validation</text>
+
+  <rect x="456" y="348" width="380" height="238" rx="14" class="yellow"/>
+  <text x="484" y="382" class="boxTitle">Model layer</text>
+  <text x="484" y="407" class="boxSub">adapters provide operations; aliases gate access</text>
+  <line x1="484" y1="426" x2="808" y2="426" class="line"/>
+  <rect x="488" y="448" width="145" height="34" rx="12" class="whitePill"/>
+  <text x="506" y="470" class="mono">Provider adapter</text>
+  <rect x="660" y="448" width="145" height="34" rx="12" class="whitePill"/>
+  <text x="686" y="470" class="mono">Model alias</text>
+  <text x="492" y="510" class="small">alias = provider + provider model id + defaults</text>
+  <text x="492" y="532" class="small">capabilities: text, object, streams, embeddings, rerank</text>
+  <text x="492" y="554" class="small">tool_use gates tool specs and tool-result messages</text>
+
+  <!-- Session API -->
+  <rect x="886" y="348" width="294" height="238" rx="14" class="blue"/>
+  <text x="914" y="382" class="boxTitle">Session API</text>
+  <text x="914" y="407" class="mono">harness.getSession(id)</text>
+  <line x1="914" y1="426" x2="1152" y2="426" class="line"/>
+  <rect x="922" y="448" width="214" height="32" rx="14" class="pill"/>
+  <text x="956" y="469" class="mono">session.agents.*</text>
+  <rect x="922" y="496" width="214" height="32" rx="14" class="pill"/>
+  <text x="946" y="517" class="mono">session.workflows.*</text>
+  <text x="924" y="554" class="small">one active run per session</text>
+
+  <rect x="1228" y="348" width="286" height="238" rx="14" class="blue"/>
+  <text x="1256" y="382" class="boxTitle">Run controller</text>
+  <text x="1256" y="407" class="boxSub">run id, timeout, cancellation, events</text>
+  <line x1="1256" y1="426" x2="1486" y2="426" class="line"/>
+  <rect x="1260" y="448" width="104" height="32" rx="14" class="pill"/>
+  <text x="1284" y="469" class="mono">State</text>
+  <rect x="1384" y="448" width="104" height="32" rx="14" class="pill"/>
+  <text x="1404" y="469" class="mono">Events</text>
+  <rect x="1260" y="496" width="104" height="32" rx="14" class="pill"/>
+  <text x="1284" y="517" class="mono">Memory</text>
+  <rect x="1384" y="496" width="104" height="32" rx="14" class="pill"/>
+  <text x="1406" y="517" class="mono">Trace</text>
+  <text x="1262" y="554" class="small">creates run records and emits events</text>
+
+  <!-- Workflow -->
+  <rect x="76" y="642" width="508" height="260" rx="16" class="blue"/>
+  <text x="104" y="676" class="section">WORKFLOW ORCHESTRATION</text>
+  <text x="104" y="704" class="boxSub">callable independently via session.workflows.*</text>
+  <rect x="110" y="730" width="148" height="42" rx="12" class="whitePill"/>
+  <text x="143" y="756" class="mono">handler</text>
+  <rect x="288" y="730" width="148" height="42" rx="12" class="yellowPill"/>
+  <text x="312" y="756" class="mono">ctx.models</text>
+  <rect x="110" y="790" width="148" height="42" rx="12" class="greenPill"/>
+  <text x="145" y="816" class="mono">ctx.step</text>
+  <rect x="288" y="790" width="148" height="42" rx="12" class="yellowPill"/>
+  <text x="312" y="816" class="mono">ctx.agents</text>
+  <text x="108" y="862" class="small">direct model calls for RAG, embeddings, rerank, scoring</text>
+  <text x="108" y="884" class="small">durable steps are workflow-only</text>
+
+  <rect x="620" y="642" width="250" height="260" rx="16" class="red"/>
+  <text x="648" y="676" class="section">DELEGATION GATE</text>
+  <text x="648" y="704" class="boxSub">only workflows call child agents</text>
+  <rect x="654" y="734" width="178" height="40" rx="14" class="outside"/>
+  <text x="690" y="759" class="mono">default: off</text>
+  <rect x="654" y="794" width="178" height="34" rx="14" class="yellowPill"/>
+  <text x="682" y="816" class="mono">agent allowlist</text>
+  <text x="650" y="856" class="small">budgets: total, parallel, depth</text>
+  <text x="650" y="878" class="small">model alias policy per child call</text>
+
+  <!-- Agent -->
+  <rect x="906" y="642" width="608" height="260" rx="16" class="blue"/>
+  <text x="934" y="676" class="section">AGENT LOOP - RUNS IN HARNESS, NOT IN THE SANDBOX</text>
+  <text x="934" y="704" class="boxSub">callable directly or as a workflow child agent</text>
+  <rect x="940" y="732" width="112" height="38" rx="12" class="whitePill"/>
+  <text x="972" y="756" class="mono">input</text>
+  <rect x="1080" y="732" width="148" height="38" rx="12" class="whitePill"/>
+  <text x="1106" y="756" class="mono">instructions</text>
+  <rect x="1256" y="732" width="124" height="38" rx="12" class="yellowPill"/>
+  <text x="1284" y="756" class="mono">model</text>
+  <rect x="940" y="802" width="164" height="38" rx="12" class="yellowPill"/>
+  <text x="970" y="826" class="mono">tool calls?</text>
+  <rect x="1138" y="802" width="164" height="38" rx="12" class="greenPill"/>
+  <text x="1162" y="826" class="mono">execute tools</text>
+  <rect x="1336" y="802" width="132" height="38" rx="12" class="whitePill"/>
+  <text x="1362" y="826" class="mono">output</text>
+  <text x="938" y="874" class="small">loop: model.object(schema + tools) -> tool result messages -> next model call -> validated object</text>
+  <text x="938" y="894" class="small">tool runners validate input/output and enforce permissions before sandbox or MCP HTTP work</text>
+
+  <!-- Sandbox and tools -->
+  <rect x="906" y="932" width="608" height="142" rx="16" class="green"/>
+  <text x="934" y="966" class="section">SANDBOX SESSION - USED BY CAPABILITIES</text>
+  <text x="934" y="994" class="small">built-ins, TS tool sandbox access, MCP stdio, and skill files operate here</text>
+  <text x="934" y="1012" class="small">MCP HTTP uses a remote endpoint and bypasses sandbox exec</text>
+  <rect x="940" y="1026" width="112" height="32" rx="12" class="greenPill"/>
+  <text x="966" y="1047" class="mono">built-ins</text>
+  <rect x="1074" y="1026" width="112" height="32" rx="12" class="greenPill"/>
+  <text x="1102" y="1047" class="mono">TS tool</text>
+  <rect x="1208" y="1026" width="112" height="32" rx="12" class="greenPill"/>
+  <text x="1228" y="1047" class="mono">MCP stdio</text>
+  <rect x="1342" y="1026" width="132" height="32" rx="12" class="greenPill"/>
+  <text x="1360" y="1047" class="mono">/skills mount</text>
+
+  <!-- Ports -->
+  <rect x="76" y="946" width="794" height="128" rx="16" class="green"/>
+  <text x="104" y="980" class="section">ADAPTER AND STORE PORTS INSIDE HARNESS</text>
+  <rect x="110" y="1008" width="124" height="30" rx="10" class="greenPill"/>
+  <text x="132" y="1028" class="mono">StateStore</text>
+  <rect x="252" y="1008" width="124" height="30" rx="10" class="greenPill"/>
+  <text x="276" y="1028" class="mono">Memory</text>
+  <rect x="394" y="1008" width="124" height="30" rx="10" class="greenPill"/>
+  <text x="416" y="1028" class="mono">Sandbox</text>
+  <rect x="536" y="1008" width="144" height="30" rx="10" class="greenPill"/>
+  <text x="554" y="1028" class="mono">DurableRuntime</text>
+  <rect x="698" y="1008" width="132" height="30" rx="10" class="greenPill"/>
+  <text x="714" y="1028" class="mono">Workspace</text>
+  <text x="110" y="1058" class="small">state persists sessions, messages, runs, events; memory defaults to sandboxMemory; durability is workflow/invocation-time</text>
+
+  <!-- Key notes -->
+  <rect x="1238" y="124" width="278" height="92" rx="16" class="outside" filter="url(#shadow)"/>
+  <text x="1264" y="154" class="section">BOUNDARY NOTES</text>
+  <text x="1264" y="181" class="small">No Vercel/UI protocol layer.</text>
+  <text x="1264" y="202" class="small">RunEvent is the harness stream shape.</text>
+
+  <!-- Arrows outside to harness -->
+  <path d="M206 216 L206 252" class="arrow"/>
+  <path d="M356 170 L446 170" class="dashArrow"/>
+  <path d="M646 216 L646 348" class="dashArrow"/>
+
+  <!-- Build and session flow -->
+  <path d="M406 467 L456 467" class="arrow"/>
+  <path d="M836 467 L886 467" class="arrow"/>
+  <path d="M1180 467 L1228 467" class="arrow"/>
+  <path d="M1033 586 L1033 612 L1210 612 L1210 642" class="arrow"/>
+  <path d="M1033 586 L1033 612 L330 612 L330 642" class="arrow"/>
+
+  <!-- Workflow/delegation/agent -->
+  <path d="M436 811 L620 811" class="dashArrow"/>
+  <path d="M870 811 L906 811" class="dashArrow"/>
+
+  <!-- Agent loop internals -->
+  <path d="M1052 751 L1080 751" class="softArrow"/>
+  <path d="M1228 751 L1256 751" class="softArrow"/>
+  <path d="M1318 770 L1318 802 L1302 802" class="softArrow"/>
+  <path d="M1104 821 L1138 821" class="arrow"/>
+  <path d="M1302 821 L1336 821" class="softArrow"/>
+  <path d="M1268 840 C1268 890 990 890 990 840" class="loopArrow"/>
+
+  <!-- Tool/sandbox/model/provider -->
+  <path d="M1220 840 L1220 932" class="arrow"/>
+</svg>

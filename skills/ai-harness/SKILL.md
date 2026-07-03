@@ -16,6 +16,9 @@ Keep these layers separate:
 - execution: `harness.getSession(id)` returns typed `session.agents.*` and `session.workflows.*`
 - adapter code: provider, state, memory, sandbox, MCP, durable runtime, logger, and telemetry ports
 - application integration: HTTP/SSE, queues, persistence, auth, and business state stay outside the harness unless represented by a port or tool
+- optional governance: policy-as-code for tool decisions, approvals, audit, and
+  policy-pack adapters is configured only when needed; ordinary agents do not
+  require policy setup
 
 ## Hard Rules
 - Use `defineHarness()` as the sole construction path. Do not invent standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, or `defineModel` helpers.
@@ -29,16 +32,18 @@ Keep these layers separate:
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
 - Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
-- Governance is optional. Use `.governance(...)` only when an application needs policy-driven tool exposure, execution decisions, approvals, audit evidence, or an external policy adapter; keep ordinary harness setup policy-free.
-- Keep permissions and governance separate: permissions are coarse built-in-tool gates, while governance is a business/domain policy layer for model-facing tool exposure and tool-call execution.
 - Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
+- Governance policy is optional and late-bound through `.governance(...)` after
+  agents/workflows are declared. Keep simple use cases on per-agent
+  permissions; use governance only for composable/audited policy, approval, or
+  external policy-pack interoperability.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
 2. Decide whether the task is one agent loop, a custom handler agent, or an orchestrating workflow.
 3. Define Zod schemas at every agent, workflow, and tool boundary.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
-5. Attach tools, skill directories, permissions, optional governance, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
+5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
 6. Decide how state, history, memory, streaming, errors, security, and operations are handled at the application edge.
 7. Invoke through `harness.getSession(id)` and close sessions/harnesses during shutdown.
 8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
@@ -100,7 +105,9 @@ await harness.shutdown()
 ## Read If Needed
 - `references/configuration.md` for package setup, builder order, sessions, state, sandbox, runtime capabilities, streaming, and shutdown.
 - `references/model-setup.md` for provider aliases, OpenAI setup, defaults, capability-gated model handles, multimodal content, embeddings, and rerank.
-- `references/agents-workflows-tools.md` for deciding between agents/workflows and wiring typed tools, permissions, optional governance, MCP, and skill-mounted agents.
+- `references/agents-workflows-tools.md` for deciding between agents/workflows and wiring typed tools, permissions, MCP, and skill-mounted agents.
+- `references/agents-workflows-tools.md` also covers optional governance policy
+  and when to prefer it over simple permissions.
 - `references/skills.md` for creating harness skill folders and registering/mounting them correctly.
 - `references/sandbox.md` for in-memory/bash sandboxes, filesystem/exec APIs, snapshots, built-in tool risk, and custom sandbox adapters.
 - `references/state-sessions-streaming-errors.md` for `StateStore`, session lifecycle, memory/history, run events, error mapping, and replay.

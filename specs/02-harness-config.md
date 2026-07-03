@@ -1,6 +1,6 @@
 # Harness configuration
 
-**Purpose.** Defines the synchronous `defineHarness()` chainable builder, every method's input shape, defaults, and validation rules. Invalid inputs throw [`HarnessConfigError`](./15-error-catalog.md) synchronously at the call site of the offending builder method. See also second-stage validators in [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md), [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), and [24-governance-policy](./24-governance-policy.md).
+**Purpose.** Defines the synchronous `defineHarness()` chainable builder, every method's input shape, defaults, and validation rules. Invalid inputs throw [`HarnessConfigError`](./15-error-catalog.md) synchronously at the call site of the offending builder method. See also second-stage validators in [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md), [09-agents](./09-agents.md), and [10-workflows](./10-workflows.md).
 
 ## Signature
 
@@ -24,16 +24,19 @@ defineHarness(opts?)
   .skills({...})?           // before agents
   .agents({...})            // before workflows
   .workflows({...})?
-  .governance({...})?       // optional policy layer
+  .governance(...)?         // optional late policy stage, after agents/workflows
   .build()
 ```
 
 - `models()` MUST be called before `tools()`, `skills()`, `agents()`, `workflows()`.
 - `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
 - `agents()` MUST be called before `workflows()`.
-- Each of `models`/`tools`/`skills`/`agents`/`workflows` is callable AT MOST ONCE.
+- `governance()` is optional, callable at most once, and only after
+  `agents()` and after `workflows()` if workflows are configured. It is late so
+  the policy callback can type-check declared tool, agent, workflow, and model
+  keys.
+- Each of `models`/`tools`/`skills`/`agents`/`workflows`/`governance` is callable AT MOST ONCE.
 - `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
-- `.governance(...)` is optional. If omitted, tool execution behavior is unchanged and no user needs to configure policies.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -209,53 +212,6 @@ interface HarnessDefaults {
 }
 ```
 
-### `.governance(config)`
-
-Configures an optional policy-driven governance layer for model-facing tool
-exposure and tool calls. See
-[24-governance-policy](./24-governance-policy.md) for the complete contract.
-
-```ts
-defineHarness()
-  .models(...)
-  .tools(...)
-  .agents(...)
-  .governance(({ native, rule, exposureRule, adapter }) => ({
-    mode: 'enforce',
-    defaultEffect: 'allow',
-    exposure: {
-      rules: [
-        exposureRule({ id: 'hide-transfers', effect: 'hide', tools: ['transfer_funds'] })
-      ]
-    },
-    policies: [
-      native({
-        id: 'bank-transfer-policy',
-        rules: [
-          rule({
-            id: 'large-transfer-approval',
-            effect: 'require_approval',
-            tools: ['transfer_funds'],
-            when: ({ input }) => input.amount > 1_000
-          })
-        ]
-      })
-    ]
-  }))
-  .build()
-```
-
-Validation:
-
-- at least one execution policy or exposure rule must be configured when governance is enabled.
-- policy ids are unique.
-- native policies have at least one rule.
-- native rule ids are unique within a policy.
-- native `tools` references point at configured custom tools or built-in tool names.
-- exposure rule ids are unique.
-- exposure `tools` references point at configured custom tools or built-in tool names.
-- adapter policies expose an `evaluate` function.
-
 Note that timeout fields keep `Ms` suffixes for backwards-readable API ergonomics; OTel-exposed durations use seconds (see [14-otel-conventions](./14-otel-conventions.md)).
 
 Delegation defaults are enforced per workflow run after delegation is enabled.
@@ -297,6 +253,38 @@ Each key is the alias id referenced by agents. Validation:
 - Each `model` must claim ≥1 capability.
 
 Zod parser invoked synchronously inside the method; failure throws `HarnessConfigError`.
+
+### `.governance(config)`
+
+Optional policy-as-code governance for tool decisions. If omitted, the harness
+does not load or evaluate any policy engine and emits no policy events.
+
+```ts
+.governance(({ native }) => ({
+  mode: 'enforce',
+  defaultEffect: 'deny',
+  policies: [
+    native({
+      name: 'financial-controls',
+      version: '1.0.0',
+      rules: [
+        {
+          id: 'large-transfer',
+          effect: 'require_approval',
+          tools: ['transfer_funds'],
+          when: (ctx) => ctx.input.amount > 10_000
+        }
+      ]
+    })
+  ]
+}))
+```
+
+Governance configuration is locked in [24-governance-policy](./24-governance-policy.md).
+Builder validation rejects missing/empty policy arrays, duplicate policy names,
+duplicate native rule ids within one policy, unknown referenced tool ids, and
+invalid effect/default values. Native single-tool rules over TypeScript tools
+infer `ctx.input` and `ctx.output` from the registered tool schemas.
 
 ### `.tools(tools)`
 

@@ -14,6 +14,7 @@ For the harness repo, run the narrowest relevant checks first, then the package-
 ```bash
 npm run lint
 npm run typecheck
+npm run test:types
 npm test
 npm run test:contracts
 npm run test:integration
@@ -57,6 +58,8 @@ Keep one explicit live-provider smoke test path if needed, gated by env vars suc
 Add type tests for builder inference:
 - unknown model aliases are rejected in agents
 - unknown tools/skills are rejected in agents
+- governance `rule(...)` narrows `ctx.input` for selected TypeScript tools
+- governance `exposureRule(...)` rejects unknown tool ids and narrows `ctx.toolId`
 - workflow `ctx.agents.<id>` input/output types come from the agent schemas
 - model handles expose only declared capability methods
 - multimodal content parts require matching input capabilities
@@ -120,6 +123,13 @@ invocation, distinct ids across parallel streams, `modelAlias`, and available
 Test stream consumers against `RunEvent`, not provider-specific HTTP/SSE chunks. HTTP/SSE mapping belongs to the application integration layer.
 Breaking out of a stream iterator should not abort the run; test cancellation
 through an explicit `AbortSignal` when run termination is expected.
+
+Governance tests should cover both exposure and execution layers:
+- exposure-only governance hides tools before the fake provider request and does not require `policies`
+- `mode: 'shadow'` emits `policy.exposure` without removing tools
+- execution policies emit `policy.evaluated` with `decisionId` and optional evidence fields
+- approvals receive `approvalId`, `callId`, and matching decisions
+- policy and approval events do not persist raw tool input or output
 
 ## Adapter Failure Tests
 Provider adapters should cover:

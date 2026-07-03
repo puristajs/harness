@@ -21,6 +21,10 @@ harness opts in with `defaults.delegation.enabled: true`. Opted-in workflows get
 bounded fan-out, agent allowlists, per-agent model alias overrides, and
 lineage-rich run events.
 
+Tool-call governance is optional. Configure `.governance(...)` only when an
+application needs policy-driven tool exposure, typed domain policies, approval
+gates, shadow rollout, audit events, or an adapter to an external policy engine.
+
 See [Evaluating Prompts](https://github.com/puristajs/harness/blob/main/docs/guides/evaluating-prompts.md)
 for the execution model, scorer limits, and privacy behavior.
 

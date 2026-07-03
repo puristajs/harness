@@ -47,6 +47,35 @@ export class PermissionDeniedError extends HarnessError {
   }
 }
 
+/** Tool execution denied by a configured governance policy or approval decision. */
+export class PolicyDeniedError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      tool_name: string
+      agent_id: string
+      policy_id: string
+      rule_id?: string
+      effect: 'deny' | 'require_approval'
+      reason?: 'policy_deny' | 'approval_rejected' | 'approval_unavailable'
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'POLICY_DENIED', category: 'permission', retriable: false, message, meta, cause })
+  }
+}
+
+/** Governance policy adapter or native predicate evaluation failed. */
+export class PolicyEvaluationError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: { tool_name: string; agent_id: string; policy_id?: string; rule_id?: string; reason: 'adapter_failed' | 'predicate_failed' | 'invalid_decision' },
+    cause?: unknown
+  ) {
+    super({ code: 'POLICY_EVALUATION_ERROR', category: 'permission', retriable: false, message, meta, cause })
+  }
+}
+
 /** Sandbox filesystem or command execution failed. */
 export class SandboxError extends HarnessError {
   public constructor(message: string, meta: { reason: 'invalid_path' | 'exec_failed' | 'fs_failed' | string; stdout?: string; stderr?: string }, cause?: unknown) {

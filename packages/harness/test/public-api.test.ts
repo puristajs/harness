@@ -30,6 +30,8 @@ const EXPECTED_MAIN_EXPORTS = [
   'OperationCancelledError',
   'OperationTimeoutError',
   'PermissionDeniedError',
+  'PolicyDeniedError',
+  'PolicyEvaluationError',
   'SandboxError',
   'SandboxNoExecutorError',
   'SessionBusyError',

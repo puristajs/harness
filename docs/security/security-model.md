@@ -48,6 +48,16 @@ Recommended defaults:
   execution or `mcp_stdio`;
 - add permission hooks for mutating tools.
 
+Use `.governance(...)` when tool safety depends on typed domain facts rather
+than only built-in tool permissions. Permissions answer "may this agent use this
+tool family"; exposure governance answers "should this model step see this
+tool"; execution governance answers "may this specific tool call proceed for
+this business case." Governance can run in `mode: 'shadow'` during rollout,
+hide tools before the model call, require human approval before side effects,
+or deny calls before the tool handler runs. Persisted governance events store
+policy ids, decision ids, effects, risk labels, and approval decisions, not raw
+tool input.
+
 ## MCP Security
 
 | Mode | Main Risk | Mitigation |

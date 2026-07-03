@@ -6,6 +6,7 @@
 - Workflow Pattern
 - TypeScript Tools
 - Built-In Tools And Permissions
+- Optional Governance Policies
 - MCP Tools
 - Skills Mounted Into Agents
 
@@ -177,6 +178,114 @@ onPermission: async (ctx) => ctx.toolName === 'bash' ? 'allow' : 'deny'
 ```
 
 Read-only built-ins are intentionally available so agents can navigate mounted skills and sandbox files.
+
+## Optional Governance Policies
+Governance is an opt-in business policy layer. Do not add `.governance(...)`
+to examples or apps unless they need policy-driven model-facing tool exposure,
+tool-call execution decisions, approvals, audit evidence, or an external policy
+adapter.
+
+Keep the layers distinct:
+- agent `tools` and `builtinTools` define the maximum tool set an agent may use
+- built-in `permissions` gate risky built-ins such as `bash`, `write`, and `edit`
+- governance `exposure` can hide configured tools before a model step
+- governance `policies` evaluate a specific tool call after permissions,
+  allowlists, and TypeScript input validation but before handler execution
+
+Use exposure rules when the model should not even see a capability for a
+tenant, plan, workflow, rollout, or step:
+
+```ts
+.governance(({ exposureRule }) => ({
+  exposure: {
+    id: 'tenant-tool-exposure',
+    version: '2026-06-30',
+    rules: [
+      exposureRule({
+        id: 'hide-transfers-for-readonly-tenants',
+        effect: 'hide',
+        tools: ['transfer_funds'],
+        when: ({ metadata }) => metadata.plan === 'readonly',
+        reason: 'Readonly tenants cannot use transfer tools.',
+        riskLevel: 'high',
+        tags: ['tenant-policy']
+      })
+    ]
+  }
+}))
+```
+
+Exposure runs after `prepareStep.activeTools` and before the model call. Hidden
+tools are removed from the provider `tools` array. In `mode: 'shadow'`, the
+harness emits `policy.exposure` decisions but does not hide tools. The runtime
+also rejects provider tool calls whose tool name was not exposed for that step.
+
+Use execution policies when a concrete tool call needs typed business rules:
+
+```ts
+.governance(({ native, rule, adapter }) => ({
+  mode: 'enforce',
+  defaultEffect: 'allow',
+  approval: {
+    request: async (request) => ({
+      decision: request.input.amount <= 5_000 ? 'approved' : 'rejected',
+      approverId: 'ops-console'
+    })
+  },
+  policies: [
+    native({
+      id: 'bank-transfer-policy',
+      version: '2026-06-30',
+      rules: [
+        rule({
+          id: 'large-transfer-approval',
+          effect: 'require_approval',
+          tools: ['transfer_funds'],
+          when: ({ input }) => input.amount > 1_000,
+          reason: 'Large transfers need human review.',
+          riskLevel: 'medium'
+        }),
+        rule({
+          id: 'insufficient-funds',
+          effect: 'deny',
+          tools: ['transfer_funds'],
+          when: ({ input }) => input.amount > input.balance,
+          reason: 'Transfer amount exceeds available balance.',
+          riskLevel: 'high'
+        })
+      ]
+    }),
+    adapter({
+      id: 'external-policy-engine',
+      version: 'bundle-42',
+      evaluate: async (ctx) => undefined
+    })
+  ]
+}))
+```
+
+`rule(...)` narrows `ctx.input` to the parsed Zod input for the selected
+TypeScript tool. MCP and built-in tool policy input is JSON-compatible raw
+input. `exposureRule(...)` narrows `ctx.toolId`; exposure rules do not receive
+tool input because no call exists yet.
+
+Execution effects resolve by precedence:
+`deny > require_approval > audit > allow`.
+
+`policies` are optional when only exposure rules are needed. When execution
+policies are configured and no decision matches, `defaultEffect` defaults to
+`deny`. A governance config with only exposure rules does not apply execution
+default-deny later.
+
+Use `mode: 'shadow'` to compare native, OPA, Cedar, Eve-style, or bespoke
+policy engines before enforcing. External adapters translate harness context
+into the engine input document and return `GovernanceDecision` values; the
+harness does not own policy language syntax, bundle distribution, or rule-store
+deployment.
+
+Governance stream/audit evidence includes stable `decisionId`, optional
+`policyVersion`, `approvalId` for approvals, `reason`, `riskLevel`, and `tags`.
+Do not include raw tool input or output in policy events, logs, or telemetry.
 
 ## MCP Tools
 Use `mcp_stdio` when the MCP server should run inside the sandbox executor:

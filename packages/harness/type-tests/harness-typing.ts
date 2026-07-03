@@ -29,6 +29,14 @@ const harness = defineHarness()
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
     reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
   })
+  .tools({
+    transfer_funds: {
+      description: 'Transfer funds between accounts.',
+      input: z.object({ amount: z.number(), balance: z.number() }),
+      output: z.object({ approved: z.boolean() }),
+      handler: async () => ({ approved: true })
+    }
+  })
   .agents(({ agent }) => ({
     planner: agent({
       model: 'assistant',
@@ -91,6 +99,82 @@ const harness = defineHarness()
       handler: async (ctx) => ctx.input.task
     })
   }))
+  .governance(({ native, rule }) => ({
+    defaultEffect: 'allow',
+    policies: [
+      native({
+        id: 'typed-bank-policy',
+        rules: [
+          rule({
+            id: 'insufficient-funds',
+            effect: 'deny',
+            tools: ['transfer_funds'],
+            when: (ctx) => {
+              type Input = typeof ctx.input
+              const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
+              const _inputExact: Expect<Equal<Input, { amount: number; balance: number }>> = true
+              return ctx.input.balance < ctx.input.amount
+            }
+          }),
+          rule({
+            id: 'bad-field',
+            effect: 'deny',
+            tools: ['transfer_funds'],
+            // @ts-expect-error governance predicates use the selected tool input schema
+            when: (ctx) => ctx.input.currency === 'EUR'
+          })
+        ]
+      })
+    ]
+  }))
+  .build()
+
+defineHarness()
+  .models({
+    assistant: { provider, model: 'type-test-model', capabilities: ['object', 'tool_use'] }
+  })
+  .tools({
+    transfer_funds: {
+      description: 'Transfer funds.',
+      input: z.object({ amount: z.number(), balance: z.number() }),
+      output: z.object({ ok: z.boolean() }),
+      handler: async () => ({ ok: true })
+    }
+  })
+  .agents(({ agent }) => ({
+    banker: agent({
+      model: 'assistant',
+      input: z.string(),
+      output: z.string(),
+      tools: ['transfer_funds'],
+      builtinTools: false,
+      instructions: 'Transfer funds.'
+    })
+  }))
+  .governance(({ exposureRule }) => {
+    exposureRule({
+      id: 'bad-exposure-tool',
+      effect: 'hide',
+      // @ts-expect-error governance exposure rules must reference known tools
+      tools: ['missing_tool']
+    })
+    return {
+      exposure: {
+        rules: [
+          exposureRule({
+            id: 'hide-transfers',
+            effect: 'hide',
+            tools: ['transfer_funds'],
+            when: (ctx) => {
+              type ToolId = typeof ctx.toolId
+              const _toolIdExact: Expect<Equal<ToolId, 'transfer_funds'>> = true
+              return ctx.step >= 0
+            }
+          })
+        ]
+      }
+    }
+  })
   .build()
 
 type PrepareInput = typeof harness.$infer.workflows.prepare.input

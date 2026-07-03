@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 25 files (this README plus 24 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 26 files (this README plus 25 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -32,6 +32,7 @@ For an implementation agent starting cold, read in this order:
 22. [21-durable-workspaces.md](./21-durable-workspaces.md) — production durable workspace lifecycle, checkpoint references, retention, encryption, cleanup, quotas, fallback, telemetry, and contract tests.
 23. [22-local-durable-execution.md](./22-local-durable-execution.md) — built-in local durable execution with SQLite runtime persistence, host-directory workspace/sandbox binding, context checkpoints, and secure defaults.
 24. [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) — provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata.
+25. [24-governance-policy.md](./24-governance-policy.md) — optional policy-driven governance layer for typed tool exposure, execution policy, approvals, audit events, and external policy adapters.
 
 ## File index (one-liners)
 
@@ -61,6 +62,7 @@ For an implementation agent starting cold, read in this order:
 | [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace store contract for production replay across runtime checkpoints and sandbox workspace state. |
 | [22-local-durable-execution.md](./22-local-durable-execution.md) | Local durable execution bundle using SQLite runtime persistence, host-directory workspaces, durable sandbox binding, and context checkpoint storage. |
 | [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) | Provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata. |
+| [24-governance-policy.md](./24-governance-policy.md) | Optional tool-exposure and tool-call governance, typed native policy rules, approval adapters, shadow mode, and external policy engine adapters. |
 
 ## Authoritative anchors
 
@@ -70,6 +72,7 @@ For an implementation agent starting cold, read in this order:
 - Durable workspace lifecycle and replay semantics → [21-durable-workspaces.md](./21-durable-workspaces.md).
 - Local durable execution, SQLite runtime persistence, and context checkpoints → [22-local-durable-execution.md](./22-local-durable-execution.md).
 - Provider outcomes, active/deferred retry, and rate-limit metadata → [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md).
+- Tool-exposure and tool-call governance, approvals → [24-governance-policy.md](./24-governance-policy.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.

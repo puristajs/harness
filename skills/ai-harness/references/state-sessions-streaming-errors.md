@@ -113,6 +113,10 @@ for await (const event of session.workflows.audit.stream(input)) {
     case 'model.object':
     case 'model.embedding.completed':
     case 'model.rerank.completed':
+    case 'policy.exposure':
+    case 'policy.evaluated':
+    case 'approval.requested':
+    case 'approval.finished':
     case 'agent.finished':
     case 'run.finished':
     case 'stream.overflow':
@@ -139,6 +143,13 @@ inspection, but recovery should use durable checkpoints, not stream cursors.
 
 Do not expose `RunEvent` directly as a provider protocol unless your application owns that contract. HTTP/SSE adapters should map harness events into client-facing event shapes.
 
+Governance events are audit-oriented and privacy-safe. `policy.exposure`
+records pre-model tool exposure decisions. `policy.evaluated` records
+execution-policy decisions for a concrete tool call. Approval events include
+`approvalId` and `decisionId`. Persisted policy payloads may include
+`policyVersion`, rule id, effect, enforcement state, reason, risk level, and
+tags, but must not include raw tool input or output.
+
 ## Error Families
 All `HarnessError` instances carry `code`, `category`, `retriable`, `message`, and optional sanitized `meta`.
 
@@ -146,6 +157,8 @@ Common classes:
 - `HarnessConfigError`
 - `ValidationError`
 - `PermissionDeniedError`
+- `PolicyEvaluationError`
+- `PolicyDeniedError`
 - `SandboxError`
 - `SandboxNoExecutorError`
 - `ModelError`

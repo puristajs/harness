@@ -71,9 +71,10 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/context-async-hooks": "^2.9.0",
     "@types/node": "^26.1.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^4.1.9",
     "just-bash": "^3.0.2",
-    "typescript": "^6.0.3",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^4.1.9"
   },
   "engines": {

@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-openai",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "OpenAI model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,16 +40,16 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "openai": "^6.45.0"
+    "openai": "^6.48.0"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.10",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "@purista/harness": "^1.7.0"
+    "@purista/harness": "^1.7.1"
   },
   "engines": {
     "node": ">=24.15.0"

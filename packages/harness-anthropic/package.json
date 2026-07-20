@@ -40,7 +40,7 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.110.0"
+    "@anthropic-ai/sdk": "^0.112.3"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2",

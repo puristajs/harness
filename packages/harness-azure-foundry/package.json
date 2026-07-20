@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-azure-foundry",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Azure AI Foundry model provider adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -41,17 +41,17 @@
   },
   "dependencies": {
     "@azure-rest/ai-inference": "^1.0.0-beta.6",
-    "@azure/core-auth": "^1.10.1",
-    "@azure/core-sse": "^2.3.0"
+    "@azure/core-auth": "^1.11.0",
+    "@azure/core-sse": "^2.4.0"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.10",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "@purista/harness": "^1.7.0"
+    "@purista/harness": "^1.7.1"
   },
   "engines": {
     "node": ">=24.15.0"

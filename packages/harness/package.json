@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Self-hosted enterprise agent harness for typed tools, agents, workflows, state, sandboxing, and telemetry.",
   "type": "module",
   "main": "dist/index.js",
@@ -50,7 +50,7 @@
     "test:failure": "vitest run test/failure"
   },
   "dependencies": {
-    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -70,12 +70,12 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/context-async-hooks": "^2.9.0",
-    "@types/node": "^26.1.0",
+    "@types/node": "^26.1.1",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^4.1.9",
-    "just-bash": "^3.0.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "just-bash": "^3.1.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=24.15.0"

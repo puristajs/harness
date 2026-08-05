@@ -154,7 +154,7 @@ Deliverables:
   - Resolve tool set (custom + built-in, filtered by executor availability).
   - Default-loop object generation through `models[model].object(...)`.
   - Per-tool permission gate (`allow|ask|deny`) with recoverable denial.
-  - `maxSteps` budget (default 16, max 64).
+  - `maxSteps` budget (default 16; positive integer, no hard upper cap).
 
 Tests:
 - Default loop with a real built-in tool round trip (via FakeModelProvider scripted scenario).

@@ -100,6 +100,10 @@ Set explicit budgets for production:
 stores, and sandboxes can inherit logger and telemetry via
 `configureHarnessContext`.
 
+`agentMaxIterations` and an agent's `maxSteps` are positive integer budgets.
+Explicit values have no hard upper cap, so choose a finite limit appropriate to
+the workflow and keep run/model timeouts configured.
+
 The implementation creates an OpenTelemetry-backed `TelemetryShim` internally when telemetry is configured. Applications still own SDK/exporter bootstrapping, for example using `@opentelemetry/sdk-node` plus an OTLP exporter before harness runs begin.
 
 Workflow, custom-agent, and TypeScript-tool handlers receive `ctx.metrics` for

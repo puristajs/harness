@@ -200,6 +200,10 @@ flow and `outcome` for operations or provider-specific handling.
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
 
+`agentMaxIterations` and an agent's `maxSteps` must be positive integers. An
+explicit value is honored as configured rather than silently capped; pair large
+budgets with appropriate run and model timeouts.
+
 `defaults.delegation` controls workflow-local child-agent calls through
 `ctx.agents`. Delegation is disabled by default. Prefer enabling it per
 workflow with `workflow.delegation`; use `defaults.delegation.enabled: true`

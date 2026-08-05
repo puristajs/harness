@@ -275,7 +275,7 @@ async function runDefaultAgentInner(args: {
     })
 
   const emitted: Message[] = []
-  const maxSteps = Math.min(args.agent.maxSteps ?? args.maxSteps, 64)
+  const maxSteps = args.agent.maxSteps ?? args.maxSteps
   let steps = 0
 
   const agentEventMeta = {

@@ -37,6 +37,18 @@ class ContextAwareStateStore extends InMemoryStateStore {
   }
 }
 
+function enqueueReadToolRounds(model: FakeModelProvider, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    model.enqueue({
+      object: {},
+      toolCalls: [{ id: `c${index + 1}`, name: 'read', arguments: { path: '/workspace/a.txt' } }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: 'tool_calls'
+    })
+  }
+  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+}
+
 it('enforces maxSteps in default agent loop', async () => {
   const model = new FakeModelProvider()
   model.enqueue({ object: {}, toolCalls: [{ id: 'c1', name: 'read', arguments: { path: '/workspace/a.txt' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
@@ -53,6 +65,57 @@ it('enforces maxSteps in default agent loop', async () => {
 
   const s = await harness.getSession('s1')
   await expect(s.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(AgentLoopBudgetError)
+})
+
+it('honors an explicit agent maxSteps value above 64', async () => {
+  const model = new FakeModelProvider()
+  enqueueReadToolRounds(model, 65)
+
+  const harness = await defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({})
+    .skills({})
+    .agents({ a1: { model: 'fast', instructions: 'x', maxSteps: 66 } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .build()
+
+  const session = await harness.getSession('max-steps-above-64')
+  await expect(session.workflows.wf.prompt('hello')).resolves.toBe('done')
+  expect(model.requests).toHaveLength(66)
+})
+
+it('honors a harness default agentMaxIterations value above 64', async () => {
+  const model = new FakeModelProvider()
+  enqueueReadToolRounds(model, 65)
+
+  const harness = await defineHarness()
+    .defaults({ agentMaxIterations: 66 })
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({})
+    .skills({})
+    .agents({ a1: { model: 'fast', instructions: 'x' } })
+    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) as Promise<string> } })
+    .build()
+
+  const session = await harness.getSession('default-max-steps-above-64')
+  await expect(session.workflows.wf.prompt('hello')).resolves.toBe('done')
+  expect(model.requests).toHaveLength(66)
+})
+
+it('rejects invalid agent loop budgets at configuration time', () => {
+  const model = new FakeModelProvider()
+  const agentWith = (maxSteps: number) => defineHarness()
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .tools({})
+    .skills({})
+    .agents({ a1: { model: 'fast', instructions: 'x', builtinTools: false, maxSteps } })
+
+  expect(() => defineHarness().defaults({ agentMaxIterations: 0 })).toThrow(HarnessConfigError)
+  expect(() => defineHarness().defaults({ agentMaxIterations: 1.5 })).toThrow(HarnessConfigError)
+  expect(() => agentWith(0)).toThrow(HarnessConfigError)
+  expect(() => agentWith(1.5)).toThrow(HarnessConfigError)
 })
 
 it('lets prepareStep switch model aliases and restrict active tools', async () => {

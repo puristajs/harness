@@ -135,7 +135,7 @@ tokens, raw headers, or attachments.
 - code: `AGENT_LOOP_BUDGET_EXCEEDED`
 - category: `validation`
 - retriable: `false`
-- when: default loop iterations > `agentMaxIterations`.
+- when: default loop iterations exceed the effective agent budget (`agent.maxSteps` when configured, otherwise `defaults.agentMaxIterations`).
 - meta: `agent_id: string`, `reason: 'iterations_exceeded'`, `limit: number`.
 
 ### `DelegationPolicyError`

@@ -178,7 +178,7 @@ must not start with an unsupported adapter combination.
 
 ```ts
 interface HarnessDefaults {
-  /** Max iterations of the default agent loop. Locked default: 16. */
+  /** Max iterations of the default agent loop. Locked default: 16; positive integer, no hard upper cap. */
   agentMaxIterations?: number
   /** Per-run wall-clock timeout in ms. Default: 600_000 (10 min). 0 disables; negative rejected. */
   runTimeoutMs?: number
@@ -374,7 +374,7 @@ interface AgentDefinition<
   skills?: readonly (keyof S['skills'] & string)[]
   permissions?: AgentPermissions
   onPermission?: OnPermission
-  maxSteps?: number                           // default 16, max 64
+  maxSteps?: number                           // default 16; positive integer, no hard upper cap
   prepareStep?: AgentPrepareStep<S, z.infer<I>>
   stopWhen?: AgentStopWhen<S, z.infer<I>>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
@@ -389,7 +389,7 @@ Cross-key constraints are enforced by the type system; harness additionally re-c
 - Every entry of `skills` MUST reference a key from `.skills(...)`.
 - If `builtinTools` is an array, every entry MUST be one of `'bash'|'read'|'write'|'edit'|'glob'|'grep'|'list'`; unknown name → `HarnessConfigError`.
 - If `permissions.bash` is set but the configured sandbox's executor will be unavailable at harness, the bash policy is still parsed but warning-logged (permissions for an unavailable tool are no-ops).
-- `maxSteps`: positive integer, ≤64; otherwise `HarnessConfigError`.
+- `maxSteps`: positive integer with no hard upper cap; otherwise `HarnessConfigError`.
 - For agents WITHOUT a custom handler: the referenced model alias's `capabilities` MUST include `'object'`. If the agent declares any `tools` OR has any built-in tools enabled, the alias MUST additionally include `'tool_use'`. Violation → `HarnessConfigError{meta.reason:'agent_model_capability_mismatch'}`.
 
 ### `.workflows(workflows)`
@@ -453,7 +453,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 8. Default-loop agents need `'object'` capability on their alias; `'tool_use'` if any custom tools or any built-in tools enabled — checked in `.agents()`.
 9. `defaults.historyWindow`: `undefined`/`0`/positive int OK; negative → `HarnessConfigError`. Same rules apply to `InvokeOptions.historyWindow` (negative throws `ValidationError{where:'invoke_options'}`).
 10. `defaults.maxParallelToolCalls` must be a positive integer. `1` forces sequential local execution of a model-returned tool batch.
-11. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set MUST be in `[1, 64]`.
+11. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set and `defaults.agentMaxIterations` if set MUST be positive integers. Explicit loop budgets have no hard upper cap.
 12. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
 13. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
 14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.

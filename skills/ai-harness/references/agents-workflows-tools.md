@@ -38,7 +38,7 @@ Default agent loop requirements:
 - the model alias needs `tool_use` when the agent has custom tools or enabled built-in tools
 - output is validated after the model returns
 - multiple tool calls returned by the same model response execute concurrently up to `defaults.maxParallelToolCalls`, with results returned to the next model call in the original call order
-- `maxSteps` defaults from harness defaults and must stay bounded
+- `maxSteps` defaults from harness defaults; both are positive integer budgets with no hidden upper cap
 - `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
 - `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
 

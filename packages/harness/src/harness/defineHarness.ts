@@ -83,7 +83,10 @@ export interface TelemetryOptions {
 
 /** Default harness budgets and execution behavior. */
 export interface HarnessDefaults {
-  /** Default maximum iterations for the built-in agent loop. Default: `16`. */
+  /**
+   * Default maximum iterations for the built-in agent loop. Default: `16`.
+   * Must be a positive integer; explicit values are not otherwise capped.
+   */
   agentMaxIterations?: number
   /** Per-run timeout in milliseconds. `0` disables. Default: `600_000`. */
   runTimeoutMs?: number
@@ -752,6 +755,11 @@ export interface AgentDefinition<
   skills?: readonly (keyof NonNullable<S['skills']> & string)[]
   permissions?: AgentPermissions
   onPermission?: OnPermission
+  /**
+   * Maximum model iterations for this default-loop agent. Falls back to
+   * `defaults.agentMaxIterations`. Must be a positive integer; explicit values
+   * are not otherwise capped.
+   */
   maxSteps?: number
   /**
    * Optional hook for per-round loop control in the default agent loop.
@@ -1103,6 +1111,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (defaults.maxParallelToolCalls !== undefined && (!Number.isInteger(defaults.maxParallelToolCalls) || defaults.maxParallelToolCalls < 1)) {
       throw new HarnessConfigError('maxParallelToolCalls must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.maxParallelToolCalls' })
     }
+    if (defaults.agentMaxIterations !== undefined && (!Number.isInteger(defaults.agentMaxIterations) || defaults.agentMaxIterations < 1)) {
+      throw new HarnessConfigError('agentMaxIterations must be a positive integer', { reason: 'invalid_defaults', path: 'defaults.agentMaxIterations' })
+    }
     validateDelegationBudget(defaults.delegation?.maxChildAgentCalls, 'defaults.delegation.maxChildAgentCalls', { min: 0 })
     validateDelegationBudget(defaults.delegation?.maxParallelChildAgentCalls, 'defaults.delegation.maxParallelChildAgentCalls', { min: 1 })
     validateDelegationBudget(defaults.delegation?.maxDepth, 'defaults.delegation.maxDepth', { min: 0 })
@@ -1145,6 +1156,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const resolved = typeof agents === 'function'
       ? agents({ agent: (definition) => definition })
       : agents
+    this.validateAgentStepBudgets(resolved)
     this.validateAgentSkillReferences(resolved)
     return this.clone({ agents: resolved }) as unknown as HarnessBuilder<any>
   }
@@ -1309,6 +1321,18 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
             id: skillId
           })
         }
+      }
+    }
+  }
+
+  private validateAgentStepBudgets(agents: Record<string, AgentDefinition<any, any, any>>): void {
+    for (const [agentId, agent] of Object.entries(agents)) {
+      if (agent.maxSteps !== undefined && (!Number.isInteger(agent.maxSteps) || agent.maxSteps < 1)) {
+        throw new HarnessConfigError('agent.maxSteps must be a positive integer', {
+          reason: 'invalid_agent',
+          path: `agents.${agentId}.maxSteps`,
+          id: agentId
+        })
       }
     }
   }

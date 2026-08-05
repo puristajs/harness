@@ -26,7 +26,7 @@ interface AgentDefinition<
   permissions?: AgentPermissions
   onPermission?: OnPermission
 
-  maxSteps?: number                                             // default 16, max 64
+  maxSteps?: number                                             // default 16; positive integer, no hard upper cap
   prepareStep?: (ctx: AgentPrepareStepContext<S, z.infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
   stopWhen?: (ctx: AgentStopWhenContext<S, z.infer<I>>) => boolean | Promise<boolean>
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // escape hatch
@@ -165,6 +165,11 @@ When `handler` is undefined, the harness executes this algorithm:
 7. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
 
 ### Loop controls
+
+`maxSteps` overrides `defaults.agentMaxIterations` for one default-loop agent.
+Both values must be positive integers. The harness does not silently clamp an
+explicit budget: callers choose the finite iteration limit, while the existing
+run and model timeouts remain independent safety bounds.
 
 `prepareStep` and `stopWhen` customize the built-in loop without requiring a full
 custom handler. Use them for bounded routing decisions: switch to a cheaper

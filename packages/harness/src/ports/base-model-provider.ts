@@ -245,11 +245,21 @@ export abstract class BaseModelProvider implements ModelProvider {
       let emitted = false
       while (true) {
         const next = this.withTimeout(req, method)
+        const iterator = fn(next.req)[Symbol.asyncIterator]()
         try {
-          for await (const chunk of fn(next.req)) {
+          while (true) {
+            // A provider iterator is not required to promptly observe an
+            // aborted signal. Race every pending pull so the configured model
+            // deadline remains terminal even for a non-cooperative stream.
+            const pull = iterator.next()
+            pull.catch(() => undefined)
+            const item = await (next.timeoutPromise
+              ? Promise.race([pull, next.timeoutPromise])
+              : pull)
+            if (item.done) break
             next.req.signal.throwIfAborted()
             emitted = true
-            yield chunk
+            yield item.value
           }
           this.telemetry?.recordHistogram('harness.model.duration', (Date.now() - started) / 1000, attrs)
           return
@@ -285,6 +295,10 @@ export abstract class BaseModelProvider implements ModelProvider {
           })
           throw finalError
         } finally {
+          // Do not await iterator cleanup: a non-cooperative provider may
+          // also leave return() pending after it ignored the abort signal.
+          const close = iterator.return?.()
+          if (close) void close.catch(() => undefined)
           next.cleanup()
         }
       }

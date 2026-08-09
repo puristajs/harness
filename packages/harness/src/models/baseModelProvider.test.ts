@@ -43,6 +43,8 @@ class TestStreamProvider extends BaseModelProvider {
   public hangsBeforeFirstChunkMs: number[] = []
   /** Sleeps (without observing the signal) between the two chunks. */
   public hangBetweenChunksMs = 0
+  /** Never yields or observes abort. Models a non-cooperative provider iterator. */
+  public neverSettles = false
   public attempts = 0
 
   constructor(opts: { timeoutMs?: number; telemetry?: TelemetryShim; logger?: Logger } = {}) {
@@ -51,6 +53,9 @@ class TestStreamProvider extends BaseModelProvider {
 
   protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
     this.attempts += 1
+    if (this.neverSettles) {
+      await new Promise<never>(() => undefined)
+    }
     const hangMs = this.hangsBeforeFirstChunkMs.shift()
     if (hangMs) {
       await new Promise((resolve) => setTimeout(resolve, hangMs))
@@ -648,6 +653,22 @@ describe('BaseModelProvider', () => {
     }))).rejects.toSatisfy((error: unknown) => {
       expect(error).toBeInstanceOf(OperationTimeoutError)
       expect((error as OperationTimeoutError).meta).toMatchObject({ scope: 'model' })
+      return true
+    })
+  })
+
+  it('enforces the stream deadline when a provider iterator ignores abort', async () => {
+    const provider = new TestStreamProvider({ timeoutMs: 10 })
+    provider.neverSettles = true
+
+    await expect(collect(provider.textStream({
+      model: 'm',
+      messages: [],
+      defaults: { retry: false },
+      signal: new AbortController().signal
+    }))).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(OperationTimeoutError)
+      expect((error as OperationTimeoutError).meta).toMatchObject({ scope: 'model', timeout_ms: 10 })
       return true
     })
   })

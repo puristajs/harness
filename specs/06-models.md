@@ -118,6 +118,13 @@ adapters disable hidden official-SDK retries by default where the SDK supports
 that because long `Retry-After` sleeps must be visible to harness policy. Users
 may still pass explicit SDK retry options through provider factory options.
 
+For every model operation, `BaseModelProvider` races provider work against the
+effective abort signal. For streams it races each pending iterator pull, so a
+model deadline or caller cancellation reaches a terminal harness error even if
+an adapter ignores `AbortSignal`. The underlying provider work may continue in
+the process until that adapter cooperates; adapters SHOULD still propagate and
+observe `req.signal` to release provider-side resources promptly.
+
 ```ts
 interface ModelProvider {
   readonly id: string

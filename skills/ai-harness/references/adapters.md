@@ -143,6 +143,9 @@ Adapter mapping checklist:
 - pass `req.call.providerOptions` through to provider-specific SDK options
 - let `BaseModelProvider` own retry, timeouts, provider error normalization,
   active/deferred retry classification, and retry telemetry
+- observe `req.signal` and release SDK resources promptly; the base class
+  terminalizes callers even for non-cooperative provider work, but cannot
+  force-stop in-process SDK work
 - disable hidden official-SDK retry by default when the SDK exposes a stable
   option, unless the user explicitly passes provider-specific retry options
 - expose `genAiSystem` for OpenTelemetry semantic conventions

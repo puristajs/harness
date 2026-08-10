@@ -204,6 +204,11 @@ for background research workflows.
 explicit value is honored as configured rather than silently capped; pair large
 budgets with appropriate run and model timeouts.
 
+`BaseModelProvider` races each model operation (and each pending stream chunk)
+against its effective signal. A model timeout or caller cancellation is
+therefore terminal even when a provider SDK does not promptly observe abort;
+the SDK work itself can continue in the background until it cooperates.
+
 `defaults.delegation` controls workflow-local child-agent calls through
 `ctx.agents`. Delegation is disabled by default. Prefer enabling it per
 workflow with `workflow.delegation`; use `defaults.delegation.enabled: true`

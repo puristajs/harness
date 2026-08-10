@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { HarnessConfigError, ModelError, OperationCancelledError, OperationTimeoutError, serializeError } from '../errors/index.js'
 import { JsonLogger, type Logger } from '../logger/index.js'
 import { BaseModelProvider } from '../ports/base-model-provider.js'
-import type { ObjectRequest, ObjectResponse, TextRequest, TextStreamChunk } from '../ports/model-provider.js'
+import type { ObjectRequest, ObjectResponse, ObjectStreamChunk, TextRequest, TextStreamChunk } from '../ports/model-provider.js'
 import type { TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 
@@ -11,6 +11,7 @@ class TestProvider extends BaseModelProvider {
   public error: unknown
   public errors: unknown[] = []
   public delayMs = 0
+  public neverSettles = false
   public calls = 0
 
   constructor(opts: { timeoutMs?: number; telemetry?: TelemetryShim; logger?: Logger } = {}) {
@@ -18,6 +19,9 @@ class TestProvider extends BaseModelProvider {
   }
 
   protected override async doObject<T extends import('./json.js').JsonValue = import('./json.js').JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+    if (this.neverSettles) {
+      await new Promise<never>(() => undefined)
+    }
     if (this.delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.delayMs))
     }
@@ -43,8 +47,8 @@ class TestStreamProvider extends BaseModelProvider {
   public hangsBeforeFirstChunkMs: number[] = []
   /** Sleeps (without observing the signal) between the two chunks. */
   public hangBetweenChunksMs = 0
-  /** Never yields or observes abort. Models a non-cooperative provider iterator. */
-  public neverSettles = false
+  /** Number of attempts that never yield or observe abort. */
+  public nonCooperativeAttempts = 0
   public attempts = 0
 
   constructor(opts: { timeoutMs?: number; telemetry?: TelemetryShim; logger?: Logger } = {}) {
@@ -53,7 +57,8 @@ class TestStreamProvider extends BaseModelProvider {
 
   protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
     this.attempts += 1
-    if (this.neverSettles) {
+    if (this.nonCooperativeAttempts > 0) {
+      this.nonCooperativeAttempts -= 1
       await new Promise<never>(() => undefined)
     }
     const hangMs = this.hangsBeforeFirstChunkMs.shift()
@@ -71,10 +76,20 @@ class TestStreamProvider extends BaseModelProvider {
     yield { kind: 'delta', text: 'second' }
     yield { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' }
   }
+
+  protected override async *doObjectStream<T extends import('./json.js').JsonValue = import('./json.js').JsonValue>(_req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+    this.attempts += 1
+    if (this.nonCooperativeAttempts > 0) {
+      this.nonCooperativeAttempts -= 1
+      await new Promise<never>(() => undefined)
+    }
+    yield { kind: 'partial', partial: {} }
+    yield { kind: 'finish', object: { ok: true } as T, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' }
+  }
 }
 
-async function collect(stream: AsyncIterable<TextStreamChunk>): Promise<TextStreamChunk[]> {
-  const chunks: TextStreamChunk[] = []
+async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
+  const chunks: T[] = []
   for await (const chunk of stream) chunks.push(chunk)
   return chunks
 }
@@ -137,6 +152,26 @@ describe('BaseModelProvider', () => {
       schema: {},
       signal: new AbortController().signal
     })).rejects.toBeInstanceOf(OperationTimeoutError)
+  })
+
+  it('enforces caller cancellation even when adapter work does not finish', async () => {
+    const provider = new TestProvider()
+    provider.neverSettles = true
+    const controller = new AbortController()
+    const outcome = provider.object({
+      model: 'm',
+      messages: [],
+      defaults: { retry: false },
+      schema: {},
+      signal: controller.signal
+    }).then(() => undefined, (error: unknown) => error)
+
+    controller.abort()
+
+    await expect(Promise.race([
+      outcome,
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100))
+    ])).resolves.toBeInstanceOf(OperationCancelledError)
   })
 
   it('actively retries short retriable model failures', async () => {
@@ -659,7 +694,7 @@ describe('BaseModelProvider', () => {
 
   it('enforces the stream deadline when a provider iterator ignores abort', async () => {
     const provider = new TestStreamProvider({ timeoutMs: 10 })
-    provider.neverSettles = true
+    provider.nonCooperativeAttempts = 1
 
     await expect(collect(provider.textStream({
       model: 'm',
@@ -671,6 +706,57 @@ describe('BaseModelProvider', () => {
       expect((error as OperationTimeoutError).meta).toMatchObject({ scope: 'model', timeout_ms: 10 })
       return true
     })
+  })
+
+  it('enforces the object-stream deadline when a provider iterator ignores abort', async () => {
+    const provider = new TestStreamProvider({ timeoutMs: 10 })
+    provider.nonCooperativeAttempts = 1
+
+    await expect(collect(provider.objectStream({
+      model: 'm',
+      messages: [],
+      defaults: { retry: false },
+      schema: {},
+      signal: new AbortController().signal
+    }))).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(OperationTimeoutError)
+      expect((error as OperationTimeoutError).meta).toMatchObject({ scope: 'model', timeout_ms: 10 })
+      return true
+    })
+  })
+
+  it('enforces cancellation when a provider stream iterator ignores abort', async () => {
+    const provider = new TestStreamProvider()
+    provider.nonCooperativeAttempts = 1
+    const controller = new AbortController()
+    const outcome = collect(provider.textStream({
+      model: 'm',
+      messages: [],
+      defaults: { retry: false },
+      signal: controller.signal
+    })).then(() => undefined, (error: unknown) => error)
+
+    controller.abort()
+
+    await expect(Promise.race([
+      outcome,
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100))
+    ])).resolves.toBeInstanceOf(OperationCancelledError)
+  })
+
+  it('retries a non-cooperative stream timeout before the first chunk', async () => {
+    const provider = new TestStreamProvider({ timeoutMs: 10 })
+    provider.nonCooperativeAttempts = 1
+
+    const chunks = await collect(provider.textStream({
+      model: 'm',
+      messages: [],
+      defaults: { retry: { maxAttempts: 2, minDelayMs: 1, maxDelayMs: 1, maxActiveDelayMs: 10, maxActiveElapsedMs: 1_000 } },
+      signal: new AbortController().signal
+    }))
+
+    expect(provider.attempts).toBe(2)
+    expect(chunks.at(-1)).toMatchObject({ kind: 'finish', finishReason: 'stop' })
   })
 
   it('retries a stream timeout before the first chunk', async () => {

@@ -1,7 +1,12 @@
 import { ModelCapabilityError, ModelError } from '../errors/index.js'
 import {
+  ATTR_ERROR_TYPE,
+  ATTR_GEN_AI_CONVERSATION_ID,
+  ATTR_GEN_AI_OUTPUT_TYPE,
   ATTR_GEN_AI_REQUEST_MODEL,
+  ATTR_GEN_AI_REQUEST_STREAM,
   ATTR_GEN_AI_RESPONSE_FINISH_REASONS,
+  ATTR_GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK,
   ATTR_GEN_AI_SYSTEM,
   ATTR_GEN_AI_TOKEN_TYPE,
   ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
@@ -9,6 +14,8 @@ import {
   ATTR_GEN_AI_USAGE_INPUT_TOKENS,
   ATTR_GEN_AI_USAGE_OUTPUT_TOKENS,
   ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
+  GEN_AI_OUTPUT_TYPE_VALUE_JSON,
+  GEN_AI_OUTPUT_TYPE_VALUE_TEXT,
   GEN_AI_TOKEN_TYPE_VALUE_INPUT,
   GEN_AI_TOKEN_TYPE_VALUE_OUTPUT
 } from '@opentelemetry/semantic-conventions/incubating'
@@ -32,7 +39,7 @@ import type {
   TokenUsage,
   ToolCallSpec
 } from '../ports/model-provider.js'
-import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
+import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import type { JsonValue } from './json.js'
 import { pumpStreamThroughSpan } from './stream-pump.js'
 
@@ -311,24 +318,42 @@ function withModelStreamSpan<T>(
   ctx: ModelInvokeContext | undefined,
   fn: () => AsyncIterable<T>
 ): AsyncIterable<T> {
-  if (!options.telemetry) return fn()
+  const telemetry = options.telemetry
+  if (!telemetry) return fn()
   const started = Date.now()
   const attrs = modelSpanAttrs(options, aliasKey, alias, method, ctx)
-  return pumpStreamThroughSpan(options.telemetry, `chat ${alias.model}`, attrs, async function* (span) {
+  return pumpStreamThroughSpan(telemetry, modelSpanName(method, alias.model), attrs, async function* (span) {
     let lastUsage: TokenUsage | undefined
     let lastFinishReason: string | undefined
-    for await (const chunk of fn()) {
-      const current = chunk as { usage?: typeof lastUsage; finishReason?: string }
-      if (current.usage) lastUsage = current.usage
-      if (current.finishReason) lastFinishReason = current.finishReason
-      yield chunk
+    let firstChunkAt: number | undefined
+    let operationError: unknown
+    try {
+      for await (const chunk of fn()) {
+        if (firstChunkAt === undefined) {
+          firstChunkAt = Date.now()
+          const elapsed = (firstChunkAt - started) / 1000
+          span.setAttribute(ATTR_GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK, elapsed)
+          telemetry.recordHistogram('gen_ai.client.operation.time_to_first_chunk', elapsed, attrs)
+        }
+        const current = chunk as { usage?: typeof lastUsage; finishReason?: string }
+        if (current.usage) lastUsage = current.usage
+        if (current.finishReason) lastFinishReason = current.finishReason
+        yield chunk
+      }
+      if (lastUsage) {
+        span.setAttributes(tokenUsageSpanAttrs(lastUsage))
+        recordTokenUsageMetrics(telemetry, attrs, lastUsage)
+      }
+      if (lastFinishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [lastFinishReason])
+    } catch (error) {
+      operationError = error
+      throw error
+    } finally {
+      telemetry.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, {
+        ...attrs,
+        ...(operationError === undefined ? {} : { [ATTR_ERROR_TYPE]: telemetryErrorType(operationError) })
+      })
     }
-    if (lastUsage) {
-      span.setAttributes(tokenUsageSpanAttrs(lastUsage))
-      recordTokenUsageMetrics(options.telemetry, attrs, lastUsage)
-    }
-    if (lastFinishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [lastFinishReason])
-    options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
   })
 }
 
@@ -340,21 +365,32 @@ async function withModelSpan<T>(
   ctx: ModelInvokeContext | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
-  if (!options.telemetry) return fn()
+  const telemetry = options.telemetry
+  if (!telemetry) return fn()
   const started = Date.now()
   const attrs = modelSpanAttrs(options, aliasKey, alias, method, ctx)
 
-  return options.telemetry.span(`chat ${alias.model}`, attrs, async (span) => {
-    const result = await fn()
-    const usage = (result as { usage?: TokenUsage; finishReason?: string }).usage
-    const finishReason = (result as { finishReason?: string }).finishReason
-    if (usage) {
-      span.setAttributes(tokenUsageSpanAttrs(usage))
-      recordTokenUsageMetrics(options.telemetry, attrs, usage)
+  return telemetry.span(modelSpanName(method, alias.model), attrs, async (span) => {
+    let operationError: unknown
+    try {
+      const result = await fn()
+      const usage = (result as { usage?: TokenUsage; finishReason?: string }).usage
+      const finishReason = (result as { finishReason?: string }).finishReason
+      if (usage) {
+        span.setAttributes(tokenUsageSpanAttrs(usage))
+        recordTokenUsageMetrics(telemetry, attrs, usage)
+      }
+      if (finishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [finishReason])
+      return result
+    } catch (error) {
+      operationError = error
+      throw error
+    } finally {
+      telemetry.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, {
+        ...attrs,
+        ...(operationError === undefined ? {} : { [ATTR_ERROR_TYPE]: telemetryErrorType(operationError) })
+      })
     }
-    if (finishReason) span.setAttribute(ATTR_GEN_AI_RESPONSE_FINISH_REASONS, [finishReason])
-    options.telemetry?.recordHistogram('gen_ai.client.operation.duration', (Date.now() - started) / 1000, attrs)
-    return result
   })
 }
 
@@ -405,10 +441,27 @@ function modelSpanAttrs(
     [ATTR_GEN_AI_SYSTEM]: alias.provider.genAiSystem,
     'gen_ai.provider.name': alias.provider.genAiSystem,
     [ATTR_GEN_AI_REQUEST_MODEL]: alias.model,
+    ...(ctx?.sessionId ? { [ATTR_GEN_AI_CONVERSATION_ID]: ctx.sessionId } : {}),
+    ...(isStreamingCapability(method) ? { [ATTR_GEN_AI_REQUEST_STREAM]: true } : {}),
+    ...(modelOutputType(method) ? { [ATTR_GEN_AI_OUTPUT_TYPE]: modelOutputType(method) } : {}),
     'model.provider': alias.provider.id,
     'llm.provider': alias.provider.genAiSystem,
     'llm.model_name': alias.model
   }
+}
+
+function modelSpanName(method: ModelCapability, model: string): string {
+  return `${genAiOperationName(method) ?? method} ${model}`
+}
+
+function isStreamingCapability(method: ModelCapability): boolean {
+  return method === 'text_stream' || method === 'object_stream'
+}
+
+function modelOutputType(method: ModelCapability): string | undefined {
+  if (method === 'text' || method === 'text_stream') return GEN_AI_OUTPUT_TYPE_VALUE_TEXT
+  if (method === 'object' || method === 'object_stream') return GEN_AI_OUTPUT_TYPE_VALUE_JSON
+  return undefined
 }
 
 function genAiOperationName(method: ModelCapability): string | undefined {

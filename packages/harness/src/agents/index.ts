@@ -1,7 +1,9 @@
 import { z } from 'zod'
 import {
+  ATTR_ERROR_TYPE,
   ATTR_GEN_AI_AGENT_ID,
   ATTR_GEN_AI_AGENT_NAME,
+  ATTR_GEN_AI_CONVERSATION_ID,
   ATTR_GEN_AI_TOOL_CALL_ID,
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE
@@ -14,7 +16,7 @@ import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, GovernanceCo
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
-import { createMetrics, type Metrics, type TelemetryShim } from '../telemetry/index.js'
+import { createMetrics, telemetryErrorType, type Metrics, type TelemetryShim } from '../telemetry/index.js'
 import { buildSkillIndex, mountSkillsOnce } from '../skills/index.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, getBuiltinToolSpecs, invokeBuiltinTool } from '../tools/index.js'
 import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
@@ -156,6 +158,7 @@ export async function runDefaultAgent(args: {
     'metadata.agent_id': args.agentId,
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_AGENT_ID]: args.agentId,
+    [ATTR_GEN_AI_CONVERSATION_ID]: args.sessionId,
     'harness.agent.model': args.modelAlias ?? args.agent.model,
     ...(args.modelAlias && args.modelAlias !== args.agent.model ? { 'harness.agent.default_model': args.agent.model } : {}),
     'harness.agent.has_handler': args.agent.handler !== undefined,
@@ -166,11 +169,20 @@ export async function runDefaultAgent(args: {
   // `read` tool loads `/skills/<name>/SKILL.md`. Only the count is emitted —
   // skill names stay out of telemetry.
   const activatedSkills = new Set<string>()
+  const started = Date.now()
+  let operationError: unknown
   return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, async (span) => {
     try {
       return await runDefaultAgentInner({ ...args, metrics, activatedSkills })
+    } catch (error) {
+      operationError = error
+      throw error
     } finally {
       span.setAttribute('harness.agent.skills_activated', activatedSkills.size)
+      args.telemetry.recordHistogram('gen_ai.invoke_agent.duration', (Date.now() - started) / 1000, {
+        ...agentAttrs,
+        ...(operationError === undefined ? {} : { [ATTR_ERROR_TYPE]: telemetryErrorType(operationError) })
+      })
     }
   })
 }
@@ -1028,9 +1040,10 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
     'openinference.span.kind': 'TOOL',
     'tool.name': toolId,
     'tool.call.id': callId,
+    [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_TOOL_NAME]: toolId,
     [ATTR_GEN_AI_TOOL_CALL_ID]: callId,
-    [ATTR_GEN_AI_TOOL_TYPE]: toolKind,
+    [ATTR_GEN_AI_TOOL_TYPE]: genAiToolType(toolKind),
     ...(mcpAttrs ? {
       'harness.mcp.server': mcpAttrs.server,
       'harness.mcp.tool': mcpAttrs.upstreamTool,
@@ -1046,6 +1059,7 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
     } catch (error) {
       const normalized = normalizeToolFailure(toolId, error, toolKind)
       durationAttrs = {
+        [ATTR_ERROR_TYPE]: telemetryErrorType(normalized),
         'harness.error.code': normalized.code,
         'harness.error.category': normalized.category,
         'harness.error.retriable': normalized.retriable
@@ -1053,9 +1067,14 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
       throw normalized
     } finally {
       args.telemetry?.recordHistogram('harness.tool.duration', (Date.now() - started) / 1000, { ...attrs, ...durationAttrs })
+      args.telemetry?.recordHistogram('gen_ai.execute_tool.duration', (Date.now() - started) / 1000, { ...attrs, ...durationAttrs })
     }
   }
   return args.telemetry ? args.telemetry.span(`execute_tool ${toolId}`, attrs, execute) : execute()
+}
+
+function genAiToolType(toolKind: ToolKind): 'function' | 'extension' {
+  return toolKind === 'mcp_stdio' || toolKind === 'mcp_http' ? 'extension' : 'function'
 }
 
 function normalizeToolFailure(toolId: string, error: unknown, toolKind: ToolKind = toolId in BUILTIN_ALIAS_TO_CANONICAL ? 'builtin' : 'ts'): HarnessError {

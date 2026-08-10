@@ -71,7 +71,7 @@ Important emitted spans:
 - `harness.session.prompt`
 - `harness.workflow.run`
 - `invoke_agent {agent.name}`
-- `chat {request.model}` for model calls in the current implementation
+- `{operation} {request.model}` for model calls (for example `chat model-a` or `embeddings model-b`)
 - `execute_tool {tool.name}`
 - `harness.sandbox.exec`
 - `harness.state.op`
@@ -82,6 +82,10 @@ Every relevant span should carry `harness.name`, `harness.session.id`, `harness.
 Common instruments:
 - `gen_ai.client.token.usage`
 - `gen_ai.client.operation.duration`
+- `gen_ai.client.operation.time_to_first_chunk` for streamed model calls
+- `gen_ai.invoke_workflow.duration`
+- `gen_ai.invoke_agent.duration`
+- `gen_ai.execute_tool.duration`
 - `harness.tool.duration`
 - `harness.run.duration`
 - `harness.run.errors`
@@ -96,6 +100,12 @@ cache-read, cache-creation, and reasoning token details are included when the
 provider reports them. The `gen_ai.client.token.usage` metric is emitted in
 addition because production trace backends may sample or drop spans while still
 aggregating metrics.
+
+Successful harness spans intentionally leave OpenTelemetry status `UNSET`.
+Errors set status `ERROR`; the same low-cardinality `error.type` is attached to
+the failed span and its matching duration metric. Timeouts and cancellations
+therefore remain traceable end to end without attaching prompts, tool inputs,
+or provider error content.
 
 Handler code should use the scoped `ctx.metrics` helper for application-owned
 measurements:

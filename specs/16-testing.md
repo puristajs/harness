@@ -167,7 +167,7 @@ The harness package additionally has integration tests:
   1. Missing `object`, `object_stream`, `embeddings`, or `rerank` capability fails before provider I/O.
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
   3. Type tests assert capability-projected handles: absent operation capabilities remove methods; absent marker capabilities reject `tools`, tool-role messages, and unsupported content parts.
-  4. `FakeModelProvider` covers text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
+  4. `FakeModelProvider` and `BaseModelProvider` tests cover text, object, text stream, object stream, multimodal capability checks, embeddings, reranking, abort, timeout, non-cooperative provider work/iterators, provider errors, malformed structured output, bad embedding counts, and bad rerank ids.
   5. Active model retry succeeds after a short retriable failure; `retry:false`
      throws after one attempt; long provider `Retry-After` produces
      `ModelError{meta.retryKind:'deferred'}` without sleeping; streaming retry

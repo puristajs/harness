@@ -1,2 +1,2 @@
 /** Harness package version, used as the OpenTelemetry instrumentation scope version. */
-export const HARNESS_VERSION = '1.7.2'
+export const HARNESS_VERSION = '1.7.3'

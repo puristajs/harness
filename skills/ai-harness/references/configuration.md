@@ -118,6 +118,11 @@ does not poll the signal. Logs and spans expose normalized harness errors;
 timeout/cancel paths include `harness.error.scope` and timeout paths include
 `harness.error.timeout_ms`.
 
+`BaseModelProvider` races each model operation and pending stream chunk against
+the effective signal, so a model timeout or caller cancellation is terminal
+even if a provider SDK ignores abort. The SDK work itself can continue until it
+observes `req.signal`, so adapters should still propagate that signal promptly.
+
 ## State, Sandbox, Runtime, And Requirements
 Defaults:
 - state: `InMemoryStateStore`

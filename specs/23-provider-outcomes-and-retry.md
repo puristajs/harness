@@ -127,6 +127,13 @@ cancellation error. This applies to streaming as well, so a stream timeout
 before the first chunk stays retry-eligible. Arming the timeout MUST NOT leave
 an unhandled promise rejection when the operation outlives the timeout.
 
+Every model operation MUST terminalize on its effective abort signal even when
+an adapter ignores it. For streams, `BaseModelProvider` races each pending
+iterator pull against that signal; timeout and caller cancellation therefore do
+not wait for another provider chunk. Best-effort iterator cleanup MUST NOT
+delay or mask the terminal harness error. Non-cooperative in-process provider
+work may still continue until the adapter or SDK observes the signal.
+
 Non-retry failures include validation, permissions, unsupported capabilities,
 auth/4xx request errors other than 408/409/429, context length errors,
 refusal/content-filter outcomes, malformed structured JSON after a provider
@@ -275,7 +282,9 @@ No model content or sensitive provider headers may be emitted.
 - With `longRetry: 'defer'`, a provider delay above `maxDeferredDelayMs`
   produces `retryKind:'none'`.
 - Streaming retries occur only before the first yielded chunk; a base-enforced
-  stream timeout normalizes as `OperationTimeoutError{scope:'model'}`.
+  stream timeout normalizes as `OperationTimeoutError{scope:'model'}` even
+  when the provider iterator ignores abort; caller cancellation is terminal
+  under the same condition.
 - Abort during a backoff sleep surfaces `OperationCancelledError`.
 - OpenAI, Anthropic, Bedrock, and Azure adapters map all tabled finish reasons.
 - Sanitized errors and telemetry include retry metadata and omit sensitive

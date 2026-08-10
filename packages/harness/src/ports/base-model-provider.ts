@@ -192,7 +192,7 @@ export abstract class BaseModelProvider implements ModelProvider {
         const next = this.withTimeout(req, method)
         try {
           const operation = fn(next.req)
-          const result = await (next.timeoutPromise ? Promise.race([operation, next.timeoutPromise]) : operation)
+          const result = await Promise.race([operation, next.terminationPromise])
           this.telemetry?.recordHistogram('harness.model.duration', (Date.now() - started) / 1000, attrs)
           this.recordUsage(method, req.model, result)
           return result
@@ -245,11 +245,26 @@ export abstract class BaseModelProvider implements ModelProvider {
       let emitted = false
       while (true) {
         const next = this.withTimeout(req, method)
+        let iterator: AsyncIterator<T> | undefined
+        let completed = false
         try {
-          for await (const chunk of fn(next.req)) {
+          iterator = fn(next.req)[Symbol.asyncIterator]()
+          const activeIterator = iterator
+          while (true) {
+            // A provider iterator is not required to promptly observe an
+            // aborted signal. Race every pending pull so cancellation and the
+            // configured model deadline remain terminal even for a
+            // non-cooperative stream.
+            const pull = Promise.resolve().then(() => activeIterator.next())
+            pull.catch(() => undefined)
+            const item = await Promise.race([pull, next.terminationPromise])
+            if (item.done) {
+              completed = true
+              break
+            }
             next.req.signal.throwIfAborted()
             emitted = true
-            yield chunk
+            yield item.value
           }
           this.telemetry?.recordHistogram('harness.model.duration', (Date.now() - started) / 1000, attrs)
           return
@@ -285,6 +300,17 @@ export abstract class BaseModelProvider implements ModelProvider {
           })
           throw finalError
         } finally {
+          // Do not await iterator cleanup: a non-cooperative provider may
+          // also leave return() pending after it ignored the abort signal.
+          if (!completed) {
+            try {
+              const close = iterator?.return?.()
+              if (close) void close.catch(() => undefined)
+            } catch {
+              // Iterator cleanup is best effort and must not mask the terminal
+              // timeout, cancellation, or provider error.
+            }
+          }
           next.cleanup()
         }
       }
@@ -294,34 +320,37 @@ export abstract class BaseModelProvider implements ModelProvider {
     return pumpStreamThroughSpan(this.telemetry, `harness.model.${method}`, attrs, iterate)
   }
 
-  private withTimeout<T extends ProviderRequest>(req: T, method: ProviderMethod): { req: T; timeoutPromise?: Promise<never>; cleanup: () => void } {
-    if (!this.timeoutMs || this.timeoutMs <= 0) {
-      return { req, cleanup: () => undefined }
+  private withTimeout<T extends ProviderRequest>(req: T, method: ProviderMethod): { req: T; terminationPromise: Promise<never>; cleanup: () => void } {
+    const controller = this.timeoutMs && this.timeoutMs > 0 ? new AbortController() : undefined
+    const signal = controller?.signal ?? req.signal
+    const relay = controller ? () => controller.abort(req.signal.reason) : undefined
+    if (relay) {
+      req.signal.addEventListener('abort', relay, { once: true })
+      if (req.signal.aborted) relay()
     }
 
-    const controller = new AbortController()
-    const relay = () => controller.abort(req.signal.reason)
-    req.signal.addEventListener('abort', relay, { once: true })
-    if (req.signal.aborted) relay()
-    let rejectTimeout: ((error: OperationTimeoutError) => void) | undefined
-    const timeoutPromise = new Promise<never>((_, reject) => { rejectTimeout = reject })
-    // Streams never race against this promise (they rely on the relayed signal
-    // abort), and unary calls may settle through the operation branch of the
-    // race. Mark the rejection as handled so a firing timer can never surface
-    // as an unhandled promise rejection.
-    timeoutPromise.catch(() => undefined)
-    const timeout = setTimeout(() => {
-      const error = new OperationTimeoutError('Model call timed out.', { scope: 'model', timeout_ms: this.timeoutMs as number })
-      controller.abort(error)
-      rejectTimeout?.(error)
-    }, this.timeoutMs)
+    let rejectTermination: ((reason?: unknown) => void) | undefined
+    const terminationPromise = new Promise<never>((_, reject) => { rejectTermination = reject })
+    const rejectOnAbort = () => rejectTermination?.(signal.reason)
+    signal.addEventListener('abort', rejectOnAbort, { once: true })
+    if (signal.aborted) rejectOnAbort()
+    // Consumers can complete before their signal aborts. Keep a later abort
+    // from surfacing as an unhandled promise rejection.
+    terminationPromise.catch(() => undefined)
+
+    const timeout = controller
+      ? setTimeout(() => {
+          controller.abort(new OperationTimeoutError('Model call timed out.', { scope: 'model', timeout_ms: this.timeoutMs as number }))
+        }, this.timeoutMs)
+      : undefined
 
     return {
-      req: { ...req, signal: controller.signal },
-      timeoutPromise,
+      req: controller ? { ...req, signal } : req,
+      terminationPromise,
       cleanup: () => {
-        clearTimeout(timeout)
-        req.signal.removeEventListener('abort', relay)
+        if (timeout) clearTimeout(timeout)
+        if (relay) req.signal.removeEventListener('abort', relay)
+        signal.removeEventListener('abort', rejectOnAbort)
       }
     }
   }

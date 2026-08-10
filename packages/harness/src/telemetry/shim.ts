@@ -21,7 +21,7 @@ export interface Metrics {
 
 /** Minimal telemetry abstraction used by harness internals and integrations. */
 export interface TelemetryShim {
-  /** Creates a span, executes `fn`, and closes the span with success/error status. */
+  /** Creates a span, executes `fn`, records an error when it fails, and closes it. */
   span<T>(name: string, attrs: SpanAttrs, fn: (span: import('@opentelemetry/api').Span) => Promise<T>): Promise<T>
   /** Records a histogram value with attributes. */
   recordHistogram(name: string, value: number, attrs: SpanAttrs): void
@@ -46,6 +46,21 @@ function sanitizeAttrs(attrs: SpanAttrs): Record<string, AttrValue> {
   return out
 }
 
+/**
+ * Returns the low-cardinality error type shared by a failed span and its
+ * operation-duration metric.
+ *
+ * @example
+ * telemetry.recordHistogram('gen_ai.client.operation.duration', elapsed, {
+ *   'error.type': telemetryErrorType(error)
+ * })
+ */
+export function telemetryErrorType(error: unknown): string {
+  if (error instanceof HarnessError) return error.code
+  if (error instanceof Error && error.constructor.name) return error.constructor.name
+  return 'Error'
+}
+
 function errorAttributes(error: unknown): SpanAttrs {
   if (error instanceof HarnessError) {
     const meta = asRecord(error.meta)
@@ -66,17 +81,22 @@ function errorAttributes(error: unknown): SpanAttrs {
       'harness.error.model_provider_type': stringAttr(meta?.['providerType']),
       'harness.error.model_provider_param': stringAttr(meta?.['providerParam']),
       'harness.error.model_provider_request_id': stringAttr(meta?.['providerRequestId']),
-      'harness.error.model_provider_message': stringAttr(meta?.['providerMessage']),
       'harness.error.model_provider_body': providerBody
     }
   }
-  const name = error instanceof Error ? error.name : 'Error'
+  const name = telemetryErrorType(error)
   return {
     [ATTR_ERROR_TYPE]: name,
     'harness.error.code': name,
     'harness.error.category': 'internal',
     'harness.error.retriable': false
   }
+}
+
+function errorForTelemetry(error: unknown): Error {
+  // Provider and tool error messages can contain user content. Use the stable,
+  // low-cardinality classification for exception events and status descriptions.
+  return new Error(telemetryErrorType(error))
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -111,11 +131,12 @@ export class OtelTelemetryShim implements TelemetryShim {
     return this.tracer.startActiveSpan(name, { attributes: sanitizeAttrs(attrs) }, async (span) => {
       try {
         const result = await fn(span)
-        span.setStatus({ code: SpanStatusCode.OK })
+        // OTel semantic conventions require the status to stay UNSET when an
+        // operation succeeds. `OK` is reserved for explicit overrides.
         return result
       } catch (error) {
         span.setAttributes(sanitizeAttrs(errorAttributes(error)))
-        const recordedError = new Error(error instanceof Error ? error.message : String(error))
+        const recordedError = errorForTelemetry(error)
         span.recordException(recordedError)
         span.setStatus({ code: SpanStatusCode.ERROR, message: recordedError.message })
         throw error

@@ -1,8 +1,9 @@
 import { SpanStatusCode } from '@opentelemetry/api'
 import { expect, it } from 'vitest'
 
-import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
+import { RecordingTelemetry, runTelemetryFlowHarness } from './telemetryFlowHarness.js'
 import { OperationTimeoutError } from '../src/errors/index.js'
+import { createModelRegistry } from '../src/models/registry.js'
 
 it('emits a traceable session workflow agent model tool flow', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness()
@@ -25,14 +26,33 @@ it('emits a traceable session workflow agent model tool flow', async () => {
     'harness.session.id': 'telemetry-session',
     'harness.workflow.id': 'wf',
     'harness.agent.id': 'responder',
-    'gen_ai.tool.name': 'policy_lookup'
+    'gen_ai.tool.name': 'policy_lookup',
+    'gen_ai.agent.name': 'responder',
+    'gen_ai.tool.type': 'function'
   })
   expect(modelSpans.at(0)?.attrs).toMatchObject({
     'harness.model.alias': 'fast',
     'gen_ai.system': 'fake',
-    'gen_ai.request.model': 'fake'
+    'gen_ai.provider.name': 'fake',
+    'gen_ai.request.model': 'fake',
+    'gen_ai.conversation.id': 'telemetry-session',
+    'gen_ai.output.type': 'json'
   })
+  expect(workflowSpan?.attrs).toMatchObject({
+    'gen_ai.operation.name': 'invoke_workflow',
+    'gen_ai.workflow.name': 'wf',
+    'gen_ai.conversation.id': 'telemetry-session'
+  })
+  expect(agentSpan?.attrs).toMatchObject({ 'gen_ai.conversation.id': 'telemetry-session' })
+  expect(sessionSpan?.status).toBeUndefined()
+  expect(workflowSpan?.status).toBeUndefined()
   expect(modelSpans.at(1)?.attrs['gen_ai.usage.total_tokens']).toBe(3)
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.invoke_workflow.duration' }),
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.invoke_agent.duration' }),
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.execute_tool.duration' }),
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.client.operation.duration' })
+  ]))
 })
 
 it('marks failing spans with standard OTel error status and safe error attributes', async () => {
@@ -59,6 +79,79 @@ it('marks failing spans with standard OTel error status and safe error attribute
         'harness.error.category': 'tool',
         'harness.error.retriable': false
       })
+    }),
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'gen_ai.execute_tool.duration',
+      attrs: expect.objectContaining({
+        'harness.tool.id': 'policy_lookup',
+        'error.type': 'TOOL_ERROR'
+      })
+    })
+  ]))
+})
+
+it('tracks streamed model time to first chunk without recording content', async () => {
+  const telemetry = new RecordingTelemetry()
+  const models = createModelRegistry({
+    stream: {
+      provider: {
+        id: 'fake-provider',
+        genAiSystem: 'fake',
+        async *textStream() {
+          yield { delta: 'private response content' }
+        }
+      },
+      model: 'fake',
+      capabilities: ['text_stream'] as const
+    }
+  }, { telemetry, harnessName: 'telemetry-test' })
+
+  const chunks: unknown[] = []
+  for await (const chunk of models.stream.textStream({ messages: [] }, new AbortController().signal, { sessionId: 'telemetry-session' })) {
+    chunks.push(chunk)
+  }
+
+  expect(chunks).toEqual([{ delta: 'private response content' }])
+  const span = telemetry.spans.find((candidate) => candidate.name === 'chat fake')
+  expect(span?.attrs).toMatchObject({
+    'gen_ai.request.stream': true,
+    'gen_ai.output.type': 'text',
+    'gen_ai.response.time_to_first_chunk': expect.any(Number),
+    'gen_ai.conversation.id': 'telemetry-session'
+  })
+  expect(JSON.stringify(span?.attrs)).not.toContain('private response content')
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.client.operation.time_to_first_chunk' }),
+    expect.objectContaining({ kind: 'histogram', name: 'gen_ai.client.operation.duration' })
+  ]))
+})
+
+it('records failed model duration with the same error.type as its span', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness({ failModel: true })
+
+  await expect(session.workflows.wf.prompt('find the policy')).rejects.toThrow('provider response included user content')
+
+  const modelSpan = telemetry.spans.find((span) => span.name === 'chat fake')
+  expect(modelSpan?.status).toEqual({ code: SpanStatusCode.ERROR, message: 'Error' })
+  expect(modelSpan?.attrs['error.type']).toBe('Error')
+  expect(modelSpan?.exceptions).toEqual([expect.objectContaining({ message: 'Error' })])
+  expect(JSON.stringify(modelSpan?.exceptions)).not.toContain('provider response included user content')
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'gen_ai.client.operation.duration',
+      attrs: expect.objectContaining({ 'error.type': 'Error' })
+    }),
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'gen_ai.invoke_agent.duration',
+      attrs: expect.objectContaining({ 'error.type': 'Error' })
+    }),
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'gen_ai.invoke_workflow.duration',
+      attrs: expect.objectContaining({ 'error.type': 'Error' })
     })
   ]))
 })
@@ -92,6 +185,13 @@ it('records run timeout cancellation in logs and trace error attributes', async 
       'harness.error.timeout_ms': 5
     })
   }
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'histogram',
+      name: 'gen_ai.invoke_workflow.duration',
+      attrs: expect.objectContaining({ 'error.type': 'OPERATION_TIMEOUT' })
+    })
+  ]))
 })
 
 it('emits OpenInference attributes alongside GenAI attributes by default', async () => {

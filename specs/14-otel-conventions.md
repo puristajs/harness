@@ -97,7 +97,7 @@ Every harness-created span carries when available:
 | Harness span | Span name | Required semantic shape |
 | --- | --- | --- |
 | Outermost prompt/run | `harness.session.prompt` | `harness.*` |
-| Workflow run | `harness.workflow.run` | `harness.*`, OpenInference `CHAIN` in `dual`/`openinference_only` |
+| Workflow run | `harness.workflow.run` | GenAI `invoke_workflow`, OpenInference `CHAIN` in `dual`/`openinference_only` |
 | Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
@@ -121,6 +121,7 @@ The harness uses only these `gen_ai.operation.name` values:
 | `text_completion` | Legacy completion providers. |
 | `embeddings` | Embedding model calls. |
 | `generate_content` | Multimodal generation when the provider uses this operation. |
+| `invoke_workflow` | One harness workflow invocation. |
 | `invoke_agent` | One harness agent invocation. |
 | `execute_tool` | One tool invocation. |
 
@@ -171,6 +172,10 @@ Span: `{operation} {request.model}`
 | Operation/kind | `gen_ai.operation.name` | `openinference.span.kind` | |
 | Provider | `gen_ai.provider.name` and legacy `gen_ai.system` | `llm.provider` | |
 | Request model | `gen_ai.request.model` | `llm.model_name` | |
+| Conversation | `gen_ai.conversation.id` when a harness session owns the conversation | | `harness.session.id` |
+| Streaming request | `gen_ai.request.stream = true` for text/object stream calls | | `harness.model.method` |
+| Output type | `gen_ai.output.type = "text"` or `"json"` when known | | |
+| Time to first chunk | `gen_ai.response.time_to_first_chunk` on stream spans | | |
 | Response model | `gen_ai.response.model` | | |
 | Temperature | `gen_ai.request.temperature` | `llm.invocation_parameters` JSON string | |
 | Max tokens | `gen_ai.request.max_tokens` | `llm.invocation_parameters` JSON string | |
@@ -205,7 +210,8 @@ Span: `execute_tool {tool.name}`
 | Tool description | | `tool.description` | |
 | Tool parameters | event content when enabled | `tool.parameters` JSON string when span content enabled | |
 | Tool result | event content when enabled | `output.value` JSON string when span content enabled | |
-| Tool type | | | `gen_ai.tool.type`, `harness.tool.type` |
+| Agent name | `gen_ai.agent.name` | | `harness.agent.id` |
+| Tool type | `gen_ai.tool.type = "function"` for local/built-in tools or `"extension"` for MCP tools | | `harness.tool.type` |
 | Tool id | | | `harness.tool.id` |
 | MCP server | | | `harness.mcp.server` |
 | MCP tool | | | `harness.mcp.tool` |
@@ -441,14 +447,18 @@ prompt/completion/tool content never appears regardless of content-capture mode.
 | `harness.error.timeout_ms` | number |
 | `harness.error.provider` / `harness.error.model` | string |
 | `harness.error.model_provider_status` | number |
-| `harness.error.model_provider_code` / `_type` / `_param` / `_request_id` / `_message` | string |
+| `harness.error.model_provider_code` / `_type` / `_param` / `_request_id` | string |
 | `harness.error.model_provider_body` | string (content-redacted JSON) |
 | `harness.error.model_retry_kind` | string |
 | `harness.error.model_retry_after_ms` | number |
 | `harness.error.model_retry_attempt` / `_max_attempts` | number |
 
-Call `recordException(err)` for the thrown error. Span status is `ERROR` on
-failure and `OK` on success.
+Record a sanitized exception classification for the thrown error. Span status
+is `ERROR` on failure and remains `UNSET` on success. Do not record errors that
+are handled by a retry or recovery path. Failed duration measurements MUST carry
+the same low-cardinality `error.type` as the failed span; successful ones omit it.
+Provider error messages are not span attributes or exception descriptions because
+they can echo prompts or other user content.
 
 ## Metrics
 
@@ -472,6 +482,10 @@ aggregating metrics.
 | --- | --- | --- | --- |
 | `gen_ai.client.token.usage` | Histogram | `{token}` | `gen_ai.provider.name`, `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.token.type` |
 | `gen_ai.client.operation.duration` | Histogram | `s` | `gen_ai.provider.name`, `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `error.type` |
+| `gen_ai.client.operation.time_to_first_chunk` | Histogram | `s` | model-operation attributes; stream calls only |
+| `gen_ai.invoke_workflow.duration` | Histogram | `s` | `gen_ai.workflow.name`, `gen_ai.conversation.id`, `error.type` |
+| `gen_ai.invoke_agent.duration` | Histogram | `s` | `gen_ai.agent.name`, `gen_ai.conversation.id`, `error.type` |
+| `gen_ai.execute_tool.duration` | Histogram | `s` | `gen_ai.tool.name`, `gen_ai.tool.type`, `gen_ai.agent.name`, `error.type` |
 
 ### Harness metrics
 

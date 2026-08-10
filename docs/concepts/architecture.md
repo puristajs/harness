@@ -165,6 +165,12 @@ expects one namespace. `InvokeOptions.traceparent` and `tracestate` are
 extracted before the root run span is created; invalid Trace Context is logged
 and the run starts a new trace.
 
+The session, workflow, agent, model, and tool spans form one parent/child trace.
+The harness records current GenAI operation-duration metrics for each layer;
+failed or aborted operations set `ERROR` and share the same `error.type` on the
+span and duration metric, while successful spans retain the OpenTelemetry
+default `UNSET` status.
+
 Persisted run events never store prompts, model outputs, tool inputs/results,
 memory, files, or user data. They may store operational metadata such as ids,
 counts, dimensions, status, serialized errors, and token usage. Telemetry

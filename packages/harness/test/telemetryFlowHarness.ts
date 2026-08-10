@@ -8,6 +8,7 @@ import { inMemorySandbox } from '../src/sandbox/index.js'
 import { sandboxMemory } from '../src/memory/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import type { TelemetryShim } from '../src/telemetry/index.js'
+import { telemetryErrorType } from '../src/telemetry/index.js'
 import type { TelemetryOptions } from '../src/index.js'
 
 export class RecordingTelemetry implements TelemetryShim {
@@ -38,11 +39,10 @@ export class RecordingTelemetry implements TelemetryShim {
 
     this.stack.push(id)
     try {
-      const result = await fn(span)
-      record.status ??= { code: SpanStatusCode.OK }
-      return result
+      return await fn(span)
     } catch (error) {
-      record.exceptions.push(error)
+      record.exceptions.push(new Error(telemetryErrorType(error)))
+      record.attrs['error.type'] = telemetryErrorType(error)
       if (error && typeof error === 'object' && 'code' in error) {
         const harnessError = error as { code?: string; category?: string; retriable?: boolean; meta?: Record<string, unknown> }
         record.attrs['error.type'] = harnessError.code
@@ -52,7 +52,7 @@ export class RecordingTelemetry implements TelemetryShim {
         if (typeof harnessError.meta?.scope === 'string') record.attrs['harness.error.scope'] = harnessError.meta.scope
         if (typeof harnessError.meta?.timeout_ms === 'number') record.attrs['harness.error.timeout_ms'] = harnessError.meta.timeout_ms
       }
-      record.status = { code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) }
+      record.status = { code: SpanStatusCode.ERROR, message: telemetryErrorType(error) }
       throw error
     } finally {
       this.stack.pop()
@@ -94,7 +94,10 @@ class FlowModelProvider implements ModelProvider {
   public readonly genAiSystem = 'fake'
   private calls = 0
 
+  public constructor(private readonly failModel = false) {}
+
   public async object(): Promise<ObjectResponse> {
+    if (this.failModel) throw new Error('provider response included user content')
     this.calls += 1
     if (this.calls === 1) {
       return {
@@ -112,7 +115,7 @@ class FlowModelProvider implements ModelProvider {
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions } = {}) {
+export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failModel?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions } = {}) {
   const telemetry = new RecordingTelemetry()
   const logger = new RecordingLogger()
   const harness = createSessionHarness<any>({
@@ -132,7 +135,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; hangWo
       maxParallelToolCalls: 8
     },
     models: {
-      fast: { provider: new FlowModelProvider(), model: 'fake', capabilities: ['object', 'tool_use'] }
+      fast: { provider: new FlowModelProvider(opts.failModel), model: 'fake', capabilities: ['object', 'tool_use'] }
     },
     tools: {
       policy_lookup: {

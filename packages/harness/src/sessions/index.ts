@@ -53,7 +53,8 @@ import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports
 import type { TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
-import { createMetrics, createTelemetryShim, type TelemetryShim } from '../telemetry/index.js'
+import { createMetrics, createTelemetryShim, telemetryErrorType, type TelemetryShim } from '../telemetry/index.js'
+import { ATTR_ERROR_TYPE, ATTR_GEN_AI_CONVERSATION_ID, ATTR_GEN_AI_WORKFLOW_NAME } from '@opentelemetry/semantic-conventions/incubating'
 import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
 import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
@@ -1008,16 +1009,34 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }
         } as unknown as Parameters<typeof runWorkflow<S>>[0]
 
-        return telemetry.span('harness.workflow.run', {
+        const workflowTelemetryAttrs = {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
           'harness.run.id': runId,
           'harness.workflow.id': workflowId,
+          'gen_ai.operation.name': 'invoke_workflow',
+          [ATTR_GEN_AI_WORKFLOW_NAME]: workflowId,
+          [ATTR_GEN_AI_CONVERSATION_ID]: sessionId,
           ...metadataSpanAttrs(opts?.metadata)
-        }, async () => runWorkflow<S>({
-            ...workflowArgs,
-            ...(opts ? { opts: { ...opts, signal: runSignal.signal } } : { opts: { signal: runSignal.signal } })
-          } as Parameters<typeof runWorkflow<S>>[0]))
+        }
+        const workflowStarted = Date.now()
+        let workflowError: unknown
+        return telemetry.span('harness.workflow.run', workflowTelemetryAttrs, async () => {
+          try {
+            return await runWorkflow<S>({
+              ...workflowArgs,
+              ...(opts ? { opts: { ...opts, signal: runSignal.signal } } : { opts: { signal: runSignal.signal } })
+            } as Parameters<typeof runWorkflow<S>>[0])
+          } catch (error) {
+            workflowError = error
+            throw error
+          } finally {
+            telemetry.recordHistogram('gen_ai.invoke_workflow.duration', (Date.now() - workflowStarted) / 1000, {
+              ...workflowTelemetryAttrs,
+              ...(workflowError === undefined ? {} : { [ATTR_ERROR_TYPE]: telemetryErrorType(workflowError) })
+            })
+          }
+        })
       }))
 
       // A resolved handler may still have child-agent calls in flight; settle

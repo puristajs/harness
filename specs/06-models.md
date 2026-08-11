@@ -275,6 +275,8 @@ type FinishReason =
   | 'cancelled'
   | 'error'
 interface TokenUsage {
+  // `inputTokens` is the normalized total of normal input, cache reads, and cache writes.
+  // `cachedInputTokens` and `cacheCreationInputTokens` are included in that total.
   inputTokens: number
   outputTokens: number
   totalTokens: number

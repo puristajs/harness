@@ -236,6 +236,9 @@ Core closes prepared launches with the owning MCP runner/session. The default
 in-memory sandbox reports that it cannot execute stdio plugins. A compatible
 exec sandbox stages files with the appropriate host-independent path mapping;
 host-directory/production sandboxes implement the same contract explicitly.
+The built-in local host-directory sandbox deliberately does **not** implement
+that contract: POSIX file modes are mutable by the plugin process owner and
+therefore are not an immutable package boundary.
 
 For `stdio`, the addon supplies `PLUGIN_ROOT` and `PLUGIN_DATA` itself after
 single, non-recursive expansion in `args`, env **values**, and `cwd`. It rejects

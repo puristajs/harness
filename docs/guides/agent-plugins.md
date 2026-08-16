@@ -28,4 +28,8 @@ runtime code. Stdio requires a spawn-capable sandbox that can also enforce an
 immutable package mount; remote MCP uses modern stateless Streamable HTTP.
 Legacy stateful MCP and HTTP+SSE are rejected.
 
+The built-in local host-directory sandbox deliberately does not claim immutable
+mount support, because file permissions are mutable by the process owner. Use
+an isolating sandbox adapter for stdio plugins in production.
+
 For upgrade steps, see [Migrating To AI Harness 2.0](./migrating-to-v2.md).

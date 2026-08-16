@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, writeFile, rm, readdir, stat, lstat, realpath, chmod } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rm, readdir, stat, lstat, realpath } from 'node:fs/promises'
 import { resolve, dirname, posix, join, basename } from 'node:path'
 import { SandboxError, SandboxNoExecutorError, OperationTimeoutError } from '../errors/index.js'
 import type { DirEntry, ExecOptions, ExecResult, FileStat } from '../harness/types.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { abortError } from '../runtime/abort.js'
-import type { ExecCapableSandboxSession, ReadOnlyMountOptions, Sandbox, SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
+import type { ExecCapableSandboxSession, Sandbox, SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { LocalWorkspaceCoordinator } from './local-workspace.js'
 import { sha256Hex } from './ref-hash.js'
@@ -192,27 +192,6 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
         const target = posix.join(atPath, name)
         await this.write(target, data)
       }
-    })
-  }
-
-  /** Stages package assets then removes write permission from every asset and directory. */
-  public async mountReadOnly(files: ReadonlyMap<string, Uint8Array | string>, atPath: string, options: ReadOnlyMountOptions = {}): Promise<void> {
-    return this.sandboxSpan('mount_read_only', { 'harness.sandbox.file_count': files.size }, async () => {
-      await this.mount(files, atPath)
-      const base = await this.toPhysical(atPath)
-      const directories = new Set<string>([base])
-      const executable = new Set(options.executablePaths ?? [])
-      for (const name of files.keys()) {
-        const target = await this.toPhysical(posix.join(atPath, name))
-        await chmod(target, executable.has(name) ? 0o555 : 0o444)
-        let directory = dirname(target)
-        while (directory === base || directory.startsWith(`${base}/`)) {
-          directories.add(directory)
-          if (directory === base) break
-          directory = dirname(directory)
-        }
-      }
-      for (const directory of [...directories].sort((left, right) => right.length - left.length)) await chmod(directory, 0o555)
     })
   }
 

@@ -89,6 +89,8 @@ const harness = defineHarness()
   directory and a sandbox that supports both spawning and immutable mounts.
   Its reviewed package and persistent data are staged into that sandbox; data
   is synchronized only to the caller-owned directory when the runner closes.
+  The local host-directory sandbox intentionally does not claim immutable-mount
+  support; use an isolating sandbox adapter for production stdio plugins.
 - Package-declared HTTP headers are validated but never sent. Bind only
   application-owned static headers explicitly; credentials and protocol headers
   stay under core control. Plugin HTTP redirects are rejected, preventing header

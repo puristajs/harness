@@ -46,6 +46,10 @@ interface WorkflowContext<S, I, O> {
   metrics: Metrics
   /** Runs `fn` as a durable step. See "Durable steps". */
   step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
+  /** Bounded, cancellation-aware parallel work preserving input order. */
+  fanOut<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: { concurrency?: number }): Promise<R[]>
+  /** Workflow-owned isolated background and continuable child tasks. */
+  childTasks: WorkflowChildTasks<S>
 }
 ```
 
@@ -65,6 +69,17 @@ interface WorkflowContext<S, I, O> {
   - Validates the agent's output. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_output'}.
   - Returns the validated output.
   - Errors are thrown directly (not wrapped) to allow the workflow to handle them.
+
+`ctx.fanOut` is a small bounded-concurrency primitive, not a second workflow
+language. Its effective concurrency is clamped to
+`maxParallelChildAgentCalls`, it preserves item order, and it emits
+content-free fan-out lifecycle events. `ctx.childTasks.start` starts a separate
+child-task run using a registered agent. Background task turns queue under the
+same delegation parallel ceiling rather than rejecting solely because the
+ceiling is occupied. `{ mode: 'continuable' }` retains an isolated task-owned
+sandbox and private turn history until `close()`; it is in-process only and is
+rejected from durable workflow invocation. See
+[28-workflow-child-tasks](./28-workflow-child-tasks.md).
 
 ## Delegation policy
 
@@ -108,6 +123,9 @@ default `model` remains unchanged.
 Builder validation rejects unknown agent ids, unknown model aliases, and invalid
 numeric budgets. Runtime violations throw
 [`DelegationPolicyError`](./15-error-catalog.md).
+
+Task-specific idempotency, recovery, and session-owner lookup rules are
+defined in [28-workflow-child-tasks](./28-workflow-child-tasks.md).
 
 The workflow's own input is validated by `workflow.input.parse(value)` at run start; output is validated by `workflow.output.parse(value)` after the handler returns. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
 

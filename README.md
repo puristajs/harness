@@ -49,6 +49,11 @@ artifacts, MCP, and Jaeger tracing. `examples/delm-shared-context` uses the
 OpenAI adapter by default to demonstrate a DeLM-inspired decentralized
 shared-context pattern with task claiming, admission-gated compact entries,
 evidence unfolding, and durable checkpoints.
+`examples/modular-support-harness` demonstrates static, typed reusable modules
+with application-owned workflows, retry-only context projection, and sanitized
+test replay. `examples/workflow-child-tasks` demonstrates credential-free
+bounded fan-out, isolated background task lookup, and short continuable task
+conversations.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
 
@@ -80,6 +85,8 @@ npm run test:failure
   - [Durable Workspaces](docs/guides/durable-workspaces.md)
   - [Evaluating prompts](docs/guides/evaluating-prompts.md)
   - [MCP tools](docs/guides/mcp-tools.md)
+  - [Agent Plugins](docs/guides/agent-plugins.md)
+  - [Migrating to AI Harness 2.0](docs/guides/migrating-to-v2.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)
 - Operate and review
@@ -94,9 +101,12 @@ npm run test:failure
 - `packages/harness-anthropic/` — Anthropic model provider adapter.
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
+- `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.
 - `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, SSE, artifacts, MCP, and Jaeger.
 - `examples/delm-shared-context/` — DeLM-inspired shared-context coordination example for parallel worker workflows.
+- `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
+- `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

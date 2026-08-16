@@ -20,6 +20,10 @@ export { durableWorkspaceStoreContract } from './durableWorkspaceStoreContract.j
 // Helpers
 export { recordEvents } from './recordEvents.js'
 export { createInMemoryFeedbackRecorder } from './feedback.js'
+export { ReplayFixtureError, assertReplayConsumed, createReplayInteractionRecorder, replayModelProvider } from './replay.js'
+export type { ReplayInteractionRecorder, ReplayModelProviderOptions, SanitizedReplayFixture, SanitizedReplayInteraction } from './replay.js'
+export { DiagnosticInvariantError, assertDiagnosticInvariants } from './diagnostics.js'
+export type { DiagnosticInvariantSnapshot, HarnessDiagnosticFinding, HarnessDiagnosticInvariant } from './diagnostics.js'
 
 // AI eval test helpers (re-exported from the main entry for test ergonomics)
 export { evaluateDeterministicScorer } from '../eval/index.js'

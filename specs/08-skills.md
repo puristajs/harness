@@ -143,6 +143,12 @@ for developer clarity. `mountPath` is always `/skills/<name>`.
 Direct users may pass explicit `.skills({...})` bindings or use discovery
 helpers before calling `.skills(...)`.
 
+`@purista/harness-agent-plugins` may construct explicit bindings from approved
+portable Agent Plugins. It reuses this loader and mount path after performing
+plugin-root containment and trust checks; it does not change direct discovery
+roots, trust defaults, or collision semantics. See
+[29-agent-plugins](./29-agent-plugins.md).
+
 ```ts
 type DiscoverSkillsOptions = {
   projectRoot?: string
@@ -256,7 +262,7 @@ a skill relevant.
 The harness tracks activated skill names per run/session when the `read` tool
 reads `/skills/<name>/SKILL.md`.
 
-History compaction must satisfy one of these locked outcomes:
+History compaction and transient context projection must satisfy one of these locked outcomes:
 
 - keep activated skill tool results protected from pruning; or
 - prune them only when the next prompt still contains the catalog and the model
@@ -350,6 +356,7 @@ The test catalog in `16-testing.md` must cover:
 - `07-tools.md` for built-in read/list/grep behavior.
 - `09-agents.md` for default-loop behavior.
 - `11-sessions.md` for history windows and compaction.
+- `26-context-projection-and-compaction.md` for the transient model-request pruner.
 - `13-public-api.md` for exported types/helpers.
 - `15-error-catalog.md` for error classes and metadata.
 - `16-testing.md` for verification.

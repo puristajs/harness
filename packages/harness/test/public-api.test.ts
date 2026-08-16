@@ -53,6 +53,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'createDurableWorkflowContext',
   'createStreamToolCallState',
   'defineHarness',
+  'defineHarnessModule',
   'discoverSkills',
   'evaluateDeterministicScorer',
   'evaluatePromptCandidates',
@@ -68,6 +69,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'localDurableExecution',
   'malformedResponseError',
   'parseProviderJson',
+  'projectToolResults',
   'redactProviderContent',
   'safePartialJson',
   'sandboxMemory',
@@ -78,6 +80,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'sqliteStateStore',
   'toTokenUsage',
   'ulid',
+  'validateContextProjection',
   'withoutObjectTool'
 ]
 
@@ -90,7 +93,11 @@ const EXPECTED_TESTING_EXPORTS = [
   'FakeStateStore',
   'InMemoryDurableWorkspaceStore',
   'adapterCapabilitiesContract',
+  'assertDiagnosticInvariants',
+  'assertReplayConsumed',
   'createInMemoryFeedbackRecorder',
+  'createReplayInteractionRecorder',
+  'DiagnosticInvariantError',
   'durableWorkspaceStoreContract',
   'evaluateDeterministicScorer',
   'fakeCapabilityAdapter',
@@ -101,6 +108,8 @@ const EXPECTED_TESTING_EXPORTS = [
   'memoryAdapterContract',
   'modelProviderContract',
   'recordEvents',
+  'ReplayFixtureError',
+  'replayModelProvider',
   'sandboxContract',
   'sandboxSnapshotContract',
   'stateStoreContract'

@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 26 files (this README plus 25 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 30 files (this README plus 29 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -33,6 +33,11 @@ For an implementation agent starting cold, read in this order:
 23. [22-local-durable-execution.md](./22-local-durable-execution.md) — built-in local durable execution with SQLite runtime persistence, host-directory workspace/sandbox binding, context checkpoints, and secure defaults.
 24. [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) — provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata.
 25. [24-governance-policy.md](./24-governance-policy.md) — optional policy-driven governance layer for typed tool exposure, execution policy, approvals, audit events, and external policy adapters.
+26. [25-static-harness-modules.md](./25-static-harness-modules.md) — static typed modules, provenance, lifecycle ownership, and capability-family rules.
+27. [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) — transient context projection and bounded recovery.
+28. [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) — sanitized test replay and opt-in diagnostic invariants.
+29. [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) — typed background child tasks, bounded fan-out, and in-process continuables.
+30. [29-agent-plugins.md](./29-agent-plugins.md) — first-party Agent Plugins client, trust, portable Skills/MCP projection, and current MCP behavior.
 
 ## File index (one-liners)
 
@@ -63,6 +68,11 @@ For an implementation agent starting cold, read in this order:
 | [22-local-durable-execution.md](./22-local-durable-execution.md) | Local durable execution bundle using SQLite runtime persistence, host-directory workspaces, durable sandbox binding, and context checkpoint storage. |
 | [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) | Provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata. |
 | [24-governance-policy.md](./24-governance-policy.md) | Optional tool-exposure and tool-call governance, typed native policy rules, approval adapters, shadow mode, and external policy engine adapters. |
+| [25-static-harness-modules.md](./25-static-harness-modules.md) | Static typed module composition, provenance, capability-family ownership, and lifecycle rules. |
+| [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) | Model-visible context projection, tool-result pruning, and single-retry recovery. |
+| [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) | Sanitized offline provider replay and explicit diagnostic invariant contracts. |
+| [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) | Typed child-task lifecycle, queued fan-out, durable descriptors, and in-process continuables. |
+| [29-agent-plugins.md](./29-agent-plugins.md) | First-party Agent Plugins client: trusted local package inspection, Skills/MCP binding, portable filesystem behavior, MCP, telemetry, testing, and release/docs scope. |
 
 ## Authoritative anchors
 
@@ -73,6 +83,11 @@ For an implementation agent starting cold, read in this order:
 - Local durable execution, SQLite runtime persistence, and context checkpoints → [22-local-durable-execution.md](./22-local-durable-execution.md).
 - Provider outcomes, active/deferred retry, and rate-limit metadata → [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md).
 - Tool-exposure and tool-call governance, approvals → [24-governance-policy.md](./24-governance-policy.md).
+- Static module behavior and provenance → [25-static-harness-modules.md](./25-static-harness-modules.md).
+- Transient context projection → [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md).
+- Test-only replay and diagnostics → [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md).
+- Workflow child tasks, fan-out, and continuables → [28-workflow-child-tasks.md](./28-workflow-child-tasks.md).
+- Agent Plugins client behavior, trust, and portable package semantics → [29-agent-plugins.md](./29-agent-plugins.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.

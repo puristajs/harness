@@ -2,7 +2,7 @@ import { HarnessError } from './harness-error.js'
 
 /** Configuration validation and assembly failures. */
 export class HarnessConfigError extends HarnessError {
-  public constructor(message: string, meta: { reason: string; path?: string; id?: string }, cause?: unknown) {
+  public constructor(message: string, meta: { reason: string; path?: string; id?: string; module_id?: string }, cause?: unknown) {
     super({ code: 'HARNESS_CONFIG_ERROR', category: 'config', retriable: false, message, meta, cause })
   }
 }

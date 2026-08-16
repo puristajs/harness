@@ -40,7 +40,17 @@ Streaming is an internal concern of the harness; there is no separate `Stream` p
 - Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 - Provider and adapter packages MUST NOT depend on harness internals; they depend only on `@purista/harness` for port interfaces/types and their official provider SDKs.
 - Provider and adapter packages MUST NOT depend on each other (no provider-to-provider or adapter-to-adapter imports).
-- The harness package is the only package that may depend on `@modelcontextprotocol/sdk` (peer dep, scoped to the MCP tool runners).
+- The harness package is the only package that may depend on `@modelcontextprotocol/client` v2 (optional peer, scoped to the MCP tool runners).
+- `@purista/harness-agent-plugins` is an opt-in first-party addon. It depends
+  only on public core APIs and local parsing/validation dependencies; it does
+  not import harness internals, providers, or another addon. Core does not
+  depend on it. Core's MCP SDK peer remains the single protocol dependency;
+  the addon projects portable entries onto that runtime.
+- Static harness modules are imported application/addon code that calls only the
+  public builder API. They neither load code dynamically nor add a runtime
+  container. Optional capability families follow the port → provider adapter →
+  consumer module → conformance-fixture rule in
+  [25-static-harness-modules](./25-static-harness-modules.md).
 
 ## Package layout
 
@@ -55,6 +65,7 @@ packages/
   harness-anthropic/       # @purista/harness-anthropic
   harness-bedrock/         # @purista/harness-bedrock
   harness-azure-foundry/   # @purista/harness-azure-foundry
+  harness-agent-plugins/   # @purista/harness-agent-plugins; local Agent Plugins client
   harness-memory-*/        # future external memory adapters; not part of core
     src/
       index.ts
@@ -65,7 +76,7 @@ examples/
 ```
 
 Published packages are the core `@purista/harness` package plus independent
-provider addons under the `@purista/harness-*` convention. Private example
+provider and capability addons under the `@purista/harness-*` convention. Private example
 workspaces are allowed under `examples/` when backed by specs. No `services/`
 or `apps/` package is part of v1. Workspace tool is locked to npm workspaces.
 
@@ -79,18 +90,21 @@ The `harness` package contains:
 - memory adapter port plus `sandboxMemory()` reference adapter
 - built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox
 - custom TS tools
-- MCP stdio + MCP http tools (peer dep `@modelcontextprotocol/sdk`)
+- MCP stdio + MCP http tools (optional peer dep `@modelcontextprotocol/client` v2)
+- generic prepared MCP stdio launch bridge used by capability addons; it does
+  not know the Agent Plugins format
 - testing utilities (port contract test factories, fake provider, fake sandbox), exposed via the `./testing` subpath, never via the main entry
 
 ## Dependency table
 
 | Package             | Harness deps             | Peer deps                                                                  |
 |---------------------|--------------------------|----------------------------------------------------------------------------|
-| `@purista/harness`        | (none beyond peer)       | `typescript@>=5.4`, `zod@^4`, `@opentelemetry/api@^1`, `@opentelemetry/semantic-conventions@^1`, `@modelcontextprotocol/sdk@^1` (optional, only required when MCP tools are used; `peerDependenciesMeta.optional = true`), `just-bash@^0` (optional, only required when `bashSandbox()` is used; `peerDependenciesMeta.optional = true`), `vitest@^2` (peer of `@purista/harness/testing`) |
+| `@purista/harness`        | (none beyond peer)       | `typescript@>=5.4`, `zod@^4`, `@opentelemetry/api@^1`, `@opentelemetry/semantic-conventions@^1`, `@modelcontextprotocol/client@^2` (optional, only required when MCP tools are used; `peerDependenciesMeta.optional = true`), `just-bash@^0` (optional, only required when `bashSandbox()` is used; `peerDependenciesMeta.optional = true`), `vitest@^2` (peer of `@purista/harness/testing`) |
 | `@purista/harness-openai` | `@purista/harness`       | `typescript@>=5.4`, `openai@^4`                                            |
 | `@purista/harness-anthropic` | `@purista/harness`    | `typescript@>=5.4`, `@anthropic-ai/sdk`                                    |
 | `@purista/harness-bedrock` | `@purista/harness`      | `typescript@>=5.4`, `@aws-sdk/client-bedrock-runtime`                      |
 | `@purista/harness-azure-foundry` | `@purista/harness` | `typescript@>=5.4`, `@azure-rest/ai-inference`, `@azure/core-auth`, `@azure/core-sse` |
+| `@purista/harness-agent-plugins` | `@purista/harness` | `typescript@>=5.4` plus local parsing/schema-validation dependencies only; no provider SDK or MCP SDK dependency |
 | `@purista/harness-memory-*` | `@purista/harness` | `typescript@>=5.4` plus the adapter's official backend SDK only |
 
 Dev deps for every package: `typescript@>=5.4`, `vitest@^2`, `@types/node`. Provider packages may add only their official provider SDK dependencies.

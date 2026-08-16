@@ -43,10 +43,12 @@ the simple in-process defaults.
 |---|---|
 | `Harness<S>` | Built runtime with `getSession`, `shutdown`, and `$infer`. |
 | `HarnessInspection` | Data-only adapter and capability snapshot returned by `harness.inspect()`. |
-| `Session<S>` | Operational context exposing `agents`, `workflows`, `history`, `memory`, `getRunSummary`, and `close`. |
+| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, and `close`. |
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
 | `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
+| `WorkflowChildTasks` / `ChildTaskHandle` | Typed workflow-owned isolated background tasks with lifecycle status and cancellation. |
+| `ContinuableChildTaskHandle` | In-process isolated task conversation with serialized `send(...)` turns and explicit `close()`. |
 | `GovernanceConfig` | Optional policy layer for tool exposure, tool-call deny/audit, shadow mode, and approvals. |
 | `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
 | `GovernanceDecision` | Normalized execution policy decision returned by native rules or adapters, including decision evidence fields. |
@@ -171,6 +173,8 @@ Streaming invokers yield `RunEvent` values:
 | Event | Meaning |
 |---|---|
 | `run.started` | Run record exists and execution began. |
+| `fanout.started` / `fanout.finished` | Bounded workflow-local batch lifecycle. |
+| `child_task.started` / `child_task.settled` | Content-free isolated task lifecycle in the child task's run. |
 | `agent.started` / `agent.finished` | Agent lifecycle. |
 | `tool.started` / `tool.finished` | Tool lifecycle and normalized errors. |
 | `model.message` | Persisted model message metadata. |

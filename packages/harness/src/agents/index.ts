@@ -23,6 +23,7 @@ import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegi
 import { ulid } from '../ulid/index.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
+import { projectToolResults, type ContextProjectionPolicy } from '../context-projection.js'
 
 function stringifyInput(input: unknown): string { return typeof input === 'string' ? input : JSON.stringify(input) }
 
@@ -135,6 +136,7 @@ export async function runDefaultAgent(args: {
   checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
+  contextProjection?: ContextProjectionPolicy
   maxSteps: number
   signal: AbortSignal
   toolTimeoutMs: number
@@ -210,6 +212,7 @@ async function runDefaultAgentInner(args: {
   mountedSkills: Set<string>
   activatedSkills: Set<string>
   historyWindow?: number
+  contextProjection?: ContextProjectionPolicy
   maxSteps: number
   signal: AbortSignal
   toolTimeoutMs: number
@@ -323,7 +326,7 @@ async function runDefaultAgentInner(args: {
       const stepTools = await applyGovernanceToolExposure(args, filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId), steps)
       const stepMessages = prepared?.messages ? [...prepared.messages] : modelMessages
       const stepInstructions = prepared?.instructions ?? instructions
-      const response = await model.object({
+      const request = {
         messages: [
           { role: 'system', content: stepInstructions },
           ...stepMessages
@@ -331,14 +334,22 @@ async function runDefaultAgentInner(args: {
         tools: stepTools,
         schema: z.toJSONSchema(outputSchema) as JsonValue,
         ...(prepared?.call ? { call: prepared.call as ModelCallOptions } : {})
-      }, args.signal, {
+      }
+      const modelContext = {
         harnessName: args.harnessName,
         sessionId: args.sessionId,
         runId: args.runId,
         ...(args.workflowId ? { workflowId: args.workflowId } : {}),
         agentId: args.agentId,
         modelAlias: stepModelAlias
-      })
+      }
+      let response: ObjectResponse<JsonValue>
+      try {
+        response = await model.object(request, args.signal, modelContext)
+      } catch (error) {
+        if (!args.contextProjection || args.signal.aborted || !(error instanceof HarnessError) || error.meta?.['reason'] !== 'context_length_exceeded') throw error
+        response = await model.object({ ...request, messages: [request.messages[0]!, ...projectToolResults(stepMessages, args.contextProjection)] }, args.signal, modelContext)
+      }
 
       // Emit one usage-bearing model event per model round-trip (including
       // tool-call steps) so run-summary modelCalls and tokenTotals are accurate

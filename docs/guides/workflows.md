@@ -70,25 +70,59 @@ const harness = defineHarness({ name: 'incident-review' })
 
 ## Fan-Out And Fan-In
 
-Use `Promise.all` when child agent calls are independent. Every call shares the
-workflow run id and signal; message history is appended as branches finish.
+Use `ctx.fanOut` for an ordered, bounded batch of independent work. It clamps
+concurrency to the workflow's delegation policy and emits lifecycle metadata;
+the direct child-agent calls still keep their usual typed inputs and outputs.
 
 ```ts
-delegation: { agents: ['security_review', 'docs_review', 'test_review'] },
+delegation: { agents: ['reviewer'], maxParallelChildAgentCalls: 2 },
 handler: async (ctx) => {
-  const [security, docs, tests] = await Promise.all([
-    ctx.agents.security_review(ctx.input),
-    ctx.agents.docs_review(ctx.input),
-    ctx.agents.test_review(ctx.input)
-  ])
+  const reviews = await ctx.fanOut(ctx.input.documents, (document) =>
+    ctx.agents.reviewer({ document }),
+  { concurrency: 2 })
 
-  return synthesize({ security, docs, tests })
+  return synthesize(reviews)
 }
 ```
 
 Use `Promise.allSettled` when a workflow can return partial results. Convert
 failures into your output schema instead of leaking raw provider or tool
 payloads.
+
+## Background Child Tasks
+
+Use `ctx.childTasks.start` when the workflow should launch isolated work and
+return before that work completes—for example a customer-facing request that
+starts a longer document review. The handle has typed output, but its descriptor
+and session lookup status deliberately contain no prompts or model output.
+
+```ts
+handler: async (ctx) => {
+  const task = await ctx.childTasks.start('reviewer', {
+    documentId: ctx.input.documentId
+  }, {
+    timeoutMs: 60_000,
+    model: 'deep_review'
+  })
+
+  return { reviewTaskId: task.id }
+}
+
+// Application code, later:
+const task = await session.childTasks.get(reviewTaskId)
+const review = await task?.result()
+```
+
+Tasks retain the selected agent's existing tools, skills, model allowlists, and
+permissions, but have their own sandbox and never inherit parent history. They
+queue under `maxParallelChildAgentCalls`; creating a task reserves the total
+call budget without turning a temporary parallel limit into a start failure.
+
+For a short-lived private conversation that needs explicit follow-up turns,
+start with `{ mode: 'continuable' }`. `send(input)` runs the next turn after
+the previous one, and `close()` settles the task with the last output. This
+mode is deliberately in-process and cannot be used with a durable workflow;
+use a queue/worker integration when a task must survive a process restart.
 
 ## Delegation Policy
 

@@ -284,6 +284,89 @@ Tests:
 Exit: focused provider/base harness tests, typecheck, lint, skill/knowledge
 audits, and full CI are green.
 
+## Follow-up wave — static modules and lifecycle ownership
+
+Deliverables:
+- `defineHarnessModule()` and typed `.use()` static composition, preserving
+  cross-module literal inference without a dynamic module loader.
+- Additive collision-rejecting definition registration and deterministic,
+  data-only inspection provenance.
+- Centralized, identity-deduplicated, failure-aggregating, idempotent harness
+  shutdown for all resolved closable resources.
+- A checked capability-family catalog/dependency verifier and one consumer
+  fixture; no package extraction occurs until the verifier is green.
+
+Tests:
+- Type and runtime module-composition matrix, external workspace fixture,
+  duplicate/atomicity/JavaScript validation cases, inspection privacy, and
+  comprehensive shutdown tests from
+  [25-static-harness-modules](./25-static-harness-modules.md).
+
+Exit: the static-module specification is implemented, public API diff test is
+updated, architecture verifier is deterministic, and the full CI matrix passes.
+
+## Follow-up wave — transient context projection
+
+Deliverables:
+- Effective context-projection policy resolution and UTF-8-safe tool-result
+  pruner on the transient provider request path.
+- Exactly one context-length recovery attempt, with cancellation and durable
+  history/event invariants preserved.
+
+Tests:
+- The complete acceptance matrix in
+  [26-context-projection-and-compaction](./26-context-projection-and-compaction.md),
+  including tool/skill/history integrity and privacy assertions.
+
+Exit: no persistent record changes occur during projection and all focused plus
+full CI tests pass.
+
+## Follow-up wave — test replay and diagnostic invariants
+
+Deliverables:
+- Explicit-sanitizer interaction fixture recorder and strict offline replay
+  model provider under `@purista/harness/testing`.
+- Explicitly enabled diagnostic invariant runner with data-minimized findings.
+- Public API, README, skill guidance, and hermetic examples for static modules,
+  replay, and diagnostics.
+
+Tests:
+- The complete acceptance matrix in
+  [27-test-replay-and-diagnostic-invariants](./27-test-replay-and-diagnostic-invariants.md),
+  including no-I/O and no-content-leak proof cases.
+
+Exit: test-only facilities stay opt-in, public/export docs are exact, skills
+pass their repository audits, and full CI is green.
+
+## Follow-up wave — Agent Plugins and current MCP major cut
+
+Deliverables:
+- Upgrade and pin the MCP runtime to a Tier-1 SDK release implementing MCP
+  `2026-07-28`; remove legacy protocol state, HTTP+SSE transport, fallback,
+  and compatibility code as one breaking major release.
+- Add only the provider-neutral prepared MCP stdio launch bridge necessary to
+  stage a validated immutable root and persistent writable data directory into
+  the existing sandbox/MCP lifecycle.
+- Add `@purista/harness-agent-plugins`, which locally validates Agent Plugins
+  1.0.0 manifests/schemas, enforces Windows/Linux realpath containment and
+  explicit application trust/digest policy, reuses the core skills loader, and
+  projects explicitly selected MCP tools into normal typed bindings.
+- Extend existing OTel renderer/metrics and inspection provenance without a
+  second telemetry pipeline or content capture.
+- Add the hermetic Agent Plugins example, docs/handbook/API/skill updates,
+  package release verification, CI coverage, and the current-MCP migration
+  notes. Runtime compatibility/migration shims are prohibited.
+
+Tests:
+- The complete Agent Plugins and MCP acceptance matrix in
+  [29-agent-plugins](./29-agent-plugins.md), including current stateless MCP
+  routing/list-cache/tasks, legacy rejection, security/privacy, staged stdio,
+  explicit aliases, and Linux/Windows filesystem tests.
+
+Exit: the addon package publishes with the same workflow as core, current MCP
+fixtures pass with no external server, the example is hermetic, public APIs and
+docs are exact, and the full CI matrix is green.
+
 ## CI
 
 - Single GitHub Actions workflow: matrix over Node 20 and 22.

@@ -22,9 +22,15 @@ Keep these layers separate:
 
 ## Hard Rules
 - Use `defineHarness()` as the sole construction path. Do not invent standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, or `defineModel` helpers.
+- Use `defineHarnessModule<Required>()('module.id', { register })` only for local static composition. Modules contribute normal definitions to the caller's builder; they are not remote plugins, manifests, loaders, or lifecycle owners. Module callbacks cannot build or recursively use a harness.
+- Use `@purista/harness-agent-plugins` only for data-only Agent Plugins v1 packages. Require application-owned source/digest/trust approval, inspect diagnostics, then bind selected skills and MCP tools explicitly. Never load package code, auto-install dependencies, auto-expose tools, or accept plugin-provided credentials.
+- MCP is a clean v2 integration pinned to `2026-07-28`: use `@modelcontextprotocol/client`, modern stateless Streamable HTTP, and a spawn-capable sandbox for stdio. Do not add legacy MCP, HTTP+SSE, one-shot exec, or compatibility fallbacks.
+- Module definition ids compose additively. Treat duplicate module/definition ids as configuration errors; inspect only `harness.inspect().modules` for content-free provenance.
 - Preserve builder inference by declaring models before agents and agents before workflows.
 - Use inline helper callbacks for agents and workflows: `.agents(({ agent }) => ({ ... }))` and `.workflows(({ workflow }) => ({ ... }))`.
 - Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
+- Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
+- `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
@@ -47,6 +53,7 @@ Keep these layers separate:
 6. Decide how state, history, memory, streaming, errors, security, and operations are handled at the application edge.
 7. Invoke through `harness.getSession(id)` and close sessions/harnesses during shutdown.
 8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
+9. For provider-loop regression tests, use the explicit sanitizer recorder and offline replay provider; do not capture production interaction content. Use diagnostic invariants only as explicitly invoked test checks.
 
 ## Quick Pattern
 ```ts

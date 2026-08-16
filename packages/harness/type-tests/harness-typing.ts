@@ -1,10 +1,10 @@
 import { z } from 'zod'
-import { defineHarness } from '../src/harness/defineHarness.js'
+import { defineHarness, defineHarnessModule } from '../src/harness/defineHarness.js'
 import { createModelRegistry } from '../src/models/registry.js'
 import { inMemorySandbox, sandboxMemory } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
-import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { JsonValue, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
 import type { Logger } from '../src/logger/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
@@ -22,6 +22,38 @@ const provider: ModelProvider = {
     }
   }
 }
+
+const modelModule = defineHarnessModule<{}>()('support-models', {
+  register(builder) {
+    return builder.models({ support: { provider, model: 'support-model', capabilities: ['object'] } })
+  }
+})
+
+type SupportModelsState = { models: { support: ModelAlias } }
+const agentModule = defineHarnessModule<SupportModelsState>()('support-agent', {
+  register(builder) {
+    return builder.agents(({ agent }) => ({
+      respond: agent({
+        model: 'support',
+        input: z.object({ question: z.string() }),
+        output: z.object({ answer: z.string() }),
+        instructions: 'Answer the support question.'
+      })
+    }))
+  }
+})
+
+const moduleHarness = defineHarness().use(modelModule).use(agentModule).build()
+type ModuleAgentInput = typeof moduleHarness.$infer.agents.respond.input
+const _moduleAgentInputExact: Expect<Equal<ModuleAgentInput, { question: string }>> = true
+
+defineHarnessModule<{}>()('no-build-module', {
+  register(builder) {
+    // @ts-expect-error static module builders intentionally cannot build a harness
+    builder.build()
+    return builder.models({ local: { provider, model: 'local', capabilities: ['object'] } })
+  }
+})
 
 const harness = defineHarness()
   .memory(sandboxMemory())
@@ -88,6 +120,17 @@ const harness = defineHarness()
         const _reviewedAgentOutputExact: Expect<Equal<typeof reviewedPlan, { plan: string; accepted: boolean }>> = true
         // @ts-expect-error workflow-local agent model overrides must use configured model aliases
         await ctx.agents.planner({ task: ctx.input.task, priority: 1 }, { model: 'missing' })
+
+        const background = await ctx.childTasks.start('planner', { task: ctx.input.task, priority: 1 })
+        const backgroundResult = background.result()
+        const _backgroundOutputExact: Expect<Equal<typeof backgroundResult, Promise<{ plan: string; accepted: boolean }>>> = true
+        const continuable = await ctx.childTasks.start('planner', { task: ctx.input.task, priority: 1 }, { mode: 'continuable' })
+        const continuableResult = continuable.send({ task: ctx.input.task, priority: 2 })
+        const _continuableOutputExact: Expect<Equal<typeof continuableResult, Promise<{ plan: string; accepted: boolean }>>> = true
+        // @ts-expect-error continuable task turns retain the selected agent input schema
+        await continuable.send({ task: ctx.input.task })
+        await continuable.close()
+        await ctx.fanOut([1, 2], async (value) => value * 2, { concurrency: 1 })
 
         return plan
       }

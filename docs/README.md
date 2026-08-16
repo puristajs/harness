@@ -39,6 +39,8 @@ flowchart TD
 - Start building
   - [Quickstart](./getting-started/quickstart.md): install, run the smallest example, and verify the harness works.
   - [Living Wiki Jaeger Example](../examples/living-wiki-jaeger/README.md): explore a full research workspace with agents, workflows, review gates, artifacts, MCP, and Jaeger.
+  - [Modular Support Harness](../examples/modular-support-harness/README.md): compose typed local modules while retaining application-owned workflows and hermetic replay tests.
+  - [Workflow Child Tasks](../examples/workflow-child-tasks/README.md): run bounded fan-out, isolated background tasks, and a short continuable task conversation without credentials.
 - Learn the model
   - [Architecture](./concepts/architecture.md): understand sessions, agents, workflows, tools, skills, state, sandboxing, and telemetry.
   - [Common Scenarios And Use Cases](./guides/common-scenarios.md): choose patterns for RAG, triage, human review, research, reports, and multi-agent work.
@@ -50,6 +52,8 @@ flowchart TD
   - [Evaluating Prompts](./guides/evaluating-prompts.md): compare prompt candidates with local deterministic or custom scorers.
   - [Extending And Customizing](./guides/extending-and-customizing.md): add adapters, TypeScript tools, skills, workflows, and custom state/sandbox implementations.
   - [MCP Tools](./guides/mcp-tools.md): register stdio and HTTP MCP tools, install stdio servers inside the sandbox, and map MCP failures.
+  - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
+  - [Migrating To AI Harness 2.0](./guides/migrating-to-v2.md): make the clean MCP v2 and package-major upgrade.
   - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and review gates.
 - Operate and review
   - [Operations Runbook](./operations/runbook.md): readiness checks, failure handling, logs, traces, MCP operations, and shutdown.
@@ -69,6 +73,8 @@ flowchart TD
 | `packages/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
 | `examples/quickstart` | Smallest typed harness example. |
 | `examples/showcase` | Skills, TypeScript tools, and multiple workflows. |
+| `examples/modular-support-harness` | Static module composition, application workflow ownership, retry-only context projection, and sanitized replay. |
+| `examples/workflow-child-tasks` | Bounded fan-out, isolated task ownership and lookup, and in-process continuables. |
 | `examples/bank-governance` | Optional typed governance policies, exposure-aware events, approvals, shadow-ready rollout, and blocked tool calls. |
 | `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, review gates, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
 | `specs/` | Approved technical specifications. Use specs for implementation detail, not first-time onboarding. |

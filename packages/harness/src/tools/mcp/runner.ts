@@ -32,7 +32,9 @@ export interface ResolvedMcpStdioTool extends ResolvedMcpTool {
   kind: 'mcp_stdio'
   command: string
   args?: readonly string[]
+  cwd?: string
   env?: Record<string, string>
+  prepareLaunch?: McpStdioToolDefinition['prepareLaunch']
   install?: McpStdioToolDefinition['install']
   sandbox: SandboxSession
 }
@@ -238,7 +240,9 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
       sandboxKey: ctx.sandboxKey ?? 'sandbox',
       command: tool.command,
       ...(tool.args ? { args: tool.args } : {}),
+      ...(tool.cwd ? { cwd: tool.cwd } : {}),
       ...(tool.env ? { env: tool.env } : {}),
+      ...(tool.prepareLaunch ? { prepareLaunch: tool.prepareLaunch } : {}),
       ...(tool.install ? { install: tool.install } : {}),
       sandbox: ctx.sandbox
     }
@@ -343,6 +347,7 @@ export async function withMcpTimeout<T>(opts: { signal?: AbortSignal; timeoutMs?
   try {
     return await Promise.race([fn(controller.signal), timeout])
   } catch (error) {
+    if (controller.signal.reason instanceof OperationTimeoutError) throw controller.signal.reason
     if (controller.signal.aborted && !(controller.signal.reason instanceof OperationTimeoutError)) {
       throw new OperationCancelledError('MCP tool operation was cancelled.', { scope: 'tool' }, controller.signal.reason ?? error)
     }

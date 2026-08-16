@@ -71,7 +71,7 @@ side effects stop promptly.
 }))
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, and `ctx.step`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, `ctx.step`, `ctx.fanOut`, and `ctx.childTasks`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
 
 Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
@@ -79,7 +79,9 @@ standalone `defineWorkflow(...)` helper.
 
 `ctx.step(stepId, fn, options?)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Use `options.retry` for short active retries before checkpoint commit. Durable execution is workflow-only — see `durable-feedback-operations.md`.
 
-Use `Promise.all` or `Promise.allSettled` for parallel agent calls when the calls are independent. Propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
+Use `ctx.fanOut(items, worker, { concurrency })` for ordered, bounded parallel work. `Promise.all` or `Promise.allSettled` remain appropriate when application-defined behavior is needed; propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
+
+Use `ctx.childTasks.start('reviewer', input)` when a workflow should return a task id before isolated work completes; application code can later retrieve the task only through `session.childTasks.get(id)`. A child task uses the chosen agent's established tool, skill, model, and delegation boundaries, owns a separate sandbox/run, and never appends its private messages to the parent session history. For a short task-owned conversation, pass `{ mode: 'continuable' }`, call `send(input)` sequentially, and finish with `close()`. This mode is in-process only and is rejected for durable workflow invocation; use an application queue/worker adapter for restart-safe work.
 The harness also races workflow handlers against `ctx.signal`, so a run can
 finish as cancelled/timed out even when handler code hangs. This is not a
 thread/process kill; cooperative cancellation is still required for cleanup.
@@ -320,7 +322,7 @@ remote_search: {
 }
 ```
 
-MCP stdio requires an executor-capable sandbox. Add `@modelcontextprotocol/sdk` only when MCP is needed.
+MCP stdio requires a spawn-capable sandbox. Add `@modelcontextprotocol/client` only when MCP is needed.
 
 MCP validation/order:
 1. optional `inputAdapter`

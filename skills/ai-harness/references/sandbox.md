@@ -155,10 +155,10 @@ spawn(command, { args, cwd, env, signal }): Promise<{
 
 `session.close()` must terminate every spawned process. The in-core
 `inMemorySandbox()`/`bashSandbox()` do not advertise `sandbox.spawn`; isolation
-backends (Docker/e2b/microvm) do. This capability powers the **persistent MCP
-stdio transport** (a stateful server is spawned once and multiplexed across
-calls); without it, `mcp_stdio` uses the stateless one-shot `exec` model. Use
-`isSpawnCapableSession(session)` to detect support.
+backends (Docker/e2b/microvm) do. This capability is required for the MCP
+stdio transport: a server is spawned once and multiplexed across calls. There
+is no exec-only fallback. Use `isSpawnCapableSession(session)` to detect
+support.
 
 ## Snapshot And Resume Capabilities
 Snapshot-capable adapters may implement:

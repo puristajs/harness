@@ -110,6 +110,7 @@ Every harness-created span carries when available:
 | Durable runtime operation | `harness.runtime.{operation}` | `harness.*` |
 | Context checkpoint operation | `harness.context_checkpoint.{operation}` | `harness.*` |
 | Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
+| Agent Plugin inspection/loading | `harness.plugin.{operation}` | `harness.*` |
 
 ## GenAI operations
 
@@ -216,6 +217,13 @@ Span: `execute_tool {tool.name}`
 | MCP server | | | `harness.mcp.server` |
 | MCP tool | | | `harness.mcp.tool` |
 | MCP transport | | | `harness.mcp.transport` |
+| MCP protocol version | | | `harness.mcp.protocol_version` |
+| MCP mode | | | `harness.mcp.mode = "stateless"` |
+| MCP task invocation | | | `harness.mcp.task` |
+| Plugin name | | | `harness.plugin.name` |
+| Plugin version | | | `harness.plugin.version` |
+| Plugin digest | | | `harness.plugin.digest` |
+| Plugin component | | | `harness.plugin.component` |
 | Permission mode | | | `harness.permission.mode` |
 | Permission decision | | | `harness.permission.decision` |
 
@@ -333,6 +341,28 @@ checkpoint records; spans, metrics, and logs emit only hashes.
 | --- | --- |
 | `harness.exec.exit_code` | integer |
 | `harness.exec.duration` | double seconds |
+
+### `harness.plugin.{operation}`
+
+Operation is one of `inspect`, `validate`, `bind`, or `stage`. These spans are
+emitted only by the Agent Plugins addon and are not nested replacement tool
+spans. They use no GenAI/OpenInference content fields.
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `harness.plugin.name` | string | manifest name when valid |
+| `harness.plugin.version` | string | declared version when present |
+| `harness.plugin.digest` | string | SHA-256 package digest |
+| `harness.plugin.operation` | string | `inspect`, `validate`, `bind`, or `stage` |
+| `harness.plugin.trusted` | boolean | resolved application trust decision |
+| `harness.plugin.skill_count` | integer | inspection/load only |
+| `harness.plugin.server_count` | integer | inspection/load only |
+| `harness.mcp.transport` | string | MCP components only |
+| `error.type` | string | failure only |
+
+Plugin roots/data paths, commands, arguments, environment values, URLs,
+headers, schemas, skill text, file names/content, credentials, tool inputs, and
+tool results are never span attributes or events in any capture mode.
 
 ### `harness.runtime.{operation}`
 
@@ -517,6 +547,8 @@ aggregating metrics.
 | `harness.context_checkpoint.operations` | Counter | `1` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
 | `harness.local_sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 | `harness.local_sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
+| `harness.plugin.operation.duration` | Histogram | `s` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
+| `harness.plugin.operations` | Counter | `1` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
 
 No `_ms` instruments exist.
 
@@ -537,6 +569,7 @@ Every harness-emitted log line carries when applicable:
 | `agent_id` | active agent |
 | `workflow_id` | active workflow |
 | `tool_id` | active tool |
+| `plugin_name` | active plugin-derived binding; never a root/data path |
 | `policy_name` | active governance policy |
 | `policy_rule_id` | active governance rule |
 | `trace_id` | active OTel trace |

@@ -17,6 +17,7 @@
 | `@purista/harness-anthropic` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
 | `@purista/harness-bedrock` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
 | `@purista/harness-azure-foundry` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
+| `@purista/harness-agent-plugins` | ≥85% | ≥80%     | ≥85%      | ≥85%  |
 
 CI fails if any gate is unmet.
 
@@ -139,9 +140,16 @@ The harness package additionally has integration tests:
   13. History compaction either preserves activated skill tool results or keeps the catalog sufficient for reread activation.
   14. Logs, spans, metrics, persisted events, and sanitized errors exclude skill bodies, supporting file content, prompts, completions, credentials, headers, and raw attachments in every content-capture mode.
 - Permissions: `'allow'` proceeds; `'deny'` produces a `PERMISSION_DENIED` tool result message and run continues; `'ask'` invokes the hook; hook failure denies and increments `harness.permission.denials`; read-only built-ins cannot be denied.
-- Builder ordering: out-of-order or repeated calls (`.tools()` before `.models()`, two `.agents()` calls, `.build()` without models) fail at the type level (verified via `tsd` or equivalent type tests).
+- Builder ordering: out-of-order or repeated direct calls (`.tools()` before `.models()`, two direct `.agents()` calls, `.build()` without models) fail at the type level (verified via `tsd` or equivalent type tests). Static-module type tests prove cross-module literal inference and that module builders expose neither `.build()` nor `.use()`.
+- Static modules: composition across separate model/tool/skill/agent/workflow modules, duplicate module and definition rejection, atomic failure, JavaScript reference validation, ordered data-only inspection provenance, capability closure, and comprehensive deduplicated/idempotent shutdown.
+- Context projection: UTF-8 boundaries, idempotence, tool-call/result pairing, precedence, one context-length retry, cancellation, no duplicate tool execution/history/events, skill preservation, and redacted byte-only diagnostics.
+- Test replay and diagnostic invariants: explicit sanitizer requirement, no-provider-I/O replay, strict ordering/mismatch/exhaustion/unused fixture failures, disabled-by-default invariants, and content-free invariant findings.
 - Default agent loop: tool-use round trip, iteration cap triggers `AgentLoopBudgetError`, explicit agent and harness-default budgets above 64 are honored without silent clamping, non-positive or non-integer budgets are rejected at configuration time, output validation, abort propagation.
 - MCP tools: fake stdio and HTTP MCP servers cover `tools/list`, `tools/call`, auth failure, schema validation failure, malformed response, process death, timeout, cancellation, SDK dynamic import behavior, and shutdown cleanup.
+- Current MCP: hermetic MCP `2026-07-28` fixtures cover stateless routing and
+  protocol headers, list-cache TTL/invalidation, task-augmented `tools/call`,
+  task polling/result/cancellation, and rejection of legacy stateful/HTTP+SSE
+  configuration. No compatibility transport or fallback is tested or shipped.
 - Workflow: parallel agent calls, abort propagates to all.
 - Session: serial concurrency rule throws `SessionBusyError` synchronously on overlap; `clearHistory` / `replaceHistory` reject with `SessionBusyError` when a run is in flight; `replaceHistory` validation failure throws `ValidationError{where:'session_history'}`.
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
@@ -184,6 +192,17 @@ The harness package additionally has integration tests:
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
 - OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.runtime.*`, `harness.context_checkpoint.*`, and `harness.local_sandbox.open` spans and metrics.
+- Agent Plugins addon: valid/invalid 1.0.0 manifest and `mcp.json` fixtures,
+  no-schema-fetch behavior, component failure isolation, trusted-root/default
+  denial/digest checks, explicit alias/type allowlists, and no automatic
+  tool exposure. Filesystem fixtures prove POSIX symlink plus Windows
+  junction/drive/UNC containment under a platform-aware test matrix. Stdio
+  fixtures cover staged root/data, reserved environment names, one-pass
+  placeholder expansion, update-persistent data, sandbox-only execution, and
+  close/cancellation; HTTP fixtures cover URL/header/redirect/auth rules.
+  Plugin spans/logs/inspection prove no paths, command/env/header values,
+  schemas, skill content, credentials, or tool content leak in any capture
+  mode.
 - Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
 - Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
 - Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.
@@ -194,6 +213,11 @@ The harness package additionally has integration tests:
 
 - Skill fixtures live under `packages/harness/src/testing/fixtures/skills/**`. At minimum include `example-skill/SKILL.md`, a supporting `scripts/run.sh`, a `references/REFERENCE.md`, and malformed/lenient frontmatter fixtures. All fixtures are hermetic and contain no secrets.
 - MCP fixtures live under `packages/harness/src/testing/fixtures/mcp/**` and must run without external network, credentials, or real draw.io services. Real MCP integration tests are opt-in only and skipped unless their documented environment variables are present.
+- Agent Plugins fixtures live under
+  `packages/harness-agent-plugins/test/fixtures/**`; they are local-only and
+  include skills-only, stdio, Streamable HTTP, malformed, containment, and
+  digest-update packages. They contain no secrets, executable host-side setup,
+  or network dependency.
 - Used by the agents and sandbox contract suites to verify mount-at-`/skills/<name>/` behavior and frontmatter parsing.
 
 ## Cross-references
@@ -201,4 +225,5 @@ The harness package additionally has integration tests:
 - [04-state-queue-stream](./04-state-queue-stream.md), [05-sandbox](./05-sandbox.md), [06-models](./06-models.md).
 - [12-streaming](./12-streaming.md), [13-public-api](./13-public-api.md), [14-otel-conventions](./14-otel-conventions.md), [15-error-catalog](./15-error-catalog.md).
 - [21-durable-workspaces](./21-durable-workspaces.md).
+- [29-agent-plugins](./29-agent-plugins.md).
 - [17-implementation-plan](./17-implementation-plan.md).

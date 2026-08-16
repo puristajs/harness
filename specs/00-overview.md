@@ -15,6 +15,15 @@ Harness
   └─ Workflows    (handler with agents context)
 ```
 
+Reusable local TypeScript modules may contribute to this one builder graph;
+they are static composition helpers, not a plugin runtime. See
+[25-static-harness-modules](./25-static-harness-modules.md).
+
+Approved, local Agent Plugins are a separate opt-in first-party addon. They
+project portable Agent Skills and explicitly selected MCP tools into the same
+normal builder registries, without executing plugin code or weakening typed
+agent allowlists. See [29-agent-plugins](./29-agent-plugins.md).
+
 **Progressive disclosure.** Skills follow the Agent Skills client model: Level 1 — the harness injects only compact metadata (`name`, `description`, location, and optional compatibility) into the system prompt. Level 2 — when the model decides a skill is relevant, it reads `/skills/<name>/SKILL.md` via the built-in `read` tool. Level 3 — supporting files (`scripts/`, `references/`, `assets/`, or any other bundled files) are accessed on demand. The harness never auto-injects skill bodies.
 
 Streaming is an internal concern of the harness (no `stream` foundation port); per-run events flow through an in-process buffered queue.
@@ -92,12 +101,24 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Harness-owned AI evaluation primitives: trace-context propagation, run
   summaries, telemetry interop, deterministic local scorer helpers, and prompt
   candidate evaluation helpers. See [19-ai-eval-core](./19-ai-eval-core.md).
+- Opt-in transient context projection and one bounded context-length recovery;
+  durable history remains unchanged. See
+  [26-context-projection-and-compaction](./26-context-projection-and-compaction.md).
+- Sanitized, offline-only provider replay and explicit development diagnostic
+  invariants under `@purista/harness/testing`. See
+  [27-test-replay-and-diagnostic-invariants](./27-test-replay-and-diagnostic-invariants.md).
+- First-party, opt-in Agent Plugins 1.0.0 support through
+  `@purista/harness-agent-plugins`: local inspection, explicit trust/digest
+  review, portable skills, and selected MCP bindings. See
+  [29-agent-plugins](./29-agent-plugins.md).
 
 ## Non-goals
 
 - No HTTP server, RPC layer, gateway, or deployable service.
 - No worker process; no daemon; no scheduler.
-- No definition bundle format, signed catalog, or remote loading.
+- No definition bundle format, signed catalog, marketplace, or remote loading.
+  `@purista/harness-agent-plugins` loads only application-approved local Agent
+  Plugins and is not a general code/plugin loader.
 - No hosted approval lifecycle, policy-language runtime, policy bundle store, or governance UI. Core owns only optional tool-exposure filtering, the tool-call governance hook, and the adapter contract in [24-governance-policy](./24-governance-policy.md).
 - No multi-tenant authentication, billing, or quota engine.
 - No time-travel debugger or visual replay UI. Durable workspace replay is an adapter contract for resumable execution state, not a debugger product.

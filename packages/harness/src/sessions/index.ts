@@ -30,9 +30,14 @@ import type {
   ToolsConfig,
   WorkflowDefinition,
   WorkflowDelegationPolicy,
+  WorkflowFanOutOptions,
   WorkflowInput,
   WorkflowOutput,
   BuilderState,
+  ChildTaskDescriptor,
+  ChildTaskHandle,
+  ChildTaskStartOptions,
+  ChildTaskStatus,
   ContextCheckpoints,
   ContentCaptureMode,
   GovernanceConfig,
@@ -58,6 +63,7 @@ import { ATTR_ERROR_TYPE, ATTR_GEN_AI_CONVERSATION_ID, ATTR_GEN_AI_WORKFLOW_NAME
 import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
 import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
+import { validateContextProjection } from '../context-projection.js'
 
 type ModelRunContext = {
   harnessName: string
@@ -112,6 +118,21 @@ type DelegationRunState = {
   activeChildAgentCalls: number
   /** In-flight child-agent call promises, settled before the run terminalizes. */
   inFlightChildCalls: Set<Promise<unknown>>
+  /** Background-task turns waiting for a child-agent concurrency slot. */
+  slotWaiters: Array<{
+    signal: AbortSignal
+    resolve: () => void
+    reject: (error: unknown) => void
+    cleanup: () => void
+  }>
+}
+
+type LiveChildTask = {
+  descriptor: ChildTaskDescriptor
+  controller: AbortController
+  result: Promise<JsonValue>
+  snapshot: ChildTaskStatus
+  cancel: (reason?: string) => Promise<void>
 }
 
 const NEVER_ABORT_SIGNAL = new AbortController().signal
@@ -140,6 +161,66 @@ const STREAM_MAX_BUFFERED_EVENTS = 1024
  * queue bounded when a slow consumer falls behind during a delegation-heavy run.
  */
 const STREAM_UNDROPPABLE_EVENT_TYPES = new Set<string>(['run.finished'])
+
+/** Runs one workflow-local batch without exposing a second orchestration DSL. */
+async function runWorkflowFanOut<T, R>(args: {
+  runId: string
+  items: readonly T[]
+  worker: (item: T, index: number) => Promise<R>
+  options?: WorkflowFanOutOptions
+  signal: AbortSignal
+  maxConcurrency: number
+  emit: (event: RunEvent) => Promise<void>
+}): Promise<R[]> {
+  const requested = args.options?.concurrency ?? args.maxConcurrency
+  if (!Number.isSafeInteger(requested) || requested < 1) {
+    throw new ValidationError('Workflow fan-out concurrency must be a positive safe integer.', {
+      where: 'invoke_options', issues: { fanOutConcurrency: args.options?.concurrency }
+    })
+  }
+  // The workflow's declared delegation policy remains the authority ceiling.
+  // A fan-out request can lower it but can never widen it.
+  const concurrency = Math.min(requested, args.maxConcurrency)
+  const batchId = `fanout_${ulid()}`
+  await args.emit({ type: 'fanout.started', runId: args.runId, batchId, at: now(), count: args.items.length, concurrency })
+  if (args.items.length === 0) {
+    await args.emit({ type: 'fanout.finished', runId: args.runId, batchId, at: now(), count: 0, status: 'succeeded' })
+    return []
+  }
+
+  const results = new Array<R>(args.items.length)
+  let nextIndex = 0
+  let failure: unknown
+  const claim = (): number | undefined => {
+    if (failure !== undefined || args.signal.aborted || nextIndex >= args.items.length) return undefined
+    const index = nextIndex
+    nextIndex += 1
+    return index
+  }
+  const drive = async (): Promise<void> => {
+    while (true) {
+      const index = claim()
+      if (index === undefined) return
+      try {
+        results[index] = await args.worker(args.items[index] as T, index)
+      } catch (error) {
+        failure ??= error
+        return
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, args.items.length) }, () => drive()))
+  if (args.signal.aborted) {
+    await args.emit({ type: 'fanout.finished', runId: args.runId, batchId, at: now(), count: args.items.length, status: 'cancelled' })
+    throw abortError(args.signal, 'run', 'Workflow fan-out was cancelled.')
+  }
+  if (failure !== undefined) {
+    await args.emit({ type: 'fanout.finished', runId: args.runId, batchId, at: now(), count: args.items.length, status: 'failed' })
+    throw failure
+  }
+  await args.emit({ type: 'fanout.finished', runId: args.runId, batchId, at: now(), count: args.items.length, status: 'succeeded' })
+  return results
+}
 
 /**
  * Relay run events from an in-process run to a stream consumer.
@@ -246,6 +327,9 @@ function validateInvokeOptions(opts: InvokeOptions | undefined): void {
   if (opts?.timeoutMs !== undefined && opts.timeoutMs < 0) {
     throw new ValidationError('Invoke options are invalid.', { where: 'invoke_options', issues: { timeoutMs: opts.timeoutMs } })
   }
+  if (!validateContextProjection(opts?.contextProjection)) {
+    throw new ValidationError('Invoke options are invalid.', { where: 'invoke_options', issues: { contextProjection: 'invalid' } })
+  }
 }
 
 function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId: string): Message {
@@ -264,6 +348,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // share one sandbox open (no orphaned sessions) and one SessionState object
   // (so the synchronous busy check/set below serializes runs correctly).
   const sessionStateOpenings = new Map<string, Promise<SessionState>>()
+  // Child tasks deliberately outlive an individual workflow handler. Their
+  // execution is still owned by this harness instance and is cancelled on
+  // session close or harness shutdown.
+  const childTasks = new Map<string, LiveChildTask>()
   // Stable per-harness-instance worker id used as the default durable lease owner.
   const durableWorkerId = `worker_${ulid()}`
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
@@ -288,6 +376,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
+  let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
 
   async function ensureSessionRecord(sessionId: string): Promise<SessionRecord> {
     const existing = await definition.state.getSession(sessionId)
@@ -336,6 +425,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       telemetry.recordCounter('harness.events.persist_errors', 1, { harness: definition.name })
       definition.logger.error('Failed to persist run events.', { harness: definition.name, run_id: runId, error: serializeError(error) })
     }
+  }
+
+  async function cancelChildTasks(predicate: (task: LiveChildTask) => boolean, reason: string): Promise<void> {
+    const selected = [...childTasks.values()].filter(predicate)
+    await Promise.allSettled(selected.map((task) => task.cancel(reason)))
   }
 
   async function getRunSummary(runId: string): Promise<RunSummary | undefined> {
@@ -521,6 +615,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         id: sessionId,
         agents,
         workflows,
+        childTasks: {
+          get: (taskId) => getSessionChildTask(sessionId, taskId),
+          list: (opts) => listSessionChildTasks(sessionId, opts)
+        },
         memory,
         history: {
           list: (opts) => definition.state.listMessages(sessionId, opts)
@@ -559,6 +657,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           if (state.busy) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
           }
+          await cancelChildTasks((task) => task.descriptor.sessionId === sessionId, 'session closed')
           await definition.state.closeSession(sessionId)
           sessionStates.delete(sessionId)
           sessionStateOpenings.delete(sessionId)
@@ -568,6 +667,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
     },
     async shutdown(): Promise<{ errors: HarnessError[] }> {
+      shutdownPromise ??= shutdownHarness()
+      return await shutdownPromise
+    },
+    $infer: {} as Harness<S>['$infer']
+  }
+
+  async function shutdownHarness(): Promise<{ errors: HarnessError[] }> {
       const errors: HarnessError[] = []
       try {
         await mcpRegistry.close()
@@ -581,20 +687,43 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close sandbox session.', { session_id: sessionId }, error))
         }
       }
+      await cancelChildTasks(() => true, 'harness shutdown')
       sessionStates.clear()
-      try {
-        await definition.state.close?.()
-      } catch (error) {
-        errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close state store.', undefined, error))
+      const closed = new Set<object>()
+      const closeResource = async (kind: string, id: string, resource: unknown, allowLog = true): Promise<void> => {
+        if (!resource || (typeof resource !== 'object' && typeof resource !== 'function') || closed.has(resource as object)) return
+        closed.add(resource as object)
+        const close = (resource as { close?: unknown }).close
+        if (typeof close !== 'function') return
+        try {
+          await close.call(resource)
+        } catch (error) {
+          const normalized = error instanceof HarnessError
+            ? error
+            : new InternalError(`Failed to close ${kind}.`, { resource_kind: kind, resource_id: id }, error)
+          errors.push(normalized)
+          if (allowLog) {
+            try {
+              definition.logger.error('Harness resource close failed.', { resource_kind: kind, resource_id: id, error: normalized.code })
+            } catch {
+              // A logger failure must not prevent subsequent resource cleanup.
+            }
+          }
+        }
       }
-      try {
-        await definition.memory.close?.()
-      } catch (error) {
-        errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close memory adapter.', undefined, error))
+
+      for (const [alias, model] of [...Object.entries(definition.models)].reverse()) {
+        await closeResource('model_provider', alias, model.provider)
       }
+      await closeResource('governance', 'governance', definition.governance)
+      await closeResource('context_checkpoints', 'checkpoints', definition.checkpoints)
+      await closeResource('workspace_store', 'workspace_store', definition.workspaceStore)
+      await closeResource('runtime', 'runtime', definition.runtime)
+      await closeResource('memory', definition.memory.info.id, definition.memory)
+      await closeResource('sandbox', 'sandbox', definition.sandbox)
+      await closeResource('state', 'state', definition.state)
+      await closeResource('logger', 'logger', definition.logger, false)
       return { errors }
-    },
-    $infer: {} as Harness<S>['$infer']
   }
 
   async function* streamAgentCall<K extends keyof NonNullable<S['agents']>>(
@@ -677,6 +806,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         }, async () => {
         await emit({ type: 'run.started', runId, at: startedAt })
         const resolvedHistoryWindow = opts?.historyWindow ?? definition.defaults.historyWindow
+        const contextProjection = opts?.contextProjection ?? (agent.model ? definition.models[agent.model]?.contextProjection : undefined) ?? definition.defaults.contextProjection
         const run = await runDefaultAgent({
           harnessName: definition.name,
           agentId,
@@ -700,6 +830,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           checkpoints,
           mountedSkills: state.mountedSkills,
           ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
+          ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: runSignal.signal,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
@@ -824,7 +955,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const delegationState: DelegationRunState = {
       totalChildAgentCalls: 0,
       activeChildAgentCalls: 0,
-      inFlightChildCalls: new Set<Promise<unknown>>()
+      inFlightChildCalls: new Set<Promise<unknown>>(),
+      slotWaiters: []
     }
     try {
       if (durableRuntime && opts?.durable) {
@@ -895,6 +1027,36 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             memory,
             checkpoints,
             step: durableBinding ? durableBinding.step : passthroughStep,
+            fanOut: <T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: WorkflowFanOutOptions) =>
+              runWorkflowFanOut({
+                runId,
+                items,
+                worker,
+                ...(options ? { options } : {}),
+                signal: runSignal.signal,
+                maxConcurrency: delegationPolicy.maxParallelChildAgentCalls,
+                emit
+              }),
+            childTasks: {
+              start: <K extends keyof NonNullable<S['agents']>>(
+                agentId: K,
+                agentInput: AgentInput<S, K>,
+                taskOptions?: ChildTaskStartOptions<S, K>
+              ) => startChildTask({
+                sessionId,
+                parentRunId: runId,
+                workflowId,
+                agentId: agentId as string,
+                agentInput,
+                agent: definition.agents[agentId as string] as AgentDefinition<S>,
+                ...(taskOptions ? { options: taskOptions as ChildTaskStartOptions<S, keyof NonNullable<S['agents']>> } : {}),
+                workflowPolicy: delegationPolicy,
+                delegationState,
+                parentSignal: runSignal.signal,
+                durable: durableBinding !== undefined,
+                metadata: opts?.metadata ?? {}
+              }) as Promise<ChildTaskHandle<AgentOutput<S, K>>>
+            },
             agents: Object.fromEntries(
               Object.entries(definition.agents).map(([agentId, agent]) => [
                 agentId,
@@ -936,6 +1098,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                   const delegationCallId = `delegate_${ulid()}`
                   const childCall = (async () => {
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
+                    const contextProjection = agentOpts?.contextProjection ?? opts?.contextProjection ?? (selectedModelAlias ? definition.models[selectedModelAlias]?.contextProjection : undefined) ?? definition.defaults.contextProjection
                     const agentMetadata = { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
                     const agentMemory = memoryFacade({
                       sessionId,
@@ -976,6 +1139,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       checkpoints: agentCheckpoints,
                       mountedSkills: runMountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
+                      ...(contextProjection ? { contextProjection } : {}),
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
                       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
@@ -995,7 +1159,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                     return await childCall
                   } finally {
                     delegationState.inFlightChildCalls.delete(childCall)
-                    delegationState.activeChildAgentCalls -= 1
+                    releaseDelegationSlot(delegationState)
                     agentSignal.cleanup()
                     if (agentSignal !== combinedSignal) combinedSignal.cleanup()
                   }
@@ -1125,6 +1289,511 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return runStepWithRetry(fn, options.retry)
   }
 
+  /**
+   * Starts a one-shot task in an isolated child execution context. The child
+   * keeps the workflow's already-validated agent/model boundary, but receives
+   * neither parent messages nor a shared sandbox session.
+   */
+  async function startChildTask(args: {
+    sessionId: string
+    parentRunId: string
+    workflowId: string
+    agentId: string
+    agentInput: unknown
+    agent: AgentDefinition<S>
+    options?: { idempotencyKey?: string; timeoutMs?: number; model?: string; context?: 'isolated'; mode?: 'one_shot' | 'continuable' }
+    workflowPolicy: EffectiveDelegationPolicy
+    delegationState: DelegationRunState
+    parentSignal: AbortSignal
+    durable: boolean
+    metadata: Readonly<Record<string, JsonValue>>
+  }): Promise<ChildTaskHandle<JsonValue>> {
+    if (args.parentSignal.aborted) throw abortError(args.parentSignal, 'run', 'Run was cancelled.')
+    if (args.options?.context !== undefined && args.options.context !== 'isolated') {
+      throw new ValidationError('Child-task context policy is invalid.', { where: 'invoke_options', issues: { context: args.options.context } })
+    }
+    if (args.options?.mode !== undefined && args.options.mode !== 'one_shot' && args.options.mode !== 'continuable') {
+      throw new ValidationError('Child-task mode is invalid.', { where: 'invoke_options', issues: { mode: args.options.mode } })
+    }
+    if (args.options?.timeoutMs !== undefined && (!Number.isFinite(args.options.timeoutMs) || args.options.timeoutMs < 0)) {
+      throw new ValidationError('Child-task timeout is invalid.', { where: 'invoke_options', issues: { timeoutMs: args.options.timeoutMs } })
+    }
+    if (args.options?.idempotencyKey !== undefined && !/^[A-Za-z0-9_.:-]{1,128}$/.test(args.options.idempotencyKey)) {
+      throw new ValidationError('Child-task idempotency key is invalid.', { where: 'invoke_options', issues: { idempotencyKey: args.options.idempotencyKey } })
+    }
+    if (args.durable && !args.options?.idempotencyKey) {
+      throw new ValidationError('Durable child tasks require an idempotency key.', {
+        where: 'invoke_options', issues: { reason: 'child_task_idempotency_key_required' }
+      })
+    }
+    if (args.durable && args.options?.mode === 'continuable') {
+      throw new ValidationError('Continuable child tasks are not available for durable workflow invocations.', {
+        where: 'invoke_options', issues: { reason: 'durable_continuable_child_task_unsupported' }
+      })
+    }
+    if (args.options?.model !== undefined && !(args.options.model in (definition.models as ModelsConfig))) {
+      throw new ValidationError('Unknown model alias for child task.', { where: 'invoke_options', issues: { model: args.options.model } })
+    }
+
+    const modelAlias = args.options?.model ?? args.agent.model
+    assertDelegationAllowed({
+      policy: args.workflowPolicy,
+      state: args.delegationState,
+      workflowId: args.workflowId,
+      agentId: args.agentId,
+      modelAlias,
+      checkParallel: false
+    })
+    args.delegationState.totalChildAgentCalls += 1
+
+    // A durable caller supplies an idempotency key. Repeating its start after
+    // a completed durable step returns the existing terminal task rather than
+    // publishing a second external agent run.
+    const taskId = args.options?.idempotencyKey
+      ? `task_${args.parentRunId}_${args.options.idempotencyKey}`
+      : `task_${ulid()}`
+    const existing = await definition.state.getRun(taskId)
+    if (existing) {
+      args.delegationState.totalChildAgentCalls -= 1
+      if (existing.status === 'running') {
+        throw new ValidationError('A durable child task is still running and is not resident in this harness instance.', {
+          where: 'invoke_options', issues: { taskId, reason: 'child_task_recovery_required' }
+        })
+      }
+      const descriptor = await readChildTaskDescriptor(taskId, existing)
+      return completedChildTaskHandle(descriptor, existing)
+    }
+
+    const controller = new AbortController()
+    const parentAndTask = combineSignals(args.parentSignal, controller.signal)
+    const taskSignal = args.options?.timeoutMs !== undefined
+      ? createRunSignal(parentAndTask.signal, args.options.timeoutMs)
+      : parentAndTask
+    const createdAt = now()
+    const descriptor: ChildTaskDescriptor = Object.freeze({
+      id: taskId,
+      parentRunId: args.parentRunId,
+      sessionId: args.sessionId,
+      workflowId: args.workflowId,
+      agentId: args.agentId,
+      modelAlias,
+      contextPolicy: 'isolated',
+      mode: args.options?.mode ?? 'one_shot',
+      createdAt
+    })
+    await definition.state.createRun({
+      id: taskId,
+      sessionId: args.sessionId,
+      kind: 'child_task',
+      target: args.agentId,
+      startedAt: createdAt,
+      status: 'running',
+      input: args.agentInput as JsonValue
+    })
+
+    if (descriptor.mode === 'continuable') {
+      return startContinuableChildTask({
+        ...args,
+        taskId,
+        descriptor,
+        createdAt,
+        controller,
+        taskSignal,
+        parentAndTask,
+        modelAlias
+      })
+    }
+
+    let live: LiveChildTask
+    const emit = async (event: RunEvent): Promise<void> => {
+      const eventAt = 'at' in event ? event.at : now()
+      await appendEvents(taskId, [{ id: ulid(), runId: taskId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
+    }
+    const settle = async (
+      status: 'succeeded' | 'failed' | 'cancelled',
+      error?: ReturnType<typeof serializeError>,
+      output?: JsonValue
+    ): Promise<void> => {
+      const finishedAt = now()
+      live.snapshot = Object.freeze({ descriptor, status, finishedAt, ...(error ? { error } : {}) })
+      await emit({
+        type: 'child_task.settled', runId: taskId, taskId, at: finishedAt,
+        parentRunId: args.parentRunId, workflowId: args.workflowId, agentId: args.agentId,
+        status, ...(error ? { error } : {})
+      })
+      await emit({ type: 'run.finished', runId: taskId, at: finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+      await definition.state.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+    }
+    const result = (async (): Promise<JsonValue> => {
+      let taskSandbox: SandboxSession | undefined
+      let slotAcquired = false
+      try {
+        await emit({
+          type: 'child_task.started', runId: taskId, taskId, at: createdAt,
+          parentRunId: args.parentRunId, workflowId: args.workflowId, agentId: args.agentId,
+          modelAlias, contextPolicy: 'isolated', mode: 'one_shot'
+        })
+        await emit({ type: 'run.started', runId: taskId, at: createdAt })
+        await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
+        slotAcquired = true
+        taskSandbox = await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
+        const memory = memoryFacade({
+          sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
+          signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
+        })
+        const checkpoints = createContextCheckpoints({ runId: taskId, sessionId: args.sessionId, workflowId: args.workflowId, agentId: args.agentId, signal: taskSignal.signal })
+        const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
+        const run = await runDefaultAgent({
+          harnessName: definition.name,
+          agentId: args.agentId,
+          runId: taskId,
+          sessionId: args.sessionId,
+          workflowId: args.workflowId,
+          delegationCallId: taskId,
+          delegationDepth: CHILD_DELEGATION_DEPTH,
+          input: args.agentInput,
+          // Isolation is intentional: do not fork raw parent history.
+          history: [],
+          agent: args.agent,
+          modelAlias,
+          models: withRunEventModelRegistry(modelRegistry, {
+            harnessName: definition.name, sessionId: args.sessionId, runId: taskId,
+            workflowId: args.workflowId, agentId: args.agentId, modelAlias
+          }, emit),
+          skills: resolvedSkills as Record<string, ResolvedSkill>,
+          customTools: definition.tools as ToolsConfig,
+          ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
+          mcpRegistry,
+          session: taskSandbox,
+          memory,
+          checkpoints,
+          mountedSkills: new Set<string>(),
+          ...(contextProjection ? { contextProjection } : {}),
+          maxSteps: definition.defaults.agentMaxIterations ?? 16,
+          signal: taskSignal.signal,
+          toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
+          logger: definition.logger,
+          telemetry,
+          emitEvent: emit,
+          metadata: args.metadata
+        })
+        await settle('succeeded', undefined, run.output as JsonValue)
+        return run.output as JsonValue
+      } catch (error) {
+        const finalError = normalizeRunError(error, taskSignal.signal)
+        const serialized = serializeError(finalError)
+        await settle(finalError instanceof OperationCancelledError ? 'cancelled' : 'failed', serialized)
+        throw finalError
+      } finally {
+        if (slotAcquired) releaseDelegationSlot(args.delegationState)
+        taskSignal.cleanup()
+        if (taskSignal !== parentAndTask) parentAndTask.cleanup()
+        if (taskSandbox) {
+          try { await taskSandbox.close() } catch (error) {
+            definition.logger.warn('Failed to close child-task sandbox.', { task_id: taskId, error: serializeError(error) })
+          }
+        }
+        childTasks.delete(taskId)
+      }
+    })()
+    live = {
+      descriptor,
+      controller,
+      result,
+      snapshot: Object.freeze({ descriptor, status: 'running' }),
+      cancel: async (reason?: string) => {
+        controller.abort(new OperationCancelledError('Child task was cancelled.', { scope: 'run' }, reason))
+        await result.catch(() => undefined)
+      }
+    }
+    childTasks.set(taskId, live)
+    // Child tasks may intentionally outlive their starter workflow, so a
+    // dropped handle must not surface an unhandled rejection.
+    result.catch(() => undefined)
+    return childTaskHandle(live)
+  }
+
+  function childTaskHandle(live: LiveChildTask): ChildTaskHandle<JsonValue> {
+    return Object.freeze({
+      id: live.descriptor.id,
+      result: () => live.result,
+      status: async () => live.snapshot,
+      cancel: async (reason?: string) => live.cancel(reason)
+    })
+  }
+
+  /**
+   * Runs a task-owned conversation one turn at a time. It deliberately keeps
+   * all history in the live task, never in the parent session's transcript.
+   * This is an in-process continuable primitive, not a claim of recovery after
+   * a process crash; durable workflows reject this mode at start time.
+   */
+  function startContinuableChildTask(args: {
+    sessionId: string
+    parentRunId: string
+    workflowId: string
+    agentId: string
+    agentInput: unknown
+    agent: AgentDefinition<S>
+    workflowPolicy: EffectiveDelegationPolicy
+    delegationState: DelegationRunState
+    metadata: Readonly<Record<string, JsonValue>>
+    taskId: string
+    descriptor: ChildTaskDescriptor
+    createdAt: string
+    controller: AbortController
+    taskSignal: ReturnType<typeof combineSignals> | ReturnType<typeof createRunSignal>
+    parentAndTask: ReturnType<typeof combineSignals>
+    modelAlias: string
+  }): ChildTaskHandle<JsonValue> {
+    const { taskId, descriptor, controller, taskSignal, parentAndTask, modelAlias } = args
+    const history: Message[] = []
+    let taskSandbox: SandboxSession | undefined
+    let settled = false
+    let closing = false
+    let lastOutput: JsonValue | undefined
+    let terminalFailure: unknown
+    let complete!: (value: JsonValue) => void
+    let fail!: (error: unknown) => void
+    const result = new Promise<JsonValue>((resolve, reject) => {
+      complete = resolve
+      fail = reject
+    })
+    let chain: Promise<unknown> = Promise.resolve()
+    let live: LiveChildTask
+
+    const emit = async (event: RunEvent): Promise<void> => {
+      const eventAt = 'at' in event ? event.at : now()
+      await appendEvents(taskId, [{ id: ulid(), runId: taskId, at: eventAt, type: event.type, payload: sanitizeEventForPersistence(event) }])
+    }
+    const cleanup = async (): Promise<void> => {
+      taskSignal.cleanup()
+      if (taskSignal !== parentAndTask) parentAndTask.cleanup()
+      if (taskSandbox) {
+        try {
+          await taskSandbox.close()
+        } catch (error) {
+          definition.logger.warn('Failed to close continuable child-task sandbox.', { task_id: taskId, error: serializeError(error) })
+        }
+        taskSandbox = undefined
+      }
+      childTasks.delete(taskId)
+    }
+    const settle = async (
+      status: 'succeeded' | 'failed' | 'cancelled',
+      error?: ReturnType<typeof serializeError>,
+      output?: JsonValue
+    ): Promise<void> => {
+      if (settled) return
+      settled = true
+      const finishedAt = now()
+      live.snapshot = Object.freeze({ descriptor, status, finishedAt, ...(error ? { error } : {}) })
+      await emit({
+        type: 'child_task.settled', runId: taskId, taskId, at: finishedAt,
+        parentRunId: args.parentRunId, workflowId: args.workflowId, agentId: args.agentId,
+        status, ...(error ? { error } : {})
+      })
+      await emit({ type: 'run.finished', runId: taskId, at: finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+      await definition.state.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+      await cleanup()
+      if (status === 'succeeded') complete(output ?? null)
+      else fail(terminalFailure ?? new InternalError('Continuable child task did not complete successfully.', { task_id: taskId, status, ...(error ? { error } : {}) }))
+    }
+    const inputMessage = (input: unknown): Message => ({
+      id: `msg_${ulid()}_u`, sessionId: args.sessionId, runId: taskId, role: 'user',
+      content: typeof input === 'string' ? input : JSON.stringify(input), timestamp: now()
+    })
+    const runTurn = async (input: unknown): Promise<JsonValue> => {
+      if (settled) throw new ValidationError('Child task is already terminal.', { where: 'invoke_options', issues: { taskId, reason: 'child_task_terminal' } })
+      let slotAcquired = false
+      try {
+        await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
+        slotAcquired = true
+        taskSandbox ??= await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
+        const memory = memoryFacade({
+          sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
+          signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
+        })
+        const checkpoints = createContextCheckpoints({ runId: taskId, sessionId: args.sessionId, workflowId: args.workflowId, agentId: args.agentId, signal: taskSignal.signal })
+        const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
+        const run = await runDefaultAgent({
+          harnessName: definition.name,
+          agentId: args.agentId,
+          runId: taskId,
+          sessionId: args.sessionId,
+          workflowId: args.workflowId,
+          delegationCallId: taskId,
+          delegationDepth: CHILD_DELEGATION_DEPTH,
+          input,
+          history,
+          agent: args.agent,
+          modelAlias,
+          models: withRunEventModelRegistry(modelRegistry, {
+            harnessName: definition.name, sessionId: args.sessionId, runId: taskId,
+            workflowId: args.workflowId, agentId: args.agentId, modelAlias
+          }, emit),
+          skills: resolvedSkills as Record<string, ResolvedSkill>,
+          customTools: definition.tools as ToolsConfig,
+          ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
+          mcpRegistry,
+          session: taskSandbox,
+          memory,
+          checkpoints,
+          mountedSkills: new Set<string>(),
+          ...(contextProjection ? { contextProjection } : {}),
+          maxSteps: definition.defaults.agentMaxIterations ?? 16,
+          signal: taskSignal.signal,
+          toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
+          logger: definition.logger,
+          telemetry,
+          emitEvent: emit,
+          metadata: args.metadata
+        })
+        history.push(inputMessage(input), ...run.emitted)
+        lastOutput = run.output as JsonValue
+        return lastOutput
+      } catch (error) {
+        const finalError = normalizeRunError(error, taskSignal.signal)
+        terminalFailure = finalError
+        await settle(finalError instanceof OperationCancelledError ? 'cancelled' : 'failed', serializeError(finalError))
+        throw finalError
+      } finally {
+        if (slotAcquired) releaseDelegationSlot(args.delegationState)
+      }
+    }
+    const enqueue = (input: unknown): Promise<JsonValue> => {
+      if (closing || settled) {
+        return Promise.reject(new ValidationError('Child task is closing or already terminal.', {
+          where: 'invoke_options', issues: { taskId, reason: closing ? 'child_task_closing' : 'child_task_terminal' }
+        }))
+      }
+      const next = chain.then(() => runTurn(input)) as Promise<JsonValue>
+      chain = next.catch(() => undefined)
+      return next
+    }
+    const close = async (): Promise<JsonValue | undefined> => {
+      closing = true
+      await chain
+      if (!settled) await settle('succeeded', undefined, lastOutput)
+      return await result
+    }
+    const cancel = async (reason?: string): Promise<void> => {
+      closing = true
+      controller.abort(new OperationCancelledError('Child task was cancelled.', { scope: 'run' }, reason))
+      await chain
+      if (!settled) {
+        terminalFailure = abortError(taskSignal.signal, 'run', 'Child task was cancelled.')
+        await settle('cancelled', serializeError(terminalFailure))
+      }
+      await result.catch(() => undefined)
+    }
+    live = {
+      descriptor,
+      controller,
+      result,
+      snapshot: Object.freeze({ descriptor, status: 'running' }),
+      cancel
+    }
+    childTasks.set(taskId, live)
+    result.catch(() => undefined)
+    const initial = (async () => {
+      await emit({
+        type: 'child_task.started', runId: taskId, taskId, at: args.createdAt,
+        parentRunId: args.parentRunId, workflowId: args.workflowId, agentId: args.agentId,
+        modelAlias, contextPolicy: 'isolated', mode: 'continuable'
+      })
+      await emit({ type: 'run.started', runId: taskId, at: args.createdAt })
+      return await runTurn(args.agentInput)
+    })()
+    chain = initial.catch(() => undefined)
+    return Object.freeze({
+      id: taskId,
+      result: () => result,
+      status: async () => live.snapshot,
+      cancel,
+      send: (input: unknown) => enqueue(input),
+      close
+    })
+  }
+
+  async function readChildTaskDescriptor(taskId: string, record: RunRecord): Promise<ChildTaskDescriptor> {
+    const events = await definition.state.listEvents(taskId, { limit: 1 })
+    const started = events.find((event) => event.type === 'child_task.started')
+    const payload = started?.payload
+    if (isJsonRecord(payload)
+      && typeof payload['parentRunId'] === 'string'
+      && typeof payload['workflowId'] === 'string'
+      && typeof payload['agentId'] === 'string'
+      && typeof payload['modelAlias'] === 'string') {
+      return Object.freeze({
+        id: taskId, parentRunId: payload['parentRunId'], sessionId: record.sessionId,
+        workflowId: payload['workflowId'], agentId: payload['agentId'], modelAlias: payload['modelAlias'],
+        contextPolicy: 'isolated', mode: payload['mode'] === 'continuable' ? 'continuable' : 'one_shot', createdAt: record.startedAt
+      })
+    }
+    throw new ValidationError('Stored child-task descriptor is invalid.', { where: 'invoke_options', issues: { taskId, reason: 'invalid_child_task_descriptor' } })
+  }
+
+  function completedChildTaskHandle(descriptor: ChildTaskDescriptor, record: RunRecord): ChildTaskHandle<JsonValue> {
+    const error = record.error ? normalizeSerializedRunError(record.error) : undefined
+    const snapshot: ChildTaskStatus = Object.freeze({
+      descriptor,
+      status: record.status,
+      ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+      ...(error ? { error } : {})
+    })
+    return Object.freeze({
+      id: descriptor.id,
+      result: async () => {
+        if (record.status === 'succeeded') return record.output as JsonValue
+        throw new InternalError('Child task did not complete successfully.', { task_id: descriptor.id, status: record.status, ...(error ? { error } : {}) })
+      },
+      status: async () => snapshot,
+      cancel: async () => undefined
+    })
+  }
+
+  async function getSessionChildTask(sessionId: string, taskId: string): Promise<ChildTaskHandle<JsonValue> | undefined> {
+    const live = childTasks.get(taskId)
+    if (live && live.descriptor.sessionId === sessionId) return childTaskHandle(live)
+    const record = await definition.state.getRun(taskId)
+    if (!record || record.sessionId !== sessionId || record.kind !== 'child_task') return undefined
+    const descriptor = await readChildTaskDescriptor(taskId, record)
+    if (record.status !== 'running') return completedChildTaskHandle(descriptor, record)
+    const unavailable = new ValidationError('Child task is not resident in this harness instance.', {
+      where: 'invoke_options', issues: { taskId, reason: 'child_task_recovery_required' }
+    })
+    const snapshot: ChildTaskStatus = Object.freeze({ descriptor, status: 'running' })
+    return Object.freeze({
+      id: taskId,
+      result: async () => { throw unavailable },
+      status: async () => snapshot,
+      cancel: async () => { throw unavailable }
+    })
+  }
+
+  async function listSessionChildTasks(
+    sessionId: string,
+    opts?: { limit?: number; before?: string }
+  ): Promise<readonly ChildTaskStatus[]> {
+    const records = await definition.state.listRuns(sessionId, opts)
+    const childRecords = records.filter((record) => record.kind === 'child_task')
+    return await Promise.all(childRecords.map(async (record) => {
+      const live = childTasks.get(record.id)
+      if (live && live.descriptor.sessionId === sessionId) return live.snapshot
+      const descriptor = await readChildTaskDescriptor(record.id, record)
+      const error = record.error ? normalizeSerializedRunError(record.error) : undefined
+      return Object.freeze({
+        descriptor,
+        status: record.status,
+        ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+        ...(error ? { error } : {})
+      })
+    }))
+  }
+
   function resolveDelegationPolicy(workflow: WorkflowDefinition<S>): EffectiveDelegationPolicy {
     const configured = workflow.delegation as WorkflowDelegationPolicy<S> | undefined
     const policy = configured ?? {}
@@ -1142,12 +1811,62 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
   }
 
+  /**
+   * Background task turns queue behind the same per-workflow child-agent
+   * ceiling used by direct `ctx.agents.*` calls. They reserve their total-call
+   * budget at creation, but consume an active slot only while actually running.
+   */
+  async function acquireDelegationSlot(
+    state: DelegationRunState,
+    policy: EffectiveDelegationPolicy,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (signal.aborted) throw abortError(signal, 'run', 'Child task was cancelled before execution.')
+    if (state.activeChildAgentCalls < policy.maxParallelChildAgentCalls) {
+      state.activeChildAgentCalls += 1
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      const waiter = {
+        signal,
+        resolve: () => {
+          waiter.cleanup()
+          resolve()
+        },
+        reject: (error: unknown) => {
+          waiter.cleanup()
+          reject(error)
+        },
+        cleanup: () => {
+          signal.removeEventListener('abort', onAbort)
+          const index = state.slotWaiters.indexOf(waiter)
+          if (index >= 0) state.slotWaiters.splice(index, 1)
+        }
+      }
+      const onAbort = () => waiter.reject(abortError(signal, 'run', 'Child task was cancelled while queued.'))
+      signal.addEventListener('abort', onAbort, { once: true })
+      state.slotWaiters.push(waiter)
+    })
+  }
+
+  function releaseDelegationSlot(state: DelegationRunState): void {
+    state.activeChildAgentCalls = Math.max(0, state.activeChildAgentCalls - 1)
+    while (state.activeChildAgentCalls < Number.MAX_SAFE_INTEGER && state.slotWaiters.length > 0) {
+      const waiter = state.slotWaiters.shift()
+      if (!waiter || waiter.signal.aborted) continue
+      state.activeChildAgentCalls += 1
+      waiter.resolve()
+      return
+    }
+  }
+
   function assertDelegationAllowed(args: {
     policy: EffectiveDelegationPolicy
     state: DelegationRunState
     workflowId: string
     agentId: string
     modelAlias: string
+    checkParallel?: boolean
   }): void {
     const { policy, state, workflowId, agentId, modelAlias } = args
     if (!policy.enabled) {
@@ -1180,7 +1899,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         limit: policy.maxChildAgentCalls
       })
     }
-    if (state.activeChildAgentCalls >= policy.maxParallelChildAgentCalls) {
+    if (args.checkParallel !== false && state.activeChildAgentCalls >= policy.maxParallelChildAgentCalls) {
       throw new DelegationPolicyError('Workflow parallel child-agent call budget exceeded.', {
         workflow_id: workflowId,
         agent_id: agentId,
@@ -1555,6 +2274,29 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
     case 'run.finished':
       return {
         ...(event.output !== undefined ? { output: '[redacted]' } : {}),
+        ...(event.error ? { error: event.error } : {})
+      } as unknown as JsonValue
+    case 'fanout.started':
+      return { batchId: event.batchId, count: event.count, concurrency: event.concurrency }
+    case 'fanout.finished':
+      return { batchId: event.batchId, count: event.count, status: event.status }
+    case 'child_task.started':
+      return {
+        taskId: event.taskId,
+        parentRunId: event.parentRunId,
+        workflowId: event.workflowId,
+        agentId: event.agentId,
+        modelAlias: event.modelAlias,
+        contextPolicy: event.contextPolicy,
+        mode: event.mode
+      }
+    case 'child_task.settled':
+      return {
+        taskId: event.taskId,
+        parentRunId: event.parentRunId,
+        workflowId: event.workflowId,
+        agentId: event.agentId,
+        status: event.status,
         ...(event.error ? { error: event.error } : {})
       } as unknown as JsonValue
     case 'agent.started':

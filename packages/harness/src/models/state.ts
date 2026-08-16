@@ -50,7 +50,7 @@ export interface SerializedError {
 export interface RunRecord {
   id: string
   sessionId: string
-  kind: 'workflow' | 'agent'
+  kind: 'workflow' | 'agent' | 'child_task'
   target: string
   startedAt: string
   finishedAt?: string

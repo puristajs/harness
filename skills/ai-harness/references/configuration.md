@@ -19,7 +19,7 @@ npm install @purista/harness @purista/harness-openai zod
 ```
 
 Optional peer dependencies:
-- `@modelcontextprotocol/sdk` for MCP stdio/http tools
+- `@modelcontextprotocol/client` for MCP stdio/http tools
 - `just-bash` for `bashSandbox()`
 - `@opentelemetry/api` for connecting spans to an existing OpenTelemetry context
 
@@ -180,3 +180,16 @@ if (shutdown.errors.length) logger.error('Harness shutdown errors.', { errors: s
 ```
 
 Provider clients, MCP runners, state stores, and sandboxes may own resources that need shutdown.
+# Static module composition
+
+Use `defineHarnessModule<Required>()('id', { register(builder) { ... } })`
+when configuration needs to live in a local file or addon package. `Required`
+states the already-configured literal keys the module needs; call `.use(module)`
+only after those contributions. Modules may contribute models, tools, skills,
+agents, and workflows. They cannot build/load a harness or supply shutdown
+hooks. Duplicate ids fail rather than override earlier definitions.
+
+`HarnessDefaults.contextProjection`, `ModelAlias.contextProjection`, and
+`InvokeOptions.contextProjection` select a retry-only tool-result projection;
+the explicit invocation wins, then model alias, then harness default. The first
+request is unchanged and only one context-length retry is attempted.

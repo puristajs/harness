@@ -37,7 +37,7 @@ function unavailableRunner(): McpTransportRunner {
 
 function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: SpawnCapableSandboxSession, hooks: StdioRunnerHooks): McpTransportRunner {
   let installPromise: Promise<void> | undefined
-  let connected: Promise<{ client: SdkClient; transport: SandboxStdioTransport; cleanup?: () => Promise<void> }> | undefined
+  let connected: Promise<StdioConnection> | undefined
 
   async function ensureInstalled(signal?: AbortSignal): Promise<void> {
     if (!config.install) return
@@ -51,32 +51,15 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
     await installPromise
   }
 
-  async function connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ client: SdkClient; transport: SandboxStdioTransport; cleanup?: () => Promise<void> }> {
+  async function connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<StdioConnection> {
     if (connected) {
       const current = await connected.catch(() => undefined)
       if (current && !current.transport.isClosed) return current
+      if (current) await finalizeConnection(current)
       connected = undefined
     }
     if (!connected) {
-      const promise = (async () => {
-        await ensureInstalled(options?.signal)
-        const prepared = await config.prepareLaunch?.({ sandbox: session, ...(options?.signal ? { signal: options.signal } : {}) })
-        const launch = prepared ? { ...config, ...prepared, env: { ...(config.env ?? {}), ...(prepared.env ?? {}) } } : config
-        const transport = new SandboxStdioTransport(launch, session, hooks)
-        try {
-          const { Client } = await import('@modelcontextprotocol/client')
-          const client = new Client(
-            { name: `purista-harness-${config.localToolId}`, version: '0.0.0' },
-            { versionNegotiation: { mode: { pin: '2026-07-28' } } }
-          ) as SdkClient
-          await client.connect(transport as never, toSdkOptions(options))
-          return { client, transport, ...(prepared?.cleanup ? { cleanup: prepared.cleanup } : {}) }
-        } catch (error) {
-          await transport.close().catch(() => undefined)
-          await prepared?.cleanup?.().catch(() => undefined)
-          throw mapStdioError(config, 'connect', error)
-        }
-      })()
+      const promise = openConnection(options)
       void promise.catch(() => {
         if (connected === promise) connected = undefined
       })
@@ -85,12 +68,66 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
     return connected
   }
 
+  async function openConnection(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<StdioConnection> {
+    let client: SdkClient | undefined
+    let transport: SandboxStdioTransport | undefined
+    let cleanup: (() => Promise<void>) | undefined
+    try {
+      return await withMcpTimeout(
+        { ...(options?.signal ? { signal: options.signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs, scope: 'tool' },
+        async (signal) => {
+          await ensureInstalled(signal)
+          const prepared = await config.prepareLaunch?.({ sandbox: session, ...(signal ? { signal } : {}) })
+          cleanup = prepared?.cleanup
+          const launch = prepared ? { ...config, ...prepared, env: { ...(config.env ?? {}), ...(prepared.env ?? {}) } } : config
+          transport = new SandboxStdioTransport(launch, session, hooks)
+          const { Client } = await import('@modelcontextprotocol/client')
+          client = new Client(
+            { name: `purista-harness-${config.localToolId}`, version: '0.0.0' },
+            { versionNegotiation: { mode: { pin: '2026-07-28' } } }
+          ) as SdkClient
+          await client.connect(transport as never, toSdkOptions(signal ? { signal } : undefined))
+          return { client, transport, ...(cleanup ? { cleanup } : {}) }
+        }
+      )
+    } catch (error) {
+      const finalization = await closeConnectionParts(client, transport, cleanup)
+      const primary = error instanceof OperationTimeoutError ? error : mapStdioError(config, 'connect', error)
+      if (finalization.cleanupFailure !== undefined) {
+        throw new AggregateError([primary, ...finalization.failures], 'MCP stdio connection failed and its staged resources could not be finalized.')
+      }
+      throw primary
+    }
+  }
+
+  async function resetConnection(current: StdioConnection, error: unknown): Promise<never> {
+    if (connected) {
+      const active = await connected.catch(() => undefined)
+      if (active === current) connected = undefined
+    }
+    try {
+      await finalizeConnection(current)
+    } catch (finalizeError) {
+      if (current.cleanupFailure === undefined) throw error
+      throw new AggregateError([error, finalizeError], 'MCP stdio operation failed and its staged resources could not be finalized.')
+    }
+    throw error
+  }
+
   return {
     async listTools(options) {
       try {
         const active = await connect(options)
-        return (await Promise.race([active.client.listTools(undefined, toSdkOptions(options)), active.transport.waitForClose()])).tools
+        return (await withMcpTimeout(
+          { ...(options?.signal ? { signal: options.signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs, scope: 'tool' },
+          (signal) => raceTransportClose(active.transport, () => active.client.listTools(undefined, toSdkOptions(signal ? { signal } : undefined)))
+        )).tools
       } catch (error) {
+        if (error instanceof OperationTimeoutError) {
+          const current = await connected?.catch(() => undefined)
+          if (current) return resetConnection(current, error)
+          throw error
+        }
         if (error instanceof McpProtocolError || error instanceof SandboxNoExecutorError) throw error
         throw mapStdioError(config, 'list', error)
       }
@@ -100,10 +137,15 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
         const active = await connect(options)
         return await withMcpTimeout(
           { ...(options?.signal ? { signal: options.signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs, scope: 'tool' },
-          (signal) => Promise.race([active.client.callTool({ name, arguments: input }, toSdkOptions({ ...(signal ? { signal } : {}) })), active.transport.waitForClose()])
+          (signal) => raceTransportClose(active.transport, () => active.client.callTool({ name, arguments: input }, toSdkOptions(signal ? { signal } : undefined)))
         )
       } catch (error) {
-        if (error instanceof McpProtocolError || error instanceof SandboxNoExecutorError || error instanceof OperationTimeoutError) throw error
+        if (error instanceof OperationTimeoutError) {
+          const current = await connected?.catch(() => undefined)
+          if (current) return resetConnection(current, error)
+          throw error
+        }
+        if (error instanceof McpProtocolError || error instanceof SandboxNoExecutorError) throw error
         throw mapStdioError(config, 'call', error)
       }
     },
@@ -112,8 +154,53 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       connected = undefined
       installPromise = undefined
       if (!current) return
-      await Promise.allSettled([current.client.close(), current.transport.close(), ...(current.cleanup ? [current.cleanup()] : [])])
+      await finalizeConnection(current)
     }
+  }
+}
+
+interface StdioConnection {
+  client: SdkClient
+  transport: SandboxStdioTransport
+  cleanup?: () => Promise<void>
+  finalization?: Promise<void>
+  cleanupFailure?: unknown
+}
+
+async function finalizeConnection(connection: StdioConnection): Promise<void> {
+  connection.finalization ??= (async () => {
+    const finalization = await closeConnectionParts(connection.client, connection.transport, connection.cleanup)
+    connection.cleanupFailure = finalization.cleanupFailure
+    if (finalization.failures.length > 0) throw new AggregateError(finalization.failures, 'MCP stdio resources could not be finalized.')
+  })()
+  return connection.finalization
+}
+
+async function closeConnectionParts(
+  client: SdkClient | undefined,
+  transport: SandboxStdioTransport | undefined,
+  cleanup: (() => Promise<void>) | undefined
+): Promise<{ failures: unknown[]; cleanupFailure?: unknown }> {
+  const failures: unknown[] = []
+  if (client) {
+    try { await client.close() } catch (error) { failures.push(error) }
+  }
+  if (transport) {
+    try { await transport.close() } catch (error) { failures.push(error) }
+  }
+  let cleanupFailure: unknown
+  if (cleanup) {
+    try { await cleanup() } catch (error) { cleanupFailure = error; failures.push(error) }
+  }
+  return { failures, ...(cleanupFailure !== undefined ? { cleanupFailure } : {}) }
+}
+
+async function raceTransportClose<T>(transport: SandboxStdioTransport, operation: () => Promise<T>): Promise<T> {
+  const closed = transport.waitForClose()
+  try {
+    return await Promise.race([operation(), closed.promise])
+  } finally {
+    closed.dispose()
   }
 }
 
@@ -211,8 +298,16 @@ class SandboxStdioTransport {
     this.onerror?.(error instanceof Error ? error : new Error(String(error)))
   }
 
-  waitForClose(): Promise<never> {
-    return new Promise((_, reject: (error: Error) => void) => this.closeWaiters.add(reject))
+  waitForClose(): { promise: Promise<never>; dispose: () => void } {
+    let rejectClose!: (error: Error) => void
+    const promise = new Promise<never>((_, reject: (error: Error) => void) => {
+      rejectClose = reject
+      this.closeWaiters.add(reject)
+    })
+    return {
+      promise,
+      dispose: () => this.closeWaiters.delete(rejectClose)
+    }
   }
 
   private notifyClosed(error: Error): void {
@@ -265,9 +360,12 @@ async function terminateProcess(process: SandboxProcess, graceMs: number): Promi
   }
 }
 
-function toSdkOptions(options?: { signal?: AbortSignal }): { signal?: AbortSignal } | undefined {
+function toSdkOptions(options?: { signal?: AbortSignal; timeoutMs?: number }): { signal?: AbortSignal; timeout?: number } | undefined {
   if (!options) return undefined
-  return options.signal ? { signal: options.signal } : undefined
+  return {
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.timeoutMs && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {})
+  }
 }
 
 

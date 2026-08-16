@@ -331,6 +331,7 @@ export type {
   InvokeOptions,
   McpAuth,
   McpHttpToolDefinition,
+  McpPluginProvenance,
   McpStdioToolDefinition,
   ModelHandles,
   ModelsConfig,

@@ -14,6 +14,11 @@ reported independently.
 An application supplies trust and source identity, inspects the result, and
 uses explicit bindings for each intended skill/tool. Existing harness policy,
 agent allowlists, sandbox, telemetry, and tool validation still apply.
+Every load also supplies an application-reviewed SHA-256 digest; there is no
+digest-free trusted-loading mode. Stdio plugin data uses an existing
+application-owned directory outside the plugin root and is serialized when it
+is staged and synchronized. Plugin HTTP headers are public static metadata,
+not credentials or MCP/hop-by-hop protocol headers.
 
 Agent Plugins may provide Skills and modern MCP servers only. They cannot add
 agents, workflows, model providers, hooks, credentials, sandbox authority, or

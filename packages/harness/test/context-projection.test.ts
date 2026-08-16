@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ModelError, defineHarness, projectToolResults } from '../src/index.js'
+import { ModelError, defineHarness, projectToolResults, validateContextProjection } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import type { ModelMessage, ObjectRequest, ObjectResponse } from '../src/index.js'
 
@@ -10,6 +10,19 @@ it('prunes oversized UTF-8 tool results deterministically without breaking the t
   expect(projected[0]?.toolCallId).toBe('call-1')
   expect(projected[0]?.content).toContain('UTF-8 bytes omitted')
   expect(projected).toEqual(projectToolResults(projected, policy))
+})
+
+it('accounts for the exact custom marker and omission annotation bytes', () => {
+  const marker = 'x'.repeat(80)
+  const policy = { toolResultPruner: { maxBytes: 128, headBytes: 12, tailBytes: 12, marker } }
+  // The old fixed 64-byte allowance accepted this policy even though rendering
+  // its custom marker could exceed the configured cap.
+  expect(validateContextProjection(policy)).toBe(false)
+
+  const validPolicy = { toolResultPruner: { maxBytes: 128, headBytes: 12, tailBytes: 12, marker: 'x'.repeat(48) } }
+  expect(validateContextProjection(validPolicy)).toBe(true)
+  const projected = projectToolResults([{ role: 'tool', toolCallId: 'call-1', content: 'é'.repeat(200) }], validPolicy)
+  expect(Buffer.byteLength(projected[0]?.content ?? '', 'utf8')).toBeLessThanOrEqual(validPolicy.toolResultPruner.maxBytes)
 })
 
 class ContextLengthProvider extends FakeModelProvider {

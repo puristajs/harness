@@ -70,10 +70,25 @@ describe('stdio MCP runner', () => {
 
   it('enforces call timeouts', async () => {
     const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox, 20)
+    const localConfig = config(sandbox, 5_000)
     const runner = createStdioMcpTransportRunner(localConfig)
     try {
+      await expect(invokeMcpTool(localConfig, runner, { message: 'ready' }, new AbortController().signal)).resolves.toEqual({ echo: 'ready' })
+      localConfig.timeoutMs = 20
       await expect(invokeMcpTool(localConfig, runner, { message: 'slow', delayMs: 250 }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
+    } finally {
+      await runner.close()
+      await sandbox.close()
+    }
+  })
+
+  it('enforces connection and discovery timeouts and tears down the partial process', async () => {
+    const sandbox = hangingSpawnSandbox()
+    const localConfig = config(sandbox as never, 20)
+    const runner = createStdioMcpTransportRunner(localConfig)
+    try {
+      await expect(invokeMcpTool(localConfig, runner, { message: 'hello' }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
+      expect(sandbox.wasKilled()).toBe(true)
     } finally {
       await runner.close()
       await sandbox.close()
@@ -133,4 +148,39 @@ function hostExecSandbox(): SpawnCapableSandboxSession {
 async function* decodeStream(stream: Readable): AsyncIterable<string> {
   const decoder = new TextDecoder()
   for await (const chunk of stream) yield decoder.decode(chunk as Buffer, { stream: true })
+}
+
+function hangingSpawnSandbox(): SpawnCapableSandboxSession & { wasKilled(): boolean } {
+  let killed = false
+  return {
+    executor: 'available',
+    async read() { throw new Error('not implemented') },
+    async readText() { throw new Error('not implemented') },
+    async write() {},
+    async remove() {},
+    async list() { return [] },
+    async stat() { throw new Error('not implemented') },
+    async exists() { return false },
+    async mount() {},
+    wasKilled: () => killed,
+    async spawn(): Promise<SandboxProcess> {
+      let resolveExit!: (result: { exitCode: number }) => void
+      const exit = new Promise<{ exitCode: number }>((resolve) => { resolveExit = resolve })
+      return {
+        async writeStdin() {},
+        stdout: neverStream(),
+        stderr: neverStream(),
+        exit,
+        async kill() {
+          killed = true
+          resolveExit({ exitCode: 137 })
+        }
+      }
+    },
+    async close() {}
+  }
+}
+
+async function* neverStream(): AsyncIterable<string> {
+  await new Promise<void>(() => undefined)
 }

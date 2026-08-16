@@ -60,10 +60,11 @@ Only the retry request is projected; the first provider call always receives the
 normal unprojected history/window. For every eligible tool result whose textual
 payload exceeds `maxBytes`, the pruner retains a UTF-8-safe prefix and suffix,
 places `"<marker> (N UTF-8 bytes omitted)"` between them, and processes results
-in stored message order. The marker is ASCII-only and the configuration requires
-`headBytes + tailBytes + 64 <= maxBytes`, ensuring its largest valid byte form
-fits. It takes at most `headBytes` from the prefix then at most `tailBytes` from
-the suffix; the output is never larger than `maxBytes`. It is idempotent:
+in stored message order. The marker is ASCII-only and configuration validation
+accounts for its actual UTF-8 byte length plus the complete omission annotation
+(including the largest exact JavaScript byte-count representation). It takes at
+most `headBytes` from the prefix then at most `tailBytes` from the suffix; the
+output is never larger than `maxBytes`, including for a custom marker. It is idempotent:
 projecting an already projected request produces the same request. It does not
 split UTF-8 code points. Structured non-text payloads are not compacted in this
 phase.

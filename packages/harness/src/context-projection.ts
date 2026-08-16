@@ -11,6 +11,15 @@ export interface ContextProjectionPolicy {
 }
 
 const DEFAULT_MARKER = '...[tool result pruned]...'
+// `Buffer.byteLength` is a JavaScript number. Reserving its largest exact
+// decimal representation keeps the validation independent from the source
+// text while still bounding the rendered omission annotation exactly.
+const MAX_OMITTED_BYTES_TEXT = String(Number.MAX_SAFE_INTEGER)
+const OMITTED_BYTES_SUFFIX = ' UTF-8 bytes omitted)'
+
+function projectionOverheadBytes(marker: string): number {
+  return Buffer.byteLength(`${marker} (${MAX_OMITTED_BYTES_TEXT}${OMITTED_BYTES_SUFFIX}`, 'utf8')
+}
 
 /** Validates a projection policy without inspecting model-visible content. */
 export function validateContextProjection(policy: ContextProjectionPolicy | undefined): boolean {
@@ -18,7 +27,7 @@ export function validateContextProjection(policy: ContextProjectionPolicy | unde
   const { maxBytes, headBytes, tailBytes, marker = DEFAULT_MARKER } = policy.toolResultPruner
   return [maxBytes, headBytes, tailBytes].every((value) => Number.isFinite(value) && Number.isInteger(value) && value >= 0)
     && /^[\x00-\x7F]*$/.test(marker)
-    && headBytes + tailBytes + 64 <= maxBytes
+    && headBytes + tailBytes + projectionOverheadBytes(marker) <= maxBytes
 }
 
 function utf8Prefix(value: string, limit: number): string {
@@ -49,6 +58,13 @@ export function projectToolResults(messages: readonly ModelMessage[], policy: Co
     const head = utf8Prefix(message.content, pruner.headBytes)
     const tail = utf8Suffix(message.content, pruner.tailBytes)
     const omitted = Buffer.byteLength(message.content, 'utf8') - Buffer.byteLength(head, 'utf8') - Buffer.byteLength(tail, 'utf8')
-    return { ...message, content: `${head}${marker} (${omitted} UTF-8 bytes omitted)${tail}` }
+    const content = `${head}${marker} (${omitted}${OMITTED_BYTES_SUFFIX}${tail}`
+    // Policy validation reserves the largest possible decimal rendering for
+    // `omitted`; retain this check as a local invariant should the policy type
+    // ever evolve independently from its validator.
+    if (Buffer.byteLength(content, 'utf8') > pruner.maxBytes) {
+      throw new RangeError('Context projection exceeded its configured byte cap.')
+    }
+    return { ...message, content }
   })
 }

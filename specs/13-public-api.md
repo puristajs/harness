@@ -175,6 +175,7 @@ export type ToolDefinition
 export interface TsToolDefinition<I, O>
 export interface McpStdioToolDefinition
 export interface McpHttpToolDefinition
+export interface McpPluginProvenance
 export type SkillsConfig
 export interface SkillDefinition
 export type SkillValidationMode

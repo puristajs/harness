@@ -65,25 +65,32 @@ const harness = defineHarness()
 ## Security and DX
 
 - Plugins are untrusted by default. `trust: 'trusted'` or `trustedRoots` is
-  required before `loadAgentPlugins()` returns a loadable plugin.
-- A deterministic SHA-256 digest supports application-owned review/lockfile
-  workflows. A digest mismatch returns no loadable entry.
+  required before `loadAgentPlugins()` returns a loadable plugin. Loading also
+  requires an application-reviewed SHA-256 `expectedDigest`; there is no
+  digest-free trusted-loading mode.
+- The deterministic digest is intended for an application-owned review/lockfile
+  workflow. A malformed or mismatched digest returns no loadable entry.
 - Every package read is `realpath`-contained within the plugin root, including
   symlinks, junctions, and fixed component paths. Public diagnostics and
   inspections deliberately omit absolute paths, file contents, commands,
   arguments, URLs, headers, environment values, and credentials.
 - Skills and tools are never auto-exposed. Callers select source components and
   assign normal local aliases, preserving the harness’s typed agent allowlists.
-- Reviewed stdio plugins additionally require a caller-owned `dataDirectory`.
-  At launch the package stages normal package files and persistent data under a
-  deterministic sandbox path, then synchronizes only the staged data back on
-  runner shutdown; plugin code never receives the host path.
+- Reviewed stdio plugins additionally require an existing caller-owned
+  `dataDirectory` whose resolved path does not overlap the plugin root. At
+  launch the package serializes access to that data directory, stages normal
+  package files and persistent data under a deterministic sandbox path, then
+  synchronizes only the staged data back on runner shutdown; plugin code never
+  receives the host path.
 - The package validates stdio and Streamable HTTP declarations. Legacy HTTP+SSE
   is intentionally unsupported in this clean-major MCP integration.
-- A selected stdio server additionally requires a caller-owned `dataDirectory`.
-  Its trusted package and persistent data are staged into the current
-  spawn-capable sandbox; package code is never evaluated and data is synchronized
-  only to that caller-owned directory when the runner closes.
+- A selected stdio server additionally requires that caller-owned data
+  directory. Its trusted package and persistent data are staged into the
+  current spawn-capable sandbox; package code is never evaluated and data is
+  synchronized only to that caller-owned directory when the runner closes.
+- Plugin HTTP headers are public static configuration only. Credential-bearing,
+  hop-by-hop, and MCP protocol headers are rejected case-insensitively;
+  application-owned authentication and protocol headers are supplied by core.
 
 The core harness remains responsible for skill mounting, MCP tool execution,
 governance, approvals, cancellation, timeouts, sessions, shutdown, and

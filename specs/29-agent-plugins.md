@@ -87,8 +87,12 @@ interface AgentPluginSource {
   expectedDigest?: string
 }
 
+interface ApprovedAgentPluginSource extends AgentPluginSource {
+  expectedDigest: string
+}
+
 interface AgentPluginLoadOptions {
-  plugins: readonly AgentPluginSource[]
+  plugins: readonly ApprovedAgentPluginSource[]
   trustedRoots?: readonly string[]
   supportedTransports?: readonly AgentPluginTransport[]
   validationMode?: 'strict' | 'lenient'
@@ -138,7 +142,7 @@ caller-owned harness tool key to one `(server, upstream tool)` pair.
 
 ```ts
 const [plugin] = await loadAgentPlugins({
-  plugins: [{ root: './plugins/research', trust: 'trusted' }]
+  plugins: [{ root: './plugins/research', trust: 'trusted', expectedDigest: reviewedDigest }]
 })
 const bindings = plugin.bindings({
   skills: { research_playbook: 'research-playbook' },
@@ -213,12 +217,15 @@ It preserves `command` as one token and passes `args` separately. On Windows,
 platform-specific executable mechanism; no shell string concatenation or
 `shell: true` is permitted.
 
-Every approved stdio plugin receives a client-managed data directory unique to
-the installed plugin identity. It is created before launch, writable only in
-the plugin runtime boundary, and persists across replacements of the plugin
-root. It may be deleted only by an explicit application uninstall operation.
-The package verifies the data directory itself and its resolved parents against
-the configured data root; a plugin cannot choose another plugin's data path.
+Every approved stdio plugin receives an existing application-managed data
+directory unique to the installed plugin identity. Its resolved path must not
+overlap the resolved plugin root; access is serialized from staging through
+synchronization, so two server aliases cannot race a shared durable store. It
+is writable only in the plugin runtime boundary, persists across replacements
+of the plugin root, and may be deleted only by an explicit application
+uninstall operation. The package verifies the data directory itself and its
+resolved parents against the configured data root; a plugin cannot choose
+another plugin's data path.
 
 Core gains a generic, MCP-only prepared-launch contract so an addon can stage a
 read-only package root and writable data directory for the current sandbox
@@ -245,13 +252,13 @@ the addon returns bindings. Trust is an application policy decision; neither
 plugin metadata, a digest, a manifest `author`, nor a package location grants
 trust. Inspection remains available for review.
 
-Before binding, a trusted plugin's canonical package digest is compared with
-`expectedDigest` when supplied. The digest covers normalized relative file
-names and bytes from the plugin root, excludes the client-managed data
-directory, and has deterministic cross-platform ordering. A mismatch rejects
-the plugin. Applications own storage/review of a lockfile; this package exports
-the digest/provenance needed to implement one and documents a reference
-lockfile format. Silent auto-updates are forbidden.
+Before loading, a trusted plugin's canonical package digest is compared with a
+required `expectedDigest`. The digest covers normalized relative file names and
+bytes from the plugin root, excludes the client-managed data directory, and
+has deterministic cross-platform ordering. A missing, malformed, or mismatched
+digest rejects the plugin. Applications own storage/review of a lockfile; this
+package exports the digest/provenance needed to implement one and documents a
+reference lockfile format. Silent auto-updates are forbidden.
 
 For each stdio server, command/cwd containment, placeholder expansion, launch
 capabilities, and package digest are checked before start. The subprocess is
@@ -264,9 +271,10 @@ For each HTTP server:
   except exact loopback hosts; redirects never forward plugin headers to a new
   origin without an explicit application authorization decision.
 - Package headers are static public configuration, not credentials. Duplicate
-  case-insensitive names are invalid. Application-owned authorization and MCP
-  protocol headers take precedence, and credentials are supplied only through
-  core's existing host-owned MCP auth configuration.
+  case-insensitive names are invalid; credential-bearing, hop-by-hop, and MCP
+  protocol headers are rejected case-insensitively. Application-owned
+  authorization and MCP protocol headers take precedence, and credentials are
+  supplied only through core's existing host-owned MCP auth configuration.
 - No portable OAuth, secret-reference, ambient-environment, or header
   interpolation mechanism is implemented. Authorization failure is a server
   connection failure, not a manifest failure.

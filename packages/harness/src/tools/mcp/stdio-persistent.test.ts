@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import { env as processEnv } from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SandboxProcess, SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import { invokeMcpTool } from './runner.js'
 import { createStdioMcpTransportRunner } from './stdio.js'
@@ -68,6 +68,44 @@ describe('persistent stdio MCP runner', () => {
     await invokeMcpTool(counter, runner, {}, new AbortController().signal)
     await expect(runner.close()).resolves.toBeUndefined()
     expect(sandbox.liveProcessCount()).toBe(0)
+    await sandbox.close()
+  })
+
+  it('finalizes staged data before restarting a server that exited unexpectedly', async () => {
+    const sandbox = hostSpawnSandbox()
+    const cleanup = vi.fn(async () => undefined)
+    const echo = {
+      ...baseConfig(sandbox, 'echo', 'echoLocal'),
+      prepareLaunch: async () => ({ cleanup })
+    }
+    const runner = createStdioMcpTransportRunner(echo)
+    try {
+      await expect(invokeMcpTool(echo, runner, { message: 'before' }, new AbortController().signal)).resolves.toEqual({ echo: 'before' })
+      await expect(invokeMcpTool(echo, runner, { message: 'crash', die: true }, new AbortController().signal)).rejects.toMatchObject({
+        code: 'MCP_PROTOCOL_ERROR',
+        meta: { phase: 'call', transport: 'stdio' }
+      })
+
+      await expect(invokeMcpTool(echo, runner, { message: 'after' }, new AbortController().signal)).resolves.toEqual({ echo: 'after' })
+      expect(cleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      await runner.close()
+      await sandbox.close()
+    }
+    expect(cleanup).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces staged-data synchronization failures during shutdown', async () => {
+    const sandbox = hostSpawnSandbox()
+    const cleanup = vi.fn(async () => { throw new Error('plugin data synchronization failed') })
+    const echo = {
+      ...baseConfig(sandbox, 'echo', 'echoLocal'),
+      prepareLaunch: async () => ({ cleanup })
+    }
+    const runner = createStdioMcpTransportRunner(echo)
+    await expect(invokeMcpTool(echo, runner, { message: 'hello' }, new AbortController().signal)).resolves.toEqual({ echo: 'hello' })
+    await expect(runner.close()).rejects.toBeInstanceOf(AggregateError)
+    expect(cleanup).toHaveBeenCalledTimes(1)
     await sandbox.close()
   })
 })

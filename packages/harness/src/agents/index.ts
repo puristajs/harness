@@ -640,7 +640,14 @@ async function executeToolCall(
 
   try {
     if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
-    result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool) ? { server: canonical, upstreamTool: tool.tool, transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http' } : undefined, async () => {
+    result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool)
+      ? {
+          server: canonical,
+          upstreamTool: tool.tool,
+          transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http',
+          ...(tool.provenance ? { provenance: tool.provenance } : {})
+        }
+      : undefined, async () => {
       const permission = await withToolSignal(args.signal, args.toolTimeoutMs, () => checkPermission(args.agentId, args.runId, args.sessionId, args.agent, canonical, input))
       if (permission.decision === 'deny') {
         throw new PermissionDeniedError('Permission denied.', { tool_name: canonical, agent_id: args.agentId, reason: permission.reason })
@@ -1037,7 +1044,12 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
   toolId: string,
   callId: string,
   toolKind: ToolKind,
-  mcpAttrs: { server: string; upstreamTool: string; transport: 'stdio' | 'http' } | undefined,
+  mcpAttrs: {
+    server: string
+    upstreamTool: string
+    transport: 'stdio' | 'http'
+    provenance?: import('../harness/defineHarness.js').McpPluginProvenance
+  } | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
   const attrs = {
@@ -1058,7 +1070,13 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
     ...(mcpAttrs ? {
       'harness.mcp.server': mcpAttrs.server,
       'harness.mcp.tool': mcpAttrs.upstreamTool,
-      'harness.mcp.transport': mcpAttrs.transport
+      'harness.mcp.transport': mcpAttrs.transport,
+      ...(mcpAttrs.provenance ? {
+        'harness.plugin.name': mcpAttrs.provenance.name,
+        ...(mcpAttrs.provenance.version ? { 'harness.plugin.version': mcpAttrs.provenance.version } : {}),
+        'harness.plugin.digest': mcpAttrs.provenance.digest,
+        'harness.plugin.component': mcpAttrs.provenance.component
+      } : {})
     } : {})
   }
   const started = Date.now()

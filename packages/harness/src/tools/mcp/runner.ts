@@ -6,7 +6,7 @@ import {
   ToolNotFoundError,
   ValidationError
 } from '../../errors/index.js'
-import type { McpHttpToolDefinition, McpStdioToolDefinition, ToolDefinition, ToolsConfig } from '../../harness/defineHarness.js'
+import type { McpHttpToolDefinition, McpPluginProvenance, McpStdioToolDefinition, ToolDefinition, ToolsConfig } from '../../harness/defineHarness.js'
 import type { JsonValue } from '../../models/json.js'
 import type { ModelToolSpec } from '../../ports/model-provider.js'
 import type { SandboxSession } from '../../sandbox/index.js'
@@ -26,6 +26,8 @@ export interface ResolvedMcpTool {
   sandboxKey?: string
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
+  /** Content-free Agent Plugin origin metadata passed through to telemetry. */
+  provenance?: McpPluginProvenance
 }
 
 export interface ResolvedMcpStdioTool extends ResolvedMcpTool {
@@ -229,7 +231,8 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
     timeoutMs: ctx.toolTimeoutMs ?? 120_000,
     serverKey: toolId,
     ...(tool.inputAdapter ? { inputAdapter: tool.inputAdapter } : {}),
-    ...(tool.outputAdapter ? { outputAdapter: tool.outputAdapter } : {})
+    ...(tool.outputAdapter ? { outputAdapter: tool.outputAdapter } : {}),
+    ...(tool.provenance ? { provenance: tool.provenance } : {})
   }
   if (tool.kind === 'mcp_stdio') {
     if (!ctx.sandbox) throw new ToolNotFoundError('MCP stdio tool requires a sandbox session.', { tool_id: toolId, where: 'registry' })

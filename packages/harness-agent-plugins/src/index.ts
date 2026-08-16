@@ -19,6 +19,30 @@ export const AGENT_PLUGIN_MCP_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/
 const pluginNamePattern = /^(?!.*--)(?!.*\.\.)[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/
 const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
 const headerNamePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+const prohibitedPluginHeaders = new Set([
+  'accept',
+  'api-key',
+  'authorization',
+  'connection',
+  'content-length',
+  'content-type',
+  'cookie',
+  'host',
+  'keep-alive',
+  'last-event-id',
+  'mcp-protocol-version',
+  'mcp-session-id',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'set-cookie',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'x-access-token',
+  'x-api-key',
+  'x-auth-token'
+])
 
 /** A portable Agent Plugins manifest author. */
 export interface AgentPluginAuthor {
@@ -54,13 +78,22 @@ export interface AgentPluginSource {
   trust?: AgentPluginTrust
   /** Reserved for the core's prepared stdio launch bridge; never created during inspection. */
   dataDirectory?: string
-  /** Lowercase SHA-256 package digest previously reviewed by the application. */
+  /** Lowercase SHA-256 package digest previously reviewed by the application, when loading. */
   expectedDigest?: string
+}
+
+/**
+ * An application-approved plugin source. Loading executable plugin components
+ * always requires a digest recorded by the application after review.
+ */
+export interface ApprovedAgentPluginSource extends AgentPluginSource {
+  /** Lowercase SHA-256 package digest previously reviewed by the application. */
+  expectedDigest: string
 }
 
 /** Options for loading approved plugin roots into explicit application bindings. */
 export interface AgentPluginLoadOptions extends InspectAgentPluginOptions {
-  plugins: readonly AgentPluginSource[]
+  plugins: readonly ApprovedAgentPluginSource[]
   trustedRoots?: readonly string[]
   supportedTransports?: readonly AgentPluginTransport[]
   validationMode?: SkillValidationMode
@@ -252,9 +285,10 @@ export async function loadAgentPlugins(options: AgentPluginLoadOptions): Promise
   const loaded: LoadedAgentPlugin[] = []
   const trustedRoots = resolveTrustedRoots(options.trustedRoots)
   for (const source of options.plugins) {
+    if (!isSha256Digest(source.expectedDigest)) continue
     const parsed = parseAgentPluginSync(source, options, trustedRoots)
     if (!parsed.valid || parsed.trust !== 'trusted' || !parsed.digest) continue
-    if (source.expectedDigest && source.expectedDigest.toLowerCase() !== parsed.digest) continue
+    if (source.expectedDigest.toLowerCase() !== parsed.digest) continue
     loaded.push(new LoadedAgentPluginImpl(parsed, source, options.supportedTransports ?? ['stdio', 'streamable-http'], options.validationMode ?? 'strict', options.maxPackageBytes ?? 100 * 1024 * 1024))
   }
   return loaded
@@ -432,15 +466,24 @@ function bindTools(
       diagnostics.push(diag('warn', 'transport_unsupported', `MCP transport "${server.type}" is disabled for this plugin load.`, undefined, 'mcp', server.name))
       continue
     }
-    if (server.type === 'stdio' && !source.dataDirectory) {
-      diagnostics.push(diag('error', 'server_invalid', 'Trusted stdio plugins require a caller-owned dataDirectory for staged persistent data.', undefined, 'mcp', server.name))
-      continue
+    let launchSource = source
+    if (server.type === 'stdio') {
+      if (!source.dataDirectory) {
+        diagnostics.push(diag('error', 'server_invalid', 'Trusted stdio plugins require an existing caller-owned dataDirectory for staged persistent data.', undefined, 'mcp', server.name))
+        continue
+      }
+      try {
+        launchSource = { ...source, dataDirectory: resolveDataDirectoryOutsidePluginRoot(source.dataDirectory, plugin.root) }
+      } catch {
+        diagnostics.push(diag('error', 'server_invalid', 'The caller-owned stdio plugin dataDirectory must be an existing directory outside the plugin root.', undefined, 'mcp', server.name))
+        continue
+      }
     }
     if (tools[alias]) {
       diagnostics.push(diag('error', 'server_invalid', `More than one selected MCP tool uses the harness tool id "${alias}".`, undefined, 'mcp', server.name))
       continue
     }
-    tools[alias] = toHarnessMcpTool(plugin, source, server, binding, maxStagedBytes)
+    tools[alias] = toHarnessMcpTool(plugin, launchSource, server, binding, maxStagedBytes)
     if (plugin.manifest && plugin.digest) {
       provenance.push({
         pluginName: plugin.manifest.name,
@@ -462,6 +505,14 @@ function toHarnessMcpTool(
   binding: AgentPluginToolBinding,
   maxStagedBytes: number
 ): McpStdioToolDefinition | McpHttpToolDefinition {
+  const provenance = plugin.manifest && plugin.digest
+    ? {
+        name: plugin.manifest.name,
+        ...(plugin.manifest.version ? { version: plugin.manifest.version } : {}),
+        digest: plugin.digest,
+        component: 'mcp' as const
+      }
+    : undefined
   if (server.type === 'stdio') {
     return {
       kind: 'mcp_stdio',
@@ -471,6 +522,7 @@ function toHarnessMcpTool(
       ...(server.env ? { env: { ...server.env } } : {}),
       ...(server.cwd ? { cwd: server.cwd } : {}),
       prepareLaunch: createPluginLaunchPreparer(plugin, source, server, maxStagedBytes),
+      ...(provenance ? { provenance } : {}),
       tool: binding.tool
     }
   }
@@ -479,11 +531,13 @@ function toHarnessMcpTool(
     description: binding.description,
     url: server.url,
     ...(server.headers ? { headers: { ...server.headers } } : {}),
+    ...(provenance ? { provenance } : {}),
     tool: binding.tool
   }
 }
 
 const DATA_STAGING_MARKER = '.purista-agent-plugin-data'
+const dataDirectoryLocks = new Map<string, Promise<void>>()
 
 function createPluginLaunchPreparer(
   plugin: ParsedAgentPlugin,
@@ -504,34 +558,46 @@ function createPluginLaunchPreparer(
     if (freshDigest !== digest) {
       throw new AgentPluginLoadError('The trusted plugin changed after review and before staging.')
     }
-    const dataRoot = ensureDataDirectory(dataDirectory)
-    const packageFiles = collectNormalFiles(plugin.root, maxStagedBytes)
-    const dataFiles = collectNormalFiles(dataRoot, maxStagedBytes)
-    await sandbox.mount(packageFiles, sandboxPluginRoot)
-    await sandbox.mount(dataFiles, sandboxDataRoot)
-    // `mount` does not create a directory for an empty map. The marker is
-    // excluded from synchronization and gives stdio cwd a durable directory.
-    await sandbox.mount(new Map([[DATA_STAGING_MARKER, '']]), sandboxDataRoot)
-    signal?.throwIfAborted()
+    const dataRoot = resolveDataDirectoryOutsidePluginRoot(dataDirectory, plugin.root)
+    const releaseDataLock = await acquireDataDirectoryLock(dataRoot)
+    try {
+      signal?.throwIfAborted()
+      const packageFiles = collectNormalFiles(plugin.root, maxStagedBytes)
+      const dataFiles = collectNormalFiles(dataRoot, maxStagedBytes)
+      await sandbox.mount(packageFiles, sandboxPluginRoot)
+      await sandbox.mount(dataFiles, sandboxDataRoot)
+      // `mount` does not create a directory for an empty map. The marker is
+      // excluded from synchronization and gives stdio cwd a durable directory.
+      await sandbox.mount(new Map([[DATA_STAGING_MARKER, '']]), sandboxDataRoot)
+      signal?.throwIfAborted()
 
-    const command = server.command.startsWith('./')
-      ? `${sandboxPluginRoot}/${server.command.slice(2)}`
-      : server.command
-    const args = server.args?.map((value) => expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot))
-    const cwd = server.cwd
-      ? expandPluginPlaceholders(server.cwd, sandboxPluginRoot, sandboxDataRoot)
-      : sandboxPluginRoot
-    const env = {
-      ...Object.fromEntries(Object.entries(server.env ?? {}).map(([name, value]) => [name, expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot)])),
-      PLUGIN_ROOT: sandboxPluginRoot,
-      PLUGIN_DATA: sandboxDataRoot
-    }
-    return {
-      command,
-      ...(args ? { args } : {}),
-      cwd,
-      env,
-      cleanup: async () => syncSandboxData(sandbox, sandboxDataRoot, dataRoot, maxStagedBytes)
+      const command = server.command.startsWith('./')
+        ? `${sandboxPluginRoot}/${server.command.slice(2)}`
+        : server.command
+      const args = server.args?.map((value) => expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot))
+      const cwd = server.cwd
+        ? expandPluginPlaceholders(server.cwd, sandboxPluginRoot, sandboxDataRoot)
+        : sandboxPluginRoot
+      const env = {
+        ...Object.fromEntries(Object.entries(server.env ?? {}).map(([name, value]) => [name, expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot)])),
+        PLUGIN_ROOT: sandboxPluginRoot,
+        PLUGIN_DATA: sandboxDataRoot
+      }
+      let cleanupPromise: Promise<void> | undefined
+      return {
+        command,
+        ...(args ? { args } : {}),
+        cwd,
+        env,
+        cleanup: () => {
+          cleanupPromise ??= syncSandboxData(sandbox, sandboxDataRoot, dataRoot, maxStagedBytes)
+            .finally(releaseDataLock)
+          return cleanupPromise
+        }
+      }
+    } catch (error) {
+      releaseDataLock()
+      throw error
     }
   }
 }
@@ -540,15 +606,36 @@ function expandPluginPlaceholders(value: string, pluginRoot: string, pluginData:
   return value.replaceAll('${PLUGIN_ROOT}', pluginRoot).replaceAll('${PLUGIN_DATA}', pluginData)
 }
 
-function ensureDataDirectory(directory: string): string {
+function resolveDataDirectoryOutsidePluginRoot(directory: string, pluginRoot: string): string {
   const requested = path.resolve(directory)
   try {
-    fs.mkdirSync(requested, { recursive: true })
     const resolved = fs.realpathSync.native(requested)
     if (!fs.statSync(resolved).isDirectory()) throw new Error('not a directory')
+    if (pathsOverlap(pluginRoot, resolved)) throw new Error('overlaps plugin root')
     return resolved
   } catch (error) {
-    throw new AgentPluginLoadError('The caller-owned plugin dataDirectory could not be provisioned.', { cause: error })
+    throw new AgentPluginLoadError('The caller-owned plugin dataDirectory must be an existing directory outside the plugin root.', { cause: error })
+  }
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isPathContained(left, right) || isPathContained(right, left)
+}
+
+async function acquireDataDirectoryLock(dataRoot: string): Promise<() => void> {
+  const previous = dataDirectoryLocks.get(dataRoot) ?? Promise.resolve()
+  let resolveCurrent: (() => void) | undefined
+  const current = new Promise<void>((resolve) => {
+    resolveCurrent = resolve
+  })
+  dataDirectoryLocks.set(dataRoot, current)
+  await previous
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    resolveCurrent?.()
+    if (dataDirectoryLocks.get(dataRoot) === current) dataDirectoryLocks.delete(dataRoot)
   }
 }
 
@@ -627,6 +714,10 @@ async function syncSandboxData(
     fs.mkdirSync(path.dirname(target), { recursive: true })
     fs.writeFileSync(target, data)
   }
+}
+
+function isSha256Digest(value: string): boolean {
+  return /^[a-fA-F0-9]{64}$/.test(value)
 }
 
 function resolveTrustedRoots(roots: readonly string[] | undefined): readonly string[] {
@@ -1110,7 +1201,13 @@ function parseHeaders(value: unknown): Readonly<Record<string, string>> | undefi
   const names = new Set<string>()
   for (const [name, headerValue] of Object.entries(headers)) {
     const normalized = name.toLowerCase()
-    if (!headerNamePattern.test(name) || /[\r\n]/.test(headerValue) || names.has(normalized)) return undefined
+    if (
+      !headerNamePattern.test(name) ||
+      /[\0\r\n]/.test(headerValue) ||
+      names.has(normalized) ||
+      prohibitedPluginHeaders.has(normalized) ||
+      normalized.startsWith('mcp-')
+    ) return undefined
     names.add(normalized)
   }
   return headers

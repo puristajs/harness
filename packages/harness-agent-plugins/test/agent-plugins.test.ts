@@ -13,6 +13,7 @@ import {
   isPathContained,
   loadAgentPlugins
 } from '../src/index.js'
+import type { ApprovedAgentPluginSource } from '../src/index.js'
 
 const roots: string[] = []
 
@@ -43,6 +44,12 @@ function writeManifest(root: string, extra: Record<string, unknown> = {}): void 
     name: 'acme.research',
     ...extra
   })
+}
+
+function reviewedSource(root: string, source: Omit<ApprovedAgentPluginSource, 'root' | 'expectedDigest'> = {}): ApprovedAgentPluginSource {
+  const digest = inspectAgentPluginSync({ root }).digest
+  if (!digest) throw new Error('Expected a plugin digest.')
+  return { root, expectedDigest: digest, ...source }
 }
 
 describe('Agent Plugins v1 inspector', () => {
@@ -81,14 +88,24 @@ describe('Agent Plugins v1 inspector', () => {
     ])
     expect(JSON.stringify(plugin)).not.toContain(root)
 
-    const [loaded] = await loadAgentPlugins({ plugins: [{ root, trust: 'trusted' }] })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted' })] })
     const bindings = loaded?.bindings({
       skills: { 'acme-research': 'research' },
       tools: { search_docs: { server: 'remote', tool: 'search', description: 'Search approved documents.' } }
     })
     expect(bindings?.diagnostics).toEqual([])
     expect(bindings?.skills['acme-research']).toMatchObject({ trust: 'trusted', source: 'agent_plugin:acme.research' })
-    expect(bindings?.tools['search_docs']).toMatchObject({ kind: 'mcp_http', tool: 'search', url: 'https://example.test/mcp' })
+    expect(bindings?.tools['search_docs']).toMatchObject({
+      kind: 'mcp_http',
+      tool: 'search',
+      url: 'https://example.test/mcp',
+      provenance: {
+        name: 'acme.research',
+        version: '1.2.3',
+        digest: plugin.digest,
+        component: 'mcp'
+      }
+    })
     expect(bindings?.provenance).toEqual(expect.arrayContaining([
       expect.objectContaining({ component: 'skill', componentName: 'research' }),
       expect.objectContaining({ component: 'mcp', componentName: 'remote', transport: 'streamable-http' })
@@ -173,20 +190,21 @@ describe('Agent Plugins v1 inspector', () => {
     expect(isPathContained('/plugins/acme', '/plugins/acme-other/SKILL.md', path.posix)).toBe(false)
   })
 
-  it('requires explicit trust, accepts trusted roots, and rejects a digest mismatch without binding', async () => {
+  it('requires an application-reviewed digest and explicit trust before binding', async () => {
     const root = pluginRoot()
     writeManifest(root)
     writeSkill(root, 'research')
 
-    await expect(loadAgentPlugins({ plugins: [{ root }] })).resolves.toEqual([])
-    const trustedByRoot = await loadAgentPlugins({ plugins: [{ root }], trustedRoots: [path.dirname(root)] })
-    expect(trustedByRoot).toHaveLength(1)
+    await expect(loadAgentPlugins({ plugins: [{ root } as never] })).resolves.toEqual([])
     const inspection = inspectAgentPluginSync({ root, trust: 'trusted' })
     expect(inspection.digest).toMatch(/^[a-f0-9]{64}$/)
     const digest = inspection.digest
     if (!digest) throw new Error('Expected a plugin digest.')
+    const trustedByRoot = await loadAgentPlugins({ plugins: [{ root, expectedDigest: digest }], trustedRoots: [path.dirname(root)] })
+    expect(trustedByRoot).toHaveLength(1)
     await expect(loadAgentPlugins({ plugins: [{ root, trust: 'trusted', expectedDigest: '0'.repeat(64) }] })).resolves.toEqual([])
     await expect(loadAgentPlugins({ plugins: [{ root, trust: 'trusted', expectedDigest: digest }] })).resolves.toHaveLength(1)
+    await expect(loadAgentPlugins({ plugins: [{ root, trust: 'trusted', expectedDigest: 'not-a-digest' }] })).resolves.toEqual([])
   })
 
   it('reports legacy SSE as unsupported and never materializes it as a harness tool', async () => {
@@ -200,13 +218,33 @@ describe('Agent Plugins v1 inspector', () => {
     const inspection = inspectAgentPluginSync({ root, trust: 'trusted' })
     expect(inspection.mcpServers).toEqual([])
     expect(inspection.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'transport_unsupported', item: 'legacy' })]))
-    const [loaded] = await loadAgentPlugins({ plugins: [{ root, trust: 'trusted' }] })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted' })] })
     expect(loaded?.bindings({ tools: { legacy_tool: { server: 'legacy', tool: 'search', description: 'Legacy.' } } }).tools).toEqual({})
+  })
+
+  it('rejects credential, MCP protocol, and hop-by-hop HTTP headers case-insensitively', () => {
+    const root = pluginRoot()
+    writeManifest(root)
+    writeJson(path.join(root, 'mcp.json'), {
+      $schema: AGENT_PLUGIN_MCP_SCHEMA,
+      mcpServers: {
+        public: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { 'X-Public-Tenant': 'acme' } },
+        credential: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { Authorization: 'Bearer secret' } },
+        protocol: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { 'mCp-SeSsIoN-iD': 'session' } },
+        hopByHop: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { Connection: 'keep-alive' } },
+        duplicate: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { 'X-Flag': 'one', 'x-flag': 'two' } }
+      }
+    })
+
+    const inspection = inspectAgentPluginSync({ root })
+
+    expect(inspection.mcpServers).toEqual([expect.objectContaining({ name: 'public', transport: 'streamable-http' })])
+    expect(inspection.diagnostics.filter((diagnostic) => diagnostic.code === 'server_invalid')).toHaveLength(4)
   })
 
   it('covers explicit selection diagnostics and both current harness MCP projections', async () => {
     const root = pluginRoot()
-    const dataDirectory = path.join(root, '.data')
+    const dataDirectory = pluginRoot()
     fs.mkdirSync(dataDirectory, { recursive: true })
     fs.writeFileSync(path.join(dataDirectory, 'state.txt'), 'before', 'utf8')
     writeManifest(root)
@@ -218,7 +256,7 @@ describe('Agent Plugins v1 inspector', () => {
         remote: { type: 'streamable-http', url: 'https://example.test/mcp' }
       }
     })
-    const [loaded] = await loadAgentPlugins({ plugins: [{ root, trust: 'trusted', dataDirectory }], supportedTransports: ['stdio'] })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory })], supportedTransports: ['stdio'] })
     const bindings = loaded?.bindings({
       skills: { Bad_Alias: 'research', missing: 'missing' },
       tools: {
@@ -239,7 +277,7 @@ describe('Agent Plugins v1 inspector', () => {
 
   it('stages a reviewed stdio plugin and synchronizes only sandbox data through cleanup', async () => {
     const root = pluginRoot()
-    const dataDirectory = path.join(root, '.data')
+    const dataDirectory = pluginRoot()
     fs.mkdirSync(dataDirectory, { recursive: true })
     fs.writeFileSync(path.join(dataDirectory, 'state.txt'), 'before', 'utf8')
     writeManifest(root)
@@ -255,7 +293,7 @@ describe('Agent Plugins v1 inspector', () => {
         }
       }
     })
-    const [loaded] = await loadAgentPlugins({ plugins: [{ root, trust: 'trusted', dataDirectory }] })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory })] })
     const tool = loaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } }).tools['local_tool']
     if (!tool || tool.kind !== 'mcp_stdio' || !tool.prepareLaunch) throw new Error('Expected a staged stdio tool.')
 
@@ -290,6 +328,74 @@ describe('Agent Plugins v1 inspector', () => {
     virtualFiles.set(`${dataPath}/result.txt`, 'after')
     await prepared.cleanup?.()
     expect(fs.readFileSync(path.join(dataDirectory, 'result.txt'), 'utf8')).toBe('after')
+  })
+
+  it('rejects stdio data directories that overlap the plugin root after resolution', async () => {
+    const root = pluginRoot()
+    const insideRoot = path.join(root, 'data')
+    fs.mkdirSync(insideRoot)
+    writeManifest(root)
+    writeJson(path.join(root, 'mcp.json'), {
+      $schema: AGENT_PLUGIN_MCP_SCHEMA,
+      mcpServers: { local: { type: 'stdio', command: './bin/server' } }
+    })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory: insideRoot })] })
+
+    const bindings = loaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } })
+
+    expect(bindings?.tools).toEqual({})
+    expect(bindings?.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'server_invalid', component: 'mcp', item: 'local' })]))
+
+    const [parentDirectoryLoaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory: path.dirname(root) })] })
+    const parentDirectoryBindings = parentDirectoryLoaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } })
+    expect(parentDirectoryBindings?.tools).toEqual({})
+  })
+
+  it('serializes staging and synchronization for a shared persistent data directory', async () => {
+    const root = pluginRoot()
+    const dataDirectory = pluginRoot()
+    writeManifest(root)
+    writeJson(path.join(root, 'mcp.json'), {
+      $schema: AGENT_PLUGIN_MCP_SCHEMA,
+      mcpServers: { local: { type: 'stdio', command: './bin/server' } }
+    })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory })] })
+    const tool = loaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } }).tools['local_tool']
+    if (!tool || tool.kind !== 'mcp_stdio' || !tool.prepareLaunch) throw new Error('Expected a staged stdio tool.')
+
+    const sandbox = (onMount: () => void) => {
+      const files = new Map<string, Uint8Array | string>()
+      return {
+        executor: 'available' as const,
+        async mount(entries: ReadonlyMap<string, Uint8Array | string>, atPath: string) {
+          onMount()
+          for (const [relative, value] of entries) files.set(`${atPath}/${relative}`, value)
+        },
+        async list(directory: string) {
+          return [...files.keys()]
+            .filter((filePath) => filePath.startsWith(`${directory}/`))
+            .map((filePath) => ({ path: filePath, kind: 'file' }))
+        },
+        async read(filePath: string) {
+          const value = files.get(filePath)
+          if (value === undefined) throw new Error('Missing virtual file.')
+          return typeof value === 'string' ? new TextEncoder().encode(value) : value
+        }
+      }
+    }
+
+    const first = await tool.prepareLaunch({ sandbox: sandbox(() => undefined) as never })
+    let secondMounted = false
+    const secondPreparation = tool.prepareLaunch({ sandbox: sandbox(() => { secondMounted = true }) as never })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(secondMounted).toBe(false)
+
+    const firstCleanup = first.cleanup?.()
+    expect(first.cleanup?.()).toBe(firstCleanup)
+    await firstCleanup
+    const second = await secondPreparation
+    expect(secondMounted).toBe(true)
+    await second.cleanup?.()
   })
 
   it('isolates manifest and MCP schema/configuration violations without evaluating package code', () => {

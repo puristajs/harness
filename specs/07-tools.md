@@ -140,6 +140,7 @@ interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string                              // upstream MCP tool name
+  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
 }
@@ -187,8 +188,16 @@ interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
+}
+
+interface McpPluginProvenance {
+  name: string
+  version?: string
+  digest: string
+  component: 'mcp'
 }
 
 type McpAuth =

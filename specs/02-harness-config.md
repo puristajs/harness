@@ -332,6 +332,7 @@ interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string
+  provenance?: McpPluginProvenance
   inputAdapter?: (i: unknown) => unknown
   outputAdapter?: (o: unknown) => unknown
 }
@@ -343,6 +344,14 @@ interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  provenance?: McpPluginProvenance
+}
+
+interface McpPluginProvenance {
+  name: string
+  version?: string
+  digest: string
+  component: 'mcp'
 }
 ```
 
@@ -474,7 +483,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
 16. `checkpoints.info` and context checkpoint store capabilities MUST pass the validation rules in [22-local-durable-execution](./22-local-durable-execution.md).
-17. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values, an ASCII-only marker, and `headBytes + tailBytes + 64 <= maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
+17. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values and an ASCII-only marker. Validation reserves the marker's actual byte length and the complete rendered omission annotation in addition to `headBytes + tailBytes`, so every valid projected result is at most `maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
 
 ## `Harness<S>` returned object
 

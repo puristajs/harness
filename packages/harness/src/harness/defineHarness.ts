@@ -315,6 +315,23 @@ export interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O exten
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
+/**
+ * Content-free origin metadata for an MCP tool projected from an Agent Plugin.
+ *
+ * The harness attaches this metadata to normal MCP tool spans and metrics; it
+ * never emits package paths, commands, URLs, headers, inputs, or results.
+ */
+export interface McpPluginProvenance {
+  /** Validated plugin manifest name. */
+  name: string
+  /** Declared plugin version, when the manifest supplied one. */
+  version?: string
+  /** Reviewed SHA-256 package digest. */
+  digest: string
+  /** Component category; MCP is the only category valid for MCP tools. */
+  component: 'mcp'
+}
+
 /** MCP-over-stdio tool definition. */
 export interface McpStdioToolDefinition {
   kind: 'mcp_stdio'
@@ -340,6 +357,8 @@ export interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string
+  /** Optional content-free Agent Plugin origin metadata for telemetry. */
+  provenance?: McpPluginProvenance
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
   configureHarnessContext?: (context: HarnessAdapterContext) => void
@@ -366,6 +385,8 @@ export interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  /** Optional content-free Agent Plugin origin metadata for telemetry. */
+  provenance?: McpPluginProvenance
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
   configureHarnessContext?: (context: HarnessAdapterContext) => void

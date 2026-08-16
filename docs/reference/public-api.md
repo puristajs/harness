@@ -13,6 +13,7 @@ adapter packages.
 | `@purista/harness-anthropic` | Anthropic model provider adapter. |
 | `@purista/harness-bedrock` | Amazon Bedrock model provider adapter. |
 | `@purista/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
+| `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection and explicit, application-owned Skill/MCP bindings. |
 
 ## Application API
 
@@ -65,7 +66,6 @@ the simple in-process defaults.
 | `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
-| `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection plus explicit, application-owned Skill/MCP bindings. |
 
 ## Adapter Capabilities
 

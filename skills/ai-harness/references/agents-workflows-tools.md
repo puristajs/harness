@@ -324,6 +324,13 @@ remote_search: {
 
 MCP stdio requires a spawn-capable sandbox. Add `@modelcontextprotocol/client` only when MCP is needed.
 
+For an Agent Plugins stdio binding, require more than `spawn`: the sandbox must
+also implement `mountReadOnly(...)` so the digest-reviewed package root cannot
+be changed by the plugin process. Supply an existing application-owned data
+directory outside the plugin root for `PLUGIN_DATA`; the addon stages and
+synchronizes only that directory. The local host-directory sandbox is not an
+isolating Agent Plugins stdio backend.
+
 MCP validation/order:
 1. optional `inputAdapter`
 2. validate against upstream MCP input JSON Schema

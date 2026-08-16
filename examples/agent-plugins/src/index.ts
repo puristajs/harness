@@ -18,7 +18,7 @@ export async function reviewAndBindPlugin(root: string, dataDirectory?: string) 
   if (!plugin) throw new Error('The reviewed plugin was not loadable.')
 
   return plugin.bindings({
-    skills: { plugin_playbook: 'playbook' },
+    skills: { 'plugin-playbook': 'playbook' },
     tools: {
       search_plugin_docs: {
         server: 'docs',

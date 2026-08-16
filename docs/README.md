@@ -41,6 +41,7 @@ flowchart TD
   - [Living Wiki Jaeger Example](../examples/living-wiki-jaeger/README.md): explore a full research workspace with agents, workflows, review gates, artifacts, MCP, and Jaeger.
   - [Modular Support Harness](../examples/modular-support-harness/README.md): compose typed local modules while retaining application-owned workflows and hermetic replay tests.
   - [Workflow Child Tasks](../examples/workflow-child-tasks/README.md): run bounded fan-out, isolated background tasks, and a short continuable task conversation without credentials.
+  - [Agent Plugins](../examples/agent-plugins/README.md): inspect a local package, pin its reviewed digest, and explicitly bind selected Skills or MCP tools.
 - Learn the model
   - [Architecture](./concepts/architecture.md): understand sessions, agents, workflows, tools, skills, state, sandboxing, and telemetry.
   - [Common Scenarios And Use Cases](./guides/common-scenarios.md): choose patterns for RAG, triage, human review, research, reports, and multi-agent work.
@@ -71,10 +72,12 @@ flowchart TD
 | `packages/harness-anthropic` | Anthropic model provider adapter. |
 | `packages/harness-bedrock` | Amazon Bedrock model provider adapter. |
 | `packages/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
+| `packages/harness-agent-plugins` | Opt-in Agent Plugins v1 inspector and explicit Skill/MCP binding addon. |
 | `examples/quickstart` | Smallest typed harness example. |
 | `examples/showcase` | Skills, TypeScript tools, and multiple workflows. |
 | `examples/modular-support-harness` | Static module composition, application workflow ownership, retry-only context projection, and sanitized replay. |
 | `examples/workflow-child-tasks` | Bounded fan-out, isolated task ownership and lookup, and in-process continuables. |
+| `examples/agent-plugins` | Review, digest-pin, and explicitly bind an installed Agent Plugins package. |
 | `examples/bank-governance` | Optional typed governance policies, exposure-aware events, approvals, shadow-ready rollout, and blocked tool calls. |
 | `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, review gates, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
 | `specs/` | Approved technical specifications. Use specs for implementation detail, not first-time onboarding. |

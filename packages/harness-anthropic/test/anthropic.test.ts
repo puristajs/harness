@@ -36,9 +36,9 @@ describe('anthropic provider factory', () => {
 
     expect(response.content).toBe('hello')
     expect(response.usage).toMatchObject({
-      inputTokens: 4,
+      inputTokens: 8,
       outputTokens: 2,
-      totalTokens: 6,
+      totalTokens: 10,
       cachedInputTokens: 3,
       cacheCreationInputTokens: 1
     })
@@ -55,7 +55,12 @@ describe('anthropic provider factory', () => {
             return {
               content: [{ type: 'tool_use', id: 'toolu_1', name: 'harness_response', input: { ok: true } }],
               stop_reason: 'tool_use',
-              usage: { input_tokens: 3, output_tokens: 2 }
+              usage: {
+                input_tokens: 3,
+                output_tokens: 2,
+                cache_read_input_tokens: 4,
+                cache_creation_input_tokens: 2
+              }
             }
           }
         }
@@ -71,10 +76,57 @@ describe('anthropic provider factory', () => {
     })
 
     expect(response.object).toEqual({ ok: true })
-    expect(response.usage.totalTokens).toBe(5)
+    expect(response.usage).toMatchObject({
+      inputTokens: 9,
+      outputTokens: 2,
+      totalTokens: 11,
+      cachedInputTokens: 4,
+      cacheCreationInputTokens: 2
+    })
     expect(calls[0]).toMatchObject({
       tool_choice: { type: 'tool', name: 'harness_response' },
       tools: [{ name: 'harness_response', input_schema: schema }]
+    })
+  })
+
+  it('keeps cache-read and cache-creation input in the normalized text-stream total', async () => {
+    async function* chunks() {
+      yield {
+        type: 'message_start',
+        message: {
+          usage: {
+            input_tokens: 4,
+            output_tokens: 0,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 1
+          }
+        }
+      }
+      yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'cached' } }
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } }
+    }
+
+    const provider = anthropic({
+      client: { messages: { create: async () => chunks() } }
+    })
+    const received: any[] = []
+    for await (const chunk of provider.textStream!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: mockSignal()
+    })) {
+      received.push(chunk)
+    }
+
+    expect(received.at(-1)).toMatchObject({
+      kind: 'finish',
+      usage: {
+        inputTokens: 8,
+        outputTokens: 2,
+        totalTokens: 10,
+        cachedInputTokens: 3,
+        cacheCreationInputTokens: 1
+      }
     })
   })
 

@@ -208,11 +208,15 @@ export interface BaseRequest {
 
 /** Token usage accounting normalized across providers. */
 export interface TokenUsage {
-  /** Input tokens charged or consumed by the provider, including cached input tokens when the provider reports them in the aggregate. */
+  /**
+   * Total input tokens consumed across normal input, provider cache reads, and
+   * provider cache writes. The optional detail fields identify the cache
+   * channels without changing this total.
+   */
   inputTokens: number
   /** Output tokens charged or consumed by the provider, including reasoning output tokens when the provider reports them in the aggregate. */
   outputTokens: number
-  /** Provider-reported total tokens, or `inputTokens + outputTokens` when the provider omits a total. */
+  /** Provider-reported normalized total tokens, or `inputTokens + outputTokens` when omitted. */
   totalTokens: number
   /** Input tokens served from a provider-managed prompt/context cache. */
   cachedInputTokens?: number

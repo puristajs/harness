@@ -231,19 +231,29 @@ export type AnthropicClient = {
 type ChatRequest = TextRequest | ObjectRequest
 
 function toAnthropicUsage(usage: any): TokenUsage {
-  return toTokenUsage(usage?.input_tokens, usage?.output_tokens, undefined, {
-    cachedInputTokens: usage?.cache_read_input_tokens,
-    cacheCreationInputTokens: usage?.cache_creation_input_tokens
+  const normalInputTokens = anthropicTokenCount(usage?.input_tokens)
+  const cachedInputTokens = anthropicTokenCount(usage?.cache_read_input_tokens)
+  const cacheCreationInputTokens = anthropicTokenCount(usage?.cache_creation_input_tokens)
+  return toTokenUsage(normalInputTokens + cachedInputTokens + cacheCreationInputTokens, usage?.output_tokens, undefined, {
+    cachedInputTokens,
+    cacheCreationInputTokens
   })
 }
 
 function fromTokenUsage(usage: TokenUsage): Record<string, number | undefined> {
+  const cachedInputTokens = usage.cachedInputTokens ?? 0
+  const cacheCreationInputTokens = usage.cacheCreationInputTokens ?? 0
   return {
-    input_tokens: usage.inputTokens,
+    input_tokens: usage.inputTokens - cachedInputTokens - cacheCreationInputTokens,
     output_tokens: usage.outputTokens,
     cache_read_input_tokens: usage.cachedInputTokens,
     cache_creation_input_tokens: usage.cacheCreationInputTokens
   }
+}
+
+/** Anthropic reports normal, cache-read, and cache-creation input independently. */
+function anthropicTokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 function toClientOptions(options: AnthropicFactoryOptions): ClientOptions {

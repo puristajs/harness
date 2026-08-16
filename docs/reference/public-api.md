@@ -56,6 +56,7 @@ the simple in-process defaults.
 | `StateStore` | Persistence port for sessions, runs, messages, and events. |
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
 | `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
+| `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
 | `DiscoverSkillsOptions` / `DiscoveredSkills` | Client-style skill discovery input and diagnostics. |
@@ -64,6 +65,7 @@ the simple in-process defaults.
 | `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
+| `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection plus explicit, application-owned Skill/MCP bindings. |
 
 ## Adapter Capabilities
 

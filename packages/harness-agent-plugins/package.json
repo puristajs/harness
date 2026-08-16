@@ -1,7 +1,7 @@
 {
   "name": "@purista/harness-agent-plugins",
   "version": "2.0.0",
-  "description": "Safe, data-only Agent Plugins v1 inspection and Agent Skills projection for @purista/harness.",
+  "description": "Safe, data-only Agent Plugins v1 inspection with explicit Skills and MCP bindings for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

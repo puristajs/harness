@@ -39,7 +39,9 @@ const bindings = plugin.bindings({
     search_docs: {
       server: 'knowledge',
       tool: 'search',
-      description: 'Search approved knowledge sources.'
+      description: 'Search approved knowledge sources.',
+      // Headers are application-owned, never copied from plugin JSON.
+      headers: { 'x-tenant': 'acme' }
     }
   }
 })
@@ -78,19 +80,19 @@ const harness = defineHarness()
   assign normal local aliases, preserving the harness’s typed agent allowlists.
 - Reviewed stdio plugins additionally require an existing caller-owned
   `dataDirectory` whose resolved path does not overlap the plugin root. At
-  launch the package serializes access to that data directory, stages normal
-  package files and persistent data under a deterministic sandbox path, then
-  synchronizes only the staged data back on runner shutdown; plugin code never
-  receives the host path.
+  launch the package serializes access to that data directory, stages an
+  immutable package root (preserving executable modes) plus persistent data,
+  then synchronizes the complete staged-data snapshot back on runner shutdown.
 - The package validates stdio and Streamable HTTP declarations. Legacy HTTP+SSE
   is intentionally unsupported in this clean-major MCP integration.
 - A selected stdio server additionally requires that caller-owned data
-  directory. Its trusted package and persistent data are staged into the
-  current spawn-capable sandbox; package code is never evaluated and data is
-  synchronized only to that caller-owned directory when the runner closes.
-- Plugin HTTP headers are public static configuration only. Credential-bearing,
-  hop-by-hop, and MCP protocol headers are rejected case-insensitively;
-  application-owned authentication and protocol headers are supplied by core.
+  directory and a sandbox that supports both spawning and immutable mounts.
+  Its reviewed package and persistent data are staged into that sandbox; data
+  is synchronized only to the caller-owned directory when the runner closes.
+- Package-declared HTTP headers are validated but never sent. Bind only
+  application-owned static headers explicitly; credentials and protocol headers
+  stay under core control. Plugin HTTP redirects are rejected, preventing header
+  forwarding to another origin.
 
 The core harness remains responsible for skill mounting, MCP tool execution,
 governance, approvals, cancellation, timeouts, sessions, shutdown, and

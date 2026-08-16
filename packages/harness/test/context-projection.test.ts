@@ -25,6 +25,15 @@ it('accounts for the exact custom marker and omission annotation bytes', () => {
   expect(Buffer.byteLength(projected[0]?.content ?? '', 'utf8')).toBeLessThanOrEqual(validPolicy.toolResultPruner.maxBytes)
 })
 
+it('does not treat tool-controlled marker text as an existing projection', () => {
+  const marker = '[projection]'
+  const policy = { toolResultPruner: { maxBytes: 96, headBytes: 12, tailBytes: 12, marker } }
+  const original = { role: 'tool' as const, toolCallId: 'call-1', content: `${marker} (not a harness projection) ${'x'.repeat(200)}` }
+  const [projected] = projectToolResults([original], policy)
+  expect(projected).not.toBe(original)
+  expect(Buffer.byteLength(projected?.content ?? '', 'utf8')).toBeLessThanOrEqual(policy.toolResultPruner.maxBytes)
+})
+
 class ContextLengthProvider extends FakeModelProvider {
   private failed = false
 

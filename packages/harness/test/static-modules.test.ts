@@ -72,6 +72,27 @@ it('rejects duplicate module ids and definition ids without overwriting earlier 
   expect(source.use(agentsModule).build().inspect().modules.map((entry) => entry.id)).toEqual(['support.models', 'support.agents'])
 })
 
+it('rejects a builder facade captured by a different module invocation', () => {
+  let captured: ReturnType<typeof defineHarnessModule<{}>> extends never ? never : unknown
+  const first = defineHarnessModule<{}>()('capture.first', {
+    register(builder) {
+      captured = builder
+      return builder.models({ support: { provider: model, model: 'support-v1', capabilities: ['object'] } })
+    }
+  })
+  const stale = defineHarnessModule<{}>()('capture.stale', {
+    register() {
+      return (captured as { tools: (tools: Record<string, unknown>) => unknown }).tools({}) as never
+    }
+  })
+  try {
+    defineHarness().use(first).use(stale)
+    throw new Error('Expected stale module facade to be rejected.')
+  } catch (error) {
+    expect(error).toMatchObject({ meta: { reason: 'invalid_module' } })
+  }
+})
+
 it('keeps failed module registration atomic and validates module identities', () => {
   const invalid = defineHarnessModule<{}>()('Bad identity', {
     register(builder) {

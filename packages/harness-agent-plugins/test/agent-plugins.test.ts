@@ -91,7 +91,7 @@ describe('Agent Plugins v1 inspector', () => {
     const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted' })] })
     const bindings = loaded?.bindings({
       skills: { 'acme-research': 'research' },
-      tools: { search_docs: { server: 'remote', tool: 'search', description: 'Search approved documents.' } }
+      tools: { search_docs: { server: 'remote', tool: 'search', description: 'Search approved documents.', headers: { 'x-tenant': 'app-owned' } } }
     })
     expect(bindings?.diagnostics).toEqual([])
     expect(bindings?.skills['acme-research']).toMatchObject({ trust: 'trusted', source: 'agent_plugin:acme.research' })
@@ -99,6 +99,8 @@ describe('Agent Plugins v1 inspector', () => {
       kind: 'mcp_http',
       tool: 'search',
       url: 'https://example.test/mcp',
+      headers: { 'x-tenant': 'app-owned' },
+      redirect: 'error',
       provenance: {
         name: 'acme.research',
         version: '1.2.3',
@@ -303,6 +305,9 @@ describe('Agent Plugins v1 inspector', () => {
       async mount(files: ReadonlyMap<string, Uint8Array | string>, atPath: string) {
         for (const [relative, value] of files) virtualFiles.set(`${atPath}/${relative}`, value)
       },
+      async mountReadOnly(files: ReadonlyMap<string, Uint8Array | string>, atPath: string) {
+        for (const [relative, value] of files) virtualFiles.set(`${atPath}/${relative}`, value)
+      },
       async list(directory: string) {
         return [...virtualFiles.keys()]
           .filter((filePath) => filePath.startsWith(`${directory}/`))
@@ -326,8 +331,10 @@ describe('Agent Plugins v1 inspector', () => {
     expect(virtualFiles.get(`${rootPath}/plugin.json`)).toBeDefined()
     expect(virtualFiles.get(`${dataPath}/state.txt`)).toBeDefined()
     virtualFiles.set(`${dataPath}/result.txt`, 'after')
+    virtualFiles.delete(`${dataPath}/state.txt`)
     await prepared.cleanup?.()
     expect(fs.readFileSync(path.join(dataDirectory, 'result.txt'), 'utf8')).toBe('after')
+    expect(fs.existsSync(path.join(dataDirectory, 'state.txt'))).toBe(false)
   })
 
   it('rejects stdio data directories that overlap the plugin root after resolution', async () => {
@@ -351,6 +358,35 @@ describe('Agent Plugins v1 inspector', () => {
     expect(parentDirectoryBindings?.tools).toEqual({})
   })
 
+  it('refuses stdio staging when a sandbox cannot enforce an immutable package root', async () => {
+    const root = pluginRoot()
+    const dataDirectory = pluginRoot()
+    writeManifest(root)
+    writeJson(path.join(root, 'mcp.json'), {
+      $schema: AGENT_PLUGIN_MCP_SCHEMA,
+      mcpServers: { local: { type: 'stdio', command: './bin/server' } }
+    })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory })] })
+    const tool = loaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } }).tools['local_tool']
+    if (!tool || tool.kind !== 'mcp_stdio' || !tool.prepareLaunch) throw new Error('Expected a staged stdio tool.')
+    await expect(tool.prepareLaunch({ sandbox: { executor: 'available' } as never })).rejects.toThrow('cannot enforce an immutable')
+  })
+
+  it('rechecks the exact staged bytes against the reviewed digest', async () => {
+    const root = pluginRoot()
+    const dataDirectory = pluginRoot()
+    writeManifest(root)
+    writeJson(path.join(root, 'mcp.json'), {
+      $schema: AGENT_PLUGIN_MCP_SCHEMA,
+      mcpServers: { local: { type: 'stdio', command: './bin/server' } }
+    })
+    const [loaded] = await loadAgentPlugins({ plugins: [reviewedSource(root, { trust: 'trusted', dataDirectory })] })
+    const tool = loaded?.bindings({ tools: { local_tool: { server: 'local', tool: 'validate', description: 'Validate.' } } }).tools['local_tool']
+    if (!tool || tool.kind !== 'mcp_stdio' || !tool.prepareLaunch) throw new Error('Expected a staged stdio tool.')
+    fs.writeFileSync(path.join(root, 'changed-after-review.txt'), 'changed')
+    await expect(tool.prepareLaunch({ sandbox: { executor: 'available', mountReadOnly: async () => undefined } as never })).rejects.toThrow('changed after review')
+  })
+
   it('serializes staging and synchronization for a shared persistent data directory', async () => {
     const root = pluginRoot()
     const dataDirectory = pluginRoot()
@@ -368,6 +404,10 @@ describe('Agent Plugins v1 inspector', () => {
       return {
         executor: 'available' as const,
         async mount(entries: ReadonlyMap<string, Uint8Array | string>, atPath: string) {
+          onMount()
+          for (const [relative, value] of entries) files.set(`${atPath}/${relative}`, value)
+        },
+        async mountReadOnly(entries: ReadonlyMap<string, Uint8Array | string>, atPath: string) {
           onMount()
           for (const [relative, value] of entries) files.set(`${atPath}/${relative}`, value)
         },

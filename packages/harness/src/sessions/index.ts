@@ -352,6 +352,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // execution is still owned by this harness instance and is cancelled on
   // session close or harness shutdown.
   const childTasks = new Map<string, LiveChildTask>()
+  // A StateStore's createRun operation is intentionally portable and does not
+  // promise compare-and-set semantics. Serialize only the short in-process
+  // reservation window so concurrent durable retries cannot both publish a
+  // child run before either becomes visible in state.
+  const childTaskStartLocks = new Map<string, Promise<void>>()
   // Stable per-harness-instance worker id used as the default durable lease owner.
   const durableWorkerId = `worker_${ulid()}`
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
@@ -675,6 +680,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   async function shutdownHarness(): Promise<{ errors: HarnessError[] }> {
       const errors: HarnessError[] = []
+      // Child tasks own MCP runners and isolated sandboxes. They must observe
+      // cancellation while those resources are still live.
+      await cancelChildTasks(() => true, 'harness shutdown')
       try {
         await mcpRegistry.close()
       } catch (error) {
@@ -687,7 +695,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close sandbox session.', { session_id: sessionId }, error))
         }
       }
-      await cancelChildTasks(() => true, 'harness shutdown')
       sessionStates.clear()
       const closed = new Set<object>()
       const closeResource = async (kind: string, id: string, resource: unknown, allowLog = true): Promise<void> => {
@@ -1352,6 +1359,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const taskId = args.options?.idempotencyKey
       ? `task_${args.parentRunId}_${args.options.idempotencyKey}`
       : `task_${ulid()}`
+    const releaseStartLock = await acquireChildTaskStartLock(taskId)
+    try {
+    const local = childTasks.get(taskId)
+    if (local) {
+      args.delegationState.totalChildAgentCalls -= 1
+      return childTaskHandle(local)
+    }
     const existing = await definition.state.getRun(taskId)
     if (existing) {
       args.delegationState.totalChildAgentCalls -= 1
@@ -1512,6 +1526,24 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     // dropped handle must not surface an unhandled rejection.
     result.catch(() => undefined)
     return childTaskHandle(live)
+    } finally {
+      releaseStartLock()
+    }
+  }
+
+  async function acquireChildTaskStartLock(taskId: string): Promise<() => void> {
+    const previous = childTaskStartLocks.get(taskId) ?? Promise.resolve()
+    let resolveCurrent!: () => void
+    const current = new Promise<void>((resolve) => { resolveCurrent = resolve })
+    childTaskStartLocks.set(taskId, current)
+    await previous
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      resolveCurrent()
+      if (childTaskStartLocks.get(taskId) === current) childTaskStartLocks.delete(taskId)
+    }
   }
 
   function childTaskHandle(live: LiveChildTask): ChildTaskHandle<JsonValue> {

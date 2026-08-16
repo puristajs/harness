@@ -23,3 +23,27 @@ it('fails strictly for an exhausted or unused fixture', async () => {
   await expect(replay.text?.({ model: 'demo', messages: [], signal: new AbortController().signal })).rejects.toMatchObject({ code: 'REPLAY_FIXTURE_ERROR' })
   expect(() => assertReplayConsumed(replay)).not.toThrow()
 })
+
+it('rejects malformed interactions as invalid fixtures before replay', () => {
+  for (const fixture of [
+    { version: 1, id: 'bad', interactions: [null] },
+    { version: 1, id: 'bad', interactions: [{ method: 'text', request: null, outcome: null }] }
+  ]) {
+    try {
+      replayModelProvider(fixture as never)
+      throw new Error('Expected invalid replay fixture to throw.')
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'REPLAY_FIXTURE_ERROR', meta: { reason: 'invalid_fixture', ordinal: 0 } })
+    }
+  }
+})
+
+it('rejects non-JSON sanitizer output while recording', async () => {
+  const source = new FakeModelProvider()
+  source.enqueueText({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  const recorder = createReplayInteractionRecorder({ sanitize: () => undefined })
+  const wrapped = recorder.wrap(source)
+  await expect(wrapped.text?.({ model: 'demo', messages: [], signal: new AbortController().signal })).rejects.toMatchObject({
+    code: 'REPLAY_FIXTURE_ERROR', meta: { fixtureId: 'recording', reason: 'invalid_fixture' }
+  })
+})

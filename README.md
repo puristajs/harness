@@ -108,5 +108,7 @@ npm run test:failure
 - `examples/delm-shared-context/` — DeLM-inspired shared-context coordination example for parallel worker workflows.
 - `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
+- `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
+- `packages/harness-agent-plugins/README.md` — Agent Plugins inspection, review digest, and explicit Skills/MCP binding example.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

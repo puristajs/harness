@@ -8,6 +8,7 @@ import {
   DurableRunLeaseError,
   DurableStepError,
   DurableTerminalRunError,
+  isReadOnlyMountCapableSession,
   localDirectorySandbox,
   localDirectoryWorkspaceStore,
   localDurableExecution,
@@ -732,6 +733,22 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
     await expect(session.stat('/workspace/mounted/a.txt')).resolves.toMatchObject({ kind: 'file', size: 5 })
     await session.remove('/workspace/mounted', { recursive: true })
     await expect(session.exists('/workspace/mounted')).resolves.toBe(false)
+  })
+
+  it('provides a spawn-capable immutable package mount for trusted stdio servers', async () => {
+    const root = await tempRoot()
+    const session = await localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }).open({
+      runId: 'run-plugin', sessionId: 'session-plugin'
+    })
+    expect(isReadOnlyMountCapableSession(session)).toBe(true)
+    if (!isReadOnlyMountCapableSession(session) || !('spawn' in session)) throw new Error('Expected local spawn/read-only capabilities.')
+    await session.mountReadOnly(new Map([['server.mjs', 'process.stdout.write(process.env.PLUGIN_ROOT)']]), '/plugins/reviewed/root', { executablePaths: ['server.mjs'] })
+    const process = await session.spawn('node', { args: ['/plugins/reviewed/root/server.mjs'], env: { PLUGIN_ROOT: '/plugins/reviewed/root' } })
+    let output = ''
+    for await (const chunk of process.stdout) output += chunk
+    await process.exit
+    expect(output).toContain('/plugins/reviewed/root')
+    await expect(session.write('/plugins/reviewed/root/server.mjs', 'mutate')).rejects.toThrow()
   })
 
   it('jails exec cwd to the sandbox root', async () => {

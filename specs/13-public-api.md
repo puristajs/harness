@@ -428,6 +428,9 @@ export interface HarnessModuleInspection
 export interface HarnessModuleContribution
 export interface Sandbox
 export interface SandboxSessionBase
+export interface ReadOnlyMountOptions
+export interface ReadOnlyMountCapableSandboxSession
+export function isReadOnlyMountCapableSession
 export interface ExecCapableSandboxSession
 export interface SandboxSession
 export type SandboxSessionFor

@@ -112,6 +112,39 @@ describe('workflow child tasks', () => {
     await harness.shutdown()
   })
 
+  it('atomically coalesces concurrent starts with the same idempotency key', async () => {
+    let executions = 0
+    const handles: ChildTaskHandle<string>[] = []
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
+      .agents(({ agent }) => ({
+        worker: agent({
+          model: 'fake', input: z.string(), output: z.string(), builtinTools: false, instructions: 'Return.',
+          handler: async (ctx) => { executions += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return ctx.input }
+        })
+      }))
+      .workflows(({ workflow }) => ({
+        launch: workflow({
+          input: z.string(), output: z.array(z.string()), delegation: { agents: ['worker'] },
+          handler: async (ctx) => {
+            handles.push(...await Promise.all([
+              ctx.childTasks.start('worker', ctx.input, { idempotencyKey: 'same-key' }),
+              ctx.childTasks.start('worker', ctx.input, { idempotencyKey: 'same-key' })
+            ]))
+            return handles.map((handle) => handle.id)
+          }
+        })
+      }))
+      .build()
+    const session = await harness.getSession('task-idempotency')
+    const ids = await session.workflows.launch.prompt('one')
+    expect(new Set(ids).size).toBe(1)
+    await expect(Promise.all(handles.map((handle) => handle.result()))).resolves.toEqual(['one', 'one'])
+    expect(executions).toBe(1)
+    await harness.shutdown()
+  })
+
   it('keeps a continuable task-owned history and exposes it through the session owner', async () => {
     let task: ContinuableChildTaskHandle<string, string> | undefined
     const harness = defineHarness()

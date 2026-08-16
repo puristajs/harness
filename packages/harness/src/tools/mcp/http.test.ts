@@ -41,9 +41,9 @@ describe('HTTP MCP runner', () => {
 
     await expect(invokeMcpTool({
       ...config(server.url),
-      headers: { authorization: 'Bearer wrong' },
+      headers: { Authorization: 'Bearer wrong' },
       auth: { kind: 'bearer' as const, token: 'secret' }
-    }, createHttpMcpTransportRunner({ ...config(server.url), headers: { authorization: 'Bearer wrong' }, auth: { kind: 'bearer' as const, token: 'secret' } }), { message: 'bearer' }, new AbortController().signal)).resolves.toEqual({ echo: 'bearer' })
+    }, createHttpMcpTransportRunner({ ...config(server.url), headers: { Authorization: 'Bearer wrong' }, auth: { kind: 'bearer' as const, token: 'secret' } }), { message: 'bearer' }, new AbortController().signal)).resolves.toEqual({ echo: 'bearer' })
 
     const oauthServer = await startFakeHttpMcpServer({ requiredHeaders: { authorization: 'Bearer oauth-secret' } })
     servers.push(oauthServer)

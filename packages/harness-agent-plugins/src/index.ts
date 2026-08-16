@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
+import { isReadOnlyMountCapableSession } from '@purista/harness'
 import type {
   McpHttpToolDefinition,
   McpStdioToolDefinition,
@@ -104,6 +105,8 @@ export interface AgentPluginToolBinding {
   server: string
   tool: string
   description: string
+  /** Application-owned static headers. Package-declared headers are never sent. */
+  headers?: Readonly<Record<string, string>>
 }
 
 /** Content-free skill inventory record safe to expose in inspection output. */
@@ -530,7 +533,8 @@ function toHarnessMcpTool(
     kind: 'mcp_http',
     description: binding.description,
     url: server.url,
-    ...(server.headers ? { headers: { ...server.headers } } : {}),
+    ...(binding.headers ? { headers: { ...binding.headers } } : {}),
+    redirect: 'error',
     ...(provenance ? { provenance } : {}),
     tool: binding.tool
   }
@@ -554,18 +558,20 @@ function createPluginLaunchPreparer(
   const sandboxDataRoot = `/plugins/${digest}/data`
   return async ({ sandbox, signal }) => {
     signal?.throwIfAborted()
-    const freshDigest = digestPlugin(plugin.root, maxStagedBytes, [])
-    if (freshDigest !== digest) {
-      throw new AgentPluginLoadError('The trusted plugin changed after review and before staging.')
-    }
+    if (!isReadOnlyMountCapableSession(sandbox)) throw new AgentPluginLoadError('The active sandbox cannot enforce an immutable Agent Plugin package mount.')
     const dataRoot = resolveDataDirectoryOutsidePluginRoot(dataDirectory, plugin.root)
     const releaseDataLock = await acquireDataDirectoryLock(dataRoot)
     try {
       signal?.throwIfAborted()
       const packageFiles = collectNormalFiles(plugin.root, maxStagedBytes)
+      // Verify the exact bytes that will be mounted; a separate filesystem
+      // digest followed by a second read leaves a review-to-execution race.
+      if (digestCollectedFiles(packageFiles.files) !== digest) {
+        throw new AgentPluginLoadError('The trusted plugin changed after review and before staging.')
+      }
       const dataFiles = collectNormalFiles(dataRoot, maxStagedBytes)
-      await sandbox.mount(packageFiles, sandboxPluginRoot)
-      await sandbox.mount(dataFiles, sandboxDataRoot)
+      await sandbox.mountReadOnly(packageFiles.files, sandboxPluginRoot, { executablePaths: packageFiles.executablePaths })
+      await sandbox.mount(dataFiles.files, sandboxDataRoot)
       // `mount` does not create a directory for an empty map. The marker is
       // excluded from synchronization and gives stdio cwd a durable directory.
       await sandbox.mount(new Map([[DATA_STAGING_MARKER, '']]), sandboxDataRoot)
@@ -639,8 +645,14 @@ async function acquireDataDirectoryLock(dataRoot: string): Promise<() => void> {
   }
 }
 
-function collectNormalFiles(root: string, maxBytes: number): Map<string, Uint8Array> {
+interface CollectedFiles {
+  files: Map<string, Uint8Array>
+  executablePaths: string[]
+}
+
+function collectNormalFiles(root: string, maxBytes: number): CollectedFiles {
   const files = new Map<string, Uint8Array>()
+  const executablePaths: string[] = []
   let totalBytes = 0
   const walk = (directory: string): void => {
     let entries: fs.Dirent[]
@@ -682,11 +694,26 @@ function collectNormalFiles(root: string, maxBytes: number): Map<string, Uint8Ar
       if (totalBytes > positiveInteger(maxBytes, 100 * 1024 * 1024)) {
         throw new AgentPluginLoadError('The trusted plugin staging directory exceeds its byte limit.')
       }
-      files.set(relative.split(path.sep).join('/'), data)
+      const normalizedRelative = relative.split(path.sep).join('/')
+      files.set(normalizedRelative, data)
+      if ((stat.mode & 0o111) !== 0) executablePaths.push(normalizedRelative)
     }
   }
   walk(root)
-  return files
+  return { files, executablePaths: executablePaths.sort() }
+}
+
+function digestCollectedFiles(files: ReadonlyMap<string, Uint8Array>): string {
+  const hasher = crypto.createHash('sha256')
+  for (const relative of [...files.keys()].sort((left, right) => left.localeCompare(right))) {
+    const data = files.get(relative)
+    if (!data) throw new AgentPluginLoadError('A trusted plugin staging file disappeared before verification.')
+    hasher.update(relative, 'utf8')
+    hasher.update('\0', 'utf8')
+    hasher.update(data)
+    hasher.update('\0', 'utf8')
+  }
+  return hasher.digest('hex')
 }
 
 async function syncSandboxData(
@@ -697,6 +724,7 @@ async function syncSandboxData(
 ): Promise<void> {
   let totalBytes = 0
   const entries = await sandbox.list(sandboxDataRoot, { recursive: true })
+  const snapshot = new Map<string, Uint8Array>()
   for (const entry of entries) {
     if (entry.kind !== 'file') continue
     const relative = path.posix.relative(sandboxDataRoot, entry.path)
@@ -704,15 +732,30 @@ async function syncSandboxData(
       if (relative === DATA_STAGING_MARKER) continue
       throw new AgentPluginLoadError('Sandbox plugin data contains an invalid path.')
     }
-    const target = path.resolve(hostDataRoot, ...relative.split('/'))
-    if (!isPathContained(hostDataRoot, target)) throw new AgentPluginLoadError('Sandbox plugin data escapes the caller-owned dataDirectory.')
     const data = await sandbox.read(entry.path)
     totalBytes += data.byteLength
     if (totalBytes > positiveInteger(maxBytes, 100 * 1024 * 1024)) {
       throw new AgentPluginLoadError('Sandbox plugin data exceeds its byte limit.')
     }
-    fs.mkdirSync(path.dirname(target), { recursive: true })
-    fs.writeFileSync(target, data)
+    snapshot.set(relative, data)
+  }
+  const stagedRoot = path.join(path.dirname(hostDataRoot), `.${path.basename(hostDataRoot)}.purista-stage-${crypto.randomUUID()}`)
+  const backupRoot = path.join(path.dirname(hostDataRoot), `.${path.basename(hostDataRoot)}.purista-backup-${crypto.randomUUID()}`)
+  try {
+    fs.mkdirSync(stagedRoot, { recursive: true })
+    for (const [relative, data] of snapshot) {
+      const target = path.resolve(stagedRoot, ...relative.split('/'))
+      if (!isPathContained(stagedRoot, target)) throw new AgentPluginLoadError('Sandbox plugin data escapes the caller-owned dataDirectory.')
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, data)
+    }
+    fs.renameSync(hostDataRoot, backupRoot)
+    fs.renameSync(stagedRoot, hostDataRoot)
+    fs.rmSync(backupRoot, { recursive: true, force: true })
+  } catch (error) {
+    if (!fs.existsSync(hostDataRoot) && fs.existsSync(backupRoot)) fs.renameSync(backupRoot, hostDataRoot)
+    fs.rmSync(stagedRoot, { recursive: true, force: true })
+    throw error
   }
 }
 

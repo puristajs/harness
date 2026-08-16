@@ -20,7 +20,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
       const promise = (async () => {
         const { Client, StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client')
         const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-          requestInit: { headers: buildHeaders(config.headers, config.auth) }
+          requestInit: { headers: buildHeaders(config.headers, config.auth), ...(config.redirect ? { redirect: config.redirect } : {}) }
         })
         // Harness v2 speaks the current MCP protocol directly. Pinning avoids
         // a legacy handshake/fallback and enables the modern per-request
@@ -80,7 +80,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
 }
 
 function buildHeaders(headers: Record<string, string> | undefined, auth: McpAuth | undefined): Record<string, string> {
-  const next = { ...(headers ?? {}) }
+  const next = Object.fromEntries(Object.entries(headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])) as Record<string, string>
   if (!auth || auth.kind === 'none') return next
   if (auth.kind === 'bearer') next['authorization'] = `Bearer ${auth.token}`
   if (auth.kind === 'oauth2') next['authorization'] = `Bearer ${auth.accessToken}`

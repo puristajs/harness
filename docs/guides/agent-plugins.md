@@ -17,12 +17,15 @@ agent allowlists, sandbox, telemetry, and tool validation still apply.
 Every load also supplies an application-reviewed SHA-256 digest; there is no
 digest-free trusted-loading mode. Stdio plugin data uses an existing
 application-owned directory outside the plugin root and is serialized when it
-is staged and synchronized. Plugin HTTP headers are public static metadata,
-not credentials or MCP/hop-by-hop protocol headers.
+is staged and synchronized. The reviewed package root is staged immutably with
+its executable modes preserved. Package-declared HTTP headers are validated but
+never sent: applications bind any non-secret static headers explicitly, and
+plugin HTTP redirects are rejected.
 
 Agent Plugins may provide Skills and modern MCP servers only. They cannot add
 agents, workflows, model providers, hooks, credentials, sandbox authority, or
-runtime code. Stdio requires a spawn-capable sandbox; remote MCP uses modern
-stateless Streamable HTTP. Legacy stateful MCP and HTTP+SSE are rejected.
+runtime code. Stdio requires a spawn-capable sandbox that can also enforce an
+immutable package mount; remote MCP uses modern stateless Streamable HTTP.
+Legacy stateful MCP and HTTP+SSE are rejected.
 
 For upgrade steps, see [Migrating To AI Harness 2.0](./migrating-to-v2.md).

@@ -46,6 +46,7 @@ export interface ResolvedMcpHttpTool extends ResolvedMcpTool {
   url: string
   auth?: McpHttpToolDefinition['auth']
   headers?: Record<string, string>
+  redirect?: 'error' | 'follow' | 'manual'
 }
 
 export type ResolvedMcpToolConfig = ResolvedMcpStdioTool | ResolvedMcpHttpTool
@@ -255,7 +256,8 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
     kind: 'mcp_http',
     url: tool.url,
     ...(tool.auth ? { auth: tool.auth } : {}),
-    ...(tool.headers ? { headers: tool.headers } : {})
+    ...(tool.headers ? { headers: tool.headers } : {}),
+    ...(tool.redirect ? { redirect: tool.redirect } : {})
   }
 }
 

@@ -210,11 +210,13 @@ export type {
 } from './runtime/index.js'
 
 // Sandbox port + default factories
-export { bashSandbox, inMemorySandbox } from './sandbox/index.js'
+export { bashSandbox, inMemorySandbox, isReadOnlyMountCapableSession } from './sandbox/index.js'
 export type {
   ExecCapableSandboxSession,
   HibernateCapableSandbox,
   ResumeCapableSandbox,
+  ReadOnlyMountCapableSandboxSession,
+  ReadOnlyMountOptions,
   Sandbox,
   SandboxProcess,
   SandboxResumeOptions,

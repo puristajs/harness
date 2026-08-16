@@ -62,6 +62,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'inMemoryDurableWorkspaceStore',
   'inMemorySandbox',
   'isHarnessError',
+  'isReadOnlyMountCapableSession',
   'isResumeBlockingRunStatus',
   'isTerminalRunStatus',
   'localDirectorySandbox',

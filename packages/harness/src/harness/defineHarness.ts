@@ -385,6 +385,8 @@ export interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  /** Fetch redirect policy. Agent Plugin bindings use `error` to prevent cross-origin header forwarding. */
+  redirect?: 'error' | 'follow' | 'manual'
   /** Optional content-free Agent Plugin origin metadata for telemetry. */
   provenance?: McpPluginProvenance
   inputAdapter?: (input: unknown) => unknown
@@ -1236,7 +1238,7 @@ type BuilderStateInternal = {
   moduleRequirements?: readonly AdapterCapability[]
 }
 
-const moduleBuilderTargets = new WeakMap<object, Builder<any>>()
+const moduleBuilderTargets = new WeakMap<object, { builder: Builder<any>; invocation: symbol | undefined }>()
 
 class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   private readonly options: HarnessOptions
@@ -1260,20 +1262,21 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       })
     }
 
+    const invocation = Symbol(`harness-module:${module.id}`)
     const scoped = new Builder(this.options, this.configured, module.id)
     let output: HarnessModuleBuilder<Result>
     try {
-      output = module.register(scoped.toModuleBuilder() as HarnessModuleBuilder<Required>)
+      output = module.register(scoped.toModuleBuilder(scoped, invocation) as unknown as HarnessModuleBuilder<Required>)
     } catch (error) {
       throw error
     }
     const target = output && typeof output === 'object' ? moduleBuilderTargets.get(output as object) : undefined
-    if (!target) {
+    if (!target || target.invocation !== invocation) {
       throw new HarnessConfigError('Harness module register must return its module builder.', {
         reason: 'invalid_module', path: `modules.${module.id}.register`, id: module.id, module_id: module.id
       })
     }
-    const contributions = moduleContributions(this.configured, target.configured)
+    const contributions = moduleContributions(this.configured, target.builder.configured)
     if (contributions.length === 0) {
       throw new HarnessConfigError('Harness module must contribute at least one definition family.', {
         reason: 'invalid_module', path: `modules.${module.id}`, id: module.id, module_id: module.id
@@ -1289,7 +1292,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       })))
     })
     return new Builder(this.options, {
-      ...target.configured,
+      ...target.builder.configured,
       modules: Object.freeze([...existing, inspection]),
       moduleRequirements: uniqueCapabilities([...(this.configured.moduleRequirements ?? []), ...(module.requires ?? [])])
     }) as unknown as HarnessBuilder<Result>
@@ -1491,16 +1494,16 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return harness
   }
 
-  private toModuleBuilder<T extends BuilderState = S>(target: Builder<T> = this as unknown as Builder<T>): HarnessModuleBuilder<T> {
+  private toModuleBuilder<T extends BuilderState = S>(target: Builder<T> = this as unknown as Builder<T>, invocation?: symbol): HarnessModuleBuilder<T> {
     const builder = target
     const facade = {
-      models: (models: ModelsConfig) => builder.toModuleBuilder(builder.models(models) as unknown as Builder<T & { models: ModelsConfig }>),
-      tools: (tools: ToolsConfig) => builder.toModuleBuilder(builder.tools(tools) as unknown as Builder<T & { tools: ToolsConfig }>),
-      skills: (skills: SkillsConfig) => builder.toModuleBuilder(builder.skills(skills) as unknown as Builder<T & { skills: SkillsConfig }>),
-      agents: (agents: unknown) => builder.toModuleBuilder(builder.agents(agents as never) as unknown as Builder<T & { agents: Record<string, AgentDefinition<any, any, any>> }>),
-      workflows: (workflows: unknown) => builder.toModuleBuilder(builder.workflows(workflows as never) as unknown as Builder<T & { workflows: Record<string, WorkflowDefinition<any, any, any>> }>)
+      models: (models: ModelsConfig) => builder.toModuleBuilder(builder.models(models) as unknown as Builder<T & { models: ModelsConfig }>, invocation),
+      tools: (tools: ToolsConfig) => builder.toModuleBuilder(builder.tools(tools) as unknown as Builder<T & { tools: ToolsConfig }>, invocation),
+      skills: (skills: SkillsConfig) => builder.toModuleBuilder(builder.skills(skills) as unknown as Builder<T & { skills: SkillsConfig }>, invocation),
+      agents: (agents: unknown) => builder.toModuleBuilder(builder.agents(agents as never) as unknown as Builder<T & { agents: Record<string, AgentDefinition<any, any, any>> }>, invocation),
+      workflows: (workflows: unknown) => builder.toModuleBuilder(builder.workflows(workflows as never) as unknown as Builder<T & { workflows: Record<string, WorkflowDefinition<any, any, any>> }>, invocation)
     }
-    moduleBuilderTargets.set(facade, builder)
+    moduleBuilderTargets.set(facade, { builder, invocation })
     return facade as unknown as HarnessModuleBuilder<T>
   }
 

@@ -40,12 +40,29 @@ const fingerprint = (method: ReplayMethod, request: { model: string }) => `${met
 export function createReplayInteractionRecorder(options: { sanitize: (value: unknown) => unknown }): ReplayInteractionRecorder {
   if (typeof options?.sanitize !== 'function') throw new TypeError('Replay recording requires a sanitize callback.')
   const interactions: SanitizedReplayInteraction[] = []
+  const sanitizeJson = (value: unknown): JsonValue => {
+    const sanitized = options.sanitize(value)
+    // JSON round-tripping deliberately removes undefined object fields, which
+    // are common on provider request/response shapes but cannot appear in a
+    // portable fixture. A top-level undefined/non-JSON result remains invalid.
+    let normalized: unknown
+    try {
+      const encoded = JSON.stringify(sanitized)
+      normalized = encoded === undefined ? undefined : JSON.parse(encoded)
+    } catch {
+      normalized = undefined
+    }
+    if (!isJsonValue(normalized)) {
+      throw new ReplayFixtureError('Replay sanitizer must return JSON-safe data.', { fixtureId: 'recording', reason: 'invalid_fixture' })
+    }
+    return normalized
+  }
   const record = (method: ReplayMethod, provider: ModelProvider, request: { model: string }, outcome: unknown, chunks?: readonly unknown[]) => {
     interactions.push({
       method,
-      request: { fingerprint: fingerprint(method, request), providerId: provider.id, model: request.model, value: options.sanitize(request) as JsonValue },
-      ...(chunks ? { chunks: chunks.map((chunk) => options.sanitize(chunk) as JsonValue) } : {}),
-      outcome: options.sanitize(outcome) as JsonValue
+      request: { fingerprint: fingerprint(method, request), providerId: provider.id, model: request.model, value: sanitizeJson(request) },
+      ...(chunks ? { chunks: chunks.map(sanitizeJson) } : {}),
+      outcome: sanitizeJson(outcome)
     })
   }
   return {
@@ -73,10 +90,35 @@ async function* recordStream<T>(source: AsyncIterable<T>, finish: (chunks: reado
 
 const replayStates = new WeakMap<ModelProvider, { fixture: SanitizedReplayFixture; cursor: number }>()
 
-export function replayModelProvider(fixture: SanitizedReplayFixture, options: ReplayModelProviderOptions = {}): ModelProvider {
-  if (!fixture || fixture.version !== 1 || !Array.isArray(fixture.interactions)) {
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every(isJsonValue)
+  return typeof value === 'object' && value !== null && Object.values(value).every(isJsonValue)
+}
+
+function isReplayMethod(value: unknown): value is ReplayMethod {
+  return value === 'text' || value === 'object' || value === 'textStream' || value === 'objectStream'
+}
+
+function assertReplayFixture(fixture: SanitizedReplayFixture): void {
+  if (!fixture || typeof fixture !== 'object' || fixture.version !== 1 || typeof fixture.id !== 'string' || !Array.isArray(fixture.interactions)) {
     throw new ReplayFixtureError('Replay fixture is invalid.', { fixtureId: fixture?.id ?? 'unknown', reason: 'invalid_fixture' })
   }
+  for (const [ordinal, interaction] of fixture.interactions.entries()) {
+    const request = interaction && typeof interaction === 'object' ? interaction.request : undefined
+    if (!interaction || typeof interaction !== 'object' || !isReplayMethod(interaction.method)
+      || !request || typeof request !== 'object' || typeof request.fingerprint !== 'string'
+      || typeof request.providerId !== 'string' || typeof request.model !== 'string'
+      || !isJsonValue(request.value) || !isJsonValue(interaction.outcome)
+      || (interaction.chunks !== undefined && (!Array.isArray(interaction.chunks) || !interaction.chunks.every(isJsonValue)))) {
+      throw new ReplayFixtureError('Replay fixture is invalid.', { fixtureId: fixture.id, ordinal, reason: 'invalid_fixture' })
+    }
+  }
+}
+
+export function replayModelProvider(fixture: SanitizedReplayFixture, options: ReplayModelProviderOptions = {}): ModelProvider {
+  assertReplayFixture(fixture)
   const state = { fixture, cursor: 0 }
   const consume = <T extends JsonValue>(method: ReplayMethod, request: { model: string }): SanitizedReplayInteraction => {
     const interaction = fixture.interactions[state.cursor]

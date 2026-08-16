@@ -292,17 +292,15 @@ not duplicate MCP JSON-schema validation, dynamic import, runner caching,
 output normalization, or shutdown behavior. Upstream `tools/list` discovery
 continues to validate the tool selected by the caller before model exposure.
 
-The core MCP runner SHALL use the `2026-07-28` stateless transport only. For
-Streamable HTTP it sends required routing/protocol headers, honours list-result
-cache lifetime without exceeding a run/session boundary, and invalidates a
-cached catalog on a protocol invalidation/error. It supports the Tasks
-extension only after both sides negotiate task-augmented `tools/call`; a task
-is polled/resolved within the current tool call, respects server poll hints
-subject to the existing timeout, emits no task data to the model beyond the
-normal final tool result, and sends cancellation on run abort/shutdown where
-supported. `input_required`, unsupported server-to-client requests, and task
-failure are returned as safely normalized `McpProtocolError`/`ToolError`
-results, never as an automatic user prompt or a hidden credential flow.
+The core MCP runner uses the `2026-07-28` stateless transport only. For
+Streamable HTTP it sends required routing/protocol headers and invalidates a
+cached catalog on a protocol invalidation/error. MCP Tasks are not exposed by
+this release: the runner does not claim task polling, cancellation, or task
+result projection semantics. Supporting Tasks requires explicit polling,
+abort/shutdown cancellation, and fixtures before it can be claimed. Unsupported
+server-to-client requests are returned as safely normalized
+`McpProtocolError`/`ToolError` results, never as an automatic user prompt or a
+hidden credential flow.
 
 ## Diagnostics, errors, inspection, and OpenTelemetry
 
@@ -333,16 +331,12 @@ plugin-derived:
 | `harness.plugin.version` | string | declared version when present |
 | `harness.plugin.digest` | string | package SHA-256 |
 | `harness.plugin.component` | string | `skill` or `mcp` |
-| `harness.mcp.protocol_version` | string | negotiated MCP version |
-| `harness.mcp.mode` | string | `stateless` |
-| `harness.mcp.task` | boolean | task-augmented call was used |
 
-Plugin inspection/loading spans are `harness.plugin.inspect` and
-`harness.plugin.load`; their operation values are `inspect`, `validate`,
-`bind`, and `stage`. They record only plugin digest/name, component counts,
-transport, trust decision, duration, and `error.type`. No plugin root/data
-path, commands, arguments, env values, headers, URLs, schemas, prompts, files,
-tool inputs/results, or credentials are emitted in any content-capture mode.
+The addon intentionally creates no inspection/loading spans because inspection
+is a standalone data-only package API with no harness telemetry context. Core
+tool spans carry the plugin provenance attributes above; no paths, commands,
+arguments, environment values, URLs, headers, schemas, prompts, files, tool
+inputs/results, or credentials are emitted.
 
 ## Testing, examples, release, and documentation
 
@@ -360,8 +354,8 @@ The addon has hermetic fixtures and contract tests covering:
    and no automatic tool exposure;
 7. stdio placeholder/reserved-env/cwd rules, persistent data across update,
    sandbox-only launch, close/cancellation/process-death behavior; and
-8. HTTP URL/header/redirect/auth policy plus stdio, Streamable HTTP,
-   `2026-07-28` stateless headers/list-cache, and task call/cancel fixtures.
+8. HTTP URL/header/redirect/auth policy plus stdio and Streamable HTTP
+   `2026-07-28` stateless fixtures. Tasks remain explicitly unsupported.
 
 Core MCP contract tests must run against the pinned current MCP SDK without an
 external server. They reject legacy protocol/transport configuration and verify

@@ -2,8 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
-    "types": ["node"]
+    "rootDir": "../..",
+    "types": ["node"],
+    "paths": {
+      "@purista/harness": ["../../packages/harness/src/index.ts"],
+      "@purista/harness-agent-plugins": ["../../packages/harness-agent-plugins/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile, rm, readdir, stat, lstat, realpath } from 'node:fs/promises'
-import { resolve, dirname, posix, join } from 'node:path'
+import { resolve, dirname, posix, join, basename } from 'node:path'
 import { SandboxError, SandboxNoExecutorError, OperationTimeoutError } from '../errors/index.js'
 import type { DirEntry, ExecOptions, ExecResult, FileStat } from '../harness/types.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { abortError } from '../runtime/abort.js'
-import type { ExecCapableSandboxSession, Sandbox, SandboxSessionBase } from '../sandbox/index.js'
+import type { ExecCapableSandboxSession, Sandbox, SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { LocalWorkspaceCoordinator } from './local-workspace.js'
 import { sha256Hex } from './ref-hash.js'
@@ -195,6 +195,51 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     })
   }
 
+  /** Starts a long-lived process using the same allowlist and environment policy as exec(). */
+  public async spawn(command: string, opts: SpawnOptions = {}): Promise<SandboxProcess> {
+    return this.sandboxSpan('spawn', { 'harness.sandbox.has_cwd': Boolean(opts.cwd) }, async () => {
+      if (this.execPolicy === false) throw new SandboxNoExecutorError('Sandbox executor unavailable.', { session_id: 'local' })
+      if (opts.signal?.aborted) throw abortError(opts.signal, 'sandbox', 'Sandbox run was cancelled.')
+      const policy = this.execPolicy
+      const commandName = command.startsWith('/') ? await this.toPhysical(command) : command
+      if (policy.allowCommands && !policy.allowCommands.includes(command) && !policy.allowCommands.includes(basename(commandName))) {
+        throw new SandboxError('Command is not allowed by local sandbox policy.', { reason: 'exec_failed' })
+      }
+      const cwd = await this.toPhysical(opts.cwd ?? '/workspace')
+      const mapSandboxPathValue = async (value: string): Promise<string> => {
+        if (value.startsWith('/')) return await this.toPhysical(value)
+        const assignment = value.indexOf('=/')
+        if (assignment < 0) return value
+        return `${value.slice(0, assignment + 1)}${await this.toPhysical(value.slice(assignment + 1))}`
+      }
+      const args = await Promise.all((opts.args ?? []).map(mapSandboxPathValue))
+      const envEntries = await Promise.all(Object.entries(opts.env ?? {}).map(async ([name, value]) => [name, await mapSandboxPathValue(value)] as const))
+      const child = spawn(commandName, args, {
+        cwd,
+        env: { PATH: process.env['PATH'] ?? '', HOME: this.root, ...policy.env, ...Object.fromEntries(envEntries) },
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+      const exit = new Promise<{ exitCode: number; signal?: string }>((resolveExit) => {
+        child.once('close', (exitCode, signal) => resolveExit({ exitCode: exitCode ?? 1, ...(signal ? { signal } : {}) }))
+      })
+      const onAbort = () => { child.kill('SIGTERM') }
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+      void exit.finally(() => opts.signal?.removeEventListener('abort', onAbort))
+      return {
+        writeStdin: async (chunk) => await new Promise<void>((resolveWrite, rejectWrite) => {
+          child.stdin.write(chunk, (error) => error ? rejectWrite(error) : resolveWrite())
+        }),
+        stdout: (async function * () { for await (const chunk of child.stdout) yield String(chunk) })(),
+        stderr: (async function * () { for await (const chunk of child.stderr) yield String(chunk) })(),
+        exit,
+        kill: async (signal = 'SIGTERM') => {
+          if (!child.killed) child.kill(signal)
+          await exit
+        }
+      }
+    })
+  }
+
   public async exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
     return this.sandboxSpan('exec', {
       'harness.sandbox.has_cwd': Boolean(opts.cwd),
@@ -329,7 +374,7 @@ class FilesOnlyLocalSandboxSession extends LocalDirectorySandboxSession {
   }
 }
 
-class ExecLocalSandboxSession extends LocalDirectorySandboxSession implements ExecCapableSandboxSession {
+class ExecLocalSandboxSession extends LocalDirectorySandboxSession implements ExecCapableSandboxSession, SpawnCapableSandboxSession {
   declare public readonly executor: 'available'
 
   public constructor(root: string, execPolicy: LocalHostExecPolicy, telemetry: TelemetryShim | undefined, fallbackExecTimeoutMs: number | undefined) {

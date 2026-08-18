@@ -40,7 +40,7 @@ import type {
   SessionMemory
 } from '../ports/memory.js'
 import { validateMemoryAdapter } from '../ports/memory.js'
-import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
 import { validateDurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
@@ -63,9 +63,11 @@ import {
   type AdapterCapability,
   type AdapterInspection,
   type DurableRuntimeAdapter,
-  type HarnessInspection
+  type HarnessInspection,
+  type HarnessModuleInspection
 } from '../ports/capabilities.js'
 import type { DurableStepOptions } from '../runtime/steps.js'
+import { type ContextProjectionPolicy, validateContextProjection } from '../context-projection.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
 export { HARNESS_VERSION } from '../version.js'
@@ -103,6 +105,8 @@ export interface HarnessDefaults {
    * `undefined` keeps all history, `0` keeps only system messages.
    */
   historyWindow?: number
+  /** Optional retry-only transient context projection. */
+  contextProjection?: ContextProjectionPolicy
   /** Default workflow child-agent delegation budgets. */
   delegation?: DelegationDefaults
 }
@@ -148,6 +152,13 @@ export interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint; the runtime may raise it on retry. */
   attempt?: number
+  /**
+   * Per-run workspace constraints applied when this invocation creates its
+   * durable workspace. Adapters remain responsible for rejecting policies
+   * they cannot enforce. This changes workspace retention/storage limits only;
+   * it never grants access to another adapter or sandbox capability.
+   */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 
 /** Shared invoke options for workflow and agent execution. */
@@ -158,6 +169,8 @@ export interface InvokeOptions {
   timeoutMs?: number
   /** Optional history-window override for this call only. */
   historyWindow?: number
+  /** Optional retry-only context projection override. */
+  contextProjection?: ContextProjectionPolicy
   /** Optional W3C Trace Context parent. */
   traceparent?: string
   /** Optional W3C Trace Context state. */
@@ -309,13 +322,40 @@ export interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O exten
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
+/**
+ * Content-free origin metadata for an MCP tool projected from an Agent Plugin.
+ *
+ * The harness attaches this metadata to normal MCP tool spans and metrics; it
+ * never emits package paths, commands, URLs, headers, inputs, or results.
+ */
+export interface McpPluginProvenance {
+  /** Validated plugin manifest name. */
+  name: string
+  /** Declared plugin version, when the manifest supplied one. */
+  version?: string
+  /** Reviewed SHA-256 package digest. */
+  digest: string
+  /** Component category; MCP is the only category valid for MCP tools. */
+  component: 'mcp'
+}
+
 /** MCP-over-stdio tool definition. */
 export interface McpStdioToolDefinition {
   kind: 'mcp_stdio'
   description: string
   command: string
   args?: readonly string[]
+  /** Working directory inside the current sandbox. */
+  cwd?: string
   env?: Record<string, string>
+  /** Prepares a sandbox-local launch before the MCP process is spawned. */
+  prepareLaunch?: (context: { sandbox: import('../sandbox/index.js').SandboxSessionBase; signal?: AbortSignal }) => Promise<{
+    command?: string
+    args?: readonly string[]
+    cwd?: string
+    env?: Record<string, string>
+    cleanup?: () => Promise<void>
+  }>
   /** Optional bootstrap command executed inside the sandbox before the MCP server is called. */
   install?: {
     command: string
@@ -324,6 +364,8 @@ export interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string
+  /** Optional content-free Agent Plugin origin metadata for telemetry. */
+  provenance?: McpPluginProvenance
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
   configureHarnessContext?: (context: HarnessAdapterContext) => void
@@ -350,6 +392,10 @@ export interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  /** Fetch redirect policy. Agent Plugin bindings use `error` to prevent cross-origin header forwarding. */
+  redirect?: 'error' | 'follow' | 'manual'
+  /** Optional content-free Agent Plugin origin metadata for telemetry. */
+  provenance?: McpPluginProvenance
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
   configureHarnessContext?: (context: HarnessAdapterContext) => void
@@ -719,7 +765,106 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
    * a transparent pass-through. See spec 10 "Durable steps".
    */
   step<T extends JsonValue>(stepId: string, fn: () => Promise<T>, options?: DurableStepOptions): Promise<T>
+  /**
+   * Runs independent workflow work with bounded, cancellation-aware
+   * concurrency. Results retain input order. The effective concurrency never
+   * exceeds this workflow's child-agent delegation budget.
+   */
+  fanOut<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: WorkflowFanOutOptions): Promise<R[]>
+  /** Starts an isolated, workflow-owned child-agent task. */
+  childTasks: WorkflowChildTasks<S>
   output?: O
+}
+
+/** Configuration for one typed workflow fan-out batch. */
+export interface WorkflowFanOutOptions {
+  /** Maximum concurrently executing workers. Defaults to the workflow child-agent budget. */
+  concurrency?: number
+}
+
+/** Content policy for workflow-owned child tasks. Only isolated execution ships in core. */
+export type ChildTaskContextPolicy = 'isolated'
+
+/** Lifecycle shape for a workflow-owned child task. */
+export type ChildTaskMode = 'one_shot' | 'continuable'
+
+/** Immutable, non-content task descriptor persisted with the task run. */
+export interface ChildTaskDescriptor {
+  readonly id: string
+  readonly parentRunId: string
+  readonly sessionId: string
+  readonly workflowId: string
+  readonly agentId: string
+  readonly modelAlias: string
+  readonly contextPolicy: ChildTaskContextPolicy
+  readonly mode: ChildTaskMode
+  readonly createdAt: string
+}
+
+/** Snapshot available to a task handle and session owner. */
+export interface ChildTaskStatus {
+  readonly descriptor: ChildTaskDescriptor
+  readonly status: 'running' | 'succeeded' | 'failed' | 'cancelled'
+  readonly finishedAt?: string
+  readonly error?: SerializedError
+}
+
+/** Opaque workflow-owned handle for a single child-agent task. */
+export interface ChildTaskHandle<O> {
+  readonly id: string
+  /** Resolves with the child output or rejects with its original failure. */
+  result(): Promise<O>
+  /** Returns a content-free lifecycle snapshot. */
+  status(): Promise<ChildTaskStatus>
+  /** Idempotently requests cancellation and waits for terminal settlement. */
+  cancel(reason?: string): Promise<void>
+}
+
+/**
+ * A task whose isolated conversation and sandbox remain live between explicit
+ * turns. Continuable tasks are in-process handles: they intentionally do not
+ * claim cross-process recovery until a durable task-worker adapter exists.
+ */
+export interface ContinuableChildTaskHandle<I, O> extends ChildTaskHandle<O> {
+  /** Queues one isolated follow-up turn after any active turn settles. */
+  send(input: I): Promise<O>
+  /** Ends the task successfully after its final queued turn has settled. */
+  close(): Promise<O | undefined>
+}
+
+/** Start options for a workflow-owned child task. */
+export type ChildTaskStartOptions<S extends BuilderState, K extends keyof NonNullable<S['agents']>> = {
+  /** A stable caller-chosen idempotency key for a durable workflow step. */
+  idempotencyKey?: string
+  /** Per-task timeout. Defaults to the workflow run timeout policy. */
+  timeoutMs?: number
+  /** A configured, policy-allowed model alias override. */
+  model?: keyof NonNullable<S['models']> & string
+  /** Only isolated history is supported; raw parent-history inheritance is intentionally absent. */
+  context?: ChildTaskContextPolicy
+  /** Runs exactly one agent turn and then settles the task. */
+  mode?: 'one_shot'
+}
+
+/** Start options for an in-process continuable child task. */
+export type ContinuableChildTaskStartOptions<S extends BuilderState, K extends keyof NonNullable<S['agents']>> =
+  Omit<ChildTaskStartOptions<S, K>, 'mode'> & {
+    /** Keeps an isolated task-owned conversation and sandbox open for `send(...)` turns. */
+    mode: 'continuable'
+  }
+
+/** Typed child-task API available only to a running workflow handler. */
+export interface WorkflowChildTasks<S extends BuilderState> {
+  start<K extends keyof NonNullable<S['agents']>>(
+    agentId: K,
+    input: AgentInput<S, K>,
+    options: ContinuableChildTaskStartOptions<S, K>
+  ): Promise<ContinuableChildTaskHandle<AgentInput<S, K>, AgentOutput<S, K>>>
+  start<K extends keyof NonNullable<S['agents']>>(
+    agentId: K,
+    input: AgentInput<S, K>,
+    options?: ChildTaskStartOptions<S, K>
+  ): Promise<ChildTaskHandle<AgentOutput<S, K>>>
 }
 
 /** Invoke options accepted by workflow-local child-agent calls. */
@@ -735,6 +880,24 @@ export type WorkflowAgentInvokeOptions<S extends BuilderState, K extends keyof N
 
 /** Full context passed to custom agent handlers. */
 export interface AgentContext<S extends BuilderState, I, O> extends AgentContextMinimal<S, I> {
+  /**
+   * Model handles scoped to the active harness run.
+   *
+   * Calls retain the harness trace/session/run attribution. Pass
+   * `{ emitRunEvents: true }` as the final invocation argument when the
+   * corresponding model completion or stream chunks should be exposed through
+   * `session.agents.<id>.stream(...)`. The harness owns event identity and
+   * persistence; custom handlers cannot forge arbitrary run events.
+   *
+   * @example
+   * ```ts
+   * const response = await ctx.models.primary.object(
+   *   { messages: [{ role: 'user', content: ctx.input }], schema },
+   *   ctx.signal,
+   *   { emitRunEvents: true }
+   * )
+   * ```
+   */
   models: ModelHandles<S>
   signal: AbortSignal
   output?: O
@@ -941,12 +1104,36 @@ export interface Session<S extends BuilderState> {
   readonly id: string
   readonly agents: { readonly [K in keyof NonNullable<S['agents']>]: AgentInvoker<S, K> }
   readonly workflows: { readonly [K in keyof NonNullable<S['workflows']>]: WorkflowInvoker<S, K> }
+  /** Session-owner access to child tasks created by this session's workflows. */
+  readonly childTasks: SessionChildTasks
   memory: SessionMemory
   history: ConversationHistory
   getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
+  /**
+   * Releases live, session-scoped resources without deleting persisted state.
+   *
+   * This closes the active sandbox and sandbox-bound MCP runners, cancels any
+   * resident child tasks, and evicts the in-memory session facade. StateStore-
+   * backed session metadata, conversation history, and run records remain
+   * available when a later {@link Harness.getSession} call reopens the same
+   * id. It is safe to call repeatedly once no run is active.
+   */
+  release(): Promise<void>
+  /**
+   * Destructively closes the session and removes its persisted session state.
+   * Use {@link release} when only live sandbox/MCP resources should be freed.
+   */
   close(): Promise<void>
+}
+
+/** Content-safe task lookup surface owned by a session, not by a workflow. */
+export interface SessionChildTasks {
+  /** Retrieves a task owned by this session, including a terminal persisted task after restart. */
+  get(id: string): Promise<ChildTaskHandle<JsonValue> | undefined>
+  /** Lists content-free task lifecycle snapshots for this session. */
+  list(opts?: { limit?: number; before?: string }): Promise<readonly ChildTaskStatus[]>
 }
 
 /** Structured run-event error payload. */
@@ -983,6 +1170,10 @@ export interface RunSummary {
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'fanout.started'; runId: string; batchId: string; at: string; count: number; concurrency: number }
+  | { type: 'fanout.finished'; runId: string; batchId: string; at: string; count: number; status: 'succeeded' | 'failed' | 'cancelled' }
+  | { type: 'child_task.started'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; modelAlias: string; contextPolicy: ChildTaskContextPolicy; mode: ChildTaskMode }
+  | { type: 'child_task.settled'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; status: 'succeeded' | 'failed' | 'cancelled'; error?: SerializedError }
   | { type: 'agent.started'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
   | { type: 'agent.finished'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
@@ -1001,6 +1192,10 @@ export type RunEvent =
 
 /** Fluent builder contract for composing a harness. */
 export interface HarnessBuilder<S extends BuilderState = {}> {
+  /** Applies a local, static harness module to this builder. */
+  use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
+    module: S extends Required ? HarnessModule<Required, Result, Id> : never
+  ): HarnessBuilder<Result>
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
   state(store: StateStore): HarnessBuilder<S>
@@ -1028,6 +1223,39 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   build(): Harness<S>
 }
 
+/** Builder surface exposed to a static harness module. It deliberately has no build or use method. */
+export interface HarnessModuleBuilder<S extends BuilderState = {}> {
+  models<const M extends ModelsConfig>(models: M): HarnessModuleBuilder<S & { models: M }>
+  tools<const T extends ToolsConfig>(tools: T): HarnessModuleBuilder<S & { tools: T }>
+  skills<const K extends SkillsConfig>(skills: K): HarnessModuleBuilder<S & { skills: K }>
+  agents<const A extends { [K in keyof A]: AgentDefinition<any, any, any> }>(
+    agents: (helpers: AgentDefinitionHelpers<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }>) => A
+  ): HarnessModuleBuilder<S & { agents: A }>
+  agents<const A extends { [K in keyof A]: { input: z.ZodTypeAny; output: z.ZodTypeAny } }>(agents: AgentsConfigFromSchemaMaps<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }, A>): HarnessModuleBuilder<S & { agents: AgentsConfigFromSchemaMaps<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }, A> }>
+  agents<const A extends { [K in keyof A]: AgentDefinitionFor<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }, A[K]> }>(agents: A): HarnessModuleBuilder<S & { agents: A }>
+  workflows<const W extends { [K in keyof W]: WorkflowDefinition<any, any, any> }>(
+    workflows: (helpers: WorkflowDefinitionHelpers<S & { agents: NonNullable<S['agents']> }>) => W
+  ): HarnessModuleBuilder<S & { workflows: W }>
+  workflows<const W extends { [K in keyof W]: { input: z.ZodTypeAny; output: z.ZodTypeAny } }>(workflows: WorkflowsConfigFromSchemaMaps<S & { agents: NonNullable<S['agents']> }, W>): HarnessModuleBuilder<S & { workflows: WorkflowsConfigFromSchemaMaps<S & { agents: NonNullable<S['agents']> }, W> }>
+  workflows<const W extends { [K in keyof W]: WorkflowDefinitionFor<S & { agents: NonNullable<S['agents']> }, W[K]> }>(workflows: W): HarnessModuleBuilder<S & { workflows: W }>
+}
+
+/** A local static transform that contributes definitions to one harness builder. */
+export interface HarnessModule<Required extends BuilderState = BuilderState, Result extends BuilderState = BuilderState, Id extends string = string> {
+  readonly id: Id
+  readonly version?: string
+  readonly requires?: readonly AdapterCapability[]
+  readonly register: (builder: HarnessModuleBuilder<Required>) => HarnessModuleBuilder<Result>
+}
+
+/** Defines a local static harness module. It does not construct or load a harness. */
+export function defineHarnessModule<Required extends BuilderState = {}>(): <const Id extends string, Result extends BuilderState>(
+  id: Id,
+  definition: Omit<HarnessModule<Required, Result, Id>, 'id'>
+) => HarnessModule<Required, Result, Id> {
+  return (id, definition) => Object.freeze({ id, ...definition })
+}
+
 type BuilderStateInternal = {
   telemetry?: TelemetryOptions
   logger?: Logger
@@ -1045,15 +1273,68 @@ type BuilderStateInternal = {
   agents?: Record<string, AgentDefinition<any, any, any>>
   workflows?: Record<string, WorkflowDefinition<any, any, any>>
   governance?: GovernanceConfig<any>
+  modules?: readonly HarnessModuleInspection[]
+  moduleRequirements?: readonly AdapterCapability[]
 }
+
+const moduleBuilderTargets = new WeakMap<object, { builder: Builder<any>; invocation: symbol | undefined }>()
 
 class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   private readonly options: HarnessOptions
   private readonly configured: BuilderStateInternal
+  private readonly activeModuleId: string | undefined
 
-  public constructor(options: HarnessOptions, configured: BuilderStateInternal = {}) {
+  public constructor(options: HarnessOptions, configured: BuilderStateInternal = {}, activeModuleId?: string) {
     this.options = options
     this.configured = configured
+    this.activeModuleId = activeModuleId
+  }
+
+  public use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
+    module: S extends Required ? HarnessModule<Required, Result, Id> : never
+  ): HarnessBuilder<Result> {
+    this.validateModule(module)
+    const existing = this.configured.modules ?? []
+    if (existing.some((entry) => entry.id === module.id)) {
+      throw new HarnessConfigError('Harness module id is already configured.', {
+        reason: 'duplicate_module', path: 'modules', id: module.id, module_id: module.id
+      })
+    }
+
+    const invocation = Symbol(`harness-module:${module.id}`)
+    const scoped = new Builder(this.options, this.configured, module.id)
+    let output: HarnessModuleBuilder<Result>
+    try {
+      output = module.register(scoped.toModuleBuilder(scoped, invocation) as unknown as HarnessModuleBuilder<Required>)
+    } catch (error) {
+      throw error
+    }
+    const target = output && typeof output === 'object' ? moduleBuilderTargets.get(output as object) : undefined
+    if (!target || target.invocation !== invocation) {
+      throw new HarnessConfigError('Harness module register must return its module builder.', {
+        reason: 'invalid_module', path: `modules.${module.id}.register`, id: module.id, module_id: module.id
+      })
+    }
+    const contributions = moduleContributions(this.configured, target.builder.configured)
+    if (contributions.length === 0) {
+      throw new HarnessConfigError('Harness module must contribute at least one definition family.', {
+        reason: 'invalid_module', path: `modules.${module.id}`, id: module.id, module_id: module.id
+      })
+    }
+    const inspection: HarnessModuleInspection = Object.freeze({
+      id: module.id,
+      ...(module.version ? { version: module.version } : {}),
+      requires: Object.freeze(uniqueCapabilities(module.requires ?? [])),
+      contributions: Object.freeze(contributions.map((contribution) => Object.freeze({
+        kind: contribution.kind,
+        ids: Object.freeze([...contribution.ids])
+      })))
+    })
+    return new Builder(this.options, {
+      ...target.builder.configured,
+      modules: Object.freeze([...existing, inspection]),
+      moduleRequirements: uniqueCapabilities([...(this.configured.moduleRequirements ?? []), ...(module.requires ?? [])])
+    }) as unknown as HarnessBuilder<Result>
   }
 
   public telemetry(opts: TelemetryOptions): HarnessBuilder<S> {
@@ -1117,6 +1398,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     validateDelegationBudget(defaults.delegation?.maxChildAgentCalls, 'defaults.delegation.maxChildAgentCalls', { min: 0 })
     validateDelegationBudget(defaults.delegation?.maxParallelChildAgentCalls, 'defaults.delegation.maxParallelChildAgentCalls', { min: 1 })
     validateDelegationBudget(defaults.delegation?.maxDepth, 'defaults.delegation.maxDepth', { min: 0 })
+    if (!validateContextProjection(defaults.contextProjection)) {
+      throw new HarnessConfigError('contextProjection is invalid.', { reason: 'invalid_context_projection', path: 'defaults.contextProjection' })
+    }
     return this.clone({ defaults })
   }
 
@@ -1127,8 +1411,11 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     for (const [alias, config] of Object.entries(models)) {
       validateModelRetrySetting(config.retry, `models.${alias}.retry`)
       validateModelRetrySetting(config.defaults?.retry, `models.${alias}.defaults.retry`)
+      if (!validateContextProjection(config.contextProjection)) {
+        throw new HarnessConfigError('contextProjection is invalid.', { reason: 'invalid_context_projection', path: `models.${alias}.contextProjection`, id: alias })
+      }
     }
-    return this.clone({ models }) as unknown as HarnessBuilder<S & { models: M }>
+    return this.clone({ models: this.mergeDefinitions('models', models) }) as unknown as HarnessBuilder<S & { models: M }>
   }
 
   public tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }> {
@@ -1140,11 +1427,11 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         )
       }
     }
-    return this.clone({ tools }) as unknown as HarnessBuilder<S & { tools: T }>
+    return this.clone({ tools: this.mergeDefinitions('tools', tools) }) as unknown as HarnessBuilder<S & { tools: T }>
   }
 
   public skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }> {
-    return this.clone({ skills }) as unknown as HarnessBuilder<S & { skills: K }>
+    return this.clone({ skills: this.mergeDefinitions('skills', skills) }) as unknown as HarnessBuilder<S & { skills: K }>
   }
 
   public agents<const A extends { [K in keyof A]: AgentDefinition<any, any, any> }>(
@@ -1158,7 +1445,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       : agents
     this.validateAgentStepBudgets(resolved)
     this.validateAgentSkillReferences(resolved)
-    return this.clone({ agents: resolved }) as unknown as HarnessBuilder<any>
+    return this.clone({ agents: this.mergeDefinitions('agents', resolved) }) as unknown as HarnessBuilder<any>
   }
 
   public workflows<const W extends { [K in keyof W]: WorkflowDefinition<any, any, any> }>(
@@ -1171,7 +1458,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       ? workflows({ workflow: (definition) => definition })
       : workflows
     this.validateWorkflowDelegationPolicies(resolved)
-    return this.clone({ workflows: resolved }) as unknown as HarnessBuilder<any>
+    return this.clone({ workflows: this.mergeDefinitions('workflows', resolved) }) as unknown as HarnessBuilder<any>
   }
 
   public governance(config: GovernanceConfig<S> | ((helpers: GovernanceDefinitionHelpers<S>) => GovernanceConfig<S>)): HarnessBuilder<S> {
@@ -1231,6 +1518,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
         maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
         ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {}),
+        ...(this.configured.defaults?.contextProjection ? { contextProjection: this.configured.defaults.contextProjection } : {}),
         ...(this.configured.defaults?.delegation ? { delegation: this.configured.defaults.delegation } : {})
       },
       models,
@@ -1245,8 +1533,57 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return harness
   }
 
+  private toModuleBuilder<T extends BuilderState = S>(target: Builder<T> = this as unknown as Builder<T>, invocation?: symbol): HarnessModuleBuilder<T> {
+    const builder = target
+    const facade = {
+      models: (models: ModelsConfig) => builder.toModuleBuilder(builder.models(models) as unknown as Builder<T & { models: ModelsConfig }>, invocation),
+      tools: (tools: ToolsConfig) => builder.toModuleBuilder(builder.tools(tools) as unknown as Builder<T & { tools: ToolsConfig }>, invocation),
+      skills: (skills: SkillsConfig) => builder.toModuleBuilder(builder.skills(skills) as unknown as Builder<T & { skills: SkillsConfig }>, invocation),
+      agents: (agents: unknown) => builder.toModuleBuilder(builder.agents(agents as never) as unknown as Builder<T & { agents: Record<string, AgentDefinition<any, any, any>> }>, invocation),
+      workflows: (workflows: unknown) => builder.toModuleBuilder(builder.workflows(workflows as never) as unknown as Builder<T & { workflows: Record<string, WorkflowDefinition<any, any, any>> }>, invocation)
+    }
+    moduleBuilderTargets.set(facade, { builder, invocation })
+    return facade as unknown as HarnessModuleBuilder<T>
+  }
+
+  private mergeDefinitions<K extends 'models' | 'tools' | 'skills' | 'agents' | 'workflows', V extends Record<string, unknown>>(
+    family: K,
+    incoming: V
+  ): V {
+    const current = (this.configured[family] ?? {}) as Record<string, unknown>
+    for (const id of Object.keys(incoming)) {
+      if (id in current) {
+        throw new HarnessConfigError(`Definition id "${id}" is already configured in ${family}.`, {
+          reason: 'duplicate_definition',
+          path: `${family}.${id}`,
+          id,
+          ...(this.activeModuleId ? { module_id: this.activeModuleId } : {})
+        })
+      }
+    }
+    return { ...current, ...incoming } as V
+  }
+
+  private validateModule(module: unknown): void {
+    const candidate = module as Partial<HarnessModule<any, any, string>> | undefined
+    if (!candidate || typeof candidate !== 'object' || typeof candidate.id !== 'string' || !/^[a-z][a-z0-9_.-]{1,63}$/.test(candidate.id)) {
+      throw new HarnessConfigError('Harness module id is invalid.', {
+        reason: 'invalid_module', path: 'modules', ...(typeof candidate?.id === 'string' ? { id: candidate.id } : {})
+      })
+    }
+    if (candidate.version !== undefined && (typeof candidate.version !== 'string' || candidate.version.length === 0 || candidate.version.length > 128 || /[^\x20-\x7E]/.test(candidate.version))) {
+      throw new HarnessConfigError('Harness module version is invalid.', { reason: 'invalid_module', path: `modules.${candidate.id}.version`, id: candidate.id, module_id: candidate.id })
+    }
+    if (typeof candidate.register !== 'function') {
+      throw new HarnessConfigError('Harness module register must be a function.', { reason: 'invalid_module', path: `modules.${candidate.id}.register`, id: candidate.id, module_id: candidate.id })
+    }
+    if (candidate.requires && !Array.isArray(candidate.requires)) {
+      throw new HarnessConfigError('Harness module requires must be an array.', { reason: 'invalid_module', path: `modules.${candidate.id}.requires`, id: candidate.id, module_id: candidate.id })
+    }
+  }
+
   private clone(patch: Partial<BuilderStateInternal>): Builder<S> {
-    return new Builder(this.options, { ...this.configured, ...patch })
+    return new Builder(this.options, { ...this.configured, ...patch }, this.activeModuleId)
   }
 
   /**
@@ -1533,10 +1870,29 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return {
       name,
       capabilities,
-      requiredCapabilities: uniqueCapabilities(this.configured.requiredCapabilities ?? []),
-      adapters
+      requiredCapabilities: uniqueCapabilities([
+        ...(this.configured.requiredCapabilities ?? []),
+        ...(this.configured.moduleRequirements ?? [])
+      ]),
+      adapters: Object.freeze(adapters.map((adapter) => Object.freeze({
+        ...adapter,
+        capabilities: Object.freeze([...adapter.capabilities]),
+        ...(adapter.metadata ? { metadata: Object.freeze({ ...adapter.metadata }) } : {})
+      }))),
+      modules: Object.freeze([...(this.configured.modules ?? [])])
     }
   }
+}
+
+function moduleContributions(before: BuilderStateInternal, after: BuilderStateInternal): Array<{ kind: 'model' | 'tool' | 'skill' | 'agent' | 'workflow'; ids: string[] }> {
+  const families: ReadonlyArray<readonly ['models' | 'tools' | 'skills' | 'agents' | 'workflows', 'model' | 'tool' | 'skill' | 'agent' | 'workflow']> = [
+    ['models', 'model'], ['tools', 'tool'], ['skills', 'skill'], ['agents', 'agent'], ['workflows', 'workflow']
+  ]
+  return families.flatMap(([family, kind]) => {
+    const previous = new Set(Object.keys((before[family] ?? {}) as Record<string, unknown>))
+    const ids = Object.keys((after[family] ?? {}) as Record<string, unknown>).filter((id) => !previous.has(id))
+    return ids.length > 0 ? [{ kind, ids }] : []
+  })
 }
 
 function getAdapterId(adapter: unknown, fallback: string): string {

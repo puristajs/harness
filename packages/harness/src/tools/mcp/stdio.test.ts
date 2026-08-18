@@ -1,9 +1,10 @@
-import { exec } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { env as processEnv } from 'node:process'
+import type { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { OperationTimeoutError, ValidationError } from '../../errors/index.js'
-import { inMemorySandbox, type SandboxSession } from '../../sandbox/index.js'
+import { inMemorySandbox, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import { invokeMcpTool } from './runner.js'
 import { createStdioMcpTransportRunner } from './stdio.js'
 
@@ -69,10 +70,25 @@ describe('stdio MCP runner', () => {
 
   it('enforces call timeouts', async () => {
     const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox, 20)
+    const localConfig = config(sandbox, 5_000)
     const runner = createStdioMcpTransportRunner(localConfig)
     try {
+      await expect(invokeMcpTool(localConfig, runner, { message: 'ready' }, new AbortController().signal)).resolves.toEqual({ echo: 'ready' })
+      localConfig.timeoutMs = 20
       await expect(invokeMcpTool(localConfig, runner, { message: 'slow', delayMs: 250 }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
+    } finally {
+      await runner.close()
+      await sandbox.close()
+    }
+  })
+
+  it('enforces connection and discovery timeouts and tears down the partial process', async () => {
+    const sandbox = hangingSpawnSandbox()
+    const localConfig = config(sandbox as never, 20)
+    const runner = createStdioMcpTransportRunner(localConfig)
+    try {
+      await expect(invokeMcpTool(localConfig, runner, { message: 'hello' }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
+      expect(sandbox.wasKilled()).toBe(true)
     } finally {
       await runner.close()
       await sandbox.close()
@@ -94,7 +110,8 @@ describe('stdio MCP runner', () => {
   })
 })
 
-function hostExecSandbox(): SandboxSession {
+function hostExecSandbox(): SpawnCapableSandboxSession {
+  const children = new Set<ChildProcessWithoutNullStreams>()
   return {
     executor: 'available',
     async read() { throw new Error('not implemented') },
@@ -105,29 +122,65 @@ function hostExecSandbox(): SandboxSession {
     async stat() { throw new Error('not implemented') },
     async exists() { return false },
     async mount() {},
-    async exec(command, opts) {
-      return new Promise((resolve, reject) => {
-        const started = Date.now()
-        const child = exec(command, { env: { ...processEnv, ...(opts?.env ?? {}) }, timeout: opts?.timeoutMs }, (error, stdout, stderr) => {
-          if (error && !('code' in error)) {
-            reject(error)
-            return
-          }
-          resolve({
-            stdout,
-            stderr,
-            exitCode: typeof (error as { code?: unknown } | null)?.code === 'number' ? (error as { code: number }).code : 0,
-            durationSeconds: (Date.now() - started) / 1000
-          })
-        })
-        if (opts?.stdin) child.stdin?.end(opts.stdin)
-        else child.stdin?.end()
-        opts?.signal?.addEventListener('abort', () => {
-          child.kill()
-          reject(opts.signal?.reason ?? new Error('aborted'))
-        }, { once: true })
+    async spawn(command, opts): Promise<SandboxProcess> {
+      const child = spawn(command, [...(opts?.args ?? [])], {
+        cwd: opts?.cwd,
+        env: { ...processEnv, ...(opts?.env ?? {}) },
+        stdio: ['pipe', 'pipe', 'pipe']
       })
+      children.add(child)
+      const exit = new Promise<{ exitCode: number; signal?: string }>((resolve) => {
+        child.on('exit', (code, signal) => resolve({ exitCode: code ?? 0, ...(signal ? { signal } : {}) }))
+      })
+      opts?.signal?.addEventListener('abort', () => child.kill(), { once: true })
+      return {
+        async writeStdin(chunk) { child.stdin.write(chunk) },
+        stdout: decodeStream(child.stdout),
+        stderr: decodeStream(child.stderr),
+        exit,
+        async kill(signal) { child.kill(signal ?? 'SIGTERM') }
+      }
+    },
+    async close() { for (const child of children) child.kill('SIGKILL') }
+  }
+}
+
+async function* decodeStream(stream: Readable): AsyncIterable<string> {
+  const decoder = new TextDecoder()
+  for await (const chunk of stream) yield decoder.decode(chunk as Buffer, { stream: true })
+}
+
+function hangingSpawnSandbox(): SpawnCapableSandboxSession & { wasKilled(): boolean } {
+  let killed = false
+  return {
+    executor: 'available',
+    async read() { throw new Error('not implemented') },
+    async readText() { throw new Error('not implemented') },
+    async write() {},
+    async remove() {},
+    async list() { return [] },
+    async stat() { throw new Error('not implemented') },
+    async exists() { return false },
+    async mount() {},
+    wasKilled: () => killed,
+    async spawn(): Promise<SandboxProcess> {
+      let resolveExit!: (result: { exitCode: number }) => void
+      const exit = new Promise<{ exitCode: number }>((resolve) => { resolveExit = resolve })
+      return {
+        async writeStdin() {},
+        stdout: neverStream(),
+        stderr: neverStream(),
+        exit,
+        async kill() {
+          killed = true
+          resolveExit({ exitCode: 137 })
+        }
+      }
     },
     async close() {}
   }
+}
+
+async function* neverStream(): AsyncIterable<string> {
+  await new Promise<void>(() => undefined)
 }

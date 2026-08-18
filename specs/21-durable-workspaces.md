@@ -613,6 +613,12 @@ interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint. The runtime may raise it on retry. */
   attempt?: number
+  /**
+   * Optional per-run retention, encryption, and quota constraints for the
+   * durable workspace created by this invocation. The selected workspace
+   * store validates and enforces it; this is never an authority grant.
+   */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 
 interface InvokeOptions {

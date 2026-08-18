@@ -163,6 +163,23 @@ Locked behavior:
   `-e2b`, `-microvm`) implement it. `@purista/harness/testing` ships a
   spawn-capable reference session for contract tests.
 
+## Prepared MCP launch capability
+
+An addon may need to stage reviewed, immutable executable assets plus a
+dedicated writable data directory before an existing MCP stdio runner starts.
+Core exposes a provider-neutral prepared-launch contract for this purpose. It
+is owned by the MCP runner/session, does not expose host process spawning, and
+does not identify any package format. The returned command, args, cwd, and env
+are still started exclusively by `exec`/`spawn` inside the current sandbox.
+
+The contract validates no application policy itself: callers must provide an
+already-validated source and core continues to enforce tool timeout,
+cancellation, process cleanup, and session close. A files-only sandbox rejects
+preparation for executable use. A compatible sandbox preserves the prepared
+read-only root and writable data mapping for the owning session only. See
+[29-agent-plugins](./29-agent-plugins.md) for the first consumer and its
+Windows/Linux containment requirements.
+
 ### Auto-detect
 
 If the user calls `.sandbox()` with no argument or omits `.sandbox()` entirely, the harness auto-detects: tries `bashSandbox()` first, falls back to `inMemorySandbox()` on import failure. This auto-detect is locked in [02-harness-config](./02-harness-config.md) §`.sandbox(...)`.

@@ -1,9 +1,16 @@
 import { SpanStatusCode } from '@opentelemetry/api'
 import { expect, it } from 'vitest'
+import { z } from 'zod'
 
-import { RecordingTelemetry, runTelemetryFlowHarness } from './telemetryFlowHarness.js'
+import { RecordingLogger, RecordingTelemetry, runTelemetryFlowHarness } from './telemetryFlowHarness.js'
 import { OperationTimeoutError } from '../src/errors/index.js'
 import { createModelRegistry } from '../src/models/registry.js'
+import { createSessionHarness } from '../src/sessions/index.js'
+import { InMemoryStateStore } from '../src/state/in-memory.js'
+import { inMemorySandbox } from '../src/sandbox/index.js'
+import { sandboxMemory } from '../src/memory/sandbox/index.js'
+import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { startFakeHttpMcpServer } from '../src/testing/fixtures/mcp/fake-http-server.js'
 
 it('emits a traceable session workflow agent model tool flow', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness()
@@ -89,6 +96,84 @@ it('marks failing spans with standard OTel error status and safe error attribute
       })
     })
   ]))
+})
+
+it('adds content-free Agent Plugin provenance to the existing MCP tool span and metrics', async () => {
+  const server = await startFakeHttpMcpServer()
+  const telemetry = new RecordingTelemetry()
+  const model = new FakeModelProvider()
+  model.enqueue({
+    object: {},
+    toolCalls: [{ id: 'call-1', name: 'plugin_echo', arguments: { message: 'hello' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  model.enqueue({ object: { answer: 'done' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+
+  const harness = createSessionHarness<any>({
+    name: 'plugin-provenance-test',
+    logger: new RecordingLogger(),
+    telemetryShim: telemetry,
+    state: new InMemoryStateStore(),
+    sandbox: inMemorySandbox(),
+    memory: sandboxMemory(),
+    defaults: {
+      agentMaxIterations: 4,
+      runTimeoutMs: 60_000,
+      toolTimeoutMs: 10_000,
+      skillTimeoutMs: 10_000,
+      modelTimeoutMs: 60_000,
+      maxParallelToolCalls: 1
+    },
+    models: { fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } },
+    tools: {
+      plugin_echo: {
+        kind: 'mcp_http',
+        description: 'Echo through an approved plugin MCP server.',
+        url: server.url,
+        tool: 'echo',
+        provenance: {
+          name: 'example-plugin',
+          version: '1.2.3',
+          digest: 'a'.repeat(64),
+          component: 'mcp'
+        }
+      }
+    },
+    skills: {},
+    agents: {
+      responder: {
+        input: z.string(),
+        output: z.object({ answer: z.string() }),
+        model: 'fast',
+        instructions: 'Use the plugin echo tool.',
+        tools: ['plugin_echo'],
+        builtinTools: false
+      }
+    },
+    workflows: {}
+  })
+
+  try {
+    const session = await harness.getSession('plugin-provenance-session')
+    await expect(session.agents.responder.prompt('hello')).resolves.toEqual({ answer: 'done' })
+    const toolSpan = telemetry.spans.find((span) => span.name === 'execute_tool plugin_echo')
+    const toolMetric = telemetry.metrics.find((metric) => metric.name === 'harness.tool.duration')
+    const expected = {
+      'harness.mcp.server': 'plugin_echo',
+      'harness.mcp.tool': 'echo',
+      'harness.mcp.transport': 'http',
+      'harness.plugin.name': 'example-plugin',
+      'harness.plugin.version': '1.2.3',
+      'harness.plugin.digest': 'a'.repeat(64),
+      'harness.plugin.component': 'mcp'
+    }
+    expect(toolSpan?.attrs).toMatchObject(expected)
+    expect(toolMetric?.attrs).toMatchObject(expected)
+    await session.close()
+  } finally {
+    await server.close()
+  }
 })
 
 it('tracks streamed model time to first chunk without recording content', async () => {

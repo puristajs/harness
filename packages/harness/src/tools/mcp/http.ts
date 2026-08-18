@@ -6,7 +6,7 @@ import { withMcpTimeout } from './runner.js'
 type SdkClient = {
   connect(transport: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<void>
   listTools(params?: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<{ tools: McpDiscoveredTool[] }>
-  callTool(params: { name: string; arguments?: unknown }, resultSchema?: unknown, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>
+  callTool(params: { name: string; arguments?: unknown }, options?: { signal?: AbortSignal; timeout?: number }): Promise<unknown>
   close(): Promise<void>
 }
 
@@ -18,14 +18,17 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
   async function connect(options?: { signal?: AbortSignal; timeoutMs?: number }) {
     if (!connected) {
       const promise = (async () => {
-        const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([
-          import('@modelcontextprotocol/sdk/client/index.js'),
-          import('@modelcontextprotocol/sdk/client/streamableHttp.js')
-        ])
+        const { Client, StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client')
         const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-          requestInit: { headers: buildHeaders(config.headers, config.auth) }
+          requestInit: { headers: buildHeaders(config.headers, config.auth), ...(config.redirect ? { redirect: config.redirect } : {}) }
         })
-        const client = new Client({ name: `purista-harness-${config.localToolId}`, version: '0.0.0' }) as SdkClient
+        // Harness v2 speaks the current MCP protocol directly. Pinning avoids
+        // a legacy handshake/fallback and enables the modern per-request
+        // envelope, paginated tool inventory, and MCP parameter headers.
+        const client = new Client(
+          { name: `purista-harness-${config.localToolId}`, version: '0.0.0' },
+          { versionNegotiation: { mode: { pin: '2026-07-28' } } }
+        ) as SdkClient
         try {
           await client.connect(transport, toSdkOptions(options))
         } catch (error) {
@@ -57,7 +60,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
       try {
         const { client } = await connect(options)
         return await withMcpTimeout({ ...(options?.signal ? { signal: options.signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs, scope: 'tool' }, (signal) =>
-          client.callTool({ name, arguments: input }, undefined, toSdkOptions({ ...(signal ? { signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs }))
+          client.callTool({ name, arguments: input }, toSdkOptions({ ...(signal ? { signal } : {}), timeoutMs: options?.timeoutMs ?? config.timeoutMs }))
         )
       } catch (error) {
         if (error instanceof McpAuthError || error instanceof McpProtocolError) throw error
@@ -77,7 +80,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
 }
 
 function buildHeaders(headers: Record<string, string> | undefined, auth: McpAuth | undefined): Record<string, string> {
-  const next = { ...(headers ?? {}) }
+  const next = Object.fromEntries(Object.entries(headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])) as Record<string, string>
   if (!auth || auth.kind === 'none') return next
   if (auth.kind === 'bearer') next['authorization'] = `Bearer ${auth.token}`
   if (auth.kind === 'oauth2') next['authorization'] = `Bearer ${auth.accessToken}`

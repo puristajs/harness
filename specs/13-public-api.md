@@ -10,6 +10,9 @@
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 - `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
 - `@purista/harness-policy-*` — optional governance policy adapters. Core exports the policy port and native policy types, but OPA/AGT/Eve/Cedar engines live outside core.
+- `@purista/harness-agent-plugins` — opt-in local Agent Plugins 1.0.0 client;
+  it inspects reviewed portable packages and returns ordinary skill/tool
+  bindings without evaluating plugin code.
 
 Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
 
@@ -39,6 +42,11 @@ Peer dependency: `typescript@>=5.4`. The builder relies on `const` type paramete
 ```ts
 // Builder entry — the SOLE construction path
 export function defineHarness(opts?: HarnessOptions): HarnessBuilder<{}>
+// Static builder-transform helper — not a second construction path
+export function defineHarnessModule<Required extends BuilderState = {}>(): <const Id extends string, Result extends BuilderState>(
+  id: Id,
+  definition: Omit<HarnessModule<Required, Result, Id>, 'id'>
+) => HarnessModule<Required, Result, Id>
 
 // Default adapters (in-memory)
 export class JsonLogger implements Logger {
@@ -135,7 +143,7 @@ export const HARNESS_VERSION: string                            // semver of the
 
 `JsonLogger` defaults: `level` is read from env `PURISTA_HARNESS_LOG_LEVEL` if set (invalid values fall back to `'info'` and emit one warning), else `'info'`; `out = process.stdout`; `bindings = {}`.
 
-**Removed in v1:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Only inline-in-builder definitions achieve cross-key type constraints (the agent's `model` referencing a `.models()` key, the workflow handler's `ctx.agents` typed by the registered agent keys, etc.). Standalone definers cannot capture the surrounding builder generics, so they are removed in v1 — accept this tradeoff explicitly.
+**Removed in v1:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Inline builder definitions and static `defineHarnessModule` transforms preserve surrounding builder constraints; a module is not an independently buildable definition catalog. See [25-static-harness-modules](./25-static-harness-modules.md).
 
 ### Exports — types (main entry)
 
@@ -143,6 +151,8 @@ export const HARNESS_VERSION: string                            // semver of the
 // Builder
 export interface HarnessOptions
 export interface HarnessBuilder<S>
+export type HarnessModuleBuilder<S>
+export interface HarnessModule<Required, Result, Id>
 export type BuilderState
 
 // Harness + handle types
@@ -165,6 +175,7 @@ export type ToolDefinition
 export interface TsToolDefinition<I, O>
 export interface McpStdioToolDefinition
 export interface McpHttpToolDefinition
+export interface McpPluginProvenance
 export type SkillsConfig
 export interface SkillDefinition
 export type SkillValidationMode
@@ -186,6 +197,16 @@ export interface WorkflowDefinition<S, I, O>
 export interface WorkflowDefinitionHelpers<S>
 export interface WorkflowDelegationPolicy<S>
 export type WorkflowAgentInvokeOptions<S, K>
+export interface WorkflowFanOutOptions
+export interface WorkflowChildTasks<S>
+export type ChildTaskContextPolicy
+export type ChildTaskMode
+export interface ChildTaskDescriptor
+export interface ChildTaskStatus
+export interface ChildTaskHandle<O>
+export interface ContinuableChildTaskHandle<I, O>
+export type ChildTaskStartOptions<S, K>
+export type ContinuableChildTaskStartOptions<S, K>
 
 // Optional governance
 export interface GovernanceConfig<S>
@@ -216,6 +237,7 @@ export type ToolInput<S, K>
 // Defaults
 export interface HarnessDefaults
 export interface DelegationDefaults
+export interface ContextProjectionPolicy
 
 // Inside-handler context types
 export interface AgentContext<S, I, O>
@@ -229,6 +251,7 @@ export interface SessionMemory
 export interface MemoryFacade
 export interface ContextCheckpoints
 export interface ConversationHistory
+export interface SessionChildTasks
 
 // Built-in tools and permissions
 export type BuiltinToolName
@@ -401,8 +424,13 @@ export interface AdapterCapabilities
 export interface DurableRuntimeAdapter
 export interface AdapterInspection
 export interface HarnessInspection
+export interface HarnessModuleInspection
+export interface HarnessModuleContribution
 export interface Sandbox
 export interface SandboxSessionBase
+export interface ReadOnlyMountOptions
+export interface ReadOnlyMountCapableSandboxSession
+export function isReadOnlyMountCapableSession
 export interface ExecCapableSandboxSession
 export interface SandboxSession
 export type SandboxSessionFor
@@ -434,6 +462,8 @@ export interface RunSummary
 
 // MCP
 export type McpAuth
+export interface PreparedMcpStdioLaunch
+export interface McpStdioLaunchPreparation
 
 // Inference helper
 export type InferTypes<S>
@@ -456,6 +486,11 @@ export function evaluatePromptCandidates<I = unknown>(
 import type { z } from 'zod'
 
 interface HarnessBuilder<S extends BuilderState> {
+  /** Apply a local static transform; unavailable to module callbacks. */
+  use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
+    this: S extends Required ? HarnessBuilder<S> : never,
+    module: HarnessModule<Required, Result, Id>
+  ): HarnessBuilder<Result>
   // Foundation — optional, called at most once each
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
@@ -468,9 +503,8 @@ interface HarnessBuilder<S extends BuilderState> {
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
-  // Domain — `.models()` must be called exactly once before `.build()`;
-  // `.tools()`, `.skills()`, `.agents()`, and `.workflows()` are optional and
-  // may each be called at most once, in this order:
+  // Domain — direct calls follow staged ordering. Module contributions append
+  // in caller order and reject duplicate keys; see 25-static-harness-modules.
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
   tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
@@ -488,7 +522,17 @@ interface HarnessBuilder<S extends BuilderState> {
 }
 ```
 
-The builder type omits already-set or out-of-order methods so that incorrect chains fail at the type level. At runtime, `.build()` fails with `HarnessConfigError{reason:'missing_models'}` when `.models()` was never called; the other domain methods may be omitted. Behavioral ordering rules and validation are described in [02-harness-config](./02-harness-config.md).
+`HarnessModuleBuilder<S>` is `HarnessBuilder<S>` without `build` and `use`.
+`HarnessModule<Required, Result, Id>.register` receives the declared minimum
+state and returns its inferred result. `.use()` is callable only when the
+accumulated state extends `Required`, and returns `HarnessBuilder<Result>`.
+The shipped declaration must preserve literal model/tool/skill/agent keys
+without public `any`/`unknown` escape hatches. Direct
+builder types omit already-set or out-of-order methods so incorrect direct
+chains fail at the type level. At runtime, `.build()` fails with
+`HarnessConfigError{reason:'missing_models'}` when no accumulated module/direct
+contribution supplied models. Behavioral ordering rules and validation are
+described in [02-harness-config](./02-harness-config.md).
 
 ### `Harness<S>` and `Session<S>` (locked)
 
@@ -505,11 +549,15 @@ interface Session<S extends BuilderState> {
   readonly id: string
   readonly agents: { readonly [K in keyof S['agents']]: AgentInvoker<S, K> }
   readonly workflows: { readonly [K in keyof S['workflows']]: WorkflowInvoker<S, K> }
+  readonly childTasks: SessionChildTasks
   memory: SessionMemory
   history: ConversationHistory
   getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message,'id'|'timestamp'>>): Promise<void>
+  /** Frees live sandbox/MCP resources but preserves persisted session state. */
+  release(): Promise<void>
+  /** Destructively removes persisted session state after releasing resources. */
   close(): Promise<void>
 }
 
@@ -704,6 +752,26 @@ interface AdapterInspection {
   id: string
   capabilities: readonly AdapterCapability[]
 }
+
+interface HarnessModuleContribution {
+  kind: 'model' | 'tool' | 'skill' | 'agent' | 'workflow' | 'foundation'
+  ids: readonly string[]
+}
+
+interface HarnessModuleInspection {
+  id: string
+  version?: string
+  requires: readonly AdapterCapability[]
+  contributions: readonly HarnessModuleContribution[]
+}
+
+interface HarnessInspection {
+  name: string
+  capabilities: readonly AdapterCapability[]
+  requiredCapabilities: readonly AdapterCapability[]
+  adapters: readonly AdapterInspection[]
+  modules: readonly HarnessModuleInspection[]
+}
 ```
 
 ### Adapter context
@@ -787,6 +855,7 @@ interface InvokeOptions {
   signal?: AbortSignal
   timeoutMs?: number
   historyWindow?: number
+  contextProjection?: ContextProjectionPolicy
   traceparent?: string
   tracestate?: string
   metadata?: Record<string, JsonValue>
@@ -798,6 +867,8 @@ interface DurableInvokeOptions {
   workerId?: string
   stepId?: string
   attempt?: number
+  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 
@@ -887,7 +958,7 @@ Cloudgrid.
    - `typeof harness.$infer.agents` → union of agent keys
    - `typeof harness.$infer.workflows` → record of `{input, output}` per workflow key
 4. **No `as const` required by user.** Builder type parameters carry the burden via `const` modifier.
-5. **Tradeoff:** cross-file agent/workflow definition is NOT type-checked across the boundary in v1. To preserve the cross-key constraints (an agent's `model` referencing a model registered on the same builder, etc.), users keep agent and workflow definitions inline in the builder. Defining agents in a separate module and importing them loses the literal generic state, so they cannot enforce the constraints. This is the reason standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` are not exported. Users who must split definitions across files can pass plain objects and accept the loss of cross-builder type safety; v1 ships no helper for this path.
+5. **Static cross-file composition:** `defineHarnessModule` receives the actual accumulated builder state through its generic `register` callback. A later module can therefore retain cross-key checks for earlier module contributions. Imported plain objects without a static module transform still lose that guarantee. Standalone definers remain intentionally absent.
 
 ### Built-in tool aliases
 
@@ -950,6 +1021,25 @@ export function makeHarness(): HarnessBuilder<{}>            // alias for define
 export function recordEvents(iter: AsyncIterable<RunEvent>): Promise<RunEvent[]>
 export function createInMemoryFeedbackRecorder(): { record(...): FeedbackRecord; list(target?: FeedbackTarget): readonly FeedbackRecord[]; clear(): void }
 
+// Sanitized model interaction fixtures
+export interface SanitizedReplayFixture
+export interface ReplayInteractionRecorder
+export interface ReplayModelProviderOptions
+export class ReplayFixtureError extends Error {}
+export function createReplayInteractionRecorder(options: { sanitize: (value: unknown) => unknown }): ReplayInteractionRecorder
+export function replayModelProvider(fixture: SanitizedReplayFixture, options?: ReplayModelProviderOptions): ModelProvider
+export function assertReplayConsumed(provider: ModelProvider): void
+
+// Development-only diagnostics
+export interface HarnessDiagnosticInvariant
+export interface HarnessDiagnosticFinding
+export interface DiagnosticInvariantSnapshot
+export class DiagnosticInvariantError extends Error {}
+export function assertDiagnosticInvariants(
+  snapshot: DiagnosticInvariantSnapshot,
+  invariants: readonly HarnessDiagnosticInvariant[]
+): void
+
 // AI eval test helpers
 export type DeterministicScorerDefinition
 export interface ScorerTarget
@@ -980,6 +1070,72 @@ export interface ScorerResult {
   evidence?: JsonValue
 }
 ```
+
+### Testing replay and diagnostic contracts
+
+```ts
+interface SanitizedReplayRequest {
+  fingerprint: string
+  providerId: string
+  model: string
+  value: JsonValue
+}
+
+interface SanitizedReplayInteraction {
+  method: 'text' | 'object' | 'textStream' | 'objectStream'
+  request: SanitizedReplayRequest
+  chunks?: readonly JsonValue[]
+  outcome: JsonValue
+}
+
+interface SanitizedReplayFixture {
+  version: 1
+  id: string
+  interactions: readonly SanitizedReplayInteraction[]
+}
+
+interface ReplayInteractionRecorder {
+  wrap(provider: ModelProvider): ModelProvider
+  fixture(id: string): SanitizedReplayFixture
+}
+
+interface ReplayModelProviderOptions {
+  id?: string
+  genAiSystem?: string
+  capabilities?: readonly ModelCapability[]
+}
+
+interface HarnessDiagnosticFinding {
+  path: string
+  message: string
+}
+
+interface DiagnosticInvariantSnapshot {
+  inspection: HarnessInspection
+  events?: readonly {
+    ordinal: number
+    type: string
+    runId?: string
+    agentId?: string
+    toolId?: string
+    callId?: string
+    attempt?: number
+  }[]
+}
+
+interface HarnessDiagnosticInvariant {
+  id: string
+  check(snapshot: DiagnosticInvariantSnapshot): HarnessDiagnosticFinding | undefined
+}
+```
+
+`ReplayFixtureError` has `code: 'REPLAY_FIXTURE_ERROR'` and metadata limited to
+fixture id, ordinal, sanitized method/provider/model labels, and reason
+`'invalid_fixture'|'mismatch'|'exhausted'|'unused'|'unsupported_method'`.
+`DiagnosticInvariantError` has `code: 'DIAGNOSTIC_INVARIANT_ERROR'` and metadata
+limited to invariant id and finding path. Both are testing-subpath errors and
+never appear in a production harness run unless a caller explicitly invokes the
+testing helper.
 
 The fake adapters and contract suites are only reachable via
 `@purista/harness/testing`, with two deliberate overlaps:
@@ -1040,6 +1196,53 @@ Current provider addons:
 - `@purista/harness-bedrock`: `bedrock(options)`, `BedrockFactoryOptions`, `BedrockClient`
 - `@purista/harness-azure-foundry`: `azureFoundry(options)`, `AzureFoundryFactoryOptions`, `AzureFoundryClient`
 
+## `@purista/harness-agent-plugins` package
+
+### `package.json` exports map (locked)
+
+```json
+{
+  "name": "@purista/harness-agent-plugins",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  }
+}
+```
+
+### Exports — values
+
+```ts
+export function inspectAgentPlugin(source: AgentPluginSource): Promise<AgentPluginInspection>
+export function loadAgentPlugins(options: AgentPluginLoadOptions): Promise<readonly LoadedAgentPlugin[]>
+export class AgentPluginError extends Error {}
+export class AgentPluginManifestError extends AgentPluginError {}
+export class AgentPluginTrustError extends AgentPluginError {}
+export class AgentPluginLoadError extends AgentPluginError {}
+```
+
+### Exports — types
+
+```ts
+export type AgentPluginTrust
+export type AgentPluginTransport
+export interface AgentPluginSource
+export interface AgentPluginLoadOptions
+export interface AgentPluginToolBinding
+export interface AgentPluginDiagnostic
+export interface AgentPluginProvenance
+export interface AgentPluginInspection
+export interface AgentPluginBindings
+export interface LoadedAgentPlugin
+```
+
+`loadAgentPlugins()` loads application-approved local roots only. The returned
+`LoadedAgentPlugin.bindings()` factory creates ordinary `SkillsConfig` and
+`ToolsConfig` entries, so applications retain literal alias inference and agent
+allowlists. The package supports `stdio` and current Streamable HTTP; legacy
+HTTP+SSE and legacy MCP protocol behavior are intentionally unsupported in this
+breaking major release. See [29-agent-plugins](./29-agent-plugins.md).
+
 ## Package surface summary
 
 `session.agents[k]` and `session.workflows[k]` lookups are typed; `harness.$infer` exposes the namespaces. The public surface does NOT impose magic mapped types beyond those listed above.
@@ -1049,6 +1252,7 @@ Every export listed above must be re-exported from the appropriate entry point:
 - `packages/harness/src/index.ts` → main entry list.
 - `packages/harness/src/testing/index.ts` → testing subpath list.
 - `packages/harness-openai/src/index.ts` and sibling provider addon entries → provider package lists.
+- `packages/harness-agent-plugins/src/index.ts` → Agent Plugins addon list.
 
 ## Schema conversion
 

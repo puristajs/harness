@@ -1,0 +1,25 @@
+{
+  "name": "@purista/workflow-child-tasks-example",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src --exclude 'dist/**'",
+    "start": "node dist/examples/workflow-child-tasks/src/index.js",
+    "lint": "npm run typecheck"
+  },
+  "dependencies": {
+    "@purista/harness": "*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

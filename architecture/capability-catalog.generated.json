@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "families": [
+    {
+      "conformance": "@purista/harness/testing:modelProviderContract",
+      "consumer": "packages/harness-openai/test/static-module-consumer.test.ts",
+      "id": "model-provider-openai",
+      "owner": "@purista/harness-openai",
+      "port": "@purista/harness:ModelProvider",
+      "provider": "@purista/harness-openai"
+    }
+  ]
+}

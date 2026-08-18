@@ -6,7 +6,7 @@ import {
   ToolNotFoundError,
   ValidationError
 } from '../../errors/index.js'
-import type { McpHttpToolDefinition, McpStdioToolDefinition, ToolDefinition, ToolsConfig } from '../../harness/defineHarness.js'
+import type { McpHttpToolDefinition, McpPluginProvenance, McpStdioToolDefinition, ToolDefinition, ToolsConfig } from '../../harness/defineHarness.js'
 import type { JsonValue } from '../../models/json.js'
 import type { ModelToolSpec } from '../../ports/model-provider.js'
 import type { SandboxSession } from '../../sandbox/index.js'
@@ -26,13 +26,17 @@ export interface ResolvedMcpTool {
   sandboxKey?: string
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
+  /** Content-free Agent Plugin origin metadata passed through to telemetry. */
+  provenance?: McpPluginProvenance
 }
 
 export interface ResolvedMcpStdioTool extends ResolvedMcpTool {
   kind: 'mcp_stdio'
   command: string
   args?: readonly string[]
+  cwd?: string
   env?: Record<string, string>
+  prepareLaunch?: McpStdioToolDefinition['prepareLaunch']
   install?: McpStdioToolDefinition['install']
   sandbox: SandboxSession
 }
@@ -42,6 +46,7 @@ export interface ResolvedMcpHttpTool extends ResolvedMcpTool {
   url: string
   auth?: McpHttpToolDefinition['auth']
   headers?: Record<string, string>
+  redirect?: 'error' | 'follow' | 'manual'
 }
 
 export type ResolvedMcpToolConfig = ResolvedMcpStdioTool | ResolvedMcpHttpTool
@@ -227,7 +232,8 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
     timeoutMs: ctx.toolTimeoutMs ?? 120_000,
     serverKey: toolId,
     ...(tool.inputAdapter ? { inputAdapter: tool.inputAdapter } : {}),
-    ...(tool.outputAdapter ? { outputAdapter: tool.outputAdapter } : {})
+    ...(tool.outputAdapter ? { outputAdapter: tool.outputAdapter } : {}),
+    ...(tool.provenance ? { provenance: tool.provenance } : {})
   }
   if (tool.kind === 'mcp_stdio') {
     if (!ctx.sandbox) throw new ToolNotFoundError('MCP stdio tool requires a sandbox session.', { tool_id: toolId, where: 'registry' })
@@ -238,7 +244,9 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
       sandboxKey: ctx.sandboxKey ?? 'sandbox',
       command: tool.command,
       ...(tool.args ? { args: tool.args } : {}),
+      ...(tool.cwd ? { cwd: tool.cwd } : {}),
       ...(tool.env ? { env: tool.env } : {}),
+      ...(tool.prepareLaunch ? { prepareLaunch: tool.prepareLaunch } : {}),
       ...(tool.install ? { install: tool.install } : {}),
       sandbox: ctx.sandbox
     }
@@ -248,7 +256,8 @@ function resolveMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpTo
     kind: 'mcp_http',
     url: tool.url,
     ...(tool.auth ? { auth: tool.auth } : {}),
-    ...(tool.headers ? { headers: tool.headers } : {})
+    ...(tool.headers ? { headers: tool.headers } : {}),
+    ...(tool.redirect ? { redirect: tool.redirect } : {})
   }
 }
 
@@ -343,6 +352,7 @@ export async function withMcpTimeout<T>(opts: { signal?: AbortSignal; timeoutMs?
   try {
     return await Promise.race([fn(controller.signal), timeout])
   } catch (error) {
+    if (controller.signal.reason instanceof OperationTimeoutError) throw controller.signal.reason
     if (controller.signal.aborted && !(controller.signal.reason instanceof OperationTimeoutError)) {
       throw new OperationCancelledError('MCP tool operation was cancelled.', { scope: 'tool' }, controller.signal.reason ?? error)
     }

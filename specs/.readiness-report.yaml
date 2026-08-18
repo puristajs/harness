@@ -108,6 +108,91 @@ deterministic_check:
   command: "rg -n \"TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort\" specs/10-workflows.md specs/21-durable-workspaces.md specs/22-local-durable-execution.md specs/23-provider-outcomes-and-retry.md"
   status: passed
 follow_up_waves:
+  - id: "2026-08-14-static-modules-context-testing"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-14"
+      approver: "repo owner (interactive Codex task)"
+      source: "User explicitly approved the DeepSeek-inspired modularity improvement plan."
+    scope:
+      specs:
+        - specs/25-static-harness-modules.md
+        - specs/26-context-projection-and-compaction.md
+        - specs/27-test-replay-and-diagnostic-invariants.md
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/02-harness-config.md
+        - specs/08-skills.md
+        - specs/11-sessions.md
+        - specs/13-public-api.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/17-implementation-plan.md
+    summary:
+      updated_at: "2026-08-14"
+      purpose: "Approve static typed modules, bounded transient context projection, and test-only replay/diagnostic invariants; UI, remote plugins, and hosted runtime are excluded."
+    confirmed_decisions:
+      - "Modules are local, static builder transforms and never a runtime plugin system."
+      - "Definition families compose additively with synchronous duplicate rejection."
+      - "Inspection provenance is data-only and lifecycle remains centralized."
+      - "Context projection is transient, deterministic, and limited to one recovery attempt."
+      - "Replay and diagnostic invariants are opt-in test/development utilities with no raw-content default."
+    gates:
+      deterministic_check:
+        status: passed_with_legacy_checker_exception
+        evidence: "New-spec ambiguity scan passed. The generic checker expects a newer nested-spec layout and fails pre-existing flat-layout artifacts/broken links outside this approved wave."
+      independent_readiness_review:
+        status: passed
+        evidence: "Independent review identified six contract gaps; all were resolved in specs 25-27 and their authoritative cross-references before implementation."
+      contradiction_check:
+        status: passed
+      public_api_alignment:
+        status: passed
+        evidence: "Public API inventory, export-diff test, and module type spike were updated together."
+      security_privacy_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed
+  - id: "2026-08-16-agent-plugins-current-mcp"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-16"
+      approver: "repo owner (interactive Codex task)"
+      source: "User approved bringing Agent Plugins into specs and implementation, with a clean current-MCP major cut."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/05-sandbox.md
+        - specs/07-tools.md
+        - specs/08-skills.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/16-testing.md
+        - specs/17-implementation-plan.md
+        - specs/29-agent-plugins.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-16"
+      purpose: "Approve a first-party trusted local Agent Plugins 1.0.0 client and a clean MCP 2026-07-28 major upgrade without legacy transports or compatibility shims."
+    confirmed_decisions:
+      - "Agent Plugins is a separate first-party addon, never a static module or dynamic code loader."
+      - "Applications explicitly trust/digest-review plugins and explicitly alias selected skills and MCP tools."
+      - "Plugin paths are containment-checked with resolved Windows and POSIX filesystem semantics."
+      - "Core retains one sandbox/MCP/tool/governance/telemetry lifecycle; the addon only projects approved data."
+      - "MCP 2026-07-28 stateless Streamable HTTP and task-augmented tools/call are required; stateful MCP and HTTP+SSE are removed."
+    gates:
+      standards_first:
+        status: passed
+        evidence: "Agent Plugins 1.0.0 and MCP 2026-07-28 contracts are pinned in the authoritative spec."
+      security_privacy_gate:
+        status: passed
+      observability_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed
   - id: "2026-06-12-delegation-local-durable-provider-retry"
     status: approved
     human_approval:

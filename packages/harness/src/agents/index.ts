@@ -23,6 +23,7 @@ import { getMcpToolSpecs, invokeMcpTool, isMcpToolDefinition, type McpRunnerRegi
 import { ulid } from '../ulid/index.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
+import { projectToolResults, type ContextProjectionPolicy } from '../context-projection.js'
 
 function stringifyInput(input: unknown): string { return typeof input === 'string' ? input : JSON.stringify(input) }
 
@@ -135,6 +136,7 @@ export async function runDefaultAgent(args: {
   checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
+  contextProjection?: ContextProjectionPolicy
   maxSteps: number
   signal: AbortSignal
   toolTimeoutMs: number
@@ -210,6 +212,7 @@ async function runDefaultAgentInner(args: {
   mountedSkills: Set<string>
   activatedSkills: Set<string>
   historyWindow?: number
+  contextProjection?: ContextProjectionPolicy
   maxSteps: number
   signal: AbortSignal
   toolTimeoutMs: number
@@ -230,22 +233,36 @@ async function runDefaultAgentInner(args: {
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
 
+  const agentEventMeta = {
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
+    modelAlias: selectedModelAlias
+  }
+
   if (args.agent.handler) {
-    const handler = args.agent.handler
-    const output = await withAbortSignal(args.signal, 'run', 'Run was cancelled.', () => handler({
-      input: parsedInput,
-      signal: args.signal,
-      models: args.models as ModelHandles<any>,
-      runId: args.runId,
-      sessionId: args.sessionId,
-      history: { list: async () => args.history },
-      memory: args.memory,
-      checkpoints: args.checkpoints,
-      metadata: args.metadata ?? {},
-      metrics: args.metrics
-    }))
-    const validated = parseAgentSchema(outputSchema, output, 'agent_output')
-    return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+    await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
+    try {
+      const handler = args.agent.handler
+      const output = await withAbortSignal(args.signal, 'run', 'Run was cancelled.', () => handler({
+        input: parsedInput,
+        signal: args.signal,
+        models: args.models as ModelHandles<any>,
+        runId: args.runId,
+        sessionId: args.sessionId,
+        history: { list: async () => args.history },
+        memory: args.memory,
+        checkpoints: args.checkpoints,
+        metadata: args.metadata ?? {},
+        metrics: args.metrics
+      }))
+      const validated = parseAgentSchema(outputSchema, output, 'agent_output')
+      await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
+      return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+    } catch (error) {
+      await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
+      throw error
+    }
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
@@ -290,13 +307,6 @@ async function runDefaultAgentInner(args: {
   const maxSteps = args.agent.maxSteps ?? args.maxSteps
   let steps = 0
 
-  const agentEventMeta = {
-    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
-    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
-    modelAlias: selectedModelAlias
-  }
-
   await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
 
   try {
@@ -323,7 +333,7 @@ async function runDefaultAgentInner(args: {
       const stepTools = await applyGovernanceToolExposure(args, filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId), steps)
       const stepMessages = prepared?.messages ? [...prepared.messages] : modelMessages
       const stepInstructions = prepared?.instructions ?? instructions
-      const response = await model.object({
+      const request = {
         messages: [
           { role: 'system', content: stepInstructions },
           ...stepMessages
@@ -331,14 +341,22 @@ async function runDefaultAgentInner(args: {
         tools: stepTools,
         schema: z.toJSONSchema(outputSchema) as JsonValue,
         ...(prepared?.call ? { call: prepared.call as ModelCallOptions } : {})
-      }, args.signal, {
+      }
+      const modelContext = {
         harnessName: args.harnessName,
         sessionId: args.sessionId,
         runId: args.runId,
         ...(args.workflowId ? { workflowId: args.workflowId } : {}),
         agentId: args.agentId,
         modelAlias: stepModelAlias
-      })
+      }
+      let response: ObjectResponse<JsonValue>
+      try {
+        response = await model.object(request, args.signal, modelContext)
+      } catch (error) {
+        if (!args.contextProjection || args.signal.aborted || !(error instanceof HarnessError) || error.meta?.['reason'] !== 'context_length_exceeded') throw error
+        response = await model.object({ ...request, messages: [request.messages[0]!, ...projectToolResults(stepMessages, args.contextProjection)] }, args.signal, modelContext)
+      }
 
       // Emit one usage-bearing model event per model round-trip (including
       // tool-call steps) so run-summary modelCalls and tokenTotals are accurate
@@ -629,7 +647,14 @@ async function executeToolCall(
 
   try {
     if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
-    result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool) ? { server: canonical, upstreamTool: tool.tool, transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http' } : undefined, async () => {
+    result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool)
+      ? {
+          server: canonical,
+          upstreamTool: tool.tool,
+          transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http',
+          ...(tool.provenance ? { provenance: tool.provenance } : {})
+        }
+      : undefined, async () => {
       const permission = await withToolSignal(args.signal, args.toolTimeoutMs, () => checkPermission(args.agentId, args.runId, args.sessionId, args.agent, canonical, input))
       if (permission.decision === 'deny') {
         throw new PermissionDeniedError('Permission denied.', { tool_name: canonical, agent_id: args.agentId, reason: permission.reason })
@@ -1026,7 +1051,12 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
   toolId: string,
   callId: string,
   toolKind: ToolKind,
-  mcpAttrs: { server: string; upstreamTool: string; transport: 'stdio' | 'http' } | undefined,
+  mcpAttrs: {
+    server: string
+    upstreamTool: string
+    transport: 'stdio' | 'http'
+    provenance?: import('../harness/defineHarness.js').McpPluginProvenance
+  } | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
   const attrs = {
@@ -1047,7 +1077,13 @@ async function withToolSpan<T extends { output?: JsonValue; error?: ReturnType<t
     ...(mcpAttrs ? {
       'harness.mcp.server': mcpAttrs.server,
       'harness.mcp.tool': mcpAttrs.upstreamTool,
-      'harness.mcp.transport': mcpAttrs.transport
+      'harness.mcp.transport': mcpAttrs.transport,
+      ...(mcpAttrs.provenance ? {
+        'harness.plugin.name': mcpAttrs.provenance.name,
+        ...(mcpAttrs.provenance.version ? { 'harness.plugin.version': mcpAttrs.provenance.version } : {}),
+        'harness.plugin.digest': mcpAttrs.provenance.digest,
+        'harness.plugin.component': mcpAttrs.provenance.component
+      } : {})
     } : {})
   }
   const started = Date.now()

@@ -718,7 +718,7 @@ The public MCP tool shapes from [07-tools](./07-tools.md) are executable:
 Locked decisions:
 
 - MCP runners are executable in this wave.
-- `@modelcontextprotocol/sdk` is loaded through dynamic import by MCP runner
+- `@modelcontextprotocol/client` v2 is loaded through dynamic import by MCP runner
   modules. TS-only harnesses must not import or require the SDK at runtime.
 - Public `McpAuth` is:
 

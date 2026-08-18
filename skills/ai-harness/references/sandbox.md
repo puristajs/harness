@@ -155,10 +155,26 @@ spawn(command, { args, cwd, env, signal }): Promise<{
 
 `session.close()` must terminate every spawned process. The in-core
 `inMemorySandbox()`/`bashSandbox()` do not advertise `sandbox.spawn`; isolation
-backends (Docker/e2b/microvm) do. This capability powers the **persistent MCP
-stdio transport** (a stateful server is spawned once and multiplexed across
-calls); without it, `mcp_stdio` uses the stateless one-shot `exec` model. Use
-`isSpawnCapableSession(session)` to detect support.
+backends (Docker/e2b/microvm) do. This capability is required for the MCP
+stdio transport: a server is spawned once and multiplexed across calls. There
+is no exec-only fallback. Use `isSpawnCapableSession(session)` to detect
+support.
+
+## Immutable Package Mounts
+Trusted Agent Plugins stdio servers additionally need an immutable package
+mount. An isolating adapter implements:
+
+```ts
+mountReadOnly(files, atPath, { executablePaths? }): Promise<void>
+```
+
+`files` are digest-reviewed package bytes; `executablePaths` retains only the
+needed execute bits. The adapter must prevent the spawned process from changing
+that mount. A plain host-directory jail, including `localDirectorySandbox()`,
+does not provide this guarantee because the owning process can change file
+permissions. Use an isolating Docker, microVM, or equivalent adapter for
+trusted plugin stdio processes, and keep mutable state in the caller-owned
+plugin data directory instead.
 
 ## Snapshot And Resume Capabilities
 Snapshot-capable adapters may implement:

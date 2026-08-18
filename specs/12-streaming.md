@@ -8,6 +8,10 @@
 type RunEvent =
   | { type: 'run.started';     runId: string; at: string }
   | { type: 'run.finished';    runId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'fanout.started';  runId: string; batchId: string; at: string; count: number; concurrency: number }
+  | { type: 'fanout.finished'; runId: string; batchId: string; at: string; count: number; status: 'succeeded'|'failed'|'cancelled' }
+  | { type: 'child_task.started'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; modelAlias: string; contextPolicy: 'isolated'; mode: 'one_shot'|'continuable' }
+  | { type: 'child_task.settled'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; status: 'succeeded'|'failed'|'cancelled'; error?: SerializedError }
 
   | { type: 'agent.started';   runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
   | { type: 'agent.finished';  runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
@@ -43,6 +47,10 @@ interface SerializedError {
 
 `at` is ISO 8601 UTC. `callId` is `tc_<ulid>` for tool calls and `sk_<ulid>` for skill calls; the same id appears in `started` and `finished`. `delegationCallId` is `delegate_<ulid>` for workflow-local child-agent calls and appears on the matching `agent.started` / `agent.finished` pair.
 
+Fan-out and child-task lifecycle events are content-free operational metadata.
+Child task events belong to the child task's own run stream, not the parent
+workflow stream. See [28-workflow-child-tasks](./28-workflow-child-tasks.md).
+
 `text(...)` and `object(...)` are final request-response model calls and do not
 emit partial run events. Consumed `textStream(...)` and `objectStream(...)`
 chunks stay private by default. A model stream call emits `model.delta`,
@@ -53,6 +61,11 @@ model stream invocation. `modelAlias` is included for harness-emitted model
 stream events, and `workflowId` / `agentId` are included when available. UI
 labels, semantic buckets, and client protocol names belong in the application
 integration layer, not in `RunEvent`.
+
+Within a workflow or custom agent handler, passing `{ emitRunEvents: true }` to
+`object(...)`, `embed(...)`, or `rerank(...)` emits the corresponding final
+completion event. The enclosing session supplies the immutable run identity;
+handler-provided invocation context cannot relabel a run, workflow, or agent.
 
 The harness does NOT auto-emit log-style events from logger calls; there is no `'log'` variant in `RunEvent`. Loggers and run events are independent surfaces.
 

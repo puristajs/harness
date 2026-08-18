@@ -1,7 +1,7 @@
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import { serializeError } from '../errors/index.js'
-import type { DurableWorkspaceStore, WorkspaceHandle } from '../ports/workspace.js'
+import type { DurableWorkspacePolicy, DurableWorkspaceStore, WorkspaceHandle } from '../ports/workspace.js'
 import type { DurableRuntime } from './durable.js'
 import { createDurableWorkflowContext, type DurableWorkflowContext } from './steps.js'
 
@@ -14,6 +14,7 @@ export interface DurableInvokeOptions {
   workerId?: string
   stepId?: string
   attempt?: number
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 
 /** Durable binding driving one workflow run's lease and workspace lifecycle. */
@@ -87,14 +88,15 @@ export async function beginDurableWorkflow(args: {
           signal
         })
       } else {
-        handle = await workspaceStore.startWorkspace({
+      handle = await workspaceStore.startWorkspace({
           runId: lease.runId,
           sessionId,
           workflowId,
           workerId,
-          attempt: lease.attempt,
-          idempotencyKey: `${lease.runId}:start`,
-          signal
+        attempt: lease.attempt,
+        idempotencyKey: `${lease.runId}:start`,
+        ...(durable.workspacePolicy ? { policy: durable.workspacePolicy } : {}),
+        signal
         })
       }
     } catch (workspaceError) {

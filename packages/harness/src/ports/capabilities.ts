@@ -101,12 +101,27 @@ export interface AdapterInspection {
   readonly metadata?: Record<string, unknown>
 }
 
+/** Data-only definition contribution recorded for a local static module. */
+export interface HarnessModuleContribution {
+  readonly kind: 'model' | 'tool' | 'skill' | 'agent' | 'workflow' | 'foundation'
+  readonly ids: readonly string[]
+}
+
+/** Immutable provenance row surfaced by {@link HarnessInspection}. */
+export interface HarnessModuleInspection {
+  readonly id: string
+  readonly version?: string
+  readonly requires: readonly AdapterCapability[]
+  readonly contributions: readonly HarnessModuleContribution[]
+}
+
 /** Data-only snapshot of resolved harness setup. */
 export interface HarnessInspection {
   readonly name: string
   readonly capabilities: readonly AdapterCapability[]
   readonly requiredCapabilities: readonly AdapterCapability[]
   readonly adapters: readonly AdapterInspection[]
+  readonly modules: readonly HarnessModuleInspection[]
 }
 
 /** Optional durable runtime adapter surface for capability-gated setup. */

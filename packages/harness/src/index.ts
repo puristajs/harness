@@ -45,6 +45,8 @@ export type { Logger, LogLevel } from './logger/index.js'
 export type { Metrics, SpanAttrs, TelemetryShim } from './telemetry/index.js'
 export { ulid } from './ulid/index.js'
 export { HARNESS_VERSION } from './version.js'
+export { projectToolResults, validateContextProjection } from './context-projection.js'
+export type { ContextProjectionPolicy } from './context-projection.js'
 
 // Model provider port
 export { BaseModelProvider } from './ports/base-model-provider.js'
@@ -109,7 +111,9 @@ export type {
   AdapterCapability,
   AdapterInspection,
   DurableRuntimeAdapter,
-  HarnessInspection
+  HarnessInspection,
+  HarnessModuleContribution,
+  HarnessModuleInspection
 } from './ports/capabilities.js'
 export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/harness-context.js'
 
@@ -206,11 +210,13 @@ export type {
 } from './runtime/index.js'
 
 // Sandbox port + default factories
-export { bashSandbox, inMemorySandbox } from './sandbox/index.js'
+export { bashSandbox, inMemorySandbox, isReadOnlyMountCapableSession } from './sandbox/index.js'
 export type {
   ExecCapableSandboxSession,
   HibernateCapableSandbox,
   ResumeCapableSandbox,
+  ReadOnlyMountCapableSandboxSession,
+  ReadOnlyMountOptions,
   Sandbox,
   SandboxProcess,
   SandboxResumeOptions,
@@ -264,7 +270,7 @@ export type {
 } from './eval/index.js'
 
 // Builder, harness, session, and handler context types
-export { defineHarness } from './harness/defineHarness.js'
+export { defineHarness, defineHarnessModule } from './harness/defineHarness.js'
 export type {
   AgentContext,
   AgentContextMinimal,
@@ -282,6 +288,14 @@ export type {
   AgentsConfig,
   BuilderState,
   BuiltinToolName,
+  ChildTaskContextPolicy,
+  ChildTaskDescriptor,
+  ChildTaskHandle,
+  ChildTaskMode,
+  ChildTaskStartOptions,
+  ChildTaskStatus,
+  ContinuableChildTaskHandle,
+  ContinuableChildTaskStartOptions,
   ContentCaptureMode,
   ContextCheckpoints,
   ConversationHistory,
@@ -312,11 +326,14 @@ export type {
   Harness,
   HarnessBuilder,
   HarnessDefaults,
+  HarnessModule,
+  HarnessModuleBuilder,
   HarnessOptions,
   InferTypes,
   InvokeOptions,
   McpAuth,
   McpHttpToolDefinition,
+  McpPluginProvenance,
   McpStdioToolDefinition,
   ModelHandles,
   ModelsConfig,
@@ -333,6 +350,7 @@ export type {
   RunSummary,
   SerializedError,
   Session,
+  SessionChildTasks,
   SkillDefinition,
   SkillDiagnostic,
   SkillFrontmatter,
@@ -346,10 +364,12 @@ export type {
   ToolsConfig,
   TsToolDefinition,
   WorkflowAgentInvokeOptions,
+  WorkflowChildTasks,
   WorkflowContext,
   WorkflowDefinition,
   WorkflowDefinitionHelpers,
   WorkflowDelegationPolicy,
+  WorkflowFanOutOptions,
   WorkflowInput,
   WorkflowInvoker,
   WorkflowOutput,

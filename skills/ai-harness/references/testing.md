@@ -150,3 +150,12 @@ State, memory, and sandbox adapters should cover:
 - executor unavailable behavior
 - snapshot/resume behavior when implemented
 - scope isolation, unsupported capability gates, and content-capture behavior for memory adapters
+# Replay and diagnostics
+
+`createReplayInteractionRecorder({ sanitize })` requires an explicit sanitizer,
+wraps a test provider, and produces a caller-owned fixture. Use
+`replayModelProvider(fixture)` plus `assertReplayConsumed(provider)` for strict,
+offline tests. The recorder never serializes the pre-sanitized value, but the
+caller must review sanitizer output. `assertDiagnosticInvariants(snapshot,
+invariants)` is a synchronous, explicit, content-free test helper; it is never
+enabled automatically in production.

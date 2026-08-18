@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { McpServer } from '@modelcontextprotocol/server'
+import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
 
+function createServer() {
 const server = new McpServer({ name: 'purista-fake-stdio-mcp', version: '0.0.0' })
 
 server.registerTool('echo', {
@@ -52,4 +53,7 @@ server.registerTool('bad-envelope', {
   content: [{ type: 'text', text: 'fake MCP failure' }]
 }))
 
-await server.connect(new StdioServerTransport())
+return server
+}
+
+serveStdio(createServer, { legacy: 'reject' })

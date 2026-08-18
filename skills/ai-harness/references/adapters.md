@@ -320,7 +320,7 @@ Tool rules:
 - Validate every input/output with Zod.
 - Keep tool ids stable and lowercase.
 - Put domain-specific logic behind app services; keep the harness tool adapter thin.
-- For MCP stdio, ensure the configured sandbox supports `sandbox.exec`.
+- For MCP stdio, ensure the configured sandbox supports `sandbox.spawn`.
 - For MCP http, keep authentication in `auth`/headers config and do not log secrets.
 - Treat tool arguments and results as content; do not put them in logs or custom telemetry under `NO_CONTENT`.
 

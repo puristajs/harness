@@ -15,6 +15,11 @@ export type FinishRunPatch = Pick<RunRecord, 'status' | 'finishedAt' | 'output' 
 export interface StateStore {
   getSession(id: string): Promise<SessionRecord | undefined>
   upsertSession(record: SessionRecord): Promise<void>
+  /**
+   * Destructively removes all persisted data owned by one session, including
+   * its session record, conversation history, runs, and run events.
+   * `Session.release()` intentionally does not call this operation.
+   */
   closeSession(id: string): Promise<void>
 
   appendMessages(sessionId: string, messages: Message[]): Promise<void>

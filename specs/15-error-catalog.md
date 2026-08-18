@@ -25,7 +25,15 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - category: `config`
 - retriable: `false`
 - when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.runtime(...)` (`reason:'durable_runtime_required'`).
-- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
+- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_module'`, `'duplicate_definition'`, `'invalid_module'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
+
+### Testing-only errors
+
+`ReplayFixtureError` and `DiagnosticInvariantError` are exported only from
+`@purista/harness/testing`. Their exact codes, reason values, and content-free
+metadata are locked in [13-public-api](./13-public-api.md) §"Testing replay and
+diagnostic contracts". They do not extend the production `HarnessError`
+taxonomy and are never emitted by normal harness execution.
 
 ### `ValidationError`
 - code: `VALIDATION_ERROR`

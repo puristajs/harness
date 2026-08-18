@@ -20,6 +20,22 @@ export interface SandboxSessionBase {
   close(): Promise<void>
 }
 
+/** Options for staging immutable executable package assets. */
+export interface ReadOnlyMountOptions {
+  /** Relative files that retain executable mode; all other files are read-only. */
+  executablePaths?: readonly string[]
+}
+
+/** A sandbox session that can enforce immutable staged package assets. */
+export interface ReadOnlyMountCapableSandboxSession extends SandboxSessionBase {
+  mountReadOnly(files: ReadonlyMap<string, Uint8Array | string>, atPath: string, options?: ReadOnlyMountOptions): Promise<void>
+}
+
+/** Returns true only when a sandbox can enforce an immutable package mount. */
+export function isReadOnlyMountCapableSession(session: SandboxSessionBase): session is ReadOnlyMountCapableSandboxSession {
+  return typeof (session as Partial<ReadOnlyMountCapableSandboxSession>).mountReadOnly === 'function'
+}
+
 export interface ExecCapableSandboxSession extends SandboxSessionBase {
   readonly executor: 'available'
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>

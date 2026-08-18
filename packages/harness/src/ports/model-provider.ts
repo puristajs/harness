@@ -1,4 +1,5 @@
 import type { JsonValue } from '../models/json.js'
+import type { ContextProjectionPolicy } from '../context-projection.js'
 
 /**
  * Model capabilities declared by aliases in `.models(...)`.
@@ -381,5 +382,7 @@ export interface ModelAlias {
   defaults?: ModelDefaults
   /** Alias-level retry behavior. Default: `true`. */
   retry?: ModelRetrySetting
+  /** Optional retry-only transient context projection for this alias. */
+  contextProjection?: ContextProjectionPolicy
   providerOptions?: Record<string, unknown>
 }

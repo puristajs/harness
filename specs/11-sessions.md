@@ -13,6 +13,7 @@ interface Session<S> {
   readonly id: string
   readonly agents: { readonly [K in keyof S['agents']]: AgentInvoker<S, K> }
   readonly workflows: { readonly [K in keyof S['workflows']]: WorkflowInvoker<S, K> }
+  readonly childTasks: SessionChildTasks
   memory: SessionMemory
   history: ConversationHistory
   getRunSummary(runId: string): Promise<RunSummary | undefined>
@@ -63,6 +64,8 @@ interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint; the runtime may raise it on retry. */
   attempt?: number
+  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 
@@ -71,6 +74,11 @@ interface DurableInvokeOptions {
 - A fixed `id` property.
 - An `agents` map: one `AgentInvoker` per registered agent id.
 - A `workflows` map: one `WorkflowInvoker` per registered workflow id.
+- A `childTasks` owner-only map. `get(id)` returns a live task handle or a
+  terminal persisted handle only when its `RunRecord` belongs to this session;
+  `list()` returns content-free child-task snapshots. A non-resident running
+  task is observable but cannot be cancelled or awaited without a task-worker
+  adapter.
 - `memory` and `history` handles for direct out-of-run access.
 - A `getRunSummary(runId)` method.
 - A `close()` method.
@@ -207,11 +215,11 @@ Atomically replaces history (delete-then-bulk-append). Each message gets a fresh
 
 ### Provider context-length errors
 
-When a model call fails because the prompt exceeds the model's context length, the provider implementation maps the response to `ModelError{meta.reason:'context_length_exceeded'}` (see [06-models](./06-models.md), [15-error-catalog](./15-error-catalog.md)). Callers can recover by reducing `historyWindow`, calling `replaceHistory` to summarize, or calling `clearHistory` to start fresh.
+When a model call fails because the prompt exceeds the model's context length, the provider implementation maps the response to `ModelError{meta.reason:'context_length_exceeded'}` (see [06-models](./06-models.md), [15-error-catalog](./15-error-catalog.md)). With an explicit context-projection policy, the default loop makes at most one transient projected retry; it never rewrites history, reruns tools, or duplicates events. Otherwise callers can recover by reducing `historyWindow`, calling `replaceHistory` to summarize, or calling `clearHistory` to start fresh. See [26-context-projection-and-compaction](./26-context-projection-and-compaction.md).
 
 ## Replay
 
-Out of scope for v1. The persisted `RunRecord` + `PersistedRunEvent` log is sufficient to reconstruct the run history offline; no API is provided.
+Production replay remains out of scope. The persisted `RunRecord` + `PersistedRunEvent` log is sufficient to reconstruct the run history offline; no production API is provided. Opt-in sanitized provider-fixture replay for tests is defined in [27-test-replay-and-diagnostic-invariants](./27-test-replay-and-diagnostic-invariants.md).
 
 ## Cross-references
 

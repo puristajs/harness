@@ -10,16 +10,23 @@ function defineHarness(opts?: HarnessOptions): HarnessBuilder<{}>
 
 `defineHarness` is **synchronous** and returns a `HarnessBuilder`. Adapters are passed already-constructed; the harness never instantiates an adapter on the user's behalf. The full builder type surface lives in [13-public-api](./13-public-api.md).
 
-The builder is the SOLE supported construction path. There are no standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` factories — only inline-in-builder objects achieve the cross-key type constraints.
+The builder is the SOLE supported construction path. `defineHarnessModule()` is
+a static transform helper for that builder, not a second construction path.
+There are no standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` factories — only inline-in-builder objects and static modules achieve the cross-key type constraints.
 
-## Builder ordering (locked)
+## Builder ordering and static modules (locked)
 
-The methods MUST be called in this order, each at most once:
+Direct builder methods MUST be called in this order, each at most once. A
+`.use(module)` call may occur at any pre-build point and applies its static
+transform to the accumulated builder; it cannot call `.build()` or another
+`.use()`. Its contributions are additive and collision-rejecting as specified
+in [25-static-harness-modules](./25-static-harness-modules.md).
 
 ```
 defineHarness(opts?)
   .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .checkpoints(...)?  .requires(...)?  .defaults(...)?
-  .models({...})            // REQUIRED, before tools/skills/agents/workflows
+  .use(module)?             // any pre-build point; static only
+  .models({...})            // REQUIRED, before direct tools/skills/agents/workflows
   .tools({...})?            // before agents
   .skills({...})?           // before agents
   .agents({...})            // before workflows
@@ -35,7 +42,10 @@ defineHarness(opts?)
   `agents()` and after `workflows()` if workflows are configured. It is late so
   the policy callback can type-check declared tool, agent, workflow, and model
   keys.
-- Each of `models`/`tools`/`skills`/`agents`/`workflows`/`governance` is callable AT MOST ONCE.
+- Direct calls of `models`/`tools`/`skills`/`agents`/`workflows`/`governance`
+  are each callable at most once. Contributions from modules append to their
+  registry in caller order. Duplicate ids across direct and module calls fail
+  synchronously; no family replaces earlier entries.
 - `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
@@ -209,6 +219,8 @@ interface HarnessDefaults {
    * Per-call override: `InvokeOptions.historyWindow`.
    */
   historyWindow?: number
+  /** Transient model-request projection. See 26-context-projection-and-compaction. */
+  contextProjection?: ContextProjectionPolicy
 }
 ```
 
@@ -232,6 +244,8 @@ interface ModelAlias {
   defaults?: ModelDefaults
   /** Provider-neutral retry behavior. Default: true. */
   retry?: ModelRetrySetting
+  /** Transient retry-only context projection for this alias. */
+  contextProjection?: ContextProjectionPolicy
   /** Free-form provider-specific options, passed to the provider unchanged. */
   providerOptions?: Record<string, unknown>
 }
@@ -318,6 +332,7 @@ interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string
+  provenance?: McpPluginProvenance
   inputAdapter?: (i: unknown) => unknown
   outputAdapter?: (o: unknown) => unknown
 }
@@ -329,6 +344,14 @@ interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  provenance?: McpPluginProvenance
+}
+
+interface McpPluginProvenance {
+  name: string
+  version?: string
+  digest: string
+  component: 'mcp'
 }
 ```
 
@@ -411,7 +434,7 @@ interface WorkflowDefinition<
 Validation:
 
 - Workflow ids match `/^[a-z][a-z0-9_]*$/`, ≤64 chars; reserved prefixes rejected.
-- Workflow ids may not collide with reserved Session member names: `'memory' | 'history' | 'close' | 'id' | 'workflows' | 'clearHistory' | 'replaceHistory'`. Violation → `HarnessConfigError`.
+- Workflow ids may not collide with reserved Session member names: `'memory' | 'history' | 'release' | 'close' | 'id' | 'workflows' | 'clearHistory' | 'replaceHistory'`. Violation → `HarnessConfigError`.
 - `ctx.agents[k]` is typed by the registered agent keys.
 - A wrapper package that accepts a workflow definition and local agent
   definitions must apply the same order as the builder: register agents first,
@@ -460,6 +483,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
 15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
 16. `checkpoints.info` and context checkpoint store capabilities MUST pass the validation rules in [22-local-durable-execution](./22-local-durable-execution.md).
+17. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values and an ASCII-only marker. Validation reserves the marker's actual byte length and the complete rendered omission annotation in addition to `headBytes + tailBytes`, so every valid projected result is at most `maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
 
 ## `Harness<S>` returned object
 
@@ -467,11 +491,19 @@ The builder's `.build()` returns the typed `Harness<S>`. The full type surface (
 
 `getSession` is `async` because the StateStore may be remote.
 
-`shutdown()` calls `.close()` on every adapter that has the method (state, sandbox, memory, logger, every model provider). Every adapter's `close()` runs regardless of individual failures. Errors are aggregated and returned in `errors`. Errors are also logged at `error` level. Resolves when all attempts finish.
+Concurrent `shutdown()` calls share one operation. It sequentially closes the MCP
+runner registry, opened session sandbox handles, unique model providers in
+reverse alias order, governance adapter, checkpoints, workspace store, runtime,
+memory, configured sandbox, state, then logger. Each object is de-duplicated by
+identity and every `close()` runs at most once. Every failure is normalized,
+aggregated and returned; failures before logger closure are error-logged using
+only resource kind/id, while logger-close failure is only aggregated. A later
+completed `shutdown()` returns the stored aggregate without new close calls.
 
 `inspect()` returns a synchronous, data-only snapshot of the resolved harness
-setup: harness name, effective adapter capabilities, required capabilities, and
-adapter descriptors. It must not make network calls or mutate runtime state.
+setup: harness name, effective adapter capabilities, required capabilities,
+adapter descriptors, and ordered content-free static-module provenance. It must
+not make network calls or mutate runtime state.
 
 ## Cross-references
 

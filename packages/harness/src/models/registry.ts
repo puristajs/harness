@@ -54,7 +54,15 @@ export interface ModelInvokeContext {
   workflowId?: string
   /** Agent id when the model call belongs to an agent run. */
   agentId?: string
-  /** Mirrors consumed stream chunks into the enclosing session `RunEvent` stream. Defaults to false. */
+  /**
+   * Mirrors this call's supported result events into the enclosing session
+   * `RunEvent` stream. Defaults to `false`.
+   *
+   * `textStream(...)` and `objectStream(...)` emit consumed stream chunks;
+   * `object(...)`, `embed(...)`, and `rerank(...)` emit their respective
+   * completion events. The surrounding session supplies the run identity, so
+   * callers can opt in without constructing or emitting events themselves.
+   */
   emitRunEvents?: boolean
 }
 

@@ -1,6 +1,6 @@
 # Tools
 
-**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered via `defineHarness().tools({...})`. There is no standalone `defineTool` factory; only inline-in-builder objects achieve cross-key type safety.
+**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered via `defineHarness().tools({...})`. There is no standalone `defineTool` factory; only inline-in-builder objects achieve cross-key type safety. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md).
 
 ## Built-in tools
 
@@ -140,6 +140,7 @@ interface McpStdioToolDefinition {
     timeoutMs?: number
   }
   tool: string                              // upstream MCP tool name
+  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
 }
@@ -147,15 +148,30 @@ interface McpStdioToolDefinition {
 
 Behavior:
 
-- Implementation lives inside `@purista/harness` under `src/tools/mcp/`. The HTTP runner loads `@modelcontextprotocol/sdk` dynamically so harnesses with only TS tools do not load MCP code at runtime.
-- Stdio MCP runs through the current `SandboxSession`. The transport adapts to the sandbox's capabilities and MUST NOT spawn directly from the host process:
-  - **Persistent transport (preferred).** When the session advertises `sandbox.spawn` (see [05-sandbox](./05-sandbox.md) §"Optional long-lived process capability"), the server is spawned **once** via `session.spawn(...)`. The runner performs `initialize` + `notifications/initialized` a single time, then multiplexes every subsequent `tools/list`/`tools/call` over the same long-lived stdin/stdout pipe, correlating responses by JSON-RPC `id`. Server-side session state is therefore preserved across calls. The process is killed on `runner.close()` (and on `session.close()`).
-  - **One-shot fallback.** When the session has only `exec` (no `sandbox.spawn`), each call is an independent one-shot exchange: spawn, send `initialize` + `notifications/initialized` + the single request, read the response, exit. This is leak-free (no persistent child process) but does **not** carry server-side session state between calls. Stateful servers require a `sandbox.spawn`-capable sandbox, the HTTP runner, or a custom adapter.
-  - If the sandbox has no executor at all, the call fails with `SandboxNoExecutorError`.
+- Implementation lives inside `@purista/harness` under `src/tools/mcp/`. The runners dynamically load `@modelcontextprotocol/client` v2 so harnesses with only TS tools do not load MCP code at runtime.
+- Stdio MCP runs only through a spawn-capable `SandboxSession` (see [05-sandbox](./05-sandbox.md) §"Optional long-lived process capability"). The server is spawned once via `session.spawn(...)`, owned by the SDK's modern transport lifecycle, and killed on `runner.close()` or `session.close()`. There is no exec-only/one-shot transport. A sandbox without `spawn` fails with `SandboxNoExecutorError`.
 - `install.command`, when provided, runs inside the same sandbox executor before first use. Use it to install or bootstrap the MCP server inside the sandbox, for example `npm install`/`npx` setup in a sandbox workspace.
 - The MCP server's `tools/list` is queried before model tool exposure; the declared input/output JSON Schemas are validated by an embedded JSON Schema validator (see "MCP JSON Schema validator" below).
 - `mcp_stdio` adapter input/output flow ordering is locked: `input → inputAdapter → JSON-Schema validate → MCP call → response → JSON-Schema validate → outputAdapter → return`.
 - Per-call timeout from `defaults.toolTimeoutMs`.
+
+### Current MCP protocol support
+
+The MCP runtime pins a current Tier-1 SDK release implementing MCP
+`2026-07-28`. Streamable HTTP uses only the stateless core, method/name routing
+headers, cacheable list results, and task-augmented `tools/call` after mutual
+capability negotiation. This is a clean breaking major cut: no stateful
+protocol, HTTP+SSE transport, compatibility shim, or transport fallback is
+retained. A task remains inside one normal tool invocation: timeout/abort also
+cancel it where the server supports cancellation, and only its final normalized
+result reaches the model. Unsupported server-to-client requests, task
+`input_required`, and task failures do not create a user prompt or credential
+flow; they fail as the existing safe MCP/tool errors.
+
+Generic prepared stdio launch support lets an addon stage validated immutable
+assets and a per-plugin writable data directory into the current sandbox. It is
+not a second MCP runner and cannot bypass command/args separation, sandbox
+execution, permissions, governance, validation, telemetry, or shutdown.
 
 ### Reconnect / process death
 
@@ -172,8 +188,16 @@ interface McpHttpToolDefinition {
   tool: string
   auth?: McpAuth
   headers?: Record<string, string>
+  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
   inputAdapter?: (input: unknown) => unknown
   outputAdapter?: (output: unknown) => unknown
+}
+
+interface McpPluginProvenance {
+  name: string
+  version?: string
+  digest: string
+  component: 'mcp'
 }
 
 type McpAuth =

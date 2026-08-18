@@ -2,7 +2,7 @@ import { HarnessError } from './harness-error.js'
 
 /** Configuration validation and assembly failures. */
 export class HarnessConfigError extends HarnessError {
-  public constructor(message: string, meta: { reason: string; path?: string; id?: string }, cause?: unknown) {
+  public constructor(message: string, meta: { reason: string; path?: string; id?: string; module_id?: string }, cause?: unknown) {
     super({ code: 'HARNESS_CONFIG_ERROR', category: 'config', retriable: false, message, meta, cause })
   }
 }
@@ -256,7 +256,7 @@ export class SessionNotFoundError extends HarnessError {
 export class SessionBusyError extends HarnessError {
   public constructor(
     message: string,
-    meta: { session_id: string; reason?: 'concurrent_run' | 'history_clear_during_run' | 'history_replace_during_run' },
+    meta: { session_id: string; reason?: 'concurrent_run' | 'session_release_in_progress' | 'history_clear_during_run' | 'history_replace_during_run' },
     cause?: unknown
   ) {
     super({ code: 'SESSION_BUSY', category: 'session', retriable: true, message, meta, cause })

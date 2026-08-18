@@ -99,6 +99,8 @@ type HarnessDefinition<S extends BuilderState> = {
 
 type SessionState = {
   busy: boolean
+  /** Prevents a new run from reopening resources while session cleanup is in progress. */
+  releasing: boolean
   sandboxSession: SandboxSession
   mountedSkills: Set<string>
 }
@@ -348,6 +350,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // share one sandbox open (no orphaned sessions) and one SessionState object
   // (so the synchronous busy check/set below serializes runs correctly).
   const sessionStateOpenings = new Map<string, Promise<SessionState>>()
+  // One release operation per in-memory session generation. Sharing the same promise makes
+  // repeated/concurrent release calls idempotent and prevents double-closing a
+  // sandbox or a sandbox-bound MCP runner.
+  const sessionResourceReleases = new WeakMap<SessionState, Promise<void>>()
   // Child tasks deliberately outlive an individual workflow handler. Their
   // execution is still owned by this harness instance and is cancelled on
   // session close or harness shutdown.
@@ -412,7 +418,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     const opening = (async () => {
       const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
-      const created: SessionState = { busy: false, sandboxSession, mountedSkills: new Set<string>() }
+      const created: SessionState = { busy: false, releasing: false, sandboxSession, mountedSkills: new Set<string>() }
       sessionStates.set(sessionId, created)
       sessionStateOpenings.delete(sessionId)
       return created
@@ -435,6 +441,60 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   async function cancelChildTasks(predicate: (task: LiveChildTask) => boolean, reason: string): Promise<void> {
     const selected = [...childTasks.values()].filter(predicate)
     await Promise.allSettled(selected.map((task) => task.cancel(reason)))
+  }
+
+  /**
+   * Frees only process-local resources. Persisted session, message, and run
+   * records deliberately remain intact so callers can reopen the same session
+   * id after an idle period or process handoff.
+   */
+  function releaseSessionResources(sessionId: string, state: SessionState, reason: string): Promise<void> {
+    const pending = sessionResourceReleases.get(state)
+    if (pending) return pending
+
+    // Facades are generation-bound. An older facade must never release a
+    // sandbox opened by a later getSession(id) call for the same logical id.
+    if (sessionStates.get(sessionId) !== state) return Promise.resolve()
+    if (state.busy || state.releasing) {
+      return Promise.reject(new SessionBusyError('Session is busy.', {
+        session_id: sessionId,
+        reason: state.releasing ? 'session_release_in_progress' : 'concurrent_run'
+      }))
+    }
+
+    state.releasing = true
+    const release = (async (): Promise<void> => {
+      // A child task can intentionally outlive its starter workflow. It owns
+      // isolated sandboxes/MCP processes, so cancellation must settle before
+      // the parent session's shared resources are closed.
+      await cancelChildTasks((task) => task.descriptor.sessionId === sessionId, reason)
+
+      const failures: unknown[] = []
+      try {
+        await mcpRegistry.closeForSandboxKey(sessionId)
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        await state.sandboxSession.close()
+      } catch (error) {
+        failures.push(error)
+      }
+
+      // Evict even when a resource reports a close failure: the resource must
+      // never be reused after a release attempt, and the next getSession call
+      // receives a fresh sandbox/MCP binding rather than a potentially closed
+      // handle. The original error is still surfaced to the caller.
+      if (sessionStates.get(sessionId) === state) sessionStates.delete(sessionId)
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures, 'Failed to release session resources.')
+    })()
+    const completed = release.finally(() => {
+      sessionResourceReleases.delete(state)
+      state.releasing = false
+    })
+    sessionResourceReleases.set(state, completed)
+    return completed
   }
 
   async function getRunSummary(runId: string): Promise<RunSummary | undefined> {
@@ -632,13 +692,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           return getRunSummary(runId)
         },
         async clearHistory(): Promise<void> {
-          if (state.busy) {
+          if (state.busy || state.releasing) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'history_clear_during_run' })
           }
           await definition.state.clearMessages(sessionId)
         },
         async replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void> {
-          if (state.busy) {
+          if (state.busy || state.releasing) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'history_replace_during_run' })
           }
           const parsed = messages.map((message) => {
@@ -659,15 +719,18 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }
         },
         async close(): Promise<void> {
-          if (state.busy) {
-            throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
-          }
-          await cancelChildTasks((task) => task.descriptor.sessionId === sessionId, 'session closed')
+          // A stale facade is a no-op. In particular, it must not delete the
+          // persisted conversation that a newer getSession(id) has reopened.
+          const current = sessionStates.get(sessionId)
+          if (current && current !== state) return
+          await releaseSessionResources(sessionId, state, 'session closed')
+          const reopened = sessionStates.get(sessionId)
+          if (reopened && reopened !== state) return
           await definition.state.closeSession(sessionId)
-          sessionStates.delete(sessionId)
           sessionStateOpenings.delete(sessionId)
-          await mcpRegistry.closeForSandboxKey(sessionId)
-          await state.sandboxSession.close()
+        },
+        async release(): Promise<void> {
+          await releaseSessionResources(sessionId, state, 'session released')
         }
       }
     },
@@ -766,8 +829,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     // Busy check precedes createRunSignal so an early SessionBusyError cannot
     // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
-    if (state.busy) {
-      throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
+    if (state.busy || state.releasing) {
+      throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: state.releasing ? 'session_release_in_progress' : 'concurrent_run' })
     }
     state.busy = true
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
@@ -930,8 +993,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     // Busy check precedes createRunSignal so an early SessionBusyError cannot
     // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
-    if (state.busy) {
-      throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'concurrent_run' })
+    if (state.busy || state.releasing) {
+      throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: state.releasing ? 'session_release_in_progress' : 'concurrent_run' })
     }
     state.busy = true
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
@@ -2043,11 +2106,68 @@ function withRunEventModelHandle(
   const source = handle as Record<string, unknown>
   const wrapped: Record<string, unknown> = { ...source }
 
-  for (const method of ['text', 'object', 'embed', 'rerank'] as const) {
-    const fn = source[method]
-    if (typeof fn !== 'function') continue
-    wrapped[method] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) =>
-      fn.call(source, req, signal, mergeModelRunContext(context, ctx))
+  const text = source['text']
+  if (typeof text === 'function') {
+    wrapped['text'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) =>
+      text.call(source, req, signal, mergeModelRunContext(context, ctx))
+  }
+
+  const object = source['object']
+  if (typeof object === 'function') {
+    wrapped['object'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = await object.call(source, req, signal, runContext) as { object: JsonValue; usage?: TokenUsage }
+      if (runContext.emitRunEvents === true) {
+        await emitEvent({
+          type: 'model.object',
+          runId: context.runId,
+          ...(context.agentId ? { agentId: context.agentId } : {}),
+          ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+          modelAlias: alias,
+          object: response.object,
+          ...(response.usage ? { usage: response.usage } : {})
+        })
+      }
+      return response
+    }
+  }
+
+  const embed = source['embed']
+  if (typeof embed === 'function') {
+    wrapped['embed'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = await embed.call(source, req, signal, runContext) as { embeddings: readonly { vector: readonly number[] }[]; usage?: TokenUsage }
+      if (runContext.emitRunEvents === true) {
+        await emitEvent({
+          type: 'model.embedding.completed',
+          runId: context.runId,
+          ...(context.agentId ? { agentId: context.agentId } : {}),
+          count: response.embeddings.length,
+          ...(response.embeddings[0] ? { dimensions: response.embeddings[0].vector.length } : {}),
+          ...(response.usage ? { usage: response.usage } : {})
+        })
+      }
+      return response
+    }
+  }
+
+  const rerank = source['rerank']
+  if (typeof rerank === 'function') {
+    wrapped['rerank'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = await rerank.call(source, req, signal, runContext) as { results: readonly unknown[]; usage?: TokenUsage }
+      if (runContext.emitRunEvents === true) {
+        await emitEvent({
+          type: 'model.rerank.completed',
+          runId: context.runId,
+          ...(context.agentId ? { agentId: context.agentId } : {}),
+          count: response.results.length,
+          ...(isRerankRequest(req) && req.topN !== undefined ? { topN: req.topN } : {}),
+          ...(response.usage ? { usage: response.usage } : {})
+        })
+      }
+      return response
+    }
   }
 
   const textStream = source['textStream']
@@ -2078,7 +2198,17 @@ function withRunEventModelHandle(
 }
 
 function mergeModelRunContext(context: ModelRunContext, override: Partial<ModelRunContext> | undefined): ModelRunContext {
-  return { ...context, ...(override ?? {}) }
+  // Invocation context is public on model handles, but run identity belongs to
+  // the enclosing session. Custom handlers may opt into events; they cannot
+  // relabel another run, agent, or workflow.
+  return {
+    ...context,
+    ...(override?.emitRunEvents === true ? { emitRunEvents: true } : {})
+  }
+}
+
+function isRerankRequest(value: unknown): value is { topN?: number } {
+  return value !== null && typeof value === 'object'
 }
 
 function modelStreamRunContext(context: ModelRunContext, override: Partial<ModelRunContext> | undefined, alias: string): ModelRunContext {

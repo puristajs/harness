@@ -93,7 +93,8 @@ A session provides:
 | `session.workflows.<id>.stream(input)` | Workflow call with run events. |
 | `session.history.list()` | Conversation messages for this session. |
 | `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
-| `session.close()` | Close the sandbox session. |
+| `session.release()` | Close live sandbox/MCP resources while retaining persisted history and runs. |
+| `session.close()` | Destructively close the session and remove its persisted session state. |
 
 Sessions enforce one active run at a time. Use different session IDs for
 parallel user threads.
@@ -282,9 +283,11 @@ Memory is session-scoped. History is persisted through the configured
 ## Shut Down
 
 ```ts
-await session.close()
+// End an idle request/session without deleting its conversation history.
+await session.release()
 await harness.shutdown()
 ```
 
 Call `harness.shutdown()` during service shutdown so adapters and MCP runners
-can close cleanly.
+can close cleanly. Use `session.close()` only when the conversation and its
+persisted session record should be deleted.

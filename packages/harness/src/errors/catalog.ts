@@ -256,7 +256,7 @@ export class SessionNotFoundError extends HarnessError {
 export class SessionBusyError extends HarnessError {
   public constructor(
     message: string,
-    meta: { session_id: string; reason?: 'concurrent_run' | 'history_clear_during_run' | 'history_replace_during_run' },
+    meta: { session_id: string; reason?: 'concurrent_run' | 'session_release_in_progress' | 'history_clear_during_run' | 'history_replace_during_run' },
     cause?: unknown
   ) {
     super({ code: 'SESSION_BUSY', category: 'session', retriable: true, message, meta, cause })

@@ -62,6 +62,11 @@ stream events, and `workflowId` / `agentId` are included when available. UI
 labels, semantic buckets, and client protocol names belong in the application
 integration layer, not in `RunEvent`.
 
+Within a workflow or custom agent handler, passing `{ emitRunEvents: true }` to
+`object(...)`, `embed(...)`, or `rerank(...)` emits the corresponding final
+completion event. The enclosing session supplies the immutable run identity;
+handler-provided invocation context cannot relabel a run, workflow, or agent.
+
 The harness does NOT auto-emit log-style events from logger calls; there is no `'log'` variant in `RunEvent`. Loggers and run events are independent surfaces.
 
 ## Streaming API

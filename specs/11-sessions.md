@@ -64,6 +64,8 @@ interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint; the runtime may raise it on retry. */
   attempt?: number
+  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 

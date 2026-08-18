@@ -233,22 +233,36 @@ async function runDefaultAgentInner(args: {
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
 
+  const agentEventMeta = {
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
+    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
+    modelAlias: selectedModelAlias
+  }
+
   if (args.agent.handler) {
-    const handler = args.agent.handler
-    const output = await withAbortSignal(args.signal, 'run', 'Run was cancelled.', () => handler({
-      input: parsedInput,
-      signal: args.signal,
-      models: args.models as ModelHandles<any>,
-      runId: args.runId,
-      sessionId: args.sessionId,
-      history: { list: async () => args.history },
-      memory: args.memory,
-      checkpoints: args.checkpoints,
-      metadata: args.metadata ?? {},
-      metrics: args.metrics
-    }))
-    const validated = parseAgentSchema(outputSchema, output, 'agent_output')
-    return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+    await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
+    try {
+      const handler = args.agent.handler
+      const output = await withAbortSignal(args.signal, 'run', 'Run was cancelled.', () => handler({
+        input: parsedInput,
+        signal: args.signal,
+        models: args.models as ModelHandles<any>,
+        runId: args.runId,
+        sessionId: args.sessionId,
+        history: { list: async () => args.history },
+        memory: args.memory,
+        checkpoints: args.checkpoints,
+        metadata: args.metadata ?? {},
+        metrics: args.metrics
+      }))
+      const validated = parseAgentSchema(outputSchema, output, 'agent_output')
+      await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
+      return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+    } catch (error) {
+      await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
+      throw error
+    }
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
@@ -292,13 +306,6 @@ async function runDefaultAgentInner(args: {
   const emitted: Message[] = []
   const maxSteps = args.agent.maxSteps ?? args.maxSteps
   let steps = 0
-
-  const agentEventMeta = {
-    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-    ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
-    ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
-    modelAlias: selectedModelAlias
-  }
 
   await args.emitEvent?.({ type: 'agent.started', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), ...agentEventMeta })
 

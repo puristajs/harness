@@ -115,6 +115,29 @@ describe('durable workflow auto-wiring', () => {
     expect(inspection?.state).toBe('paused')
   })
 
+  it('forwards an invocation workspace policy only when it creates the workspace', async () => {
+    const effects: Record<string, number> = {}
+    const runtime = inMemoryDurableRuntime()
+    const workspaceStore = inMemoryDurableWorkspaceStore()
+    const startWorkspace = workspaceStore.startWorkspace.bind(workspaceStore)
+    let receivedPolicy: unknown
+    workspaceStore.startWorkspace = async (options) => {
+      receivedPolicy = options.policy
+      return startWorkspace(options)
+    }
+    const harness = buildHarness({ runtime, workspaceStore, effects })
+    const session = await harness.getSession('durable-workspace-policy')
+    const workspacePolicy = {
+      retention: { cleanupMode: 'manual_only' as const, pausedTtlMs: 60_000 }
+    }
+
+    await session.workflows.twoStep.prompt('go', {
+      durable: { runId: 'run-ws-policy', workspacePolicy }
+    })
+
+    expect(receivedPolicy).toEqual(workspacePolicy)
+  })
+
   it('rejects a durable invocation without an executable runtime', async () => {
     const effects: Record<string, number> = {}
     const harness = buildHarness({ effects })

@@ -238,6 +238,67 @@ describe('model stream run events', () => {
     ]))
   })
 
+  it('keeps custom handler object calls and lifecycle events on the native run pipeline', async () => {
+    const provider = new FakeModelProvider()
+    provider.enqueueObject({
+      object: { answer: 'native' },
+      usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+      finishReason: 'stop'
+    })
+    const state = new InMemoryStateStore()
+    const harness = defineHarness()
+      .sandbox(inMemorySandbox())
+      .state(state)
+      .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents(({ agent }) => ({
+        custom: agent({
+          model: 'fake',
+          input: z.string(),
+          output: z.object({ answer: z.string() }),
+          handler: async (ctx) => {
+            const response = await ctx.models.fake.object(
+              {
+                messages: [{ role: 'user', content: ctx.input }],
+                schema: { type: 'object' }
+              },
+              ctx.signal,
+              // The enclosing session owns run identity even when a handler
+              // supplies an invocation context of its own.
+              { emitRunEvents: true, runId: 'forged-run-id' }
+            )
+            return response.object as { answer: string }
+          }
+        })
+      }))
+      .build()
+
+    const session = await harness.getSession('s1')
+    const events = []
+    for await (const event of session.agents.custom.stream('hello')) events.push(event)
+    const run = (await state.listRuns('s1'))[0]!
+    const persisted = await state.listEvents(run.id)
+    const summary = await session.getRunSummary(run.id)
+
+    expect(events.map((event) => event.type)).toEqual([
+      'run.started',
+      'agent.started',
+      'model.object',
+      'agent.finished',
+      'run.finished'
+    ])
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'model.object', runId: run.id, agentId: 'custom', modelAlias: 'fake', object: { answer: 'native' } }),
+      expect.objectContaining({ type: 'agent.finished', runId: run.id, agentId: 'custom', output: { answer: 'native' } })
+    ]))
+    expect(events.some((event) => event.runId === 'forged-run-id')).toBe(false)
+    expect(persisted).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'model.object', payload: { agentId: 'custom', modelAlias: 'fake', object: '[redacted]', usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } } })
+    ]))
+    expect(summary).toMatchObject({ agentCalls: 1, modelCalls: 1, tokenTotals: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } })
+  })
+
   it('assigns separate stream ids for parallel opted-in workflow model streams', async () => {
     const provider = new FakeModelProvider()
     provider.enqueueTextStream([

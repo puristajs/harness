@@ -245,6 +245,13 @@ The harness passes the run signal into `ctx.signal` and races the handler
 against cancellation/timeout so a hung custom handler does not block the run
 record from reaching a terminal state.
 
+`ctx.models` remains the harness-scoped model registry: calls retain the active
+trace, session, run, and agent attribution. A handler may opt a model call into
+the native run-event pipeline with `{ emitRunEvents: true }` as the model
+invocation context. The harness—not handler code—owns event ids, event ordering,
+and persisted-event redaction. There is no arbitrary custom-event emitter on
+`AgentContext`.
+
 ## Telemetry
 
 - Span `invoke_agent {agent.name}` per invocation (GenAI conv); attributes `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.agent.description`, plus `harness.agent.id`, `harness.agent.model`, `harness.agent.has_handler`.

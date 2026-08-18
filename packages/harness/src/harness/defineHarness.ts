@@ -40,7 +40,7 @@ import type {
   SessionMemory
 } from '../ports/memory.js'
 import { validateMemoryAdapter } from '../ports/memory.js'
-import type { DurableWorkspaceStore } from '../ports/workspace.js'
+import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
 import { validateDurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
@@ -152,6 +152,13 @@ export interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint; the runtime may raise it on retry. */
   attempt?: number
+  /**
+   * Per-run workspace constraints applied when this invocation creates its
+   * durable workspace. Adapters remain responsible for rejecting policies
+   * they cannot enforce. This changes workspace retention/storage limits only;
+   * it never grants access to another adapter or sandbox capability.
+   */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 
 /** Shared invoke options for workflow and agent execution. */
@@ -873,6 +880,24 @@ export type WorkflowAgentInvokeOptions<S extends BuilderState, K extends keyof N
 
 /** Full context passed to custom agent handlers. */
 export interface AgentContext<S extends BuilderState, I, O> extends AgentContextMinimal<S, I> {
+  /**
+   * Model handles scoped to the active harness run.
+   *
+   * Calls retain the harness trace/session/run attribution. Pass
+   * `{ emitRunEvents: true }` as the final invocation argument when the
+   * corresponding model completion or stream chunks should be exposed through
+   * `session.agents.<id>.stream(...)`. The harness owns event identity and
+   * persistence; custom handlers cannot forge arbitrary run events.
+   *
+   * @example
+   * ```ts
+   * const response = await ctx.models.primary.object(
+   *   { messages: [{ role: 'user', content: ctx.input }], schema },
+   *   ctx.signal,
+   *   { emitRunEvents: true }
+   * )
+   * ```
+   */
   models: ModelHandles<S>
   signal: AbortSignal
   output?: O
@@ -1086,6 +1111,20 @@ export interface Session<S extends BuilderState> {
   getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
+  /**
+   * Releases live, session-scoped resources without deleting persisted state.
+   *
+   * This closes the active sandbox and sandbox-bound MCP runners, cancels any
+   * resident child tasks, and evicts the in-memory session facade. StateStore-
+   * backed session metadata, conversation history, and run records remain
+   * available when a later {@link Harness.getSession} call reopens the same
+   * id. It is safe to call repeatedly once no run is active.
+   */
+  release(): Promise<void>
+  /**
+   * Destructively closes the session and removes its persisted session state.
+   * Use {@link release} when only live sandbox/MCP resources should be freed.
+   */
   close(): Promise<void>
 }
 

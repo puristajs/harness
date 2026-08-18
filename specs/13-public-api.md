@@ -555,6 +555,9 @@ interface Session<S extends BuilderState> {
   getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message,'id'|'timestamp'>>): Promise<void>
+  /** Frees live sandbox/MCP resources but preserves persisted session state. */
+  release(): Promise<void>
+  /** Destructively removes persisted session state after releasing resources. */
   close(): Promise<void>
 }
 
@@ -864,6 +867,8 @@ interface DurableInvokeOptions {
   workerId?: string
   stepId?: string
   attempt?: number
+  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 

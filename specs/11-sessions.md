@@ -204,6 +204,9 @@ output without invoking the model or writing a second transcript. Reusing the
 key with a different invocation is rejected. Queue/framework integrations MUST
 pass their stable delivery/message id; the harness never derives an idempotency
 key from user content.
+An idempotent `.stream(...)` replay emits exactly `run.started` followed by
+`run.finished{output}` from the recorded result; it performs no state write and
+emits no model or tool events.
 
 `HarnessDefaults.historyRetention` optionally retains newest complete turns:
 

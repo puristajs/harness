@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { BaseModelProvider, InMemoryStateStore, ModelError, defineHarness, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { FakeStateStore } from '../src/testing/fakeStateStore.js'
 
 function message(id: string, role: Message['role'], content: string): Message {
   return { id, sessionId: 'history', role, content, timestamp: '2026-08-19T00:00:00.000Z' }
@@ -63,6 +64,31 @@ describe('durable conversation history', () => {
 
     expect(provider.requests).toHaveLength(1)
     expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('replays a terminal stream lifecycle for an idempotent delivery without state writes', async () => {
+    const provider = new FakeModelProvider()
+    const state = new FakeStateStore()
+    provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    const harness = defineHarness()
+      .state(state)
+      .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
+      .agents({ answer: { model: 'fake', instructions: 'Answer.', builtinTools: false, input: z.string(), output: z.string() } })
+      .build()
+    const session = await harness.getSession('stream-redelivery')
+    const options = { idempotencyKey: 'queue-message-stream' }
+
+    await session.agents.answer.prompt('work', options)
+    state.resetOps()
+    const events = []
+    for await (const event of session.agents.answer.stream('work', options)) events.push(event)
+
+    expect(events).toMatchObject([
+      { type: 'run.started', runId: 'agent_answer_queue-message-stream' },
+      { type: 'run.finished', runId: 'agent_answer_queue-message-stream', output: 'done' }
+    ])
+    expect(state.ops).toEqual(['getRun'])
+    expect(provider.requests).toHaveLength(1)
   })
 
   it('recovers a committed transcript after a crash before run terminalization without a second model call', async () => {

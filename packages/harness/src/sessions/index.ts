@@ -899,6 +899,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           })
         }
         if (previous.status === 'succeeded') {
+          // `stream()` still has to satisfy the run-event lifecycle contract
+          // on an idempotent replay. These are relay-only events: the prior
+          // completed run is authoritative, so no model call or state/event
+          // mutation is performed.
+          if (onEvent) {
+            const replayedAt = now()
+            await onEvent({ type: 'run.started', runId, at: replayedAt })
+            await onEvent({ type: 'run.finished', runId, at: replayedAt, output: previous.output ?? null })
+          }
           return previous.output as AgentOutput<S, K>
         }
         if (previous.status === 'cancelled') {

@@ -156,8 +156,10 @@ For every run:
 
 Append rules:
 
-- `system` messages are persisted once per agent run (rebuilt from instructions each time and appended).
-- `user`, `assistant`, `tool` messages are persisted as they're produced.
+- Rebuilt agent instructions are never persisted. They are reconstructed as
+  the one canonical system prompt for each default-loop provider request.
+- `user`, `assistant`, and `tool` messages are assembled as one logical turn
+  and committed only after the default agent loop succeeds.
 
 ## Session memory
 
@@ -188,9 +190,10 @@ Locked semantics:
 
 ### Durable transcript, redelivery, and retention
 
-The default agent loop assembles one logical transcript turn locally: its
-rebuilt system instruction, the user input, and all assistant/tool messages.
-It commits that turn only after the model loop succeeds. Provider retries and
+The default agent loop assembles one logical transcript turn locally: the user
+input and all assistant/tool messages. Rebuilt agent instructions stay outside
+durable history as the one canonical prompt for each model request. The turn
+commits only after the model loop succeeds. Provider retries and
 context-projection retries therefore never append partial or duplicate history.
 Every message id is stable within the logical run.
 

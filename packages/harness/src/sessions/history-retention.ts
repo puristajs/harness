@@ -27,10 +27,10 @@ export function validateSessionHistoryRetention(policy: SessionHistoryRetentionP
 /**
  * Returns the newest complete turns permitted by `policy`.
  *
- * A turn begins with any leading system messages and a user message, then
- * contains its assistant/tool work until the next user message. This keeps
- * tool calls and their results together. Imported legacy messages without a
- * user boundary are one indivisible leading turn.
+ * A turn begins with a user message, then contains its assistant/tool work
+ * until the next user message. This keeps tool calls and their results
+ * together. Imported legacy system records are attached to their following
+ * user turn; records without a user boundary remain one indivisible turn.
  *
  * `maxBytes` is strict. A single completed turn larger than the configured
  * cap is rejected instead of silently splitting or truncating durable audit
@@ -80,9 +80,8 @@ function partitionTurns(messages: readonly Message[]): Message[][] {
   let current: Message[] | undefined
   for (const message of messages) {
     if (message.role === 'system') {
-      // Default-agent system instructions are emitted immediately before their
-      // user prompt. Close the preceding turn first so these instructions join
-      // the following user turn instead of surviving as an orphaned turn.
+      // Old/imported system records are attached to the following user turn.
+      // New default-agent instructions are never persisted.
       if (current) turns.push(current)
       current = undefined
       leadingSystem.push(message)

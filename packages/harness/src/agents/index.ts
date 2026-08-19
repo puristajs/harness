@@ -307,10 +307,13 @@ async function runDefaultAgentInner(args: {
   const customSpecs = [...tsCustomSpecs, ...mcpSpecs]
   const allToolSpecs = [...builtinSpecs, ...customSpecs]
 
+  // Agent instructions are reconstructed for every request and are the one
+  // canonical default-loop system prompt. Durable history intentionally omits
+  // those rebuilt records; ignore pre-v2/imported system records here as well
+  // so reopening a session can never duplicate or amplify instructions.
   const nonSystem = args.history.filter((m) => m.role !== 'system')
-  const system = args.history.filter((m) => m.role === 'system')
   const cappedNonSystem = args.historyWindow === undefined ? nonSystem : args.historyWindow === 0 ? [] : nonSystem.slice(-args.historyWindow)
-  const modelMessages: ModelMessage[] = [...system, ...cappedNonSystem, { id: '', sessionId: args.sessionId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() } as unknown as Message]
+  const modelMessages: ModelMessage[] = [...cappedNonSystem, { id: '', sessionId: args.sessionId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() } as unknown as Message]
     .flatMap((m) => {
       if (m.role === 'tool' && m.toolResults) {
         return m.toolResults.map((r) => ({ role: 'tool' as const, toolCallId: r.toolCallId, content: JSON.stringify(r.output ?? r.error ?? {}) }))
@@ -322,7 +325,6 @@ async function runDefaultAgentInner(args: {
   // agent has completed. Provider retries therefore never mutate durable
   // history, and a logical run has deterministic message ids on redelivery.
   const emitted: Message[] = [
-    { id: turnMessageId(args.delegationCallId ?? args.runId, '00_system'), sessionId: args.sessionId, runId: args.runId, role: 'system', content: instructions, timestamp: new Date().toISOString() },
     { id: turnMessageId(args.delegationCallId ?? args.runId, '01_user'), sessionId: args.sessionId, runId: args.runId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() }
   ]
   const maxSteps = args.agent.maxSteps ?? args.maxSteps

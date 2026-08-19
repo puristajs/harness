@@ -19,15 +19,13 @@ function buildHarness(provider = new FakeModelProvider(), historyRetention?: { m
 describe('durable conversation history', () => {
   it('retains whole newest turns rather than arbitrary individual messages', () => {
     const retained = retainCompleteTurns([
-      message('system-1', 'system', 'rules'),
       message('user-1', 'user', 'first'),
       message('assistant-1', 'assistant', 'first answer'),
-      message('system-2', 'system', 'rules'),
       message('user-2', 'user', 'second'),
       message('assistant-2', 'assistant', 'second answer')
     ], { maxTurns: 1 })
 
-    expect(retained.map((entry) => entry.id)).toEqual(['system-2', 'user-2', 'assistant-2'])
+    expect(retained.map((entry) => entry.id)).toEqual(['user-2', 'assistant-2'])
   })
 
   it('rejects a newest complete turn that cannot fit without splitting it', () => {
@@ -37,7 +35,7 @@ describe('durable conversation history', () => {
     ], { maxBytes: 20 })).toThrow(/newest complete conversation turn/i)
   })
 
-  it('persists system, user, and assistant as one rolling durable turn', async () => {
+  it('persists user and assistant as one rolling durable turn without duplicating rebuilt instructions', async () => {
     const provider = new FakeModelProvider()
     provider.enqueue({ object: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     provider.enqueue({ object: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
@@ -48,10 +46,10 @@ describe('durable conversation history', () => {
     await session.agents.answer.prompt('second question')
 
     expect((await session.history.list()).map((entry) => [entry.role, entry.content])).toEqual([
-      ['system', 'Answer.'],
       ['user', 'second question'],
       ['assistant', '"second"']
     ])
+    expect(provider.requests[1]?.messages.filter((entry) => entry.role === 'system')).toHaveLength(1)
   })
 
   it('deduplicates a successful queue redelivery by caller-owned idempotency key', async () => {
@@ -64,7 +62,7 @@ describe('durable conversation history', () => {
     await expect(session.agents.answer.prompt('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('done')
 
     expect(provider.requests).toHaveLength(1)
-    expect((await session.history.list()).map((entry) => entry.role)).toEqual(['system', 'user', 'assistant'])
+    expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
   })
 
   it('recovers a committed transcript after a crash before run terminalization without a second model call', async () => {
@@ -75,7 +73,6 @@ describe('durable conversation history', () => {
     await state.upsertSession({ id: 'crash-recovery', createdAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', runCount: 0 })
     await state.createRun({ id: runId, sessionId: 'crash-recovery', kind: 'agent', target: 'answer', startedAt: '2026-08-19T00:00:00.000Z', status: 'running', input: 'work' })
     await state.appendMessages('crash-recovery', [
-      { ...message(`msg_${runId}_00_system`, 'system', 'Answer.'), sessionId: 'crash-recovery', runId },
       { ...message(`msg_${runId}_01_user`, 'user', 'work'), sessionId: 'crash-recovery', runId },
       { ...message(`msg_${runId}_99_assistant_final`, 'assistant', '"done"'), sessionId: 'crash-recovery', runId }
     ])
@@ -116,5 +113,5 @@ it('does not persist duplicate messages when the model retries before producing 
 
   await expect(session.agents.answer.prompt('question')).resolves.toBe('recovered')
   expect(provider.attempts).toBe(2)
-  expect((await session.history.list()).map((entry) => entry.role)).toEqual(['system', 'user', 'assistant'])
+  expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
 })

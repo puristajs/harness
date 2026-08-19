@@ -1,6 +1,6 @@
 {
   "name": "@purista/agent-plugins-example",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@purista/harness": "*",
-    "@purista/harness-agent-plugins": "*"
+    "@purista/harness": "^2.1.0",
+    "@purista/harness-agent-plugins": "^2.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

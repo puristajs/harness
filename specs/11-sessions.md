@@ -156,8 +156,10 @@ For every run:
 
 Append rules:
 
-- `system` messages are persisted once per agent run (rebuilt from instructions each time and appended).
-- `user`, `assistant`, `tool` messages are persisted as they're produced.
+- Rebuilt agent instructions are never persisted. They are reconstructed as
+  the one canonical system prompt for each default-loop provider request.
+- `user`, `assistant`, and `tool` messages are assembled as one logical turn
+  and committed only after the default agent loop succeeds.
 
 ## Session memory
 
@@ -185,6 +187,38 @@ Locked semantics:
 ## Conversation history and threads
 
 **One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
+
+### Durable transcript, redelivery, and retention
+
+The default agent loop assembles one logical transcript turn locally: the user
+input and all assistant/tool messages. Rebuilt agent instructions stay outside
+durable history as the one canonical prompt for each model request. The turn
+commits only after the model loop succeeds. Provider retries and
+context-projection retries therefore never append partial or duplicate history.
+Every message id is stable within the logical run.
+
+`InvokeOptions.idempotencyKey` is an optional caller-owned value for
+at-least-once direct-agent delivery. It matches `/^[A-Za-z0-9_.:-]{1,120}$/`.
+Repeating a successful `(session, agent, input, key)` returns the recorded
+output without invoking the model or writing a second transcript. Reusing the
+key with a different invocation is rejected. Queue/framework integrations MUST
+pass their stable delivery/message id; the harness never derives an idempotency
+key from user content.
+An idempotent `.stream(...)` replay emits exactly `run.started` followed by
+`run.finished{output}` from the recorded result; it performs no state write and
+emits no model or tool events.
+
+`HarnessDefaults.historyRetention` optionally retains newest complete turns:
+
+```ts
+{ historyRetention: { maxTurns?: number, maxBytes?: number } }
+```
+
+`maxTurns` is the primary rolling-window control. `maxBytes` counts serialized
+UTF-8 durable records solely as a storage bound; it is not a token estimate.
+Turns are never split, so an individual newest turn larger than `maxBytes`
+fails rather than silently dropping a prompt, tool call, or tool result. The
+policy requires atomic `StateStore.replaceMessages`.
 
 ### History window
 

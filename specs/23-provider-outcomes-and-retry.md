@@ -30,6 +30,10 @@ and adapter acceptance criteria. This spec extends [06-models](./06-models.md),
   into the normalized `FinishReason` enum.
 - POR-07: No prompts, outputs, tool payloads, credentials, or sensitive headers
   may be logged, traced, persisted, or exposed in sanitized errors.
+- POR-08: A model retry MUST happen before durable transcript commit. It MUST
+  not append a duplicate user, assistant, tool-call, or tool-result message.
+  At-least-once queue delivery uses the caller-owned session invocation
+  idempotency key defined in [11-sessions](./11-sessions.md).
 
 ## Public types
 

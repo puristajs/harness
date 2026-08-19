@@ -68,6 +68,7 @@ import {
 } from '../ports/capabilities.js'
 import type { DurableStepOptions } from '../runtime/steps.js'
 import { type ContextProjectionPolicy, validateContextProjection } from '../context-projection.js'
+import { type SessionHistoryRetentionPolicy, validateSessionHistoryRetention } from '../sessions/history-retention.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
 export { HARNESS_VERSION } from '../version.js'
@@ -107,6 +108,14 @@ export interface HarnessDefaults {
   historyWindow?: number
   /** Optional retry-only transient context projection. */
   contextProjection?: ContextProjectionPolicy
+  /**
+   * Optional durable conversation-history bounds for every session.
+   *
+   * This is storage retention, not a model context-window setting. It retains
+   * complete newest turns and counts UTF-8 serialized bytes; model token
+   * budgeting requires an explicit model/provider token counter.
+   */
+  historyRetention?: SessionHistoryRetentionPolicy
   /** Default workflow child-agent delegation budgets. */
   delegation?: DelegationDefaults
 }
@@ -169,6 +178,13 @@ export interface InvokeOptions {
   timeoutMs?: number
   /** Optional history-window override for this call only. */
   historyWindow?: number
+  /**
+   * Stable caller-owned key for at-least-once delivery of a direct agent call.
+   * Repeating a successful call with the same session, agent, input, and key
+   * returns the recorded output without invoking the model or writing another
+   * transcript turn. It is intentionally not inferred from prompt content.
+   */
+  idempotencyKey?: string
   /** Optional retry-only context projection override. */
   contextProjection?: ContextProjectionPolicy
   /** Optional W3C Trace Context parent. */
@@ -1401,6 +1417,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     if (!validateContextProjection(defaults.contextProjection)) {
       throw new HarnessConfigError('contextProjection is invalid.', { reason: 'invalid_context_projection', path: 'defaults.contextProjection' })
     }
+    if (!validateSessionHistoryRetention(defaults.historyRetention)) {
+      throw new HarnessConfigError('historyRetention is invalid.', { reason: 'invalid_defaults', path: 'defaults.historyRetention' })
+    }
     return this.clone({ defaults })
   }
 
@@ -1519,6 +1538,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
         ...(this.configured.defaults?.historyWindow !== undefined ? { historyWindow: this.configured.defaults.historyWindow } : {}),
         ...(this.configured.defaults?.contextProjection ? { contextProjection: this.configured.defaults.contextProjection } : {}),
+        ...(this.configured.defaults?.historyRetention ? { historyRetention: this.configured.defaults.historyRetention } : {}),
         ...(this.configured.defaults?.delegation ? { delegation: this.configured.defaults.delegation } : {})
       },
       models,

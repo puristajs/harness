@@ -117,3 +117,8 @@ Adaptive token estimation, provider-specific tokenizers, automatic model
 summarization, durable history mutation, compaction of arbitrary structured
 attachments, and multi-attempt recovery are out of scope. Future strategies
 need a new numbered specification and explicit privacy/error/telemetry terms.
+
+`maxBytes` in this specification and durable-history retention is deliberately
+UTF-8 byte accounting, not context-window accounting. A model request may only
+be token-budgeted by an explicit provider/model tokenizer capability; generic
+bytes-per-token conversion is forbidden.

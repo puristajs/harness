@@ -23,6 +23,8 @@ interface StateStore {
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<Message[]>
   /** Delete every message for a session. Used by `Session.clearHistory` and `replaceHistory`. */
   clearMessages(sessionId: string): Promise<void>
+  /** Optional atomic clear-and-replace. Required when `historyRetention` is configured. */
+  replaceMessages?(sessionId: string, messages: Message[]): Promise<void>
 
   // Runs
   createRun(record: RunRecord): Promise<void>
@@ -100,6 +102,9 @@ interface PersistedRunEvent {
 
 - `appendMessages` and `appendEvents` are atomic per call. Partial writes MUST NOT be observable.
 - `appendMessages` rejects duplicate message ids with `StateError{meta.reason:'duplicate_message_id'}`.
+- When a harness configures durable `historyRetention`, its StateStore MUST
+  implement atomic `replaceMessages`; harness construction rejects adapters
+  without it. A clear-then-append fallback is forbidden for retained history.
 - `clearMessages` is atomic: either every message for the session is removed or none is.
 - `listMessages` returns messages in ascending order by `(timestamp, id)`. `before` cursor is a message id; pagination is exclusive.
 - `listRuns` returns runs in descending order by `startedAt` then by `id` descending. `before` cursor is a run id; pagination is exclusive.

@@ -7,6 +7,7 @@ import {
   OperationTimeoutError,
   HarnessError,
   SessionBusyError,
+  StateError,
   ValidationError,
   DelegationPolicyError,
   serializeError
@@ -64,6 +65,7 @@ import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
 import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 import { validateContextProjection } from '../context-projection.js'
+import { retainCompleteTurns } from './history-retention.js'
 
 type ModelRunContext = {
   harnessName: string
@@ -332,6 +334,9 @@ function validateInvokeOptions(opts: InvokeOptions | undefined): void {
   if (!validateContextProjection(opts?.contextProjection)) {
     throw new ValidationError('Invoke options are invalid.', { where: 'invoke_options', issues: { contextProjection: 'invalid' } })
   }
+  if (opts?.idempotencyKey !== undefined && !/^[A-Za-z0-9_.:-]{1,120}$/.test(opts.idempotencyKey)) {
+    throw new ValidationError('Invoke options are invalid.', { where: 'invoke_options', issues: { idempotencyKey: 'must match /^[A-Za-z0-9_.:-]{1,120}$/' } })
+  }
 }
 
 function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId: string): Message {
@@ -344,6 +349,11 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 }
 
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
+  if (definition.defaults.historyRetention && !definition.state.replaceMessages) {
+    throw new HarnessConfigError('historyRetention requires an atomic StateStore.replaceMessages implementation.', {
+      reason: 'state_store_atomic_replace_required', path: 'state.replaceMessages'
+    })
+  }
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
   // In-flight session-state creations, memoized so concurrent first-time callers
@@ -436,6 +446,55 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       telemetry.recordCounter('harness.events.persist_errors', 1, { harness: definition.name })
       definition.logger.error('Failed to persist run events.', { harness: definition.name, run_id: runId, error: serializeError(error) })
     }
+  }
+
+  /**
+   * Commits one completed logical transcript turn. Model/provider retries
+   * happen before this boundary. A redelivered logical run reuses stable
+   * message ids, so exact messages are a no-op while a conflicting duplicate
+   * remains a state error rather than silently corrupting history.
+   */
+  async function persistConversationTurn(sessionId: string, messages: readonly Message[]): Promise<void> {
+    if (messages.length === 0) return
+    const current = await definition.state.listMessages(sessionId)
+    const existing = new Map(current.map((message) => [message.id, message]))
+    const additions: Message[] = []
+    for (const message of messages) {
+      const prior = existing.get(message.id)
+      if (!prior) {
+        additions.push(message)
+        continue
+      }
+      if (!sameLogicalMessage(prior, message)) {
+        throw new StateError('A logical conversation message id was reused with different content.', {
+          op: 'appendMessages', reason: 'message_id_conflict'
+        })
+      }
+    }
+    if (definition.defaults.historyRetention) {
+      const retained = retainCompleteTurns([...current, ...additions], definition.defaults.historyRetention)
+      await definition.state.replaceMessages!(sessionId, retained)
+      return
+    }
+    if (additions.length > 0) await definition.state.appendMessages(sessionId, additions)
+  }
+
+  async function readCommittedAgentOutput(sessionId: string, runId: string, agent: AgentDefinition<S>): Promise<JsonValue | undefined> {
+    const finalMessage = (await definition.state.listMessages(sessionId))
+      .find((message) => message.id === `msg_${runId}_99_assistant_final`)
+    if (!finalMessage) return undefined
+    let candidate: unknown
+    try {
+      candidate = JSON.parse(finalMessage.content)
+    } catch {
+      return undefined
+    }
+    const schema = agent.output
+    if (schema) {
+      const parsed = schema.safeParse(candidate)
+      return parsed.success ? parsed.data as JsonValue : undefined
+    }
+    return typeof candidate === 'string' ? candidate : undefined
   }
 
   async function cancelChildTasks(predicate: (task: LiveChildTask) => boolean, reason: string): Promise<void> {
@@ -826,6 +885,49 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
+    const runId = opts?.idempotencyKey ? `agent_${agentId}_${opts.idempotencyKey}` : ulid()
+    if (opts?.idempotencyKey) {
+      const previous = await definition.state.getRun(runId)
+      if (previous) {
+        const sameInvocation = previous.sessionId === sessionId
+          && previous.kind === 'agent'
+          && previous.target === agentId
+          && JSON.stringify(previous.input) === JSON.stringify(input)
+        if (!sameInvocation) {
+          throw new ValidationError('idempotencyKey is already bound to a different agent invocation.', {
+            where: 'invoke_options', issues: { idempotencyKey: opts.idempotencyKey }
+          })
+        }
+        if (previous.status === 'succeeded') {
+          // `stream()` still has to satisfy the run-event lifecycle contract
+          // on an idempotent replay. These are relay-only events: the prior
+          // completed run is authoritative, so no model call or state/event
+          // mutation is performed.
+          if (onEvent) {
+            const replayedAt = now()
+            await onEvent({ type: 'run.started', runId, at: replayedAt })
+            await onEvent({ type: 'run.finished', runId, at: replayedAt, output: previous.output ?? null })
+          }
+          return previous.output as AgentOutput<S, K>
+        }
+        if (previous.status === 'cancelled') {
+          throw new StateError('A cancelled agent invocation cannot be replayed with the same idempotencyKey.', {
+            op: 'createRun', reason: 'idempotency_terminal_run'
+          })
+        }
+        // A process may have committed the transcript and crashed before it
+        // could terminalize the run record. Recover that committed result
+        // instead of calling the provider again or treating regenerated
+        // timestamps as a transcript conflict.
+        const committed = await readCommittedAgentOutput(sessionId, runId, agent)
+        if (committed !== undefined) {
+          const finishedAt = now()
+          await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: committed })
+          return committed as AgentOutput<S, K>
+        }
+      }
+    }
+
     // Busy check precedes createRunSignal so an early SessionBusyError cannot
     // leak the run-timeout timer or the caller-signal abort listener.
     const state = await getSessionState(sessionId)
@@ -836,7 +938,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
-    const runId = ulid()
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
       await onEvent?.(event)
@@ -911,7 +1012,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           metadata: opts?.metadata ?? {}
         })
         if (run.emitted.length > 0) {
-          await definition.state.appendMessages(sessionId, run.emitted)
+          await persistConversationTurn(sessionId, run.emitted)
         }
         return run.output
       }))
@@ -1220,7 +1321,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       metadata: agentMetadata
                     })
                     if (run.emitted.length > 0) {
-                      await definition.state.appendMessages(sessionId, run.emitted)
+                      await persistConversationTurn(sessionId, run.emitted)
                     }
                     return run.output
                   })()
@@ -1695,10 +1796,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       if (status === 'succeeded') complete(output ?? null)
       else fail(terminalFailure ?? new InternalError('Continuable child task did not complete successfully.', { task_id: taskId, status, ...(error ? { error } : {}) }))
     }
-    const inputMessage = (input: unknown): Message => ({
-      id: `msg_${ulid()}_u`, sessionId: args.sessionId, runId: taskId, role: 'user',
-      content: typeof input === 'string' ? input : JSON.stringify(input), timestamp: now()
-    })
     const runTurn = async (input: unknown): Promise<JsonValue> => {
       if (settled) throw new ValidationError('Child task is already terminal.', { where: 'invoke_options', issues: { taskId, reason: 'child_task_terminal' } })
       let slotAcquired = false
@@ -1746,7 +1843,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           emitEvent: emit,
           metadata: args.metadata
         })
-        history.push(inputMessage(input), ...run.emitted)
+        // Continuable task history is private in-memory loop state. Preserve
+        // its established user/assistant/tool shape; the run already emits
+        // the current user exactly once, and rebuilt system instructions are
+        // configuration rather than task history.
+        history.push(...run.emitted.filter((message) => message.role !== 'system'))
         lastOutput = run.output as JsonValue
         return lastOutput
       } catch (error) {
@@ -2084,6 +2185,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
     }
   }
+}
+
+function sameLogicalMessage(left: Message, right: Message): boolean {
+  // Timestamps are observability metadata, not logical transcript identity.
+  // Retried delivery regenerates them while retaining the same stable id and
+  // canonical message content.
+  const { timestamp: _leftTimestamp, ...leftLogical } = left
+  const { timestamp: _rightTimestamp, ...rightLogical } = right
+  return JSON.stringify(leftLogical) === JSON.stringify(rightLogical)
 }
 
 function withRunEventModelRegistry<M extends Record<string, unknown>>(

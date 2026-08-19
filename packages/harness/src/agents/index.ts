@@ -27,6 +27,15 @@ import { projectToolResults, type ContextProjectionPolicy } from '../context-pro
 
 function stringifyInput(input: unknown): string { return typeof input === 'string' ? input : JSON.stringify(input) }
 
+/**
+ * Stable within one logical run so a durable/redelivered run never creates a
+ * second transcript entry for the same logical message. The StateStore remains
+ * the final duplicate-id authority.
+ */
+function turnMessageId(runId: string, slot: string): string {
+  return `msg_${runId}_${slot}`
+}
+
 type ToolKind = 'builtin' | 'ts' | 'mcp_stdio' | 'mcp_http'
 type ToolFailure = ReturnType<typeof serializeError>
 type PermissionResult =
@@ -258,7 +267,13 @@ async function runDefaultAgentInner(args: {
       }))
       const validated = parseAgentSchema(outputSchema, output, 'agent_output')
       await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
-      return { output: validated as JsonValue, emitted: [{ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }] }
+      return {
+        output: validated as JsonValue,
+        emitted: [
+          { id: turnMessageId(args.delegationCallId ?? args.runId, '01_user'), sessionId: args.sessionId, runId: args.runId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() },
+          { id: turnMessageId(args.delegationCallId ?? args.runId, '99_assistant_final'), sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() }
+        ]
+      }
     } catch (error) {
       await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
       throw error
@@ -292,10 +307,13 @@ async function runDefaultAgentInner(args: {
   const customSpecs = [...tsCustomSpecs, ...mcpSpecs]
   const allToolSpecs = [...builtinSpecs, ...customSpecs]
 
+  // Agent instructions are reconstructed for every request and are the one
+  // canonical default-loop system prompt. Durable history intentionally omits
+  // those rebuilt records; ignore pre-v2/imported system records here as well
+  // so reopening a session can never duplicate or amplify instructions.
   const nonSystem = args.history.filter((m) => m.role !== 'system')
-  const system = args.history.filter((m) => m.role === 'system')
   const cappedNonSystem = args.historyWindow === undefined ? nonSystem : args.historyWindow === 0 ? [] : nonSystem.slice(-args.historyWindow)
-  const modelMessages: ModelMessage[] = [...system, ...cappedNonSystem, { id: '', sessionId: args.sessionId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() } as unknown as Message]
+  const modelMessages: ModelMessage[] = [...cappedNonSystem, { id: '', sessionId: args.sessionId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() } as unknown as Message]
     .flatMap((m) => {
       if (m.role === 'tool' && m.toolResults) {
         return m.toolResults.map((r) => ({ role: 'tool' as const, toolCallId: r.toolCallId, content: JSON.stringify(r.output ?? r.error ?? {}) }))
@@ -303,7 +321,12 @@ async function runDefaultAgentInner(args: {
       return [{ role: m.role, content: m.content, toolCalls: m.toolCalls } as ModelMessage]
     })
 
-  const emitted: Message[] = []
+  // Build one logical transcript turn locally and commit it only after the
+  // agent has completed. Provider retries therefore never mutate durable
+  // history, and a logical run has deterministic message ids on redelivery.
+  const emitted: Message[] = [
+    { id: turnMessageId(args.delegationCallId ?? args.runId, '01_user'), sessionId: args.sessionId, runId: args.runId, role: 'user', content: stringifyInput(parsedInput), timestamp: new Date().toISOString() }
+  ]
   const maxSteps = args.agent.maxSteps ?? args.maxSteps
   let steps = 0
 
@@ -375,19 +398,19 @@ async function runDefaultAgentInner(args: {
       ensureToolCallsWereExposed(toolCalls, stepTools)
       if (await shouldStopAgentLoop(args, parsedInput, stepModelAlias, steps, modelMessages, allToolSpecs, response as ObjectResponse<JsonValue>, toolCalls)) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
-        emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+        emitted.push({ id: turnMessageId(args.delegationCallId ?? args.runId, '99_assistant_final'), sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
         await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
         return { output: validated as JsonValue, emitted }
       }
       if (toolCalls.length === 0) {
         const validated = parseAgentSchema(outputSchema, response.object, 'agent_output')
-        emitted.push({ id: `msg_${ulid()}_a`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
+        emitted.push({ id: turnMessageId(args.delegationCallId ?? args.runId, '99_assistant_final'), sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: JSON.stringify(validated), timestamp: new Date().toISOString() })
         await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), output: validated as JsonValue, ...agentEventMeta })
         return { output: validated as JsonValue, emitted }
       }
 
       const assistantMsg: Message = {
-        id: `msg_${ulid()}_assistant`, sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
+        id: turnMessageId(args.delegationCallId ?? args.runId, `10_assistant_${steps}`), sessionId: args.sessionId, runId: args.runId, role: 'assistant', content: '', toolCalls,
         timestamp: new Date().toISOString()
       }
       emitted.push(assistantMsg)
@@ -724,7 +747,7 @@ async function executeToolCall(
 
   await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, ...(result.output !== undefined ? { output: result.output } : {}), ...(result.error ? { error: result.error } : {}) })
   const toolMessage: Message = {
-    id: `msg_${ulid()}_${call.id}`,
+    id: turnMessageId(args.delegationCallId ?? args.runId, `20_tool_${call.id}`),
     sessionId: args.sessionId,
     runId: args.runId,
     role: 'tool',

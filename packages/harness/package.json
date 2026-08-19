@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Self-hosted enterprise agent harness for typed tools, agents, workflows, state, sandboxing, and telemetry.",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/puristajs/harness",
+    "url": "git+https://github.com/puristajs/harness.git",
     "directory": "packages/harness"
   },
   "bugs": {
@@ -57,7 +57,7 @@
   "peerDependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@opentelemetry/api": "^1.9.1",
-    "just-bash": "^3.0.1"
+    "just-bash": "^3.4.1"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/client": {
@@ -74,10 +74,10 @@
     "@opentelemetry/context-async-hooks": "^2.10.0",
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^4.1.10",
-    "just-bash": "^3.3.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "just-bash": "^3.4.1",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=24.15.0"

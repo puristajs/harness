@@ -72,6 +72,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'parseProviderJson',
   'projectToolResults',
   'redactProviderContent',
+  'retainCompleteTurns',
   'safePartialJson',
   'sandboxMemory',
   'sanitizeProviderMessage',
@@ -82,6 +83,8 @@ const EXPECTED_MAIN_EXPORTS = [
   'toTokenUsage',
   'ulid',
   'validateContextProjection',
+  'validateSessionHistoryRetention',
+  'messageStorageBytes',
   'withoutObjectTool'
 ]
 

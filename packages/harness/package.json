@@ -26,7 +26,7 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/puristajs/harness",
+    "url": "git+https://github.com/puristajs/harness.git",
     "directory": "packages/harness"
   },
   "bugs": {

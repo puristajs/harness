@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import type { Logger } from '../logger/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
 import type { JsonValue } from '../models/json.js'
@@ -76,6 +78,13 @@ type ModelRunContext = {
   emitRunEvents?: boolean
   streamId?: string
   modelAlias?: string
+}
+
+function directAgentIdempotencyRunId(sessionId: string, agentId: string, idempotencyKey: string): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([sessionId, agentId, idempotencyKey]))
+    .digest('hex')
+  return `agent_${digest}`
 }
 
 type HarnessDefinition<S extends BuilderState> = {
@@ -885,7 +894,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    const runId = opts?.idempotencyKey ? `agent_${agentId}_${opts.idempotencyKey}` : ulid()
+    // StateStore run ids are global. Scope caller-provided delivery keys by the
+    // logical session and agent so the same transport key can safely occur in
+    // independent conversations. Hashing also keeps the persisted id bounded
+    // and avoids placing a caller-controlled delivery id in logs or storage.
+    const runId = opts?.idempotencyKey ? directAgentIdempotencyRunId(sessionId, agentId, opts.idempotencyKey) : ulid()
     if (opts?.idempotencyKey) {
       const previous = await definition.state.getRun(runId)
       if (previous) {

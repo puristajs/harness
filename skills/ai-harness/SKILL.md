@@ -133,3 +133,13 @@ implements `replaceMessages` atomically.
 - `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
 - `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
 - `references/package-surface.md` for exports, package boundaries, source files, public docs, and known source-vs-doc checks.
+
+## Mirror Maintenance
+
+This directory is the canonical source for the AI Harness agent skill. Sync a
+runtime mirror explicitly after changing it, then verify byte-for-byte:
+
+```sh
+npm run skills:sync -- /path/to/installed/ai-harness
+npm run skills:sync -- --check /path/to/installed/ai-harness
+```

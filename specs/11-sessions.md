@@ -21,6 +21,9 @@ interface Session<S> {
   clearHistory(): Promise<void>
   /** Atomically replace history with the provided messages. Each entry gets a fresh ULID and current timestamp. */
   replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
+  /** Frees live sandbox/MCP resources while preserving persisted session state. */
+  release(): Promise<void>
+  /** Destructively removes persisted session state after releasing live resources. */
   close(): Promise<void>
 }
 
@@ -201,7 +204,9 @@ Every message id is stable within the logical run.
 at-least-once direct-agent delivery. It matches `/^[A-Za-z0-9_.:-]{1,120}$/`.
 Repeating a successful `(session, agent, input, key)` returns the recorded
 output without invoking the model or writing a second transcript. Reusing the
-key with a different invocation is rejected. Queue/framework integrations MUST
+key with a different invocation in the same session and agent is rejected. The
+same transport delivery key is valid in an independent conversation.
+Queue/framework integrations MUST
 pass their stable delivery/message id; the harness never derives an idempotency
 key from user content.
 An idempotent `.stream(...)` replay emits exactly `run.started` followed by

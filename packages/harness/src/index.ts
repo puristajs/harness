@@ -47,6 +47,8 @@ export { ulid } from './ulid/index.js'
 export { HARNESS_VERSION } from './version.js'
 export { projectToolResults, validateContextProjection } from './context-projection.js'
 export type { ContextProjectionPolicy } from './context-projection.js'
+export { messageStorageBytes, retainCompleteTurns, validateSessionHistoryRetention } from './sessions/history-retention.js'
+export type { SessionHistoryRetentionPolicy } from './sessions/history-retention.js'
 
 // Model provider port
 export { BaseModelProvider } from './ports/base-model-provider.js'

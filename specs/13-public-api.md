@@ -238,6 +238,7 @@ export type ToolInput<S, K>
 export interface HarnessDefaults
 export interface DelegationDefaults
 export interface ContextProjectionPolicy
+export interface SessionHistoryRetentionPolicy
 
 // Inside-handler context types
 export interface AgentContext<S, I, O>
@@ -855,6 +856,7 @@ interface InvokeOptions {
   signal?: AbortSignal
   timeoutMs?: number
   historyWindow?: number
+  idempotencyKey?: string
   contextProjection?: ContextProjectionPolicy
   traceparent?: string
   tracestate?: string

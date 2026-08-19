@@ -186,6 +186,34 @@ Locked semantics:
 
 **One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
 
+### Durable transcript, redelivery, and retention
+
+The default agent loop assembles one logical transcript turn locally: its
+rebuilt system instruction, the user input, and all assistant/tool messages.
+It commits that turn only after the model loop succeeds. Provider retries and
+context-projection retries therefore never append partial or duplicate history.
+Every message id is stable within the logical run.
+
+`InvokeOptions.idempotencyKey` is an optional caller-owned value for
+at-least-once direct-agent delivery. It matches `/^[A-Za-z0-9_.:-]{1,120}$/`.
+Repeating a successful `(session, agent, input, key)` returns the recorded
+output without invoking the model or writing a second transcript. Reusing the
+key with a different invocation is rejected. Queue/framework integrations MUST
+pass their stable delivery/message id; the harness never derives an idempotency
+key from user content.
+
+`HarnessDefaults.historyRetention` optionally retains newest complete turns:
+
+```ts
+{ historyRetention: { maxTurns?: number, maxBytes?: number } }
+```
+
+`maxTurns` is the primary rolling-window control. `maxBytes` counts serialized
+UTF-8 durable records solely as a storage bound; it is not a token estimate.
+Turns are never split, so an individual newest turn larger than `maxBytes`
+fails rather than silently dropping a prompt, tool call, or tool result. The
+policy requires atomic `StateStore.replaceMessages`.
+
 ### History window
 
 `HarnessDefaults.historyWindow` (see [02-harness-config](./02-harness-config.md)) caps how many conversation messages are passed into model calls. `InvokeOptions.historyWindow` overrides it for a single call. Locked semantics:

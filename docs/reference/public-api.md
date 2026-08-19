@@ -44,7 +44,7 @@ the simple in-process defaults.
 |---|---|
 | `Harness<S>` | Built runtime with `getSession`, `shutdown`, and `$infer`. |
 | `HarnessInspection` | Data-only adapter and capability snapshot returned by `harness.inspect()`. |
-| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, and `close`. |
+| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, `release`, and destructive `close`. |
 | `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
 | `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
 | `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |

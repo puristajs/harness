@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { BaseModelProvider, InMemoryStateStore, ModelError, defineHarness, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
@@ -66,6 +67,22 @@ describe('durable conversation history', () => {
     expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
   })
 
+  it('scopes an idempotency key to its session and agent instead of rejecting another conversation', async () => {
+    const provider = new FakeModelProvider()
+    provider.enqueue({ object: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    provider.enqueue({ object: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    const harness = buildHarness(provider)
+    const first = await harness.getSession('first-conversation')
+    const second = await harness.getSession('second-conversation')
+
+    await expect(first.agents.answer.prompt('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('first')
+    await expect(second.agents.answer.prompt('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('second')
+
+    expect(provider.requests).toHaveLength(2)
+    expect((await first.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
+    expect((await second.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
+  })
+
   it('replays a terminal stream lifecycle for an idempotent delivery without state writes', async () => {
     const provider = new FakeModelProvider()
     const state = new FakeStateStore()
@@ -84,8 +101,8 @@ describe('durable conversation history', () => {
     for await (const event of session.agents.answer.stream('work', options)) events.push(event)
 
     expect(events).toMatchObject([
-      { type: 'run.started', runId: 'agent_answer_queue-message-stream' },
-      { type: 'run.finished', runId: 'agent_answer_queue-message-stream', output: 'done' }
+      { type: 'run.started', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream') },
+      { type: 'run.finished', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream'), output: 'done' }
     ])
     expect(state.ops).toEqual(['getRun'])
     expect(provider.requests).toHaveLength(1)
@@ -95,7 +112,7 @@ describe('durable conversation history', () => {
     const provider = new FakeModelProvider()
     const state = new InMemoryStateStore()
     const key = 'queue-message-2'
-    const runId = `agent_answer_${key}`
+    const runId = directAgentRunId('crash-recovery', 'answer', key)
     await state.upsertSession({ id: 'crash-recovery', createdAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', runCount: 0 })
     await state.createRun({ id: runId, sessionId: 'crash-recovery', kind: 'agent', target: 'answer', startedAt: '2026-08-19T00:00:00.000Z', status: 'running', input: 'work' })
     await state.appendMessages('crash-recovery', [
@@ -114,6 +131,10 @@ describe('durable conversation history', () => {
     await expect(state.getRun(runId)).resolves.toMatchObject({ status: 'succeeded', output: 'done' })
   })
 })
+
+function directAgentRunId(sessionId: string, agentId: string, idempotencyKey: string): string {
+  return `agent_${createHash('sha256').update(JSON.stringify([sessionId, agentId, idempotencyKey])).digest('hex')}`
+}
 
 class RetryBeforeOutputProvider extends BaseModelProvider {
   public attempts = 0

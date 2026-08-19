@@ -48,6 +48,10 @@ const output = await session.agents.support.prompt(input, {
 })
 ```
 
+The key is scoped to this session and agent. Reuse the transport delivery id
+for a retry of the same message; another conversation may safely use the same
+delivery id without sharing a replay record.
+
 When the same session, agent, key, and input are delivered again after a
 successful run, Harness returns the recorded output without another provider
 call or another transcript write. Provider retries before a successful turn

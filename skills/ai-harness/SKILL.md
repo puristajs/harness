@@ -31,6 +31,9 @@ Keep these layers separate:
 - Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
 - Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
 - `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
+- Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `StateStore.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
+- For at-least-once direct-agent delivery, pass the transport's stable message or delivery id as `InvokeOptions.idempotencyKey`. Replaying the same successful invocation returns its recorded output without a second provider call or transcript; never derive this key from prompt content.
+- Use `session.release()` at the end of an idle request to close live sandbox/MCP resources while preserving StateStore-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, and persisted events.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
@@ -50,8 +53,8 @@ Keep these layers separate:
 3. Define Zod schemas at every agent, workflow, and tool boundary.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
 5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
-6. Decide how state, history, memory, streaming, errors, security, and operations are handled at the application edge.
-7. Invoke through `harness.getSession(id)` and close sessions/harnesses during shutdown.
+6. Decide which state is durable: session history/runs use `StateStore`, session memory uses `MemoryAdapter`, and provider context is transient. Bound durable history with whole-turn retention and bound request context with the model's context/token limits.
+7. Invoke through `harness.getSession(id)`, release idle sessions, and shut down the shared harness during process shutdown. Use destructive session close only for explicit conversation deletion.
 8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
 9. For provider-loop regression tests, use the explicit sanitizer recorder and offline replay provider; do not capture production interaction content. Use diagnostic invariants only as explicitly invoked test checks.
 
@@ -65,6 +68,9 @@ const harness = defineHarness({ name: 'support-ai' })
   .logger(new JsonLogger({ level: 'info' }))
   .telemetry({ contentCaptureMode: 'NO_CONTENT' })
   .sandbox(inMemorySandbox())
+  .defaults({
+    historyRetention: { maxTurns: 50, maxBytes: 256_000 }
+  })
   .models({
     assistant: {
       provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
@@ -105,9 +111,13 @@ const harness = defineHarness({ name: 'support-ai' })
 
 const session = await harness.getSession('tenant-a:user-42')
 const result = await session.workflows.triage_ticket.prompt({ ticketId: 'T-123' })
-await session.close()
+await session.release()
 await harness.shutdown()
 ```
+
+The example's in-memory state store supports atomic history replacement for
+local use. Production history retention needs a durable StateStore adapter that
+implements `replaceMessages` atomically.
 
 ## Read If Needed
 - `references/configuration.md` for package setup, builder order, sessions, state, sandbox, runtime capabilities, streaming, and shutdown.

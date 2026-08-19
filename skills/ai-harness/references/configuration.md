@@ -65,7 +65,11 @@ for await (const event of session.workflows.review.stream(input)) {
 }
 ```
 
-Sessions provide `agents`, `workflows`, `memory`, `history`, `clearHistory`, `replaceHistory`, and `close`.
+Sessions provide `agents`, `workflows`, `memory`, `history`, `clearHistory`,
+`replaceHistory`, `release`, and `close`. Call `release()` when an idle
+request is done: it releases live sandbox/MCP resources while retaining
+StateStore-backed history and runs. `close()` is the destructive operation that
+deletes the session and its persisted StateStore data.
 
 Use stable, tenant-safe session ids. One session has one active run at a time; use separate session ids for parallel user threads.
 
@@ -90,7 +94,8 @@ Set explicit budgets for production:
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
   maxParallelToolCalls: 8,
-  historyWindow: 20
+  historyWindow: 20,
+  historyRetention: { maxTurns: 50, maxBytes: 256_000 }
 })
 .logger(new JsonLogger({ level: process.env.PURISTA_HARNESS_LOG_LEVEL ?? 'info' }))
 .telemetry({ contentCaptureMode: 'NO_CONTENT' })
@@ -103,6 +108,14 @@ stores, and sandboxes can inherit logger and telemetry via
 `agentMaxIterations` and an agent's `maxSteps` are positive integer budgets.
 Explicit values have no hard upper cap, so choose a finite limit appropriate to
 the workflow and keep run/model timeouts configured.
+
+`historyRetention` bounds durable conversation storage by retaining whole
+newest turns. It requires an atomic `StateStore.replaceMessages` implementation
+at build time; the Harness never uses a non-atomic trim/write fallback. Its
+`maxBytes` limit counts serialized UTF-8 persisted records, not model tokens.
+Keep transient request context separate: use `historyWindow` for a simple
+message-count limit, or model/provider token information for an exact context
+budget.
 
 The implementation creates an OpenTelemetry-backed `TelemetryShim` internally when telemetry is configured. Applications still own SDK/exporter bootstrapping, for example using `@opentelemetry/sdk-node` plus an OTLP exporter before harness runs begin.
 
@@ -171,15 +184,17 @@ events, not text deltas.
 Do not treat harness streams as a client HTTP protocol. Map `RunEvent` into application-owned SSE, WebSocket, or queue events at the integration edge.
 
 ## Shutdown
-Close session and harness resources:
+Release each request/session and shut down the shared harness resources:
 
 ```ts
-await session.close()
+await session.release()
 const shutdown = await harness.shutdown()
 if (shutdown.errors.length) logger.error('Harness shutdown errors.', { errors: shutdown.errors })
 ```
 
 Provider clients, MCP runners, state stores, and sandboxes may own resources that need shutdown.
+Use `session.close()` only when the caller deliberately deletes the conversation
+and its persisted runs/events.
 # Static module composition
 
 Use `defineHarnessModule<Required>()('id', { register(builder) { ... } })`

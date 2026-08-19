@@ -5,6 +5,7 @@
 - Persisted Shapes
 - Sessions
 - Memory And History
+- Durable History, Retention, And Direct-Agent Redelivery
 - Concurrency
 - Streaming Run Events
 - Error Families
@@ -21,6 +22,8 @@ interface StateStore {
   appendMessages(sessionId, messages): Promise<void>
   listMessages(sessionId, opts?): Promise<Message[]>
   clearMessages(sessionId): Promise<void>
+  /** Atomic clear-and-replace; required by defaults.historyRetention. */
+  replaceMessages?(sessionId, messages): Promise<void>
   createRun(record): Promise<void>
   finishRun(runId, patch): Promise<void>
   getRun(runId): Promise<RunRecord | undefined>
@@ -42,7 +45,10 @@ Important records:
 - `RunRecord`: `id`, `sessionId`, `kind`, `target`, `startedAt`, status, input/output/error
 - `PersistedRunEvent`: `id`, `runId`, `at`, `type`, `payload`
 
-State/history is sensitive data. Keep tenant scoping and retention outside the harness if your adapter stores records durably.
+State/history is sensitive data. Keep tenant scoping and retention policy at the
+application configuration boundary. For a bounded Harness-managed transcript,
+configure `defaults.historyRetention`; durable StateStore adapters must enforce
+the required atomic `replaceMessages` operation.
 
 ## Sessions
 Application code enters through:
@@ -51,7 +57,7 @@ Application code enters through:
 const session = await harness.getSession('tenant:user:thread')
 await session.agents.answerer.prompt(input, opts)
 await session.workflows.report.stream(input, opts)
-await session.close()
+await session.release()
 ```
 
 The session API exposes:
@@ -62,6 +68,7 @@ The session API exposes:
 - `history`
 - `clearHistory()`
 - `replaceHistory(messages)`
+- `release()`
 - `close()`
 
 Use stable, tenant-safe session ids. Do not put secrets in session ids.
@@ -91,6 +98,42 @@ await session.replaceHistory([{ role: 'user', content: 'hello', sessionId: sessi
 ```
 
 `clearHistory()` and `replaceHistory()` fail with `SessionBusyError` while a run is active.
+
+`release()` closes live session resources such as sandbox-bound MCP runners
+without deleting StateStore-backed history, runs, or events. Call it after an
+idle request. `close()` first releases resources and then destructively removes
+the session record, conversation history, runs, and persisted events.
+
+## Durable History, Retention, And Direct-Agent Redelivery
+
+The default agent loop commits one complete logical turn only after it
+succeeds: user input, any assistant/tool exchanges, and the final assistant
+output. Rebuilt instructions, provider retries, and context-projection retries
+never create partial or duplicate durable messages.
+
+```ts
+const harness = defineHarness({ name: 'support' })
+  .state(durableStateStore)
+  .defaults({ historyRetention: { maxTurns: 50, maxBytes: 256_000 } })
+  // models, tools, and agents
+  .build()
+
+const session = await harness.getSession(`tenant:${tenantId}:thread:${threadId}`)
+const output = await session.agents.answerer.prompt(input, {
+  idempotencyKey: queueMessage.id
+})
+```
+
+`maxTurns` is the rolling retention window. `maxBytes` is a serialized UTF-8
+storage bound, not a token approximation; no complete turn is split, and a
+newest turn that alone exceeds the cap fails. `historyRetention` requires
+atomic `StateStore.replaceMessages`, so use an adapter that implements it.
+
+`idempotencyKey` is only for direct-agent at-least-once delivery and must be a
+stable caller-owned delivery id. Repeating the same successful session, agent,
+input, and key returns its recorded output without a provider call or a second
+transcript write. It does not make external tool side effects exactly-once.
+Workflows use their existing durable runtime/workspace idempotency policy.
 
 ## Concurrency
 One session has one active run at a time. Concurrent runs in the same session throw `SessionBusyError` with reason `concurrent_run`.

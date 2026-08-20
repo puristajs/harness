@@ -50,6 +50,14 @@ application configuration boundary. For a bounded Harness-managed transcript,
 configure `defaults.historyRetention`; durable StateStore adapters must enforce
 the required atomic `replaceMessages` operation.
 
+## Conversation Concurrency
+
+A session id scopes a transcript; it does not schedule user turns across
+processes. The application decides whether one conversation uses a FIFO queue,
+returns a busy response, or treats concurrent work as independent sessions.
+Atomic replacement prevents a lost storage update; it cannot make two model
+calls that began from the same history causally ordered after the fact.
+
 ## Sessions
 Application code enters through:
 
@@ -136,7 +144,10 @@ transcript write. It does not make external tool side effects exactly-once.
 Workflows use their existing durable runtime/workspace idempotency policy.
 
 ## Concurrency
-One session has one active run at a time. Concurrent runs in the same session throw `SessionBusyError` with reason `concurrent_run`.
+One Harness process admits one active run per session. A concurrent local call
+throws `SessionBusyError` with reason `concurrent_run`. This is not a
+cross-process conversation lock: applications choose and implement any
+same-conversation serialization or busy-response behavior at their boundary.
 
 Use separate session ids for parallel user threads or independent background jobs.
 

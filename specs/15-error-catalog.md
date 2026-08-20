@@ -171,7 +171,7 @@ tokens, raw headers, or attachments.
 - code: `SESSION_BUSY`
 - category: `session`
 - retriable: `true`
-- when: a second concurrent run starts on the same session (sessions are serial-only), or `Session.clearHistory` / `Session.replaceHistory` is called while a run is in flight.
+- when: a second local concurrent run starts on the same session, or `Session.clearHistory` / `Session.replaceHistory` is called while a local run is in flight.
 - meta: `session_id: string`, `reason?: 'concurrent_run' | 'history_clear_during_run' | 'history_replace_during_run'`.
 
 ### `StateError`

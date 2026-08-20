@@ -29,6 +29,18 @@ const harness = defineHarness({ name: 'support' })
 non-atomic read/trim/write sequence. If the newest complete turn alone exceeds
 `maxBytes`, the call fails rather than persisting an invalid partial history.
 
+## Conversation ordering is application-owned
+
+A session id scopes history and replay; it is not a distributed conversation
+scheduler. Two different inputs may be valid at the same time but cause model
+calls from the same earlier history. Ordering their persisted timestamps later
+does not make either answer aware of the other turn.
+
+Choose the product behavior outside Harness: serialize turns per conversation,
+reject a new turn while one is active, or model independent work as separate
+sessions. Atomic history replacement protects a storage update; it does not
+choose or enforce a conversation-concurrency policy.
+
 The byte bound is deliberately **not** a token estimate. Use a model/provider
 token counter and its declared context window when choosing which retained
 messages fit a particular request. Such selection is transient and must not

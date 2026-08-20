@@ -71,7 +71,9 @@ request is done: it releases live sandbox/MCP resources while retaining
 StateStore-backed history and runs. `close()` is the destructive operation that
 deletes the session and its persisted StateStore data.
 
-Use stable, tenant-safe session ids. One session has one active run at a time; use separate session ids for parallel user threads.
+Use stable, tenant-safe session ids. One Harness process admits one active run
+per session; use separate session ids for parallel user threads. Cross-process
+conversation ordering is application policy, not a Harness session guarantee.
 
 ## Optional Governance
 Use `.governance(...)` after agents/workflows when policy is needed. Ordinary

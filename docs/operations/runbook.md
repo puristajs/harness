@@ -63,7 +63,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 | Symptom | Likely Cause | Action |
 |---|---|---|
-| `SessionBusyError` | Two runs started in one session. | Use distinct session IDs or wait for the current run. |
+| `SessionBusyError` | Two local runs started in one session. | Use distinct session IDs or wait; coordinate cross-process turns in the application. |
 | `OperationTimeoutError` | Run/model/tool exceeded budget. | Tune `defaults`, inspect provider/tool latency. |
 | `OperationCancelledError` | Caller or parent run aborted the operation. | Check disconnect/shutdown paths and `InvokeOptions.signal` propagation. |
 | `ValidationError` | Input/output schema mismatch. | Check Zod issues in logs and traces. |

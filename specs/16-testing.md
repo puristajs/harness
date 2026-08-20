@@ -151,7 +151,7 @@ The harness package additionally has integration tests:
   task polling/result/cancellation, and rejection of legacy stateful/HTTP+SSE
   configuration. No compatibility transport or fallback is tested or shipped.
 - Workflow: parallel agent calls, abort propagates to all.
-- Session: serial concurrency rule throws `SessionBusyError` synchronously on overlap; `clearHistory` / `replaceHistory` reject with `SessionBusyError` when a run is in flight; `replaceHistory` validation failure throws `ValidationError{where:'session_history'}`.
+- Session: local serial concurrency rule throws `SessionBusyError` synchronously on overlap; cross-process conversation admission is application-owned; `clearHistory` / `replaceHistory` reject with `SessionBusyError` when a local run is in flight; `replaceHistory` validation failure throws `ValidationError{where:'session_history'}`.
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
 - `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.

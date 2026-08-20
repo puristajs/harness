@@ -215,7 +215,7 @@ Before exposing a harness-backed service:
 ## Common Failures
 | Symptom | Likely Cause | Action |
 |---|---|---|
-| `SessionBusyError` | Two runs in one session. | Use distinct sessions or wait. |
+| `SessionBusyError` | Two local runs in one session. | Use distinct sessions or wait; coordinate cross-process turns in the application. |
 | `OperationTimeoutError` | Run/model/tool exceeded budget. | Tune defaults and inspect latency. |
 | `ValidationError` | Schema mismatch. | Inspect Zod issues in `meta`. |
 | `ModelCapabilityError` | Alias lacks capability or provider method. | Fix alias capabilities/provider adapter. |

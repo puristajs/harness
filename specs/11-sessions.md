@@ -102,7 +102,7 @@ Application-facing execution is session-centric. The harness owns registries, ad
 
 For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(input, opts?)`, `session.workflows[id].prompt(input, opts?)`, and `session.workflows[id].stream(input, opts?)`:
 
-1. **Synchronous pre-checks.** Assert `opts.signal` is not aborted (if aborted, reject in a microtask with `OperationCancelledError{scope:'run'}`). Assert no other run is in-flight on this session (else throw `SessionBusyError` synchronously).
+1. **Synchronous pre-checks.** Assert `opts.signal` is not aborted (if aborted, reject in a microtask with `OperationCancelledError{scope:'run'}`). Assert no other run is in-flight for this session in this Harness process (else throw `SessionBusyError` synchronously).
 2. **Acquire session lock.**
 3. **Extract trace context** from `opts.traceparent`/`opts.tracestate` if present. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`.
 4. **Open `harness.session.prompt` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
@@ -137,16 +137,18 @@ above is extended (see [21-durable-workspaces](./21-durable-workspaces.md) §16.
   `ValidationError{where:'invoke_options'}`; supplying it without an executable
   `.runtime(...)` throws `HarnessConfigError{meta.reason:'durable_runtime_required'}`.
 
-## Concurrency rule (locked)
+## Local concurrency rule (locked)
 
-Sessions are **serial-only**. Per session, only one run executes at a time. Implementation:
+Within one Harness process, sessions are **serial-only**. Per session, only one run executes at a time. Implementation:
 
 - The harness maintains an in-process per-session async lock keyed by `sessionId`.
 - Each `prompt`/`stream` call acquires the lock at start.
-- Sessions execute one prompt/stream at a time. Overlap throws `SessionBusyError` synchronously (`category:'session'`, `retriable:true`).
+- A Harness process executes one prompt/stream at a time for each session. Local overlap throws `SessionBusyError` synchronously (`category:'session'`, `retriable:true`).
 - There is no `concurrent: true` opt-out.
 
-Cross-process concurrency is enforced only in-process. Cross-process callers may execute concurrently unless the StateStore adapter implements advisory locks (out-of-scope for v1).
+Cross-process callers may execute concurrently. Applications own conversation
+admission and ordering; a StateStore does not turn independently started model
+calls into one causal sequence.
 
 ## Persistence semantics
 
@@ -189,7 +191,13 @@ Locked semantics:
 
 ## Conversation history and threads
 
-**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
+**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, and session-scoped memory facade.
+
+Session identity and atomic state writes do not define distributed conversation
+ordering. The application owns whether same-session turns queue, are rejected
+while a turn is active, or are represented as independent sessions. An
+in-process busy guard is not a cross-process scheduler, and timestamp ordering
+cannot make parallel model calls causally aware of each other.
 
 ### Durable transcript, redelivery, and retention
 
@@ -242,7 +250,7 @@ The cap is applied by the default agent loop before history conversion (see [09-
 clearHistory(): Promise<void>
 ```
 
-Removes all messages from the StateStore for this session id. Memory KV is unaffected. Emits no `RunEvent` (it is not part of a run). Acquires the per-session serial lock; if a run is in flight, rejects with `SessionBusyError{meta.reason:'history_clear_during_run'}`.
+Removes all messages from the StateStore for this session id. Memory KV is unaffected. Emits no `RunEvent` (it is not part of a run). Acquires the local per-session serial lock; if a run is in flight in this Harness process, rejects with `SessionBusyError{meta.reason:'history_clear_during_run'}`.
 
 ### `Session.replaceHistory(messages)`
 
@@ -250,7 +258,7 @@ Removes all messages from the StateStore for this session id. Memory KV is unaff
 replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
 ```
 
-Atomically replaces history (delete-then-bulk-append). Each message gets a fresh ULID and the current ISO 8601 UTC timestamp. Validates each entry against the `Message` Zod schema; failure throws `ValidationError{where:'session_history'}`. Acquires the per-session serial lock; if a run is in flight, rejects with `SessionBusyError{meta.reason:'history_replace_during_run'}`.
+Atomically replaces history (delete-then-bulk-append). Each message gets a fresh ULID and the current ISO 8601 UTC timestamp. Validates each entry against the `Message` Zod schema; failure throws `ValidationError{where:'session_history'}`. Acquires the local per-session serial lock; if a run is in flight in this Harness process, rejects with `SessionBusyError{meta.reason:'history_replace_during_run'}`.
 
 ### Provider context-length errors
 

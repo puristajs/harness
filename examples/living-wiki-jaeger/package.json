@@ -31,7 +31,7 @@
     "beautiful-mermaid": "^1.1.3",
     "hono": "^4.13.3",
     "json-renderer": "npm:@patrikstep/json-renderer@^3.1.3",
-    "lucide-react": "^1.32.0",
+    "lucide-react": "^1.33.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",

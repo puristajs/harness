@@ -67,3 +67,105 @@ Rail actions time out after 10 seconds by default (override globally with `actio
 `modelCheckRail` invokes the registered Harness model handle within that guardrail span. Its nested standard `LLM` model span carries the configured alias/provider/model plus `gen_ai.usage.*` and `llm.token_count.*` when the provider reports usage, and emits the normal `gen_ai.client.token.usage` metric. This deliberate nesting lets observability backends attribute safety-model spend to the exact guardrail without duplicating or inventing token counts on the guardrail span. Pricing remains application/backend policy because model price schedules are not stable telemetry data.
 
 Do not put prompts, completions, documents, tool inputs/results, or credentials into action errors, logs, span attributes, reason codes, or fixtures.
+
+## Default-loop agents, workflows, tools, and skills
+
+`rails.attach(...)` adds one ordered, fail-closed interceptor to a Harness
+**default-loop agent**. That is the automation boundary: the normal agent loop
+owns model and tool lifecycles, so the addon can safely evaluate all four
+interception points.
+
+| Execution path | Coverage | Notes |
+| --- | --- | --- |
+| Attached default-loop agent input | Automatic | Runs after the input schema and before instructions, history, or a model call. |
+| Attached default-loop agent output | Automatic | Runs after each provider result and before output validation, persistence, or tool dispatch. |
+| TypeScript, MCP, and built-in tool call input/output | Automatic | `tool_input` runs before permissions, governance, schema validation, and side effects. `tool_output` runs before the result returns to the model. |
+| Skill activation | Automatic through the `read` built-in tool | Skills are mounted files. A rail does not scan all skill files at startup; it can govern the `read` call that opens a skill. |
+| Workflow calling an attached agent | Automatic for that agent invocation | Workflow and agent spans stay correlated through the normal Harness run context. |
+| Workflow-owned retrieval | Explicit | Call `filterRetrievedChunks(...)` before putting application-owned chunks into an agent input. |
+| Direct `ctx.models.*` calls or custom-handler agents | Not automatic | The caller owns that lifecycle. `attach(...)` rejects custom handlers rather than implying incomplete coverage. |
+
+### Workflow with a guarded agent and retrieval
+
+Keep business orchestration and retrieval in the workflow; delegate model and
+tool work to an attached agent. This preserves typed Harness boundaries while
+giving one trace tree for the workflow, rail checks, models, and tools.
+
+```ts
+const harness = defineHarness({ name: 'support' })
+  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
+  .models({ assistant, safety })
+  .tools({ transfer_money })
+  .skills({ refund_policy: { directory: './skills/refund-policy' } })
+  .agents(({ agent }) => ({
+    support: rails.attach(agent({
+      model: 'assistant',
+      instructions: 'Help customers safely using approved policy.',
+      tools: ['transfer_money'],
+      skills: ['refund_policy'],
+      builtinTools: ['read']
+    }))
+  }))
+  .workflows(({ workflow }) => ({
+    answer_customer: workflow({
+      input: z.object({ question: z.string() }),
+      output: z.string(),
+      delegation: { agents: ['support'] },
+      handler: async (ctx) => {
+        const chunks = await searchApprovedKnowledge(ctx.input.question)
+        const safeChunks = await rails.filterRetrievedChunks(chunks, {
+          workflowId: ctx.workflowId,
+          runId: ctx.runId,
+          sessionId: ctx.sessionId,
+          models: ctx.models,
+          signal: ctx.signal,
+          logger: ctx.log
+        })
+
+        return ctx.agents.support({
+          question: ctx.input.question,
+          context: safeChunks
+        })
+      }
+    })
+  }))
+  .build()
+```
+
+For a sensitive tool, use a tool-input rail and keep the existing Harness
+permission or governance policy enabled. A transformed tool input is the value
+that permission, governance, the Zod tool schema, and the tool handler see;
+blocking stops execution before any side effect. Tool schemas must still be
+strict because a rail can transform only to a valid JSON value, not grant a
+tool broader authority.
+
+```yaml
+rails:
+  tool_input:
+    flows: [approve-transfer]
+  tool_output:
+    flows: [remove-sensitive-tool-result]
+```
+
+For example, `approve-transfer` can return
+`{ decision: 'block', reasonCode: 'approval_required' }`. The trace then shows
+the blocked `GUARDRAIL` span and no tool span or tool side effect. It does not
+record the payment details.
+
+## Operational use cases
+
+- **Customer support:** redact identifiers on input and output; use retrieval
+  rails to keep untrusted documents out of grounded answers.
+- **Financial or health workflows:** block mutation tools until application
+  approval policy permits the exact typed operation; preserve the decision and
+  safety-model cost in the trace.
+- **Document processing:** check retrieved chunks for prompt injection or data
+  classifications before an agent sees them; retain the source system's own
+  authorization and retention rules.
+- **Skill-backed operators:** allowlist a mounted skill and the `read` tool;
+  use tool rails to prevent access outside the intended skill paths and to
+  sanitize any returned content before the model consumes it.
+
+Use ordinary application authorization, Harness permissions, and governance
+for authority decisions. Guardrails are a content and execution-control layer,
+not an identity system or substitute for deterministic business rules.

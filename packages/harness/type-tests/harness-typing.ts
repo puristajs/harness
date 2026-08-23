@@ -47,6 +47,33 @@ const moduleHarness = defineHarness().use(modelModule).use(agentModule).build()
 type ModuleAgentInput = typeof moduleHarness.$infer.agents.respond.input
 const _moduleAgentInputExact: Expect<Equal<ModuleAgentInput, { question: string }>> = true
 
+const interceptorHarness = defineHarness()
+  .models({ guarded: { provider, model: 'guarded-model', capabilities: ['object'] } })
+  .agents(({ agent }) => ({
+    guarded: agent({
+      model: 'guarded',
+      input: z.object({ question: z.string() }),
+      output: z.object({ answer: z.string() }),
+      builtinTools: false,
+      instructions: ({ input }) => input.question,
+      interceptors: [{
+        id: 'typed-boundary',
+        beforeInput: (ctx) => {
+          const _inputExact: Expect<Equal<typeof ctx.input, { question: string }>> = true
+          return { decision: 'transform', value: { question: ctx.input.question.trim() } }
+        },
+        afterModel: (ctx) => {
+          const _agentInputExact: Expect<Equal<typeof ctx.agentInput, { question: string }>> = true
+          const _responseIsNotAny: IsAny<typeof ctx.response> extends true ? 'any' : 'ok' = 'ok'
+          return { decision: 'allow' }
+        }
+      }]
+    })
+  }))
+  .build()
+
+const _interceptorAgentInputExact: Expect<Equal<typeof interceptorHarness.$infer.agents.guarded.input, { question: string }>> = true
+
 defineHarnessModule<{}>()('no-build-module', {
   register(builder) {
     // @ts-expect-error static module builders intentionally cannot build a harness

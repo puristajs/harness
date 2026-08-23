@@ -110,6 +110,7 @@ export class ValidationError extends HarnessError {}
 export class PermissionDeniedError extends HarnessError {}
 export class PolicyDeniedError extends HarnessError {}
 export class PolicyEvaluationError extends HarnessError {}
+export class AgentInterceptorError extends HarnessError {}
 export class SandboxError extends HarnessError {}
 export class SandboxNoExecutorError extends HarnessError {}
 export class ModelError extends HarnessError {}
@@ -186,6 +187,15 @@ export interface DiscoveredSkills
 export function discoverSkills(options?: DiscoverSkillsOptions): Promise<DiscoveredSkills>
 export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
+export interface AgentModelRequest
+export interface AgentExecutionInterceptorContext<S, I>
+export interface AgentBeforeInputInterceptorContext<S, I>
+export interface AgentBeforeModelInterceptorContext<S, I>
+export interface AgentAfterModelInterceptorContext<S, I>
+export interface AgentBeforeToolInterceptorContext<S, I>
+export interface AgentAfterToolInterceptorContext<S, I>
+export interface AgentExecutionInterceptor<S, I>
+export type AgentExecutionInterception<T>
 export interface AgentDefinitionHelpers<S>
 export interface AgentPrepareStepContext<S, I>
 export interface AgentPrepareStepResult<S>

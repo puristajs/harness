@@ -400,9 +400,19 @@ interface AgentDefinition<
   maxSteps?: number                           // default 16; positive integer, no hard upper cap
   prepareStep?: AgentPrepareStep<S, z.infer<I>>
   stopWhen?: AgentStopWhen<S, z.infer<I>>
+  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 ```
+
+`interceptors` are ordered, default-loop-only hooks. `beforeInput` executes
+after input-schema validation and before instructions, transcript, or a model
+call. `afterModel` executes before model events, output validation,
+persistence, and tool dispatch; tool hooks wrap the actual side effect. A block
+or hook exception is terminal and throws non-retriable `AgentInterceptorError`.
+Custom handlers deliberately do not receive interceptors because they own their
+own provider and tool lifecycle. The optional NeMo-shaped addon is specified in
+[30-guardrails](./30-guardrails.md).
 
 Cross-key constraints are enforced by the type system; harness additionally re-checks at the builder call. Validation (synchronous):
 

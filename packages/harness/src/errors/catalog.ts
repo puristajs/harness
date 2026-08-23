@@ -76,6 +76,21 @@ export class PolicyEvaluationError extends HarnessError {
   }
 }
 
+/** A default-agent interception hook blocked work or failed while enforcing a boundary. */
+export class AgentInterceptorError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      interceptor_id: string
+      phase: 'before_input' | 'before_model' | 'after_model' | 'before_tool' | 'after_tool'
+      reason: 'blocked' | 'failed' | 'invalid_result'
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'AGENT_INTERCEPTOR_ERROR', category: 'interceptor', retriable: false, message, meta, cause })
+  }
+}
+
 /** Sandbox filesystem or command execution failed. */
 export class SandboxError extends HarnessError {
   public constructor(message: string, meta: { reason: 'invalid_path' | 'exec_failed' | 'fs_failed' | string; stdout?: string; stderr?: string }, cause?: unknown) {

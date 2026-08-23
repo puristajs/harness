@@ -102,6 +102,7 @@ Every harness-created span carries when available:
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
 | Policy evaluation | `harness.policy.evaluate` | OpenInference `GUARDRAIL` in `dual`/`openinference_only` |
+| Optional guardrail action | `evaluate_guardrail {rail.id}` | OpenInference `GUARDRAIL`; addon-owned and content-free |
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |

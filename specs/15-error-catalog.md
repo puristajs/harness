@@ -63,6 +63,13 @@ taxonomy and are never emitted by normal harness execution.
 - when: a native governance predicate throws, an external policy adapter throws, or an adapter returns an invalid decision effect.
 - meta: `tool_name: string`, `agent_id: string`, `policy_id?: string`, `rule_id?: string`, `reason: 'adapter_failed'|'predicate_failed'|'invalid_decision'`.
 
+### `AgentInterceptorError`
+- code: `AGENT_INTERCEPTOR_ERROR`
+- category: `interceptor`
+- retriable: `false`
+- when: an ordered default-loop interceptor blocks guarded input/model/tool work, returns an invalid result, or throws. It is terminal for that agent invocation and is never converted into a model-visible tool error.
+- meta: `interceptor_id: string`, `phase: 'before_input'|'before_model'|'after_model'|'before_tool'|'after_tool'`, `reason: 'blocked'|'failed'|'invalid_result'`.
+
 ### `SandboxError`
 - code: `SANDBOX_ERROR`
 - category: `sandbox`

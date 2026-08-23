@@ -111,6 +111,10 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
   `@purista/harness-agent-plugins`: local inspection, explicit trust/digest
   review, portable skills, and selected MCP bindings. See
   [29-agent-plugins](./29-agent-plugins.md).
+- Optional typed guardrails through `@purista/harness-guardrails`: a strict
+  NeMo-shaped YAML subset, application-owned actions, generic default-loop
+  interception, and explicit retrieval filtering. See
+  [30-guardrails](./30-guardrails.md).
 
 ## Non-goals
 
@@ -127,6 +131,8 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No pluggable stream adapter — the streaming generator is internal.
 - No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
   prompt-version store, or experiment database in this repository.
+- No Python/Colang runtime, implicit safety provider, vector store, or guardrail
+  server. The optional guardrails addon is in-process only.
 
 ## Glossary
 
@@ -166,3 +172,4 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
 - [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.
 - [24-governance-policy](./24-governance-policy.md) — optional tool-exposure and tool-call governance, approvals, and external policy adapters.
+- [30-guardrails](./30-guardrails.md) — optional typed NeMo-shaped guardrails addon.

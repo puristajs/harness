@@ -145,6 +145,7 @@ The harness package additionally has integration tests:
 - Context projection: UTF-8 boundaries, idempotence, tool-call/result pairing, precedence, one context-length retry, cancellation, no duplicate tool execution/history/events, skill preservation, and redacted byte-only diagnostics.
 - Test replay and diagnostic invariants: explicit sanitizer requirement, no-provider-I/O replay, strict ordering/mismatch/exhaustion/unused fixture failures, disabled-by-default invariants, and content-free invariant findings.
 - Default agent loop: tool-use round trip, iteration cap triggers `AgentLoopBudgetError`, explicit agent and harness-default budgets above 64 are honored without silent clamping, non-positive or non-integer budgets are rejected at configuration time, output validation, abort propagation.
+- Guardrails: deterministic `FakeModelProvider` tests prove ordered input/output transformation, fail-closed blocking before history persistence and tool side effects, explicit retrieval filtering, strict NeMo-shaped YAML rejection, and model-check rails resolved through registered Harness model handles.
 - MCP tools: fake stdio and HTTP MCP servers cover `tools/list`, `tools/call`, auth failure, schema validation failure, malformed response, process death, timeout, cancellation, SDK dynamic import behavior, and shutdown cleanup.
 - Current MCP: hermetic MCP `2026-07-28` fixtures cover stateless routing and
   protocol headers, list-cache TTL/invalidation, task-augmented `tools/call`,

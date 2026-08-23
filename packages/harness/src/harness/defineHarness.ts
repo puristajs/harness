@@ -556,6 +556,96 @@ export type AgentPrepareStep<S extends BuilderState, I> =
 export type AgentStopWhen<S extends BuilderState, I> =
   (ctx: AgentStopWhenContext<S, I>) => boolean | Promise<boolean>
 
+/** A model request after agent preparation and governance tool exposure. */
+export interface AgentModelRequest {
+  /** Complete model-visible message list, including the reconstructed system message. */
+  messages: readonly ModelMessage[]
+  /** Model-visible tools for this loop iteration. */
+  tools: readonly ModelToolSpec[]
+  /** JSON Schema used to validate the final object response. */
+  schema: JsonValue
+  /** Optional provider-neutral generation options. */
+  call?: ModelCallOptions
+}
+
+/** Content-free context common to every default-loop interceptor hook. */
+export interface AgentExecutionInterceptorContext<S extends BuilderState, I> extends Omit<AgentContextMinimal<S, I>, 'input'> {
+  /** Parsed agent input for the invocation. */
+  agentInput: I
+  /** Stable interceptor id registered on the agent definition. */
+  interceptorId: string
+  /** Current default-loop model step. `0` for input validation hooks. */
+  step: number
+  /** Model alias selected for the current model step, when applicable. */
+  model?: keyof NonNullable<S['models']> & string
+  /** Current agent id. */
+  agentId: string
+  /** Current workflow id when this agent is invoked by a workflow. */
+  workflowId?: string
+  /** Harness-scoped model handles. */
+  models: ModelHandles<S>
+  /** Cooperative cancellation signal for this invocation. */
+  signal: AbortSignal
+  /** Harness logger; interceptor implementations must keep content out of logs by default. */
+  logger: Logger
+  /** Harness telemetry shim; interceptor implementations must use content-free attributes by default. */
+  telemetry: TelemetryShim
+}
+
+/** Allow, block, or replace a value at one default-loop interception point. */
+export type AgentExecutionInterception<T> =
+  | { decision: 'allow' }
+  | { decision: 'block'; reason?: string; metadata?: Record<string, JsonValue> }
+  | { decision: 'transform'; value: T; metadata?: Record<string, JsonValue> }
+
+/** Input gate invoked after the agent input schema has parsed and before any handler or model work. */
+export interface AgentBeforeInputInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  input: I
+}
+
+/** Model gate invoked after `prepareStep` and tool exposure, immediately before a provider call. */
+export interface AgentBeforeModelInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  request: AgentModelRequest
+}
+
+/** Model gate invoked immediately after a provider response and before run events, output validation, or tool dispatch. */
+export interface AgentAfterModelInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  request: AgentModelRequest
+  response: ObjectResponse<JsonValue>
+}
+
+/** Tool gate invoked before permission/governance evaluation and before the tool side effect. */
+export interface AgentBeforeToolInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  toolId: string
+  callId: string
+  input: JsonValue
+}
+
+/** Tool gate invoked after the tool completes and validates, before its result is emitted or returned to the model. */
+export interface AgentAfterToolInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  toolId: string
+  callId: string
+  output: JsonValue
+}
+
+/**
+ * Provider-neutral interception points for the built-in agent loop.
+ *
+ * Interceptors are ordered and fail closed: a block or hook failure ends the
+ * invocation before the guarded operation can continue. They deliberately do
+ * not apply to a custom `AgentDefinition.handler`, which owns its own model and
+ * tool lifecycle.
+ */
+export interface AgentExecutionInterceptor<S extends BuilderState = BuilderState, I = JsonValue> {
+  /** Stable, content-free identifier used in errors and telemetry. */
+  id: string
+  beforeInput?: (ctx: AgentBeforeInputInterceptorContext<S, I>) => AgentExecutionInterception<I> | void | Promise<AgentExecutionInterception<I> | void>
+  beforeModel?: (ctx: AgentBeforeModelInterceptorContext<S, I>) => AgentExecutionInterception<AgentModelRequest> | void | Promise<AgentExecutionInterception<AgentModelRequest> | void>
+  afterModel?: (ctx: AgentAfterModelInterceptorContext<S, I>) => AgentExecutionInterception<ObjectResponse<JsonValue>> | void | Promise<AgentExecutionInterception<ObjectResponse<JsonValue>> | void>
+  beforeTool?: (ctx: AgentBeforeToolInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
+  afterTool?: (ctx: AgentAfterToolInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
+}
+
 /** Governance mode for policy evaluation. `shadow` records decisions without enforcement. */
 export type GovernanceMode = 'enforce' | 'shadow'
 
@@ -958,6 +1048,8 @@ export interface AgentDefinition<
    * ```
    */
   stopWhen?: AgentStopWhen<S, z.infer<I>>
+  /** Ordered, fail-closed interception hooks for the built-in agent loop. */
+  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 
@@ -991,6 +1083,7 @@ type AgentDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O e
   maxSteps?: number
   prepareStep?: AgentPrepareStep<S, z.infer<I>>
   stopWhen?: AgentStopWhen<S, z.infer<I>>
+  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
 }
 

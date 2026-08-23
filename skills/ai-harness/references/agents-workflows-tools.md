@@ -41,6 +41,7 @@ Default agent loop requirements:
 - `maxSteps` defaults from harness defaults; both are positive integer budgets with no hidden upper cap
 - `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
 - `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
+- `interceptors` are ordered, fail-closed default-loop hooks. `beforeInput` runs before dynamic instructions/transcript work; `afterModel` runs before events, output validation, persistence, and tool dispatch; tool hooks wrap the actual side effect. Use them through `@purista/harness-guardrails` unless an application owns a different generic boundary concern.
 
 Use a custom `handler` only when the default loop is the wrong execution model.
 

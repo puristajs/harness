@@ -9,6 +9,7 @@ import * as testingEntry from '../src/testing/index.js'
  * `src/index.ts` / `src/testing/index.ts` (the compiler fails on drift).
  */
 const EXPECTED_MAIN_EXPORTS = [
+  'AgentInterceptorError',
   'AgentLoopBudgetError',
   'AgentNotFoundError',
   'BaseModelProvider',

@@ -72,6 +72,10 @@ npm install @purista/harness
 Optional peer dependencies:
 
 - `@modelcontextprotocol/client` enables MCP stdio/http tools.
+
+## Optional guardrails
+
+`@purista/harness-guardrails` provides NeMo-shaped YAML configuration, typed action rails, model-check rails, and explicit retrieval filtering through the Harness interceptor contract. It is intentionally an optional package so the core runtime remains dependency-light. See the [guardrails guide](../../docs/guides/guardrails.md).
 - `just-bash` enables the exec-capable bash sandbox.
 - `@opentelemetry/api` connects harness spans to an existing OpenTelemetry
   context.

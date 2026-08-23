@@ -29,6 +29,7 @@ interface AgentDefinition<
   maxSteps?: number                                             // default 16; positive integer, no hard upper cap
   prepareStep?: (ctx: AgentPrepareStepContext<S, z.infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
   stopWhen?: (ctx: AgentStopWhenContext<S, z.infer<I>>) => boolean | Promise<boolean>
+  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
   handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // escape hatch
 }
 
@@ -134,23 +135,27 @@ The default loop requires the agent's model alias to claim `'object'` (and `'too
 When `handler` is undefined, the harness executes this algorithm:
 
 1. **Validate input** against the `input` schema → `ValidationError{where:'agent_input'}` on failure.
-2. **Open sandbox session** (if not already open for this session). Mount declared skills.
-3. **Build system message**:
+2. **Apply `beforeInput` interceptors** in declaration order. A transform is reparsed through the same input schema. A block/failure throws terminal `AgentInterceptorError` before instructions, transcript construction, or provider work.
+3. **Open sandbox session** (if not already open for this session). Mount declared skills.
+4. **Build system message**:
    - Resolve `instructions` (string or function call).
    - Append the skill catalog format defined in [08-skills](./08-skills.md), including `Location: /skills/<name>/SKILL.md` and optional compatibility.
-4. **Resolve tool set**:
+5. **Resolve tool set**:
    - Custom tools from `tools[]` (typed against harness config).
    - Built-in tools per `builtinTools` rule, filtered by sandbox executor availability.
-5. **Build initial messages**: prior conversation history (capped by effective `historyWindow`) + the current user input as `Message{role:'user', content: stringify(input)}`. `stringify` is `String(input)` if a string, else `JSON.stringify(input)`.
-6. **Loop** up to `maxSteps`:
+6. **Build initial messages**: prior conversation history (capped by effective `historyWindow`) + the current user input as `Message{role:'user', content: stringify(input)}`. `stringify` is `String(input)` if a string, else `JSON.stringify(input)`.
+7. **Loop** up to `maxSteps`:
    - a. If `prepareStep` is configured, call it with the zero-based `step`, selected model alias, current `messages`, and full model-facing tool list. Its result may override the model alias, instruction text, active tool names, model messages, and model call options for this model call only.
-   - b. Call `models[stepModel].object(messages, tools, schema=outputSchema)`.
-   - c. Emit `model.object` with the model alias used for this step.
-   - d. If `stopWhen` returns `true`, validate `response.object` against the output schema and return without executing requested tool calls.
-   - e. If response has no tool calls and includes structured `object` matching the output schema: validate; return.
-   - f. If response has no tool calls and no valid `object`: throw `ModelError{reason:'unstructured_response'}`.
-   - g. Execute the tool calls returned by that model response as one parallel batch, capped by `defaults.maxParallelToolCalls`:
+   - b. Apply `beforeModel` interceptors after governance tool exposure and before provider I/O. A block/failure ends the run without provider I/O.
+   - c. Call `models[stepModel].object(messages, tools, schema=outputSchema)`.
+   - d. Apply `afterModel` interceptors before any model event, output validation, tool dispatch, or persistence.
+   - e. Emit `model.object` with the model alias used for this step.
+   - f. If `stopWhen` returns `true`, validate `response.object` against the output schema and return without executing requested tool calls.
+   - g. If response has no tool calls and includes structured `object` matching the output schema: validate; return.
+   - h. If response has no tool calls and no valid `object`: throw `ModelError{reason:'unstructured_response'}`.
+   - i. Execute the tool calls returned by that model response as one parallel batch, capped by `defaults.maxParallelToolCalls`:
      - Resolve canonical tool name (alias → canonical).
+     - Apply `beforeTool` interceptors before permissions, governance, events, and the side effect. A block/failure is terminal and has no side effect.
      - Check permissions. On `'deny'`, append a tool result message `{role:'tool', content: JSON.stringify({error:'PERMISSION_DENIED'})}` and continue (does NOT throw — the model can adapt).
      - Validate tool input against the tool schema. On failure, append a tool result with `error: ValidationError`.
      - If governance is configured, evaluate `phase:'pre'` policy. Enforced
@@ -159,10 +164,11 @@ When `handler` is undefined, the harness executes this algorithm:
      - Execute the tool (with timeout). On error, append the tool result with the serialized error.
      - If governance is configured, evaluate `phase:'post'` policy for audit
        and visibility after output validation or error serialization.
+     - Apply `afterTool` interceptors after validated output and before `tool.finished`/model continuation. A block/failure is terminal.
      - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
      - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
-   - h. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
-7. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
+   - j. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
+8. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
 
 ### Loop controls
 

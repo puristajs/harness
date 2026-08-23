@@ -22,6 +22,7 @@ For an implementation agent starting cold, read in this order:
 12. [11-sessions.md](./11-sessions.md) — `Session` API, concurrency, conversation history.
 13. [12-streaming.md](./12-streaming.md) — `RunEvent`, bounded live streaming, and privacy-safe persistence.
 14. [13-public-api.md](./13-public-api.md) — authoritative export list.
+15. [30-guardrails.md](./30-guardrails.md) — optional typed NeMo-shaped guardrails addon and generic interception contract.
 15. [14-otel-conventions.md](./14-otel-conventions.md) — span/metric/attribute names.
 16. [15-error-catalog.md](./15-error-catalog.md) — every error class.
 17. [16-testing.md](./16-testing.md) — vitest, contract suites, gates.
@@ -57,6 +58,7 @@ For an implementation agent starting cold, read in this order:
 | [11-sessions.md](./11-sessions.md) | `Session` API, persistence, serial concurrency rule, `SessionMemory`, conversation history. |
 | [12-streaming.md](./12-streaming.md) | `RunEvent` union, ordering guarantees, in-process buffered queue. |
 | [13-public-api.md](./13-public-api.md) | Authoritative export list; Zod-to-JSON-Schema conversion rules. |
+| [30-guardrails.md](./30-guardrails.md) | Optional NeMo-shaped config subset, rail phases, failure/privacy rules, and release evidence. |
 | [14-otel-conventions.md](./14-otel-conventions.md) | Spans, metrics, attribute keys, log fields. |
 | [15-error-catalog.md](./15-error-catalog.md) | Every error class, code, category, retriable, meta. |
 | [16-testing.md](./16-testing.md) | Vitest, contract suites, fakes, coverage gates. |

@@ -211,3 +211,45 @@ follow_up_waves:
       - "Workflow child-agent delegation is opt-in per workflow or via harness delegation defaults."
       - "Local durable execution ships in core behind built-in Node SQLite; no new runtime dependencies."
       - "Provider retry policy is harness-owned; first-party adapters disable hidden SDK retries by default."
+  - id: "2026-08-23-nemo-shaped-guardrails"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-23"
+      approver: "repo owner (interactive Codex task)"
+      source: "User explicitly requested and auto-approved a complete NeMo-shaped guardrails implementation for AI Harness, including deterministic tests, docs, skills, example, and CI integration."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/02-harness-config.md
+        - specs/09-agents.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/30-guardrails.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-23"
+      purpose: "Approve optional typed NeMo-shaped input/output/tool/retrieval guardrails while retaining Harness ownership of models, state, tools, governance, errors, logging, and telemetry."
+    confirmed_decisions:
+      - "Harness receives only generic default-loop interception; the guardrails addon is optional and has no Core dependency."
+      - "Portable NeMo YAML concepts are supported, but Python actions, Colang, dialog/execution runtime, provider creation, servers, and vector stores are rejected rather than approximated."
+      - "Actions are application-owned, ordered, transform-aware, and fail closed; no implicit fail-open exists."
+      - "Guardrail telemetry, errors, logs, events, and fixtures are content-free by default."
+      - "The Harness testing adapter is the required deterministic evidence path."
+    gates:
+      deterministic_check:
+        status: passed
+        evidence: "Spec has explicit phase ordering, closed outcomes, migration diagnostics, ownership, no-invention gate, acceptance paths, and bounded dependencies."
+      semantic_judge_gate:
+        status: passed
+        evidence: "Repository-owner approval is bound to this requested scope; all supported and unsupported NeMo behaviors have a named final state."
+      contradiction_check:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      observability_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed

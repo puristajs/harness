@@ -12,6 +12,8 @@ export type ErrorCategory =
   | 'validation'
   /** Permission and approval denials. */
   | 'permission'
+  /** A provider-neutral agent interception denied or failed closed. */
+  | 'interceptor'
   /** Sandbox filesystem or execution failures. */
   | 'sandbox'
   /** Model/provider invocation failures. */

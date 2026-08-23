@@ -8,11 +8,11 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE
 } from '@opentelemetry/semantic-conventions/incubating'
-import { AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, PolicyDeniedError, PolicyEvaluationError, SkillManifestError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
+import { AgentInterceptorError, AgentLoopBudgetError, HarnessError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, PolicyDeniedError, PolicyEvaluationError, SkillManifestError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, GovernanceToolExposureContext, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, AgentExecutionInterception, AgentExecutionInterceptor, AgentModelRequest, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, GovernanceToolExposureContext, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -235,7 +235,8 @@ async function runDefaultAgentInner(args: {
   if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
   const inputSchema = args.agent.input ?? z.string()
   const outputSchema = args.agent.output ?? z.string()
-  const parsedInput = parseAgentSchema(inputSchema, args.input, 'agent_input')
+  let parsedInput = parseAgentSchema(inputSchema, args.input, 'agent_input')
+  parsedInput = parseAgentSchema(inputSchema, await applyBeforeInputInterceptors(args, parsedInput), 'agent_input')
 
   const selectedModelAlias = args.modelAlias ?? args.agent.model
   if (!args.models[selectedModelAlias]) throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
@@ -356,7 +357,7 @@ async function runDefaultAgentInner(args: {
       const stepTools = await applyGovernanceToolExposure(args, filterActiveTools(allToolSpecs, prepared?.activeTools, args.agentId), steps)
       const stepMessages = prepared?.messages ? [...prepared.messages] : modelMessages
       const stepInstructions = prepared?.instructions ?? instructions
-      const request = {
+      let request: AgentModelRequest = {
         messages: [
           { role: 'system', content: stepInstructions },
           ...stepMessages
@@ -365,6 +366,7 @@ async function runDefaultAgentInner(args: {
         schema: z.toJSONSchema(outputSchema) as JsonValue,
         ...(prepared?.call ? { call: prepared.call as ModelCallOptions } : {})
       }
+      request = await applyBeforeModelInterceptors(args, parsedInput, steps, stepModelAlias, request)
       const modelContext = {
         harnessName: args.harnessName,
         sessionId: args.sessionId,
@@ -380,6 +382,7 @@ async function runDefaultAgentInner(args: {
         if (!args.contextProjection || args.signal.aborted || !(error instanceof HarnessError) || error.meta?.['reason'] !== 'context_length_exceeded') throw error
         response = await model.object({ ...request, messages: [request.messages[0]!, ...projectToolResults(stepMessages, args.contextProjection)] }, args.signal, modelContext)
       }
+      response = await applyAfterModelInterceptors(args, parsedInput, steps, stepModelAlias, request, response)
 
       // Emit one usage-bearing model event per model round-trip (including
       // tool-call steps) so run-summary modelCalls and tokenTotals are accurate
@@ -436,6 +439,130 @@ async function runDefaultAgentInner(args: {
     await args.emitEvent?.({ type: 'agent.finished', runId: args.runId, agentId: args.agentId, at: new Date().toISOString(), error: serializeError(error), ...agentEventMeta })
     throw error
   }
+}
+
+type InterceptorPhase = 'before_input' | 'before_model' | 'after_model' | 'before_tool' | 'after_tool'
+type DefaultAgentArgs = Parameters<typeof runDefaultAgentInner>[0]
+
+function interceptorContext(
+  args: DefaultAgentArgs,
+  interceptorId: string,
+  input: unknown,
+  step: number,
+  model?: string
+) {
+  return {
+    interceptorId,
+    agentInput: input,
+    step,
+    ...(model ? { model } : {}),
+    agentId: args.agentId,
+    runId: args.runId,
+    sessionId: args.sessionId,
+    ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+    history: { list: async () => args.history },
+    memory: args.memory,
+    checkpoints: args.checkpoints,
+    metadata: args.metadata ?? {},
+    metrics: args.metrics,
+    models: args.models as ModelHandles<any>,
+    signal: args.signal,
+    logger: args.logger,
+    telemetry: args.telemetry
+  }
+}
+
+async function applyInterceptors<T>(
+  args: DefaultAgentArgs,
+  phase: InterceptorPhase,
+  value: T,
+  invoke: (interceptor: AgentExecutionInterceptor<any, any>, current: T) => AgentExecutionInterception<T> | void | Promise<AgentExecutionInterception<T> | void>
+): Promise<T> {
+  let current = value
+  for (const interceptor of args.agent.interceptors ?? []) {
+    if (!interceptor.id) {
+      throw new AgentInterceptorError('Agent interceptor id must be non-empty.', {
+        interceptor_id: 'unknown', phase, reason: 'invalid_result'
+      })
+    }
+    let result: AgentExecutionInterception<T> | void
+    try {
+      result = await invoke(interceptor as AgentExecutionInterceptor<any, any>, current)
+    } catch (error) {
+      if (error instanceof AgentInterceptorError || error instanceof OperationCancelledError || error instanceof OperationTimeoutError) throw error
+      throw new AgentInterceptorError('Agent interceptor failed closed.', {
+        interceptor_id: interceptor.id, phase, reason: 'failed'
+      }, error)
+    }
+    if (!result) continue
+    if (result.decision === 'allow') continue
+    if (result.decision === 'transform') {
+      current = result.value
+      continue
+    }
+    if (result.decision === 'block') {
+      throw new AgentInterceptorError(result.reason ?? 'Agent interceptor blocked execution.', {
+        interceptor_id: interceptor.id, phase, reason: 'blocked'
+      })
+    }
+    throw new AgentInterceptorError('Agent interceptor returned an invalid decision.', {
+      interceptor_id: interceptor.id, phase, reason: 'invalid_result'
+    })
+  }
+  return current
+}
+
+async function applyBeforeInputInterceptors(args: DefaultAgentArgs, input: unknown): Promise<unknown> {
+  return applyInterceptors(args, 'before_input', input, (interceptor, current) => interceptor.beforeInput?.({
+    ...interceptorContext(args, interceptor.id, current, 0),
+    input: current
+  }))
+}
+
+async function applyBeforeModelInterceptors(
+  args: DefaultAgentArgs,
+  input: unknown,
+  step: number,
+  model: string,
+  request: AgentModelRequest
+): Promise<AgentModelRequest> {
+  return applyInterceptors(args, 'before_model', request, (interceptor, current) => interceptor.beforeModel?.({
+    ...interceptorContext(args, interceptor.id, input, step, model),
+    request: current
+  }))
+}
+
+async function applyAfterModelInterceptors(
+  args: DefaultAgentArgs,
+  input: unknown,
+  step: number,
+  model: string,
+  request: AgentModelRequest,
+  response: ObjectResponse<JsonValue>
+): Promise<ObjectResponse<JsonValue>> {
+  return applyInterceptors(args, 'after_model', response, (interceptor, current) => interceptor.afterModel?.({
+    ...interceptorContext(args, interceptor.id, input, step, model),
+    request,
+    response: current
+  }))
+}
+
+async function applyBeforeToolInterceptors(args: DefaultAgentArgs, toolId: string, callId: string, input: JsonValue): Promise<JsonValue> {
+  return applyInterceptors(args, 'before_tool', input, (interceptor, current) => interceptor.beforeTool?.({
+    ...interceptorContext(args, interceptor.id, args.input, 0),
+    toolId,
+    callId,
+    input: current
+  }))
+}
+
+async function applyAfterToolInterceptors(args: DefaultAgentArgs, toolId: string, callId: string, output: JsonValue): Promise<JsonValue> {
+  return applyInterceptors(args, 'after_tool', output, (interceptor, current) => interceptor.afterTool?.({
+    ...interceptorContext(args, interceptor.id, args.input, 0),
+    toolId,
+    callId,
+    output: current
+  }))
 }
 
 function filterActiveTools(tools: readonly ModelToolSpec[], activeTools: readonly string[] | undefined, agentId: string): ModelToolSpec[] {
@@ -663,13 +790,14 @@ async function executeToolCall(
   call: ToolCallSpec
 ): Promise<ToolExecutionOutcome> {
   const canonical = BUILTIN_ALIAS_TO_CANONICAL[call.name] ?? call.name
-  const input = call.arguments
+  let input = call.arguments as JsonValue
   const tool = args.customTools[canonical]
   const toolKind = resolveToolKind(canonical, tool)
   let result: { output?: JsonValue; error?: ToolFailure }
 
   try {
     if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
+    input = await applyBeforeToolInterceptors(args, canonical, call.id, input)
     result = await withToolSpan(args, canonical, call.id, toolKind, tool && isMcpToolDefinition(tool)
       ? {
           server: canonical,
@@ -687,7 +815,7 @@ async function executeToolCall(
         await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
         const output = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeBuiltinTool(canonical, input, withSandboxTelemetry(args, canonical), signal))
         if (canonical === 'read') markSkillActivation(input, args.skills, args.activatedSkills)
-        return { output }
+        return { output: await applyAfterToolInterceptors(args, canonical, call.id, output) }
       }
       if (!args.enabledCustomTools.has(canonical)) {
         throw new ToolNotFoundError('Tool is not allowed for this agent.', { tool_id: canonical, where: 'agent_allowlist' })
@@ -698,7 +826,8 @@ async function executeToolCall(
         const registry = args.mcpRegistry
         await enforceGovernance(args, canonical, input, call.id)
         await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: canonical, callId: call.id, input: input as JsonValue })
-        return { output: await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeMcpTool(canonical, tool, input, { registry, signal, toolTimeoutMs: args.toolTimeoutMs, sandbox: withSandboxTelemetry(args, canonical), sandboxKey: args.sessionId })) }
+        const output = await withToolSignal(args.signal, args.toolTimeoutMs, (signal) => invokeMcpTool(canonical, tool, input, { registry, signal, toolTimeoutMs: args.toolTimeoutMs, sandbox: withSandboxTelemetry(args, canonical), sandboxKey: args.sessionId }))
+        return { output: await applyAfterToolInterceptors(args, canonical, call.id, output) }
       }
       if (tool.kind && tool.kind !== 'ts') {
         throw new ValidationError('Unsupported tool kind.', { where: 'tool_input', issues: { toolId: canonical, kind: tool.kind } })
@@ -725,9 +854,10 @@ async function executeToolCall(
         agentId: args.agentId,
         toolId: canonical
       }, parsed))
-      return { output: tool.output.parse(out) as JsonValue }
+      return { output: await applyAfterToolInterceptors(args, canonical, call.id, tool.output.parse(out) as JsonValue) }
     })
   } catch (error) {
+    if (error instanceof AgentInterceptorError) throw error
     const failure = normalizeToolFailure(canonical, error, toolKind)
     if (failure instanceof OperationCancelledError) {
       const cancellation = args.signal.aborted

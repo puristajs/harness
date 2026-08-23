@@ -46,6 +46,10 @@ Keep these layers separate:
   agents/workflows are declared. Keep simple use cases on per-agent
   permissions; use governance only for composable/audited policy, approval, or
   external policy-pack interoperability.
+- Use `@purista/harness-guardrails` for optional typed default-loop content
+  rails. It accepts a documented NeMo-shaped YAML subset, requires
+  application-owned actions/model aliases, fails closed, and never loads
+  Python, Colang, providers, servers, or vector stores from configuration.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
@@ -132,6 +136,8 @@ implements `replaceMessages` atomically.
 - `references/telemetry-observability.md` for OpenTelemetry setup, `TelemetryShim`, span/metric names, logs, privacy, and adapter context propagation.
 - `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
 - `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
+- `references/agents-workflows-tools.md` for default-loop interception and the
+  optional guardrails addon boundary.
 - `references/package-surface.md` for exports, package boundaries, source files, public docs, and known source-vs-doc checks.
 
 ## Mirror Maintenance

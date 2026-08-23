@@ -50,6 +50,16 @@ Keep these layers separate:
   rails. It accepts a documented NeMo-shaped YAML subset, requires
   application-owned actions/model aliases, fails closed, and never loads
   Python, Colang, providers, servers, or vector stores from configuration.
+- Treat every guardrail evaluation as an operational security decision: use
+  its content-free `GUARDRAIL` span, outcome metric, and structured decision
+  log; blocks are expected enforcement decisions rather than span errors.
+  For application-owned retrieval, call `filterRetrievedChunks(chunks, {
+  models, signal, logger })` so model checks, cancellation, and audit context
+  remain connected to the active workflow.
+- A `modelCheckRail` must use a configured Harness model handle. Its nested
+  standard `LLM` span—not the GUARDRAIL parent—is the single source of truth
+  for model/provider identity and reported `gen_ai.usage.*` /
+  `llm.token_count.*` cost inputs.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.

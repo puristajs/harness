@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { SpanStatusCode, type Span } from '@opentelemetry/api'
 
 import type { Logger } from '../src/logger/index.js'
 import type { ObjectResponse, ModelProvider } from '../src/ports/model-provider.js'
@@ -7,75 +6,11 @@ import { InMemoryStateStore } from '../src/state/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { sandboxMemory } from '../src/memory/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
-import type { TelemetryShim } from '../src/telemetry/index.js'
-import { telemetryErrorType } from '../src/telemetry/index.js'
 import type { TelemetryOptions } from '../src/index.js'
+import type { AgentExecutionInterceptor } from '../src/harness/defineHarness.js'
+import { RecordingTelemetry } from '../src/testing/recordingTelemetry.js'
 
-export class RecordingTelemetry implements TelemetryShim {
-  public readonly spans: Array<{
-    id: string
-    parentId?: string
-    name: string
-    attrs: Record<string, unknown>
-    status?: { code: SpanStatusCode; message?: string }
-    exceptions: unknown[]
-  }> = []
-  public readonly traceContexts: Array<{ traceparent: string; tracestate?: string }> = []
-  public readonly metrics: Array<{ kind: 'counter' | 'histogram'; name: string; value: number; attrs: Record<string, unknown> }> = []
-
-  private readonly stack: string[] = []
-
-  public async span<T>(name: string, attrs: Record<string, unknown>, fn: (span: Span) => Promise<T>): Promise<T> {
-    const id = `span-${this.spans.length + 1}`
-    const record = { id, parentId: this.stack.at(-1), name, attrs: { ...attrs }, exceptions: [] as unknown[] }
-    this.spans.push(record)
-    const span = {
-      setAttribute: (key: string, value: unknown) => { record.attrs[key] = value; return span },
-      setAttributes: (next: Record<string, unknown>) => { Object.assign(record.attrs, next); return span },
-      recordException: (error: unknown) => { record.exceptions.push(error) },
-      setStatus: (status: { code: SpanStatusCode; message?: string }) => { record.status = status },
-      end: () => undefined
-    } as unknown as Span
-
-    this.stack.push(id)
-    try {
-      return await fn(span)
-    } catch (error) {
-      record.exceptions.push(new Error(telemetryErrorType(error)))
-      record.attrs['error.type'] = telemetryErrorType(error)
-      if (error && typeof error === 'object' && 'code' in error) {
-        const harnessError = error as { code?: string; category?: string; retriable?: boolean; meta?: Record<string, unknown> }
-        record.attrs['error.type'] = harnessError.code
-        record.attrs['harness.error.code'] = harnessError.code
-        record.attrs['harness.error.category'] = harnessError.category
-        record.attrs['harness.error.retriable'] = harnessError.retriable
-        if (typeof harnessError.meta?.scope === 'string') record.attrs['harness.error.scope'] = harnessError.meta.scope
-        if (typeof harnessError.meta?.timeout_ms === 'number') record.attrs['harness.error.timeout_ms'] = harnessError.meta.timeout_ms
-      }
-      record.status = { code: SpanStatusCode.ERROR, message: telemetryErrorType(error) }
-      throw error
-    } finally {
-      this.stack.pop()
-    }
-  }
-
-  public recordHistogram(name: string, value: number, attrs: Record<string, unknown>): void {
-    this.metrics.push({ kind: 'histogram', name, value, attrs: { ...attrs } })
-  }
-
-  public recordCounter(name: string, value: number, attrs: Record<string, unknown>): void {
-    this.metrics.push({ kind: 'counter', name, value, attrs: { ...attrs } })
-  }
-
-  public currentTraceparent(): string | undefined {
-    return this.stack.length > 0 ? '00-00000000000000000000000000000001-0000000000000001-01' : undefined
-  }
-
-  public async withTraceContext<T>(carrier: { traceparent: string; tracestate?: string }, fn: () => Promise<T>): Promise<T> {
-    this.traceContexts.push(carrier)
-    return fn()
-  }
-}
+export { RecordingTelemetry } from '../src/testing/recordingTelemetry.js'
 
 export class RecordingLogger implements Logger {
   public readonly entries: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = []
@@ -115,7 +50,7 @@ class FlowModelProvider implements ModelProvider {
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failModel?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions } = {}) {
+export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failModel?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions; interceptors?: readonly AgentExecutionInterceptor[] } = {}) {
   const telemetry = new RecordingTelemetry()
   const logger = new RecordingLogger()
   const harness = createSessionHarness<any>({
@@ -159,7 +94,8 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
         model: 'fast',
         instructions: 'Answer with policy context.',
         tools: ['policy_lookup'],
-        builtinTools: false
+        builtinTools: false,
+        ...(opts.interceptors ? { interceptors: opts.interceptors } : {})
       }
     },
     workflows: {

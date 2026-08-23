@@ -76,14 +76,17 @@ Colang 1/2 parity is outside this release. It needs a separately approved gramma
 
 ## Action, failure, privacy, and telemetry contract
 
-An action returns exactly `{decision:'allow'}`, `{decision:'block'}`, or `{decision:'transform', target, value}`. Allowed transform targets are closed by phase: `user_message`, `bot_message`, `tool_input`, `tool_output`, and `relevant_chunks`. Mismatch, malformed outcome, non-array retrieval transform, or action exception fails closed. Flows execute sequentially in YAML order; no parallel flag exists because transforms have observable ordering.
+An action returns exactly `{decision:'allow'}`, `{decision:'block',reasonCode?}`, or `{decision:'transform',target,value,reasonCode?}`. `reasonCode`, when present, is a deployment-controlled lower-case snake-case operator code (maximum 64 characters), never request-derived content. `mayTransform:false` is an enforced declaration: a transform from that action is invalid. Allowed transform targets are closed by phase: `user_message`, `bot_message`, `tool_input`, `tool_output`, and `relevant_chunks`. Mismatch, malformed outcome, non-array retrieval transform, or action exception fails closed. Flows execute sequentially in YAML order; no parallel flag exists because transforms have observable ordering.
 
 `modelCheckRail({model,instructions})` accepts only `{allow:boolean}`, resolves through `modelAliases`, and invokes an existing Harness handle. It has no provider SDK dependency.
 
 - Production default is `contentCaptureMode: 'NO_CONTENT'`.
-- Addon spans are `evaluate_guardrail {rail.id}` with `openinference.span.kind=GUARDRAIL`, `harness.guardrail.id`, and `harness.guardrail.phase` only.
-- Error metadata is bounded to ids, phases, and reason codes. Prompts, completions, documents, tool inputs/results, provider bodies, and credentials are forbidden from spans, logs, errors, events, and fixtures.
-- Application action reasons are content-free operator diagnostics, never end-user responses.
+- Every addon evaluation emits `evaluate_guardrail {rail.id}` with `openinference.span.kind=GUARDRAIL`, `harness.guardrail.id`, `harness.guardrail.phase`, and `harness.guardrail.outcome: 'allow'|'block'|'transform'|'error'`; a valid `reasonCode` is emitted only for block/transform outcomes.
+- Blocks are successful enforcement decisions (span status remains `UNSET`); action failure, malformed outcome, and timeout are error spans with `GUARDRAIL_EVALUATION_ERROR`. The addon emits one `harness.guardrail.evaluations` counter and one `harness.guardrail.duration` histogram per evaluation, both with content-free rail/phase/outcome dimensions and `error.type` only on failure.
+- A `modelCheckRail` invocation uses the supplied configured Harness handle inside its active guardrail span. The nested standard `LLM` span, rather than the `GUARDRAIL` parent, owns `harness.model.alias`, provider/model identifiers, `gen_ai.usage.*`, `llm.token_count.*`, finish reason, and `gen_ai.client.token.usage` metrics when the provider reports usage. This keeps one authoritative token record and enables exact trace-parent cost attribution; pricing is application/backend policy and is not guessed by the addon.
+- Default-loop rails inherit the exact scoped Harness telemetry/logger. Standalone retrieval rails use an explicit `GuardrailExecutionContext` (`models`, `signal`, logger and/or telemetry) with a global-OTel telemetry fallback. Model-backed retrieval rails require the supplied `models` context.
+- Action evaluation has a fail-closed 10-second default budget; `actionTimeoutMs` and a validated action `timeoutMs` override are positive safe integers. A timed-out action receives an aborted signal and terminates the caller with non-retriable `GUARDRAIL_EVALUATION_ERROR` / `reason:'action_timeout'`.
+- Error metadata and structured logs are bounded to ids, phases, outcomes, reason codes, and error codes. Prompts, completions, documents, tool inputs/results, provider bodies, and credentials are forbidden from spans, logs, errors, events, and fixtures.
 
 ## File, build, and acceptance contract
 
@@ -96,7 +99,7 @@ An action returns exactly `{decision:'allow'}`, `{decision:'block'}`, or `{decis
 | `examples/guardrails/` | runnable no-network example |
 | `docs/guides/guardrails.md`, `skills/ai-harness/` | public user guidance |
 
-Root workspace `lint`, `build`, `test`, `test:coverage`, and `ci` discover every package/example workspace; CI already runs these root scripts and package dry-run verification. Release requires core interceptor tests, addon parser/input/output/tool/retrieval tests, example test, typecheck, package build, and content-free telemetry assertions.
+Root workspace `lint`, `build`, `test`, `test:coverage`, and `ci` discover every package/example workspace; CI already runs these root scripts and package dry-run verification. Release requires core interceptor tests, addon parser/input/output/tool/retrieval tests, deterministic recording-telemetry assertions for allow/block/transform/error/privacy/metric/span status, retrieval model context, and nested model alias/provider/token usage trace attribution, example test, typecheck, package build, and content-free telemetry assertions.
 
 ## No-invention gate
 

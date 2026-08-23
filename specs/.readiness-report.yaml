@@ -224,6 +224,7 @@ follow_up_waves:
         - specs/02-harness-config.md
         - specs/09-agents.md
         - specs/13-public-api.md
+        - specs/13-public-api.md
         - specs/14-otel-conventions.md
         - specs/15-error-catalog.md
         - specs/16-testing.md
@@ -237,6 +238,8 @@ follow_up_waves:
       - "Portable NeMo YAML concepts are supported, but Python actions, Colang, dialog/execution runtime, provider creation, servers, and vector stores are rejected rather than approximated."
       - "Actions are application-owned, ordered, transform-aware, and fail closed; no implicit fail-open exists."
       - "Guardrail telemetry, errors, logs, events, and fixtures are content-free by default."
+      - "Every guardrail evaluation has an explicit content-free outcome in traces and metrics; blocks are expected enforcement results, while action failures and timeouts are error spans."
+      - "Standalone retrieval rails accept typed model/cancellation/observability context and retain the global OTel parent when no scoped Harness interceptor exists."
       - "The Harness testing adapter is the required deterministic evidence path."
     gates:
       deterministic_check:

@@ -81,7 +81,14 @@ function errorAttributes(error: unknown): SpanAttrs {
       'harness.error.model_provider_type': stringAttr(meta?.['providerType']),
       'harness.error.model_provider_param': stringAttr(meta?.['providerParam']),
       'harness.error.model_provider_request_id': stringAttr(meta?.['providerRequestId']),
-      'harness.error.model_provider_body': providerBody
+      'harness.error.model_provider_body': providerBody,
+      // Interceptor ids and phases are configuration-controlled, content-free
+      // identifiers. They make a failed agent span attributable without
+      // promoting action-provided messages or inputs into telemetry.
+      ...(error.code === 'AGENT_INTERCEPTOR_ERROR' ? {
+        'harness.interceptor.id': stringAttr(meta?.['interceptor_id']),
+        'harness.interceptor.phase': stringAttr(meta?.['phase'])
+      } : {})
     }
   }
   const name = telemetryErrorType(error)

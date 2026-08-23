@@ -70,6 +70,11 @@ taxonomy and are never emitted by normal harness execution.
 - when: an ordered default-loop interceptor blocks guarded input/model/tool work, returns an invalid result, or throws. It is terminal for that agent invocation and is never converted into a model-visible tool error.
 - meta: `interceptor_id: string`, `phase: 'before_input'|'before_model'|'after_model'|'before_tool'|'after_tool'`, `reason: 'blocked'|'failed'|'invalid_result'`.
 
+### Addon-owned guardrail errors
+- `GUARDRAILS_CONFIG_ERROR`: non-retriable `config` error for an unsupported NeMo-shaped configuration, missing action, or invalid action timeout.
+- `GUARDRAIL_EVALUATION_ERROR`: non-retriable `interceptor` error for a guardrail action failure, timeout, malformed outcome, or unsupported transform. Meta is `rail_id`, `phase`, and `reason: 'action_failed'|'action_timeout'|'invalid_outcome'|'unsupported_transform'`.
+- `GUARDRAIL_BLOCKED`: non-retriable `interceptor` error returned only by standalone retrieval evaluation. Meta is `rail_id`, `phase:'retrieval'`, and optional validated `reason_code`; attached default-loop rails still terminate with the generic `AgentInterceptorError` contract.
+
 ### `SandboxError`
 - code: `SANDBOX_ERROR`
 - category: `sandbox`

@@ -1,8 +1,10 @@
+import { SpanStatusCode } from '@opentelemetry/api'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { defineHarness, inMemorySandbox } from '@purista/harness'
-import { FakeModelProvider } from '@purista/harness/testing'
-import { defineGuardrails, modelCheckRail, parseGuardrailsConfig } from '../src/index.js'
+import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
+import { createModelRegistry } from '../../harness/src/models/registry.js'
+import { defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig } from '../src/index.js'
 
 it('runs NeMo-shaped input and output rails with the Harness test adapter', async () => {
   const provider = new FakeModelProvider()
@@ -116,4 +118,195 @@ it('uses an explicitly configured Harness model alias for a model-backed check',
 
 it('rejects unsupported Colang/dialog configuration rather than silently accepting it', () => {
   expect(() => parseGuardrailsConfig({ rails: { dialog: { flows: ['hello'] } } })).toThrow(/not included/)
+})
+
+it('records content-free trace, metric, and structured-log outcomes for standalone retrieval rails', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['redact source'] } } }),
+    observability: { telemetry, logger },
+    actions: {
+      'redact source': {
+        evaluate: ({ value }) => ({
+          decision: 'transform',
+          target: 'relevant_chunks',
+          value: (value as string[]).map(() => 'approved source'),
+          reasonCode: 'pii_redacted'
+        })
+      }
+    }
+  })
+
+  await expect(rails.filterRetrievedChunks(['customer-secret@example.test'])).resolves.toEqual(['approved source'])
+  expect(telemetry.spans).toMatchObject([{
+    name: 'evaluate_guardrail redact source',
+    attrs: {
+      'openinference.span.kind': 'GUARDRAIL',
+      'harness.guardrail.id': 'redact source',
+      'harness.guardrail.phase': 'retrieval',
+      'harness.guardrail.outcome': 'transform',
+      'harness.guardrail.reason_code': 'pii_redacted'
+    }
+  }])
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'counter', name: 'harness.guardrail.evaluations', attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'transform' }) }),
+    expect.objectContaining({ kind: 'histogram', name: 'harness.guardrail.duration', attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'transform' }) })
+  ]))
+  expect(logger.recordsAt('info')).toEqual([expect.objectContaining({
+    msg: 'Harness guardrail transformed a value.',
+    fields: expect.objectContaining({ guardrail_id: 'redact source', guardrail_phase: 'retrieval', guardrail_outcome: 'transform' })
+  })])
+  expect(JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics, logs: logger.records })).not.toContain('customer-secret@example.test')
+})
+
+it('makes a block searchable without treating the guardrail evaluation itself as an error', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['deny restricted source'] } } }),
+    observability: { telemetry, logger },
+    actions: { 'deny restricted source': { evaluate: () => ({ decision: 'block', reasonCode: 'classification_denied' }) } }
+  })
+
+  await expect(rails.filterRetrievedChunks(['restricted source'])).rejects.toMatchObject({
+    code: 'GUARDRAIL_BLOCKED',
+    meta: { rail_id: 'deny restricted source', phase: 'retrieval', reason_code: 'classification_denied' }
+  } satisfies Partial<GuardrailBlockedError>)
+  expect(telemetry.spans[0]).toMatchObject({
+    attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'block', 'harness.guardrail.reason_code': 'classification_denied' })
+  })
+  expect(telemetry.spans[0]?.status).toBeUndefined()
+  expect(logger.recordsAt('warn')).toEqual([expect.objectContaining({ msg: 'Harness guardrail blocked execution.' })])
+})
+
+it('fails closed with classified, content-free telemetry when an action fails or exceeds its budget', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  let actionSignal: AbortSignal | undefined
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['slow safety check'] } } }),
+    observability: { telemetry, logger },
+    actionTimeoutMs: 10,
+    actions: {
+      'slow safety check': {
+        evaluate: ({ signal }) => {
+          actionSignal = signal
+          return new Promise<never>(() => undefined)
+        }
+      }
+    }
+  })
+
+  await expect(rails.filterRetrievedChunks(['secret source'])).rejects.toMatchObject({
+    code: 'GUARDRAIL_EVALUATION_ERROR',
+    meta: { rail_id: 'slow safety check', phase: 'retrieval', reason: 'action_timeout' }
+  })
+  expect(telemetry.spans[0]).toMatchObject({
+    attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'error', 'error.type': 'GUARDRAIL_EVALUATION_ERROR' }),
+    status: { code: SpanStatusCode.ERROR }
+  })
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: 'harness.guardrail.evaluations', attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'error' }) })
+  ]))
+  expect(actionSignal?.aborted).toBe(true)
+  expect(JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics, logs: logger.records })).not.toContain('secret source')
+})
+
+it('classifies thrown action failures without leaking the action error content', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['external classifier'] } } }),
+    observability: { telemetry, logger },
+    actions: { 'external classifier': { evaluate: () => { throw new Error('provider rejected customer-secret@example.test') } } }
+  })
+
+  await expect(rails.filterRetrievedChunks(['customer-secret@example.test'])).rejects.toMatchObject({
+    code: 'GUARDRAIL_EVALUATION_ERROR',
+    meta: { rail_id: 'external classifier', phase: 'retrieval', reason: 'action_failed' }
+  })
+  expect(telemetry.spans[0]).toMatchObject({
+    attrs: expect.objectContaining({ 'harness.guardrail.outcome': 'error', 'error.type': 'GUARDRAIL_EVALUATION_ERROR' }),
+    status: { code: SpanStatusCode.ERROR }
+  })
+  expect(JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics, logs: logger.records })).not.toContain('customer-secret@example.test')
+})
+
+it('enforces an action declaration that transforms are not permitted', async () => {
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['decision only'] } } }),
+    actions: {
+      'decision only': {
+        mayTransform: false,
+        evaluate: () => ({ decision: 'transform', target: 'relevant_chunks', value: [] })
+      }
+    }
+  })
+
+  await expect(rails.filterRetrievedChunks(['source'])).rejects.toMatchObject({
+    code: 'GUARDRAIL_EVALUATION_ERROR',
+    meta: { reason: 'invalid_outcome' }
+  })
+})
+
+it('supports model-backed retrieval checks through the typed standalone execution context', async () => {
+  let calls = 0
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['retrieval self check'] } } }),
+    modelAliases: { safety: 'guardrail_model' },
+    actions: { 'retrieval self check': modelCheckRail({ model: 'safety', instructions: 'Return the allow decision.' }) }
+  })
+
+  await expect(rails.filterRetrievedChunks(['untrusted'], {
+    models: {
+      guardrail_model: {
+        object: async () => {
+          calls += 1
+          return { object: { allow: false }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+        }
+      }
+    }
+  })).rejects.toBeInstanceOf(GuardrailBlockedError)
+  expect(calls).toBe(1)
+})
+
+it('parents model-backed rail usage under the GUARDRAIL span with standard model and token attributes', async () => {
+  const telemetry = new RecordingTelemetry()
+  const provider = new FakeModelProvider()
+  provider.enqueue({
+    object: { allow: true },
+    usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, cachedInputTokens: 3, reasoningTokens: 2 },
+    finishReason: 'stop'
+  })
+  const models = createModelRegistry({
+    safety: { provider, model: 'safety-model', capabilities: ['object'] }
+  }, { telemetry, harnessName: 'guardrails-test' })
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({ rails: { retrieval: { flows: ['safety model'] } } }),
+    observability: { telemetry },
+    modelAliases: { safety: 'safety' },
+    actions: { 'safety model': modelCheckRail({ model: 'safety', instructions: 'Return an allow decision.' }) }
+  })
+
+  await expect(rails.filterRetrievedChunks(['approved source'], { models })).resolves.toEqual(['approved source'])
+  const guardrailSpan = telemetry.spans.find((span) => span.name === 'evaluate_guardrail safety model')
+  const modelSpan = telemetry.spans.find((span) => span.name === 'chat safety-model')
+  expect(modelSpan).toMatchObject({
+    parentId: guardrailSpan?.id,
+    attrs: expect.objectContaining({
+      'openinference.span.kind': 'LLM',
+      'harness.model.alias': 'safety',
+      'gen_ai.request.model': 'safety-model',
+      'llm.model_name': 'safety-model',
+      'gen_ai.usage.input_tokens': 11,
+      'gen_ai.usage.output_tokens': 7,
+      'gen_ai.usage.total_tokens': 18,
+      'llm.token_count.total': 18
+    })
+  })
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: 'gen_ai.client.token.usage', value: 11, attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }) }),
+    expect.objectContaining({ name: 'gen_ai.client.token.usage', value: 7, attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }) })
+  ]))
 })

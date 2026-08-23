@@ -24,10 +24,13 @@ const harness = defineHarness()
 ```
 
 Rail actions return `allow`, `block`, or a phase-appropriate `transform`.
-They are ordered and fail closed. The addon emits content-free `GUARDRAIL`
-spans through the configured Harness telemetry shim. Use
-`filterRetrievedChunks(...)` after application-owned retrieval; the addon has
-no vector-store integration.
+They are ordered, have a 10-second fail-closed evaluation budget by default,
+and support a validated, content-free `reasonCode` for operational diagnosis.
+Every evaluation emits an OpenInference `GUARDRAIL` span, a counter, and a
+duration metric with the final outcome; blocks remain successful guardrail
+evaluations, while failed actions are error spans. Use
+`filterRetrievedChunks(chunks, { models, signal, logger })` after
+application-owned retrieval; the addon has no vector-store integration.
 
 Unsupported NeMo executable features (`.co`, `actions.py`, `config.py`,
 dialog and execution rails) fail at config load/compile time with stable

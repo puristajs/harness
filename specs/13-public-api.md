@@ -6,6 +6,7 @@
 - `@purista/harness-openai` — OpenAI provider.
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
+- `@purista/harness-guardrails` — optional NeMo-shaped typed input/output/tool/retrieval rails.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 - `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
@@ -258,6 +259,7 @@ export interface ToolHandlerContext
 export interface Metrics
 export type SpanAttrs
 export interface TelemetryShim
+export function createTelemetryShim(): TelemetryShim
 export interface SessionMemory
 export interface MemoryFacade
 export interface ContextCheckpoints
@@ -994,6 +996,7 @@ export class FakeModelProvider implements ModelProvider     // configurable scri
 export class FakeStateStore extends InMemoryStateStore       // records invoked operations (`ops`, `opCount`, `resetOps`)
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory (`records`)
+export class RecordingTelemetry implements TelemetryShim     // captures deterministic spans, metrics, and parent links
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
 export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore   // also a main-entry export
 export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore        // also a main-entry export
@@ -1005,6 +1008,8 @@ export function fakeSnapshotSandbox(): Sandbox               // snapshot/resume/
 export type FakeStateStoreOp
 export interface FakeSandboxOptions
 export interface FakeLogRecord
+export interface RecordedTelemetrySpan
+export interface RecordedTelemetryMetric
 export interface FakeCapabilityAdapter
 
 // Contract suites — each is a Vitest test factory

@@ -2,6 +2,7 @@ import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { AgentInterceptorError, defineHarness, inMemorySandbox } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
 
 it('transforms parsed input before the default loop builds the model request', async () => {
   const provider = new FakeModelProvider()
@@ -91,4 +92,21 @@ it('blocks a tool before its side effect', async () => {
   const session = await harness.getSession('interceptor-tool-block')
   await expect(session.agents.answer.prompt('transfer')).rejects.toBeInstanceOf(AgentInterceptorError)
   expect(calls).toBe(0)
+})
+
+it('attributes a blocked interceptor on the failed parent agent span without recording input content', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness({
+    interceptors: [{ id: 'compliance_gate', beforeInput: () => ({ decision: 'block' }) }]
+  })
+
+  await expect(session.agents.responder.prompt('customer-secret@example.test')).rejects.toBeInstanceOf(AgentInterceptorError)
+  const agentSpan = telemetry.spans.find((span) => span.name === 'invoke_agent responder')
+  expect(agentSpan).toMatchObject({
+    attrs: expect.objectContaining({
+      'error.type': 'AGENT_INTERCEPTOR_ERROR',
+      'harness.interceptor.id': 'compliance_gate',
+      'harness.interceptor.phase': 'before_input'
+    })
+  })
+  expect(JSON.stringify(agentSpan)).not.toContain('customer-secret@example.test')
 })

@@ -42,6 +42,7 @@ Default agent loop requirements:
 - `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
 - `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
 - `interceptors` are ordered, fail-closed default-loop hooks. `beforeInput` runs before dynamic instructions/transcript work; `afterModel` runs before events, output validation, persistence, and tool dispatch; tool hooks wrap the actual side effect. Use them through `@purista/harness-guardrails` unless an application owns a different generic boundary concern.
+- Guardrails produce content-free `evaluate_guardrail {rail.id}` OpenInference `GUARDRAIL` spans plus `harness.guardrail.evaluations` and `harness.guardrail.duration`. Treat `outcome='block'` as an expected enforced policy decision and reserve span errors for action failures/timeouts. Retrieval remains caller-owned; pass its run-scoped models, abort signal, and logger to `filterRetrievedChunks`.
 
 Use a custom `handler` only when the default loop is the wrong execution model.
 

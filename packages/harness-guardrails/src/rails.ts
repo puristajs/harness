@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { createTelemetryShim, OperationCancelledError } from '@purista/harness'
 import type {
   AgentAfterModelInterceptorContext,
   AgentAfterToolInterceptorContext,
@@ -8,18 +8,22 @@ import type {
   AgentExecutionInterceptor,
   BuilderState,
   JsonValue,
+  Logger,
   ModelMessage,
-  ObjectResponse
+  ObjectResponse,
+  TelemetryShim
 } from '@purista/harness'
-import { GuardrailsConfigError, GuardrailEvaluationError, type GuardrailPhase } from './errors.js'
+import { z } from 'zod'
+import { GuardrailBlockedError, GuardrailsConfigError, GuardrailEvaluationError, type GuardrailPhase } from './errors.js'
 import type { NeMoGuardrailsConfig } from './config.js'
 
 export type GuardrailTransformTarget = 'user_message' | 'bot_message' | 'tool_input' | 'tool_output' | 'relevant_chunks'
 
+/** A deterministic, content-free result from one application-owned rail action. */
 export type GuardrailOutcome =
   | { decision: 'allow' }
-  | { decision: 'block'; reason?: string }
-  | { decision: 'transform'; target: GuardrailTransformTarget; value: JsonValue }
+  | { decision: 'block'; reasonCode?: string }
+  | { decision: 'transform'; target: GuardrailTransformTarget; value: JsonValue; reasonCode?: string }
 
 /** Stable content-free action context provided to an application-defined rail. */
 export interface GuardrailActionContext {
@@ -36,7 +40,8 @@ export interface GuardrailActionContext {
   signal?: AbortSignal
   models?: Record<string, GuardrailModelHandle>
   modelAliases?: Readonly<Record<string, string>>
-  telemetry?: import('@purista/harness').TelemetryShim
+  telemetry?: TelemetryShim
+  logger?: Logger
 }
 
 /** Small provider-neutral model surface available to model-backed rail actions. */
@@ -48,31 +53,66 @@ export interface GuardrailModelHandle {
 export interface GuardrailAction {
   /** Set `false` only when the action can never return a transform outcome. */
   mayTransform?: boolean
+  /** Maximum evaluation time in milliseconds. Defaults to the guardrails-level 10 second budget. */
+  timeoutMs?: number
   evaluate(ctx: GuardrailActionContext): GuardrailOutcome | Promise<GuardrailOutcome>
 }
 
 export type GuardrailActions = Readonly<Record<string, GuardrailAction>>
+
+/** Process-level observability used when a rail runs outside a Harness interceptor. */
+export interface GuardrailsObservability {
+  telemetry?: TelemetryShim
+  logger?: Logger
+}
+
+/** Run-scoped dependencies for standalone evaluation, especially retrieval rails. */
+export interface GuardrailExecutionContext {
+  agentId?: string
+  runId?: string
+  sessionId?: string
+  workflowId?: string
+  toolId?: string
+  callId?: string
+  modelAlias?: string
+  signal?: AbortSignal
+  models?: Record<string, GuardrailModelHandle>
+  telemetry?: TelemetryShim
+  logger?: Logger
+}
 
 export interface DefineGuardrailsOptions {
   config: NeMoGuardrailsConfig
   actions: GuardrailActions
   /** Optional aliases from NeMo model `type` values to configured Harness aliases. */
   modelAliases?: Readonly<Record<string, string>>
+  /** Content-free telemetry and structured logging used outside attached default-loop agents, such as retrieval rails. */
+  observability?: GuardrailsObservability
+  /** Maximum evaluation time for actions without an action-level override. Defaults to 10_000 milliseconds. */
+  actionTimeoutMs?: number
 }
 
 type CompiledRail = { id: string; phase: GuardrailPhase; action: GuardrailAction }
+const DEFAULT_ACTION_TIMEOUT_MS = 10_000
 
 /**
- * Compiles a portable NeMo-shaped rail configuration into one ordered Harness
+ * Compiles portable NeMo-shaped rail configuration into one ordered Harness
  * interceptor. No provider, vector database, Colang runtime, Python action, or
  * server is constructed from configuration.
  */
 export class Guardrails {
   private readonly rails: ReadonlyMap<GuardrailPhase, readonly CompiledRail[]>
   private readonly modelAliases: Readonly<Record<string, string>>
+  private readonly observability: Required<Pick<GuardrailsObservability, 'telemetry'>> & Pick<GuardrailsObservability, 'logger'>
+  private readonly actionTimeoutMs: number
 
   public constructor(options: DefineGuardrailsOptions) {
     this.modelAliases = options.modelAliases ?? {}
+    this.observability = {
+      telemetry: options.observability?.telemetry ?? createTelemetryShim(),
+      ...(options.observability?.logger ? { logger: options.observability.logger } : {})
+    }
+    this.actionTimeoutMs = requireTimeout(options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS, 'actionTimeoutMs')
     this.rails = compileRails(options.config, options.actions)
   }
 
@@ -87,17 +127,19 @@ export class Guardrails {
     } as D
   }
 
-  /** Applies configured retrieval rails to caller-owned chunks; it never creates or queries a vector store. */
-  public async filterRetrievedChunks(chunks: readonly JsonValue[]): Promise<JsonValue[]> {
+  /**
+   * Applies configured retrieval rails to caller-owned chunks. Supply the
+   * workflow/transport run context to correlate standalone retrieval checks;
+   * configured process-level observability is used as a safe fallback.
+   */
+  public async filterRetrievedChunks(chunks: readonly JsonValue[], execution: GuardrailExecutionContext = {}): Promise<JsonValue[]> {
     let current = [...chunks] as JsonValue
     for (const rail of this.rails.get('retrieval') ?? []) {
-      const outcome = await this.evaluate(rail, current, { railId: rail.id, phase: 'retrieval', value: current })
-      if (outcome.decision === 'block') throw blockedError(rail, 'retrieval')
-      if (outcome.decision === 'transform') {
-        requireTarget(rail, 'retrieval', outcome.target, 'relevant_chunks')
-        if (!Array.isArray(outcome.value)) throw invalidOutcome(rail, 'retrieval', 'invalid_outcome')
-        current = outcome.value
+      const outcome = await this.evaluate(rail, current, this.withExecutionContext({ ...execution, railId: rail.id, phase: 'retrieval', value: current }))
+      if (outcome.decision === 'block') {
+        throw new GuardrailBlockedError({ rail_id: rail.id, phase: 'retrieval', ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}) })
       }
+      if (outcome.decision === 'transform') current = outcome.value
     }
     return current as JsonValue[]
   }
@@ -113,8 +155,7 @@ export class Guardrails {
   }
 
   private async applyInput(ctx: AgentBeforeInputInterceptorContext<any, JsonValue>): Promise<{ decision: 'allow' } | { decision: 'block' } | { decision: 'transform'; value: JsonValue }> {
-    const value = await this.apply('input', ctx.input, contextFromAgent(ctx, 'input'))
-    return value
+    return this.apply('input', ctx.input, contextFromAgent(ctx, 'input'))
   }
 
   private async applyOutput(ctx: AgentAfterModelInterceptorContext<any, JsonValue>): Promise<{ decision: 'allow' } | { decision: 'block' } | { decision: 'transform'; value: ObjectResponse<JsonValue> }> {
@@ -134,37 +175,83 @@ export class Guardrails {
   private async apply(phase: GuardrailPhase, initial: JsonValue, base: GuardrailActionContext): Promise<{ decision: 'allow' } | { decision: 'block' } | { decision: 'transform'; value: JsonValue }> {
     let current = initial
     for (const rail of this.rails.get(phase) ?? []) {
-      const outcome = await this.evaluate(rail, current, { ...base, railId: rail.id, value: current })
+      const outcome = await this.evaluate(rail, current, this.withExecutionContext({ ...base, railId: rail.id, value: current }))
       if (outcome.decision === 'allow') continue
       if (outcome.decision === 'block') return { decision: 'block' }
-      requireTarget(rail, phase, outcome.target, targetFor(phase))
       current = outcome.value
     }
     return current === initial ? { decision: 'allow' } : { decision: 'transform', value: current }
   }
 
   private async evaluate(rail: CompiledRail, value: JsonValue, context: GuardrailActionContext): Promise<GuardrailOutcome> {
+    const attrs = guardrailAttributes(rail)
+    const started = Date.now()
     try {
-      const actionContext: GuardrailActionContext = {
-        ...context,
-        value,
-        modelAliases: this.modelAliases,
-        ...(context.models ? { models: context.models } : {})
-      }
-      const evaluate = async () => await rail.action.evaluate(actionContext)
-      const outcome = context.telemetry
-        ? await context.telemetry.span(`evaluate_guardrail ${rail.id}`, {
-            'harness.guardrail.id': rail.id,
-            'harness.guardrail.phase': rail.phase,
-            'openinference.span.kind': 'GUARDRAIL'
-          }, evaluate)
-        : await evaluate()
-      if (!outcome || !['allow', 'block', 'transform'].includes(outcome.decision)) throw invalidOutcome(rail, rail.phase, 'invalid_outcome')
+      const outcome = await context.telemetry!.span(`evaluate_guardrail ${rail.id}`, attrs, async (span) => {
+        try {
+          const result = await evaluateAction(rail, {
+            ...context,
+            value,
+            modelAliases: this.modelAliases,
+            ...(context.models ? { models: context.models } : {})
+          }, this.actionTimeoutMs)
+          validateOutcome(rail, result)
+          span.setAttributes(outcomeAttributes(result))
+          return result
+        } catch (error) {
+          const classified = asGuardrailEvaluationError(rail, error)
+          span.setAttribute('harness.guardrail.outcome', 'error')
+          throw classified
+        }
+      })
+      this.recordOutcome(context, attrs, outcome, started)
       return outcome
     } catch (error) {
-      if (error instanceof GuardrailEvaluationError) throw error
-      throw new GuardrailEvaluationError('Guardrail action failed closed.', { rail_id: rail.id, phase: rail.phase, reason: 'action_failed' }, error)
+      const classified = asGuardrailEvaluationError(rail, error)
+      this.recordFailure(context, attrs, classified, started)
+      context.logger?.error('Harness guardrail evaluation failed closed.', {
+        guardrail_id: rail.id,
+        guardrail_phase: rail.phase,
+        guardrail_outcome: 'error',
+        error_code: classified.code
+      })
+      throw classified
     }
+  }
+
+  private withExecutionContext(context: GuardrailActionContext): GuardrailActionContext {
+    return {
+      ...context,
+      telemetry: context.telemetry ?? this.observability.telemetry,
+      ...(context.logger ?? this.observability.logger ? { logger: context.logger ?? this.observability.logger } : {})
+    }
+  }
+
+  private recordOutcome(context: GuardrailActionContext, attrs: Record<string, string>, outcome: GuardrailOutcome, started: number): void {
+    const outcomeAttrs = { ...attrs, ...outcomeAttributes(outcome) }
+    context.telemetry!.recordCounter('harness.guardrail.evaluations', 1, outcomeAttrs)
+    context.telemetry!.recordHistogram('harness.guardrail.duration', (Date.now() - started) / 1000, outcomeAttrs)
+    if (outcome.decision === 'block') {
+      context.logger?.warn('Harness guardrail blocked execution.', {
+        guardrail_id: attrs['harness.guardrail.id'],
+        guardrail_phase: attrs['harness.guardrail.phase'],
+        guardrail_outcome: outcome.decision,
+        ...(outcome.reasonCode ? { guardrail_reason_code: outcome.reasonCode } : {})
+      })
+    } else if (outcome.decision === 'transform') {
+      context.logger?.info('Harness guardrail transformed a value.', {
+        guardrail_id: attrs['harness.guardrail.id'],
+        guardrail_phase: attrs['harness.guardrail.phase'],
+        guardrail_outcome: outcome.decision,
+        ...(outcome.reasonCode ? { guardrail_reason_code: outcome.reasonCode } : {})
+      })
+    }
+  }
+
+  private recordFailure(context: GuardrailActionContext, attrs: Record<string, string>, error: GuardrailEvaluationError, started: number): void {
+    const outcomeAttrs = { ...attrs, 'harness.guardrail.outcome': 'error', 'error.type': error.code }
+    context.telemetry!.recordCounter('harness.guardrail.evaluations', 1, outcomeAttrs)
+    context.telemetry!.recordHistogram('harness.guardrail.duration', (Date.now() - started) / 1000, outcomeAttrs)
   }
 }
 
@@ -188,7 +275,7 @@ export function modelCheckRail(options: { model: string; instructions: string })
         schema: z.toJSONSchema(z.object({ allow: z.boolean() })) as JsonValue
       }, ctx.signal)
       const result = z.object({ allow: z.boolean() }).parse(response.object)
-      return result.allow ? { decision: 'allow' } : { decision: 'block' }
+      return result.allow ? { decision: 'allow' } : { decision: 'block', reasonCode: 'model_denied' }
     }
   }
 }
@@ -199,6 +286,7 @@ function compileRails(config: NeMoGuardrailsConfig, actions: GuardrailActions): 
     const rails = (config.rails[phase]?.flows ?? []).map((id) => {
       const action = actions[id]
       if (!action) throw new GuardrailsConfigError('A configured rail flow has no application-owned action.', { reason: 'action_missing', flow_id: id })
+      if (action.timeoutMs !== undefined) requireTimeout(action.timeoutMs, `actions.${id}.timeoutMs`)
       return { id, phase, action }
     })
     if (rails.length > 0) compiled.set(phase, rails)
@@ -217,14 +305,13 @@ function contextFromAgent(ctx: AgentBeforeInputInterceptorContext<any, JsonValue
     ...(ctx.workflowId ? { workflowId: ctx.workflowId } : {}),
     ...(toolId ? { toolId } : {}),
     ...(callId ? { callId } : {}),
-    ...(ctx.model ? { modelAlias: thisModelAlias(ctx.model) } : {}),
+    ...(ctx.model ? { modelAlias: ctx.model } : {}),
     signal: ctx.signal,
     models: ctx.models as Record<string, GuardrailModelHandle>,
-    telemetry: ctx.telemetry
+    telemetry: ctx.telemetry,
+    logger: ctx.logger
   }
 }
-
-function thisModelAlias(model: string): string { return model }
 
 function targetFor(phase: GuardrailPhase): GuardrailTransformTarget {
   if (phase === 'input') return 'user_message'
@@ -234,14 +321,74 @@ function targetFor(phase: GuardrailPhase): GuardrailTransformTarget {
   return 'relevant_chunks'
 }
 
-function requireTarget(rail: CompiledRail, phase: GuardrailPhase, actual: GuardrailTransformTarget, expected: GuardrailTransformTarget): void {
-  if (actual !== expected) throw invalidOutcome(rail, phase, 'unsupported_transform')
+function guardrailAttributes(rail: CompiledRail): Record<string, string> {
+  return {
+    'harness.guardrail.id': rail.id,
+    'harness.guardrail.phase': rail.phase,
+    'openinference.span.kind': 'GUARDRAIL'
+  }
 }
 
-function blockedError(rail: CompiledRail, phase: GuardrailPhase): GuardrailEvaluationError {
-  return new GuardrailEvaluationError('Guardrail blocked retrieval chunks.', { rail_id: rail.id, phase, reason: 'invalid_outcome' })
+function outcomeAttributes(outcome: GuardrailOutcome): Record<string, string> {
+  return {
+    'harness.guardrail.outcome': outcome.decision,
+    ...(outcome.decision !== 'allow' && outcome.reasonCode ? { 'harness.guardrail.reason_code': outcome.reasonCode } : {})
+  }
 }
 
-function invalidOutcome(rail: CompiledRail, phase: GuardrailPhase, reason: 'invalid_outcome' | 'unsupported_transform'): GuardrailEvaluationError {
-  return new GuardrailEvaluationError('Guardrail action returned an unsupported outcome.', { rail_id: rail.id, phase, reason })
+function validateOutcome(rail: CompiledRail, outcome: GuardrailOutcome): asserts outcome is GuardrailOutcome {
+  if (!outcome || !['allow', 'block', 'transform'].includes(outcome.decision)) throw invalidOutcome(rail, 'invalid_outcome')
+  if (outcome.decision === 'allow') return
+  if (outcome.reasonCode !== undefined && !isReasonCode(outcome.reasonCode)) throw invalidOutcome(rail, 'invalid_outcome')
+  if (outcome.decision === 'block') return
+  if (rail.action.mayTransform === false) throw invalidOutcome(rail, 'invalid_outcome')
+  if (outcome.target !== targetFor(rail.phase)) throw invalidOutcome(rail, 'unsupported_transform')
+  if (rail.phase === 'retrieval' && !Array.isArray(outcome.value)) throw invalidOutcome(rail, 'invalid_outcome')
+}
+
+function invalidOutcome(rail: CompiledRail, reason: 'invalid_outcome' | 'unsupported_transform'): GuardrailEvaluationError {
+  return new GuardrailEvaluationError('Guardrail action returned an unsupported outcome.', { rail_id: rail.id, phase: rail.phase, reason })
+}
+
+function asGuardrailEvaluationError(rail: CompiledRail, error: unknown): GuardrailEvaluationError {
+  if (error instanceof GuardrailEvaluationError) return error
+  if (error instanceof OperationCancelledError) throw error
+  return new GuardrailEvaluationError('Guardrail action failed closed.', { rail_id: rail.id, phase: rail.phase, reason: 'action_failed' }, error)
+}
+
+async function evaluateAction(rail: CompiledRail, context: GuardrailActionContext, defaultTimeoutMs: number): Promise<GuardrailOutcome> {
+  const timeoutMs = rail.action.timeoutMs ?? defaultTimeoutMs
+  const controller = new AbortController()
+  const parent = context.signal
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const boundary = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      const error = parent?.reason instanceof Error ? parent.reason : new OperationCancelledError('Guardrail evaluation was cancelled.', { scope: 'run' }, parent?.reason)
+      controller.abort(error)
+      reject(error)
+    }
+    if (parent?.aborted) return onAbort()
+    if (parent) parent.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(() => {
+      const error = new GuardrailEvaluationError('Guardrail action timed out and was blocked.', { rail_id: rail.id, phase: rail.phase, reason: 'action_timeout' })
+      controller.abort(error)
+      reject(error)
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([Promise.resolve(rail.action.evaluate({ ...context, signal: controller.signal })), boundary])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (parent && onAbort) parent.removeEventListener('abort', onAbort)
+  }
+}
+
+function requireTimeout(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new GuardrailsConfigError('Guardrail action timeout must be a positive safe integer.', { reason: 'invalid_timeout', field })
+  return value
+}
+
+function isReasonCode(value: string): boolean {
+  return /^[a-z][a-z0-9_]{0,63}$/.test(value)
 }

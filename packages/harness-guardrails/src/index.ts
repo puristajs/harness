@@ -1,6 +1,6 @@
-export { GuardrailsConfigError, GuardrailEvaluationError } from './errors.js'
+export { GuardrailBlockedError, GuardrailsConfigError, GuardrailEvaluationError } from './errors.js'
 export type { GuardrailPhase } from './errors.js'
 export { loadGuardrailsConfig, parseGuardrailsConfig } from './config.js'
 export type { NeMoGuardrailsConfig, NeMoModelConfig, NeMoRailConfig } from './config.js'
 export { defineGuardrails, Guardrails, modelCheckRail } from './rails.js'
-export type { DefineGuardrailsOptions, GuardrailAction, GuardrailActionContext, GuardrailActions, GuardrailModelHandle, GuardrailOutcome, GuardrailTransformTarget } from './rails.js'
+export type { DefineGuardrailsOptions, GuardrailAction, GuardrailActionContext, GuardrailActions, GuardrailExecutionContext, GuardrailModelHandle, GuardrailOutcome, GuardrailTransformTarget, GuardrailsObservability } from './rails.js'

@@ -43,6 +43,7 @@ export type { ErrorCategory } from './errors/index.js'
 // Foundation: logger, telemetry shim types, ULID, version
 export { JsonLogger } from './logger/index.js'
 export type { Logger, LogLevel } from './logger/index.js'
+export { createTelemetryShim } from './telemetry/index.js'
 export type { Metrics, SpanAttrs, TelemetryShim } from './telemetry/index.js'
 export { ulid } from './ulid/index.js'
 export { HARNESS_VERSION } from './version.js'

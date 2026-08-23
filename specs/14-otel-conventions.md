@@ -113,6 +113,14 @@ Every harness-created span carries when available:
 | Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
 | Agent Plugin inspection/loading | `harness.plugin.{operation}` | `harness.*` |
 
+## Optional guardrail addon attributes and metrics
+
+The `@purista/harness-guardrails` addon emits `evaluate_guardrail {rail.id}` as a child of the active Harness run span (or of the active global OTel context for standalone retrieval). It carries `openinference.span.kind='GUARDRAIL'`, `harness.guardrail.id`, `harness.guardrail.phase`, and `harness.guardrail.outcome` (`allow`, `block`, `transform`, or `error`). A validated deployment-controlled `harness.guardrail.reason_code` may appear only on block/transform outcomes. These attributes are content-free.
+
+Every evaluation records `harness.guardrail.evaluations` (counter) and `harness.guardrail.duration` (seconds histogram) with the same rail/phase/outcome dimensions; failures additionally carry `error.type`. A block is an expected enforcement result and leaves the guardrail span status `UNSET`; a timeout, malformed action result, or action failure sets status `ERROR`. The addon emits structured logs for block, transform, and error only, with the same content-free identity/outcome fields.
+
+`modelCheckRail` must call a configured Harness model handle. Its model call is a nested ordinary `LLM` span and retains the standard model protocol: `harness.model.alias`, provider/model attributes, `gen_ai.usage.*`, `llm.token_count.*`, finish reason, `gen_ai.client.operation.duration`, and `gen_ai.client.token.usage` when usage is reported. The guardrail parent never copies or estimates token counts; trace hierarchy is the authoritative cost-attribution relationship.
+
 ## GenAI operations
 
 The harness uses only these `gen_ai.operation.name` values:

@@ -118,6 +118,46 @@ Both testing subpaths are public development-only helpers. They are the
 default for unit, workflow, tool, skill, and adapter-contract tests; a live
 Presidio sidecar is reserved for explicitly configured integration tests.
 
+## End-user capability matrix
+
+Public docs, handbook, website, and searchable Harness content MUST include
+one outcome-oriented matrix with separate `Presidio sidecar` and `Native
+privacy` columns. It is a product decision aid, not an implementation/API
+inventory. The current release MUST distinguish at least these user outcomes:
+
+| User outcome | Presidio sidecar | Native privacy |
+| --- | --- | --- |
+| Block protected text before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes |
+| Replace a detected whole value with the configured fixed mask token | Yes | Yes |
+| Remove a detected whole value with an empty mask token | Yes | Yes |
+| Detect email address | Deployment recognizer dependent | Built in, regex-based |
+| Detect phone number | Deployment recognizer dependent | Built in, format-based |
+| Detect payment-card number | Deployment recognizer dependent | Built in, Luhn-checked |
+| Detect IPv4 address | Deployment recognizer dependent | Built in, IPv4 only |
+| Detect IPv6 address | Deployment recognizer dependent | Not supplied |
+| Detect IBAN-shaped value | Deployment recognizer dependent | Built in, format-based |
+| Detect US SSN-shaped value | Deployment recognizer dependent | Built in, format-based |
+| Detect HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only |
+| Detect names, locations, organizations, medical or other model/NER entities | Deployment recognizer/model dependent | Not supplied |
+| Detect application-specific identifiers | Custom recognizer dependent | Not supplied |
+| Choose a detection language | Fixed composition-root language per detector | No NLP language model |
+| Keep detector processing in-process without a detector network hop | Not supplied | Yes |
+| Protect reviewed text fields of structured tool values | Yes, through the same explicit codec | Yes, through the same explicit codec |
+| Script deterministic test outcomes | `FakePresidioSidecar` | `FakeSensitiveDataDetector` |
+
+The docs MUST separately state that neither current detector package supplies
+realistic fake-value generation, per-entity transform policies, partial
+masking, hashing, encryption/decryption, table/CSV-wide processing, image/PDF
+OCR redaction, or batch APIs. This is deliberately a separate “not supplied
+today” callout rather than a set of unhelpful two-column `No` rows.
+
+Presidio-sidecar cells MUST say `deployment recognizer dependent` where
+availability depends on the application-owned Analyzer configuration. They
+MUST NOT imply that this adapter configures, downloads, validates, or manages
+the recognizer/model. New transformation, structured-data, or image capability
+requires a separately approved provider-neutral port and specification; it
+must not be inferred from Presidio’s wider product surface.
+
 ## Portable policy and configuration
 
 `NeMoGuardrailsConfig.rails.config.sensitive_data_detection` has exactly this

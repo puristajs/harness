@@ -1,6 +1,6 @@
 # `@purista/harness` — Specification v2
 
-This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
+This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. `32-harness-storage.md` is the clean-break authority for Harness persistence and supersedes older state/runtime/checkpoint binding text.
 
 The folder contains 31 files (this README plus 30 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
@@ -40,6 +40,9 @@ For an implementation agent starting cold, read in this order:
 28. [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) — sanitized test replay and opt-in diagnostic invariants.
 29. [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) — typed background child tasks, bounded fan-out, and in-process continuables.
 30. [29-agent-plugins.md](./29-agent-plugins.md) — first-party Agent Plugins client, trust, portable Skills/MCP projection, and current MCP behavior.
+31. [30-guardrails.md](./30-guardrails.md) — typed NeMo-shaped guardrails subset.
+32. [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md) — sensitive-data adapters and privacy behavior.
+33. [32-harness-storage.md](./32-harness-storage.md) — one Harness storage boundary, one run model, local SQLite, external waits, and PURISTA integration contract.
 
 ## File index (one-liners)
 
@@ -77,6 +80,7 @@ For an implementation agent starting cold, read in this order:
 | [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) | Sanitized offline provider replay and explicit diagnostic invariant contracts. |
 | [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) | Typed child-task lifecycle, queued fan-out, durable descriptors, and in-process continuables. |
 | [29-agent-plugins.md](./29-agent-plugins.md) | First-party Agent Plugins client: trusted local package inspection, Skills/MCP binding, portable filesystem behavior, MCP, telemetry, testing, and release/docs scope. |
+| [32-harness-storage.md](./32-harness-storage.md) | Clean-break Harness storage contract replacing separately configured state, runtime, context-checkpoint, and external-wait persistence. |
 
 ## Authoritative anchors
 
@@ -92,6 +96,7 @@ For an implementation agent starting cold, read in this order:
 - Test-only replay and diagnostics → [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md).
 - Workflow child tasks, fan-out, and continuables → [28-workflow-child-tasks.md](./28-workflow-child-tasks.md).
 - Agent Plugins client behavior, trust, and portable package semantics → [29-agent-plugins.md](./29-agent-plugins.md).
+- Harness structured persistence and PURISTA `ai.storage` integration → [32-harness-storage.md](./32-harness-storage.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.

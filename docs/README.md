@@ -9,17 +9,37 @@ The harness is infrastructure, not a hosted SaaS product. You embed it in your
 service, choose the adapters, and keep control over data, execution, and
 observability.
 
-## Who This Is For
+## Begin With The Right Outcome
 
-| Reader | What You Need |
-|---|---|
-| New joiner | A mental model, the first working run, and where each concept lives. |
-| Application developer | How to define agents, workflows, tools, skills, and sessions. |
-| Platform engineer | How adapters, MCP, sandboxing, telemetry, and state fit together. |
-| Operator | How to verify, observe, troubleshoot, and shut down harness services. |
-| Security reviewer | Trust boundaries, sandbox behavior, secret handling, and redaction defaults. |
+| I need to… | Start here | Then continue with |
+| --- | --- | --- |
+| Understand whether the Harness fits | [Architecture](./concepts/architecture.md) | [Quickstart](./getting-started/quickstart.md) |
+| Run my first typed agent | [Quickstart](./getting-started/quickstart.md) | [Configuration](./guides/configuration.md) and [Usage](./guides/usage.md) |
+| Give an agent safe capabilities | [Tools and skills](./guides/tools-and-skills.md) | [Security](./security/security-model.md) |
+| Coordinate agents or durable work | [Workflows](./guides/workflows.md) | [Durable workspaces](./guides/durable-workspaces.md) |
+| Protect content and tool boundaries | [Guardrails](./guides/guardrails.md) | [Security](./security/security-model.md) |
+| Prove behavior and operate it | [Testing](./guides/testing.md) | [Evaluations](./guides/evaluating-prompts.md) and [Operations](./operations/runbook.md) |
 
-## Start Here
+## Learning Sequence
+
+1. **Foundation** — [Architecture](./concepts/architecture.md), then the
+   [Quickstart](./getting-started/quickstart.md).
+2. **Build** — [Configuration](./guides/configuration.md),
+   [Usage](./guides/usage.md), and [Tools and skills](./guides/tools-and-skills.md).
+3. **Compose** — [Workflows](./guides/workflows.md),
+   [conversation history](./guides/conversation-history.md), and
+   [durable workspaces](./guides/durable-workspaces.md).
+4. **Control** — [Guardrails](./guides/guardrails.md) and the
+   [security model](./security/security-model.md).
+5. **Prove and operate** — [Testing](./guides/testing.md),
+   [evaluations](./guides/evaluating-prompts.md), and the
+   [operations runbook](./operations/runbook.md).
+
+For PURISTA service integration, use the **AI Agent** card in the framework
+handbook. It owns commands, queues, streams, and service contracts; this
+documentation owns the standalone Harness runtime.
+
+## First Run
 
 ```mermaid
 flowchart TD

@@ -121,6 +121,33 @@ Both testing subpaths are public development-only helpers. They are the
 default for unit, workflow, tool, skill, and adapter-contract tests; a live
 Presidio sidecar is reserved for explicitly configured integration tests.
 
+## Published documentation topology
+
+Public documentation has two deliberately different entry points:
+
+| Surface | Audience | Required scope | Must not become |
+| --- | --- | --- | --- |
+| `ai-harness/docs/` | Application developers and operators | Standalone, progressive reference from first harness through production operation | A PURISTA service-builder guide |
+| PURISTA Handbook → `AI Harness` | Implementers | The same standalone progressive journey, including setup, configuration, tools/skills, workflows, guardrails, tests, evaluations, telemetry, operations, and references | A duplicate of the architecture/positioning site |
+| PURISTA Handbook → `Core Building Blocks` → `AI Agent` | PURISTA application developers | Framework-specific attachment, command/queue/stream ownership, service contracts, and framework test boundaries; it links to the Harness handbook for runtime details | A second standalone Harness manual |
+| PURISTA `/harness/` site | Architects, engineering leaders, and evaluators | Why the runtime exists, architecture, governance, production posture, adoption choices, and links into the handbook | An API reference or a long implementation tutorial |
+
+The standalone journey begins with one working typed agent and then progresses
+through model selection, tools and skills, agent and workflow composition,
+guardrails, deterministic tests/evaluations, observability/operations, and
+advanced adapter/deployment choices. Every page has a concrete next step.
+
+The Handbook navigation MUST expose `AI Harness` as a top-level chapter with
+one nested sequence in that order. It MUST retain the `AI Agent` card under
+`Core Building Blocks` for PURISTA-specific composition. Public pages MUST link
+to a real in-repository page or a published package document; they must not
+require access to `specs/`, `plans/`, skills, or unpublished source.
+
+The architect site navigation MUST be short and outcome-oriented: overview,
+architecture, safety/governance, production operations, use cases, and the
+implementation handbook. Detail pages remain addressable but do not all need
+to occupy top-level navigation.
+
 ## End-user capability matrix
 
 Public docs, handbook, website, and searchable Harness content MUST include
@@ -128,25 +155,25 @@ one outcome-oriented matrix with separate `Presidio sidecar` and `Native
 privacy` columns. It is a product decision aid, not an implementation/API
 inventory. The current release MUST distinguish at least these user outcomes:
 
-| User outcome | Presidio sidecar | Native privacy |
-| --- | --- | --- |
-| Block protected text before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes |
-| Replace a detected whole value with the configured fixed mask token | Yes | Yes |
-| Remove a detected whole value with an empty mask token | Yes | Yes |
-| Detect email address | Deployment recognizer dependent | Built in, regex-based |
-| Detect phone number | Deployment recognizer dependent | Built in, format-based |
-| Detect payment-card number | Deployment recognizer dependent | Built in, Luhn-checked |
-| Detect IPv4 address | Deployment recognizer dependent | Built in, IPv4 only |
-| Detect IPv6 address | Deployment recognizer dependent | Built in, syntax-validated |
-| Detect IBAN-shaped value | Deployment recognizer dependent | Built in, format-based |
-| Detect US SSN-shaped value | Deployment recognizer dependent | Built in, format-based |
-| Detect HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only |
-| Detect names, locations, organizations, medical or other model/NER entities | Deployment recognizer/model dependent | Not supplied |
-| Detect application-specific identifiers | Custom recognizer dependent | Not supplied |
-| Choose a detection language | Fixed composition-root language per detector | No NLP language model |
-| Keep detector processing in-process without a detector network hop | Not supplied | Yes |
-| Protect reviewed text fields of structured tool values | Yes, through the same explicit codec | Yes, through the same explicit codec |
-| Script deterministic test outcomes | `FakePresidioSidecar` | `FakeSensitiveDataDetector` |
+| User outcome | Presidio sidecar | Native privacy | Local NER |
+| --- | --- | --- | --- |
+| Block protected text before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes | Yes |
+| Replace a detected whole value with the configured fixed mask token | Yes | Yes | Yes |
+| Remove a detected whole value with an empty mask token | Yes | Yes | Yes |
+| Detect email address | Deployment recognizer dependent | Built in, regex-based | Model/label dependent; not built in |
+| Detect phone number | Deployment recognizer dependent | Built in, format-based | Model/label dependent; not built in |
+| Detect payment-card number | Deployment recognizer dependent | Built in, Luhn-checked | Model/label dependent; not built in |
+| Detect IPv4 address | Deployment recognizer dependent | Built in, syntax-validated | Model/label dependent; not built in |
+| Detect IPv6 address | Deployment recognizer dependent | Built in, syntax-validated | Model/label dependent; not built in |
+| Detect IBAN-shaped value | Deployment recognizer dependent | Built in, format-based | Model/label dependent; not built in |
+| Detect US SSN-shaped value | Deployment recognizer dependent | Built in, format-based | Model/label dependent; not built in |
+| Detect HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only | Model/label dependent; not built in |
+| Detect names, locations, organizations, medical or other model/NER entities | Deployment recognizer/model dependent | Not supplied | Selected model and explicit label mapping |
+| Detect application-specific identifiers | Custom recognizer dependent | Not supplied | Not supplied; inject a dedicated detector |
+| Choose a detection language | Fixed composition-root language per detector | No NLP language model | Selected local model and label mapping |
+| Keep detector processing in-process without a detector network hop | Not supplied | Yes | Yes, with an installed local model |
+| Protect reviewed text fields of structured tool values | Yes, through the same explicit codec | Yes, through the same explicit codec | Yes, through the same explicit codec |
+| Script deterministic test outcomes | `FakePresidioSidecar` | `FakeSensitiveDataDetector` | `FakeLocalNerRuntime` |
 
 The docs MUST separately state that neither current detector package supplies
 realistic fake-value generation, per-entity transform policies, partial
@@ -190,7 +217,8 @@ rails:
 
 Each configured phase is optional. Within a configured phase, `entities` is a
 non-empty, unique list of uppercase ASCII identifiers (`[A-Z][A-Z0-9_]{0,63}`),
-`mask_token` is a non-empty string of at most 128 UTF-16 code units, and
+`mask_token` is a string of at most 128 UTF-16 code units; the empty string is
+the explicit whole-value removal mode, and
 `score_threshold` is a finite number in `[0, 1]`. Unknown keys, a non-object
 phase, `recognizers`, `language`, provider names, endpoint URLs, credentials,
 or a flow whose phase lacks the matching policy are rejected with a

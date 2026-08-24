@@ -87,7 +87,8 @@ Keep these layers separate:
   local subset. Both must fail closed. In user-facing material, describe them
   with the outcome-oriented capability matrix: Presidio availability is
   deployment recognizer/model dependent; native supports only its documented
-  regex/validator subset (including IPv4, not IPv6). Do not imply Presidio
+  regex/validator subset (including syntax-validated IPv4 and IPv6). Do not
+  imply Presidio
   Anonymizer, fake-value generation, hashing/encryption, structured-data,
   image/PDF OCR, or batch support from the detection adapter.
 - Sensitive-data inspection has a nested content-free

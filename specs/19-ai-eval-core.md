@@ -58,12 +58,12 @@ Defaults:
 - `contentCaptureMode`: env
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`
 
-v1 core does not emit prompt, completion, tool input/result, expected-output, or
+v3 core does not emit prompt, completion, tool input/result, expected-output, or
 context content on spans or span events. Memory content is governed by
 [20-memory-adapters](./20-memory-adapters.md) and defaults to no raw content.
 Non-`NO_CONTENT` values are accepted as stable policy inputs for memory content
 capture and for adapters that want to inspect the configured policy, but
-persisted `StateStore` events remain redacted in every mode.
+persisted `HarnessStorage` events remain redacted in every mode.
 
 ## Trace Context propagation
 
@@ -129,7 +129,7 @@ interface RunSummary {
 `tokenTotals` is the sum of persisted model usage events for the run. Missing
 usage counts as zero. The harness must not estimate tokens.
 
-`getRunSummary` reads the configured `StateStore`; it does not require an OTel
+`getRunSummary` reads the configured `HarnessStorage`; it does not require an OTel
 collector and does not inspect spans.
 
 ## Deterministic scorer helpers
@@ -189,7 +189,7 @@ Unsupported keywords are ignored. Downstream agents must not assume `$ref`,
 item schemas, or draft-specific behavior.
 
 These helpers are testing/local primitives. LLM judge and RAG scorers are not
-core exports in v1 because they require product-specific dataset, prompt, and
+core exports in v3 because they require product-specific dataset, prompt, and
 judge-agent policy.
 
 ## Prompt candidate evaluation helper
@@ -278,7 +278,7 @@ Required core tests:
 4. Invalid Trace Context test asserts a new trace is created and warning log is
    emitted.
 5. `getRunSummary` tests assert token totals, model/tool/agent counts, status,
-   and errors are derived from `StateStore` data.
+   and errors are derived from `HarnessStorage` data.
 6. Deterministic scorer tests cover regex, json-schema, contains,
    attribute-equality, missing pointers, invalid schemas, and invalid regex.
 7. `evaluatePromptCandidates` tests cover stable ordering, aggregate

@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-guardrails-native-privacy",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "description": "Local Rust Node-API sensitive-data recognizers for @purista/harness-guardrails.",
   "type": "module",
   "main": "./dist/index.js",
@@ -43,10 +43,10 @@
     "artifacts": "napi pre-publish --tag-style npm --npm-dir npm"
   },
   "peerDependencies": {
-    "@purista/harness-guardrails": "^2.1.1"
+    "@purista/harness-guardrails": "^3.0.0"
   },
   "devDependencies": {
-    "@purista/harness-guardrails": "^2.1.1",
+    "@purista/harness-guardrails": "^3.0.0",
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "npm:@typescript/typescript6@^6.0.2",

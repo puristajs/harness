@@ -1,6 +1,6 @@
 [package]
 name = "harness_guardrails_native_privacy"
-version = "2.1.1"
+version = "3.0.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false

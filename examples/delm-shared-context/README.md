@@ -76,7 +76,7 @@ Admitted shared context:
 Rejected reports:
 - rejected rollback-proposal from worker-1: patch_summary_requires_verified_evidence
 
-Durable context checkpoints written: 1
+Durable workflow checkpoints written: 1
 ```
 
 The runnable CLI uses the real OpenAI provider by default:
@@ -109,7 +109,7 @@ network access or an API key.
 - Selective unfolding when a caller needs the detailed evidence behind one
   shared entry.
 - A harness workflow that runs worker agents in parallel rounds and writes a
-  durable context checkpoint.
+  durable workflow checkpoint.
 
 The implementation is split so the reusable pieces can later move into a
 package such as `@purista/harness-shared-context`:

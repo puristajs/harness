@@ -1,8 +1,8 @@
 import { OperationCancelledError, WorkspaceError, WorkspaceQuotaExceededError } from '../errors/index.js'
 import type { JsonValue } from '../models/json.js'
 import type {
-  DurableWorkspaceStore,
-  DurableWorkspaceStoreInfo,
+  DurableWorkspace,
+  DurableWorkspaceInfo,
   WorkspaceAbortOptions,
   WorkspaceAbortResult,
   WorkspaceCheckpoint,
@@ -51,23 +51,23 @@ const RETENTION: WorkspaceRetentionPolicy = {
 }
 const QUOTA = { maxActiveWorkspaces: 100, maxWorkspaceBytes: 10_000_000, maxCheckpointPayloadBytes: 1_000_000 } as const
 
-/** In-process durable workspace store for local development, examples, and tests. */
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore {
+/** In-process durable workspace for local development, examples, and tests. */
+export class InMemoryDurableWorkspace implements DurableWorkspace {
   public readonly info = {
-    id: 'in_memory_workspace_store',
+    id: 'in_memory_workspace',
     packageName: '@purista/harness',
     capabilities: [
-      'workspace_store.durable',
-      'workspace_store.checkpoint',
-      'workspace_store.resume',
-      'workspace_store.abort',
-      'workspace_store.cleanup',
-      'workspace_store.inspect',
-      'workspace_store.retention',
-      'workspace_store.quota'
+      'workspace.durable',
+      'workspace.checkpoint',
+      'workspace.resume',
+      'workspace.abort',
+      'workspace.cleanup',
+      'workspace.inspect',
+      'workspace.retention',
+      'workspace.quota'
     ] as const,
     policy: { retention: RETENTION, quota: { maxActiveWorkspaces: QUOTA.maxActiveWorkspaces, maxWorkspaceBytes: QUOTA.maxWorkspaceBytes } }
-  } satisfies DurableWorkspaceStoreInfo
+  } satisfies DurableWorkspaceInfo
 
   public readonly capabilities = this.info.capabilities
   private readonly workspaces = new Map<string, StoredWorkspace>()
@@ -381,7 +381,7 @@ function byteLength(value: JsonValue): number {
   }
 }
 
-/** Creates a fresh in-process durable workspace store. */
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore {
-  return new InMemoryDurableWorkspaceStore()
+/** Creates a fresh in-process durable workspace. */
+export function inMemoryDurableWorkspace(): DurableWorkspace {
+  return new InMemoryDurableWorkspace()
 }

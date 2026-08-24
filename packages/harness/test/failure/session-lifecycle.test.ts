@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { defineHarness, inMemorySandbox, InMemoryStateStore, JsonLogger, StateError, type FinishRunPatch, type PersistedRunEvent, type SessionRecord } from '../../src/index.js'
+import { defineHarness, inMemorySandbox, InMemoryHarnessStorage, JsonLogger, StateError, type FinishRunPatch, type PersistedRunEvent, type SessionRecord } from '../../src/index.js'
 import type { RunRecord } from '../../src/models/state.js'
 
-class CreateRunFailingStateStore extends InMemoryStateStore {
+class CreateRunFailingHarnessStorage extends InMemoryHarnessStorage {
   public readonly appendedEvents: PersistedRunEvent[] = []
   public readonly finishRunCalls: Array<{ runId: string; patch: FinishRunPatch }> = []
 
@@ -20,7 +20,7 @@ class CreateRunFailingStateStore extends InMemoryStateStore {
   }
 }
 
-class FailureTerminalizationStateStore extends InMemoryStateStore {
+class FailureTerminalizationHarnessStorage extends InMemoryHarnessStorage {
   public constructor(private readonly failingOperation: 'finishRun' | 'upsertSession') {
     super()
   }
@@ -41,9 +41,9 @@ class FailureTerminalizationStateStore extends InMemoryStateStore {
 }
 
 it('does not emit or finish a run when createRun fails', async () => {
-  const state = new CreateRunFailingStateStore()
+  const storage = new CreateRunFailingHarnessStorage()
   const harness = defineHarness()
-    .state(state)
+    .storage(storage)
     .sandbox(inMemorySandbox())
     .models({
       fake: {
@@ -71,19 +71,19 @@ it('does not emit or finish a run when createRun fails', async () => {
 
   const session = await harness.getSession('s1')
   await expect(session.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(StateError)
-  expect(state.appendedEvents).toEqual([])
-  expect(state.finishRunCalls).toEqual([])
+  expect(storage.appendedEvents).toEqual([])
+  expect(storage.finishRunCalls).toEqual([])
 })
 
 it.each(['finishRun', 'upsertSession'] as const)(
   'preserves the original workflow/model failure when %s fails during failure terminalization',
   async (failingOperation) => {
-    const state = new FailureTerminalizationStateStore(failingOperation)
+    const storage = new FailureTerminalizationHarnessStorage(failingOperation)
     const primaryError = new Error('model failed first')
     const logs: string[] = []
     const harness = defineHarness()
       .logger(new JsonLogger({ level: 'error', out: { write: (chunk) => logs.push(chunk) } }))
-      .state(state)
+      .storage(storage)
       .sandbox(inMemorySandbox())
       .models({
         fake: {

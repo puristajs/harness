@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { defineHarness, inMemorySandbox, InMemoryStateStore } from '../src/index.js'
+import { defineHarness, inMemorySandbox, InMemoryHarnessStorage } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 describe('emitted message id uniqueness', () => {
@@ -18,10 +18,10 @@ describe('emitted message id uniqueness', () => {
     model.enqueueObject({ object: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     model.enqueueObject({ object: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 
-    const state = new InMemoryStateStore()
+    const storage = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(storage)
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
       .tools({})
       .skills({})
@@ -45,7 +45,7 @@ describe('emitted message id uniqueness', () => {
     const session = await harness.getSession('s1')
     await expect(session.workflows.wf.prompt('go')).resolves.toBe('first,second')
 
-    const messages = await state.listMessages('s1')
+    const messages = await storage.listMessages('s1')
     const ids = messages.map((message) => message.id)
     expect(ids.length).toBeGreaterThanOrEqual(2)
     expect(new Set(ids).size).toBe(ids.length)

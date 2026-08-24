@@ -77,6 +77,7 @@ flowchart TD
   - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
   - [Guardrails](./guides/guardrails.md): configure typed input, output, tool, retrieval, and sensitive-data protection; choose Presidio or native privacy by user outcome.
   - [Migrating To AI Harness 2.0](./guides/migrating-to-v2.md): make the clean MCP v2 and package-major upgrade.
+  - [Migrating To AI Harness 3.0](./guides/migrating-to-v3.md): replace overlapping state/runtime/wait/checkpoint adapters with one `HarnessStorage`.
   - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and application-owned review tasks.
 - Operate and review
   - [Operations Runbook](./operations/runbook.md): readiness checks, failure handling, logs, traces, MCP operations, and shutdown.
@@ -119,13 +120,13 @@ flowchart LR
   Tools --> Governance["Optional governance"]
   Agent --> Skills["Mounted skills"]
   Governance --> Sandbox["Sandbox session"]
-  Session --> State["State store"]
+  Session --> Storage["Harness storage"]
   Session --> Telemetry["Logs + OpenTelemetry"]
 ```
 
 The application API is `harness.getSession(...)`, then
 `session.agents.<id>` or `session.workflows.<id>`. Providers, tools, sandboxes,
-state stores, and durable workspace stores are infrastructure behind that
+Harness storage, and durable workspaces are infrastructure behind that
 boundary.
 
 In harness terminology, an **agent** is the typed LLM conversation loop: it

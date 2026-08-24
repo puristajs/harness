@@ -13,10 +13,10 @@ assistant/tool exchange, and the terminal assistant output; the Harness never
 keeps a partial tool exchange merely to fit a limit.
 
 ```ts
-import { defineHarness, InMemoryStateStore } from '@purista/harness'
+import { defineHarness, InMemoryHarnessStorage } from '@purista/harness'
 
 const harness = defineHarness({ name: 'support' })
-  .state(new InMemoryStateStore())
+  .storage(new InMemoryHarnessStorage())
   .defaults({
     historyRetention: { maxTurns: 50, maxBytes: 256_000 },
   })
@@ -24,7 +24,7 @@ const harness = defineHarness({ name: 'support' })
   .build()
 ```
 
-`historyRetention` requires a state store that implements atomic
+`historyRetention` requires a Harness storage that implements atomic
 `replaceMessages`. The Harness fails at build time instead of falling back to a
 non-atomic read/trim/write sequence. If the newest complete turn alone exceeds
 `maxBytes`, the call fails rather than persisting an invalid partial history.
@@ -59,6 +59,6 @@ commit also leave no partial transcript. This does not make external tool or
 service side effects exactly-once: design those operations with their own
 idempotency contracts.
 
-For workflows, use the existing durable runtime/workspace idempotency contract;
+For workflows, use the existing Harness storage/workspace idempotency contract;
 the direct-agent `idempotencyKey` is intentionally not inferred for a workflow
 because workflow inputs and side effects need an explicit durable policy.

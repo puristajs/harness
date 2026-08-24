@@ -1,1 +1,1 @@
-export { InMemoryDurableWorkspaceStore, inMemoryDurableWorkspaceStore } from './in-memory.js'
+export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from './in-memory.js'

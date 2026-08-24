@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { defineHarness, defineHarnessModule } from '../src/harness/defineHarness.js'
 import { createModelRegistry } from '../src/models/registry.js'
-import { inMemorySandbox, sandboxMemory } from '../src/index.js'
+import { inMemoryDurableWorkspace, inMemoryHarnessStorage, inMemorySandbox, sandboxMemory } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
 import type { JsonValue, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
@@ -10,6 +10,20 @@ import type { Logger } from '../src/logger/index.js'
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
 type IsAny<T> = 0 extends 1 & T ? true : false
+
+defineHarness().storage(inMemoryHarnessStorage())
+defineHarness().workspace(inMemoryDurableWorkspace())
+
+// @ts-expect-error clean-break API: structured persistence is configured through storage
+defineHarness().state(inMemoryHarnessStorage())
+// @ts-expect-error clean-break API: durable execution is a HarnessStorage responsibility
+defineHarness().runtime({})
+// @ts-expect-error clean-break API: external waits are a HarnessStorage responsibility
+defineHarness().externalWait({})
+// @ts-expect-error clean-break API: context checkpoints were removed
+defineHarness().checkpoints({})
+// @ts-expect-error clean-break API: durable files are configured through workspace
+defineHarness().workspaceStore(inMemoryDurableWorkspace())
 
 const provider: ModelProvider = {
   id: 'type-test-provider',
@@ -279,7 +293,7 @@ type CapabilityAwareBuilder<S extends BuilderState> = Omit<HarnessBuilder<S>, 'b
 }
 
 const futureCapabilityHarness = (defineHarness() as CapabilityAwareBuilder<{}>)
-  .requires(['sandbox.snapshot', 'sandbox.resume', 'runtime.checkpoint'])
+  .requires(['sandbox.snapshot', 'sandbox.resume', 'storage.checkpoint'])
   .models({
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] }
   })

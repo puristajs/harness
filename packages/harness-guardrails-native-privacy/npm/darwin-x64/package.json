@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-guardrails-native-privacy-darwin-x64",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "cpu": [
     "x64"
   ],

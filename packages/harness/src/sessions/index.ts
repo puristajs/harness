@@ -41,23 +41,20 @@ import type {
   ChildTaskHandle,
   ChildTaskStartOptions,
   ChildTaskStatus,
-  ContextCheckpoints,
   ContentCaptureMode,
   GovernanceConfig,
   TelemetryOptions
 } from '../harness/defineHarness.js'
 import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
-import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
-import type { DurableWorkspaceStore } from '../ports/workspace.js'
-import type { ContextCheckpoint, ContextCheckpointStore } from '../ports/context-checkpoints.js'
-import { ExternalWaitError, ExternalWaitPendingError, type DurableExternalWaitAdapter, type ExternalWaitRequest, type ExternalWaitSnapshot } from '../ports/external-wait.js'
-import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
-import type { DurableRuntime } from '../runtime/durable.js'
+import type { HarnessInspection } from '../ports/capabilities.js'
+import type { DurableWorkspace } from '../ports/workspace.js'
+import { ExternalWaitError, ExternalWaitPendingError, type ExternalWaitRequest, type ExternalWaitSnapshot } from '../storage/external-wait.js'
+import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import { runStepWithRetry, type DurableStepOptions } from '../runtime/steps.js'
 import { HarnessConfigError } from '../errors/catalog.js'
 import type { Sandbox, SandboxSession } from '../sandbox/index.js'
-import type { StateStore } from '../ports/state.js'
+import type { HarnessStorage } from '../storage/types.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
 import type { TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
@@ -93,13 +90,10 @@ type HarnessDefinition<S extends BuilderState> = {
   logger: Logger
   telemetry?: TelemetryOptions
   telemetryShim?: TelemetryShim
-  state: StateStore
+  storage: HarnessStorage
   sandbox: Sandbox
   memory: MemoryAdapter
-  runtime?: DurableRuntimeAdapter
-  workspaceStore?: DurableWorkspaceStore
-  checkpoints?: ContextCheckpointStore
-  externalWait?: DurableExternalWaitAdapter
+  workspace?: DurableWorkspace
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -366,9 +360,9 @@ function normalizeMessage(message: Omit<Message, 'id' | 'timestamp'>, sessionId:
 }
 
 export function createSessionHarness<S extends BuilderState>(definition: HarnessDefinition<S>): Harness<S> {
-  if (definition.defaults.historyRetention && !definition.state.replaceMessages) {
-    throw new HarnessConfigError('historyRetention requires an atomic StateStore.replaceMessages implementation.', {
-      reason: 'state_store_atomic_replace_required', path: 'state.replaceMessages'
+  if (definition.defaults.historyRetention && !definition.storage.replaceMessages) {
+    throw new HarnessConfigError('historyRetention requires an atomic HarnessStorage.replaceMessages implementation.', {
+      reason: 'storage_atomic_replace_required', path: 'storage.replaceMessages'
     })
   }
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
@@ -385,7 +379,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // execution is still owned by this harness instance and is cancelled on
   // session close or harness shutdown.
   const childTasks = new Map<string, LiveChildTask>()
-  // A StateStore's createRun operation is intentionally portable and does not
+  // A HarnessStorage's createRun operation is intentionally portable and does not
   // promise compare-and-set semantics. Serialize only the short in-process
   // reservation window so concurrent durable retries cannot both publish a
   // child run before either becomes visible in state.
@@ -411,13 +405,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
-  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints, definition.externalWait)
+  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.storage, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.workspace)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
 
   async function ensureSessionRecord(sessionId: string): Promise<SessionRecord> {
-    const existing = await definition.state.getSession(sessionId)
+    const existing = await definition.storage.getSession(sessionId)
     if (existing) {
       return existing
     }
@@ -429,7 +423,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       updatedAt: createdAt,
       runCount: 0
     }
-    await definition.state.upsertSession(created)
+    await definition.storage.upsertSession(created)
     return created
   }
 
@@ -458,7 +452,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   async function appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
     try {
-      await definition.state.appendEvents(runId, events)
+      await definition.storage.appendEvents(runId, events)
     } catch (error) {
       telemetry.recordCounter('harness.events.persist_errors', 1, { harness: definition.name })
       definition.logger.error('Failed to persist run events.', { harness: definition.name, run_id: runId, error: serializeError(error) })
@@ -473,7 +467,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
    */
   async function persistConversationTurn(sessionId: string, messages: readonly Message[]): Promise<void> {
     if (messages.length === 0) return
-    const current = await definition.state.listMessages(sessionId)
+    const current = await definition.storage.listMessages(sessionId)
     const existing = new Map(current.map((message) => [message.id, message]))
     const additions: Message[] = []
     for (const message of messages) {
@@ -490,14 +484,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
     if (definition.defaults.historyRetention) {
       const retained = retainCompleteTurns([...current, ...additions], definition.defaults.historyRetention)
-      await definition.state.replaceMessages!(sessionId, retained)
+      await definition.storage.replaceMessages!(sessionId, retained)
       return
     }
-    if (additions.length > 0) await definition.state.appendMessages(sessionId, additions)
+    if (additions.length > 0) await definition.storage.appendMessages(sessionId, additions)
   }
 
   async function readCommittedAgentOutput(sessionId: string, runId: string, agent: AgentDefinition<S>): Promise<JsonValue | undefined> {
-    const finalMessage = (await definition.state.listMessages(sessionId))
+    const finalMessage = (await definition.storage.listMessages(sessionId))
       .find((message) => message.id === `msg_${runId}_99_assistant_final`)
     if (!finalMessage) return undefined
     let candidate: unknown
@@ -574,9 +568,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   async function getRunSummary(runId: string): Promise<RunSummary | undefined> {
-    const run = await definition.state.getRun(runId)
+    const run = await definition.storage.getRun(runId)
     if (!run) return undefined
-    const events = await definition.state.listEvents(runId)
+    const events = await definition.storage.listEvents(runId)
     const tokenTotals: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     let modelCalls = 0
     let toolCalls = 0
@@ -650,73 +644,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   /**
-   * Validates `opts.durable` and returns the executable durable runtime, or
+   * Validates `opts.durable` and returns the configured Harness storage, or
    * `undefined` for an ephemeral run. Throws before any run record is created.
    */
-  function resolveDurableRuntime(opts: InvokeOptions | undefined): DurableRuntime | undefined {
+  function resolveDurableStorage(opts: InvokeOptions | undefined): HarnessStorage | undefined {
     if (!opts?.durable) return undefined
     if (!DURABLE_RUN_ID_PATTERN.test(opts.durable.runId)) {
       throw new ValidationError('Durable run id is invalid.', { where: 'invoke_options', issues: { 'durable.runId': opts.durable.runId } })
     }
-    if (!isExecutableDurableRuntime(definition.runtime)) {
-      throw new HarnessConfigError('Durable execution requires an executable .runtime(...) adapter.', { reason: 'durable_runtime_required', path: 'runtime' })
-    }
-    return definition.runtime
-  }
-
-  function createContextCheckpoints(args: {
-    runId: string
-    sessionId: string
-    workflowId?: string
-    agentId?: string
-    signal: AbortSignal
-  }): ContextCheckpoints {
-    const store = definition.checkpoints
-    const requireStore = (): ContextCheckpointStore => {
-      if (!store) {
-        throw new ValidationError('No context checkpoint store is configured.', {
-          where: 'invoke_options',
-          issues: { reason: 'context_checkpoint_store_missing' }
-        })
-      }
-      return store
-    }
-    const baseQuery = {
-      runId: args.runId,
-      sessionId: args.sessionId,
-      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-      ...(args.agentId ? { agentId: args.agentId } : {})
-    }
-    return {
-      async write(input): Promise<void> {
-        const json = JSON.stringify(input.payload)
-        if (json === undefined) {
-          throw new ValidationError('Context checkpoint payload must be JSON-serializable.', {
-            where: 'invoke_options',
-            issues: { reason: 'non_json_context_checkpoint_payload' }
-          })
-        }
-        const checkpoint: ContextCheckpoint = {
-          ...baseQuery,
-          sequence: input.sequence,
-          kind: input.kind,
-          payload: input.payload,
-          payloadSizeBytes: Buffer.byteLength(json, 'utf8'),
-          createdAt: now(),
-          ...(input.metadata ? { metadata: input.metadata } : {})
-        }
-        await requireStore().write(checkpoint, { signal: args.signal })
-      },
-      async list(query = {}): Promise<readonly ContextCheckpoint[]> {
-        return requireStore().list({ ...baseQuery, ...query, signal: args.signal })
-      },
-      async read(ref): Promise<ContextCheckpoint | undefined> {
-        return requireStore().read({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
-      },
-      async delete(ref): Promise<void> {
-        await requireStore().delete({ runId: args.runId, sessionId: args.sessionId, sequence: ref.sequence, kind: ref.kind })
-      }
-    }
+    return definition.storage
   }
 
   return {
@@ -762,7 +698,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         },
         memory,
         history: {
-          list: (opts) => definition.state.listMessages(sessionId, opts)
+          list: (opts) => definition.storage.listMessages(sessionId, opts)
         },
         async getRunSummary(runId: string): Promise<RunSummary | undefined> {
           return getRunSummary(runId)
@@ -771,7 +707,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           if (state.busy || state.releasing) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'history_clear_during_run' })
           }
-          await definition.state.clearMessages(sessionId)
+          await definition.storage.clearMessages(sessionId)
         },
         async replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void> {
           if (state.busy || state.releasing) {
@@ -784,13 +720,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               throw new ValidationError('Session history replacement failed validation.', { where: 'session_history', issues: { message } }, error)
             }
           })
-          if (definition.state.replaceMessages) {
-            await definition.state.replaceMessages(sessionId, parsed)
+          if (definition.storage.replaceMessages) {
+            await definition.storage.replaceMessages(sessionId, parsed)
           } else {
             // Non-atomic fallback for adapters without atomic replace.
-            await definition.state.clearMessages(sessionId)
+            await definition.storage.clearMessages(sessionId)
             if (parsed.length > 0) {
-              await definition.state.appendMessages(sessionId, parsed)
+              await definition.storage.appendMessages(sessionId, parsed)
             }
           }
         },
@@ -802,7 +738,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           await releaseSessionResources(sessionId, state, 'session closed')
           const reopened = sessionStates.get(sessionId)
           if (reopened && reopened !== state) return
-          await definition.state.closeSession(sessionId)
+          await definition.storage.closeSession(sessionId)
           sessionStateOpenings.delete(sessionId)
         },
         async release(): Promise<void> {
@@ -862,13 +798,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         await closeResource('model_provider', alias, model.provider)
       }
       await closeResource('governance', 'governance', definition.governance)
-      await closeResource('external_wait', definition.externalWait?.id ?? 'external_wait', definition.externalWait)
-      await closeResource('context_checkpoints', 'checkpoints', definition.checkpoints)
-      await closeResource('workspace_store', 'workspace_store', definition.workspaceStore)
-      await closeResource('runtime', 'runtime', definition.runtime)
+      await closeResource('workspace', 'workspace', definition.workspace)
       await closeResource('memory', definition.memory.info.id, definition.memory)
       await closeResource('sandbox', 'sandbox', definition.sandbox)
-      await closeResource('state', 'state', definition.state)
+      await closeResource('state', 'state', definition.storage)
       await closeResource('logger', 'logger', definition.logger, false)
       return { errors }
   }
@@ -903,13 +836,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
-    // StateStore run ids are global. Scope caller-provided delivery keys by the
+    // HarnessStorage run ids are global. Scope caller-provided delivery keys by the
     // logical session and agent so the same transport key can safely occur in
     // independent conversations. Hashing also keeps the persisted id bounded
     // and avoids placing a caller-controlled delivery id in logs or storage.
     const runId = opts?.idempotencyKey ? directAgentIdempotencyRunId(sessionId, agentId, opts.idempotencyKey) : ulid()
     if (opts?.idempotencyKey) {
-      const previous = await definition.state.getRun(runId)
+      const previous = await definition.storage.getRun(runId)
       if (previous) {
         const sameInvocation = previous.sessionId === sessionId
           && previous.kind === 'agent'
@@ -944,7 +877,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         const committed = await readCommittedAgentOutput(sessionId, runId, agent)
         if (committed !== undefined) {
           const finishedAt = now()
-          await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: committed })
+          await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: committed })
           return committed as AgentOutput<S, K>
         }
       }
@@ -976,7 +909,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         sandboxSession: state.sandboxSession,
         metadata: opts?.metadata ?? {}
       })
-      const checkpoints = createContextCheckpoints({ sessionId, runId, agentId, signal: runSignal.signal })
       const runRecord: RunRecord = {
         id: runId,
         sessionId,
@@ -986,7 +918,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         status: 'running',
         input: input as JsonValue
       }
-      await definition.state.createRun(runRecord)
+      await definition.storage.createRun(runRecord)
       runCreated = true
 
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.agent_prompt', {
@@ -1006,7 +938,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           runId,
           sessionId,
           input,
-          history: await definition.state.listMessages(sessionId),
+          history: await definition.storage.listMessages(sessionId),
           agent,
           models: withRunEventModelRegistry(modelRegistry, {
             harnessName: definition.name,
@@ -1020,7 +952,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           mcpRegistry,
           session: state.sandboxSession,
           memory,
-          checkpoints,
           mountedSkills: state.mountedSkills,
           ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
           ...(contextProjection ? { contextProjection } : {}),
@@ -1041,9 +972,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
       const finishedAt = now()
       await emit({ type: 'run.finished', runId, at: finishedAt, output: result as JsonValue })
-      await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
+      await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
       const sessionRecord = await ensureSessionRecord(sessionId)
-      await definition.state.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
       return result as AgentOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
@@ -1068,14 +999,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         runId,
         primaryError: serialized,
         emitRunFinished: () => emit(runFinished),
-        finishRun: () => definition.state.finishRun(runId, {
+        finishRun: () => definition.storage.finishRun(runId, {
           status: finalError instanceof OperationCancelledError ? 'cancelled' : 'failed',
           finishedAt,
           error: serialized
         }),
         upsertSession: async () => {
           const sessionRecord = await ensureSessionRecord(sessionId)
-          await definition.state.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
         }
       })
       throw finalError
@@ -1108,7 +1039,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<WorkflowOutput<S, K>> {
     validateInvokeOptions(opts)
-    const durableRuntime = resolveDurableRuntime(opts)
+    const durableStorage = resolveDurableStorage(opts)
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
@@ -1152,10 +1083,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       slotWaiters: []
     }
     try {
-      if (durableRuntime && opts?.durable) {
+      await definition.storage.createRun(runRecord)
+      runCreated = true
+      if (durableStorage && opts?.durable) {
         durableBinding = await beginDurableWorkflow({
-          runtime: durableRuntime,
-          ...(definition.workspaceStore ? { workspaceStore: definition.workspaceStore } : {}),
+          storage: durableStorage,
+          ...(definition.workspace ? { workspace: definition.workspace } : {}),
           durable: opts.durable,
           defaultWorkerId: durableWorkerId,
           sessionId,
@@ -1165,7 +1098,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           logger: definition.logger,
           harnessName: definition.name
         })
-        if (definition.workspaceStore) {
+        if (definition.workspace) {
           runSandboxSession = await definition.sandbox.open({ sessionId, runId, signal: runSignal.signal }) as SandboxSession
           runMountedSkills = new Set<string>()
           closeRunSandbox = true
@@ -1179,9 +1112,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         sandboxSession: runSandboxSession,
         metadata: opts?.metadata ?? {}
       })
-      const checkpoints = createContextCheckpoints({ sessionId, runId, workflowId, signal: runSignal.signal })
-      await definition.state.createRun(runRecord)
-      runCreated = true
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
           'harness.name': definition.name,
           'harness.session.id': sessionId,
@@ -1218,10 +1148,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: opts?.metadata ?? {},
             metrics: workflowMetrics,
             memory,
-            checkpoints,
             step: durableBinding ? durableBinding.step : passthroughStep,
             externalWait: createExternalWaitFacade({
-              adapter: definition.externalWait,
+              storage: definition.storage,
               durable: durableBinding,
               telemetry,
               harnessName: definition.name,
@@ -1312,7 +1241,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       sandboxSession: runSandboxSession,
                       metadata: agentMetadata
                     })
-                    const agentCheckpoints = createContextCheckpoints({ sessionId, runId, workflowId, agentId, signal: agentSignal.signal })
                     const run = await runDefaultAgent({
                       harnessName: definition.name,
                       agentId,
@@ -1322,7 +1250,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       delegationCallId,
                       delegationDepth: CHILD_DELEGATION_DEPTH,
                       input: agentInput,
-                      history: await definition.state.listMessages(sessionId),
+                      history: await definition.storage.listMessages(sessionId),
                       agent: agent as AgentDefinition<S>,
                       modelAlias: selectedModelAlias,
                       models: withRunEventModelRegistry(modelRegistry, {
@@ -1339,7 +1267,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       mcpRegistry,
                       session: runSandboxSession,
                       memory: agentMemory,
-                      checkpoints: agentCheckpoints,
                       mountedSkills: runMountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
                       ...(contextProjection ? { contextProjection } : {}),
@@ -1428,9 +1355,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       const runFinished: RunEvent = { type: 'run.finished', runId, at: finishedAt, output: result as JsonValue }
       await emit(runFinished)
-      await definition.state.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
+      await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
       const sessionRecord = await ensureSessionRecord(sessionId)
-      await definition.state.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
       return result as WorkflowOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
@@ -1447,7 +1374,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         throw finalError
       }
       if (finalError instanceof ExternalWaitPendingError) {
-        await definition.state.finishRun(runId, { status: 'waiting' })
+        await definition.storage.finishRun(runId, { status: 'waiting' })
         // A durable wait is a normal suspension: do not log it as a workflow
         // failure, emit run.finished, or make the durable run terminal. The
         // finally block releases the lease so a signal can trigger a later run.
@@ -1472,14 +1399,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         runId,
         primaryError: serialized,
         emitRunFinished: () => emit(runFinished),
-        finishRun: () => definition.state.finishRun(runId, {
-          status: finalError instanceof OperationCancelledError ? 'cancelled' : 'failed',
+        finishRun: () => definition.storage.finishRun(runId, {
+          status: finalError instanceof OperationCancelledError ? 'cancelled' : durableBinding ? 'interrupted' : 'failed',
           finishedAt,
           error: serialized
         }),
         upsertSession: async () => {
           const sessionRecord = await ensureSessionRecord(sessionId)
-          await definition.state.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
         }
       })
       throw finalError
@@ -1507,7 +1434,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   /** Pass-through step used when a workflow runs without durable execution. */
   function createExternalWaitFacade(args: {
-    adapter: DurableExternalWaitAdapter | undefined
+    storage: HarnessStorage
     durable: DurableWorkflowBinding | undefined
     telemetry: TelemetryShim
     harnessName: string
@@ -1519,10 +1446,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return {
       wait: async (request) => {
         if (!args.durable) {
-          throw new ExternalWaitError('External waits require opts.durable and a durable runtime.', 'durable_required')
-        }
-        if (!args.adapter) {
-          throw new ExternalWaitError('No external wait adapter is configured. Add .externalWait(adapter) to the Harness builder.', 'adapter_unavailable')
+          throw new ExternalWaitError('External waits require a durable workflow invocation.', 'durable_required')
         }
         return args.telemetry.span('harness.external_wait.wait', {
           'harness.name': args.harnessName,
@@ -1534,7 +1458,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           'harness.external_wait.definition_version': request.definitionVersion,
           'harness.external_wait.deadline_expired': Date.parse(request.deadline) <= Date.now()
         }, async () => {
-          const registration = await args.adapter!.register(request)
+          const registration = await args.storage.registerWait({ ...request, runId: args.runId, sessionId: args.sessionId })
           if (registration.created) {
             await args.emit({
               type: 'external_wait.requested', runId: args.runId, at: now(), waitId: request.waitId,
@@ -1543,7 +1467,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             })
           }
           const snapshot = registration.snapshot.status === 'waiting'
-            ? (await args.adapter!.get(request.waitId) ?? registration.snapshot)
+            ? (await args.storage.getWait(request.waitId) ?? registration.snapshot)
             : registration.snapshot
           if (snapshot.status === 'waiting') {
             await args.emit({ type: 'external_wait.waiting', runId: args.runId, at: now(), waitId: snapshot.waitId, kind: snapshot.kind, deadline: snapshot.deadline })
@@ -1640,7 +1564,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       args.delegationState.totalChildAgentCalls -= 1
       return childTaskHandle(local)
     }
-    const existing = await definition.state.getRun(taskId)
+    const existing = await definition.storage.getRun(taskId)
     if (existing) {
       args.delegationState.totalChildAgentCalls -= 1
       if (existing.status === 'running') {
@@ -1669,7 +1593,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       mode: args.options?.mode ?? 'one_shot',
       createdAt
     })
-    await definition.state.createRun({
+    await definition.storage.createRun({
       id: taskId,
       sessionId: args.sessionId,
       kind: 'child_task',
@@ -1710,7 +1634,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         status, ...(error ? { error } : {})
       })
       await emit({ type: 'run.finished', runId: taskId, at: finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
-      await definition.state.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+      await definition.storage.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
     }
     const result = (async (): Promise<JsonValue> => {
       let taskSandbox: SandboxSession | undefined
@@ -1729,7 +1653,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
           signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
         })
-        const checkpoints = createContextCheckpoints({ runId: taskId, sessionId: args.sessionId, workflowId: args.workflowId, agentId: args.agentId, signal: taskSignal.signal })
         const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
         const run = await runDefaultAgent({
           harnessName: definition.name,
@@ -1754,7 +1677,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           mcpRegistry,
           session: taskSandbox,
           memory,
-          checkpoints,
           mountedSkills: new Set<string>(),
           ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
@@ -1901,7 +1823,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         status, ...(error ? { error } : {})
       })
       await emit({ type: 'run.finished', runId: taskId, at: finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
-      await definition.state.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
+      await definition.storage.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
       await cleanup()
       if (status === 'succeeded') complete(output ?? null)
       else fail(terminalFailure ?? new InternalError('Continuable child task did not complete successfully.', { task_id: taskId, status, ...(error ? { error } : {}) }))
@@ -1917,7 +1839,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
           signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
         })
-        const checkpoints = createContextCheckpoints({ runId: taskId, sessionId: args.sessionId, workflowId: args.workflowId, agentId: args.agentId, signal: taskSignal.signal })
         const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
         const run = await runDefaultAgent({
           harnessName: definition.name,
@@ -1941,7 +1862,6 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           mcpRegistry,
           session: taskSandbox,
           memory,
-          checkpoints,
           mountedSkills: new Set<string>(),
           ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
@@ -2025,7 +1945,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   async function readChildTaskDescriptor(taskId: string, record: RunRecord): Promise<ChildTaskDescriptor> {
-    const events = await definition.state.listEvents(taskId, { limit: 1 })
+    const events = await definition.storage.listEvents(taskId, { limit: 1 })
     const started = events.find((event) => event.type === 'child_task.started')
     const payload = started?.payload
     if (isJsonRecord(payload)
@@ -2064,7 +1984,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   async function getSessionChildTask(sessionId: string, taskId: string): Promise<ChildTaskHandle<JsonValue> | undefined> {
     const live = childTasks.get(taskId)
     if (live && live.descriptor.sessionId === sessionId) return childTaskHandle(live)
-    const record = await definition.state.getRun(taskId)
+    const record = await definition.storage.getRun(taskId)
     if (!record || record.sessionId !== sessionId || record.kind !== 'child_task') return undefined
     const descriptor = await readChildTaskDescriptor(taskId, record)
     if (record.status !== 'running') return completedChildTaskHandle(descriptor, record)
@@ -2084,7 +2004,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     sessionId: string,
     opts?: { limit?: number; before?: string }
   ): Promise<readonly ChildTaskStatus[]> {
-    const records = await definition.state.listRuns(sessionId, opts)
+    const records = await definition.storage.listRuns(sessionId, opts)
     const childRecords = records.filter((record) => record.kind === 'child_task')
     return await Promise.all(childRecords.map(async (record) => {
       const live = childTasks.get(record.id)
@@ -2508,26 +2428,20 @@ function isObjectFinishChunk(chunk: unknown): chunk is { kind: 'finish'; object:
 function configureHarnessAdapters(
   context: HarnessAdapterContext,
   models: ModelsConfig,
-  state: StateStore,
+  storage: HarnessStorage,
   sandbox: Sandbox,
   memory: MemoryAdapter,
   tools: ToolsConfig,
-  runtime: DurableRuntimeAdapter | undefined,
-  workspaceStore: DurableWorkspaceStore | undefined,
-  checkpoints: ContextCheckpointStore | undefined,
-  externalWait: DurableExternalWaitAdapter | undefined
+  workspace: DurableWorkspace | undefined
 ): void {
   const seen = new Set<unknown>()
   for (const alias of Object.values(models)) {
     configureOne(alias.provider, context, seen)
   }
-  configureOne(state, context, seen)
+  configureOne(storage, context, seen)
   configureOne(sandbox, context, seen)
   configureOne(memory, context, seen)
-  configureOne(runtime, context, seen)
-  configureOne(workspaceStore, context, seen)
-  configureOne(checkpoints, context, seen)
-  configureOne(externalWait, context, seen)
+  configureOne(workspace, context, seen)
   for (const tool of Object.values(tools)) {
     configureOne(tool, context, seen)
   }

@@ -181,7 +181,7 @@ Modules SHALL NOT define close hooks or own resource cleanup. The harness owns
 the final resolved adapter graph. One shutdown operation is shared by concurrent
 callers. It closes sequentially in this order: MCP runner registry; opened
 session sandbox handles; unique model providers in reverse model-alias order;
-governance adapter (if closable); context checkpoints; workspace store; runtime;
+governance adapter (if closable); context checkpoints; workspace; runtime;
 memory; configured sandbox; state; logger. Every object is identity-deduplicated
 across this list and `close()` is attempted once only. It continues after every
 failure, normalizes failures to `HarnessError`, and aggregates them in the

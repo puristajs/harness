@@ -1,7 +1,7 @@
-# State, Sessions, Streaming, And Errors
+# Storage, Sessions, Streaming, And Errors
 
 ## Contents
-- StateStore
+- HarnessStorage
 - Persisted Shapes
 - Sessions
 - Memory And History
@@ -11,11 +11,17 @@
 - Error Families
 - API Edge Mapping
 
-## StateStore
-`StateStore` persists sessions, messages, run records, and run events:
+## HarnessStorage
+
+`HarnessStorage` is the single Harness persistence port. It owns conversations,
+run records/events, recoverable workflow checkpoints and leases, and durable
+external waits. It is unrelated to PURISTA framework's general-purpose
+`StateStore`; never bridge one into the other.
 
 ```ts
-interface StateStore {
+interface HarnessStorage {
+  readonly info: HarnessStorageInfo
+  readonly capabilities: readonly AdapterCapability[]
   getSession(id): Promise<SessionRecord | undefined>
   upsertSession(record): Promise<void>
   closeSession(id): Promise<void>
@@ -30,13 +36,28 @@ interface StateStore {
   listRuns(sessionId, opts?): Promise<RunRecord[]>
   appendEvents(runId, events): Promise<void>
   listEvents(runId, opts?): Promise<PersistedRunEvent[]>
+
+  acquireRun(start): Promise<DurableRunLease>
+  loadCheckpoint(runId): Promise<RunCheckpoint | undefined>
+  commitCheckpoint(checkpoint): Promise<void>
+  withSessionLock<T>(sessionId, fn): Promise<T>
+
+  registerWait(request): Promise<ExternalWaitRegistration>
+  getWait(waitId): Promise<ExternalWaitSnapshot | undefined>
+  signalWait(signal): Promise<ExternalWaitSignalResult>
+  cancelWait(waitId, eventId, observedAt?): Promise<ExternalWaitSignalResult>
   close?(): Promise<void>
 }
 ```
 
-Default state is `InMemoryStateStore`, which is suitable for tests/local development and not durable production history.
+The default is `InMemoryHarnessStorage`, which is suitable for tests and local
+development but does not survive process exit. `SqliteHarnessStorage` is the
+zero-extra-dependency Node/Bun single-host option. Distributed deployments must
+provide a backend with transactional run acquisition, checkpoint, wait, and
+session-lock semantics and advertise `storage.multi_instance`.
 
-Durable adapters should preserve stable ordering, reject duplicate message ids, and pass `stateStoreContract` from `@purista/harness/testing`.
+Custom adapters must pass `harnessStorageContract` from
+`@purista/harness/testing`.
 
 ## Persisted Shapes
 Important records:
@@ -45,9 +66,9 @@ Important records:
 - `RunRecord`: `id`, `sessionId`, `kind`, `target`, `startedAt`, status, input/output/error
 - `PersistedRunEvent`: `id`, `runId`, `at`, `type`, `payload`
 
-State/history is sensitive data. Keep tenant scoping and retention policy at the
+Conversation and run storage is sensitive data. Keep tenant scoping and retention policy at the
 application configuration boundary. For a bounded Harness-managed transcript,
-configure `defaults.historyRetention`; durable StateStore adapters must enforce
+configure `defaults.historyRetention`; durable `HarnessStorage` adapters must enforce
 the required atomic `replaceMessages` operation.
 
 ## Sessions
@@ -100,7 +121,7 @@ await session.replaceHistory([{ role: 'user', content: 'hello', sessionId: sessi
 `clearHistory()` and `replaceHistory()` fail with `SessionBusyError` while a run is active.
 
 `release()` closes live session resources such as sandbox-bound MCP runners
-without deleting StateStore-backed history, runs, or events. Call it after an
+without deleting `HarnessStorage`-backed history, runs, or events. Call it after an
 idle request. `close()` first releases resources and then destructively removes
 the session record, conversation history, runs, and persisted events.
 
@@ -113,7 +134,7 @@ never create partial or duplicate durable messages.
 
 ```ts
 const harness = defineHarness({ name: 'support' })
-  .state(durableStateStore)
+  .storage(distributedHarnessStorage)
   .defaults({ historyRetention: { maxTurns: 50, maxBytes: 256_000 } })
   // models, tools, and agents
   .build()
@@ -127,13 +148,14 @@ const output = await session.agents.answerer.prompt(input, {
 `maxTurns` is the rolling retention window. `maxBytes` is a serialized UTF-8
 storage bound, not a token approximation; no complete turn is split, and a
 newest turn that alone exceeds the cap fails. `historyRetention` requires
-atomic `StateStore.replaceMessages`, so use an adapter that implements it.
+atomic `HarnessStorage.replaceMessages`, so use an adapter that implements it.
 
 `idempotencyKey` is only for direct-agent at-least-once delivery and must be a
 stable caller-owned delivery id. Repeating the same successful session, agent,
 input, and key returns its recorded output without a provider call or a second
 transcript write. It does not make external tool side effects exactly-once.
-Workflows use their existing durable runtime/workspace idempotency policy.
+Recoverable workflows use the configured `HarnessStorage` and optional
+`DurableWorkspace` idempotency policy.
 
 ## Concurrency
 One session has one active run at a time. Concurrent runs in the same session throw `SessionBusyError` with reason `concurrent_run`.
@@ -171,7 +193,7 @@ for await (const event of session.workflows.audit.stream(input)) {
 Ordering is lifecycle order for a single run. Streams are live observation.
 Breaking out of a `stream(...)` iterator detaches that consumer only; it does
 not cancel the underlying run. Pass `opts.signal` when the application intends
-to cancel the run, and use `StateStore.listEvents(runId)` for persisted audit
+to cancel the run, and use `HarnessStorage.listEvents(runId)` for persisted audit
 history after live observation ends.
 
 `text(...)` and `object(...)` are final request-response model calls and do not

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { HarnessConfigError, InMemoryStateStore, JsonLogger, defineHarness, defineHarnessModule, inMemorySandbox, sandboxMemory } from '../src/index.js'
+import { HarnessConfigError, InMemoryHarnessStorage, JsonLogger, defineHarness, defineHarnessModule, inMemorySandbox, sandboxMemory } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import type { BuilderState, ModelAlias } from '../src/index.js'
 
@@ -122,7 +122,7 @@ it('closes each configured closable resource once, continues after failure, and 
   const calls: string[] = []
   const sharedProvider = new FakeModelProvider() as FakeModelProvider & { close: () => Promise<void> }
   sharedProvider.close = async () => { calls.push('provider'); throw new Error('provider close failed') }
-  const state = new InMemoryStateStore() as InMemoryStateStore & { close: () => Promise<void> }
+  const state = new InMemoryHarnessStorage() as InMemoryHarnessStorage & { close: () => Promise<void> }
   state.close = async () => { calls.push('state') }
   const memory = sandboxMemory() as ReturnType<typeof sandboxMemory> & { close: () => Promise<void> }
   memory.close = async () => { calls.push('memory') }
@@ -133,7 +133,7 @@ it('closes each configured closable resource once, continues after failure, and 
 
   const harness = defineHarness()
     .logger(logger)
-    .state(state)
+    .storage(state)
     .sandbox(sandbox)
     .memory(memory)
     .models({ first: { provider: sharedProvider, model: 'one', capabilities: ['object'] }, second: { provider: sharedProvider, model: 'two', capabilities: ['object'] } })

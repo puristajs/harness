@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" role="img" aria-labelledby="title desc">
   <title id="title">@purista/harness logic-level architecture</title>
-  <desc id="desc">Logic-level diagram of @purista/harness showing model provider adapters, model aliases and capabilities, sessions, direct agent calls, workflow orchestration, delegation policy, agent loop outside the sandbox, tool execution through sandbox and MCP, skills mounted into the sandbox, state stores, memory, durable workflow runtime, workspace store, and telemetry.</desc>
+  <desc id="desc">Logic-level diagram of @purista/harness showing model provider adapters, model aliases and capabilities, sessions, direct agent calls, workflow orchestration, delegation policy, agent loop outside the sandbox, tool execution through sandbox and MCP, skills mounted into the sandbox, Harness storages, memory, Harness storage, durable workspace, and telemetry.</desc>
   <defs>
     <style>
       text {
@@ -178,13 +178,13 @@
   <rect x="76" y="946" width="794" height="128" rx="16" class="green"/>
   <text x="104" y="980" class="section">ADAPTER AND STORE PORTS INSIDE HARNESS</text>
   <rect x="110" y="1008" width="124" height="30" rx="10" class="greenPill"/>
-  <text x="132" y="1028" class="mono">StateStore</text>
+  <text x="132" y="1028" class="mono">HarnessStorage</text>
   <rect x="252" y="1008" width="124" height="30" rx="10" class="greenPill"/>
   <text x="276" y="1028" class="mono">Memory</text>
   <rect x="394" y="1008" width="124" height="30" rx="10" class="greenPill"/>
   <text x="416" y="1028" class="mono">Sandbox</text>
   <rect x="536" y="1008" width="144" height="30" rx="10" class="greenPill"/>
-  <text x="554" y="1028" class="mono">DurableRuntime</text>
+  <text x="554" y="1028" class="mono">HarnessStorage</text>
   <rect x="698" y="1008" width="132" height="30" rx="10" class="greenPill"/>
   <text x="714" y="1028" class="mono">Workspace</text>
   <text x="110" y="1058" class="small">state persists sessions, messages, runs, events; memory defaults to sandboxMemory; durability is workflow/invocation-time</text>

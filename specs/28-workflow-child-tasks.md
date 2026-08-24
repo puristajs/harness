@@ -44,7 +44,7 @@ settles the task successfully with its final output; `result()` resolves only
 after that close. A continuable task does not append either its inputs or its
 outputs to the parent session history. `session.childTasks.get(id)` and
 `session.childTasks.list()` provide session-owner lookup with content-free
-status; terminal tasks remain readable through the configured StateStore.
+status; terminal tasks remain readable through the configured HarnessStorage.
 
 `ChildTaskDescriptor` persists only lifecycle identity: task/parent/session/
 workflow/agent/model ids, context-policy name, and creation time. Inputs and

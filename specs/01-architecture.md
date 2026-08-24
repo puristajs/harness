@@ -22,7 +22,7 @@
    └────────┘  └─────────┘  └──────────┘  └──────┘
                        │
    ┌────────────────────────────────────────────┐
-   │  Foundation ports (state, sandbox, memory, │
+   │ Foundation ports (storage, sandbox, memory,│
    │  model provider) + logger + telemetry      │
    └────────────────────────────────────────────┘
                        │
@@ -78,14 +78,14 @@ examples/
 Published packages are the core `@purista/harness` package plus independent
 provider and capability addons under the `@purista/harness-*` convention. Private example
 workspaces are allowed under `examples/` when backed by specs. No `services/`
-or `apps/` package is part of v1. Workspace tool is locked to npm workspaces.
+or `apps/` package is part of v3. Workspace tool is locked to npm workspaces.
 
 The `harness` package contains:
 - core harness (`defineHarness` chainable builder, `Harness`, `Session`)
 - types and errors
 - structured JSON logger (built-in, no external deps)
 - OpenTelemetry deep integration (peer dep `@opentelemetry/api`)
-- in-memory `StateStore` (default, only state implementation in v1)
+- in-memory `HarnessStorage` default plus native SQLite local storage
 - two default `Sandbox` factories: `inMemorySandbox()` (files-only) and `bashSandbox()` (wraps `just-bash` peer dep)
 - memory adapter port plus `sandboxMemory()` reference adapter
 - built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox
@@ -121,7 +121,7 @@ src/
   telemetry/            # OTel shims, attribute keys, span/metric helpers
   ulid/                 # internal ULID utility
   ports/                # state, sandbox, memory, model-provider
-  state/in-memory/      # default StateStore impl
+  state/in-memory/      # default HarnessStorage impl
   memory/sandbox/       # sandboxMemory() reference MemoryAdapter
   sandbox/in-memory/    # inMemorySandbox() — files-only
   sandbox/bash/         # bashSandbox() — wraps just-bash peer dep

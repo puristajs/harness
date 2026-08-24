@@ -1,6 +1,6 @@
 ---
 name: ai-harness
-description: Use when designing, implementing, configuring, testing, or extending applications built with @purista/harness and its provider adapters, including agents, workflows, tools, skills, models, state, sandbox, telemetry, and custom adapter packages.
+description: Use when designing, implementing, configuring, testing, or extending applications built with @purista/harness and its provider adapters, including agents, workflows, tools, skills, models, storage, sandbox, telemetry, and custom adapter packages.
 ---
 
 # AI Harness
@@ -9,12 +9,12 @@ description: Use when designing, implementing, configuring, testing, or extendin
 Use this skill for work involving `@purista/harness`, `@purista/harness-openai`, or addon packages named `@purista/harness-*`.
 
 ## Core Model
-`@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, state, memory, sandboxing, logging, telemetry, and streaming behind one session API.
+`@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, Harness storage, memory, sandboxing, logging, telemetry, and streaming behind one session API.
 
 Keep these layers separate:
 - configuration: `defineHarness()` registers adapters, defaults, models, tools, skills, agents, and workflows
 - execution: `harness.getSession(id)` returns typed `session.agents.*` and `session.workflows.*`
-- adapter code: provider, state, memory, sandbox, MCP, durable runtime, logger, and telemetry ports
+- adapter code: provider, Harness storage, memory, durable workspace, sandbox, MCP, logger, and telemetry ports
 - application integration: HTTP/SSE, queues, persistence, auth, and business state stay outside the harness unless represented by a port or tool
 - optional governance: policy-as-code for tool decisions, approvals, audit, and
   policy-pack adapters is configured only when needed; ordinary agents do not
@@ -31,14 +31,16 @@ Keep these layers separate:
 - Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
 - Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
 - `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
-- Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `StateStore.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
+- Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `HarnessStorage.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
 - For at-least-once direct-agent delivery, pass the transport's stable message or delivery id as `InvokeOptions.idempotencyKey`. Replaying the same successful invocation returns its recorded output without a second provider call or transcript; never derive this key from prompt content.
-- Use `session.release()` at the end of an idle request to close live sandbox/MCP resources while preserving StateStore-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, and persisted events.
+- Use `session.release()` at the end of an idle request to close live sandbox/MCP resources while preserving `HarnessStorage`-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, and persisted events.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
 - Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
 - Do not import PURISTA framework packages from harness or harness addon packages.
+- Use `.storage(HarnessStorage)` as the only Harness persistence boundary. Do not reintroduce `.state(...)`, `.runtime(...)`, `.checkpoints(...)`, `.externalWait(...)`, or `.workspaceStore(...)`; do not adapt PURISTA's unrelated general-purpose `StateStore` into Harness storage.
+- Use `.workspace(DurableWorkspace)` only for resumable filesystem/workspace state. `localDurableExecution(...)` returns exactly `{ storage, sandbox, workspace, close }` and is for local development or a trusted single-host worker, not distributed production.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
 - Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
 - Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
@@ -111,8 +113,8 @@ Keep these layers separate:
 2. Decide whether the task is one agent loop, a custom handler agent, or an orchestrating workflow.
 3. Define Zod schemas at every agent, workflow, and tool boundary.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
-5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
-6. Decide which state is durable: session history/runs use `StateStore`, session memory uses `MemoryAdapter`, and provider context is transient. Bound durable history with whole-turn retention and bound request context with the model's context/token limits.
+5. Attach tools, skill directories, permissions, sandbox, memory, Harness storage, optional durable workspace, requirements, logger, and telemetry explicitly.
+6. Decide which data is durable: conversation/run/checkpoint/wait records use `HarnessStorage`, session memory uses `MemoryAdapter`, durable files use `DurableWorkspace`, and provider context is transient. Do not adapt PURISTA's general-purpose `StateStore` into Harness storage.
 7. Invoke through `harness.getSession(id)`, release idle sessions, and shut down the shared harness during process shutdown. Use destructive session close only for explicit conversation deletion.
 8. Test with `@purista/harness/testing` model/runtime fakes, the Guardrails
    fake detector, and the Presidio scripted sidecar before live-provider or
@@ -176,22 +178,22 @@ await session.release()
 await harness.shutdown()
 ```
 
-The example's in-memory state store supports atomic history replacement for
-local use. Production history retention needs a durable StateStore adapter that
+The example's in-memory Harness storage supports atomic history replacement for
+local use. Production history retention needs a durable `HarnessStorage` adapter that
 implements `replaceMessages` atomically.
 
 ## Read If Needed
-- `references/configuration.md` for package setup, builder order, sessions, state, sandbox, runtime capabilities, streaming, and shutdown.
+- `references/configuration.md` for package setup, builder order, sessions, storage, sandbox, workspace capabilities, streaming, and shutdown.
 - `references/model-setup.md` for provider aliases, OpenAI setup, defaults, capability-gated model handles, multimodal content, embeddings, and rerank.
 - `references/agents-workflows-tools.md` for deciding between agents/workflows and wiring typed tools, permissions, MCP, and skill-mounted agents.
 - `references/agents-workflows-tools.md` also covers optional governance policy
   and when to prefer it over simple permissions.
 - `references/skills.md` for creating harness skill folders and registering/mounting them correctly.
 - `references/sandbox.md` for in-memory/bash sandboxes, filesystem/exec APIs, snapshots, built-in tool risk, and custom sandbox adapters.
-- `references/state-sessions-streaming-errors.md` for `StateStore`, session lifecycle, memory/history, run events, error mapping, and replay.
-- `references/durable-feedback-operations.md` for durable runtime checkpoints, adapter capabilities, feedback records, readiness, and operational runbooks.
+- `references/storage-sessions-streaming-errors.md` for `HarnessStorage`, session lifecycle, memory/history, run events, error mapping, and replay.
+- `references/durable-feedback-operations.md` for recoverable workflow checkpoints, external waits, workspace capabilities, feedback records, readiness, and operational runbooks.
 - `references/telemetry-observability.md` for OpenTelemetry setup, `TelemetryShim`, span/metric names, logs, privacy, and adapter context propagation.
-- `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
+- `references/adapters.md` for creating and using provider, Harness storage, memory, durable workspace, sandbox, logger, telemetry, tool/MCP, and addon adapter packages.
 - `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
 - `references/agents-workflows-tools.md` for default-loop interception and the
   optional guardrails addon boundary.

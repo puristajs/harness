@@ -1,7 +1,7 @@
 import { getEventListeners } from 'node:events'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { InMemoryStateStore, OperationCancelledError, SessionBusyError, defineHarness, inMemorySandbox, type Sandbox, type SandboxSession } from '../src/index.js'
+import { InMemoryHarnessStorage, OperationCancelledError, SessionBusyError, defineHarness, inMemorySandbox, type Sandbox, type SandboxSession } from '../src/index.js'
 import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
 
 function buildBusyHarness() {
@@ -36,7 +36,7 @@ function buildBusyHarness() {
   return { harness, handlerStarted }
 }
 
-class TrackingStateStore extends InMemoryStateStore {
+class TrackingHarnessStorage extends InMemoryHarnessStorage {
   public closeSessionCalls = 0
 
   public override async closeSession(id: string): Promise<void> {
@@ -69,13 +69,13 @@ class TrackingSandbox implements Sandbox {
   }
 }
 
-function buildReleaseHarness(state = new TrackingStateStore(), sandbox = new TrackingSandbox()) {
+function buildReleaseHarness(storage = new TrackingHarnessStorage(), sandbox = new TrackingSandbox()) {
   let markChildStarted!: () => void
   const childStarted = new Promise<void>((resolve) => {
     markChildStarted = resolve
   })
   const harness = defineHarness()
-    .state(state)
+    .storage(storage)
     .sandbox(sandbox)
     .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
     .tools({})
@@ -103,7 +103,7 @@ function buildReleaseHarness(state = new TrackingStateStore(), sandbox = new Tra
       }
     })
     .build()
-  return { harness, state, sandbox, childStarted }
+  return { harness, storage, sandbox, childStarted }
 }
 
 describe('session lifecycle guards', () => {
@@ -150,7 +150,7 @@ describe('session lifecycle guards', () => {
   })
 
   it('releases live resources without deleting persisted session, history, or runs', async () => {
-    const { harness, state, sandbox } = buildReleaseHarness()
+    const { harness, storage, sandbox } = buildReleaseHarness()
     const session = await harness.getSession('s-release')
     await session.replaceHistory([{ role: 'user', content: 'remember this' }])
     await expect(session.agents.echo.prompt('done')).resolves.toBe('done')
@@ -159,10 +159,10 @@ describe('session lifecycle guards', () => {
 
     expect(sandbox.openCalls).toBe(1)
     expect(sandbox.closeCalls).toBe(1)
-    expect(state.closeSessionCalls).toBe(0)
-    await expect(state.getSession('s-release')).resolves.toEqual(expect.objectContaining({ id: 's-release', runCount: 1 }))
+    expect(storage.closeSessionCalls).toBe(0)
+    await expect(storage.getSession('s-release')).resolves.toEqual(expect.objectContaining({ id: 's-release', runCount: 1 }))
     await expect(session.history.list()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ content: 'remember this' })]))
-    await expect(state.listRuns('s-release')).resolves.toHaveLength(1)
+    await expect(storage.listRuns('s-release')).resolves.toHaveLength(1)
 
     const reopened = await harness.getSession('s-release')
     expect(sandbox.openCalls).toBe(2)
@@ -171,7 +171,7 @@ describe('session lifecycle guards', () => {
   })
 
   it('does not let a stale facade release or close a reopened session generation', async () => {
-    const { harness, state, sandbox } = buildReleaseHarness()
+    const { harness, storage, sandbox } = buildReleaseHarness()
     const original = await harness.getSession('s-stale-release')
     await original.release()
 
@@ -180,25 +180,25 @@ describe('session lifecycle guards', () => {
     await original.close()
 
     expect(sandbox.closeCalls).toBe(1)
-    await expect(state.getSession('s-stale-release')).resolves.toEqual(expect.objectContaining({ runCount: 1 }))
+    await expect(storage.getSession('s-stale-release')).resolves.toEqual(expect.objectContaining({ runCount: 1 }))
     await expect(reopened.agents.echo.prompt('still here')).resolves.toBe('still here')
     await reopened.release()
   })
 
   it('allows a released session generation to be destructively closed before it is reopened', async () => {
-    const { harness, state } = buildReleaseHarness()
+    const { harness, storage } = buildReleaseHarness()
     const session = await harness.getSession('s-release-then-close')
     await session.agents.echo.prompt('remove after release')
 
     await session.release()
     await session.close()
 
-    expect(state.closeSessionCalls).toBe(1)
-    await expect(state.getSession('s-release-then-close')).resolves.toBeUndefined()
+    expect(storage.closeSessionCalls).toBe(1)
+    await expect(storage.getSession('s-release-then-close')).resolves.toBeUndefined()
   })
 
   it('keeps close destructive for the active session generation', async () => {
-    const { harness, state, sandbox } = buildReleaseHarness()
+    const { harness, storage, sandbox } = buildReleaseHarness()
     const session = await harness.getSession('s-destructive-close')
     await session.replaceHistory([{ role: 'user', content: 'remove me' }])
     await session.agents.echo.prompt('remove run')
@@ -206,10 +206,10 @@ describe('session lifecycle guards', () => {
     await session.close()
 
     expect(sandbox.closeCalls).toBe(1)
-    expect(state.closeSessionCalls).toBe(1)
-    await expect(state.getSession('s-destructive-close')).resolves.toBeUndefined()
-    await expect(state.listMessages('s-destructive-close')).resolves.toEqual([])
-    await expect(state.listRuns('s-destructive-close')).resolves.toEqual([])
+    expect(storage.closeSessionCalls).toBe(1)
+    await expect(storage.getSession('s-destructive-close')).resolves.toBeUndefined()
+    await expect(storage.listMessages('s-destructive-close')).resolves.toEqual([])
+    await expect(storage.listRuns('s-destructive-close')).resolves.toEqual([])
   })
 
   it('cancels resident child tasks before releasing their owner session', async () => {

@@ -52,7 +52,7 @@ Locked validation:
 - `compatibility`: 1-500 chars when present.
 - `metadata`: string keys and string values only.
 - `allowed-tools`: parsed and preserved as a string. Enforcement is not part of
-  v1; permission systems may consume it later.
+  v3; permission systems may consume it later.
 - Parent directory name should match `name`. Strict mode treats mismatch as an
   error. Lenient mode records a diagnostic and loads the skill under the
   frontmatter name unless that name collides.

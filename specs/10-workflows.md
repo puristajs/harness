@@ -134,13 +134,13 @@ The workflow's own input is validated by `workflow.input.parse(value)` at run st
 `ctx.step(stepId, fn, options?)` marks a JSON-serializable boundary in a workflow handler.
 Its behavior depends purely on how the workflow is invoked:
 
-- **Durable invocation** (`opts.durable` supplied and a `.runtime(...)` adapter is
+- **Durable invocation** (`opts.durable` supplied and a `.storage(...)` adapter is
   configured — see [21-durable-workspaces](./21-durable-workspaces.md) §16.1): a
   step committed on a prior attempt returns its stored output **without re-running
   `fn`** or re-committing a checkpoint. A new step runs `fn`, validates that the
   output is JSON-serializable (`DurableStepError` otherwise), commits a runtime
-  checkpoint, and — when a workspace store is configured — links a durable
-  workspace checkpoint committed before the runtime checkpoint.
+  checkpoint, and — when a workspace is configured — links a durable
+  workspace checkpoint committed before the storage checkpoint.
 - **Ephemeral invocation** (no `opts.durable`, or no configured runtime):
   `ctx.step(stepId, fn)` is a transparent pass-through — it simply awaits `fn` and
   returns its value with no checkpointing.
@@ -181,7 +181,7 @@ and typed workflow boundaries.
 Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSettled`. Locked rules:
 
 1. The same `signal` is propagated to every parallel agent call. Aborting the workflow aborts all in-flight agent calls.
-2. Persisted message ordering follows completion time, not invocation time. Each agent call appends its messages atomically (per the StateStore guarantee), but interleaving is permitted.
+2. Persisted message ordering follows completion time, not invocation time. Each agent call appends its messages atomically (per the HarnessStorage guarantee), but interleaving is permitted.
 3. The session's serial-execution rule (see [11-sessions](./11-sessions.md)) applies at the session boundary, not within a workflow run. Within a single workflow run, parallel agent calls share the run id and are allowed.
 
 ## Cancellation

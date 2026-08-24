@@ -94,7 +94,7 @@ A session provides:
 | `session.history.list()` | Conversation messages for this session. |
 | `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
 | `session.release()` | Close live sandbox/MCP resources while retaining persisted history and runs. |
-| `session.close()` | Destructively close the session and remove its persisted session state. |
+| `session.close()` | Destructively close the session and remove its persisted session data. |
 
 Sessions enforce one active run at a time. Use different session IDs for
 parallel user threads.
@@ -278,7 +278,7 @@ const messages = await session.history.list({ limit: 20 })
 ```
 
 Memory is session-scoped. History is persisted through the configured
-`StateStore`.
+`HarnessStorage`.
 
 ## Shut Down
 

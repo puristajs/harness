@@ -19,7 +19,8 @@ adapter packages.
 
 ```ts
 const harness = defineHarness({ name: 'my-service' })
-  .runtime(...)
+  .storage(...)
+  .workspace(...)
   .memory(...)
   .requires(...)
   .models(...)
@@ -35,7 +36,7 @@ const report = await session.workflows.research_report.prompt(input)
 await harness.shutdown()
 ```
 
-`runtime(...)`, `memory(...)`, and `requires(...)` are optional. Omit them for
+`storage(...)`, `workspace(...)`, `memory(...)`, and `requires(...)` are optional. Omit them for
 the simple in-process defaults.
 
 ## Main Types
@@ -54,16 +55,15 @@ the simple in-process defaults.
 | `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
 | `GovernanceDecision` | Normalized execution policy decision returned by native rules or adapters, including decision evidence fields. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
-| `StateStore` | Persistence port for sessions, runs, messages, and events. |
+| `HarnessStorage` | Persistence port for sessions, messages, runs, events, workflow checkpoints, leases, and external waits. |
 | `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
 | `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
 | `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
 | `DiscoverSkillsOptions` / `DiscoveredSkills` | Client-style skill discovery input and diagnostics. |
-| `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `runtime.checkpoint`. |
-| `DurableRuntime` | Optional checkpoint/lease runtime contract for durable use cases. |
-| `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
+| `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `storage.checkpoint`. |
+| `DurableWorkspace` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
 
@@ -71,9 +71,9 @@ the simple in-process defaults.
 
 ```ts
 const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())
-  .workspaceStore(durableWorkspace)
-  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint', 'runtime.workspace_checkpoint', 'workspace_store.durable'])
+  .storage(inMemoryHarnessStorage())
+  .workspace(durableWorkspace)
+  .requires(['sandbox.fs', 'memory.session', 'storage.checkpoint', 'storage.workspace_checkpoint', 'workspace.durable'])
   .models(...)
   .agents(...)
   .build()
@@ -291,7 +291,7 @@ durable steps return the committed output and never re-run the step function.
 const summary = await session.getRunSummary(runId)
 ```
 
-`getRunSummary` reads the configured `StateStore` and returns status, start and
+`getRunSummary` reads the configured `HarnessStorage` and returns status, start and
 finish timestamps, model/tool/agent call counts, token totals, optional
 cache/reasoning token details when providers report them, and any serialized
 run error. It does not require an OpenTelemetry backend.
@@ -440,7 +440,7 @@ defineHarness()
 `contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
 `SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
 prompt, output, tool argument/result, context, and file content out of spans,
-span events, and persisted StateStore events. Memory content follows the
+span events, and persisted HarnessStorage events. Memory content follows the
 memory-facade capture policy: `NO_CONTENT` emits no raw memory content, while
 non-`NO_CONTENT` modes opt into bounded `harness.memory.key`,
 `harness.memory.value`, and `harness.memory.query` fields on memory spans or
@@ -479,11 +479,11 @@ draft implementation. It supports `type`, `const`, `enum`, object
 ## Testing Subpath
 
 `@purista/harness/testing` ships the fakes (`FakeModelProvider`,
-`FakeStateStore`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
+`FakeHarnessStorage`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
 `fakeSnapshotSandbox`, `fakeCapabilityAdapter`,
-`InMemoryDurableWorkspaceStore`), the port contract suites
-(`stateStoreContract`, `sandboxContract`, `modelProviderContract`,
-`loggerContract`, `memoryAdapterContract`, `durableWorkspaceStoreContract`,
+`InMemoryDurableWorkspace`), the port contract suites
+(`harnessStorageContract`, `sandboxContract`, `modelProviderContract`,
+`loggerContract`, `memoryAdapterContract`, `durableWorkspaceContract`,
 `adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
 `makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
 locked list lives in `specs/13-public-api.md`; adapter packages run the

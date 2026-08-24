@@ -7,7 +7,7 @@
 - Sessions
 - Optional Governance
 - Defaults, Logs, And Telemetry
-- State, Sandbox, Runtime, And Requirements
+- Storage, Sandbox, Workspace, And Requirements
 - Streaming
 - Shutdown
 
@@ -32,10 +32,10 @@ Prefer this order because it preserves inference and mirrors dependency directio
 defineHarness({ name: 'app-name' })
   .telemetry(...)
   .logger(...)
-  .state(...)
+  .storage(...)
   .sandbox(...)
   .memory(...)
-  .runtime(...)
+  .workspace(...)
   .requires(...)
   .defaults(...)
   .models(...)
@@ -68,8 +68,8 @@ for await (const event of session.workflows.review.stream(input)) {
 Sessions provide `agents`, `workflows`, `memory`, `history`, `clearHistory`,
 `replaceHistory`, `release`, and `close`. Call `release()` when an idle
 request is done: it releases live sandbox/MCP resources while retaining
-StateStore-backed history and runs. `close()` is the destructive operation that
-deletes the session and its persisted StateStore data.
+`HarnessStorage`-backed history and runs. `close()` is the destructive operation
+that deletes the session and its persisted Harness data.
 
 Use stable, tenant-safe session ids. One session has one active run at a time; use separate session ids for parallel user threads.
 
@@ -101,8 +101,8 @@ Set explicit budgets for production:
 .telemetry({ contentCaptureMode: 'NO_CONTENT' })
 ```
 
-`contentCaptureMode` defaults to `NO_CONTENT`. Model providers, tools, state
-stores, and sandboxes can inherit logger and telemetry via
+`contentCaptureMode` defaults to `NO_CONTENT`. Model providers, tools, Harness
+storage, and sandboxes can inherit logger and telemetry via
 `configureHarnessContext`.
 
 `agentMaxIterations` and an agent's `maxSteps` are positive integer budgets.
@@ -110,7 +110,7 @@ Explicit values have no hard upper cap, so choose a finite limit appropriate to
 the workflow and keep run/model timeouts configured.
 
 `historyRetention` bounds durable conversation storage by retaining whole
-newest turns. It requires an atomic `StateStore.replaceMessages` implementation
+newest turns. It requires an atomic `HarnessStorage.replaceMessages` implementation
 at build time; the Harness never uses a non-atomic trim/write fallback. Its
 `maxBytes` limit counts serialized UTF-8 persisted records, not model tokens.
 Keep transient request context separate: use `historyWindow` for a simple
@@ -136,9 +136,9 @@ the effective signal, so a model timeout or caller cancellation is terminal
 even if a provider SDK ignores abort. The SDK work itself can continue until it
 observes `req.signal`, so adapters should still propagate that signal promptly.
 
-## State, Sandbox, Runtime, And Requirements
+## Storage, Sandbox, Workspace, And Requirements
 Defaults:
-- state: `InMemoryStateStore`
+- storage: `InMemoryHarnessStorage`
 - sandbox: `autoDetectSandbox()` when `.sandbox()` is omitted or called with no argument
 - memory: `sandboxMemory()` when `.memory(...)` is omitted
 - logger: `JsonLogger`
@@ -148,17 +148,20 @@ Use explicit infrastructure in production:
 
 ```ts
 defineHarness({ name: 'research-service' })
-  .state(durableStateStore)
+  .storage(distributedHarnessStorage)
   .sandbox(bashSandbox({ network: { deny: ['169.254.169.254'] } }))
   .memory(persistentMemory)
-  .runtime(durableRuntime)
-  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'runtime.checkpoint'])
+  .workspace(distributedWorkspace)
+  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'storage.multi_instance', 'workspace.persistent'])
   .models(...)
   .agents(...)
   .build()
 ```
 
-`.requires(...)` validates adapter capabilities during setup. Use it to fail fast when a required sandbox, memory, or runtime capability is missing.
+`.requires(...)` validates adapter capabilities during setup. Use it to fail
+fast when a required sandbox, memory, storage, or workspace capability is
+missing. `HarnessStorage` is the Harness persistence port; it is not PURISTA's
+general-purpose `StateStore`.
 
 ## Streaming
 Harness stream methods return typed `RunEvent` values:
@@ -192,7 +195,7 @@ const shutdown = await harness.shutdown()
 if (shutdown.errors.length) logger.error('Harness shutdown errors.', { errors: shutdown.errors })
 ```
 
-Provider clients, MCP runners, state stores, and sandboxes may own resources that need shutdown.
+Provider clients, MCP runners, Harness storage, and sandboxes may own resources that need shutdown.
 Use `session.close()` only when the caller deliberately deletes the conversation
 and its persisted runs/events.
 # Static module composition

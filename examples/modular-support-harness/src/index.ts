@@ -79,7 +79,7 @@ export const supportAgents = defineHarnessModule<SupportModelState>()('support.a
 
 /**
  * Application composition: reusable modules supply capabilities; this app owns
- * the customer-facing workflow and its durable session state.
+ * the customer-facing workflow and its durable conversation history.
  */
 export function createModularSupportHarness(provider?: ModelProvider) {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'

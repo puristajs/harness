@@ -208,7 +208,7 @@ Never log prompts, model outputs, or other content payloads.
 
 `ctx.step(stepId, fn)` marks a JSON-serializable checkpoint boundary. It is a
 transparent pass-through unless the workflow call opts into durable execution
-and a durable runtime adapter is configured.
+and a Harness storage adapter is configured.
 
 ```ts
 delegation: { agents: ['outline', 'writer'] },

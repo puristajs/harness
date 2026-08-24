@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
 import { WorkspaceError, WorkspaceQuotaExceededError } from '../errors/index.js'
-import type { DurableWorkspaceStore } from '../ports/workspace.js'
-import { validateDurableWorkspaceStore } from '../ports/workspace.js'
+import type { DurableWorkspace } from '../ports/workspace.js'
+import { validateDurableWorkspace } from '../ports/workspace.js'
 
-/** Shared Vitest contract for durable workspace store implementations (spec 21 §18). */
-export function durableWorkspaceStoreContract(make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>): void {
-  describe('durableWorkspaceStoreContract', () => {
+/** Shared Vitest contract for durable workspace implementations (spec 21 §18). */
+export function durableWorkspaceContract(make: () => DurableWorkspace | Promise<DurableWorkspace>): void {
+  describe('durableWorkspaceContract', () => {
     const signal = new AbortController().signal
 
     it('validates metadata and round-trips checkpointed workspaces', async () => {
       const adapter = await make()
-      validateDurableWorkspaceStore(adapter)
+      validateDurableWorkspace(adapter)
       const handle = await adapter.startWorkspace({ sessionId: 'session-1', runId: 'run-1', agentId: 'agent-1', attempt: 1, idempotencyKey: 'start-1', signal })
       const checkpoint = await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause-1', signal })
       const resumed = await adapter.resumeWorkspace({ workspaceRef: handle.workspaceRef, checkpointRef: checkpoint.checkpointRef, sessionId: 'session-1', runId: 'run-2', attempt: 2, idempotencyKey: 'resume-1', signal })

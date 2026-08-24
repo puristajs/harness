@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { StateError } from '../errors/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
-import type { StateStore } from '../ports/state.js'
+import type { HarnessStorage } from '../storage/types.js'
 
 const session: SessionRecord = {
   id: 'session_1',
@@ -35,8 +35,8 @@ const event: PersistedRunEvent = {
   payload: { ok: true }
 }
 
-export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void {
-  describe('stateStoreContract', () => {
+export function harnessStorageContract(make: () => HarnessStorage | Promise<HarnessStorage>): void {
+  describe('harnessStorageContract', () => {
     it('getSession returns undefined for unknown id', async () => {
       const store = await make()
       await expect(store.getSession('missing')).resolves.toBeUndefined()
@@ -152,6 +152,72 @@ export function stateStoreContract(make: () => StateStore | Promise<StateStore>)
       const store = await make()
       await expect(store.appendMessages(session.id, [m1 as Message, { ...(m1 as Message) }])).rejects.toBeInstanceOf(StateError)
       await expect(store.listMessages(session.id)).resolves.toEqual([])
+    })
+
+    it('uses the authoritative run record for durable attempts and interruption', async () => {
+      const store = await make()
+      await store.createRun(run)
+      const first = await store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-1', stepId: 'prepare', input: { value: 1 }
+      })
+      expect(first.attempt).toBe(1)
+      await first.release()
+      await expect(store.getRun(run.id)).resolves.toMatchObject({ status: 'interrupted', attempt: 1 })
+
+      const second = await store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-2', stepId: 'prepare', input: { value: 1 }
+      })
+      expect(second.attempt).toBe(2)
+      await store.finishRun(run.id, { status: 'succeeded', output: { ok: true } })
+      await expect(store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-3', stepId: 'prepare', input: { value: 1 }
+      })).rejects.toThrow(/terminal/i)
+    })
+
+    it('commits and replays durable step checkpoints', async () => {
+      const store = await make()
+      await store.createRun(run)
+      const lease = await store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-1', stepId: 'prepare', input: { value: 1 }
+      })
+      await store.commitCheckpoint({
+        runId: run.id,
+        sessionId: run.sessionId,
+        workerId: lease.workerId,
+        leaseId: lease.leaseId,
+        stepId: 'prepare',
+        input: lease.start.input,
+        attempt: lease.attempt,
+        sequence: 1,
+        output: { prepared: true }
+      })
+      await lease.release()
+      const resumed = await store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-2', stepId: 'prepare', input: { value: 1 }
+      })
+      expect(resumed.resumed).toBe(true)
+      expect(resumed.checkpoint?.output).toEqual({ prepared: true })
+    })
+
+    it('atomically suspends a run on an external wait and deduplicates signals', async () => {
+      const store = await make()
+      await store.createRun(run)
+      await store.acquireRun({
+        runId: run.id, sessionId: run.sessionId, workerId: 'worker-1', stepId: 'review', input: null
+      })
+      const request = {
+        runId: run.id,
+        sessionId: run.sessionId,
+        waitId: 'wait-1',
+        kind: 'human_review',
+        schemaVersion: 'v1',
+        definitionVersion: 'v1',
+        deadline: '2030-01-01T00:00:00.000Z'
+      }
+      await expect(store.registerWait(request)).resolves.toMatchObject({ created: true })
+      await expect(store.getRun(run.id)).resolves.toMatchObject({ status: 'waiting' })
+      await expect(store.signalWait({ waitId: request.waitId, eventId: 'event-1', outcome: 'approved' })).resolves.toMatchObject({ kind: 'applied' })
+      await expect(store.signalWait({ waitId: request.waitId, eventId: 'event-1', outcome: 'approved' })).resolves.toMatchObject({ kind: 'duplicate' })
     })
   })
 }

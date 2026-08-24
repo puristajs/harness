@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { BaseModelProvider, InMemoryStateStore, ModelError, defineHarness, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
+import { BaseModelProvider, InMemoryHarnessStorage, ModelError, defineHarness, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { FakeStateStore } from '../src/testing/fakeStateStore.js'
+import { FakeHarnessStorage } from '../src/testing/fakeHarnessStorage.js'
 
 function message(id: string, role: Message['role'], content: string): Message {
   return { id, sessionId: 'history', role, content, timestamp: '2026-08-19T00:00:00.000Z' }
@@ -11,7 +11,7 @@ function message(id: string, role: Message['role'], content: string): Message {
 
 function buildHarness(provider = new FakeModelProvider(), historyRetention?: { maxTurns?: number; maxBytes?: number }) {
   return defineHarness()
-    .state(new InMemoryStateStore())
+    .storage(new InMemoryHarnessStorage())
     .defaults(historyRetention ? { historyRetention } : {})
     .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
     .agents({ answer: { model: 'fake', instructions: 'Answer.', builtinTools: false, input: z.string(), output: z.string() } })
@@ -83,12 +83,12 @@ describe('durable conversation history', () => {
     expect((await second.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
   })
 
-  it('replays a terminal stream lifecycle for an idempotent delivery without state writes', async () => {
+  it('replays a terminal stream lifecycle for an idempotent delivery without storage writes', async () => {
     const provider = new FakeModelProvider()
-    const state = new FakeStateStore()
+    const storage = new FakeHarnessStorage()
     provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     const harness = defineHarness()
-      .state(state)
+      .storage(storage)
       .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
       .agents({ answer: { model: 'fake', instructions: 'Answer.', builtinTools: false, input: z.string(), output: z.string() } })
       .build()
@@ -96,7 +96,7 @@ describe('durable conversation history', () => {
     const options = { idempotencyKey: 'queue-message-stream' }
 
     await session.agents.answer.prompt('work', options)
-    state.resetOps()
+    storage.resetOps()
     const events = []
     for await (const event of session.agents.answer.stream('work', options)) events.push(event)
 
@@ -104,23 +104,23 @@ describe('durable conversation history', () => {
       { type: 'run.started', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream') },
       { type: 'run.finished', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream'), output: 'done' }
     ])
-    expect(state.ops).toEqual(['getRun'])
+    expect(storage.ops).toEqual(['getRun'])
     expect(provider.requests).toHaveLength(1)
   })
 
   it('recovers a committed transcript after a crash before run terminalization without a second model call', async () => {
     const provider = new FakeModelProvider()
-    const state = new InMemoryStateStore()
+    const storage = new InMemoryHarnessStorage()
     const key = 'queue-message-2'
     const runId = directAgentRunId('crash-recovery', 'answer', key)
-    await state.upsertSession({ id: 'crash-recovery', createdAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', runCount: 0 })
-    await state.createRun({ id: runId, sessionId: 'crash-recovery', kind: 'agent', target: 'answer', startedAt: '2026-08-19T00:00:00.000Z', status: 'running', input: 'work' })
-    await state.appendMessages('crash-recovery', [
+    await storage.upsertSession({ id: 'crash-recovery', createdAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', runCount: 0 })
+    await storage.createRun({ id: runId, sessionId: 'crash-recovery', kind: 'agent', target: 'answer', startedAt: '2026-08-19T00:00:00.000Z', status: 'running', input: 'work' })
+    await storage.appendMessages('crash-recovery', [
       { ...message(`msg_${runId}_01_user`, 'user', 'work'), sessionId: 'crash-recovery', runId },
       { ...message(`msg_${runId}_99_assistant_final`, 'assistant', '"done"'), sessionId: 'crash-recovery', runId }
     ])
     const harness = defineHarness()
-      .state(state)
+      .storage(storage)
       .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
       .agents({ answer: { model: 'fake', instructions: 'Answer.', builtinTools: false, input: z.string(), output: z.string() } })
       .build()
@@ -128,7 +128,7 @@ describe('durable conversation history', () => {
 
     await expect(session.agents.answer.prompt('work', { idempotencyKey: key })).resolves.toBe('done')
     expect(provider.requests).toHaveLength(0)
-    await expect(state.getRun(runId)).resolves.toMatchObject({ status: 'succeeded', output: 'done' })
+    await expect(storage.getRun(runId)).resolves.toMatchObject({ status: 'succeeded', output: 'done' })
   })
 })
 

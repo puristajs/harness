@@ -1,15 +1,15 @@
 import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 
-import { defineHarness, inMemorySandbox, InMemoryStateStore } from '../src/index.js'
+import { defineHarness, inMemorySandbox, InMemoryHarnessStorage } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/index.js'
 
 describe('run event persistence privacy', () => {
   it('redacts output content by default and keeps envelope fields outside payload', async () => {
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(state)
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
@@ -31,11 +31,11 @@ describe('run event persistence privacy', () => {
   })
 
   it('keeps persisted event content redacted even when a non-default telemetry content policy is configured', async () => {
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .telemetry({ contentCaptureMode: 'SPAN_AND_EVENT' })
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(state)
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
@@ -97,10 +97,10 @@ describe('model stream run events', () => {
       { kind: 'delta', text: 'lo' },
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' }
     ])
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(state)
       .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
       .tools({})
       .skills({})
@@ -141,10 +141,10 @@ describe('model stream run events', () => {
       { kind: 'delta', text: 'lo' },
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' }
     ])
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(state)
       .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
       .tools({})
       .skills({})
@@ -245,10 +245,10 @@ describe('model stream run events', () => {
       usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
       finishReason: 'stop'
     })
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .state(state)
+      .storage(state)
       .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
       .tools({})
       .skills({})

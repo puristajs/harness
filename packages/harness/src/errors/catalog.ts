@@ -278,7 +278,7 @@ export class SessionBusyError extends HarnessError {
   }
 }
 
-/** State backend operation failed. */
+/** Harness storage or scoped-memory backend operation failed. */
 export class StateError extends HarnessError {
   public constructor(
     message: string,
@@ -286,7 +286,8 @@ export class StateError extends HarnessError {
       op:
         | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
         | 'clearMessages' | 'replaceMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
-        | 'contextCheckpointWrite' | 'contextCheckpointRead' | 'contextCheckpointList' | 'contextCheckpointDelete'
+        | 'acquireRun' | 'loadCheckpoint' | 'commitCheckpoint' | 'withSessionLock'
+        | 'registerWait' | 'getWait' | 'signalWait' | 'cancelWait'
         | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
       reason?: 'duplicate_message_id' | string
       adapter?: 'memory' | string

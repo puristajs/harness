@@ -4,13 +4,13 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { HarnessConfigError } from '../errors/index.js'
-import { localDirectoryWorkspaceStore } from '../local/local-workspace.js'
-import { durableWorkspaceStoreContract, inMemoryDurableWorkspaceStore } from '../testing/index.js'
-import type { DurableWorkspaceStore } from './workspace.js'
-import { validateDurableWorkspaceStore } from './workspace.js'
+import { localDirectoryWorkspace } from '../local/local-workspace.js'
+import { durableWorkspaceContract, inMemoryDurableWorkspace } from '../testing/index.js'
+import type { DurableWorkspace } from './workspace.js'
+import { validateDurableWorkspace } from './workspace.js'
 
-describe('inMemoryDurableWorkspaceStore', () => {
-  durableWorkspaceStoreContract(() => inMemoryDurableWorkspaceStore())
+describe('inMemoryDurableWorkspace', () => {
+  durableWorkspaceContract(() => inMemoryDurableWorkspace())
 
   afterEach(() => {
     vi.useRealTimers()
@@ -18,7 +18,7 @@ describe('inMemoryDurableWorkspaceStore', () => {
 
   it('evicts idempotency records once a workspace is cleaned', async () => {
     const signal = new AbortController().signal
-    const adapter = inMemoryDurableWorkspaceStore()
+    const adapter = inMemoryDurableWorkspace()
     const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
     await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
     await adapter.cleanupWorkspace({ workspaceRef: handle.workspaceRef, reason: 'manual', idempotencyKey: 'cleanup', signal })
@@ -36,7 +36,7 @@ describe('inMemoryDurableWorkspaceStore', () => {
   it('resume of an expired workspace reports expired', async () => {
     vi.useFakeTimers()
     const signal = new AbortController().signal
-    const adapter = inMemoryDurableWorkspaceStore()
+    const adapter = inMemoryDurableWorkspace()
     const handle = await adapter.startWorkspace({ sessionId: 's', runId: 'r', attempt: 1, idempotencyKey: 'start', signal })
     await adapter.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
     vi.advanceTimersByTime(86_400_001)
@@ -47,32 +47,32 @@ describe('inMemoryDurableWorkspaceStore', () => {
   })
 })
 
-describe('localDirectoryWorkspaceStore', () => {
-  durableWorkspaceStoreContract(async () => localDirectoryWorkspaceStore({
+describe('localDirectoryWorkspace', () => {
+  durableWorkspaceContract(async () => localDirectoryWorkspace({
     root: await mkdtemp(join(tmpdir(), 'purista-workspace-contract-'))
   }))
 })
 
-it('rejects workspace stores without durable workspace capability', () => {
-  const adapter = inMemoryDurableWorkspaceStore()
-  const invalid: DurableWorkspaceStore = {
+it('rejects workspaces without durable workspace capability', () => {
+  const adapter = inMemoryDurableWorkspace()
+  const invalid: DurableWorkspace = {
     ...adapter,
     info: {
       ...adapter.info,
-      capabilities: ['workspace_store.checkpoint']
+      capabilities: ['workspace.checkpoint']
     },
-    capabilities: ['workspace_store.checkpoint']
+    capabilities: ['workspace.checkpoint']
   }
 
-  expect(() => validateDurableWorkspaceStore(invalid)).toThrow(HarnessConfigError)
+  expect(() => validateDurableWorkspace(invalid)).toThrow(HarnessConfigError)
 })
 
-it('rejects workspace stores with divergent capability declarations', () => {
-  const adapter = inMemoryDurableWorkspaceStore()
-  const invalid: DurableWorkspaceStore = {
+it('rejects workspaces with divergent capability declarations', () => {
+  const adapter = inMemoryDurableWorkspace()
+  const invalid: DurableWorkspace = {
     ...adapter,
-    capabilities: [...adapter.info.capabilities, 'workspace_store.encrypted_storage']
+    capabilities: [...adapter.info.capabilities, 'workspace.encrypted_storage']
   }
 
-  expect(() => validateDurableWorkspaceStore(invalid)).toThrow(HarnessConfigError)
+  expect(() => validateDurableWorkspace(invalid)).toThrow(HarnessConfigError)
 })

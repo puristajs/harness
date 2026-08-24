@@ -46,9 +46,9 @@ Default: env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else
 | Mode | Span attributes | Span events |
 | --- | --- | --- |
 | `NO_CONTENT` | Content, tool arguments, tool results, documents, and files omitted. | No content-bearing span events are emitted by core. |
-| `SPAN_ONLY` | Reserved in v1; core still omits content attributes. | No content-bearing span events are emitted by core. |
-| `EVENT_ONLY` | Content attributes omitted. | Reserved in v1; core still emits no content-bearing span events. |
-| `SPAN_AND_EVENT` | Reserved in v1; core still omits content attributes. | Reserved in v1; core still emits no content-bearing span events. |
+| `SPAN_ONLY` | Reserved in v3; core still omits content attributes. | No content-bearing span events are emitted by core. |
+| `EVENT_ONLY` | Content attributes omitted. | Reserved in v3; core still emits no content-bearing span events. |
+| `SPAN_AND_EVENT` | Reserved in v3; core still omits content attributes. | Reserved in v3; core still emits no content-bearing span events. |
 
 Structured objects, prompts, documents, tool parameters, tool results, file
 content, memory keys, memory values, memory search queries, memory search
@@ -57,7 +57,7 @@ counts, finish reasons, dimensions, scores, memory hit booleans, result counts,
 and hashed keys is not content.
 
 The enum is intentionally present before broad content telemetry is implemented
-so applications and adapters can pass a stable policy value. In v1, selecting a
+so applications and adapters can pass a stable policy value. In v3, selecting a
 non-`NO_CONTENT` mode causes content capture only for the memory facade rules in
 [20-memory-adapters](./20-memory-adapters.md). Core still omits prompt, output,
 tool argument, tool result, expected-output, context, and file content.
@@ -106,10 +106,8 @@ Every harness-created span carries when available:
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
-| State op | `harness.state.op` | `harness.*` |
+| Harness storage lifecycle | `harness.storage.{operation}` | `harness.*` |
 | Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
-| Durable runtime operation | `harness.runtime.{operation}` | `harness.*` |
-| Context checkpoint operation | `harness.context_checkpoint.{operation}` | `harness.*` |
 | Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
 | Agent Plugin inspection/loading | `harness.plugin.{operation}` | `harness.*` |
 
@@ -157,7 +155,7 @@ The harness emits:
 | `GUARDRAIL` | Optional governance policy evaluation |
 | `EVALUATOR` | Prompt candidate evaluation helper |
 
-The harness does not emit `RETRIEVER` or `PROMPT` in v1 because core has no
+The harness does not emit `RETRIEVER` or `PROMPT` in v3 because core has no
 retrieval store or prompt store. `GUARDRAIL` is emitted only when optional
 governance is configured.
 
@@ -207,7 +205,7 @@ Span: `{operation} {request.model}`
 `'text' | 'text_stream' | 'object' | 'object_stream' | 'embed' | 'rerank'`.
 
 Provider adapters must set `gen_ai.provider.name` and `gen_ai.system` to the
-same provider id for v1 compatibility. `gen_ai.provider.name` is canonical;
+same provider id for v3 compatibility. `gen_ai.provider.name` is canonical;
 `gen_ai.system` remains for older backends.
 
 ## Tool span attributes
@@ -282,7 +280,7 @@ Emitted by `evaluatePromptCandidates`.
 | `harness.eval.score` | double |
 | `harness.eval.passed` | boolean |
 
-No prompt, input, expected output, or context content is emitted by v1 core,
+No prompt, input, expected output, or context content is emitted by v3 core,
 regardless of `contentCaptureMode`.
 
 ## Memory span attributes
@@ -291,7 +289,7 @@ Spans: `harness.memory.get`, `harness.memory.set`, `harness.memory.delete`,
 `harness.memory.list`, `harness.memory.search`.
 
 Memory spans use only `harness.*` attributes. The harness does not emit
-OpenInference `RETRIEVER` in v1 because memory search is a generic adapter
+OpenInference `RETRIEVER` in v3 because memory search is a generic adapter
 operation, not a full retrieval pipeline contract.
 
 | Key | Type | Notes |
@@ -324,7 +322,7 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `harness.workspace.adapter` | string | `DurableWorkspaceStore.info.id` |
+| `harness.workspace.adapter` | string | `DurableWorkspace.info.id` |
 | `harness.workspace.operation` | string | `start`, `pause`, `resume`, `abort`, `cleanup`, `inspect` |
 | `harness.workspace.state` | string | lifecycle state returned by the adapter |
 | `harness.workspace.ref_hash` | string | SHA-256 hex of `workspaceRef` |
@@ -333,9 +331,9 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 | `harness.workspace.attempt` | integer | start/pause/resume only |
 | `harness.workspace.sequence` | integer | pause only |
 | `harness.workflow.step_id` | string | pause only |
-| `harness.workspace_store.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
-| `harness.workspace_store.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
-| `harness.workspace_store.quota` | string | quota id when a quota is checked or exceeded |
+| `harness.workspace.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
+| `harness.workspace.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
+| `harness.workspace.quota` | string | quota id when a quota is checked or exceeded |
 | `harness.run.id` | string | when available |
 | `harness.session.id` | string | when available |
 | `harness.workflow.id` | string | when available |
@@ -375,45 +373,24 @@ Plugin roots/data paths, commands, arguments, environment values, URLs,
 headers, schemas, skill text, file names/content, credentials, tool inputs, and
 tool results are never span attributes or events in any capture mode.
 
-### `harness.runtime.{operation}`
+### `harness.storage.{operation}`
 
-Operation is one of `start`, `load_checkpoint`, `checkpoint`, or `finish`.
+Operation is one of `acquire_run`, `load_checkpoint`, `commit_checkpoint`,
+`finish_run`, `register_wait`, or `signal_wait`.
 
 | Key | Type |
 | --- | --- |
-| `harness.runtime.adapter` | string |
-| `harness.runtime.operation` | string |
-| `harness.runtime.persistent` | boolean |
-| `harness.runtime.resumed` | boolean, start only |
-| `harness.runtime.attempt` | integer |
-| `harness.runtime.sequence` | integer, checkpoint only |
-| `harness.runtime.step_id` | string, checkpoint only |
+| `harness.storage.adapter` | string |
+| `harness.storage.operation` | string |
+| `harness.storage.persistent` | boolean |
+| `harness.storage.resumed` | boolean, acquire only |
+| `harness.storage.attempt` | integer |
+| `harness.storage.sequence` | integer, checkpoint only |
+| `harness.storage.step_id` | string, checkpoint only |
 | `harness.run.id` | string |
 | `harness.run.status` | string, finish only |
 | `harness.session.id` | string |
 | `error.type` | string, failure only |
-
-### `harness.context_checkpoint.{operation}`
-
-Operation is one of `write`, `read`, `list`, or `delete`.
-
-| Key | Type |
-| --- | --- |
-| `harness.context_checkpoint.adapter` | string |
-| `harness.context_checkpoint.operation` | string |
-| `harness.context_checkpoint.kind` | string, when available |
-| `harness.context_checkpoint.ref_hash` | string, when available |
-| `harness.context_checkpoint.sequence` | integer, when available |
-| `harness.context_checkpoint.result_count` | integer, list only |
-| `harness.context_checkpoint.limit` | integer, list only |
-| `harness.context_checkpoint.payload_size_bytes` | integer, write only |
-| `harness.run.id` | string, when available |
-| `harness.session.id` | string, when available |
-| `harness.workflow.id` | string, when available |
-| `harness.agent.id` | string, when available |
-| `error.type` | string, failure only |
-
-Context checkpoint payload content is never emitted by core.
 
 ### `harness.local_sandbox.{operation}`
 
@@ -462,7 +439,7 @@ Latest experimental event:
 
 - `gen_ai.client.inference.operation.details`
 
-v1 core does not emit these content events. Future implementations that add
+v3 core does not emit these content events. Future implementations that add
 content events must follow `contentCaptureMode` and preserve `NO_CONTENT` as the
 default.
 
@@ -550,12 +527,10 @@ aggregating metrics.
 | `harness.workspace.operation.duration` | Histogram | `s` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.operations` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.bytes` | Histogram | `By` | `harness.workspace.adapter`, `harness.workspace.operation` |
-| `harness.workspace_store.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.cleanup.reason`, `error.type` |
-| `harness.workspace_store.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.quota` |
-| `harness.runtime.operation.duration` | Histogram | `s` | `harness.runtime.adapter`, `harness.runtime.operation`, `error.type` |
-| `harness.runtime.operations` | Counter | `1` | `harness.runtime.adapter`, `harness.runtime.operation`, `error.type` |
-| `harness.context_checkpoint.operation.duration` | Histogram | `s` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
-| `harness.context_checkpoint.operations` | Counter | `1` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
+| `harness.workspace.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.cleanup.reason`, `error.type` |
+| `harness.workspace.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.quota` |
+| `harness.storage.operation.duration` | Histogram | `s` | `harness.storage.adapter`, `harness.storage.operation`, `error.type` |
+| `harness.storage.operations` | Counter | `1` | `harness.storage.adapter`, `harness.storage.operation`, `error.type` |
 | `harness.local_sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 | `harness.local_sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 | `harness.plugin.operation.duration` | Histogram | `s` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |

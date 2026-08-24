@@ -27,7 +27,7 @@ validates the final output, and emits run events.
 
 A **workflow** is application orchestration around one or more agent
 invocations. Workflows sequence or parallelize agents, add deterministic logic,
-request human approval, write durable state, and create artifacts.
+request human approval, persist durable workflow data, and create artifacts.
 
 ## Quick Start
 
@@ -88,6 +88,7 @@ npm run test:failure
   - [Agent Plugins](docs/guides/agent-plugins.md)
   - [Guardrails](docs/guides/guardrails.md)
   - [Migrating to AI Harness 2.0](docs/guides/migrating-to-v2.md)
+  - [Migrating to AI Harness 3.0](docs/guides/migrating-to-v3.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)
 - Operate and review

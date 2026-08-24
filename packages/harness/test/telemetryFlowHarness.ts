@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import type { Logger } from '../src/logger/index.js'
 import type { ObjectResponse, ModelProvider } from '../src/ports/model-provider.js'
-import { InMemoryStateStore } from '../src/state/in-memory.js'
+import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { sandboxMemory } from '../src/memory/sandbox/index.js'
 import { createSessionHarness } from '../src/sessions/index.js'
@@ -58,7 +58,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
     logger,
     telemetry: opts.telemetry,
     telemetryShim: telemetry,
-    state: new InMemoryStateStore(),
+    storage: new InMemoryHarnessStorage(),
     sandbox: inMemorySandbox(),
     memory: sandboxMemory(),
     defaults: {

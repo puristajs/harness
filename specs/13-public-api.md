@@ -1,6 +1,6 @@
 # Public API
 
-**Purpose.** Single source of truth for every symbol exported from the v1 package set. The published package set includes the core package plus independent provider addons:
+**Purpose.** Single source of truth for every symbol exported from the v3 package set. The published package set includes the core package plus independent provider addons:
 
 - `@purista/harness` — harness, types, errors, in-memory adapters, local durable adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
 - `@purista/harness-openai` — OpenAI provider.
@@ -11,7 +11,7 @@
 - `@purista/harness-guardrails-native-privacy` — optional Rust/Node-API local recognizer subset for Node.js and Bun.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
-- `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
+- `@purista/harness-workspace-*` — optional external durable workspaces. Core ships local durable adapters and test helpers.
 - `@purista/harness-policy-*` — optional governance policy adapters. Core exports the policy port and native policy types, but OPA/AGT/Eve/Cedar engines live outside core.
 - `@purista/harness-agent-plugins` — opt-in local Agent Plugins 1.0.0 client;
   it inspects reviewed portable packages and returns ordinary skill/tool
@@ -59,7 +59,8 @@ export class JsonLogger implements Logger {
     bindings?: Record<string, unknown>
   })
 }
-export class InMemoryStateStore implements StateStore { constructor() }
+export class InMemoryHarnessStorage implements HarnessStorage { constructor() }
+export function inMemoryHarnessStorage(): InMemoryHarnessStorage
 
 // Sandbox factories (default adapters)
 export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs']>
@@ -74,32 +75,26 @@ export function sandboxMemory(): MemoryAdapter
 
 // Local durable execution factories
 export function localDurableExecution(options: LocalDurableExecutionOptions): LocalDurableExecution
-export function sqliteStateStore(options: SqliteStateStoreOptions): StateStore & { close(): Promise<void> }
-export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): DurableRuntime & { close(): Promise<void> }
-export function localDirectoryWorkspaceStore(options: LocalDirectoryWorkspaceStoreOptions): DurableWorkspaceStore
+export function sqliteHarnessStorage(options: SqliteHarnessStorageOptions): HarnessStorage & { close(): Promise<void> }
+export class LocalDirectoryWorkspace implements DurableWorkspace
+export function localDirectoryWorkspace(options: LocalDirectoryWorkspaceOptions): DurableWorkspace
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): Sandbox
-export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> }
-export class SqliteHarnessStorage    // shared SQLite backend behind the sqlite* factories
+export class SqliteHarnessStorage implements HarnessStorage
 
-// Durable external wait (generic checkpoint-and-signal primitive)
-export class InMemoryExternalWaitAdapter implements DurableExternalWaitAdapter {}
-export function inMemoryExternalWait(options?: { now?: () => Date }): InMemoryExternalWaitAdapter
-export function validateExternalWaitRequest(request: ExternalWaitRequest): void
+// Durable external wait errors; persistence is part of HarnessStorage
 export class ExternalWaitPendingError extends HarnessError {}
 export class ExternalWaitError extends HarnessError {}
 
-// Durable runtime (in-memory reference + durable workflow context)
-export function inMemoryDurableRuntime(options?: InMemoryDurableRuntimeOptions): DurableRuntime
-export function createDurableWorkflowContext(options: DurableWorkflowContextOptions): DurableWorkflowContext
+// Storage-owned recoverable execution primitives
 export function isTerminalRunStatus(status: DurableRunStatus): boolean
 export function isResumeBlockingRunStatus(status: DurableRunStatus): boolean
 export class DurableStepError extends Error {}
 export class DurableRunLeaseError extends Error {}
 export class DurableTerminalRunError extends Error {}
 
-// Durable workspace in-memory reference store (also re-exported from /testing)
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
+// Durable workspace in-memory reference (also re-exported from /testing)
+export class InMemoryDurableWorkspace implements DurableWorkspace
+export function inMemoryDurableWorkspace(): DurableWorkspace
 
 // Shared model-adapter helpers (consumed by first-party provider packages)
 export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number, details?: TokenUsageDetails): TokenUsage
@@ -154,7 +149,7 @@ export const HARNESS_VERSION: string                            // semver of the
 
 `JsonLogger` defaults: `level` is read from env `PURISTA_HARNESS_LOG_LEVEL` if set (invalid values fall back to `'info'` and emit one warning), else `'info'`; `out = process.stdout`; `bindings = {}`.
 
-**Removed in v1:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Inline builder definitions and static `defineHarnessModule` transforms preserve surrounding builder constraints; a module is not an independently buildable definition catalog. See [25-static-harness-modules](./25-static-harness-modules.md).
+**Removed in v3:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Inline builder definitions and static `defineHarnessModule` transforms preserve surrounding builder constraints; a module is not an independently buildable definition catalog. See [25-static-harness-modules](./25-static-harness-modules.md).
 
 ### Exports — types (main entry)
 
@@ -271,7 +266,6 @@ export interface TelemetryShim
 export function createTelemetryShim(): TelemetryShim
 export interface SessionMemory
 export interface MemoryFacade
-export interface ContextCheckpoints
 export interface ConversationHistory
 export interface SessionChildTasks
 
@@ -373,8 +367,8 @@ export interface MemorySearchQuery
 export interface MemorySearchResult
 
 // Durable workspace replay
-export interface DurableWorkspaceStore
-export interface DurableWorkspaceStoreInfo
+export interface DurableWorkspace
+export interface DurableWorkspaceInfo
 export interface DurableWorkspacePolicy
 export type WorkspaceLifecycleState
 export interface WorkspaceStartOptions
@@ -398,19 +392,11 @@ export interface LocalDurableExecution
 export type LocalDurableSandbox
 export type LocalFilesOnlySandboxCapabilities
 export type LocalExecSandboxCapabilities
-export interface SqliteDurableRuntimeOptions
-export interface SqliteStateStoreOptions
-export interface LocalDirectoryWorkspaceStoreOptions
+export interface SqliteHarnessStorageOptions
+export interface LocalDirectoryWorkspaceOptions
 export interface LocalDirectorySandboxOptions
-export interface ContextCheckpointStore
-export interface ContextCheckpointStoreInfo
-export interface ContextCheckpoint
-export interface ContextCheckpointQuery
-export interface ContextCheckpointRef
-export interface SqliteContextCheckpointStoreOptions
 
-// Durable runtime
-export interface DurableRuntime
+// Storage-owned durable execution
 export interface DurableRunLease
 export interface DurableRunStart
 export type DurableRunStatus
@@ -423,7 +409,6 @@ export interface DurableStepRetryPolicy
 export type DurableStepRetrySetting
 export interface DurableWorkflowContext
 export interface DurableWorkflowContextOptions
-export interface InMemoryDurableRuntimeOptions
 
 // Feedback
 export interface FeedbackRecord
@@ -437,13 +422,12 @@ export interface TelemetryOptions
 export type TelemetryFlavor
 export type ContentCaptureMode
 
-// State / Sandbox ports
-export interface StateStore
-export abstract class StateStoreAdapterBase
+// Harness storage / Sandbox ports
+export interface HarnessStorage
+export interface HarnessStorageInfo
 export type FinishRunPatch
 export type AdapterCapability
 export interface AdapterCapabilities
-export interface DurableRuntimeAdapter
 export interface AdapterInspection
 export interface HarnessInspection
 export interface HarnessModuleInspection
@@ -516,12 +500,10 @@ interface HarnessBuilder<S extends BuilderState> {
   // Foundation — optional, called at most once each
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
-  state(store: StateStore): HarnessBuilder<S>
+  storage(storage: HarnessStorage): HarnessBuilder<S>
   sandbox(sandbox: Sandbox): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
-  runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
-  workspaceStore(adapter: DurableWorkspaceStore): HarnessBuilder<S>
-  checkpoints(adapter: ContextCheckpointStore): HarnessBuilder<S>
+  workspace(workspace: DurableWorkspace): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
@@ -744,33 +726,29 @@ type AdapterCapability =
   | 'sandbox.snapshot'
   | 'sandbox.resume'
   | 'sandbox.hibernate'
-  | 'runtime.checkpoint'
-  | 'runtime.retry'
-  | 'runtime.distributed_lock'
-  | 'runtime.resume_from_checkpoint'
-  | 'runtime.workspace_checkpoint'
-  | 'runtime.checkpoint_retention'
-  | 'runtime.persistent'
-  | 'workspace_store.durable'
-  | 'workspace_store.persistent'
-  | 'workspace_store.checkpoint'
-  | 'workspace_store.resume'
-  | 'workspace_store.abort'
-  | 'workspace_store.cleanup'
-  | 'workspace_store.inspect'
-  | 'workspace_store.retention'
-  | 'workspace_store.quota'
-  | 'workspace_store.encrypted_storage'
-  | 'context_checkpoint.write'
-  | 'context_checkpoint.read'
-  | 'context_checkpoint.list'
-  | 'context_checkpoint.delete'
-  | 'context_checkpoint.persistent'
+  | 'storage.checkpoint'
+  | 'storage.retry'
+  | 'storage.multi_instance'
+  | 'storage.resume'
+  | 'storage.workspace_checkpoint'
+  | 'storage.checkpoint_retention'
+  | 'storage.persistent'
+  | 'storage.external_wait'
+  | 'workspace.durable'
+  | 'workspace.persistent'
+  | 'workspace.checkpoint'
+  | 'workspace.resume'
+  | 'workspace.abort'
+  | 'workspace.cleanup'
+  | 'workspace.inspect'
+  | 'workspace.retention'
+  | 'workspace.quota'
+  | 'workspace.encrypted_storage'
   | 'feedback.record'
   | MemoryCapability
 
 interface AdapterInspection {
-  kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'feedback' | 'model' | 'memory'
+  kind: 'storage' | 'sandbox' | 'workspace' | 'feedback' | 'model' | 'memory'
   id: string
   capabilities: readonly AdapterCapability[]
 }
@@ -890,18 +868,18 @@ interface DurableInvokeOptions {
   workerId?: string
   stepId?: string
   attempt?: number
-  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  /** Per-run workspace constraints; the workspace adapter validates and enforces them. */
   workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 
-`durable` opts a workflow run into durable execution against the configured
-`.runtime(...)` / `.workspaceStore(...)`; see
+`durable` opts a workflow run into recoverable execution against the configured
+`.storage(...)` and optional `.workspace(...)`; see
 [21-durable-workspaces](./21-durable-workspaces.md) §16.1 and
 [11-sessions](./11-sessions.md).
 
 `traceparent`/`tracestate` follow W3C Trace Context and are propagated into the
-run span before child workflow, agent, model, tool, sandbox, and state spans are
+run span before child workflow, agent, model, tool, sandbox, and storage spans are
 created. `metadata` is available to handlers and emitted only as sanitized
 scalar string, number, and boolean `harness.metadata.*` attributes as specified in
 [19-ai-eval-core](./19-ai-eval-core.md).
@@ -926,7 +904,7 @@ interface RunSummary {
 `RunSummary.tokenTotals` includes the optional `TokenUsage` detail fields when
 one or more completed model events reported them.
 
-`Session.getRunSummary(runId)` derives this from the configured `StateStore`; it
+`Session.getRunSummary(runId)` derives this from the configured `HarnessStorage`; it
 does not inspect OTel spans.
 
 ### AI evaluation core
@@ -1002,19 +980,19 @@ Locked canonical → alias map (the harness normalizes alias dispatch to canonic
 ```ts
 // Fakes
 export class FakeModelProvider implements ModelProvider     // configurable scripted responses
-export class FakeStateStore extends InMemoryStateStore       // records invoked operations (`ops`, `opCount`, `resetOps`)
+export class FakeHarnessStorage extends InMemoryHarnessStorage       // records invoked operations (`ops`, `opCount`, `resetOps`)
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory (`records`)
 export class RecordingTelemetry implements TelemetryShim     // captures deterministic spans, metrics, and parent links
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore   // also a main-entry export
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore        // also a main-entry export
+export class InMemoryDurableWorkspace implements DurableWorkspace   // also a main-entry export
+export function inMemoryDurableWorkspace(): DurableWorkspace        // also a main-entry export
 export function fakeCapabilityAdapter(
   capabilities: readonly AdapterCapability[],
   opts?: { id?: string }
 ): FakeCapabilityAdapter
 export function fakeSnapshotSandbox(): Sandbox               // snapshot/resume/hibernate-capable in-memory sandbox
-export type FakeStateStoreOp
+export type FakeHarnessStorageOp
 export interface FakeSandboxOptions
 export interface FakeLogRecord
 export interface RecordedTelemetrySpan
@@ -1022,7 +1000,7 @@ export interface RecordedTelemetryMetric
 export interface FakeCapabilityAdapter
 
 // Contract suites — each is a Vitest test factory
-export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
+export function harnessStorageContract(make: () => HarnessStorage | Promise<HarnessStorage>): void
 export function sandboxContract(
   make: () => Sandbox | Promise<Sandbox>,
   opts: { executor: 'available' | 'unavailable' }
@@ -1036,8 +1014,8 @@ export function memoryAdapterContract(
   make: () => MemoryAdapter | Promise<MemoryAdapter>,
   opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
 ): void
-export function durableWorkspaceStoreContract(
-  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
+export function durableWorkspaceContract(
+  make: () => DurableWorkspace | Promise<DurableWorkspace>,
 ): void
 export function adapterCapabilitiesContract(make: () => AdapterCapabilities | Promise<AdapterCapabilities>): void
 export function sandboxSnapshotContract(make: () => Sandbox | Promise<Sandbox>): void
@@ -1166,7 +1144,7 @@ testing helper.
 The fake adapters and contract suites are only reachable via
 `@purista/harness/testing`, with two deliberate overlaps:
 `evaluateDeterministicScorer` (plus its deterministic scorer types) and
-`InMemoryDurableWorkspaceStore`/`inMemoryDurableWorkspaceStore` are main-entry
+`InMemoryDurableWorkspace`/`inMemoryDurableWorkspace` are main-entry
 exports re-exported by the testing subpath for ergonomics.
 Implementation agents must add a CI test that verifies the actual exports of
 each entry against the lists above
@@ -1214,7 +1192,7 @@ export type OpenAiFactoryOptions
 export type OpenAiClient
 ```
 
-Additional provider packages follow the `@purista/harness-{addon}` naming convention and expose one provider factory plus factory options/client types. The `ModelProvider` port remains stable for v1.x provider packages.
+Additional provider packages follow the `@purista/harness-{addon}` naming convention and expose one provider factory plus factory options/client types. The `ModelProvider` port remains stable for v3.x provider packages.
 
 Current provider addons:
 

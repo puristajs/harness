@@ -8,7 +8,7 @@ same session API.
 ```mermaid
 flowchart TD
   Harness["defineHarness"] --> Model["ModelProvider adapter"]
-  Harness --> State["StateStore adapter"]
+  Harness --> State["HarnessStorage adapter"]
   Harness --> Memory["MemoryAdapter"]
   Harness --> Sandbox["Sandbox adapter"]
   Harness --> Tools["TypeScript and MCP tools"]
@@ -34,12 +34,13 @@ schema-validated structured output. Expose `embed(...)` and `rerank(...)` only
 when the provider SDK can support those operations cleanly; otherwise omit the
 method and do not declare the matching capability.
 
-## Add A State Store Adapter
+## Add A Harness Storage Adapter
 
-Implement `StateStore` when sessions, runs, messages, and events must outlive
-the process.
+Implement `HarnessStorage` when sessions, messages, runs, events, workflow
+checkpoints, leases, or external waits must outlive the process. Use one shared
+transactional backend; do not split these operations across adapters.
 
-Durable adapters should pass the shared state-store contract tests.
+Durable adapters should pass the shared storage contract tests.
 
 ## Add A Memory Adapter
 
@@ -84,15 +85,15 @@ defineHarness()
 Preview ports and browser routing remain application concerns, not core
 sandbox capabilities.
 
-## Add A Durable Runtime Adapter
+## Add Recoverable Execution Storage
 
-Durable execution is opt-in. A runtime adapter declares capabilities and owns
-checkpoint storage, leases, retries, and resume behavior.
+Durable execution is opt-in per workflow invocation. `HarnessStorage` declares
+capabilities and owns checkpoint storage, leases, waits, retries, and resume.
 
 ```ts
 const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())
-  .requires(['runtime.checkpoint', 'runtime.resume_from_checkpoint'])
+  .storage(inMemoryHarnessStorage())
+  .requires(['storage.checkpoint', 'storage.resume'])
   .models(...)
   .agents(...)
   .build()

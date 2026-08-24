@@ -4,9 +4,9 @@ import type { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { BaseModelProvider, InMemoryStateStore, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../src/index.js'
+import { BaseModelProvider, InMemoryHarnessStorage, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { inMemoryDurableWorkspaceStore } from '../src/index.js'
+import { inMemoryDurableWorkspace } from '../src/index.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError, SkillManifestError } from '../src/errors/index.js'
 import type { ObjectRequest } from '../src/ports/model-provider.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
@@ -29,7 +29,7 @@ class SlowBaseProvider extends BaseModelProvider {
   }
 }
 
-class ContextAwareStateStore extends InMemoryStateStore {
+class ContextAwareHarnessStorage extends InMemoryHarnessStorage {
   public configured = false
 
   public configureHarnessContext(context: HarnessAdapterContext): void {
@@ -322,11 +322,11 @@ it('validates model retry policies at alias registration time', () => {
     .toThrow(HarnessConfigError)
 })
 
-it('passes harness context into state, sandbox, and tool adapters', async () => {
+it('passes harness context into storage, sandbox, and tool adapters', async () => {
   const model = new FakeModelProvider()
   model.enqueue({ object: {}, toolCalls: [{ id: 'call-1', name: 'ctx_tool', arguments: { value: 'x' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
   model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-  const state = new ContextAwareStateStore()
+  const state = new ContextAwareHarnessStorage()
   let sandboxConfigured = false
   let memoryConfigured = false
   let toolConfigured = false
@@ -350,7 +350,7 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
 
   const harness = defineHarness({ name: 'ctx-test' })
     .logger(new JsonLogger({ level: 'fatal', out: { write: () => undefined } }))
-    .state(state)
+    .storage(state)
     .sandbox(sandbox)
     .memory(memory)
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
@@ -381,6 +381,14 @@ it('passes harness context into state, sandbox, and tool adapters', async () => 
   expect(memoryConfigured).toBe(true)
   expect(toolConfigured).toBe(true)
   expect(toolSawContext).toBe(true)
+})
+
+it('rejects malformed Harness storage synchronously', () => {
+  expect(() => defineHarness().storage({} as never)).toThrow(HarnessConfigError)
+
+  const missingCapability = new InMemoryHarnessStorage() as InMemoryHarnessStorage & { capabilities: string[] }
+  Object.defineProperty(missingCapability, 'capabilities', { value: ['storage.checkpoint'] })
+  expect(() => defineHarness().storage(missingCapability as never)).toThrow(HarnessConfigError)
 })
 
 it('executes tool calls from the same model response concurrently and preserves model result order', async () => {
@@ -739,12 +747,11 @@ it('bounds permission hooks with the tool timeout and lets the model recover', a
 
 it('inspects effective adapter capabilities and validates requirements at build time', () => {
   const model = new FakeModelProvider()
-  const workspace = inMemoryDurableWorkspaceStore()
+  const workspace = inMemoryDurableWorkspace()
   const harness = defineHarness({ name: 'capability-test' })
     .sandbox(inMemorySandbox())
-    .runtime({ id: 'fake-runtime', capabilities: ['runtime.checkpoint'] })
-    .workspaceStore(workspace)
-    .requires(['sandbox.fs', 'runtime.checkpoint', 'workspace_store.durable', 'workspace_store.resume'])
+    .workspace(workspace)
+    .requires(['sandbox.fs', 'storage.checkpoint', 'workspace.durable', 'workspace.resume'])
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
     .build()
@@ -752,26 +759,30 @@ it('inspects effective adapter capabilities and validates requirements at build 
   const inspection = harness.inspect()
   expect(inspection.name).toBe('capability-test')
   expect(inspection.capabilities).toEqual([
+    'storage.checkpoint',
+    'storage.retry',
+    'storage.resume',
+    'storage.workspace_checkpoint',
+    'storage.external_wait',
     'sandbox.fs',
     'memory.kv',
     'memory.list',
     'memory.delete',
     'memory.run',
     'memory.session',
-    'runtime.checkpoint',
-    'workspace_store.durable',
-    'workspace_store.checkpoint',
-    'workspace_store.resume',
-    'workspace_store.abort',
-    'workspace_store.cleanup',
-    'workspace_store.inspect',
-    'workspace_store.retention',
-    'workspace_store.quota'
+    'workspace.durable',
+    'workspace.checkpoint',
+    'workspace.resume',
+    'workspace.abort',
+    'workspace.cleanup',
+    'workspace.inspect',
+    'workspace.retention',
+    'workspace.quota'
   ])
-  expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'runtime.checkpoint', 'workspace_store.durable', 'workspace_store.resume'])
+  expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'storage.checkpoint', 'workspace.durable', 'workspace.resume'])
   expect(inspection.adapters.some((adapter) => adapter.kind === 'memory' && adapter.id === 'sandbox_memory')).toBe(true)
-  expect(inspection.adapters.some((adapter) => adapter.kind === 'runtime' && adapter.id === 'fake-runtime')).toBe(true)
-  expect(inspection.adapters.some((adapter) => adapter.kind === 'workspace_store' && adapter.id === 'in_memory_workspace_store')).toBe(true)
+  expect(inspection.adapters.some((adapter) => adapter.kind === 'storage' && adapter.id === 'in_memory')).toBe(true)
+  expect(inspection.adapters.some((adapter) => adapter.kind === 'workspace' && adapter.id === 'in_memory_workspace')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'model' && adapter.id === 'fast')).toBe(true)
 
   expect(() => defineHarness()
@@ -793,8 +804,8 @@ it('inspects effective adapter capabilities and validates requirements at build 
     .memory(sandboxMemory())).toThrow(HarnessConfigError)
 
   expect(() => defineHarness()
-    .workspaceStore(inMemoryDurableWorkspaceStore())
-    .workspaceStore(inMemoryDurableWorkspaceStore())).toThrow(HarnessConfigError)
+    .workspace(inMemoryDurableWorkspace())
+    .workspace(inMemoryDurableWorkspace())).toThrow(HarnessConfigError)
 })
 
 it('rejects malformed custom tool ids at the .tools() call', () => {

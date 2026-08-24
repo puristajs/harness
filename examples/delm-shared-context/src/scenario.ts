@@ -53,7 +53,7 @@ export function formatCheckoutIncidentRun(result: DelmWorkflowOutput): string {
     'Rejected reports:',
     rejected,
     '',
-    `Durable context checkpoints written: ${result.checkpointCount}`
+    `Durable workflow checkpoints written: ${result.checkpointCount}`
   ].join('\n')
 }
 

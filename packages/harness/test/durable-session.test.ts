@@ -5,18 +5,18 @@ import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 import {
   defineHarness,
-  inMemoryDurableRuntime,
-  inMemoryDurableWorkspaceStore,
+  inMemoryDurableWorkspace,
+  inMemoryHarnessStorage,
   inMemorySandbox,
-  localDirectoryWorkspaceStore,
-  type DurableRuntime,
-  type DurableWorkspaceStore
+  localDirectoryWorkspace,
+  type HarnessStorage,
+  type DurableWorkspace
 } from '../src/index.js'
 import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
 import type { Logger } from '../src/logger/logger.js'
 import { beginDurableWorkflow } from '../src/runtime/sessionDurable.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { HarnessConfigError, ValidationError, WorkspaceError } from '../src/errors/index.js'
+import { ValidationError, WorkspaceError } from '../src/errors/index.js'
 
 function noopLogger(): Logger {
   const logger: Logger = {
@@ -31,7 +31,7 @@ function noopLogger(): Logger {
   return logger
 }
 
-function buildHarness(opts: { runtime?: DurableRuntime; workspaceStore?: DurableWorkspaceStore; effects: Record<string, number> } ) {
+function buildHarness(opts: { storage?: HarnessStorage; workspace?: DurableWorkspace; effects: Record<string, number> } ) {
   const model = new FakeModelProvider()
   let builder = defineHarness()
     .sandbox(inMemorySandbox())
@@ -39,8 +39,8 @@ function buildHarness(opts: { runtime?: DurableRuntime; workspaceStore?: Durable
     .tools({})
     .skills({})
     .agents({ noop: { model: 'fast', instructions: 'x', builtinTools: false } })
-  if (opts.runtime) builder = builder.runtime(opts.runtime)
-  if (opts.workspaceStore) builder = builder.workspaceStore(opts.workspaceStore)
+  if (opts.storage) builder = builder.storage(opts.storage)
+  if (opts.workspace) builder = builder.workspace(opts.workspace)
   return builder
     .workflows({
       twoStep: {
@@ -66,16 +66,16 @@ describe('durable workflow auto-wiring', () => {
     expect(effects).toEqual({ a: 1, b: 1 })
   })
 
-  it('checkpoints steps and finalizes the durable runtime on success', async () => {
+  it('checkpoints steps and finalizes Harness storage on success', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime()
-    const harness = buildHarness({ runtime, effects })
+    const storage = inMemoryHarnessStorage()
+    const harness = buildHarness({ storage, effects })
     const session = await harness.getSession('durable-success')
 
     const result = await session.workflows.twoStep.prompt('go', { durable: { runId: 'run-success' } })
     expect(result).toBe(JSON.stringify({ a: 1, b: 2 }))
 
-    const checkpoint = await runtime.loadCheckpoint('run-success')
+    const checkpoint = await storage.loadCheckpoint('run-success')
     expect(checkpoint?.stepId).toBe('b')
     const summary = await session.getRunSummary('run-success')
     expect(summary?.status).toBe('succeeded')
@@ -83,8 +83,8 @@ describe('durable workflow auto-wiring', () => {
 
   it('replays committed steps on resume after a crash without re-running side effects', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime({ failAfterCheckpoint: 1 })
-    const harness = buildHarness({ runtime, effects })
+    const storage = inMemoryHarnessStorage({ failAfterCheckpoint: 1 })
+    const harness = buildHarness({ storage, effects })
     const session = await harness.getSession('durable-resume')
 
     // First attempt crashes after step "a" commits its checkpoint.
@@ -99,33 +99,33 @@ describe('durable workflow auto-wiring', () => {
 
   it('drives the durable workspace lifecycle across a crash and resume', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime({ failAfterCheckpoint: 1 })
-    const workspaceStore = inMemoryDurableWorkspaceStore()
-    const harness = buildHarness({ runtime, workspaceStore, effects })
+    const storage = inMemoryHarnessStorage({ failAfterCheckpoint: 1 })
+    const workspace = inMemoryDurableWorkspace()
+    const harness = buildHarness({ storage, workspace, effects })
     const session = await harness.getSession('durable-workspace')
 
     await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-ws' } })).rejects.toThrow()
     await session.workflows.twoStep.prompt('go', { durable: { runId: 'run-ws' } })
 
-    const checkpoint = await runtime.loadCheckpoint('run-ws')
+    const checkpoint = await storage.loadCheckpoint('run-ws')
     const workspaceRef = checkpoint?.replay?.workspaceRef
     expect(workspaceRef).toBeTypeOf('string')
-    const inspection = await workspaceStore.inspectWorkspace?.({ workspaceRef })
+    const inspection = await workspace.inspectWorkspace?.({ workspaceRef })
     expect(inspection?.checkpoints.length).toBe(2)
     expect(inspection?.state).toBe('paused')
   })
 
   it('forwards an invocation workspace policy only when it creates the workspace', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime()
-    const workspaceStore = inMemoryDurableWorkspaceStore()
-    const startWorkspace = workspaceStore.startWorkspace.bind(workspaceStore)
+    const storage = inMemoryHarnessStorage()
+    const workspace = inMemoryDurableWorkspace()
+    const startWorkspace = workspace.startWorkspace.bind(workspace)
     let receivedPolicy: unknown
-    workspaceStore.startWorkspace = async (options) => {
+    workspace.startWorkspace = async (options) => {
       receivedPolicy = options.policy
       return startWorkspace(options)
     }
-    const harness = buildHarness({ runtime, workspaceStore, effects })
+    const harness = buildHarness({ storage, workspace, effects })
     const session = await harness.getSession('durable-workspace-policy')
     const workspacePolicy = {
       retention: { cleanupMode: 'manual_only' as const, pausedTtlMs: 60_000 }
@@ -138,36 +138,38 @@ describe('durable workflow auto-wiring', () => {
     expect(receivedPolicy).toEqual(workspacePolicy)
   })
 
-  it('rejects a durable invocation without an executable runtime', async () => {
+  it('supports durable invocation with the default in-memory storage', async () => {
     const effects: Record<string, number> = {}
     const harness = buildHarness({ effects })
     const session = await harness.getSession('no-runtime')
 
     await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-x' } }))
-      .rejects.toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'durable_runtime_required' } })
-    await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-x' } })).rejects.toBeInstanceOf(HarnessConfigError)
+      .resolves.toBe(JSON.stringify({ a: 1, b: 2 }))
   })
 
   it('rejects an invalid durable run id', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime()
-    const harness = buildHarness({ runtime, effects })
+    const harness = buildHarness({ effects })
     const session = await harness.getSession('bad-run-id')
 
     await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'bad run id!' } })).rejects.toBeInstanceOf(ValidationError)
   })
 
   it('releases the lease when the workspace phase fails after startRun', async () => {
-    const runtime = inMemoryDurableRuntime()
-    const failingStore = inMemoryDurableWorkspaceStore()
+    const storage = inMemoryHarnessStorage()
+    const failingStore = inMemoryDurableWorkspace()
     const originalStart = failingStore.startWorkspace.bind(failingStore)
     failingStore.startWorkspace = async () => {
       throw new WorkspaceError('Workspace backend down.', { reason: 'backend_failure' })
     }
+    await storage.createRun({
+      id: 'run-lease-leak', sessionId: 'session-lease-leak', kind: 'workflow', target: 'wf',
+      startedAt: new Date().toISOString(), status: 'running', input: { ok: true }
+    })
 
     await expect(beginDurableWorkflow({
-      runtime,
-      workspaceStore: failingStore,
+      storage,
+      workspace: failingStore,
       durable: { runId: 'run-lease-leak' },
       defaultWorkerId: 'worker-1',
       sessionId: 'session-lease-leak',
@@ -182,8 +184,8 @@ describe('durable workflow auto-wiring', () => {
     // immediately instead of waiting for the lease TTL.
     failingStore.startWorkspace = originalStart
     const binding = await beginDurableWorkflow({
-      runtime,
-      workspaceStore: failingStore,
+      storage,
+      workspace: failingStore,
       durable: { runId: 'run-lease-leak' },
       defaultWorkerId: 'worker-2',
       sessionId: 'session-lease-leak',
@@ -200,12 +202,16 @@ describe('durable workflow auto-wiring', () => {
   it('unbinds the local workspace coordinator when the durable binding is disposed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'purista-durable-binding-'))
     const coordinator = createLocalWorkspaceCoordinator()
-    const workspaceStore = localDirectoryWorkspaceStore({ root, coordinator })
-    const runtime = inMemoryDurableRuntime()
+    const workspace = localDirectoryWorkspace({ root, coordinator })
+    const storage = inMemoryHarnessStorage()
+    await storage.createRun({
+      id: 'run-binding', sessionId: 'session-binding', kind: 'workflow', target: 'wf',
+      startedAt: new Date().toISOString(), status: 'running', input: { ok: true }
+    })
 
     const binding = await beginDurableWorkflow({
-      runtime,
-      workspaceStore,
+      storage,
+      workspace,
       durable: { runId: 'run-binding' },
       defaultWorkerId: 'worker-1',
       sessionId: 'session-binding',
@@ -224,8 +230,7 @@ describe('durable workflow auto-wiring', () => {
 
   it('rejects durable execution on agent runs', async () => {
     const effects: Record<string, number> = {}
-    const runtime = inMemoryDurableRuntime()
-    const harness = buildHarness({ runtime, effects })
+    const harness = buildHarness({ effects })
     const session = await harness.getSession('agent-durable')
 
     await expect(session.agents.noop.prompt('hi', { durable: { runId: 'run-agent' } })).rejects.toBeInstanceOf(ValidationError)

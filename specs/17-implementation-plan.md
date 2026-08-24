@@ -21,10 +21,10 @@ green; coverage ≥85%.
 ## Phase 2 — State port + in-memory default + history API (no memory KV)
 
 Deliverables:
-- `packages/harness/src/ports/state.ts` with the `StateStore` interface (no memory KV methods).
+- `packages/harness/src/ports/state.ts` with the `HarnessStorage` interface (no memory KV methods).
 - `packages/harness/src/state/in-memory/` with default impl.
 - Persistence shape types (`SessionRecord`, `Message`, `RunRecord`, `PersistedRunEvent`).
-- `stateStoreContract` factory under `packages/harness/src/testing/`.
+- `harnessStorageContract` factory under `packages/harness/src/testing/`.
 
 Exit: state contract green.
 
@@ -108,7 +108,7 @@ Exit: skills tests green.
 
 Deliverables:
 - `packages/harness/src/sessions/` with `Session` facade (incl. `clearHistory`, `replaceHistory`).
-- `Session.getRunSummary(runId)` derived from `StateStore`.
+- `Session.getRunSummary(runId)` derived from `HarnessStorage`.
 - Run lifecycle, OTel spans, run-event persistence.
 - Internal in-process bounded run-event queue with overflow notification; slow consumers do not pause model/tool execution.
 - `SessionMemory` facade backed by the configured `MemoryAdapter`.
@@ -202,7 +202,7 @@ fixtures green.
 
 Deliverables:
 - `packages/harness/src/harness/defineHarness.ts` exporting the chainable `HarnessBuilder` entry point.
-- `.runtime(...)`, `.requires(...)`, and `harness.inspect()` for adapter capability policy and data-only inspection.
+- `.storage(...)`, `.requires(...)`, and `harness.inspect()` for adapter capability policy and data-only inspection.
 - Surface diff test passes for both entries (actual exports == [13-public-api](./13-public-api.md) lists).
 
 Exit: harness complete; coverage ≥85%.

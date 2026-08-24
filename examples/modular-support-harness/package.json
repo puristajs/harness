@@ -11,8 +11,8 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@purista/harness": "^2.1.0",
-    "@purista/harness-openai": "^2.1.0",
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-openai": "^3.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

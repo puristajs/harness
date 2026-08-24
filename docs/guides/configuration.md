@@ -34,18 +34,17 @@ flowchart LR
   Harness --> Skills["skills"]
   Harness --> Agents["agents"]
   Harness --> Workflows["workflows"]
-  Harness --> State["state adapter"]
+  Harness --> Storage["Harness storage"]
   Harness --> Sandbox["sandbox adapter"]
   Harness --> Memory["memory adapter"]
-  Harness --> Workspace["durable workspace store"]
-  Harness --> Checkpoints["context checkpoint store"]
+  Harness --> Workspace["durable workspace"]
   Harness --> Telemetry["logger + telemetry"]
 ```
 
 | Area | Default | Configure When |
 |---|---|---|
 | Logger | `JsonLogger` | You need structured logs at a specific level or sink. |
-| State | In-memory state | Runs/history must survive process restart. |
+| Storage | `InMemoryHarnessStorage` | Runs/history must survive process restart or workflows need recovery. |
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
 | Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
 | Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
@@ -274,8 +273,8 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 
 ## Local Durable Bundle
 
-Use `localDurableExecution` when you want durable state, checkpointed workflows,
-workspace restore, and context checkpoints without Docker or an external
+Use `localDurableExecution` when you want durable conversations, checkpointed
+workflows, waits, and workspace restore without Docker or an external
 database:
 
 ```ts
@@ -284,13 +283,12 @@ import { localDurableExecution } from '@purista/harness'
 const local = localDurableExecution({ root: '.purista/harness', exec: false })
 
 const harness = defineHarness()
-  .state(local.state)
+  .storage(local.storage)
   .sandbox(local.sandbox)
-  .workspaceStore(local.workspaceStore)
+  .workspace(local.workspace)
   .requires([
-    'runtime.persistent',
-    'workspace_store.persistent',
-    'context_checkpoint.persistent'
+    'storage.persistent',
+    'workspace.persistent'
   ])
   .models(models)
   .agents(agents)
@@ -307,17 +305,18 @@ executor-capable sandbox for built-in `bash`, exec-backed `grep`, and
 `mcp_stdio`.
 
 Sandbox snapshot/resume/hibernate is a low-level sandbox adapter capability.
-Production durable replay also requires a durable workspace store:
+Production durable replay uses one shared storage adapter and, for files, a
+durable workspace:
 
 ```ts
-.runtime(durableRuntime)
-.workspaceStore(durableWorkspace)
+.storage(harnessStorage)
+.workspace(durableWorkspace)
 .requires([
-  'runtime.workspace_checkpoint',
-  'workspace_store.durable',
-  'workspace_store.checkpoint',
-  'workspace_store.resume',
-  'workspace_store.cleanup'
+  'storage.workspace_checkpoint',
+  'workspace.durable',
+  'workspace.checkpoint',
+  'workspace.resume',
+  'workspace.cleanup'
 ])
 ```
 
@@ -416,7 +415,7 @@ attributes include `harness.error.code`, `harness.error.category`,
 
 ## Production Checklist
 
-- Use durable `StateStore` for long-lived sessions and audit history.
+- Use durable `HarnessStorage` for long-lived sessions and audit history.
 - Define tenant-safe session IDs.
 - Set explicit timeout budgets.
 - Wire caller cancellation through `InvokeOptions.signal`.

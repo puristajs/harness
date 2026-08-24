@@ -3,21 +3,18 @@ import { describe, expect, it } from 'vitest'
 import {
   defineHarness,
   ExternalWaitPendingError,
-  inMemoryDurableRuntime,
-  inMemoryExternalWait,
+  inMemoryHarnessStorage,
   inMemorySandbox
 } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 describe('durable external waits', () => {
   it('persists a wait, releases the run, and resumes without replaying completed side effects', async () => {
-    const runtime = inMemoryDurableRuntime()
-    const waits = inMemoryExternalWait()
+    const storage = inMemoryHarnessStorage()
     const effects = { prepared: 0, executed: 0 }
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .runtime(runtime)
-      .externalWait(waits)
+      .storage(storage)
       .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
       .tools({})
       .skills({})
@@ -54,10 +51,10 @@ describe('durable external waits', () => {
       .rejects.toBeInstanceOf(ExternalWaitPendingError)
     expect(effects).toEqual({ prepared: 1, executed: 0 })
     expect((await session.getRunSummary('review-run'))?.status).toBe('waiting')
-    expect((await waits.get('review-a'))?.status).toBe('waiting')
+    expect((await storage.getWait('review-a'))?.status).toBe('waiting')
 
-    expect((await waits.signal({ waitId: 'review-a', eventId: 'delivery-1', outcome: 'approved' })).kind).toBe('applied')
-    expect((await waits.signal({ waitId: 'review-a', eventId: 'delivery-1', outcome: 'approved' })).kind).toBe('duplicate')
+    expect((await storage.signalWait({ waitId: 'review-a', eventId: 'delivery-1', outcome: 'approved' })).kind).toBe('applied')
+    expect((await storage.signalWait({ waitId: 'review-a', eventId: 'delivery-1', outcome: 'approved' })).kind).toBe('duplicate')
 
     await expect(session.workflows.transfer.prompt({ id: 'a' }, { durable: { runId: 'review-run' } })).resolves.toBe('executed')
     expect(effects).toEqual({ prepared: 1, executed: 1 })
@@ -67,7 +64,6 @@ describe('durable external waits', () => {
   it('rejects durable waits outside a durable workflow invocation', async () => {
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
-      .externalWait(inMemoryExternalWait())
       .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
       .tools({})
       .skills({})

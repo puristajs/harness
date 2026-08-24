@@ -2,21 +2,21 @@ import { defineHarness } from '../harness/defineHarness.js'
 
 // Fakes
 export { FakeModelProvider } from './fakeModelProvider.js'
-export { FakeStateStore, type FakeStateStoreOp } from './fakeStateStore.js'
+export { FakeHarnessStorage, type FakeHarnessStorageOp } from './fakeHarnessStorage.js'
 export { FakeSandbox, type FakeSandboxOptions } from './fakeSandbox.js'
 export { FakeLogger, type FakeLogRecord } from './fakeLogger.js'
 export { RecordingTelemetry, type RecordedTelemetryMetric, type RecordedTelemetrySpan } from './recordingTelemetry.js'
 export { FakeMemoryAdapter, memoryAdapterContract } from './fakeMemoryAdapter.js'
-export { InMemoryDurableWorkspaceStore, inMemoryDurableWorkspaceStore } from '../workspace/index.js'
+export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from '../workspace/index.js'
 export { adapterCapabilitiesContract, fakeCapabilityAdapter, type FakeCapabilityAdapter } from './capabilities.js'
 export { fakeSnapshotSandbox, sandboxSnapshotContract } from './sandboxSnapshot.js'
 
 // Contract suites
-export { stateStoreContract } from './stateStoreContract.js'
+export { harnessStorageContract } from './harnessStorageContract.js'
 export { sandboxContract } from './sandboxContract.js'
 export { modelProviderContract } from './modelProviderContract.js'
 export { loggerContract } from './loggerContract.js'
-export { durableWorkspaceStoreContract } from './durableWorkspaceStoreContract.js'
+export { durableWorkspaceContract } from './durableWorkspaceContract.js'
 
 // Helpers
 export { recordEvents } from './recordEvents.js'

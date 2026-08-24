@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "harness_guardrails_native_privacy"
-version = "2.1.1"
+version = "3.0.0"
 dependencies = [
  "napi",
  "napi-derive",

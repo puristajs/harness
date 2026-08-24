@@ -1,9 +1,11 @@
 import { expect, it } from 'vitest'
-import { createDurableWorkflowContext, DurableStepError, inMemoryDurableRuntime } from '../src/index.js'
+import { DurableStepError, inMemoryHarnessStorage } from '../src/index.js'
+import { createDurableWorkflowContext } from '../src/runtime/steps.js'
 
 async function createContext() {
-  const runtime = inMemoryDurableRuntime()
-  const lease = await runtime.startRun({
+  const runtime = inMemoryHarnessStorage()
+  await runtime.createRun({ id: 'run-step', sessionId: 'session-step', kind: 'workflow', target: 'initial', startedAt: new Date().toISOString(), status: 'running', input: { prompt: 'hello' } })
+  const lease = await runtime.acquireRun({
     runId: 'run-step',
     sessionId: 'session-step',
     workerId: 'worker-step',
@@ -41,11 +43,12 @@ it('rejects non-serializable durable step output deterministically', async () =>
 })
 
 it('replays committed steps on resume without re-running side effects', async () => {
-  const runtime = inMemoryDurableRuntime()
+  const runtime = inMemoryHarnessStorage()
   const start = { runId: 'run-replay', sessionId: 'session-replay', workerId: 'worker-replay', stepId: 'initial', input: { n: 1 } }
+  await runtime.createRun({ id: start.runId, sessionId: start.sessionId, kind: 'workflow', target: start.stepId, startedAt: new Date().toISOString(), status: 'running', input: start.input })
 
   // First attempt: run two steps, then "crash" (release the lease) after committing.
-  const lease1 = await runtime.startRun(start)
+  const lease1 = await runtime.acquireRun(start)
   const ctx1 = createDurableWorkflowContext(runtime, lease1)
   let sideEffects = 0
   await ctx1.step('a', async () => { sideEffects += 1; return { a: true } })
@@ -54,7 +57,7 @@ it('replays committed steps on resume without re-running side effects', async ()
   await lease1.release()
 
   // Resume: a and b must replay from committed output; their fns must NOT run again.
-  const lease2 = await runtime.startRun(start)
+  const lease2 = await runtime.acquireRun(start)
   expect(lease2.resumed).toBe(true)
   const ctx2 = createDurableWorkflowContext(runtime, lease2)
   const a = await ctx2.step('a', async () => { sideEffects += 1; return { a: false } })

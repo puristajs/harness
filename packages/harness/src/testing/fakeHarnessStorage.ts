@@ -1,9 +1,9 @@
-import { InMemoryStateStore } from '../state/in-memory.js'
+import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
-import type { FinishRunPatch } from '../ports/state.js'
+import type { FinishRunPatch } from '../storage/types.js'
 
-/** Operation names recorded by {@link FakeStateStore}. */
-export type FakeStateStoreOp =
+/** Operation names recorded by {@link FakeHarnessStorage}. */
+export type FakeHarnessStorageOp =
   | 'getSession'
   | 'upsertSession'
   | 'closeSession'
@@ -18,10 +18,10 @@ export type FakeStateStoreOp =
   | 'appendEvents'
   | 'listEvents'
 
-/** In-memory state store that records every invoked operation for test inspection. */
-export class FakeStateStore extends InMemoryStateStore {
+/** In-memory Harness storage that records every invoked operation for test inspection. */
+export class FakeHarnessStorage extends InMemoryHarnessStorage {
   /** Ordered list of operations invoked on this store. */
-  public readonly ops: FakeStateStoreOp[] = []
+  public readonly ops: FakeHarnessStorageOp[] = []
 
   public override async getSession(id: string): Promise<SessionRecord | undefined> {
     this.ops.push('getSession')
@@ -89,7 +89,7 @@ export class FakeStateStore extends InMemoryStateStore {
   }
 
   /** Returns how often the given operation was invoked. */
-  public opCount(op: FakeStateStoreOp): number {
+  public opCount(op: FakeHarnessStorageOp): number {
     return this.ops.filter((entry) => entry === op).length
   }
 

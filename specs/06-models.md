@@ -238,7 +238,7 @@ Content-part capability rules:
 - `file` and `file_url` require `file_input`.
 - Providers may reject URL parts if a specific SDK/model cannot consume remote
   URLs.
-- Data-bearing parts are always omitted from persisted run-event payloads in v1.
+- Data-bearing parts are always omitted from persisted run-event payloads in v3.
   Telemetry content capture controls spans and span events only.
 - Sandbox files are never implicitly uploaded. Applications or provider
   adapters must explicitly convert files into supported content parts.

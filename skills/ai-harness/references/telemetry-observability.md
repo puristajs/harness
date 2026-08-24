@@ -142,7 +142,8 @@ handler: async (ctx, input) => {
 Avoid logging prompts, full documents, secrets, provider request bodies, and tool outputs unless intentionally redacted.
 
 ## Adapter Context Propagation
-Providers extending `BaseModelProvider`, `StateStoreAdapterBase`, tools, sandboxes, and other configurable adapters can inherit harness context:
+Providers extending `BaseModelProvider`, `HarnessStorage` implementations,
+tools, sandboxes, and other configurable adapters can inherit Harness context:
 
 ```ts
 configureHarnessContext(context) {

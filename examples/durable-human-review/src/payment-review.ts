@@ -2,14 +2,9 @@ import { z } from 'zod'
 import {
   defineHarness,
   ExternalWaitPendingError,
-  inMemoryDurableRuntime,
-  inMemoryExternalWait,
   inMemorySandbox,
-  type DurableExternalWaitAdapter,
-  type DurableRuntime,
-  isDurableStateStore,
-  type StateStore,
-  InMemoryStateStore,
+  type HarnessStorage,
+  InMemoryHarnessStorage,
   type JsonValue
 } from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
@@ -23,16 +18,11 @@ export interface PaymentExecutor {
   execute(input: PaymentInput & { idempotencyKey: string }): Promise<void>
 }
 
-export function createPaymentReviewExample(input: { tasks: ReviewTaskStore; waits?: DurableExternalWaitAdapter; runtime?: DurableRuntime; state?: StateStore; payments: PaymentExecutor }) {
-  const state = input.state ?? new InMemoryStateStore()
-  const durableState = isDurableStateStore(state) ? state : undefined
-  const waits: DurableExternalWaitAdapter = durableState ?? input.waits ?? inMemoryExternalWait()
-  const runtime: DurableRuntime = durableState ?? input.runtime ?? inMemoryDurableRuntime()
-  let builder = defineHarness({ name: 'durable-payment-review-example' })
+export function createPaymentReviewExample(input: { tasks: ReviewTaskStore; storage?: HarnessStorage; payments: PaymentExecutor }) {
+  const storage = input.storage ?? new InMemoryHarnessStorage()
+  const harness = defineHarness({ name: 'durable-payment-review-example' })
     .sandbox(inMemorySandbox())
-    .state(state)
-  if (!durableState) builder = builder.runtime(runtime).externalWait(waits)
-  const harness = builder
+    .storage(storage)
     .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
     .tools({})
     .skills({})
@@ -74,7 +64,7 @@ export function createPaymentReviewExample(input: { tasks: ReviewTaskStore; wait
     .build()
 
   return {
-    waits,
+    storage,
     async run(payment: PaymentInput): Promise<{ status: 'waiting' | 'approved' | 'rejected' | 'expired' | 'cancelled' }> {
       const session = await harness.getSession(`payment:${payment.paymentId}`)
       try {

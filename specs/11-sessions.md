@@ -51,7 +51,7 @@ interface InvokeOptions {
   metadata?: Record<string, JsonValue>
   /**
    * Opt into durable execution for a workflow run. Requires a configured
-   * executable `.runtime(...)`. Workflow-only; supplying it on an agent run
+   * executable `.storage(...)`. Workflow-only; supplying it on an agent run
    * throws `ValidationError{where:'invoke_options'}`. See
    * [21-durable-workspaces](./21-durable-workspaces.md) §16.1.
    */
@@ -67,7 +67,7 @@ interface DurableInvokeOptions {
   stepId?: string
   /** Optional attempt hint; the runtime may raise it on retry. */
   attempt?: number
-  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  /** Per-run workspace constraints; the workspace adapter validates and enforces them. */
   workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
@@ -93,8 +93,8 @@ Application-facing execution is session-centric. The harness owns registries, ad
 ## Lifecycle
 
 - `harness.getSession(id)`:
-  1. Looks up `state.getSession(id)`.
-  2. If absent, calls `state.upsertSession({id, createdAt: now, updatedAt: now, runCount: 0})`.
+  1. Looks up `storage.getSession(id)`.
+  2. If absent, calls `storage.upsertSession({id, createdAt: now, updatedAt: now, runCount: 0})`.
   3. Returns a `Session` instance bound to that id.
 - `Session` instances are not cached by the harness — each call returns a fresh facade. They are cheap to construct.
 
@@ -107,11 +107,11 @@ For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(
 3. **Extract trace context** from `opts.traceparent`/`opts.tracestate` if present. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`.
 4. **Open `harness.session.prompt` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
 5. **Validate input** via the selected agent/workflow input schema. Failure → `ValidationError{where:'agent_input'|'workflow_input'}`.
-6. **`state.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `prompt`/`stream`.
-7. **Emit `run.started`** to the in-process run queue (see [12-streaming](./12-streaming.md)) and persist via `state.appendEvents`.
+6. **`storage.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `prompt`/`stream`.
+7. **Emit `run.started`** to the in-process run queue (see [12-streaming](./12-streaming.md)) and persist via `storage.appendEvents`.
 8. **Open child span**: `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
-9. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `state.finishRun({status:'succeeded', finishedAt, output})`.
-10. **On error:** classify the error; emit `run.finished{error}`; `state.finishRun({status:'failed'|'cancelled', finishedAt, error})`. (`cancelled` is used when the cause is `OperationCancelledError`; `failed` otherwise — including `OperationTimeoutError`.)
+9. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `storage.finishRun({status:'succeeded', finishedAt, output})`.
+10. **On error:** classify the error; emit `run.finished{error}`; `storage.finishRun({status:'failed'|'cancelled', finishedAt, error})`. (`cancelled` is used when the cause is `OperationCancelledError`; `failed` otherwise — including `OperationTimeoutError`.)
 11. **Close spans, release lock.** Failed/cancelled spans carry safe
     `harness.error.*` attributes. Timeout/cancel errors include
     `harness.error.scope` and, for timeouts, `harness.error.timeout_ms`.
@@ -125,17 +125,17 @@ When `opts.durable` is supplied to a workflow `prompt`/`stream`, the locked orde
 above is extended (see [21-durable-workspaces](./21-durable-workspaces.md) §16.1):
 
 - The run id is `opts.durable.runId` (not a fresh ULID), so the `RunRecord`,
-  persisted events, run summary, durable runtime lease, and any durable workspace
+  persisted events, run summary, durable storage lease, and any durable workspace
   share one stable id.
 - After the busy check and before the handler runs, the harness acquires a durable
-  runtime lease and (when a workspace store is configured) starts or resumes the
+  runtime lease and (when a workspace is configured) starts or resumes the
   durable workspace. `ctx.step(...)` becomes durable for the call.
-- On terminal, the harness finalizes the durable runtime (`finishRun`) and drives
-  the workspace lifecycle in addition to the ordinary `state.finishRun`. Durable
+- On terminal, the harness finalizes the durable storage (`finishRun`) and drives
+  the workspace lifecycle in addition to the ordinary `storage.finishRun`. Durable
   finalization failures are logged and counted but never mask the primary error.
 - Supplying `opts.durable` on an agent run throws
   `ValidationError{where:'invoke_options'}`; supplying it without an executable
-  `.runtime(...)` throws `HarnessConfigError{meta.reason:'durable_runtime_required'}`.
+  `.storage(...)` throws `HarnessConfigError{meta.reason:'durable_runtime_required'}`.
 
 ## Concurrency rule (locked)
 
@@ -146,16 +146,16 @@ Sessions are **serial-only**. Per session, only one run executes at a time. Impl
 - Sessions execute one prompt/stream at a time. Overlap throws `SessionBusyError` synchronously (`category:'session'`, `retriable:true`).
 - There is no `concurrent: true` opt-out.
 
-Cross-process concurrency is enforced only in-process. Cross-process callers may execute concurrently unless the StateStore adapter implements advisory locks (out-of-scope for v1).
+Cross-process concurrency is enforced only in-process. Cross-process callers may execute concurrently unless the HarnessStorage adapter implements advisory locks (out-of-scope for v3).
 
 ## Persistence semantics
 
 For every run:
 
-1. A `RunRecord` is created via `state.createRun({id, sessionId, kind:'agent'|'workflow', target:agentIdOrWorkflowId, startedAt, status:'running', input})`.
-2. As the run executes, the harness appends messages to `state.appendMessages(sessionId, ...)` whenever the conversation list grows.
-3. RunEvents are appended to the in-process run queue (consumed by any active `stream()` iterator) AND persisted via `state.appendEvents(runId, ...)`. `appendEvents` failures are logged at `error` level and counted via the `harness.events.persist_errors` metric; the run continues unaffected.
-4. On finish: `state.finishRun(runId, {status, finishedAt, output?, error?})`. Session metadata is updated with `updatedAt` and incremented `runCount`.
+1. A `RunRecord` is created via `storage.createRun({id, sessionId, kind:'agent'|'workflow', target:agentIdOrWorkflowId, startedAt, status:'running', input})`.
+2. As the run executes, the harness appends messages to `storage.appendMessages(sessionId, ...)` whenever the conversation list grows.
+3. RunEvents are appended to the in-process run queue (consumed by any active `stream()` iterator) AND persisted via `storage.appendEvents(runId, ...)`. `appendEvents` failures are logged at `error` level and counted via the `harness.events.persist_errors` metric; the run continues unaffected.
+4. On finish: `storage.finishRun(runId, {status, finishedAt, output?, error?})`. Session metadata is updated with `updatedAt` and incremented `runCount`.
 
 Append rules:
 
@@ -166,7 +166,7 @@ Append rules:
 
 ## Session memory
 
-`Session.memory` is a session-scoped facade over the configured `MemoryAdapter`. Memory is not stored in the `StateStore`. The default adapter is `sandboxMemory()`, which stores session memory in `/memory/session/` inside the sandbox.
+`Session.memory` is a session-scoped facade over the configured `MemoryAdapter`. Memory is not stored in the `HarnessStorage`. The default adapter is `sandboxMemory()`, which stores session memory in `/memory/session/` inside the sandbox.
 
 ```ts
 interface SessionMemory {
@@ -189,7 +189,7 @@ Locked semantics:
 
 ## Conversation history and threads
 
-**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v1. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
+**One session equals one conversation thread.** The harness does not model thread/conversation as a separate entity in v3. Apps that need multiple chat threads per user MUST create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Each session owns its own message history, sandbox session, session-scoped memory facade, and serial-execution lock.
 
 ### Durable transcript, redelivery, and retention
 
@@ -223,7 +223,7 @@ emits no model or tool events.
 UTF-8 durable records solely as a storage bound; it is not a token estimate.
 Turns are never split, so an individual newest turn larger than `maxBytes`
 fails rather than silently dropping a prompt, tool call, or tool result. The
-policy requires atomic `StateStore.replaceMessages`.
+policy requires atomic `HarnessStorage.replaceMessages`.
 
 ### History window
 
@@ -242,7 +242,7 @@ The cap is applied by the default agent loop before history conversion (see [09-
 clearHistory(): Promise<void>
 ```
 
-Removes all messages from the StateStore for this session id. Memory KV is unaffected. Emits no `RunEvent` (it is not part of a run). Acquires the per-session serial lock; if a run is in flight, rejects with `SessionBusyError{meta.reason:'history_clear_during_run'}`.
+Removes all messages from the HarnessStorage for this session id. Memory KV is unaffected. Emits no `RunEvent` (it is not part of a run). Acquires the per-session serial lock; if a run is in flight, rejects with `SessionBusyError{meta.reason:'history_clear_during_run'}`.
 
 ### `Session.replaceHistory(messages)`
 

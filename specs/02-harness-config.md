@@ -24,7 +24,7 @@ in [25-static-harness-modules](./25-static-harness-modules.md).
 
 ```
 defineHarness(opts?)
-  .telemetry(...)?  .logger(...)?  .state(...)?  .sandbox(...)?  .memory(...)?  .runtime(...)?  .workspaceStore(...)?  .checkpoints(...)?  .requires(...)?  .defaults(...)?
+  .telemetry(...)?  .logger(...)?  .storage(...)?  .sandbox(...)?  .memory(...)?  .workspace(...)?  .requires(...)?  .defaults(...)?
   .use(module)?             // any pre-build point; static only
   .models({...})            // REQUIRED, before direct tools/skills/agents/workflows
   .tools({...})?            // before agents
@@ -46,7 +46,7 @@ defineHarness(opts?)
   are each callable at most once. Contributions from modules append to their
   registry in caller order. Duplicate ids across direct and module calls fail
   synchronously; no family replaces earlier entries.
-- `.memory(...)`, `.runtime(...)`, `.workspaceStore(...)`, `.checkpoints(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
+- `.storage(...)`, `.memory(...)`, `.workspace(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
 - Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
 - `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
 
@@ -75,7 +75,7 @@ interface TelemetryOptions {
   /**
    * Content telemetry policy. Defaults to env
    * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else `'NO_CONTENT'`.
-   * In v1 core, prompt, model output, tool input/result, file, expected-output,
+   * In v3 core, prompt, model output, tool input/result, file, expected-output,
    * and context content are never emitted. Memory content follows the bounded
    * memory-facade policy in `20-memory-adapters`.
    */
@@ -87,7 +87,7 @@ Default: `{ flavor: 'dual', contentCaptureMode: 'NO_CONTENT' }`. Tracer and
 meter names are locked to `'@purista/harness'` (see
 [14-otel-conventions](./14-otel-conventions.md)).
 
-Core v1 never emits prompt, model output, tool input/result, file,
+Core v3 never emits prompt, model output, tool input/result, file,
 expected-output, or context content in telemetry or persisted run events,
 regardless of `contentCaptureMode`. Memory content is governed separately by
 the facade rules in [20-memory-adapters](./20-memory-adapters.md): default
@@ -98,9 +98,9 @@ bounded memory content fields defined there.
 
 Pass a value implementing `Logger` (see [03-foundation](./03-foundation.md)). Default: built-in `JsonLogger`.
 
-### `.state(store)`
+### `.storage(store)`
 
-Pass a `StateStore`. Default: `InMemoryStateStore`.
+Pass a `HarnessStorage`. Default: `InMemoryHarnessStorage`.
 
 ### `.sandbox(sandbox?)`
 
@@ -115,18 +115,24 @@ Validation:
 - `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
 - `adapter.info.packageName` is non-empty.
 - `adapter.info.capabilities` contains `'memory.kv'`.
-- The method is callable at most once and only in the foundation stage after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or domain methods.
+- The method is callable at most once and only in the foundation stage after `.sandbox(...)` and before `.workspace(...)`, `.requires(...)`, `.defaults(...)`, or domain methods.
 
-### `.runtime(runtime)`
+### `.storage(storage)`
 
-Pass an optional durable runtime adapter descriptor. Core treats durable runtime
-support as an opt-in adapter capability surface, not a mandatory worker or
-queue. Runtime adapters declare `capabilities`; checkpoint, retry, lock, and
-resume semantics stay owned by the runtime adapter.
+Pass the sole `HarnessStorage` instance. If omitted, core constructs
+`inMemoryHarnessStorage()`. Storage owns sessions, messages, runs, events,
+durable leases/checkpoints, and external waits as one consistency boundary.
+It declares exact `storage.*` capabilities; see
+[32-harness-storage](./32-harness-storage.md).
 
-### `.workspaceStore(adapter)`
+The builder validates adapter metadata, the complete required method set, and
+baseline checkpoint/retry/resume/workspace-reference/external-wait
+capabilities synchronously. Invalid JavaScript adapters throw
+`HarnessConfigError{meta.reason:'invalid_storage'}` at `.storage(...)`.
 
-Pass an optional `DurableWorkspaceStore`. Core treats durable workspace
+### `.workspace(adapter)`
+
+Pass an optional `DurableWorkspace`. Core treats durable workspace
 support as an opt-in adapter capability surface for production replay. The
 adapter lifecycle, references, retention, encryption, cleanup, quota, fallback,
 and telemetry rules are locked in [21-durable-workspaces](./21-durable-workspaces.md).
@@ -135,27 +141,10 @@ Validation:
 
 - `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
 - `adapter.info.packageName` is non-empty.
-- `adapter.info.capabilities` contains `workspace_store.durable`.
+- `adapter.info.capabilities` contains `workspace.durable`.
 - The method is callable at most once and only in the foundation stage after
-  `.runtime(...)` and before `.requires(...)`, `.defaults(...)`, or domain
+  `.memory(...)` and before `.requires(...)`, `.defaults(...)`, or domain
   methods.
-
-### `.checkpoints(adapter)`
-
-Pass an optional `ContextCheckpointStore`. Core treats context checkpoints as
-explicit, adapter-backed long-horizon handoff records. It does not summarize,
-rewrite, or inject prompt context automatically. The port, first-party SQLite
-store, and local durable bundle wiring are locked in
-[22-local-durable-execution](./22-local-durable-execution.md).
-
-Validation:
-
-- `adapter.info.id` matches `/^[a-z][a-z0-9_.-]{1,63}$/`.
-- `adapter.info.packageName` is non-empty.
-- `adapter.info.capabilities` contains `context_checkpoint.write`.
-- The method is callable at most once and only in the foundation stage after
-  `.workspaceStore(...)` and before `.requires(...)`, `.defaults(...)`, or
-  domain methods.
 
 ### `.requires(capabilities)`
 
@@ -165,17 +154,18 @@ Declares adapter capabilities required by this harness definition:
 defineHarness()
   .sandbox(snapshotSandbox)
   .memory(persistentMemory)
-  .runtime(durableRuntime)
-  .workspaceStore(durableWorkspace)
+  .storage(postgresHarnessStorage)
+  .workspace(durableWorkspace)
   .requires([
     'sandbox.snapshot',
     'sandbox.resume',
     'memory.persistent',
-    'runtime.checkpoint',
-    'runtime.workspace_checkpoint',
-    'workspace_store.durable',
-    'workspace_store.resume',
-    'workspace_store.cleanup',
+    'storage.checkpoint',
+    'storage.workspace_checkpoint',
+    'storage.multi_instance',
+    'workspace.durable',
+    'workspace.resume',
+    'workspace.cleanup',
   ])
 ```
 
@@ -459,7 +449,7 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 | Key                                  | Default                              |
 |--------------------------------------|--------------------------------------|
 | `name`                               | `'agent-harness'`                    |
-| `state`                              | `InMemoryStateStore`                 |
+| `state`                              | `InMemoryHarnessStorage`                 |
 | `sandbox`                            | auto-detect: `bashSandbox()` if `just-bash` is installed, else `inMemorySandbox()` |
 | `memory`                             | `sandboxMemory()`                    |
 | `checkpoints`                        | none                                 |
@@ -491,20 +481,20 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 13. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
 14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
 14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
-15. `workspaceStore.info` and durable workspace store capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
-16. `checkpoints.info` and context checkpoint store capabilities MUST pass the validation rules in [22-local-durable-execution](./22-local-durable-execution.md).
+15. `workspace.info` and durable workspace capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
+16. `storage.info` and `storage.capabilities` MUST satisfy [32-harness-storage](./32-harness-storage.md).
 17. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values and an ASCII-only marker. Validation reserves the marker's actual byte length and the complete rendered omission annotation in addition to `headBytes + tailBytes`, so every valid projected result is at most `maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
 
 ## `Harness<S>` returned object
 
 The builder's `.build()` returns the typed `Harness<S>`. The full type surface (including `$infer`, `getSession`, and `inspect`) is locked in [13-public-api](./13-public-api.md).
 
-`getSession` is `async` because the StateStore may be remote.
+`getSession` is `async` because the HarnessStorage may be remote.
 
 Concurrent `shutdown()` calls share one operation. It sequentially closes the MCP
 runner registry, opened session sandbox handles, unique model providers in
-reverse alias order, governance adapter, checkpoints, workspace store, runtime,
-memory, configured sandbox, state, then logger. Each object is de-duplicated by
+reverse alias order, governance adapter, workspace, memory, configured sandbox,
+storage, then logger. Each object is de-duplicated by
 identity and every `close()` runs at most once. Every failure is normalized,
 aggregated and returned; failures before logger closure are error-logged using
 only resource kind/id, while logger-close failure is only aggregated. A later

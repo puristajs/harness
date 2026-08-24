@@ -10,8 +10,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@purista/harness": "^2.1.0",
-    "@purista/harness-agent-plugins": "^2.1.0"
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-agent-plugins": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

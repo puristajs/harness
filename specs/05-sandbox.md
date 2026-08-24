@@ -1,6 +1,6 @@
 # Sandbox
 
-The Sandbox port abstracts an isolated filesystem and shell execution backend. v1 ships an in-memory file system and a `just-bash`-backed bash emulator (https://github.com/vercel-labs/just-bash). Future adapters will provide Docker, microVM, and cloud-sandbox isolation behind the same port.
+The Sandbox port abstracts an isolated filesystem and shell execution backend. v3 ships an in-memory file system and a `just-bash`-backed bash emulator (https://github.com/vercel-labs/just-bash). Future adapters will provide Docker, microVM, and cloud-sandbox isolation behind the same port.
 
 ## Port interface
 
@@ -105,7 +105,7 @@ interface HibernateCapableSandbox {
 
 These capabilities describe low-level sandbox session behavior only. They do
 not imply production durable replay, retention, encryption, cleanup, or quota
-support. Production durable replay requires a `DurableWorkspaceStore` and the
+support. Production durable replay requires a `DurableWorkspace` and the
 `workspace.*` capabilities defined in [21-durable-workspaces](./21-durable-workspaces.md).
 
 ## Optional long-lived process capability

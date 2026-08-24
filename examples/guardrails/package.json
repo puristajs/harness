@@ -11,8 +11,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@purista/harness": "^2.1.1",
-    "@purista/harness-guardrails": "^2.1.1",
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-guardrails": "^3.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

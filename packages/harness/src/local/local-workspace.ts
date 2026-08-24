@@ -8,8 +8,8 @@ import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type {
   DurableWorkspacePolicy,
-  DurableWorkspaceStore,
-  DurableWorkspaceStoreInfo,
+  DurableWorkspace,
+  DurableWorkspaceInfo,
   WorkspaceEncryptionInfo,
   WorkspaceRetentionPolicy,
   WorkspaceAbortOptions,
@@ -65,7 +65,7 @@ export function createLocalWorkspaceCoordinator(): LocalWorkspaceCoordinator {
   }
 }
 
-export interface LocalDirectoryWorkspaceStoreOptions {
+export interface LocalDirectoryWorkspaceOptions {
   /** Host root for durable workspaces. */
   root: string
   /** Optional policy metadata reported by the adapter. */
@@ -82,9 +82,9 @@ const DEFAULT_POLICY: DurableWorkspacePolicy = {
 /** Refs are always `workspace_${ulid()}`; anything else is rejected before path use (spec 22 §4). */
 const WORKSPACE_REF_PATTERN = /^workspace_[A-Z0-9]+$/
 
-/** Host-directory durable workspace store used by localDurableExecution. */
-export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
-  public readonly info: DurableWorkspaceStoreInfo
+/** Host-directory durable workspace used by localDurableExecution. */
+export class LocalDirectoryWorkspace implements DurableWorkspace {
+  public readonly info: DurableWorkspaceInfo
   public readonly capabilities: readonly AdapterCapability[]
   private readonly root: string
   private readonly coordinator: LocalWorkspaceCoordinator | undefined
@@ -93,7 +93,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
   private readonly opKeyIndex = new Map<string, string>()
   private telemetry: TelemetryShim | undefined
 
-  public constructor(options: LocalDirectoryWorkspaceStoreOptions) {
+  public constructor(options: LocalDirectoryWorkspaceOptions) {
     this.root = resolve(options.root, 'workspaces')
     this.coordinator = options.coordinator
     const retention: WorkspaceRetentionPolicy = { cleanupMode: options.policy?.retention?.cleanupMode ?? DEFAULT_POLICY.retention!.cleanupMode }
@@ -104,17 +104,17 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       metadataEncrypted: options.policy?.encryption?.metadataEncrypted ?? DEFAULT_POLICY.encryption!.metadataEncrypted
     }
     this.info = {
-      id: 'local_directory_workspace_store',
+      id: 'local_directory_workspace',
       packageName: '@purista/harness',
       capabilities: [
-        'workspace_store.durable',
-        'workspace_store.persistent',
-        'workspace_store.checkpoint',
-        'workspace_store.resume',
-        'workspace_store.abort',
-        'workspace_store.cleanup',
-        'workspace_store.inspect',
-        'workspace_store.retention'
+        'workspace.durable',
+        'workspace.persistent',
+        'workspace.checkpoint',
+        'workspace.resume',
+        'workspace.abort',
+        'workspace.cleanup',
+        'workspace.inspect',
+        'workspace.retention'
       ],
       policy: {
         retention,
@@ -212,12 +212,12 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
       const maxWorkspaceBytes = this.info.policy.quota?.maxWorkspaceBytes
       if (maxWorkspaceBytes !== undefined && sizeBytes > maxWorkspaceBytes) {
         await rm(checkpointPath, { recursive: true, force: true })
-        this.telemetry?.recordCounter('harness.workspace_store.quota.exceeded', 1, {
+        this.telemetry?.recordCounter('harness.workspace.quota.exceeded', 1, {
           'harness.workspace.adapter': this.info.id,
           'harness.workspace.operation': 'pause',
-          'harness.workspace_store.quota': 'maxWorkspaceBytes'
+          'harness.workspace.quota': 'maxWorkspaceBytes'
         })
-        recordAttrs({ 'harness.workspace_store.quota': 'maxWorkspaceBytes' })
+        recordAttrs({ 'harness.workspace.quota': 'maxWorkspaceBytes' })
         throw new WorkspaceQuotaExceededError('Workspace byte quota exceeded.', {
           quota: 'maxWorkspaceBytes',
           limit: maxWorkspaceBytes,
@@ -322,7 +322,7 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
   public async cleanupWorkspace(opts: WorkspaceCleanupOptions): Promise<WorkspaceCleanupResult> {
     return this.workspaceSpan('cleanup', {
       'harness.workspace.ref_hash': sha256Hex(opts.workspaceRef),
-      'harness.workspace_store.cleanup.reason': opts.reason
+      'harness.workspace.cleanup.reason': opts.reason
     }, async (recordAttrs) => {
       throwIfAborted(opts.signal)
       const root = this.workspacePath(opts.workspaceRef)
@@ -332,10 +332,10 @@ export class LocalDirectoryWorkspaceStore implements DurableWorkspaceStore {
         const target = await assertInsideRealpath(this.root, root)
         if (target) await rm(target, { recursive: true, force: true })
       } catch (error) {
-        this.telemetry?.recordCounter('harness.workspace_store.cleanup.failures', 1, {
+        this.telemetry?.recordCounter('harness.workspace.cleanup.failures', 1, {
           'harness.workspace.adapter': this.info.id,
           'harness.workspace.operation': 'cleanup',
-          'harness.workspace_store.cleanup.reason': opts.reason,
+          'harness.workspace.cleanup.reason': opts.reason,
           'error.type': error instanceof Error ? error.name : 'unknown'
         })
         if (error instanceof WorkspaceError) throw error
@@ -560,6 +560,6 @@ async function assertInsideRealpath(root: string, target: string): Promise<strin
   return targetReal
 }
 
-export function localDirectoryWorkspaceStore(options: LocalDirectoryWorkspaceStoreOptions): DurableWorkspaceStore {
-  return new LocalDirectoryWorkspaceStore(options)
+export function localDirectoryWorkspace(options: LocalDirectoryWorkspaceOptions): DurableWorkspace {
+  return new LocalDirectoryWorkspace(options)
 }

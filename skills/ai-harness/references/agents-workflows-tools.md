@@ -79,7 +79,12 @@ Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
 standalone `defineWorkflow(...)` helper.
 
-`ctx.step(stepId, fn, options?)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Use `options.retry` for short active retries before checkpoint commit. Durable execution is workflow-only — see `durable-feedback-operations.md`.
+`ctx.step(stepId, fn, options?)` marks a recoverable boundary. When the workflow
+is invoked with `{ durable: { runId } }`, the configured `HarnessStorage`
+commits each completed step; on resume it replays stored output without
+re-running `fn`. Without durable invocation it is a transparent pass-through.
+Use `options.retry` for short active retries before checkpoint commit.
+Recoverable execution is workflow-only—see `durable-feedback-operations.md`.
 
 Use `ctx.fanOut(items, worker, { concurrency })` for ordered, bounded parallel work. `Promise.all` or `Promise.allSettled` remain appropriate when application-defined behavior is needed; propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
 

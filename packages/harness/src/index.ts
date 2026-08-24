@@ -114,17 +114,15 @@ export type {
   AdapterCapabilities,
   AdapterCapability,
   AdapterInspection,
-  DurableRuntimeAdapter,
   HarnessInspection,
   HarnessModuleContribution,
   HarnessModuleInspection
 } from './ports/capabilities.js'
 export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/harness-context.js'
 
-// State port + in-memory default
-export { StateStoreAdapterBase, isDurableStateStore } from './ports/state.js'
-export type { DurableStateStore, StateStore } from './ports/state.js'
-export { InMemoryStateStore } from './state/in-memory.js'
+// Harness-owned persistence + in-memory default
+export type { FinishRunPatch, HarnessStorage, HarnessStorageInfo } from './storage/types.js'
+export { InMemoryHarnessStorage, inMemoryHarnessStorage } from './storage/in-memory.js'
 export type { JsonValue } from './models/json.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
 
@@ -153,9 +151,8 @@ export { sandboxMemory } from './memory/sandbox/index.js'
 export type { FeedbackRecord, FeedbackTarget } from './ports/feedback.js'
 
 // Durable external wait port
-export { ExternalWaitError, ExternalWaitPendingError, InMemoryExternalWaitAdapter, inMemoryExternalWait, validateExternalWaitRequest } from './ports/external-wait.js'
+export { ExternalWaitError, ExternalWaitPendingError } from './storage/external-wait.js'
 export type {
-  DurableExternalWaitAdapter,
   ExternalWaitOutcome,
   ExternalWaitRequest,
   ExternalWaitSnapshot,
@@ -163,14 +160,14 @@ export type {
   ExternalWaitSignalResult,
   ExternalWaitStatus,
   ExternalWaitRegistration
-} from './ports/external-wait.js'
+} from './storage/external-wait.js'
 
 // Durable workspace port
 export type {
   DurableReplayCheckpoint,
   DurableWorkspacePolicy,
-  DurableWorkspaceStore,
-  DurableWorkspaceStoreInfo,
+  DurableWorkspace,
+  DurableWorkspaceInfo,
   WorkspaceAbortOptions,
   WorkspaceAbortResult,
   WorkspaceCheckpoint,
@@ -187,24 +184,13 @@ export type {
   WorkspaceRetentionPolicy,
   WorkspaceStartOptions
 } from './ports/workspace.js'
-export { InMemoryDurableWorkspaceStore, inMemoryDurableWorkspaceStore } from './workspace/index.js'
+export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from './workspace/index.js'
 
-// Context checkpoint port
-export type {
-  ContextCheckpoint,
-  ContextCheckpointQuery,
-  ContextCheckpointRef,
-  ContextCheckpointStore,
-  ContextCheckpointStoreInfo
-} from './ports/context-checkpoints.js'
-
-// Durable runtime
+// Storage-owned durable execution types
 export {
-  createDurableWorkflowContext,
   DurableStepError,
   DurableRunLeaseError,
   DurableTerminalRunError,
-  inMemoryDurableRuntime,
   isResumeBlockingRunStatus,
   isTerminalRunStatus
 } from './runtime/index.js'
@@ -219,10 +205,7 @@ export type {
   DurableRunLease,
   DurableRunStart,
   DurableRunStatus,
-  DurableRuntime,
   DurableTerminalRunStatus,
-  FinishRunPatch,
-  InMemoryDurableRuntimeOptions,
   RunCheckpoint
 } from './runtime/index.js'
 
@@ -250,27 +233,22 @@ export type { DirEntry, ExecOptions, ExecResult, FileStat } from './harness/type
 // Local durable execution
 export {
   localDirectorySandbox,
-  localDirectoryWorkspaceStore,
+  LocalDirectoryWorkspace,
+  localDirectoryWorkspace,
   localDurableExecution,
-  SqliteDurableStateStore,
   SqliteHarnessStorage,
-  sqliteContextCheckpointStore,
-  sqliteDurableRuntime,
-  sqliteDurableStateStore,
-  sqliteStateStore
+  sqliteHarnessStorage
 } from './local/index.js'
 export type {
   LocalDirectorySandboxOptions,
-  LocalDirectoryWorkspaceStoreOptions,
+  LocalDirectoryWorkspaceOptions,
   LocalDurableExecution,
   LocalDurableExecutionOptions,
   LocalDurableSandbox,
   LocalExecSandboxCapabilities,
   LocalFilesOnlySandboxCapabilities,
   LocalHostExecPolicy,
-  SqliteContextCheckpointStoreOptions,
-  SqliteDurableRuntimeOptions,
-  SqliteStateStoreOptions
+  SqliteHarnessStorageOptions
 } from './local/index.js'
 
 // Skills discovery
@@ -325,7 +303,6 @@ export type {
   ContinuableChildTaskHandle,
   ContinuableChildTaskStartOptions,
   ContentCaptureMode,
-  ContextCheckpoints,
   ConversationHistory,
   DelegationDefaults,
   DiscoveredSkills,

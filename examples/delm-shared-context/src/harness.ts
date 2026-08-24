@@ -40,12 +40,10 @@ export function createDelmSharedContextHarness(options: DelmSharedContextHarness
   const harness = defineHarness({ name: 'delm-shared-context-example' })
     .logger(new JsonLogger({ level: 'error' }))
     .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-    .state(local.state)
-    .runtime(local.runtime)
+    .storage(local.storage)
     .sandbox(local.sandbox)
-    .workspaceStore(local.workspaceStore)
-    .checkpoints(local.checkpoints)
-    .requires(['context_checkpoint.write', 'context_checkpoint.list', 'context_checkpoint.persistent'])
+    .workspace(local.workspace)
+    .requires(['storage.persistent', 'workspace.persistent'])
     .models({
       worker_model: {
         provider,
@@ -132,16 +130,11 @@ export function createDelmSharedContextHarness(options: DelmSharedContextHarness
           }
 
           const snapshot = shared.snapshot()
-          await ctx.checkpoints.write({
-            sequence: 1,
-            kind: 'summary',
-            payload: {
+          await ctx.step('shared-context-summary', async () => ({
               admitted: snapshot.entries.length,
               rejected: snapshot.rejectedReports.length,
               queue: queue.snapshot()
-            } as unknown as JsonValue
-          })
-          const checkpoints = await ctx.checkpoints.list({ kind: 'summary' })
+            } as unknown as JsonValue))
           const verifiedPatch = snapshot.entries.find((entry) => entry.type === 'PATCH_SUMMARY')
           return delmWorkflowOutputSchema.parse({
             answer: verifiedPatch
@@ -150,7 +143,7 @@ export function createDelmSharedContextHarness(options: DelmSharedContextHarness
             admittedEntries: snapshot.entries,
             rejectedReports: snapshot.rejectedReports,
             queue: queue.snapshot(),
-            checkpointCount: checkpoints.length
+            checkpointCount: 1
           })
         }
       })

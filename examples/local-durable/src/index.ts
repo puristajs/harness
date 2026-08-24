@@ -19,12 +19,10 @@ export async function createLocalDurableHarness(root?: string) {
   const local = localDurableExecution({ root: root ?? await mkdtemp(join(tmpdir(), 'purista-local-durable-')), exec: false })
   const provider = new NoopProvider()
   const harness = defineHarness()
-    .state(local.state)
-    .runtime(local.runtime)
+    .storage(local.storage)
     .sandbox(local.sandbox)
-    .workspaceStore(local.workspaceStore)
-    .checkpoints(local.checkpoints)
-    .requires(['runtime.persistent', 'workspace_store.persistent', 'context_checkpoint.persistent'])
+    .workspace(local.workspace)
+    .requires(['storage.persistent', 'workspace.persistent'])
     .models({ noop: { provider, model: 'noop', capabilities: ['object'], retry: false } })
     .tools({})
     .skills({})
@@ -34,14 +32,7 @@ export async function createLocalDurableHarness(root?: string) {
         input: planInput,
         output: planOutput,
         handler: async (ctx) => {
-          await ctx.step('outline', async () => {
-            await ctx.checkpoints.write({
-              sequence: 1,
-              kind: 'summary',
-              payload: { topic: ctx.input.topic, next: 'draft' }
-            })
-            return { outline: true }
-          })
+          await ctx.step('outline', async () => ({ topic: ctx.input.topic, next: 'draft' }))
           if (ctx.input.failAfterFirstStep) throw new Error('simulated crash')
           await ctx.step('draft', async () => ({ draft: true }))
           return { done: true, topic: ctx.input.topic }

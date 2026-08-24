@@ -30,7 +30,7 @@ import type {
   ContentPart,
   ModelCallOptions
 } from '../ports/model-provider.js'
-import { isDurableStateStore, type StateStore } from '../ports/state.js'
+import { validateHarnessStorage, type HarnessStorage } from '../storage/types.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { sandboxMemory } from '../memory/sandbox/index.js'
@@ -40,13 +40,10 @@ import type {
   SessionMemory
 } from '../ports/memory.js'
 import { validateMemoryAdapter } from '../ports/memory.js'
-import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
-import { validateDurableWorkspaceStore } from '../ports/workspace.js'
-import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
-import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
-import { validateContextCheckpointStore } from '../ports/context-checkpoints.js'
-import type { DurableExternalWaitAdapter, ExternalWaitRequest, ExternalWaitSnapshot } from '../ports/external-wait.js'
-import { InMemoryStateStore } from '../state/in-memory.js'
+import type { DurableWorkspacePolicy, DurableWorkspace } from '../ports/workspace.js'
+import { validateDurableWorkspace } from '../ports/workspace.js'
+import type { ExternalWaitRequest, ExternalWaitSnapshot } from '../storage/external-wait.js'
+import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import { validateModelRetrySetting } from '../models/retry-policy.js'
@@ -63,7 +60,6 @@ import {
   uniqueCapabilities,
   type AdapterCapability,
   type AdapterInspection,
-  type DurableRuntimeAdapter,
   type HarnessInspection,
   type HarnessModuleInspection
 } from '../ports/capabilities.js'
@@ -196,7 +192,7 @@ export interface InvokeOptions {
   metadata?: Record<string, JsonValue>
   /**
    * Opt a workflow run into durable execution against the configured
-   * `.runtime(...)` (and optional `.workspaceStore(...)`). Workflow-only;
+   * `.storage(...)` (and optional `.workspace(...)`). Workflow-only;
    * supplying it on an agent run throws `ValidationError`.
    */
   durable?: DurableInvokeOptions
@@ -510,7 +506,6 @@ export interface AgentContextMinimal<S extends BuilderState, I> {
   runId: string
   history: ConversationHistory
   memory: MemoryFacade
-  checkpoints: ContextCheckpoints
   metadata: Readonly<Record<string, JsonValue>>
   metrics: Metrics
 }
@@ -839,19 +834,6 @@ export interface GovernanceDefinitionHelpers<S extends BuilderState> {
   adapter<const P extends GovernancePolicyEvaluator<S>>(definition: P): P
 }
 
-/** Run-bound facade for explicit long-horizon context checkpoints. */
-export interface ContextCheckpoints {
-  write(input: {
-    sequence: number
-    kind: ContextCheckpoint['kind']
-    payload: JsonValue
-    metadata?: Record<string, JsonValue>
-  }): Promise<void>
-  list(query?: Omit<ContextCheckpointQuery, 'runId' | 'sessionId' | 'workflowId' | 'agentId' | 'signal'>): Promise<readonly ContextCheckpoint[]>
-  read(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<ContextCheckpoint | undefined>
-  delete(ref: { sequence: number; kind: ContextCheckpoint['kind'] }): Promise<void>
-}
-
 /** Full context passed to workflow handlers. */
 export interface WorkflowContext<S extends BuilderState, I, O> {
   input: I
@@ -864,7 +846,6 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   sessionId: string
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
-  checkpoints: ContextCheckpoints
   /**
    * Persists an application-owned external decision checkpoint and suspends a
    * durable workflow until a terminal signal is delivered. It never stores
@@ -1233,14 +1214,14 @@ export interface Session<S extends BuilderState> {
    * Releases live, session-scoped resources without deleting persisted state.
    *
    * This closes the active sandbox and sandbox-bound MCP runners, cancels any
-   * resident child tasks, and evicts the in-memory session facade. StateStore-
+   * resident child tasks, and evicts the in-memory session facade. HarnessStorage-
    * backed session metadata, conversation history, and run records remain
-   * available when a later {@link Harness.getSession} call reopens the same
+   * available when a later `harness.getSession(...)` call reopens the same
    * id. It is safe to call repeatedly once no run is active.
    */
   release(): Promise<void>
   /**
-   * Destructively closes the session and removes its persisted session state.
+   * Destructively closes the session and removes its persisted session data.
    * Use {@link release} when only live sandbox/MCP resources should be freed.
    */
   close(): Promise<void>
@@ -1319,13 +1300,10 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   ): HarnessBuilder<Result>
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
-  state(store: StateStore): HarnessBuilder<S>
+  storage(storage: HarnessStorage): HarnessBuilder<S>
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
-  runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
-  workspaceStore(store: DurableWorkspaceStore): HarnessBuilder<S>
-  checkpoints(store: ContextCheckpointStore): HarnessBuilder<S>
-  externalWait(adapter: DurableExternalWaitAdapter): HarnessBuilder<S>
+  workspace(workspace: DurableWorkspace): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -1381,13 +1359,10 @@ export function defineHarnessModule<Required extends BuilderState = {}>(): <cons
 type BuilderStateInternal = {
   telemetry?: TelemetryOptions
   logger?: Logger
-  state?: StateStore
+  storage?: HarnessStorage
   sandbox?: Sandbox<any>
   memory?: MemoryAdapter
-  runtime?: DurableRuntimeAdapter
-  workspaceStore?: DurableWorkspaceStore
-  checkpoints?: ContextCheckpointStore
-  externalWait?: DurableExternalWaitAdapter
+  workspace?: DurableWorkspace
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -1468,8 +1443,12 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ logger })
   }
 
-  public state(store: StateStore): HarnessBuilder<S> {
-    return this.clone({ state: store })
+  public storage(storage: HarnessStorage): HarnessBuilder<S> {
+    if (this.configured.storage) {
+      throw new HarnessConfigError('Harness storage is already configured.', { reason: 'duplicate_adapter', path: 'storage' })
+    }
+    validateHarnessStorage(storage)
+    return this.clone({ storage })
   }
 
   public sandbox(sandbox: Sandbox<any> = autoDetectSandbox()): HarnessBuilder<S> {
@@ -1484,31 +1463,12 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ memory })
   }
 
-  public runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S> {
-    return this.clone({ runtime })
-  }
-
-  public workspaceStore(workspaceStore: DurableWorkspaceStore): HarnessBuilder<S> {
-    if (this.configured.workspaceStore) {
-      throw new HarnessConfigError('Workspace store is already configured.', { reason: 'duplicate_adapter', path: 'workspaceStore' })
+  public workspace(workspace: DurableWorkspace): HarnessBuilder<S> {
+    if (this.configured.workspace) {
+      throw new HarnessConfigError('Workspace is already configured.', { reason: 'duplicate_adapter', path: 'workspace' })
     }
-    validateDurableWorkspaceStore(workspaceStore)
-    return this.clone({ workspaceStore })
-  }
-
-  public checkpoints(checkpoints: ContextCheckpointStore): HarnessBuilder<S> {
-    if (this.configured.checkpoints) {
-      throw new HarnessConfigError('Context checkpoint store is already configured.', { reason: 'duplicate_adapter', path: 'checkpoints' })
-    }
-    validateContextCheckpointStore(checkpoints)
-    return this.clone({ checkpoints })
-  }
-
-  public externalWait(externalWait: DurableExternalWaitAdapter): HarnessBuilder<S> {
-    if (this.configured.externalWait) {
-      throw new HarnessConfigError('External wait adapter is already configured.', { reason: 'duplicate_adapter', path: 'externalWait' })
-    }
-    return this.clone({ externalWait })
+    validateDurableWorkspace(workspace)
+    return this.clone({ workspace })
   }
 
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
@@ -1621,25 +1581,10 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
-    const state = this.configured.state ?? new InMemoryStateStore()
-    const durableState = isDurableStateStore(state) ? state : undefined
-    if (durableState) {
-      if (this.configured.runtime && this.configured.runtime !== durableState) {
-        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different runtime adapter.', { reason: 'conflicting_durable_state_adapter', path: 'runtime' })
-      }
-      if (this.configured.checkpoints && this.configured.checkpoints !== durableState) {
-        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different context checkpoint store.', { reason: 'conflicting_durable_state_adapter', path: 'checkpoints' })
-      }
-      if (this.configured.externalWait && this.configured.externalWait !== durableState) {
-        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different external wait adapter.', { reason: 'conflicting_durable_state_adapter', path: 'externalWait' })
-      }
-    }
-    const runtime = this.configured.runtime ?? durableState
-    const checkpoints = this.configured.checkpoints ?? durableState
-    const externalWait = this.configured.externalWait ?? durableState
-    if (this.configured.workspaceStore) validateDurableWorkspaceStore(this.configured.workspaceStore)
-    if (checkpoints) validateContextCheckpointStore(checkpoints)
-    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models, runtime, checkpoints, externalWait)
+    const storage = this.configured.storage ?? new InMemoryHarnessStorage()
+    validateHarnessStorage(storage)
+    if (this.configured.workspace) validateDurableWorkspace(this.configured.workspace)
+    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', storage, sandbox, memory, models)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
       throw new HarnessConfigError('Required adapter capabilities are not available.', {
@@ -1653,13 +1598,10 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       name: this.options.name ?? 'agent-harness',
       logger: this.configured.logger ?? new JsonLogger(),
       ...(this.configured.telemetry ? { telemetry: this.configured.telemetry } : {}),
-      state,
+      storage,
       sandbox,
       memory,
-      ...(runtime ? { runtime } : {}),
-      ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
-      ...(checkpoints ? { checkpoints } : {}),
-      ...(externalWait ? { externalWait } : {}),
+      ...(this.configured.workspace ? { workspace: this.configured.workspace } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -1953,8 +1895,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
   }
 
-  private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig, runtime: DurableRuntimeAdapter | undefined, checkpoints: ContextCheckpointStore | undefined, externalWait: DurableExternalWaitAdapter | undefined): HarnessInspection {
+  private resolveInspection(name: string, storage: HarnessStorage, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {
     const adapters: AdapterInspection[] = []
+    adapters.push({
+      kind: 'storage',
+      id: storage.info.id,
+      capabilities: uniqueCapabilities(storage.capabilities),
+      metadata: { packageName: storage.info.packageName, ...(storage.info.version ? { version: storage.info.version } : {}) }
+    })
     const sandboxCapabilities = hasAdapterCapabilities(sandbox) ? uniqueCapabilities(sandbox.capabilities) : []
     adapters.push({
       kind: 'sandbox',
@@ -1971,42 +1919,15 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       }
     })
 
-    if (runtime) {
+    if (this.configured.workspace) {
       adapters.push({
-        kind: 'runtime',
-        id: runtime.id ?? 'runtime',
-        capabilities: uniqueCapabilities(runtime.capabilities)
-      })
-    }
-
-    if (this.configured.workspaceStore) {
-      adapters.push({
-        kind: 'workspace_store',
-        id: this.configured.workspaceStore.info.id,
-        capabilities: uniqueCapabilities(this.configured.workspaceStore.info.capabilities),
+        kind: 'workspace',
+        id: this.configured.workspace.info.id,
+        capabilities: uniqueCapabilities(this.configured.workspace.info.capabilities),
         metadata: {
-          packageName: this.configured.workspaceStore.info.packageName,
-          policy: this.configured.workspaceStore.info.policy
+          packageName: this.configured.workspace.info.packageName,
+          policy: this.configured.workspace.info.policy
         }
-      })
-    }
-
-    if (checkpoints) {
-      adapters.push({
-        kind: 'context_checkpoint',
-        id: checkpoints.info.id,
-        capabilities: uniqueCapabilities(checkpoints.info.capabilities),
-        metadata: {
-          packageName: checkpoints.info.packageName
-        }
-      })
-    }
-
-    if (externalWait) {
-      adapters.push({
-        kind: 'external_wait',
-        id: externalWait.id ?? 'external_wait',
-        capabilities: uniqueCapabilities(externalWait.capabilities)
       })
     }
 

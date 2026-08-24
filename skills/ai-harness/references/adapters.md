@@ -8,11 +8,11 @@
 - Anthropic Provider
 - Amazon Bedrock Provider
 - Azure AI Foundry Provider
-- State Store Adapter
+- Harness Storage Adapter
 - Memory Adapter
 - Sandbox Adapter
 - Tool And MCP Adapters
-- Durable Runtime Adapter
+- Durable Workspace Adapter
 - Harness Context
 
 Adapters should be thin, typed implementations of harness ports. Prefer official provider SDKs and pass provider-specific options through instead of recreating provider feature matrices inside the harness.
@@ -24,10 +24,10 @@ Core ships the common ports, default local adapters, and testing contracts. Exte
 | Adapter type | Core port / API | Core default | External package pattern |
 | --- | --- | --- | --- |
 | Model provider | `ModelProvider` / `BaseModelProvider` | `FakeModelProvider` for tests only | `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-{provider}` |
-| State store | `StateStore` / `StateStoreAdapterBase` | `InMemoryStateStore` | `@purista/harness-state-{backend}` |
+| Harness storage | `HarnessStorage` | `InMemoryHarnessStorage`, `SqliteHarnessStorage` | `@purista/harness-storage-{backend}` |
 | Memory | `MemoryAdapter` / `MemoryStore` | `sandboxMemory()` | `@purista/harness-memory-{backend}` |
 | Sandbox | `Sandbox` / `SandboxSession` | `inMemorySandbox()`, `bashSandbox()` | `@purista/harness-sandbox-{backend}` |
-| Durable runtime | `DurableRuntimeAdapter` | none unless implemented by core/test helpers | `@purista/harness-runtime-{backend}` |
+| Durable workspace | `DurableWorkspace` | `InMemoryDurableWorkspace`, `LocalDirectoryWorkspace` | `@purista/harness-workspace-{backend}` |
 | Tool adapter | `TsToolDefinition`, MCP stdio/http definitions | built-in tools + TS tools | app-local tools or `@purista/harness-tools-{domain}` |
 | Logger/telemetry bridge | `Logger`, `TelemetryShim`, `Metrics` | `JsonLogger`, OTel shim | app-local integration package |
 
@@ -36,7 +36,7 @@ Package rules:
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Do not make adapter packages depend on each other.
 - Keep provider/backend credentials in adapter options or environment-owned app code, not in docs or examples.
-- Export one factory with a stable, lowercase adapter id, for example `redisMemory(...)`, `postgresStateStore(...)`, or `remoteSandbox(...)`.
+- Export one factory with a stable, lowercase adapter id, for example `redisMemory(...)`, `postgresHarnessStorage(...)`, or `remoteSandbox(...)`.
 
 ## Using Adapters
 
@@ -46,11 +46,11 @@ Register adapters in the foundation stage before models/agents/workflows:
 const harness = defineHarness()
   .logger(logger)
   .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-  .state(postgresStateStore({ url: process.env.DATABASE_URL! }))
+  .storage(postgresHarnessStorage({ url: process.env.DATABASE_URL! }))
   .sandbox(remoteSandbox({ endpoint: process.env.SANDBOX_URL! }))
   .memory(redisMemory({ url: process.env.REDIS_URL! }))
-  .runtime(durableRuntime)
-  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'runtime.checkpoint'])
+  .workspace(objectStorageWorkspace)
+  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'storage.multi_instance', 'workspace.persistent'])
   .models({ /* aliases */ })
   .agents(({ agent }) => ({ /* agents */ }))
   .build()
@@ -214,11 +214,29 @@ azureFoundry({
 The Azure adapter maps chat completions, object generation, streaming, and
 embeddings to the official `@azure-rest/ai-inference` client.
 
-## State Store Adapter
-Implement `StateStore` for durable sessions, messages, runs, and streamed events. Extend `StateStoreAdapterBase` when useful so logger, telemetry, and harness name are inherited:
+## Harness Storage Adapter
+
+Implement `HarnessStorage` for sessions, messages, runs/events, leases,
+checkpoints, session locking, and external waits. This port is specific to the
+Harness protocol; do not adapt PURISTA's general-purpose `StateStore` or an
+unstructured key/value store.
 
 ```ts
-class PostgresStateStore extends StateStoreAdapterBase {
+class PostgresHarnessStorage implements HarnessStorage {
+  readonly info = {
+    id: 'postgres',
+    packageName: '@purista/harness-storage-postgres',
+    capabilities: [
+      'storage.checkpoint',
+      'storage.resume',
+      'storage.external_wait',
+      'storage.persistent',
+      'storage.multi_instance'
+    ]
+  } as const
+  readonly capabilities = this.info.capabilities
+
+  configureHarnessContext(context) { /* inherit logger and telemetry */ }
   async getSession(id) { /* read session */ }
   async upsertSession(record) { /* upsert session */ }
   async appendMessages(sessionId, messages) { /* append atomically */ }
@@ -227,12 +245,20 @@ class PostgresStateStore extends StateStoreAdapterBase {
   async finishRun(runId, patch) { /* update terminal run */ }
   async appendEvents(runId, events) { /* append event batch */ }
   async listEvents(runId, opts) { /* cursor/after support */ }
+  async acquireRun(start) { /* transactional lease */ }
+  async loadCheckpoint(runId) { /* last committed checkpoint */ }
+  async commitCheckpoint(checkpoint) { /* compare lease + commit */ }
+  async withSessionLock(sessionId, fn) { /* serialize session */ }
+  async registerWait(request) { /* wait + status + lease in one transaction */ }
+  async getWait(waitId) { /* safe snapshot */ }
+  async signalWait(signal) { /* idempotent terminal signal */ }
+  async cancelWait(waitId, eventId, observedAt) { /* idempotent cancel */ }
 }
 ```
 
-Durable state stores should pass the state-store contract tests from `@purista/harness/testing`.
-
-State stores may implement `configureHarnessContext(context)` directly or extend `StateStoreAdapterBase`. Keep message and event ordering stable because session history and stream replay rely on deterministic order.
+Adapters must pass `harnessStorageContract` from `@purista/harness/testing`,
+plus backend-specific multi-process contention, migration, retention, and outage
+tests. Keep message/event ordering stable and storage telemetry content-free.
 
 ## Memory Adapter
 Implement `MemoryAdapter` when a project needs memory outside the default sandbox-backed `sandboxMemory()` adapter. Keep standard validation, spans, metrics, error mapping, and content-capture enforcement in core; adapters implement backend I/O only.
@@ -324,13 +350,16 @@ Tool rules:
 - For MCP http, keep authentication in `auth`/headers config and do not log secrets.
 - Treat tool arguments and results as content; do not put them in logs or custom telemetry under `NO_CONTENT`.
 
-## Durable Runtime Adapter
-Use a durable runtime adapter when workflow execution needs leases, checkpoints, retries, and resume behavior:
+## Durable Workspace Adapter
+
+Use a `DurableWorkspace` when a recoverable workflow also needs filesystem
+snapshots. Run/lease/checkpoint semantics remain in `HarnessStorage`.
 
 ```ts
 const harness = defineHarness()
-  .runtime(durableRuntime)
-  .requires(['runtime.checkpoint', 'runtime.resume_from_checkpoint'])
+  .storage(distributedHarnessStorage)
+  .workspace(objectStorageWorkspace)
+  .requires(['storage.multi_instance', 'storage.resume', 'workspace.persistent'])
   .models(...)
   .agents(...)
   .build()
@@ -338,7 +367,8 @@ const harness = defineHarness()
 
 Streams are observation, not recovery. Recovery resumes from committed checkpoints.
 
-Use `.requires([...])` with durable runtime capabilities so unsupported adapters fail at startup instead of silently degrading.
+Use `.requires([...])` and `durableWorkspaceContract` so unsupported adapters
+fail at startup instead of silently degrading.
 
 ## Harness Context
 Adapters that need shared logger, telemetry, timeout defaults, or harness name can implement:

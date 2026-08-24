@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { SqliteDurableStateStore } from '@purista/harness'
+import { SqliteHarnessStorage } from '@purista/harness'
 import { createPaymentReviewExample } from './payment-review.js'
 import { ReviewTaskStore } from './review-task-store.js'
 
@@ -18,10 +18,10 @@ describe('durable human review reference', () => {
     expect(tasks.decide({ businessKey: task.businessKey, expectedRevision: 0, outcome: 'approved', eventId: 'decision-0', principalId: 'reviewer-a' })).toEqual({ kind: 'stale' })
     const decision = tasks.decide({ businessKey: task.businessKey, expectedRevision: task.revision, outcome: 'approved', eventId: 'decision-1', principalId: 'reviewer-a' })
     expect(decision.kind).toBe('applied')
-    await app.waits.signal({ waitId: task.waitId, eventId: 'decision-1', outcome: 'approved' })
+    await app.storage.signalWait({ waitId: task.waitId, eventId: 'decision-1', outcome: 'approved' })
 
     await expect(app.run(payment)).resolves.toEqual({ status: 'approved' })
-    expect((await app.waits.signal({ waitId: task.waitId, eventId: 'decision-1', outcome: 'approved' })).kind).toBe('duplicate')
+    expect((await app.storage.signalWait({ waitId: task.waitId, eventId: 'decision-1', outcome: 'approved' })).kind).toBe('duplicate')
     expect(executed).toHaveLength(1)
   })
 
@@ -31,23 +31,23 @@ describe('durable human review reference', () => {
     await app.run({ paymentId: 'p-2', amountCents: 100, targetRevision: 'r1' })
     const task = tasks.read('payment:p-2:payment-v1')!
     tasks.decide({ businessKey: task.businessKey, expectedRevision: 1, outcome: 'approved', eventId: 'decision-2', principalId: 'reviewer-a' })
-    await app.waits.signal({ waitId: task.waitId, eventId: 'decision-2', outcome: 'approved' })
+    await app.storage.signalWait({ waitId: task.waitId, eventId: 'decision-2', outcome: 'approved' })
     await expect(app.run({ paymentId: 'p-2', amountCents: 200, targetRevision: 'r1' })).rejects.toThrow('stale or no longer binds')
 	})
 
-	it('resumes after rebuilding one SQLite durable conversation-state store', async () => {
+	it('resumes after rebuilding one SQLite durable conversation-Harness storage', async () => {
 		const tasks = new ReviewTaskStore()
 		const file = join(await mkdtemp(join(tmpdir(), 'purista-review-')), 'runtime.sqlite')
-		const firstStorage = new SqliteDurableStateStore({ file })
-		const first = createPaymentReviewExample({ tasks, state: firstStorage, payments: { execute: async () => undefined } })
+		const firstStorage = new SqliteHarnessStorage({ file })
+		const first = createPaymentReviewExample({ tasks, storage: firstStorage, payments: { execute: async () => undefined } })
 		await expect(first.run({ paymentId: 'p-3', amountCents: 100, targetRevision: 'r1' })).resolves.toEqual({ status: 'waiting' })
 		const task = tasks.read('payment:p-3:payment-v1')!
 		tasks.decide({ businessKey: task.businessKey, expectedRevision: 1, outcome: 'approved', eventId: 'decision-3', principalId: 'reviewer-a' })
-		await firstStorage.signal({ waitId: task.waitId, eventId: 'decision-3', outcome: 'approved' })
+		await firstStorage.signalWait({ waitId: task.waitId, eventId: 'decision-3', outcome: 'approved' })
 		await firstStorage.close()
 
-		const secondStorage = new SqliteDurableStateStore({ file })
-		const second = createPaymentReviewExample({ tasks, state: secondStorage, payments: { execute: async () => undefined } })
+		const secondStorage = new SqliteHarnessStorage({ file })
+		const second = createPaymentReviewExample({ tasks, storage: secondStorage, payments: { execute: async () => undefined } })
 		await expect(second.run({ paymentId: 'p-3', amountCents: 100, targetRevision: 'r1' })).resolves.toEqual({ status: 'approved' })
 		await secondStorage.close()
 	})

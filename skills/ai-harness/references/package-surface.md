@@ -11,11 +11,16 @@
 
 ## Packages
 Published packages:
-- `@purista/harness`: core runtime, ports, adapters, errors, logger, telemetry, state, sandbox, tools, agents, workflows, sessions, testing subpath
+- `@purista/harness`: core runtime, ports, local storage/workspace adapters, errors, logger, telemetry, sandbox, tools, agents, workflows, sessions, testing subpath
 - `@purista/harness-openai`: OpenAI provider adapter
 - `@purista/harness-anthropic`: Anthropic provider adapter
 - `@purista/harness-bedrock`: Amazon Bedrock provider adapter
 - `@purista/harness-azure-foundry`: Azure AI Foundry provider adapter
+- `@purista/harness-agent-plugins`: data-only Agent Plugins v1 loader and verifier
+- `@purista/harness-guardrails`: provider-neutral typed rails and privacy detector port
+- `@purista/harness-guardrails-presidio`: optional Microsoft Presidio sidecar detector
+- `@purista/harness-guardrails-native-privacy`: optional local Rust/Node-API detector
+- `@purista/harness-guardrails-local-ner`: optional local Transformers.js NER detector
 
 Package conventions:
 - packages are ESM-only
@@ -30,9 +35,10 @@ Main core entry exports:
 - telemetry from `telemetry/index.js`
 - ULID from `ulid/index.js`
 - ports from `ports/index.js`
-- durable runtime helpers from `runtime/index.js`
-- `InMemoryStateStore`
-- JSON/model state types
+- recoverable workflow helpers and execution types from `runtime/index.js`
+- `HarnessStorage`, `InMemoryHarnessStorage`, and `SqliteHarnessStorage`
+- `DurableWorkspace`, `InMemoryDurableWorkspace`, and local workspace helpers
+- JSON/model persistence types
 - model registry and capability-projected model handles
 - sandbox factories and sandbox types
 - `sandboxMemory()` memory adapter
@@ -64,7 +70,9 @@ Azure AI Foundry entry exports:
 `@purista/harness/testing` exports:
 - `makeHarness`
 - `FakeModelProvider`
-- `stateStoreContract`
+- `FakeHarnessStorage`
+- `harnessStorageContract`
+- `durableWorkspaceContract`
 - `FakeMemoryAdapter`
 - `memoryAdapterContract`
 - `sandboxContract`
@@ -86,13 +94,13 @@ Use these files as the implementation source of truth:
 | Agent loop/tools/permissions/governance | `packages/harness/src/agents/index.ts` |
 | Workflow invocation | `packages/harness/src/workflows/index.ts` |
 | Models/capability gates | `packages/harness/src/models/registry.ts`, `ports/model-provider.ts`, `ports/base-model-provider.ts` |
-| State port/default | `ports/state.ts`, `state/in-memory.ts`, `models/state.ts` |
+| Harness storage | `storage/*`, `models/state.ts` |
 | Memory port/default | `ports/memory.ts`, `ports/memory/*`, `memory/*` |
 | Sandbox | `sandbox/index.ts` |
 | Skills | `skills/index.ts` |
 | MCP | `tools/mcp/*` |
 | Telemetry | `telemetry/*` |
-| Durable runtime | `runtime/*` |
+| Recoverable workflow execution | `runtime/*` |
 | Errors | `errors/catalog.ts`, `errors/harness-error.ts` |
 | Provider adapters | `packages/harness-openai/src/index.ts`, `packages/harness-anthropic/src/index.ts`, `packages/harness-bedrock/src/index.ts`, `packages/harness-azure-foundry/src/index.ts` |
 

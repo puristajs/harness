@@ -6,7 +6,7 @@ import { RecordingLogger, RecordingTelemetry, runTelemetryFlowHarness } from './
 import { OperationTimeoutError } from '../src/errors/index.js'
 import { createModelRegistry } from '../src/models/registry.js'
 import { createSessionHarness } from '../src/sessions/index.js'
-import { InMemoryStateStore } from '../src/state/in-memory.js'
+import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { sandboxMemory } from '../src/memory/sandbox/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
@@ -114,7 +114,7 @@ it('adds content-free Agent Plugin provenance to the existing MCP tool span and 
     name: 'plugin-provenance-test',
     logger: new RecordingLogger(),
     telemetryShim: telemetry,
-    state: new InMemoryStateStore(),
+    storage: new InMemoryHarnessStorage(),
     sandbox: inMemorySandbox(),
     memory: sandboxMemory(),
     defaults: {

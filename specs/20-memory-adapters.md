@@ -32,7 +32,7 @@ defineHarness()
   .build()
 ```
 
-`.memory(adapter)` is an optional foundation-stage builder method. It is normally called after `.sandbox(...)` and before `.runtime(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used. Duplicate `.memory(...)` calls are invalid and MUST fail builder validation.
+`.memory(adapter)` is an optional foundation-stage builder method. It is normally called after `.sandbox(...)` and before `.workspace(...)`, `.requires(...)`, `.defaults(...)`, or any domain method. If omitted, `sandboxMemory()` is used. Duplicate `.memory(...)` calls are invalid and MUST fail builder validation.
 
 Validation rules:
 
@@ -250,7 +250,7 @@ Behavior:
 - Session writes MUST use `/memory/session/<key>.json`.
 - `list()` for session scope MUST list only `/memory/session/*.json`.
 - Search is unsupported and MUST fail through the core capability gate.
-- `ttlMs`, `tags`, and `metadata` are accepted only when they can be represented in a sidecar `/memory/.meta/<scope>/<key>.json`; v1 implementation MUST reject `ttlMs` because the reference adapter does not run expiry jobs.
+- `ttlMs`, `tags`, and `metadata` are accepted only when they can be represented in a sidecar `/memory/.meta/<scope>/<key>.json`; v3 implementation MUST reject `ttlMs` because the reference adapter does not run expiry jobs.
 - Atomicity is per key. Writes serialize to a string first, then write one file.
 - Persistence equals sandbox persistence. The default in-memory sandbox loses all memory on process exit; persistent sandbox adapters may retain memory files.
 
@@ -315,11 +315,11 @@ type EvalMemoryMode =
   | { kind: 'snapshot'; id: string; adapter: MemoryAdapter }
 ```
 
-Core v1 does not add a full eval runner memory API, but specs require implementation agents to keep memory facade calls deterministic in tests:
+Core v3 does not add a full eval runner memory API, but specs require implementation agents to keep memory facade calls deterministic in tests:
 
 - Unit and contract tests use `sandboxMemory()` or a fake memory adapter.
 - Prompt candidate evaluation helpers MUST NOT read or write harness memory unless the caller does so inside `runCandidate`.
-- Run summaries MUST NOT depend on sampled spans to report memory operation counts in v1. Memory operation counts may be added later through `StateStore` event data, not OTel span inspection.
+- Run summaries MUST NOT depend on sampled spans to report memory operation counts in v3. Memory operation counts may be added later through `HarnessStorage` event data, not OTel span inspection.
 
 ## Example
 

@@ -1,8 +1,8 @@
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import { serializeError } from '../errors/index.js'
-import type { DurableWorkspacePolicy, DurableWorkspaceStore, WorkspaceHandle } from '../ports/workspace.js'
-import type { DurableRuntime } from './durable.js'
+import type { DurableWorkspacePolicy, DurableWorkspace, WorkspaceHandle } from '../ports/workspace.js'
+import type { HarnessStorage } from '../storage/types.js'
 import { createDurableWorkflowContext, type DurableWorkflowContext } from './steps.js'
 
 /** Run-id format accepted for durable invocations. */
@@ -34,24 +34,14 @@ export interface DurableWorkflowBinding {
   dispose(): Promise<void>
 }
 
-/** Narrows a configured runtime adapter to an executable durable runtime. */
-export function isExecutableDurableRuntime(runtime: unknown): runtime is DurableRuntime {
-  if (!runtime || typeof runtime !== 'object') return false
-  const candidate = runtime as Partial<DurableRuntime>
-  return typeof candidate.startRun === 'function'
-    && typeof candidate.commitCheckpoint === 'function'
-    && typeof candidate.finishRun === 'function'
-    && typeof candidate.withSessionLock === 'function'
-}
-
 /**
- * Acquires a durable runtime lease for a workflow run and, when a workspace
- * store is configured, starts or resumes the durable workspace and links each
+ * Acquires a Harness storage lease for a workflow run and, when a durable
+ * workspace is configured, starts or resumes it and links each
  * new step checkpoint to a workspace checkpoint (spec 21 §16.1).
  */
 export async function beginDurableWorkflow(args: {
-  runtime: DurableRuntime
-  workspaceStore?: DurableWorkspaceStore
+  storage: HarnessStorage
+  workspace?: DurableWorkspace
   durable: DurableInvokeOptions
   defaultWorkerId: string
   sessionId: string
@@ -61,10 +51,10 @@ export async function beginDurableWorkflow(args: {
   logger: Logger
   harnessName: string
 }): Promise<DurableWorkflowBinding> {
-  const { runtime, workspaceStore, durable, sessionId, workflowId, input, signal, logger, harnessName } = args
+  const { storage, workspace, durable, sessionId, workflowId, input, signal, logger, harnessName } = args
   const workerId = durable.workerId ?? args.defaultWorkerId
 
-  const lease = await runtime.startRun({
+  const lease = await storage.acquireRun({
     runId: durable.runId,
     sessionId,
     workerId,
@@ -74,11 +64,11 @@ export async function beginDurableWorkflow(args: {
   })
 
   let handle: WorkspaceHandle | undefined
-  if (workspaceStore) {
+  if (workspace) {
     try {
       const priorReplay = lease.checkpoint?.replay
       if (lease.resumed && priorReplay?.workspaceRef) {
-        handle = await workspaceStore.resumeWorkspace({
+        handle = await workspace.resumeWorkspace({
           workspaceRef: priorReplay.workspaceRef,
           ...(priorReplay.checkpointRef ? { checkpointRef: priorReplay.checkpointRef } : {}),
           runId: lease.runId,
@@ -88,15 +78,15 @@ export async function beginDurableWorkflow(args: {
           signal
         })
       } else {
-      handle = await workspaceStore.startWorkspace({
+        handle = await workspace.startWorkspace({
           runId: lease.runId,
           sessionId,
           workflowId,
           workerId,
-        attempt: lease.attempt,
-        idempotencyKey: `${lease.runId}:start`,
-        ...(durable.workspacePolicy ? { policy: durable.workspacePolicy } : {}),
-        signal
+          attempt: lease.attempt,
+          idempotencyKey: `${lease.runId}:start`,
+          ...(durable.workspacePolicy ? { policy: durable.workspacePolicy } : {}),
+          signal
         })
       }
     } catch (workspaceError) {
@@ -118,9 +108,9 @@ export async function beginDurableWorkflow(args: {
   }
 
   const activeHandle = handle
-  const onStepCommit = workspaceStore && activeHandle
+  const onStepCommit = workspace && activeHandle
     ? async (commit: { stepId: string; sequence: number; attempt: number; output: JsonValue }) => {
-        const checkpoint = await workspaceStore.pauseWorkspace({
+        const checkpoint = await workspace.pauseWorkspace({
           handle: activeHandle,
           stepId: commit.stepId,
           sequence: commit.sequence,
@@ -147,13 +137,13 @@ export async function beginDurableWorkflow(args: {
       }
     : undefined
 
-  const ctx = createDurableWorkflowContext(runtime, lease, onStepCommit ? { onStepCommit } : {})
-  const autoCleanup = workspaceStore?.info.policy.retention?.cleanupMode === 'adapter_automatic'
+  const ctx = createDurableWorkflowContext(storage, lease, onStepCommit ? { onStepCommit } : {})
+  const autoCleanup = workspace?.info.policy.retention?.cleanupMode === 'adapter_automatic'
   let settled = false
-  // Stores that bind run sandboxes to active workspaces (localDirectoryWorkspaceStore)
+  // Workspaces that bind run sandboxes to active directories (LocalDirectoryWorkspace)
   // expose an unbind hook so the binding never outlives the durable run.
   const releaseRunBinding = (): void => {
-    const candidate = workspaceStore as { releaseRunBinding?: (runId: string, sessionId: string) => void } | undefined
+    const candidate = workspace as { releaseRunBinding?: (runId: string, sessionId: string) => void } | undefined
     candidate?.releaseRunBinding?.(lease.runId, sessionId)
   }
 
@@ -163,10 +153,10 @@ export async function beginDurableWorkflow(args: {
     resumed: lease.resumed,
     step: ctx.step,
     async finishSuccess(output: JsonValue): Promise<void> {
-      await runtime.finishRun(lease.runId, { status: 'succeeded', output })
+      await storage.finishRun(lease.runId, { status: 'succeeded', output })
       settled = true
-      if (workspaceStore && activeHandle && autoCleanup) {
-        await workspaceStore.cleanupWorkspace({
+      if (workspace && activeHandle && autoCleanup) {
+        await workspace.cleanupWorkspace({
           workspaceRef: activeHandle.workspaceRef,
           reason: 'terminal_success',
           idempotencyKey: `${lease.runId}:cleanup`
@@ -174,10 +164,10 @@ export async function beginDurableWorkflow(args: {
       }
     },
     async finishCancelled(error: unknown): Promise<void> {
-      await runtime.finishRun(lease.runId, { status: 'cancelled', error: serializeError(error) })
+      await storage.finishRun(lease.runId, { status: 'cancelled', error: serializeError(error) })
       settled = true
-      if (workspaceStore && activeHandle) {
-        await workspaceStore.abortWorkspace({
+      if (workspace && activeHandle) {
+        await workspace.abortWorkspace({
           workspaceRef: activeHandle.workspaceRef,
           runId: lease.runId,
           sessionId,

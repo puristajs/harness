@@ -72,7 +72,9 @@ Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `FakeModelProvider`
 - `FakeMemoryAdapter`
 - `makeHarness`
-- `stateStoreContract`
+- `FakeHarnessStorage`
+- `harnessStorageContract`
+- `durableWorkspaceContract`
 - `memoryAdapterContract`
 - `sandboxContract`
 - `sandboxSnapshotContract`

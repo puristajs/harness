@@ -12,7 +12,7 @@ import { AgentInterceptorError, AgentLoopBudgetError, HarnessError, OperationCan
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { AgentDefinition, AgentExecutionInterception, AgentExecutionInterceptor, AgentModelRequest, BuiltinToolName, ContextCheckpoints, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, GovernanceToolExposureContext, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import type { AgentDefinition, AgentExecutionInterception, AgentExecutionInterceptor, AgentModelRequest, BuiltinToolName, GovernanceConfig, GovernanceContext, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, GovernanceToolExposureContext, ModelHandles, NativePolicyDefinition, PermissionMode, PermissionPolicy, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { ModelCallOptions, ModelMessage, ModelToolSpec, ObjectResponse, ToolCallSpec } from '../ports/model-provider.js'
 import type { SandboxSession, SpawnCapableSandboxSession } from '../sandbox/index.js'
@@ -29,7 +29,7 @@ function stringifyInput(input: unknown): string { return typeof input === 'strin
 
 /**
  * Stable within one logical run so a durable/redelivered run never creates a
- * second transcript entry for the same logical message. The StateStore remains
+ * second transcript entry for the same logical message. The HarnessStorage remains
  * the final duplicate-id authority.
  */
 function turnMessageId(runId: string, slot: string): string {
@@ -142,7 +142,6 @@ export async function runDefaultAgent(args: {
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
-  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   historyWindow?: number
   contextProjection?: ContextProjectionPolicy
@@ -217,7 +216,6 @@ async function runDefaultAgentInner(args: {
   mcpRegistry?: McpRunnerRegistry
   session: SandboxSession
   memory: MemoryFacade
-  checkpoints: ContextCheckpoints
   mountedSkills: Set<string>
   activatedSkills: Set<string>
   historyWindow?: number
@@ -262,7 +260,6 @@ async function runDefaultAgentInner(args: {
         sessionId: args.sessionId,
         history: { list: async () => args.history },
         memory: args.memory,
-        checkpoints: args.checkpoints,
         metadata: args.metadata ?? {},
         metrics: args.metrics
       }))
@@ -282,7 +279,7 @@ async function runDefaultAgentInner(args: {
   }
 
   const baseInstructions = typeof args.agent.instructions === 'function'
-    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, checkpoints: args.checkpoints, metadata: args.metadata ?? {}, metrics: args.metrics })
+    ? args.agent.instructions({ input: parsedInput, runId: args.runId, sessionId: args.sessionId, history: { list: async () => args.history }, memory: args.memory, metadata: args.metadata ?? {}, metrics: args.metrics })
     : args.agent.instructions
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
@@ -343,7 +340,6 @@ async function runDefaultAgentInner(args: {
         sessionId: args.sessionId,
         history: { list: async () => args.history },
         memory: args.memory,
-        checkpoints: args.checkpoints,
         metadata: args.metadata ?? {},
         metrics: args.metrics,
         step: steps,
@@ -462,7 +458,6 @@ function interceptorContext(
     ...(args.workflowId ? { workflowId: args.workflowId } : {}),
     history: { list: async () => args.history },
     memory: args.memory,
-    checkpoints: args.checkpoints,
     metadata: args.metadata ?? {},
     metrics: args.metrics,
     models: args.models as ModelHandles<any>,
@@ -753,7 +748,6 @@ async function shouldStopAgentLoop(
     sessionId: args.sessionId,
     history: { list: async () => args.history },
     memory: args.memory,
-    checkpoints: args.checkpoints,
     metadata: args.metadata ?? {},
     metrics: args.metrics,
     step,

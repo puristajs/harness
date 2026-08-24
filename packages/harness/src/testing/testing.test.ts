@@ -22,12 +22,12 @@ import type { RunEvent } from '../harness/defineHarness.js'
 
 import { FakeLogger } from './fakeLogger.js'
 import { FakeSandbox } from './fakeSandbox.js'
-import { FakeStateStore } from './fakeStateStore.js'
+import { FakeHarnessStorage } from './fakeHarnessStorage.js'
 import { loggerContract } from './loggerContract.js'
 import { modelProviderContract } from './modelProviderContract.js'
 import { recordEvents } from './recordEvents.js'
 import { sandboxContract } from './sandboxContract.js'
-import { stateStoreContract } from './stateStoreContract.js'
+import { harnessStorageContract } from './harnessStorageContract.js'
 
 function usage(): TokenUsage {
   return { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
@@ -73,7 +73,7 @@ class ContractProvider extends BaseModelProvider {
   }
 }
 
-stateStoreContract(() => new FakeStateStore())
+harnessStorageContract(() => new FakeHarnessStorage())
 
 sandboxContract(() => new FakeSandbox({ executor: 'unavailable' }), { executor: 'unavailable' })
 
@@ -84,9 +84,9 @@ modelProviderContract(() => new ContractProvider(), {
   capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank']
 })
 
-describe('FakeStateStore inspection helpers', () => {
+describe('FakeHarnessStorage inspection helpers', () => {
   it('records invoked operations in order', async () => {
-    const store = new FakeStateStore()
+    const store = new FakeHarnessStorage()
     await store.upsertSession({ id: 's1', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', runCount: 0 })
     await store.getSession('s1')
     expect(store.ops).toEqual(['upsertSession', 'getSession'])

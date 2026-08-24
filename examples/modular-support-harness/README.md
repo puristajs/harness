@@ -21,7 +21,7 @@ a deterministic provider, so they never require a network call or a credential.
   builder rejects duplicate module and definition ids instead of silently
   replacing a previous contribution.
 - **Keep business orchestration local.** `answer_support_ticket` is deliberately
-  not a module. It owns the tenant/session state and composes the reusable
+  not a module. It owns the tenant-specific workflow and composes the reusable
   `answer_ticket` agent with the app's domain behavior.
 - **Prepare for large tool results.** The default retry-only context projection
   prunes oversized future tool results only if a model rejects the original

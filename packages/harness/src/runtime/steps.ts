@@ -1,6 +1,7 @@
 import type { JsonValue } from '../models/json.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
-import type { DurableRunLease, DurableRuntime, RunCheckpoint } from './durable.js'
+import type { HarnessStorage } from '../storage/types.js'
+import type { DurableRunLease, RunCheckpoint } from '../storage/execution.js'
 
 const STEP_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
 
@@ -12,13 +13,13 @@ export interface DurableStepCommit {
   readonly output: JsonValue
 }
 
-/** Optional hooks for binding durable steps to a durable workspace store. */
+/** Optional hooks for binding recoverable steps to a durable workspace. */
 export interface DurableWorkflowContextOptions {
   /**
    * Invoked before each NEW step checkpoint is committed (never on replay). The
-   * returned record is stored on the runtime checkpoint's `replay` field so a
+   * returned record is stored on the storage checkpoint's `replay` field so a
    * later resume can locate the durable workspace checkpoint. This enforces the
-   * "workspace state first, runtime checkpoint second" ordering (spec 21 §10).
+   * "workspace state first, storage checkpoint second" ordering.
    */
   readonly onStepCommit?: (commit: DurableStepCommit) => Promise<DurableReplayCheckpoint | undefined>
 }
@@ -69,9 +70,9 @@ export class DurableStepError extends Error {
   }
 }
 
-/** Creates a durable workflow context bound to an acquired runtime lease. */
+/** Creates a durable workflow context bound to an acquired storage lease. */
 export function createDurableWorkflowContext(
-  runtime: DurableRuntime,
+  storage: Pick<HarnessStorage, 'commitCheckpoint'>,
   lease: DurableRunLease,
   options: DurableWorkflowContextOptions = {}
 ): DurableWorkflowContext {
@@ -102,8 +103,8 @@ export function createDurableWorkflowContext(
       const output = await runStepWithRetry(fn, stepOptions.retry)
       assertJsonSerializable(output, stepId)
       sequence += 1
-      // Workspace state is written before the runtime checkpoint (spec 21 §10),
-      // and the returned reference is linked on the runtime checkpoint.
+      // Workspace state is written before the storage checkpoint, and the
+      // returned reference is linked on that checkpoint.
       const replayCheckpoint = options.onStepCommit
         ? await options.onStepCommit({ stepId, sequence, attempt: lease.attempt, output })
         : undefined
@@ -119,7 +120,7 @@ export function createDurableWorkflowContext(
         output,
         ...(replayCheckpoint ? { replay: replayCheckpoint } : {})
       }
-      await runtime.commitCheckpoint(checkpoint)
+      await storage.commitCheckpoint(checkpoint)
       return output
     }
   }

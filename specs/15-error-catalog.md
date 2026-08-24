@@ -24,7 +24,7 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - code: `HARNESS_CONFIG_ERROR`
 - category: `config`
 - retriable: `false`
-- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.runtime(...)` (`reason:'durable_runtime_required'`).
+- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.storage(...)` (`reason:'durable_runtime_required'`).
 - meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_module'`, `'duplicate_definition'`, `'invalid_module'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
 
 ### Testing-only errors
@@ -176,7 +176,7 @@ tokens, raw headers, or attachments.
 - code: `SESSION_NOT_FOUND`
 - category: `session`
 - retriable: `false`
-- when: StateStore returned undefined for an id that was expected to exist (rare; mostly internal).
+- when: HarnessStorage returned undefined for an id that was expected to exist (rare; mostly internal).
 - meta: `session_id: string`.
 
 ### `SessionBusyError`
@@ -190,7 +190,7 @@ tokens, raw headers, or attachments.
 - code: `STATE_ERROR`
 - category: `state`
 - retriable: `true`
-- when: StateStore, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
+- when: HarnessStorage, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
 - meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
 
 ### `WorkspaceError`

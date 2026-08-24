@@ -75,7 +75,7 @@ The harness does NOT auto-emit log-style events from logger calls; there is no `
 session.workflows[id].stream(input, opts?): AsyncIterable<RunEvent>
 ```
 
-Each `prompt`/`stream` invocation creates an internal async generator. Events are appended to an in-process bounded queue scoped to the run. `stream()` returns an `AsyncIterable<RunEvent>` reading from that queue. Consumer slowness MUST NOT pause model/tool/workflow execution. Persistence of events for audit goes through `StateStore.appendEvents`. There is no pluggable stream adapter and no `Stream` port.
+Each `prompt`/`stream` invocation creates an internal async generator. Events are appended to an in-process bounded queue scoped to the run. `stream()` returns an `AsyncIterable<RunEvent>` reading from that queue. Consumer slowness MUST NOT pause model/tool/workflow execution. Persistence of events for audit goes through `HarnessStorage.appendEvents`. There is no pluggable stream adapter and no `Stream` port.
 
 - The first event is always `run.started` (with `runId` matching the iterator's run).
 - The last event is always `run.finished`.
@@ -108,7 +108,7 @@ The run queue is bounded. Consumer slowness does not pause the producer:
 Implications:
 
 - A slow UI consumer may miss non-terminal live events under overflow.
-- Terminal run state is persisted via `StateStore`; consumers needing full history must call `state.listEvents(runId)`.
+- Terminal run state is persisted via `HarnessStorage`; consumers needing full history must call `storage.listEvents(runId)`.
 
 ## Subscriber failures
 
@@ -122,15 +122,15 @@ When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model o
 
 Governance event payloads may include `policyId`, `ruleId`, `effect`, `enforced`, approval `decision`, `approverId`, and `reason`. They MUST NOT include raw tool input or tool output.
 
-When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not StateStore audit retention.
+When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not HarnessStorage audit retention.
 
 ## Persistence
 
-Every `RunEvent` is also written to `state.appendEvents(runId, [event])` from inside the run lifecycle using the privacy-safe payload mapping above. Persistence failures are logged at `error` level and counted via `harness.events.persist_errors`; they do NOT fail the run. There is no separate persistence span — the work happens inline in the run lifecycle.
+Every `RunEvent` is also written to `storage.appendEvents(runId, [event])` from inside the run lifecycle using the privacy-safe payload mapping above. Persistence failures are logged at `error` level and counted via `harness.events.persist_errors`; they do NOT fail the run. There is no separate persistence span — the work happens inline in the run lifecycle.
 
 ## Cross-references
 
-- [04-state-queue-stream](./04-state-queue-stream.md) — `StateStore` and event persistence.
+- [04-state-queue-stream](./04-state-queue-stream.md) — `HarnessStorage` and event persistence.
 - [11-sessions](./11-sessions.md) — `Session` API.
 - [14-otel-conventions](./14-otel-conventions.md).
 - [24-governance-policy](./24-governance-policy.md).

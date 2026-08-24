@@ -3,7 +3,7 @@ import { z } from 'zod'
 import {
   DelegationPolicyError,
   HarnessConfigError,
-  InMemoryStateStore,
+  InMemoryHarnessStorage,
   OperationCancelledError,
   OperationTimeoutError,
   ValidationError,
@@ -333,11 +333,11 @@ describe('workflow delegation policy', () => {
 
   it('emits and persists child-agent lineage without content payloads', async () => {
     const model = new FakeModelProvider()
-    const state = new InMemoryStateStore()
+    const state = new InMemoryHarnessStorage()
     model.enqueue({ object: 'done', usage, finishReason: 'stop' })
 
     const harness = defineHarness()
-      .state(state)
+      .storage(state)
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
       .tools({})

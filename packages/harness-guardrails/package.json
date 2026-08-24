@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-guardrails",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "description": "Typed, NeMo-shaped guardrails for @purista/harness default-loop agents.",
   "type": "module",
   "main": "dist/index.js",
@@ -41,7 +41,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@purista/harness": "^2.1.1",
+    "@purista/harness": "^3.0.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },

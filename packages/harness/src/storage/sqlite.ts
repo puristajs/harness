@@ -1,15 +1,14 @@
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { HarnessConfigError, OperationCancelledError, StateError, WorkspaceError } from '../errors/index.js'
+import { HarnessConfigError, StateError, WorkspaceError } from '../errors/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message, PersistedRunEvent, RunRecord, RunStatus, SerializedError, SessionRecord } from '../models/state.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
-import type { ContextCheckpoint, ContextCheckpointQuery, ContextCheckpointRef, ContextCheckpointStore, ContextCheckpointStoreInfo } from '../ports/context-checkpoints.js'
-import { ExternalWaitError, validateExternalWaitRequest, type DurableExternalWaitAdapter, type ExternalWaitOutcome, type ExternalWaitRegistration, type ExternalWaitRequest, type ExternalWaitSignal, type ExternalWaitSignalResult, type ExternalWaitSnapshot } from '../ports/external-wait.js'
+import { ExternalWaitError, validateExternalWaitRequest, type ExternalWaitOutcome, type ExternalWaitRegistration, type ExternalWaitSignal, type ExternalWaitSignalResult, type ExternalWaitSnapshot } from '../storage/external-wait.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
-import type { DurableStateStore, FinishRunPatch, StateStore } from '../ports/state.js'
+import type { BoundExternalWaitRequest, FinishRunPatch, HarnessStorage } from '../storage/types.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import {
   AsyncMutex,
@@ -18,13 +17,10 @@ import {
   isResumeBlockingRunStatus,
   type DurableRunLease,
   type DurableRunStart,
-  type DurableRuntime,
-  type FinishRunPatch as DurableFinishRunPatch,
   type DurableTerminalRunStatus,
   type RunCheckpoint
-} from '../runtime/durable.js'
+} from './execution.js'
 import { DurableStepError } from '../runtime/steps.js'
-import { sha256Hex } from './ref-hash.js'
 
 type SqlValue = string | number | null
 type SqlRow = Record<string, SqlValue>
@@ -41,23 +37,13 @@ interface SqlDatabase {
   close(): void
 }
 
-export interface SqliteDurableRuntimeOptions {
+export interface SqliteHarnessStorageOptions {
   /** SQLite database file. */
   file: string
   /** Lease takeover window for crashed workers. Default: `120_000`. */
   leaseTtlMs?: number
   /** Injectable epoch-millisecond clock for lease tests. Default: `Date.now`. */
   now?: () => number
-}
-
-export interface SqliteContextCheckpointStoreOptions {
-  /** SQLite database file. */
-  file: string
-}
-
-export interface SqliteStateStoreOptions {
-  /** SQLite database file. */
-  file: string
 }
 
 const SQLITE_ENGINE_REQUIREMENT = 'node>=24.15.0 (node:sqlite) or bun (bun:sqlite)'
@@ -125,10 +111,6 @@ function parseJson<T>(value: SqlValue | undefined): T | undefined {
   return JSON.parse(value) as T
 }
 
-function contextRefHash(ref: { runId: string; sessionId: string; sequence: number; kind: string }): string {
-  return sha256Hex(`${ref.runId}:${ref.sessionId}:${ref.sequence}:${ref.kind}`)
-}
-
 function isConstraintViolation(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /constraint|unique/i.test(message)
@@ -149,41 +131,29 @@ function requiredNumber(row: SqlRow, key: string, op: StateOp): number {
 }
 
 /**
- * Native SQLite durable conversation-state store for one local host.
+ * Native SQLite Harness storage for one local host.
  *
  * @example
  * ```ts
- * const state = sqliteDurableStateStore({ file: '.purista/harness.sqlite' })
- * const harness = defineHarness().state(state).models(models).build()
+ * const storage = sqliteHarnessStorage({ file: '.purista/harness.sqlite' })
+ * const harness = defineHarness().storage(storage).models(models).build()
  * ```
  */
-export class SqliteDurableStateStore implements DurableStateStore {
+export class SqliteHarnessStorage implements HarnessStorage {
   public readonly capabilities = [
-    'runtime.checkpoint',
-    'runtime.retry',
-    'runtime.resume_from_checkpoint',
-    'runtime.workspace_checkpoint',
-    'runtime.persistent',
-    'external_wait.durable',
-    'external_wait.signal',
-    'context_checkpoint.write',
-    'context_checkpoint.read',
-    'context_checkpoint.list',
-    'context_checkpoint.delete',
-    'context_checkpoint.persistent'
+    'storage.checkpoint',
+    'storage.retry',
+    'storage.resume',
+    'storage.workspace_checkpoint',
+    'storage.persistent',
+    'storage.external_wait'
   ] as const satisfies readonly AdapterCapability[]
 
-  public readonly id = 'sqlite_runtime'
-  public readonly info: ContextCheckpointStoreInfo = {
-    id: 'sqlite_context_checkpoints',
+  public readonly id = 'sqlite'
+  public readonly info = {
+    id: 'sqlite',
     packageName: '@purista/harness',
-    capabilities: [
-      'context_checkpoint.write',
-      'context_checkpoint.read',
-      'context_checkpoint.list',
-      'context_checkpoint.delete',
-      'context_checkpoint.persistent'
-    ] as const
+    capabilities: this.capabilities
   }
 
   private readonly db: SqlDatabase
@@ -201,10 +171,11 @@ export class SqliteDurableStateStore implements DurableStateStore {
   private logger: HarnessAdapterContext['logger'] | undefined
   private telemetry: TelemetryShim | undefined
 
-  public constructor(options: SqliteDurableRuntimeOptions) {
+  public constructor(options: SqliteHarnessStorageOptions) {
     this.leaseTtlMs = options.leaseTtlMs ?? 120_000
     this.clock = options.now ?? Date.now
     this.db = openBuiltinSqlite(options.file)
+    this.assertCleanSchema()
     this.migrate()
   }
 
@@ -227,6 +198,10 @@ export class SqliteDurableStateStore implements DurableStateStore {
     await this.transaction(() => {
       this.stmt('delete from harness_sessions where id = ?').run(id)
       this.stmt('delete from harness_messages where session_id = ?').run(id)
+      this.stmt('delete from harness_external_wait_signals where wait_id in (select wait_id from harness_external_waits where session_id = ?)').run(id)
+      this.stmt('delete from harness_external_waits where session_id = ?').run(id)
+      this.stmt('delete from harness_run_checkpoints where session_id = ?').run(id)
+      this.stmt('delete from harness_run_leases where session_id = ?').run(id)
       this.stmt('delete from harness_run_events where run_id in (select id from harness_runs where session_id = ?)').run(id)
       this.stmt('delete from harness_runs where session_id = ?').run(id)
     })
@@ -292,15 +267,13 @@ export class SqliteDurableStateStore implements DurableStateStore {
           throw new StateError('Terminal run already exists.', { op: 'createRun', reason: 'terminal_run_exists' })
         }
         if (existing.sessionId === record.sessionId && existing.kind === record.kind && existing.target === record.target) {
-          this.stmt('update harness_runs set status = ?, started_at = ?, finished_at = null, input_json = ?, output_json = null, error_json = null where id = ?')
-            .run('running', record.startedAt, stringify(record.input), record.id)
           return
         }
         throw new StateError('Run id already exists for a different run.', { op: 'createRun', reason: 'run_conflict' })
       }
       try {
-        this.stmt('insert into harness_runs(id, session_id, kind, target, started_at, finished_at, status, input_json, output_json, error_json) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(record.id, record.sessionId, record.kind, record.target, record.startedAt, record.finishedAt ?? null, record.status, stringify(record.input), stringify(record.output), stringify(record.error))
+        this.stmt('insert into harness_runs(id, session_id, kind, target, started_at, finished_at, status, input_json, output_json, error_json, attempt, worker_id, initial_step_id, metadata_json) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(record.id, record.sessionId, record.kind, record.target, record.startedAt, record.finishedAt ?? null, record.status, stringify(record.input), stringify(record.output), stringify(record.error), record.attempt ?? null, record.workerId ?? null, record.initialStepId ?? null, stringify(record.metadata))
       } catch (error) {
         if (isConstraintViolation(error)) {
           throw new StateError('Run id already exists for a different run.', { op: 'createRun', reason: 'run_conflict' }, error)
@@ -310,21 +283,14 @@ export class SqliteDurableStateStore implements DurableStateStore {
     })
   }
 
-  public async finishRun(runId: string, patch: FinishRunPatch | DurableFinishRunPatch): Promise<void> {
-    return this.runtimeSpan('finish', {
+  public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
+    return this.storageSpan('finish_run', {
       'harness.run.id': runId,
       'harness.run.status': patch.status
     }, async () => this.transaction(() => {
       this.stmt('update harness_runs set status = coalesce(?, status), finished_at = coalesce(?, finished_at), output_json = coalesce(?, output_json), error_json = coalesce(?, error_json) where id = ?')
         .run(patch.status ?? null, patch.finishedAt ?? null, stringify(patch.output), stringify(patch.error), runId)
-      if (patch.status) {
-        // Spec 22 §3: every terminal status (including `failed`) is recorded on
-        // the durable run with its sanitized error and releases the lease.
-        // Only `succeeded`/`cancelled` block a later resume.
-        this.stmt('update harness_durable_runs set status = ?, output_json = ?, error_json = ?, finished_at = ? where run_id = ?')
-          .run(patch.status, stringify(patch.output), stringify(patch.error), patch.finishedAt ?? this.nowIso(), runId)
-        this.stmt('delete from harness_durable_leases where run_id = ?').run(runId)
-      }
+      if (patch.status !== 'running') this.stmt('delete from harness_run_leases where run_id = ?').run(runId)
     }))
   }
 
@@ -366,50 +332,47 @@ export class SqliteDurableStateStore implements DurableStateStore {
     }))
   }
 
-  public async startRun(record: DurableRunStart): Promise<DurableRunLease> {
-    return this.runtimeSpan('start', {
+  public async acquireRun(record: DurableRunStart): Promise<DurableRunLease> {
+    return this.storageSpan('acquire_run', {
       'harness.run.id': record.runId,
       'harness.session.id': record.sessionId
     }, (recordAttrs) => this.withSessionLock(record.sessionId, async () => this.transaction(() => {
-      const current = this.loadDurableRun(record.runId)
-      // Failed runs stay resumable (spec 22 §3); only succeeded/cancelled block.
-      if (current && isResumeBlockingRunStatus(current.status)) {
+      const current = this.loadRun(record.runId)
+      if (!current) throw new StateError('Durable run must be created before acquisition.', { op: 'createRun', reason: 'run_not_found' })
+      if (current.sessionId !== record.sessionId) throw new DurableRunLeaseError(`Durable run "${record.runId}" belongs to another session.`)
+      if (isResumeBlockingRunStatus(current.status)) {
         throw new DurableTerminalRunError(record.runId, current.status as DurableTerminalRunStatus)
       }
       this.assertLeaseAvailable(record.runId, record.sessionId, record.workerId)
-      const attempt = current ? current.attempt + 1 : Math.max(1, record.attempt ?? 1)
-      if (!current) {
-        this.stmt('insert into harness_durable_runs(run_id, session_id, worker_id, step_id, input_json, attempt, status, metadata_json, started_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(record.runId, record.sessionId, record.workerId, record.stepId, JSON.stringify(record.input), attempt, 'running', stringify(record.metadata), this.nowIso())
-      } else {
-        this.stmt('update harness_durable_runs set attempt = ?, worker_id = ?, status = ?, finished_at = null, error_json = null where run_id = ?')
-          .run(attempt, record.workerId, 'running', record.runId)
-      }
+      const priorStatus = current.status
+      const attempt = current.attempt === undefined ? Math.max(1, record.attempt ?? 1) : current.attempt + 1
+      this.stmt('update harness_runs set attempt = ?, worker_id = ?, initial_step_id = coalesce(initial_step_id, ?), metadata_json = coalesce(metadata_json, ?), status = ?, finished_at = null, output_json = null, error_json = null where id = ?')
+        .run(attempt, record.workerId, record.stepId, stringify(record.metadata), 'running', record.runId)
       const leaseId = `lease_${this.clock()}_${Math.random().toString(36).slice(2)}`
       const expiresAt = new Date(this.clock() + this.leaseTtlMs).toISOString()
       // Upsert allows same-worker lease renewal for retries within the TTL.
-      this.stmt('insert into harness_durable_leases(run_id, session_id, worker_id, lease_id, expires_at) values(?, ?, ?, ?, ?) on conflict(run_id) do update set session_id=excluded.session_id, worker_id=excluded.worker_id, lease_id=excluded.lease_id, expires_at=excluded.expires_at')
+      this.stmt('insert into harness_run_leases(run_id, session_id, worker_id, lease_id, expires_at) values(?, ?, ?, ?, ?) on conflict(run_id) do update set session_id=excluded.session_id, worker_id=excluded.worker_id, lease_id=excluded.lease_id, expires_at=excluded.expires_at')
         .run(record.runId, record.sessionId, record.workerId, leaseId, expiresAt)
-      const lease = this.toLease(record.runId, leaseId)
-      recordAttrs({ 'harness.runtime.resumed': lease.resumed, 'harness.runtime.attempt': lease.attempt })
+      const lease = this.toLease(record.runId, leaseId, priorStatus)
+      recordAttrs({ 'harness.storage.resumed': lease.resumed, 'harness.storage.attempt': lease.attempt })
       return lease
     })))
   }
 
   public async loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined> {
-    return this.runtimeSpan('load_checkpoint', {
+    return this.storageSpan('load_checkpoint', {
       'harness.run.id': runId
     }, async () => {
-      const row = this.stmt('select * from harness_durable_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
+      const row = this.stmt('select * from harness_run_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
       return row ? this.rowToCheckpoint(row) : undefined
     })
   }
 
   public async commitCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
-    return this.runtimeSpan('checkpoint', {
-      'harness.runtime.attempt': checkpoint.attempt,
-      'harness.runtime.sequence': checkpoint.sequence,
-      'harness.runtime.step_id': checkpoint.stepId,
+    return this.storageSpan('commit_checkpoint', {
+      'harness.storage.attempt': checkpoint.attempt,
+      'harness.storage.sequence': checkpoint.sequence,
+      'harness.storage.step_id': checkpoint.stepId,
       'harness.run.id': checkpoint.runId,
       'harness.session.id': checkpoint.sessionId
     }, () => this.withSessionLock(checkpoint.sessionId, async () => {
@@ -428,20 +391,20 @@ export class SqliteDurableStateStore implements DurableStateStore {
         throw new DurableStepError(`Durable checkpoint for step "${checkpoint.stepId}" is not JSON-serializable.`)
       }
       return this.transaction(() => {
-        const lease = this.stmt('select * from harness_durable_leases where run_id = ? and lease_id = ? and worker_id = ?').get(checkpoint.runId, checkpoint.leaseId, checkpoint.workerId)
+        const lease = this.stmt('select * from harness_run_leases where run_id = ? and lease_id = ? and worker_id = ?').get(checkpoint.runId, checkpoint.leaseId, checkpoint.workerId)
         if (!lease) throw new DurableRunLeaseError(`Durable run "${checkpoint.runId}" is not owned by this lease.`)
         // Heartbeat: each checkpoint by the owning lease renews the TTL so
         // long runs are not taken over mid-flight.
-        this.stmt('update harness_durable_leases set expires_at = ? where run_id = ? and lease_id = ?')
+        this.stmt('update harness_run_leases set expires_at = ? where run_id = ? and lease_id = ?')
           .run(new Date(this.clock() + this.leaseTtlMs).toISOString(), checkpoint.runId, checkpoint.leaseId)
-        const existing = this.stmt('select * from harness_durable_checkpoints where run_id = ? and step_id = ?').get(checkpoint.runId, checkpoint.stepId)
+        const existing = this.stmt('select * from harness_run_checkpoints where run_id = ? and step_id = ?').get(checkpoint.runId, checkpoint.stepId)
         if (existing) {
           if (existing['output_json'] !== outputJson || existing['replay_json'] !== replayJson || existing['sequence'] !== checkpoint.sequence || existing['attempt'] !== checkpoint.attempt) {
             throw new WorkspaceError('Durable checkpoint idempotency conflict.', { reason: 'checkpoint_conflict', run_id: checkpoint.runId, session_id: checkpoint.sessionId })
           }
           return
         }
-        this.stmt('insert into harness_durable_checkpoints(run_id, session_id, lease_id, worker_id, step_id, input_json, attempt, sequence, output_json, replay_json, metadata_json, committed_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        this.stmt('insert into harness_run_checkpoints(run_id, session_id, lease_id, worker_id, step_id, input_json, attempt, sequence, output_json, replay_json, metadata_json, committed_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(checkpoint.runId, checkpoint.sessionId, checkpoint.leaseId, checkpoint.workerId, checkpoint.stepId, inputJson, checkpoint.attempt, checkpoint.sequence, outputJson, replayJson, metadataJson, checkpoint.committedAt ?? this.nowIso())
       })
     }))
@@ -456,109 +419,46 @@ export class SqliteDurableStateStore implements DurableStateStore {
     return lock.lock(fn)
   }
 
-  public async register(request: ExternalWaitRequest): Promise<ExternalWaitRegistration> {
+  public async registerWait(request: BoundExternalWaitRequest): Promise<ExternalWaitRegistration> {
     validateExternalWaitRequest(request)
-    return this.transaction(() => {
+    return this.storageSpan('register_wait', {
+      'harness.run.id': request.runId,
+      'harness.session.id': request.sessionId,
+      'harness.wait.kind': request.kind
+    }, async () => this.transaction(() => {
       const existing = this.expireExternalWait(this.loadExternalWait(request.waitId))
       if (existing) {
-        if (existing.kind !== request.kind || existing.schemaVersion !== request.schemaVersion || existing.definitionVersion !== request.definitionVersion || existing.deadline !== request.deadline) {
+        const binding = this.stmt('select run_id, session_id from harness_external_waits where wait_id = ?').get(request.waitId)
+        if (binding?.['run_id'] !== request.runId || binding?.['session_id'] !== request.sessionId || existing.kind !== request.kind || existing.schemaVersion !== request.schemaVersion || existing.definitionVersion !== request.definitionVersion || existing.deadline !== request.deadline) {
           throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
         }
         return { created: false, snapshot: existing }
       }
+      const run = this.loadRun(request.runId)
+      if (!run || run.sessionId !== request.sessionId || run.status !== 'running') {
+        throw new ExternalWaitError('External wait run binding is invalid.', 'durable_required')
+      }
       const snapshot: ExternalWaitSnapshot = { ...request, status: 'waiting', createdAt: this.nowIso() }
-      this.stmt('insert into harness_external_waits(wait_id, kind, schema_version, definition_version, deadline, status, created_at) values(?, ?, ?, ?, ?, ?, ?)')
-        .run(snapshot.waitId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
+      this.stmt('insert into harness_external_waits(wait_id, run_id, session_id, kind, schema_version, definition_version, deadline, status, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(snapshot.waitId, request.runId, request.sessionId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
+      this.stmt('update harness_runs set status = ? where id = ?').run('waiting', request.runId)
+      this.stmt('delete from harness_run_leases where run_id = ?').run(request.runId)
       return { created: true, snapshot }
-    })
+    }))
   }
 
-  public async get(waitId: string): Promise<ExternalWaitSnapshot | undefined> {
+  public async getWait(waitId: string): Promise<ExternalWaitSnapshot | undefined> {
     return this.transaction(() => this.expireExternalWait(this.loadExternalWait(waitId)))
   }
 
-  public async signal(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
-    return this.resolveExternalWait(signal.waitId, signal.eventId, signal.outcome, signal.observedAt)
+  public async signalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
+    return this.storageSpan('signal_wait', {
+      'harness.wait.outcome': signal.outcome
+    }, async () => this.resolveExternalWait(signal.waitId, signal.eventId, signal.outcome, signal.observedAt))
   }
 
-  public async cancel(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult> {
+  public async cancelWait(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult> {
     return this.resolveExternalWait(waitId, eventId, 'cancelled', observedAt)
-  }
-
-  public async write(checkpoint: ContextCheckpoint, opts: { signal?: AbortSignal } = {}): Promise<void> {
-    return this.contextSpan('write', {
-      'harness.context_checkpoint.kind': checkpoint.kind,
-      'harness.context_checkpoint.sequence': checkpoint.sequence,
-      'harness.context_checkpoint.ref_hash': contextRefHash(checkpoint),
-      'harness.context_checkpoint.payload_size_bytes': checkpoint.payloadSizeBytes,
-      'harness.run.id': checkpoint.runId,
-      'harness.session.id': checkpoint.sessionId,
-      ...(checkpoint.workflowId ? { 'harness.workflow.id': checkpoint.workflowId } : {}),
-      ...(checkpoint.agentId ? { 'harness.agent.id': checkpoint.agentId } : {})
-    }, async () => {
-      throwIfAborted(opts.signal)
-      this.stmt('insert into harness_context_checkpoints(run_id, session_id, workflow_id, agent_id, sequence, kind, payload_json, payload_size_bytes, created_at, metadata_json) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(run_id, session_id, sequence, kind) do update set payload_json=excluded.payload_json, payload_size_bytes=excluded.payload_size_bytes, created_at=excluded.created_at, metadata_json=excluded.metadata_json')
-        .run(checkpoint.runId, checkpoint.sessionId, checkpoint.workflowId ?? null, checkpoint.agentId ?? null, checkpoint.sequence, checkpoint.kind, JSON.stringify(checkpoint.payload), checkpoint.payloadSizeBytes, checkpoint.createdAt, stringify(checkpoint.metadata))
-    })
-  }
-
-  public async list(query: ContextCheckpointQuery): Promise<readonly ContextCheckpoint[]> {
-    return this.contextSpan('list', {
-      'harness.context_checkpoint.limit': query.limit ?? 100,
-      ...(query.kind ? { 'harness.context_checkpoint.kind': query.kind } : {}),
-      ...(query.runId ? { 'harness.run.id': query.runId } : {}),
-      ...(query.sessionId ? { 'harness.session.id': query.sessionId } : {}),
-      ...(query.workflowId ? { 'harness.workflow.id': query.workflowId } : {}),
-      ...(query.agentId ? { 'harness.agent.id': query.agentId } : {})
-    }, async (recordAttrs) => {
-      throwIfAborted(query.signal)
-      const clauses: string[] = []
-      const params: SqlValue[] = []
-      for (const [column, value] of [
-        ['run_id', query.runId],
-        ['session_id', query.sessionId],
-        ['workflow_id', query.workflowId],
-        ['agent_id', query.agentId],
-        ['kind', query.kind]
-      ] as const) {
-        if (value !== undefined) {
-          clauses.push(`${column} = ?`)
-          params.push(value)
-        }
-      }
-      const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : ''
-      const limit = query.limit ?? 100
-      const rows = this.stmt(`select * from harness_context_checkpoints ${where} order by sequence asc limit ?`).all(...params, limit)
-      recordAttrs({ 'harness.context_checkpoint.result_count': rows.length })
-      return rows.map((row) => this.rowToContextCheckpoint(row))
-    })
-  }
-
-  public async read(ref: ContextCheckpointRef): Promise<ContextCheckpoint | undefined> {
-    return this.contextSpan('read', {
-      'harness.context_checkpoint.kind': ref.kind,
-      'harness.context_checkpoint.sequence': ref.sequence,
-      'harness.context_checkpoint.ref_hash': contextRefHash(ref),
-      'harness.run.id': ref.runId,
-      'harness.session.id': ref.sessionId
-    }, async () => {
-      const row = this.stmt('select * from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
-        .get(ref.runId, ref.sessionId, ref.sequence, ref.kind)
-      return row ? this.rowToContextCheckpoint(row) : undefined
-    })
-  }
-
-  public async delete(ref: ContextCheckpointRef): Promise<void> {
-    return this.contextSpan('delete', {
-      'harness.context_checkpoint.kind': ref.kind,
-      'harness.context_checkpoint.sequence': ref.sequence,
-      'harness.context_checkpoint.ref_hash': contextRefHash(ref),
-      'harness.run.id': ref.runId,
-      'harness.session.id': ref.sessionId
-    }, async () => {
-      this.stmt('delete from harness_context_checkpoints where run_id = ? and session_id = ? and sequence = ? and kind = ?')
-        .run(ref.runId, ref.sessionId, ref.sequence, ref.kind)
-    })
   }
 
   public async close(): Promise<void> {
@@ -576,20 +476,36 @@ export class SqliteDurableStateStore implements DurableStateStore {
       create table if not exists harness_sessions(id text primary key, created_at text not null, updated_at text not null, run_count integer not null, metadata_json text);
       create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null);
       create index if not exists idx_harness_messages_session_order on harness_messages(session_id, timestamp, id);
-      create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, input_json text, output_json text, error_json text);
+      create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, input_json text, output_json text, error_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text);
       create index if not exists idx_harness_runs_session_order on harness_runs(session_id, started_at, id);
       create table if not exists harness_run_events(id text primary key, run_id text not null, at text not null, type text not null, payload_json text not null);
       create index if not exists idx_harness_run_events_run_order on harness_run_events(run_id, id);
-      create table if not exists harness_durable_runs(run_id text primary key, session_id text not null, worker_id text not null, step_id text not null, input_json text not null, attempt integer not null, status text not null, metadata_json text, output_json text, error_json text, started_at text not null, finished_at text);
-      create table if not exists harness_durable_checkpoints(run_id text not null, session_id text not null, lease_id text not null, worker_id text not null, step_id text not null, input_json text not null, attempt integer not null, sequence integer not null, output_json text, replay_json text, metadata_json text, committed_at text not null, primary key(run_id, step_id));
-      create index if not exists idx_harness_durable_checkpoints_order on harness_durable_checkpoints(run_id, sequence);
-      create table if not exists harness_durable_leases(run_id text primary key, session_id text not null, worker_id text not null, lease_id text not null, expires_at text not null);
-      create index if not exists idx_harness_durable_leases_session on harness_durable_leases(session_id);
-      create table if not exists harness_external_waits(wait_id text primary key, kind text not null, schema_version text not null, definition_version text not null, deadline text not null, status text not null, created_at text not null, resolved_at text, event_id text);
+      create table if not exists harness_run_checkpoints(run_id text not null, session_id text not null, lease_id text not null, worker_id text not null, step_id text not null, input_json text not null, attempt integer not null, sequence integer not null, output_json text, replay_json text, metadata_json text, committed_at text not null, primary key(run_id, step_id));
+      create index if not exists idx_harness_run_checkpoints_order on harness_run_checkpoints(run_id, sequence);
+      create table if not exists harness_run_leases(run_id text primary key, session_id text not null, worker_id text not null, lease_id text not null, expires_at text not null);
+      create index if not exists idx_harness_run_leases_session on harness_run_leases(session_id);
+      create table if not exists harness_external_waits(wait_id text primary key, run_id text not null, session_id text not null, kind text not null, schema_version text not null, definition_version text not null, deadline text not null, status text not null, created_at text not null, resolved_at text, event_id text);
       create index if not exists idx_harness_external_waits_deadline on harness_external_waits(status, deadline);
       create table if not exists harness_external_wait_signals(wait_id text not null, event_id text not null, primary key(wait_id, event_id));
-      create table if not exists harness_context_checkpoints(run_id text not null, session_id text not null, workflow_id text, agent_id text, sequence integer not null, kind text not null, payload_json text not null, payload_size_bytes integer not null, created_at text not null, metadata_json text, primary key(run_id, session_id, sequence, kind));
     `)
+  }
+
+  private assertCleanSchema(): void {
+    const legacyTables = ['harness_durable_runs', 'harness_context_checkpoints']
+      .filter((name) => this.db.prepare("select name from sqlite_master where type = 'table' and name = ?").get(name))
+    const runsTable = this.db.prepare("select name from sqlite_master where type = 'table' and name = 'harness_runs'").get()
+    if (runsTable) {
+      const columns = new Set(this.db.prepare('pragma table_info(harness_runs)').all().map((row) => row['name']))
+      if (!columns.has('attempt') || !columns.has('initial_step_id')) legacyTables.push('harness_runs')
+    }
+    if (legacyTables.length > 0) {
+      this.db.close()
+      throw new HarnessConfigError('Legacy Harness SQLite schema detected. Create a new database for this clean-break release.', {
+        reason: 'sqlite_schema_incompatible',
+        path: 'localDurableExecution.databaseFile',
+        id: legacyTables.join(',')
+      })
+    }
   }
 
   private stmt(sql: string): SqlStatement {
@@ -627,11 +543,6 @@ export class SqliteDurableStateStore implements DurableStateStore {
   private loadRun(runId: string): RunRecord | undefined {
     const row = this.stmt('select * from harness_runs where id = ?').get(runId)
     return row ? this.rowToRun(row) : undefined
-  }
-
-  private loadDurableRun(runId: string): { status: RunStatus; attempt: number } | undefined {
-    const row = this.stmt('select status, attempt from harness_durable_runs where run_id = ?').get(runId)
-    return row ? { status: requiredString(row, 'status', 'getRun') as RunStatus, attempt: requiredNumber(row, 'attempt', 'getRun') } : undefined
   }
 
   private loadExternalWait(waitId: string): ExternalWaitSnapshot | undefined {
@@ -678,18 +589,18 @@ export class SqliteDurableStateStore implements DurableStateStore {
     const nowIso = this.nowIso()
     // Scoped expiry: only clear stale leases for the contested run/session so
     // an unrelated long-running lease is never deleted by another start.
-    this.stmt('delete from harness_durable_leases where run_id = ? and expires_at < ?').run(runId, nowIso)
-    this.stmt('delete from harness_durable_leases where session_id = ? and expires_at < ?').run(sessionId, nowIso)
-    const runLease = this.stmt('select * from harness_durable_leases where run_id = ?').get(runId)
+    this.stmt('delete from harness_run_leases where run_id = ? and expires_at < ?').run(runId, nowIso)
+    this.stmt('delete from harness_run_leases where session_id = ? and expires_at < ?').run(sessionId, nowIso)
+    const runLease = this.stmt('select * from harness_run_leases where run_id = ?').get(runId)
     if (runLease && runLease['worker_id'] !== workerId) throw new DurableRunLeaseError(`Durable run "${runId}" is already owned by worker "${runLease['worker_id']}".`)
-    const sessionLease = this.stmt('select * from harness_durable_leases where session_id = ? and run_id != ?').get(sessionId, runId)
+    const sessionLease = this.stmt('select * from harness_run_leases where session_id = ? and run_id != ?').get(sessionId, runId)
     if (sessionLease && sessionLease['worker_id'] !== workerId) throw new DurableRunLeaseError(`Durable session "${sessionId}" is already owned by another worker.`)
   }
 
-  private toLease(runId: string, leaseId: string): DurableRunLease {
-    const run = this.stmt('select * from harness_durable_runs where run_id = ?').get(runId)
+  private toLease(runId: string, leaseId: string, priorStatus: RunStatus): DurableRunLease {
+    const run = this.stmt('select * from harness_runs where id = ?').get(runId)
     if (!run) throw new DurableRunLeaseError(`Durable run "${runId}" has not been started.`)
-    const checkpoints = this.stmt('select * from harness_durable_checkpoints where run_id = ? order by sequence asc').all(runId).map((row) => this.rowToCheckpoint(row))
+    const checkpoints = this.stmt('select * from harness_run_checkpoints where run_id = ? order by sequence asc').all(runId).map((row) => this.rowToCheckpoint(row))
     const latest = checkpoints.at(-1)
     return {
       runId,
@@ -697,12 +608,12 @@ export class SqliteDurableStateStore implements DurableStateStore {
       workerId: requiredString(run, 'worker_id', 'getRun'),
       leaseId,
       attempt: requiredNumber(run, 'attempt', 'getRun'),
-      resumed: checkpoints.length > 0,
+      resumed: checkpoints.length > 0 || priorStatus === 'waiting' || priorStatus === 'interrupted',
       start: {
         runId,
         sessionId: requiredString(run, 'session_id', 'getRun'),
         workerId: requiredString(run, 'worker_id', 'getRun'),
-        stepId: requiredString(run, 'step_id', 'getRun'),
+        stepId: requiredString(run, 'initial_step_id', 'getRun'),
         input: parseJson<JsonValue>(run['input_json']) ?? null,
         attempt: requiredNumber(run, 'attempt', 'getRun'),
         ...optional('metadata', parseJson<Record<string, JsonValue>>(run['metadata_json']))
@@ -710,7 +621,10 @@ export class SqliteDurableStateStore implements DurableStateStore {
       ...(latest ? { checkpoint: latest } : {}),
       checkpoints,
       release: async () => {
-        this.stmt('delete from harness_durable_leases where run_id = ? and lease_id = ?').run(runId, leaseId)
+        await this.transaction(() => {
+          this.stmt('delete from harness_run_leases where run_id = ? and lease_id = ?').run(runId, leaseId)
+          this.stmt('update harness_runs set status = ? where id = ? and status = ?').run('interrupted', runId, 'running')
+        })
       }
     }
   }
@@ -753,7 +667,11 @@ export class SqliteDurableStateStore implements DurableStateStore {
       status: requiredString(row, 'status', 'getRun') as RunRecord['status'],
       ...optional('input', input),
       ...optional('output', output),
-      ...optional('error', error)
+      ...optional('error', error),
+      ...optional('attempt', typeof row['attempt'] === 'number' ? row['attempt'] : undefined),
+      ...optional('workerId', typeof row['worker_id'] === 'string' ? row['worker_id'] : undefined),
+      ...optional('initialStepId', typeof row['initial_step_id'] === 'string' ? row['initial_step_id'] : undefined),
+      ...optional('metadata', parseJson<Record<string, JsonValue>>(row['metadata_json']))
     }
   }
 
@@ -777,35 +695,11 @@ export class SqliteDurableStateStore implements DurableStateStore {
     }
   }
 
-  private rowToContextCheckpoint(row: SqlRow): ContextCheckpoint {
-    const metadata = parseJson<Record<string, JsonValue>>(row['metadata_json'])
-    return {
-      runId: requiredString(row, 'run_id', 'contextCheckpointRead'),
-      sessionId: requiredString(row, 'session_id', 'contextCheckpointRead'),
-      ...(row['workflow_id'] ? { workflowId: requiredString(row, 'workflow_id', 'contextCheckpointRead') } : {}),
-      ...(row['agent_id'] ? { agentId: requiredString(row, 'agent_id', 'contextCheckpointRead') } : {}),
-      sequence: requiredNumber(row, 'sequence', 'contextCheckpointRead'),
-      kind: requiredString(row, 'kind', 'contextCheckpointRead') as ContextCheckpoint['kind'],
-      payload: parseJson<JsonValue>(row['payload_json']) ?? null,
-      payloadSizeBytes: requiredNumber(row, 'payload_size_bytes', 'contextCheckpointRead'),
-      createdAt: requiredString(row, 'created_at', 'contextCheckpointRead'),
-      ...optional('metadata', metadata)
-    }
-  }
-
-  private async runtimeSpan<T>(operation: string, attrs: SpanAttrs, fn: (recordAttrs: (extra: SpanAttrs) => void) => Promise<T>): Promise<T> {
-    return this.operationSpan('harness.runtime', 'harness.runtime.operation.duration', 'harness.runtime.operations', {
-      'harness.runtime.adapter': this.id,
-      'harness.runtime.operation': operation,
-      'harness.runtime.persistent': true,
-      ...attrs
-    }, fn)
-  }
-
-  private async contextSpan<T>(operation: string, attrs: SpanAttrs, fn: (recordAttrs: (extra: SpanAttrs) => void) => Promise<T>): Promise<T> {
-    return this.operationSpan('harness.context_checkpoint', 'harness.context_checkpoint.operation.duration', 'harness.context_checkpoint.operations', {
-      'harness.context_checkpoint.adapter': this.info.id,
-      'harness.context_checkpoint.operation': operation,
+  private async storageSpan<T>(operation: string, attrs: SpanAttrs, fn: (recordAttrs: (extra: SpanAttrs) => void) => Promise<T>): Promise<T> {
+    return this.operationSpan('harness.storage', 'harness.storage.operation.duration', 'harness.storage.operations', {
+      'harness.storage.adapter': this.id,
+      'harness.storage.operation': operation,
+      'harness.storage.persistent': true,
       ...attrs
     }, fn)
   }
@@ -842,26 +736,7 @@ function optional<K extends string, V>(key: K, value: V | undefined): V extends 
   return (value === undefined ? {} : { [key]: value }) as V extends undefined ? Record<never, never> : { [P in K]: V }
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new OperationCancelledError('Context checkpoint operation was cancelled.', { scope: 'workspace' })
+/** Creates the zero-dependency local SQLite Harness storage. */
+export function sqliteHarnessStorage(options: SqliteHarnessStorageOptions): HarnessStorage & { close(): Promise<void> } {
+  return new SqliteHarnessStorage(options)
 }
-
-export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): DurableRuntime & { close(): Promise<void> } {
-  return new SqliteDurableStateStore(options)
-}
-
-/** Creates the recommended zero-dependency SQLite conversation store for one local host. */
-export function sqliteDurableStateStore(options: SqliteDurableRuntimeOptions): DurableStateStore & { close(): Promise<void> } {
-  return new SqliteDurableStateStore(options)
-}
-
-export function sqliteStateStore(options: SqliteStateStoreOptions): StateStore & { close(): Promise<void> } {
-  return new SqliteDurableStateStore(options)
-}
-
-export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> } {
-  return new SqliteDurableStateStore(options)
-}
-
-/** @deprecated Use {@link SqliteDurableStateStore}; this alias is retained for source compatibility. */
-export const SqliteHarnessStorage = SqliteDurableStateStore

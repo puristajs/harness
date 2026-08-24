@@ -108,7 +108,7 @@ Locked semantics:
 - `'deny'` — throws `PermissionDeniedError` before invocation.
 - `'ask'` — invokes `onPermission` if defined; if undefined, treated as `'deny'`.
 - Pattern matching: glob-style (`*` matches any chars except `/`, `**` matches any including `/`). For `bash`, matched against the literal command string; for file tools, against the path. `deny` patterns evaluated first; then `allow` (if non-empty, must match); then `mode`.
-- Read-only built-ins (`read`, `list`, `glob`, `grep`) cannot be denied in v1 — the model needs to navigate the sandbox FS for skill discovery to work. Locked rule.
+- Read-only built-ins (`read`, `list`, `glob`, `grep`) cannot be denied in v3 — the model needs to navigate the sandbox FS for skill discovery to work. Locked rule.
 
 ### `onPermission` hook
 
@@ -168,7 +168,7 @@ When `handler` is undefined, the harness executes this algorithm:
      - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
      - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
    - j. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
-8. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
+8. **Persist**: append every assistant + tool message produced in the loop to session history via `HarnessStorage.appendMessages`.
 
 ### Loop controls
 

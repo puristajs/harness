@@ -31,8 +31,8 @@ should read.
 | TypeScript tools | Aligned | Zod input/output validation and tool spans. |
 | MCP tools | Aligned | Stdio/HTTP success and failure paths have focused tests. |
 | Skills | Aligned | `SKILL.md` frontmatter validation and mounting are implemented. |
-| Durable workspaces (spec 21) | Aligned | `DurableWorkspaceStore` port, lifecycle/idempotency/quota errors, in-memory reference store, and `durableWorkspaceStoreContract` are covered. |
-| Local durable execution (spec 22) | Aligned | `localDurableExecution()` bundle: SQLite runtime/state/context checkpoints, host-directory workspace store, jailed local sandbox, lease and resume semantics. |
+| Durable workspaces (spec 21) | Aligned | `DurableWorkspace` port, lifecycle/idempotency/quota errors, in-memory reference store, and `durableWorkspaceContract` are covered. |
+| Local durable execution (spec 22) | Aligned | `localDurableExecution()` bundle: SQLite Harness storage and host-directory durable workspace, jailed local sandbox, lease and resume semantics. |
 | Provider outcomes and retry (spec 23) | Aligned | Normalized `ModelOutcome`/`FinishReason`, active/deferred retry policy with `longRetry`, SDK retry disabling, rate-limit metadata, and the shared `modelProviderContract` across all four adapters. |
 | Living Wiki example | Aligned | Real app shell, application-owned review tasks, artifacts, graph, SSE, Jaeger links, optional draw.io MCP. |
 

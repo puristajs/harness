@@ -35,7 +35,7 @@ There is no `streamContract` — streaming is internal to the harness; see "Stre
 
 Each contract suite calls `make()` per test for isolation. Required tests:
 
-### StateStore
+### HarnessStorage
 
 1. `getSession` returns undefined for unknown id.
 2. `upsertSession` then `getSession` returns the record.
@@ -103,7 +103,7 @@ test suite cover the scripted tool-use, capability-gate, and error/retry items
 11. Standard memory spans and metrics are emitted by the core wrapper, not by adapter code.
 12. Content capture tests cover `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT`; raw keys/values/queries/results appear only in the modes allowed by [20-memory-adapters](./20-memory-adapters.md).
 
-### DurableWorkspaceStore
+### DurableWorkspace
 
 1. `info.id`, `info.packageName`, and `info.capabilities` pass [21-durable-workspaces](./21-durable-workspaces.md) validation.
 2. `startWorkspace` is idempotent for the same idempotency key and throws `WorkspaceError{meta.reason:'idempotency_conflict'}` for conflicting input.
@@ -111,7 +111,7 @@ test suite cover the scripted tool-use, capability-gate, and error/retry items
 4. `resumeWorkspace` succeeds only for committed, non-expired, non-aborted, non-cleaned checkpoints.
 5. `abortWorkspace` is idempotent and blocks later resume.
 6. `cleanupWorkspace` is idempotent, returns `cleaned` for full deletion, and returns `cleanup_pending` with retry metadata for partial deletion.
-7. `inspectWorkspace` is read-only and returns policy metadata when `workspace_store.inspect`, `workspace_store.retention`, `workspace_store.encrypted_storage`, or `workspace_store.quota` is advertised.
+7. `inspectWorkspace` is read-only and returns policy metadata when `workspace.inspect`, `workspace.retention`, `workspace.encrypted_storage`, or `workspace.quota` is advertised.
 8. Quota failures throw `WorkspaceQuotaExceededError` and expose no visible partial checkpoint except an inspectable orphan marked for cleanup.
 9. `signal` cancellation causes `OperationCancelledError{meta.scope:'workspace'}`.
 10. Backend failures surface as `WorkspaceError` or `WorkspaceCleanupError`.
@@ -156,13 +156,13 @@ The harness package additionally has integration tests:
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
 - `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
-- Durable workspace integration: `.workspaceStore(custom)` registers a durable workspace store; `.requires(['workspace_store.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, runtime checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
-- Local durable execution: `localDurableExecution({ root })` wires `.runtime(...)`, `.sandbox(...)`, `.workspaceStore(...)`, and `.checkpoints(...)`; a workflow writes a file under `/workspace`, commits a durable step, rebuilds the bundle/harness from the same root/database, retries with the same durable `runId`, reads the file, and proves the committed step was not re-run.
-- SQLite durable runtime: fresh run, retry, process-style rebuild, active lease conflict, stale lease takeover after `leaseTtlMs`, checkpoint idempotency, checkpoint conflict, terminal-run retry rejection, JSON serialization rejection, cancellation, WAL/busy timeout setup, and `close()`.
-- Local directory workspace store: start/pause/resume/abort/cleanup/inspect, idempotency conflict, missing checkpoint, expired/aborted/cleaned resume rejection, orphan inspection, realpath cleanup guard, and quota metadata.
+- Durable workspace integration: `.workspace(custom)` registers a durable workspace; `.requires(['workspace.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, storage checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
+- Local durable execution: `localDurableExecution({ root })` wires `.storage(local.storage)`, `.sandbox(local.sandbox)`, and `.workspace(local.workspace)`; a workflow writes a file under `/workspace`, commits a step, rebuilds the bundle/harness from the same root/database, retries with the same durable `runId`, reads the file, and proves the committed step was not re-run.
+- SQLite durable storage: fresh run, retry, process-style rebuild, active lease conflict, stale lease takeover after `leaseTtlMs`, checkpoint idempotency, checkpoint conflict, terminal-run retry rejection, JSON serialization rejection, cancellation, WAL/busy timeout setup, and `close()`.
+- Local directory workspace: start/pause/resume/abort/cleanup/inspect, idempotency conflict, missing checkpoint, expired/aborted/cleaned resume rejection, orphan inspection, realpath cleanup guard, and quota metadata.
 - Local directory sandbox: read/write/list/stat/remove/mount, files-only default, disabled exec behavior, enabled exec behavior, command allow-list, cwd jailing, symlink escape prevention, timeout, minimal env, and close.
 - Context checkpoint store: write/read/list/delete, process-style rebuild, ordering by sequence, kind filtering, payload JSON serialization rejection, delete idempotency, capability gates, and OTel/log privacy.
-- Durable run state ordering: durable lease acquisition happens before `StateStore.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
+- Durable run state ordering: durable lease acquisition happens before `HarnessStorage.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.
@@ -171,7 +171,7 @@ The harness package additionally has integration tests:
   4. Breaking out of a stream iterator detaches that consumer but does not cancel the underlying run; explicit `opts.signal` cancellation still aborts the run.
   5. Consumer `take()` throwing logs `STREAM_SUBSCRIBER_FAILED` and removes the subscription; the run continues.
   6. Per-run total ordering matches the rules in [12-streaming](./12-streaming.md).
-  7. Persistence: every emitted event is written to `state.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
+  7. Persistence: every emitted event is written to `storage.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
 - Provider runtime parity:
   1. Missing `object`, `object_stream`, `embeddings`, or `rerank` capability fails before provider I/O.
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
@@ -192,7 +192,7 @@ The harness package additionally has integration tests:
   3. `inMemorySandbox()` type tests assert files-only sessions do not expose `exec`.
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
-- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.runtime.*`, `harness.context_checkpoint.*`, and `harness.local_sandbox.open` spans and metrics.
+- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.storage.*`, and `harness.local_sandbox.open` spans and metrics.
 - Agent Plugins addon: valid/invalid 1.0.0 manifest and `mcp.json` fixtures,
   no-schema-fetch behavior, component failure isolation, trusted-root/default
   denial/digest checks, explicit alias/type allowlists, and no automatic
@@ -207,7 +207,7 @@ The harness package additionally has integration tests:
 - Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
 - Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
 - Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.
-- Run summary: `Session.getRunSummary(runId)` derives status, token totals, model/tool/agent counts, and errors from `StateStore` data without reading OTel spans.
+- Run summary: `Session.getRunSummary(runId)` derives status, token totals, model/tool/agent counts, and errors from `HarnessStorage` data without reading OTel spans.
 - AI eval core: deterministic scorer helper and `evaluatePromptCandidates` tests listed in [19-ai-eval-core](./19-ai-eval-core.md) are required.
 
 ## Fixtures

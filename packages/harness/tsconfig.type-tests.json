@@ -13,7 +13,8 @@
     "src/ulid/**/*.ts",
     "src/ports/**/*.ts",
     "src/models/**/*.ts",
-    "src/testing/stateStoreContract.ts",
+    "src/storage/**/*.ts",
+    "src/testing/harnessStorageContract.ts",
     "src/index.ts",
     "type-tests/**/*.ts"
   ]

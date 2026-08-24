@@ -161,7 +161,6 @@ export class SqliteDurableStateStore implements DurableStateStore {
   public readonly capabilities = [
     'runtime.checkpoint',
     'runtime.retry',
-    'runtime.distributed_lock',
     'runtime.resume_from_checkpoint',
     'runtime.workspace_checkpoint',
     'runtime.persistent',

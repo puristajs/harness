@@ -32,6 +32,15 @@ evaluations, while failed actions are error spans. Use
 `filterRetrievedChunks(chunks, { models, signal, logger })` after
 application-owned retrieval; the addon has no vector-store integration.
 
-Unsupported NeMo executable features (`.co`, `actions.py`, `config.py`,
-dialog and execution rails) fail at config load/compile time with stable
-diagnostics instead of being approximated.
+Unsupported NeMo executable features (`.co` and `.py` files, `prompts.yml`,
+`prompts.yaml`, `actions`/`kb` directories, and dialog/execution rails) fail
+at config load/compile time with stable diagnostics instead of being
+approximated.
+
+The accepted YAML is intentionally strict: root `models`, `instructions`,
+`prompts`, `custom_data`, and `rails`; model `type`, `engine`, `model`, and
+`parameters`; phase `flows`; and the documented sensitive-data subtree only.
+`models`, `instructions`, `prompts`, and `custom_data` are preserved migration
+metadata, not executable provider/prompt/template configuration. Use Harness
+model aliases, typed agent instructions, actions, workflows, and
+application-owned retrieval for the executable behavior.

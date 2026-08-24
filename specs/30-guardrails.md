@@ -62,6 +62,21 @@ rails:
 
 `models` is descriptive; `modelAliases` maps its `type` to an already configured Harness alias. YAML never instantiates a provider, reads a key, or selects a network destination. Each configured flow must resolve to an application-owned action.
 
+The parser is strict at every accepted mapping. It accepts only root
+`models`, `instructions`, `prompts`, `custom_data`, and `rails`; model
+`type`, `engine`, `model`, and `parameters`; phase `flows`; and the
+`rails.config.sensitive_data_detection` subtree defined in
+`31-sensitive-data-guardrails.md`. `models`, `instructions`, `prompts`, and
+`custom_data` are preserved compatibility metadata only: they do not select a
+provider, inject an agent prompt, render a template, or execute behavior.
+
+When a directory is loaded, the directory tree is also an explicit migration
+boundary: the single root `config.yml`/`config.yaml` is the only consumed
+configuration source. Nested or root `.co`/`.py` files, `prompts.yml` or
+`prompts.yaml`, and NeMo `actions` or `kb` directories reject with a stable
+unsupported-config diagnostic instead of being ignored. Applications keep
+their own assets outside the guardrails configuration directory.
+
 | Source feature | Required behavior |
 | --- | --- |
 | `config.yml`/`config.yaml` | exactly one file per directory; strict shape diagnostics |

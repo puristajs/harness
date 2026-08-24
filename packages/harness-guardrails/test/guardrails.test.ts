@@ -1,10 +1,13 @@
 import { SpanStatusCode } from '@opentelemetry/api'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { defineHarness, inMemorySandbox } from '@purista/harness'
 import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
 import { createModelRegistry } from '../../harness/src/models/registry.js'
-import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig, SensitiveDataDetectorError, type SensitiveDataDetector } from '../src/index.js'
+import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, loadGuardrailsConfig, modelCheckRail, parseGuardrailsConfig, SensitiveDataDetectorError, type SensitiveDataDetector } from '../src/index.js'
 import { FakeSensitiveDataDetector } from '../src/testing/index.js'
 
 it('scripts deterministic sensitive-data findings, failures, capabilities, and request recording', async () => {
@@ -21,6 +24,38 @@ it('scripts deterministic sensitive-data findings, failures, capabilities, and r
   expect(detector.requests).toHaveLength(3)
   detector.reset()
   expect(detector.requests).toEqual([])
+})
+
+it('accepts only the documented portable YAML fields and preserves empty masking', () => {
+  expect(() => parseGuardrailsConfig({ unsupported: true })).toThrow(/Unknown guardrails configuration field/)
+  expect(() => parseGuardrailsConfig({ models: [{ type: 'main', endpoint: 'https://example.test' }] })).toThrow(/Unknown guardrails configuration field/)
+  expect(() => parseGuardrailsConfig({ rails: { input: { flows: [], parallel: true } } })).toThrow(/Unknown guardrails configuration field/)
+
+  expect(parseGuardrailsConfig({
+    rails: {
+      config: {
+        sensitive_data_detection: {
+          input: { entities: ['EMAIL_ADDRESS'], mask_token: '', score_threshold: 0 }
+        }
+      },
+      input: { flows: ['mask sensitive data on input'] }
+    }
+  }).rails.config?.sensitiveDataDetection?.input?.maskToken).toBe('')
+})
+
+it('rejects unexecuted NeMo files and directories anywhere in a config directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'purista-guardrails-config-'))
+  try {
+    await writeFile(join(directory, 'config.yml'), 'rails: {}\n', 'utf8')
+    await mkdir(join(directory, 'rails'))
+    await writeFile(join(directory, 'rails', 'input.co'), 'flow main\n', 'utf8')
+    await expect(loadGuardrailsConfig(directory)).rejects.toMatchObject({
+      code: 'GUARDRAILS_CONFIG_ERROR',
+      meta: { reason: 'unsupported_executable_config' }
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 it('runs NeMo-shaped input and output rails with the Harness test adapter', async () => {

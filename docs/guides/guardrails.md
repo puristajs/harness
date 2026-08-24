@@ -2,6 +2,34 @@
 
 `@purista/harness-guardrails` is an optional, typed addon for default-loop agents. It adapts the portable configuration vocabulary from NVIDIA NeMo Guardrails without importing a Python runtime, Colang, provider SDK, server, or vector database.
 
+## Exact portable configuration subset
+
+The parser accepts only these root keys: `models`, `instructions`, `prompts`,
+`custom_data`, and `rails`. It rejects unknown fields at each accepted mapping.
+
+| YAML location | Accepted fields | Harness behavior |
+| --- | --- | --- |
+| `models[]` | `type`, `engine`, `model`, `parameters` | Preserved metadata only; `modelAliases` maps a type to an already-registered Harness alias. |
+| `instructions` | non-empty string array | Preserved metadata; does not inject an agent instruction. |
+| `prompts`, `custom_data` | JSON-compatible values | Preserved metadata; never rendered or executed. |
+| `rails.input`, `output`, `tool_input`, `tool_output`, `retrieval` | `flows` only | Ordered application action IDs for the matching Harness phase. |
+| `rails.config` | `sensitive_data_detection` only | Strict input/output/retrieval PII policies. |
+
+Input, output, tool-input, and tool-output phases attach to the default agent
+loop. Retrieval uses explicit `filterRetrievedChunks(...)` after
+application-owned retrieval. The only reserved flow IDs are the six
+`detect`/`mask sensitive data on input|output|retrieval` names, which require
+`createSensitiveDataActions`.
+
+`.co` and `.py` files anywhere below the configuration directory,
+`prompts.yml`/`prompts.yaml`, and NeMo `actions` or `kb` directories are
+rejected. Dialog/execution rails, parallel/streaming settings,
+provider/server configuration, template execution, and implicit
+knowledge-base/vector-store behavior are intentionally unsupported. Use typed
+workflows/state, TypeScript rail actions/tools, registered model adapters, and
+application RAG instead. Full NeMo runtime parity would require a separate
+dialogue/Colang/Python runtime and is not a safe parser compatibility feature.
+
 ## Install and configure
 
 ```sh
@@ -300,7 +328,7 @@ closed before the tool side effect.
 
 ## Compatibility and safety
 
-The first release supports `config.yml`/`config.yaml`, `models`, `instructions`, `prompts`, `custom_data`, and input/output/tool/retrieval rail lists. `config.py`, `actions.py`, `.co` files, dialog rails, execution rails, LangChain, servers, and implicit vector stores are rejected with stable diagnostics rather than silently approximated.
+The first release supports `config.yml`/`config.yaml`, `models`, `instructions`, `prompts`, `custom_data`, and input/output/tool/retrieval rail lists. It rejects `.co` and `.py` files anywhere below the configuration directory, `prompts.yml`/`prompts.yaml`, and NeMo `actions` or `kb` directories. Dialog rails, execution rails, LangChain, servers, and implicit vector stores are rejected with stable diagnostics rather than silently approximated.
 
 Rail actions time out after 10 seconds by default (override globally with `actionTimeoutMs` or per action with `timeoutMs`) and failures are fail-closed. Every evaluation emits an `evaluate_guardrail {rail.id}` child span with `openinference.span.kind=GUARDRAIL`, rail identity, phase, and outcome (`allow`, `block`, `transform`, or `error`). It also emits `harness.guardrail.evaluations` and `harness.guardrail.duration`; blocks are successful guardrail evaluations (span status `UNSET`) while action failures are span errors. Blocks, transformations, and failures have content-free structured logs.
 

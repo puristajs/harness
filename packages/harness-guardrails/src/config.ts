@@ -48,7 +48,8 @@ export interface NeMoGuardrailsConfig {
 }
 
 const SUPPORTED_RAILS = new Set<GuardrailPhase>(['input', 'output', 'tool_input', 'tool_output', 'retrieval'])
-const UNSUPPORTED_EXECUTABLE_FILES = new Set(['actions.py', 'config.py'])
+const UNSUPPORTED_CONFIG_FILES = new Set(['actions.py', 'config.py', 'prompts.yml', 'prompts.yaml'])
+const UNSUPPORTED_CONFIG_DIRECTORIES = new Set(['actions', 'kb'])
 
 /** Loads `config.yml` or `config.yaml` from a NeMo-shaped config file or directory. */
 export async function loadGuardrailsConfig(path: string): Promise<NeMoGuardrailsConfig> {
@@ -62,7 +63,7 @@ export async function loadGuardrailsConfig(path: string): Promise<NeMoGuardrails
   if (!['.yml', '.yaml'].includes(extname(configPath))) {
     throw new GuardrailsConfigError('Guardrails configuration must be YAML.', { reason: 'invalid_extension', path: configPath })
   }
-  await rejectUnsupportedExecutableFiles(dirname(configPath))
+  await rejectUnsupportedConfigFiles(dirname(configPath))
   const source = await readFile(configPath, 'utf8')
   let parsed: unknown
   try {
@@ -76,6 +77,7 @@ export async function loadGuardrailsConfig(path: string): Promise<NeMoGuardrails
 /** Parses an already-loaded NeMo-shaped YAML value without touching the filesystem. */
 export function parseGuardrailsConfig(value: unknown, sourcePath?: string): NeMoGuardrailsConfig {
   const root = object(value, 'root', sourcePath)
+  rejectUnknownKeys(root, new Set(['models', 'instructions', 'prompts', 'custom_data', 'rails']), 'root', sourcePath)
   const railsSource = root['rails'] === undefined ? {} : object(root['rails'], 'rails', sourcePath)
   const rails: Partial<Record<GuardrailPhase, NeMoRailConfig>> = {}
   let runtimeConfig: NeMoGuardrailsRuntimeConfig | undefined
@@ -91,11 +93,13 @@ export function parseGuardrailsConfig(value: unknown, sourcePath?: string): NeMo
       throw new GuardrailsConfigError('Unknown guardrails rail category.', { reason: 'unknown_rail_category', field: `rails.${key}`, path: sourcePath })
     }
     const railObject = object(rail, `rails.${key}`, sourcePath)
+    rejectUnknownKeys(railObject, new Set(['flows']), `rails.${key}`, sourcePath)
     rails[key as GuardrailPhase] = { flows: strings(railObject['flows'], `rails.${key}.flows`, sourcePath) }
   }
   validateSensitiveDataFlows(rails, runtimeConfig?.sensitiveDataDetection, sourcePath)
   const models = root['models'] === undefined ? [] : array(root['models'], 'models', sourcePath).map((model, index) => {
     const item = object(model, `models[${index}]`, sourcePath)
+    rejectUnknownKeys(item, new Set(['type', 'engine', 'model', 'parameters']), `models[${index}]`, sourcePath)
     return {
       type: string(item['type'], `models[${index}].type`, sourcePath),
       ...(item['engine'] === undefined ? {} : { engine: string(item['engine'], `models[${index}].engine`, sourcePath) }),
@@ -135,7 +139,7 @@ function parseSensitiveDataPolicy(value: unknown, field: string, path?: string):
     return entity
   })
   if (entities.length === 0 || new Set(entities).size !== entities.length) throw new GuardrailsConfigError('Sensitive-data entities must be a non-empty unique list.', { reason: 'invalid_shape', field: `${field}.entities`, path })
-  const maskToken = string(policy['mask_token'], `${field}.mask_token`, path)
+  const maskToken = stringAllowEmpty(policy['mask_token'], `${field}.mask_token`, path)
   if (maskToken.length > 128) throw new GuardrailsConfigError('Sensitive-data mask_token must be at most 128 UTF-16 code units.', { reason: 'invalid_shape', field: `${field}.mask_token`, path })
   const scoreThreshold = policy['score_threshold']
   if (typeof scoreThreshold !== 'number' || !Number.isFinite(scoreThreshold) || scoreThreshold < 0 || scoreThreshold > 1) {
@@ -179,11 +183,20 @@ async function findConfigFile(directory: string): Promise<string> {
   return join(directory, candidates[0]!)
 }
 
-async function rejectUnsupportedExecutableFiles(directory: string): Promise<void> {
-  const entries = await readdir(directory)
-  const blocked = entries.find((entry) => UNSUPPORTED_EXECUTABLE_FILES.has(entry) || entry.endsWith('.co'))
-  if (blocked) {
-    throw new GuardrailsConfigError('Python actions and Colang files are not executable in this TypeScript package.', { reason: 'unsupported_executable_config', path: join(directory, blocked) })
+async function rejectUnsupportedConfigFiles(directory: string): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
+    const entryPath = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      if (UNSUPPORTED_CONFIG_DIRECTORIES.has(entry.name)) {
+        throw new GuardrailsConfigError('This NeMo configuration directory is not supported by the TypeScript guardrails package.', { reason: 'unsupported_executable_config', path: entryPath })
+      }
+      await rejectUnsupportedConfigFiles(entryPath)
+      continue
+    }
+    if (UNSUPPORTED_CONFIG_FILES.has(entry.name) || entry.name.endsWith('.co') || entry.name.endsWith('.py')) {
+      throw new GuardrailsConfigError('Colang, Python, prompt-file, and knowledge-base configuration are not executable in this TypeScript package.', { reason: 'unsupported_executable_config', path: entryPath })
+    }
   }
 }
 
@@ -199,6 +212,11 @@ function array(value: unknown, field: string, path?: string): unknown[] {
 
 function string(value: unknown, field: string, path?: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new GuardrailsConfigError('Expected a non-empty string in guardrails configuration.', { reason: 'invalid_shape', field, path })
+  return value
+}
+
+function stringAllowEmpty(value: unknown, field: string, path?: string): string {
+  if (typeof value !== 'string') throw new GuardrailsConfigError('Expected a string in guardrails configuration.', { reason: 'invalid_shape', field, path })
   return value
 }
 

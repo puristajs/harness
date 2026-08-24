@@ -51,6 +51,7 @@ import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { DurableRuntimeAdapter, HarnessInspection } from '../ports/capabilities.js'
 import type { DurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpoint, ContextCheckpointStore } from '../ports/context-checkpoints.js'
+import { ExternalWaitError, ExternalWaitPendingError, type DurableExternalWaitAdapter, type ExternalWaitRequest, type ExternalWaitSnapshot } from '../ports/external-wait.js'
 import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, isExecutableDurableRuntime, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import type { DurableRuntime } from '../runtime/durable.js'
 import { runStepWithRetry, type DurableStepOptions } from '../runtime/steps.js'
@@ -98,6 +99,7 @@ type HarnessDefinition<S extends BuilderState> = {
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
   checkpoints?: ContextCheckpointStore
+  externalWait?: DurableExternalWaitAdapter
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   tools: NonNullable<S['tools']>
@@ -138,6 +140,12 @@ type DelegationRunState = {
     reject: (error: unknown) => void
     cleanup: () => void
   }>
+}
+
+type SuspendedWorkflowResult = { readonly __harnessExternalWaitPending: ExternalWaitPendingError }
+
+function isSuspendedWorkflowResult(value: unknown): value is SuspendedWorkflowResult {
+  return Boolean(value && typeof value === 'object' && '__harnessExternalWaitPending' in value)
 }
 
 type LiveChildTask = {
@@ -403,7 +411,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       ...(definition.defaults.historyWindow !== undefined ? { historyWindow: definition.defaults.historyWindow } : {})
     }
   }
-  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints)
+  configureHarnessAdapters(adapterContext, definition.models as ModelsConfig, definition.state, definition.sandbox, definition.memory, definition.tools as ToolsConfig, definition.runtime, definition.workspaceStore, definition.checkpoints, definition.externalWait)
   const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
@@ -854,6 +862,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         await closeResource('model_provider', alias, model.provider)
       }
       await closeResource('governance', 'governance', definition.governance)
+      await closeResource('external_wait', definition.externalWait?.id ?? 'external_wait', definition.externalWait)
       await closeResource('context_checkpoints', 'checkpoints', definition.checkpoints)
       await closeResource('workspace_store', 'workspace_store', definition.workspaceStore)
       await closeResource('runtime', 'runtime', definition.runtime)
@@ -1211,6 +1220,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             memory,
             checkpoints,
             step: durableBinding ? durableBinding.step : passthroughStep,
+            externalWait: createExternalWaitFacade({
+              adapter: definition.externalWait,
+              durable: durableBinding,
+              telemetry,
+              harnessName: definition.name,
+              sessionId,
+              runId,
+              workflowId,
+              emit
+            }),
             fanOut: <T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: WorkflowFanOutOptions) =>
               runWorkflowFanOut({
                 runId,
@@ -1376,6 +1395,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               ...(opts ? { opts: { ...opts, signal: runSignal.signal } } : { opts: { signal: runSignal.signal } })
             } as Parameters<typeof runWorkflow<S>>[0])
           } catch (error) {
+            if (error instanceof ExternalWaitPendingError) {
+              // A wait is a normal checkpoint-and-suspend transition. Keep
+              // both short spans successful; the run catch below persists the
+              // waiting lifecycle record and returns the public signal to the
+              // delivery worker without recording a false exception span.
+              return { __harnessExternalWaitPending: error } as SuspendedWorkflowResult
+            }
             workflowError = error
             throw error
           } finally {
@@ -1386,6 +1412,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           }
         })
       }))
+
+      if (isSuspendedWorkflowResult(result)) {
+        throw result.__harnessExternalWaitPending
+      }
 
       // A resolved handler may still have child-agent calls in flight; settle
       // them before terminalizing so no run events trail run.finished.
@@ -1414,6 +1444,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finishedAt = now()
       const serialized = serializeError(finalError)
       if (!runCreated) {
+        throw finalError
+      }
+      if (finalError instanceof ExternalWaitPendingError) {
+        await definition.state.finishRun(runId, { status: 'waiting' })
+        // A durable wait is a normal suspension: do not log it as a workflow
+        // failure, emit run.finished, or make the durable run terminal. The
+        // finally block releases the lease so a signal can trigger a later run.
         throw finalError
       }
       if (durableBinding && finalError instanceof OperationCancelledError) {
@@ -1465,6 +1502,66 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       runSignal.cleanup()
       state.busy = false
+    }
+  }
+
+  /** Pass-through step used when a workflow runs without durable execution. */
+  function createExternalWaitFacade(args: {
+    adapter: DurableExternalWaitAdapter | undefined
+    durable: DurableWorkflowBinding | undefined
+    telemetry: TelemetryShim
+    harnessName: string
+    sessionId: string
+    runId: string
+    workflowId: string
+    emit: (event: RunEvent) => Promise<void>
+  }): { wait(request: ExternalWaitRequest): Promise<ExternalWaitSnapshot> } {
+    return {
+      wait: async (request) => {
+        if (!args.durable) {
+          throw new ExternalWaitError('External waits require opts.durable and a durable runtime.', 'durable_required')
+        }
+        if (!args.adapter) {
+          throw new ExternalWaitError('No external wait adapter is configured. Add .externalWait(adapter) to the Harness builder.', 'adapter_unavailable')
+        }
+        return args.telemetry.span('harness.external_wait.wait', {
+          'harness.name': args.harnessName,
+          'harness.session.id': args.sessionId,
+          'harness.run.id': args.runId,
+          'harness.workflow.id': args.workflowId,
+          'harness.external_wait.kind': request.kind,
+          'harness.external_wait.schema_version': request.schemaVersion,
+          'harness.external_wait.definition_version': request.definitionVersion,
+          'harness.external_wait.deadline_expired': Date.parse(request.deadline) <= Date.now()
+        }, async () => {
+          const registration = await args.adapter!.register(request)
+          if (registration.created) {
+            await args.emit({
+              type: 'external_wait.requested', runId: args.runId, at: now(), waitId: request.waitId,
+              kind: request.kind, schemaVersion: request.schemaVersion,
+              definitionVersion: request.definitionVersion, deadline: request.deadline
+            })
+          }
+          const snapshot = registration.snapshot.status === 'waiting'
+            ? (await args.adapter!.get(request.waitId) ?? registration.snapshot)
+            : registration.snapshot
+          if (snapshot.status === 'waiting') {
+            await args.emit({ type: 'external_wait.waiting', runId: args.runId, at: now(), waitId: snapshot.waitId, kind: snapshot.kind, deadline: snapshot.deadline })
+            throw new ExternalWaitPendingError(snapshot)
+          }
+          await args.emit({
+            type: 'external_wait.resolved', runId: args.runId, at: now(), waitId: snapshot.waitId,
+            kind: snapshot.kind, outcome: snapshot.status, deadline: snapshot.deadline
+          })
+          args.telemetry.recordCounter('harness.external_wait.resolved', 1, {
+            'harness.name': args.harnessName,
+            'harness.workflow.id': args.workflowId,
+            'harness.external_wait.kind': snapshot.kind,
+            'harness.external_wait.outcome': snapshot.status
+          })
+          return snapshot
+        })
+      }
     }
   }
 
@@ -1949,7 +2046,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const error = record.error ? normalizeSerializedRunError(record.error) : undefined
     const snapshot: ChildTaskStatus = Object.freeze({
       descriptor,
-      status: record.status,
+      status: record.status as ChildTaskStatus['status'],
       ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
       ...(error ? { error } : {})
     })
@@ -1996,7 +2093,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const error = record.error ? normalizeSerializedRunError(record.error) : undefined
       return Object.freeze({
         descriptor,
-        status: record.status,
+        status: record.status as ChildTaskStatus['status'],
         ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
         ...(error ? { error } : {})
       })
@@ -2417,7 +2514,8 @@ function configureHarnessAdapters(
   tools: ToolsConfig,
   runtime: DurableRuntimeAdapter | undefined,
   workspaceStore: DurableWorkspaceStore | undefined,
-  checkpoints: ContextCheckpointStore | undefined
+  checkpoints: ContextCheckpointStore | undefined,
+  externalWait: DurableExternalWaitAdapter | undefined
 ): void {
   const seen = new Set<unknown>()
   for (const alias of Object.values(models)) {
@@ -2429,6 +2527,7 @@ function configureHarnessAdapters(
   configureOne(runtime, context, seen)
   configureOne(workspaceStore, context, seen)
   configureOne(checkpoints, context, seen)
+  configureOne(externalWait, context, seen)
   for (const tool of Object.values(tools)) {
     configureOne(tool, context, seen)
   }
@@ -2663,6 +2762,12 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         ...(event.approverId ? { approverId: event.approverId } : {}),
         ...(event.reason ? { reason: event.reason } : {})
       } as unknown as JsonValue
+    case 'external_wait.requested':
+      return { waitId: event.waitId, kind: event.kind, schemaVersion: event.schemaVersion, definitionVersion: event.definitionVersion, deadline: event.deadline }
+    case 'external_wait.waiting':
+      return { waitId: event.waitId, kind: event.kind, deadline: event.deadline }
+    case 'external_wait.resolved':
+      return { waitId: event.waitId, kind: event.kind, outcome: event.outcome, deadline: event.deadline }
     case 'model.object.partial':
       return { ...modelStreamEventMeta(event), partial: '[redacted]' }
     case 'model.object':

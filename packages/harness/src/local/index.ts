@@ -3,6 +3,7 @@ import type { StateStore } from '../ports/state.js'
 import type { DurableRuntime } from '../runtime/durable.js'
 import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
+import type { DurableExternalWaitAdapter } from '../ports/external-wait.js'
 import { createLocalWorkspaceCoordinator, localDirectoryWorkspaceStore } from './local-workspace.js'
 import { localDirectorySandbox, type LocalDurableSandbox, type LocalHostExecPolicy } from './local-sandbox.js'
 import { SqliteHarnessStorage, type SqliteDurableRuntimeOptions, type SqliteContextCheckpointStoreOptions, type SqliteStateStoreOptions, sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore } from './sqlite-storage.js'
@@ -42,6 +43,8 @@ export interface LocalDurableExecution {
   sandbox: LocalDurableSandbox
   workspaceStore: DurableWorkspaceStore
   checkpoints: ContextCheckpointStore
+  /** Durable, SQLite-backed opaque wait/signal persistence. */
+  externalWait: DurableExternalWaitAdapter
   close(): Promise<void>
 }
 
@@ -57,6 +60,7 @@ export function localDurableExecution(options: LocalDurableExecutionOptions): Lo
     state: storage,
     runtime: storage,
     checkpoints: storage,
+    externalWait: storage,
     sandbox: localDirectorySandbox({ root, exec: options.exec ?? false, coordinator }),
     workspaceStore: localDirectoryWorkspaceStore({ root, ...(options.policy ? { policy: options.policy } : {}), coordinator }),
     close: () => storage.close()

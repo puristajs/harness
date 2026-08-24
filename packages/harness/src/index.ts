@@ -152,6 +152,19 @@ export { sandboxMemory } from './memory/sandbox/index.js'
 // Feedback port
 export type { FeedbackRecord, FeedbackTarget } from './ports/feedback.js'
 
+// Durable external wait port
+export { ExternalWaitError, ExternalWaitPendingError, InMemoryExternalWaitAdapter, inMemoryExternalWait, validateExternalWaitRequest } from './ports/external-wait.js'
+export type {
+  DurableExternalWaitAdapter,
+  ExternalWaitOutcome,
+  ExternalWaitRequest,
+  ExternalWaitSnapshot,
+  ExternalWaitSignal,
+  ExternalWaitSignalResult,
+  ExternalWaitStatus,
+  ExternalWaitRegistration
+} from './ports/external-wait.js'
+
 // Durable workspace port
 export type {
   DurableReplayCheckpoint,

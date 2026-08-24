@@ -45,6 +45,7 @@ import { validateDurableWorkspaceStore } from '../ports/workspace.js'
 import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import type { ContextCheckpoint, ContextCheckpointQuery } from '../ports/context-checkpoints.js'
 import { validateContextCheckpointStore } from '../ports/context-checkpoints.js'
+import type { DurableExternalWaitAdapter, ExternalWaitRequest, ExternalWaitSnapshot } from '../ports/external-wait.js'
 import { InMemoryStateStore } from '../state/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -864,6 +865,14 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
   metadata: Readonly<Record<string, JsonValue>>
   memory: MemoryFacade
   checkpoints: ContextCheckpoints
+  /**
+   * Persists an application-owned external decision checkpoint and suspends a
+   * durable workflow until a terminal signal is delivered. It never stores
+   * review content or authenticates a reviewer; those remain application code.
+   */
+  externalWait: {
+    wait(request: ExternalWaitRequest): Promise<ExternalWaitSnapshot>
+  }
   metrics: Metrics
   /**
    * Runs `fn` as a durable step. Under a durable invocation the output is
@@ -1279,6 +1288,9 @@ export interface RunSummary {
 export type RunEvent =
   | { type: 'run.started'; runId: string; at: string }
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
+  | { type: 'external_wait.requested'; runId: string; at: string; waitId: string; kind: string; schemaVersion: string; definitionVersion: string; deadline: string }
+  | { type: 'external_wait.waiting'; runId: string; at: string; waitId: string; kind: string; deadline: string }
+  | { type: 'external_wait.resolved'; runId: string; at: string; waitId: string; kind: string; outcome: 'approved' | 'rejected' | 'expired' | 'cancelled'; deadline: string }
   | { type: 'fanout.started'; runId: string; batchId: string; at: string; count: number; concurrency: number }
   | { type: 'fanout.finished'; runId: string; batchId: string; at: string; count: number; status: 'succeeded' | 'failed' | 'cancelled' }
   | { type: 'child_task.started'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; modelAlias: string; contextPolicy: ChildTaskContextPolicy; mode: ChildTaskMode }
@@ -1313,6 +1325,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
   workspaceStore(store: DurableWorkspaceStore): HarnessBuilder<S>
   checkpoints(store: ContextCheckpointStore): HarnessBuilder<S>
+  externalWait(adapter: DurableExternalWaitAdapter): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
@@ -1374,6 +1387,7 @@ type BuilderStateInternal = {
   runtime?: DurableRuntimeAdapter
   workspaceStore?: DurableWorkspaceStore
   checkpoints?: ContextCheckpointStore
+  externalWait?: DurableExternalWaitAdapter
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
@@ -1488,6 +1502,13 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
     validateContextCheckpointStore(checkpoints)
     return this.clone({ checkpoints })
+  }
+
+  public externalWait(externalWait: DurableExternalWaitAdapter): HarnessBuilder<S> {
+    if (this.configured.externalWait) {
+      throw new HarnessConfigError('External wait adapter is already configured.', { reason: 'duplicate_adapter', path: 'externalWait' })
+    }
+    return this.clone({ externalWait })
   }
 
   public requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S> {
@@ -1622,6 +1643,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
       ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
       ...(this.configured.checkpoints ? { checkpoints: this.configured.checkpoints } : {}),
+      ...(this.configured.externalWait ? { externalWait: this.configured.externalWait } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -1961,6 +1983,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         metadata: {
           packageName: this.configured.checkpoints.info.packageName
         }
+      })
+    }
+
+    if (this.configured.externalWait) {
+      adapters.push({
+        kind: 'external_wait',
+        id: this.configured.externalWait.id ?? 'external_wait',
+        capabilities: uniqueCapabilities(this.configured.externalWait.capabilities)
       })
     }
 

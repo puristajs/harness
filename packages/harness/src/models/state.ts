@@ -31,11 +31,12 @@ export interface Message {
 
 /** Run lifecycle status values.
  * - `running`: active run in progress
+ * - `waiting`: durable run is safely suspended for an external signal
  * - `succeeded`: run completed successfully
  * - `failed`: run completed with error
  * - `cancelled`: run cancelled before completion
  */
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunStatus = 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
 
 /** Serialized error payload stored on run records. */
 export interface SerializedError {

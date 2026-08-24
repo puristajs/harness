@@ -33,6 +33,10 @@ export type AdapterCapability =
   | 'runtime.checkpoint_retention'
   /** Runtime checkpoints, leases, and terminal state survive process exit. */
   | 'runtime.persistent'
+  /** External waits persist safe request state beyond the active process. */
+  | 'external_wait.durable'
+  /** External waits accept idempotent terminal signals. */
+  | 'external_wait.signal'
   /** Workspace store implements durable lifecycle and opaque checkpoint refs. */
   | 'workspace_store.durable'
   /** Workspace store persists state beyond process exit. */
@@ -95,7 +99,7 @@ export interface AdapterCapabilities {
 
 /** Adapter descriptor surfaced through `harness.inspect()`. */
 export interface AdapterInspection {
-  readonly kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'feedback' | 'model' | 'memory'
+  readonly kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'external_wait' | 'feedback' | 'model' | 'memory'
   readonly id: string
   readonly capabilities: readonly AdapterCapability[]
   readonly metadata?: Record<string, unknown>

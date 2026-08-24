@@ -12,6 +12,7 @@ import {
   localDirectorySandbox,
   localDirectoryWorkspaceStore,
   localDurableExecution,
+  SqliteHarnessStorage,
   sqliteDurableRuntime
 } from '../src/index.js'
 import type { JsonValue } from '../src/index.js'
@@ -48,6 +49,20 @@ function configureForTelemetry(adapter: unknown, telemetry: RecordingTelemetry, 
 }
 
 describe('local durable execution', () => {
+  it('persists external waits and deterministic signal delivery across adapter rebuilds', async () => {
+    const root = await tempRoot()
+    const file = join(root, 'runtime.sqlite')
+    const first = new SqliteHarnessStorage({ file })
+    await first.register({ waitId: 'review-a', kind: 'human_review', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z' })
+    await first.close()
+
+    const reopened = new SqliteHarnessStorage({ file })
+    expect((await reopened.get('review-a'))?.status).toBe('waiting')
+    expect((await reopened.signal({ waitId: 'review-a', eventId: 'event-a', outcome: 'approved' })).kind).toBe('applied')
+    expect((await reopened.signal({ waitId: 'review-a', eventId: 'event-a', outcome: 'approved' })).kind).toBe('duplicate')
+    await reopened.close()
+  })
+
   it('persists durable runtime checkpoints across adapter rebuilds', async () => {
     const root = await tempRoot()
     const file = join(root, 'runtime.sqlite')

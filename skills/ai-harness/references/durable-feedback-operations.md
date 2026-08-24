@@ -28,6 +28,8 @@ type AdapterCapability =
   | 'runtime.resume_from_checkpoint'
   | 'runtime.workspace_checkpoint'
   | 'runtime.persistent'
+  | 'external_wait.durable'
+  | 'external_wait.signal'
   | 'workspace_store.durable'       // lifecycle contract
   | 'workspace_store.persistent'    // survives process exit
   | 'workspace_store.checkpoint'
@@ -171,6 +173,19 @@ Rules:
   application `workflowVersion` in input or metadata, keep step outputs
   backward-compatible, and chain a new durable run when a major migration needs
   a new code path.
+
+## Durable External Waits
+Use `.externalWait(adapter)` only with durable workflow invocations. A workflow
+calls `ctx.externalWait.wait({ waitId, kind, schemaVersion, definitionVersion,
+deadline })`; a pending result throws `ExternalWaitPendingError`, releases the
+lease, and marks the run `waiting`. Deliver a terminal, idempotent
+`adapter.signal({ waitId, eventId, outcome })`, then invoke the same durable
+run id. Completed `ctx.step` bodies replay without rerunning side effects.
+
+This is not a review system: the application owns review task persistence,
+reviewer authentication/authorization, CAS decision, action-digest binding,
+outbox, and final idempotent command. Never put prompt text, proposed actions,
+comments, credentials, or reviewer IDs into the wait request or metric labels.
 
 ## Feedback
 Feedback is optional and application-owned. Core exports shared types and test helpers, not a production feedback store.

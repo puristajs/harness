@@ -8,6 +8,7 @@ real requirement appears.
 2. [Usage](./usage.md) — sessions, direct agents, and streams.
 3. [Tools and skills](./tools-and-skills.md) — typed capabilities and mounted methods.
 4. [Workflows](./workflows.md) — orchestration, fan-out, and durable steps.
+5. [Human review gates](./human-review-gates.md) — restart-safe external decisions without a built-in reviewer system.
 5. [Guardrails](./guardrails.md) — content, tool, retrieval, and sensitive-data controls.
 6. [Ecosystem and packages](./ecosystem-packages.md) — first-party packages, optional peers, and execution boundaries.
 7. [Testing](./testing.md) and [evaluations](./evaluating-prompts.md) — deterministic evidence.

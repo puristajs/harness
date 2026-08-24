@@ -81,6 +81,13 @@ export function localDirectorySandbox(options: LocalDirectorySandboxOptions): Sa
 export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> }
 export class SqliteHarnessStorage    // shared SQLite backend behind the sqlite* factories
 
+// Durable external wait (generic checkpoint-and-signal primitive)
+export class InMemoryExternalWaitAdapter implements DurableExternalWaitAdapter {}
+export function inMemoryExternalWait(options?: { now?: () => Date }): InMemoryExternalWaitAdapter
+export function validateExternalWaitRequest(request: ExternalWaitRequest): void
+export class ExternalWaitPendingError extends HarnessError {}
+export class ExternalWaitError extends HarnessError {}
+
 // Durable runtime (in-memory reference + durable workflow context)
 export function inMemoryDurableRuntime(options?: InMemoryDurableRuntimeOptions): DurableRuntime
 export function createDurableWorkflowContext(options: DurableWorkflowContextOptions): DurableWorkflowContext

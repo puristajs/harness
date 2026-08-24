@@ -6,6 +6,7 @@ import type { JsonValue } from '../models/json.js'
 import type { Message, PersistedRunEvent, RunRecord, RunStatus, SerializedError, SessionRecord } from '../models/state.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
 import type { ContextCheckpoint, ContextCheckpointQuery, ContextCheckpointRef, ContextCheckpointStore, ContextCheckpointStoreInfo } from '../ports/context-checkpoints.js'
+import { ExternalWaitError, validateExternalWaitRequest, type DurableExternalWaitAdapter, type ExternalWaitOutcome, type ExternalWaitRegistration, type ExternalWaitRequest, type ExternalWaitSignal, type ExternalWaitSignalResult, type ExternalWaitSnapshot } from '../ports/external-wait.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { FinishRunPatch, StateStore } from '../ports/state.js'
@@ -147,7 +148,7 @@ function requiredNumber(row: SqlRow, key: string, op: StateOp): number {
 }
 
 /** SQLite-backed local storage implementing StateStore, DurableRuntime, and ContextCheckpointStore. */
-export class SqliteHarnessStorage implements StateStore, DurableRuntime, ContextCheckpointStore {
+export class SqliteHarnessStorage implements StateStore, DurableRuntime, ContextCheckpointStore, DurableExternalWaitAdapter {
   public readonly capabilities = [
     'runtime.checkpoint',
     'runtime.retry',
@@ -155,6 +156,8 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
     'runtime.resume_from_checkpoint',
     'runtime.workspace_checkpoint',
     'runtime.persistent',
+    'external_wait.durable',
+    'external_wait.signal',
     'context_checkpoint.write',
     'context_checkpoint.read',
     'context_checkpoint.list',
@@ -445,6 +448,35 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
     return lock.lock(fn)
   }
 
+  public async register(request: ExternalWaitRequest): Promise<ExternalWaitRegistration> {
+    validateExternalWaitRequest(request)
+    return this.transaction(() => {
+      const existing = this.expireExternalWait(this.loadExternalWait(request.waitId))
+      if (existing) {
+        if (existing.kind !== request.kind || existing.schemaVersion !== request.schemaVersion || existing.definitionVersion !== request.definitionVersion || existing.deadline !== request.deadline) {
+          throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
+        }
+        return { created: false, snapshot: existing }
+      }
+      const snapshot: ExternalWaitSnapshot = { ...request, status: 'waiting', createdAt: this.nowIso() }
+      this.stmt('insert into harness_external_waits(wait_id, kind, schema_version, definition_version, deadline, status, created_at) values(?, ?, ?, ?, ?, ?, ?)')
+        .run(snapshot.waitId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
+      return { created: true, snapshot }
+    })
+  }
+
+  public async get(waitId: string): Promise<ExternalWaitSnapshot | undefined> {
+    return this.transaction(() => this.expireExternalWait(this.loadExternalWait(waitId)))
+  }
+
+  public async signal(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
+    return this.resolveExternalWait(signal.waitId, signal.eventId, signal.outcome, signal.observedAt)
+  }
+
+  public async cancel(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult> {
+    return this.resolveExternalWait(waitId, eventId, 'cancelled', observedAt)
+  }
+
   public async write(checkpoint: ContextCheckpoint, opts: { signal?: AbortSignal } = {}): Promise<void> {
     return this.contextSpan('write', {
       'harness.context_checkpoint.kind': checkpoint.kind,
@@ -545,6 +577,9 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
       create index if not exists idx_harness_durable_checkpoints_order on harness_durable_checkpoints(run_id, sequence);
       create table if not exists harness_durable_leases(run_id text primary key, session_id text not null, worker_id text not null, lease_id text not null, expires_at text not null);
       create index if not exists idx_harness_durable_leases_session on harness_durable_leases(session_id);
+      create table if not exists harness_external_waits(wait_id text primary key, kind text not null, schema_version text not null, definition_version text not null, deadline text not null, status text not null, created_at text not null, resolved_at text, event_id text);
+      create index if not exists idx_harness_external_waits_deadline on harness_external_waits(status, deadline);
+      create table if not exists harness_external_wait_signals(wait_id text not null, event_id text not null, primary key(wait_id, event_id));
       create table if not exists harness_context_checkpoints(run_id text not null, session_id text not null, workflow_id text, agent_id text, sequence integer not null, kind text not null, payload_json text not null, payload_size_bytes integer not null, created_at text not null, metadata_json text, primary key(run_id, session_id, sequence, kind));
     `)
   }
@@ -589,6 +624,46 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
   private loadDurableRun(runId: string): { status: RunStatus; attempt: number } | undefined {
     const row = this.stmt('select status, attempt from harness_durable_runs where run_id = ?').get(runId)
     return row ? { status: requiredString(row, 'status', 'getRun') as RunStatus, attempt: requiredNumber(row, 'attempt', 'getRun') } : undefined
+  }
+
+  private loadExternalWait(waitId: string): ExternalWaitSnapshot | undefined {
+    const row = this.stmt('select * from harness_external_waits where wait_id = ?').get(waitId)
+    if (!row) return undefined
+    const status = requiredString(row, 'status', 'getRun') as ExternalWaitSnapshot['status']
+    return {
+      waitId: requiredString(row, 'wait_id', 'getRun'),
+      kind: requiredString(row, 'kind', 'getRun'),
+      schemaVersion: requiredString(row, 'schema_version', 'getRun'),
+      definitionVersion: requiredString(row, 'definition_version', 'getRun'),
+      deadline: requiredString(row, 'deadline', 'getRun'),
+      status,
+      createdAt: requiredString(row, 'created_at', 'getRun'),
+      ...optional('resolvedAt', row['resolved_at'] as string | undefined),
+      ...optional('eventId', row['event_id'] as string | undefined)
+    }
+  }
+
+  private expireExternalWait(snapshot: ExternalWaitSnapshot | undefined): ExternalWaitSnapshot | undefined {
+    if (!snapshot || snapshot.status !== 'waiting' || Date.parse(snapshot.deadline) > this.clock()) return snapshot
+    const expired: ExternalWaitSnapshot = { ...snapshot, status: 'expired', resolvedAt: this.nowIso() }
+    this.stmt('update harness_external_waits set status = ?, resolved_at = ? where wait_id = ?').run(expired.status, expired.resolvedAt!, expired.waitId)
+    return expired
+  }
+
+  private async resolveExternalWait(waitId: string, eventId: string, outcome: ExternalWaitOutcome, observedAt?: string): Promise<ExternalWaitSignalResult> {
+    if (!/^[A-Za-z0-9_.:@/-]{1,200}$/.test(eventId)) throw new ExternalWaitError('External wait eventId must be a bounded identifier.', 'invalid_request')
+    return this.transaction(() => {
+      const snapshot = this.expireExternalWait(this.loadExternalWait(waitId))
+      if (!snapshot) return { kind: 'not_found' }
+      const duplicate = this.stmt('select event_id from harness_external_wait_signals where wait_id = ? and event_id = ?').get(waitId, eventId)
+      if (duplicate) return { kind: 'duplicate', snapshot }
+      this.stmt('insert into harness_external_wait_signals(wait_id, event_id) values(?, ?)').run(waitId, eventId)
+      if (snapshot.status !== 'waiting') return { kind: 'already_terminal', snapshot }
+      const resolved: ExternalWaitSnapshot = { ...snapshot, status: outcome, resolvedAt: observedAt ?? this.nowIso(), eventId }
+      this.stmt('update harness_external_waits set status = ?, resolved_at = ?, event_id = ? where wait_id = ?')
+        .run(resolved.status, resolved.resolvedAt!, eventId, waitId)
+      return { kind: 'applied', snapshot: resolved }
+    })
   }
 
   private assertLeaseAvailable(runId: string, sessionId: string, workerId: string): void {

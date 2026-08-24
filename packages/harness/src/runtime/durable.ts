@@ -4,7 +4,7 @@ import type { RunStatus, SerializedError } from '../models/state.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 
 /** Non-terminal run status used while durable work can still be resumed. */
-export type DurableActiveRunStatus = 'running'
+export type DurableActiveRunStatus = 'running' | 'waiting'
 
 /** Terminal run statuses that must never be resumed by a durable runtime. */
 export type DurableTerminalRunStatus = Exclude<RunStatus, DurableActiveRunStatus>

@@ -113,8 +113,11 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
   [29-agent-plugins](./29-agent-plugins.md).
 - Optional typed guardrails through `@purista/harness-guardrails`: a strict
   NeMo-shaped YAML subset, application-owned actions, generic default-loop
-  interception, and explicit retrieval filtering. See
-  [30-guardrails](./30-guardrails.md).
+  interception, explicit retrieval filtering, and a provider-neutral
+  sensitive-data detector port. Optional Presidio sidecar and native privacy
+  packages remain composition-root-selected addons. See
+  [30-guardrails](./30-guardrails.md) and
+  [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
 
 ## Non-goals
 
@@ -132,7 +135,9 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
   prompt-version store, or experiment database in this repository.
 - No Python/Colang runtime, implicit safety provider, vector store, or guardrail
-  server. The optional guardrails addon is in-process only.
+  server. The optional guardrails addon is in-process only; its separately
+  configured Presidio adapter may call an application-owned internal sidecar as
+  specified in [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
 
 ## Glossary
 

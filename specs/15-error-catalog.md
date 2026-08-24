@@ -72,7 +72,7 @@ taxonomy and are never emitted by normal harness execution.
 
 ### Addon-owned guardrail errors
 - `GUARDRAILS_CONFIG_ERROR`: non-retriable `config` error for an unsupported NeMo-shaped configuration, missing action, or invalid action timeout.
-- `GUARDRAIL_EVALUATION_ERROR`: non-retriable `interceptor` error for a guardrail action failure, timeout, malformed outcome, or unsupported transform. Meta is `rail_id`, `phase`, and `reason: 'action_failed'|'action_timeout'|'invalid_outcome'|'unsupported_transform'`.
+- `GUARDRAIL_EVALUATION_ERROR`: non-retriable `interceptor` error for a guardrail action failure, timeout, malformed outcome, unsupported transform, or a sensitive-data detector/codec fault. Meta is `rail_id`, `phase`, and `reason: 'action_failed'|'action_timeout'|'invalid_outcome'|'unsupported_transform'|'sensitive_data_detector_failed'|'sensitive_data_invalid_result'|'sensitive_data_codec_failed'`. Meta never contains text, offsets, endpoint/transport details, headers, request/response bodies, or credentials.
 - `GUARDRAIL_BLOCKED`: non-retriable `interceptor` error returned only by standalone retrieval evaluation. Meta is `rail_id`, `phase:'retrieval'`, and optional validated `reason_code`; attached default-loop rails still terminate with the generic `AgentInterceptorError` contract.
 
 ### `SandboxError`

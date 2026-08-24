@@ -103,4 +103,4 @@ Root workspace `lint`, `build`, `test`, `test:coverage`, and `ci` discover every
 
 ## No-invention gate
 
-Stop and write a new approved spec before adding Colang, Python action loading, provider construction, secrets, server/network behavior, vector storage, parallel transform execution, persistent guardrail state, custom-handler interception, extra telemetry content, or a Core dependency.
+Stop and write a new approved spec before adding Colang, Python action loading, provider construction, secrets, server/network behavior, vector storage, parallel transform execution, persistent guardrail state, custom-handler interception, extra telemetry content, or a Core dependency. The sole approved exception is the provider-neutral sensitive-data port and its optional Presidio/native adapters specified in [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md).

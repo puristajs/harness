@@ -2,7 +2,7 @@
 
 This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
 
-The folder contains 30 files (this README plus 29 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains 31 files (this README plus 30 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Reading order
 
@@ -23,6 +23,7 @@ For an implementation agent starting cold, read in this order:
 13. [12-streaming.md](./12-streaming.md) — `RunEvent`, bounded live streaming, and privacy-safe persistence.
 14. [13-public-api.md](./13-public-api.md) — authoritative export list.
 15. [30-guardrails.md](./30-guardrails.md) — optional typed NeMo-shaped guardrails addon and generic interception contract.
+16. [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md) — provider-neutral sensitive-data port, Presidio sidecar, native Node/Bun privacy subset, and observability.
 15. [14-otel-conventions.md](./14-otel-conventions.md) — span/metric/attribute names.
 16. [15-error-catalog.md](./15-error-catalog.md) — every error class.
 17. [16-testing.md](./16-testing.md) — vitest, contract suites, gates.
@@ -59,6 +60,7 @@ For an implementation agent starting cold, read in this order:
 | [12-streaming.md](./12-streaming.md) | `RunEvent` union, ordering guarantees, in-process buffered queue. |
 | [13-public-api.md](./13-public-api.md) | Authoritative export list; Zod-to-JSON-Schema conversion rules. |
 | [30-guardrails.md](./30-guardrails.md) | Optional NeMo-shaped config subset, rail phases, failure/privacy rules, and release evidence. |
+| [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md) | Sensitive-data policy, detector port, optional Presidio/native packages, Node/Bun support, privacy and release evidence. |
 | [14-otel-conventions.md](./14-otel-conventions.md) | Spans, metrics, attribute keys, log fields. |
 | [15-error-catalog.md](./15-error-catalog.md) | Every error class, code, category, retriable, meta. |
 | [16-testing.md](./16-testing.md) | Vitest, contract suites, fakes, coverage gates. |

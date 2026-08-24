@@ -6,7 +6,9 @@
 - `@purista/harness-openai` — OpenAI provider.
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
-- `@purista/harness-guardrails` — optional NeMo-shaped typed input/output/tool/retrieval rails.
+- `@purista/harness-guardrails` — optional NeMo-shaped typed input/output/tool/retrieval rails and provider-neutral sensitive-data detector port.
+- `@purista/harness-guardrails-presidio` — optional original Presidio Analyzer REST adapter.
+- `@purista/harness-guardrails-native-privacy` — optional Rust/Node-API local recognizer subset for Node.js and Bun.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 - `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.

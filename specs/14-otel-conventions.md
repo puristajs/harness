@@ -121,6 +121,8 @@ Every evaluation records `harness.guardrail.evaluations` (counter) and `harness.
 
 `modelCheckRail` must call a configured Harness model handle. Its model call is a nested ordinary `LLM` span and retains the standard model protocol: `harness.model.alias`, provider/model attributes, `gen_ai.usage.*`, `llm.token_count.*`, finish reason, `gen_ai.client.operation.duration`, and `gen_ai.client.token.usage` when usage is reported. The guardrail parent never copies or estimates token counts; trace hierarchy is the authoritative cost-attribution relationship.
 
+Sensitive-data guardrails are specified by [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md). Each detector inspection is a child `harness.sensitive_data.inspect` `GUARDRAIL` span and records only the bounded detector id, `local|cloud` execution mode, `detect|mask` operation, `allow|block|transform|error` outcome, finding count, sorted configured category identifiers, and `error.type` on failure. It emits `harness.sensitive_data.inspections` and `harness.sensitive_data.duration` with the same content-free dimensions. It never emits text, entity text, offsets, endpoint/request metadata, model identity, `gen_ai.*`, `llm.*`, token usage or cost. A detector is not a model call; a nested standard LLM span is the only cost record for a model-backed rail action.
+
 ## GenAI operations
 
 The harness uses only these `gen_ai.operation.name` values:

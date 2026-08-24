@@ -1,95 +1,100 @@
 # Security Model
 
-The harness is designed for self-hosted systems where the application team owns
-deployment, adapters, data retention, and authorization.
+The Harness is designed for self-hosted applications. The application team owns
+deployment, identities, authorization, data retention, and adapter selection.
+The Harness supplies typed composition, validation, lifecycle management and
+content-safe diagnostics; a sandbox adapter supplies the session filesystem and
+any execution capability it truthfully implements.
 
-## Trust Boundaries
+## Security Boundary
 
 ```mermaid
 flowchart LR
-  User["User / caller"] --> App["Application authz boundary"]
-  App --> Harness["Harness runtime"]
-  Harness --> Provider["External model provider"]
-  Harness --> Sandbox["Sandbox"]
-  Harness --> State["State store"]
-  Harness --> Tools["Tools and MCP servers"]
+  Caller[Caller] --> App[Application\nauthn · authz · secret delivery]
+  App --> Harness[Harness\nschemas · tools · lifecycle]
+  Harness --> Provider[Model provider]
+  Harness --> Sandbox[Sandbox adapter\nfiles · optional exec/spawn]
+  Sandbox --> Stdio[Stdio MCP process]
+  Harness --> Http[Remote HTTP MCP]
+  App --> Domain[Domain service\nside effects]
 ```
 
-| Boundary | Treat As | Required Control |
-|---|---|---|
-| User input | Untrusted | Validate with schemas and application authz. |
-| Model output | Untrusted | Validate output schemas before use. |
-| Tool input from model | Untrusted | Validate tool schemas and permission gates. |
-| External providers | External dependency | Timeouts, error mapping, secret handling. |
-| Sandbox execution | Privileged | Least privilege, explicit executor choice. |
-| State/history | Sensitive data | Retention, tenant scoping, access control. |
+User input, model output, tool input, tool output, retrieved content, and
+external provider/MCP responses are untrusted. The application authenticates
+the caller, scopes data and tenancy, chooses credentials, and makes domain
+writes. A schema validates shape; it does not grant authorization.
 
-## Secrets
+## Sandbox Capabilities And Limits
 
-- Use environment variables or secret managers.
-- Do not put secrets in skill files, wiki pages, prompts, test fixtures, or logs.
-- Do not enable telemetry content capture in shared environments.
-- Redact MCP payloads and provider request bodies by default.
+| Adapter | Files | Execution | What it guarantees | What it does **not** guarantee |
+| --- | --- | --- | --- | --- |
+| `inMemorySandbox()` | Per-session memory filesystem | No executor or `spawn` | No command execution through the sandbox | Host/process/network isolation, persistence, authorization |
+| `bashSandbox()` | Per-session memory filesystem | `exec` through optional `just-bash`; no `spawn` | An in-process execution helper | Container/VM/tenant isolation or stdio MCP support |
+| `localDirectorySandbox()` / local durable bundle | Host-directory workspace; files-only by default | Host child process when `exec` is configured | Traversal and symlink-escape checks; tokenized command execution | Hardened isolation for untrusted commands or trusted plugin processes |
+| Custom container, microVM, or remote adapter | Adapter-defined | Adapter-defined, including `spawn` if declared | Only the controls the adapter/platform enforces | Controls that are merely documented but not enforced/tested |
 
-## Sandbox And Tool Risk
+Use `inMemorySandbox()` for file-only agents. Treat `bashSandbox()` and local
+host execution as trusted-development or carefully controlled worker choices,
+not a production isolation boundary. A production command/stdio adapter must
+enforce and test the chosen filesystem mounts, unprivileged process identity,
+network egress policy, CPU/memory/PID/disk limits, image provenance,
+per-run/tenant workspace lifecycle, cancellation, and cleanup.
+
+`mcp_stdio` requires a spawn-capable sandbox. `mcp_http` does not start a local
+process, but the remote MCP server must independently authenticate and
+authorize each request. Trusted Agent Plugin stdio servers additionally need a
+sandbox that can enforce an immutable `mountReadOnly(...)` package mount;
+neither the in-memory nor local host-directory built-in supplies that guarantee.
+
+## Threats And Ownership
+
+| Threat | Harness contribution | Required application/platform control |
+| --- | --- | --- |
+| Prompt injection and unsafe tool request | Explicit tool lists, schemas, permissions and governance hooks | Domain authorization, approval workflow, and an allowlist of model-reachable capabilities |
+| Host/other-tenant file exposure | Per-session sandbox API; local path-jail checks | Authorize/stage data, isolate workspace roots, retention and secure cleanup |
+| Arbitrary execution, egress, resource exhaustion | Files-only default, cancellation and timeout propagation | Isolating runtime, default-deny egress, workload limits, unprivileged identity and monitored quotas |
+| Secrets or sensitive diagnostics | Content-free core telemetry and normalized errors | Scoped secret injection, redacting exporter/logger, production content-capture policy |
+| MCP overreach | Schema validation and normalized transport errors | Remote MCP authentication/authorization; reviewed, pinned stdio package/image and process isolation |
+
+Session IDs and schemas are useful controls, but neither establishes tenant
+isolation nor authorizes an action on its own.
+
+## Tool And Governance Risk
 
 Built-in `bash`, `write`, and `edit` can mutate state or execute commands.
 
-Recommended defaults:
+- Disable built-ins with `builtinTools: false` unless needed.
+- A skill-backed agent normally needs only `builtinTools: ['read']`.
+- Bind only explicit TypeScript/MCP tools to an agent; validate input and output.
+- Use permission policies and `.governance(...)` for tool decisions that depend
+  on typed domain facts.
+- Keep business mutations behind application authorization, an idempotent
+  transaction boundary, and an application-owned durable review task where
+  human review is required.
 
-- disable built-ins with `builtinTools: false` unless needed;
-- for skill-backed agents, enable `builtinTools: ['read']` so skills can be
-  loaded without enabling mutation or command execution;
-- allow only explicit custom tools;
-- for workflows, use `delegation.agents` and model alias allowlists when only
-  specific child agents or review models should be reachable;
-- use `inMemorySandbox()` for file-only use cases;
-- use executor-capable sandbox only for trusted workloads that require command
-  execution or `mcp_stdio`;
-- add permission hooks for mutating tools.
+Harness governance can make a synchronous tool decision. It is not a durable,
+restart-safe human-review runtime; the application owns reviewer identity, UI,
+decision storage, expiry, stale-decision rejection, and audit records.
 
-Use `.governance(...)` when tool safety depends on typed domain facts rather
-than only built-in tool permissions. Permissions answer "may this agent use this
-tool family"; exposure governance answers "should this model step see this
-tool"; execution governance answers "may this specific tool call proceed for
-this business case." Governance can run in `mode: 'shadow'` during rollout,
-hide tools before the model call, require human approval before side effects,
-or deny calls before the tool handler runs. Persisted governance events store
-policy ids, decision ids, effects, risk labels, and approval decisions, not raw
-tool input.
+## Secrets And Telemetry Privacy
 
-## MCP Security
+- Use a secret manager or deployment-managed environment configuration.
+- Do not put secrets in prompts, skills, mounted files, fixtures, tool results,
+  or logs.
+- Core spans and persisted events avoid prompt, model-output, file, memory and
+  tool-payload content. Keep `contentCaptureMode: 'NO_CONTENT'` in production.
+- Treat log/trace exporters, collectors, retention and access control as part
+  of the security boundary. An adapter must not add raw content to its own
+  diagnostics.
 
-| Mode | Main Risk | Mitigation |
-|---|---|---|
-| `mcp_stdio` | Local command execution. | Run through sandbox executor; use idempotent install; restrict env; set timeouts. |
-| `mcp_http` | Remote service and auth exposure. | Use HTTPS, scoped tokens, auth failure handling, and payload redaction. |
+## Verification Baseline
 
-## Telemetry Privacy
+For a custom sandbox, run `sandboxContract(...)` from
+`@purista/harness/testing`; add the snapshot contract only when snapshot/resume
+is truly supported. Then add platform integration tests for controls generic
+contracts cannot prove: blocked egress, forbidden command, cross-tenant mount,
+expired credential, resource limit, cancellation/process cleanup, immutable
+plugin package, and workspace retention cleanup.
 
-Default behavior is privacy-safe:
-
-- persisted event payload content is always redacted by core;
-- spans include IDs, safe scalar metadata, and error metadata, not full prompts,
-  model outputs, tool input/results, files, memory, expected outputs, or
-  context content;
-- provider and MCP error metadata should be actionable without leaking secrets.
-
-`telemetry.contentCaptureMode` is accepted as a stable policy value. v1 core
-does not emit prompt/tool/file/context content in any mode; memory content is
-omitted by default and only follows the bounded memory-facade policy when
-non-`NO_CONTENT` modes are enabled.
-
-## Application-Owned Review Tasks
-
-Human-in-the-loop flows should enforce:
-
-- no mutation before approval;
-- typed review decisions;
-- idempotent decision submission;
-- stale review/run rejection;
-- audit log entry for applied, rejected, or revision decisions.
-
-The application owns the review record, reviewer authorization, user interface,
-and durable decision store. The Harness currently offers synchronous governance
-approval for a tool decision, not a durable, restart-safe review-gate runtime.
+The canonical developer implementation guide is the official PURISTA website:
+[/handbook/harness/guide/sandboxing-and-mcp/](https://purista.dev/handbook/harness/guide/sandboxing-and-mcp/).

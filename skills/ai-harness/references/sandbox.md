@@ -48,6 +48,29 @@ defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySand
 - exec runs without a shell (tokenized argv); unquoted shell metacharacters are rejected when `allowCommands` is set; output capture caps at 10 MiB per stream; timeout falls back to the harness `toolTimeoutMs`; abort surfaces `OperationCancelledError{scope:'sandbox'}`
 - durable local persistence, not a hardened isolation layer — enabling `exec` is a host trust decision
 
+## Enterprise Selection Rule
+
+Do not call every `Sandbox` a security sandbox. The Harness contract owns a
+session filesystem, declared execution capabilities, cancellation and close;
+the selected adapter and deployment platform own process identity, filesystem
+mounts, network egress, resource limits, image/package provenance, tenancy,
+and secure cleanup.
+
+| Requirement | Minimum suitable choice | Not sufficient on its own |
+| --- | --- | --- |
+| Reviewed files plus TypeScript/HTTP tools | `inMemorySandbox()` | A session ID or schema is not authorization |
+| Trusted local transformation | `bashSandbox()` with a narrow reviewed use case | `bashSandbox()` is not a container/VM and cannot host stdio MCP |
+| Local durable trusted worker | `localDurableExecution({ exec: false })`, or explicitly reviewed host exec | The local path jail is not a tenant/process isolation boundary |
+| Untrusted/model-directed command or stdio MCP | A custom container, microVM, or remote adapter that enforces its policy | A host process, `bashSandbox()`, or local directory sandbox |
+| Trusted Agent Plugin stdio process | Spawn-capable **and** immutable-mount-capable isolating adapter | `inMemorySandbox()` and `localDirectorySandbox()` cannot enforce `mountReadOnly(...)` |
+
+For an executor in a regulated production deployment, require platform tests
+for default-deny egress, unprivileged process identity, CPU/memory/PID/disk and
+wall-clock limits, scoped secret injection, per-run/tenant workspace mounts,
+process cleanup, retention cleanup, and no raw content in telemetry. Never let
+the model choose a command, package install source, credential, mount, or
+network destination.
+
 ## SandboxSession API
 Every sandbox session supports:
 
@@ -110,7 +133,7 @@ Security defaults:
 - disable all built-ins for tool-only agents with `builtinTools: false`
 - enable only read-only built-ins for skill-reading agents
 - add permission policies for `bash`, `write`, and `edit`
-- use `bashSandbox()` only for workloads that genuinely need command execution or `mcp_stdio`
+- use `bashSandbox()` only for workloads that genuinely need trusted in-process command execution; it cannot run `mcp_stdio`
 
 ## Custom Sandbox Adapters
 Implement `Sandbox<C>`:

@@ -5,7 +5,7 @@ one Rust Node-API binary family that is tested under Node.js and Bun; it has no
 WASM, JavaScript, model, filesystem, or network fallback.
 
 The first release supports only `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
-`IP_ADDRESS`, `IBAN_CODE`, `US_SSN`, and `URL`. Use the Presidio sidecar adapter
+`IP_ADDRESS` (IPv4 and IPv6 syntax), `IBAN_CODE`, `US_SSN`, and `URL`. Use the Presidio sidecar adapter
 for entities such as `PERSON` or custom/ML recognizers.
 
 ```ts

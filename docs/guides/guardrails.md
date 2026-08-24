@@ -70,6 +70,8 @@ npm install @purista/harness-guardrails
 npm install @purista/harness-guardrails-presidio
 # Or the local deterministic Rust/Node-API subset for Node.js and Bun
 npm install @purista/harness-guardrails-native-privacy
+# Or local model-based NER; install this heavier optional peer only where needed
+npm install @purista/harness-guardrails-local-ner @huggingface/transformers
 ```
 
 ```yaml
@@ -126,7 +128,8 @@ appear in operational evidence.
 | Package | When to choose it | Entity coverage and runtime |
 | --- | --- | --- |
 | `@purista/harness-guardrails-presidio` | You require Presidio recognizers such as `PERSON`, custom deployment-side recognizers, or Presidio language support. | Calls only original Presidio `POST /analyze` through an injected internal HTTP(S) endpoint. It sends `return_decision_process: false`, validates every result, and converts Python code-point offsets to JavaScript UTF-16 indexes. Deploy the upstream service behind application-owned authentication; it has no built-in public-service security boundary. |
-| `@purista/harness-guardrails-native-privacy` | You need a local dependency with no detector network hop. | Deterministic first-release subset: `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `IP_ADDRESS`, `IBAN_CODE`, `US_SSN`, `URL`. One Node-API prebuild family is tested on Node.js and Bun for macOS, Linux glibc, and Windows. Missing platform artifacts fail during construction; there is no JavaScript, WASM, model, or remote fallback. |
+| `@purista/harness-guardrails-native-privacy` | You need deterministic local detection with no detector network hop. | Deterministic subset: `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `IP_ADDRESS` (IPv4/IPv6 syntax), `IBAN_CODE`, `US_SSN`, `URL`. One Node-API prebuild family is tested on Node.js and Bun for macOS, Linux glibc, and Windows. Missing platform artifacts fail during construction; there is no JavaScript, WASM, model, or remote fallback. |
+| `@purista/harness-guardrails-local-ner` | You need local model-based recognition for a reviewed mapping such as people, organizations, or locations. | A separately installed optional peer uses an application-provisioned absolute local model directory and SHA-256 asset manifest. It never downloads a model or calls a model registry. Call `warmup()` before accepting traffic; missing `@huggingface/transformers`, invalid local assets, malformed output, and cancellation fail closed with a safe error kind. |
 
 The native package rejects unsupported configured entities at construction. It
 is not a Presidio or NER/ML port. Use Presidio or another injected
@@ -140,32 +143,78 @@ dependent” means the application-owned Presidio Analyzer deployment must
 already contain the relevant recognizer or model; this adapter neither installs
 nor configures it.
 
-| I want to… | Presidio sidecar | Native privacy |
-| --- | --- | --- |
-| Block PII before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes |
-| Replace each detected whole value with a fixed configured token | Yes | Yes |
-| Remove each detected whole value | Yes, use an empty `mask_token` | Yes, use an empty `mask_token` |
-| Detect an email address | Deployment recognizer dependent | Built in, regex-based |
-| Detect a phone number | Deployment recognizer dependent | Built in, format-based |
-| Detect a payment-card number | Deployment recognizer dependent | Built in, Luhn-checked |
-| Detect an IPv4 address | Deployment recognizer dependent | Built in, IPv4 only |
-| Detect an IPv6 address | Deployment recognizer dependent | Not supplied |
-| Detect an IBAN | Deployment recognizer dependent | Built in, IBAN-shaped format |
-| Detect a US Social Security number | Deployment recognizer dependent | Built in, US-SSN-shaped format |
-| Detect an HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only |
-| Detect names, locations, organizations, medical entities, or other NER/model entities | Deployment recognizer/model dependent | Not supplied |
-| Detect an application-specific identifier | Custom recognizer dependent | Not supplied |
-| Choose a detection language | One fixed composition-root language per detector | No NLP language model |
-| Keep detector processing in-process with no detector network hop | Not supplied | Yes |
-| Protect reviewed text fields inside a structured tool value | Yes, through the same explicit codec | Yes, through the same explicit codec |
-| Script deterministic tests | `FakePresidioSidecar` | `FakeSensitiveDataDetector` |
+| I want to… | Presidio sidecar | Native privacy | Local NER |
+| --- | --- | --- | --- |
+| Block PII before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes | Yes |
+| Replace each detected whole value with a fixed configured token | Yes | Yes | Yes |
+| Remove each detected whole value | Yes, use an empty `mask_token` | Yes, use an empty `mask_token` | Yes, use an empty `mask_token` |
+| Detect an email address | Deployment recognizer dependent | Built in, regex-based | Model/label dependent; not built in |
+| Detect a phone number | Deployment recognizer dependent | Built in, format-based | Model/label dependent; not built in |
+| Detect a payment-card number | Deployment recognizer dependent | Built in, Luhn-checked | Model/label dependent; not built in |
+| Detect an IPv4 address | Deployment recognizer dependent | Built in, syntax-validated | Model/label dependent; not built in |
+| Detect an IPv6 address | Deployment recognizer dependent | Built in, syntax-validated | Model/label dependent; not built in |
+| Detect an IBAN | Deployment recognizer dependent | Built in, IBAN-shaped format | Model/label dependent; not built in |
+| Detect a US Social Security number | Deployment recognizer dependent | Built in, US-SSN-shaped format | Model/label dependent; not built in |
+| Detect an HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only | Model/label dependent; not built in |
+| Detect names, locations, organizations, medical entities, or other NER/model entities | Deployment recognizer/model dependent | Not supplied | Yes, only selected local model labels |
+| Detect an application-specific identifier | Custom recognizer dependent | Not supplied | Not supplied; inject a dedicated detector |
+| Choose a detection language | One fixed composition-root language per detector | No NLP language model | Selected local model and label mapping |
+| Keep detector processing in-process with no detector network hop | Not supplied | Yes | Yes, with an installed local model |
+| Protect reviewed text fields inside a structured tool value | Yes, through the same explicit codec | Yes, through the same explicit codec | Yes, through the same explicit codec |
+| Script deterministic tests | `FakePresidioSidecar` | `FakeSensitiveDataDetector` | `FakeLocalNerRuntime` |
 
-Neither current detector generates realistic replacement data, chooses a
+None of the current detectors generates realistic replacement data, chooses a
 different replacement by entity type, partially masks a value, hashes or
 encrypts a value, processes a complete CSV/JSON dataset, redacts image/PDF
 OCR, or provides a batch API. Those are separate capabilities, not hidden
 sidecar features. In particular, the Presidio adapter intentionally uses only
 Analyzer detection; it does not call Presidio Anonymizer.
+
+### Use a pinned local NER model
+
+The local NER package is intentionally not included in the base addon. Install
+it only in applications that need model-based entities, provision a reviewed
+model directory through your normal artifact process, and map only the labels
+you have evaluated. `NER_EN_V1_ASSETS` is an application-owned SHA-256 manifest
+of every runtime model asset; warmup verifies it before loading. A model
+identifier is inventory metadata; the detector loads only the absolute local
+directory and never accepts a repository id or remote URL.
+
+```ts
+import { createSensitiveDataActions, defineGuardrails, loadGuardrailsConfig } from '@purista/harness-guardrails'
+import { createLocalNerDetector, LocalNerDetectorError } from '@purista/harness-guardrails-local-ner'
+import { NER_EN_V1_ASSETS } from './models/ner-en-v1.integrity.js'
+
+const detector = createLocalNerDetector({
+  id: 'ner-en',
+  modelId: 'ner-en-v1',
+  modelPath: '/srv/purista-models/ner-en-v1',
+  modelFiles: NER_EN_V1_ASSETS,
+  labels: { PER: 'PERSON', ORG: 'ORGANIZATION', LOC: 'LOCATION' },
+})
+
+try {
+  await detector.warmup()
+} catch (error) {
+  if (error instanceof LocalNerDetectorError) {
+    // Safe to expose to the operator; it contains no inspected text or local path.
+    console.error({ local_ner_failure_kind: error.kind, message: error.message })
+  }
+  throw error
+}
+
+const rails = defineGuardrails({
+  config: await loadGuardrailsConfig('./guardrails'),
+  actions: createSensitiveDataActions({ detector }),
+})
+```
+
+The policy must use only mapped categories. An unmapped configured category is
+rejected when Guardrails is built. During a guarded inspection, missing optional
+dependencies and local-model failures remain fail-closed; the trace and error
+log contain only `harness.sensitive_data.failure_kind` or
+`sensitive_data_failure_kind`, never the inspected value, local path, model
+output, or credentials.
 
 ### Test rails and sidecars deterministically
 
@@ -174,6 +223,20 @@ adapter contract tests. They do not recognize data or call a network: each
 test scripts exactly the findings, failure, or Presidio HTTP outcome it needs.
 The request record is test-only and can contain synthetic input, so never send
 it to logs, snapshots, or telemetry.
+
+For local NER adapter tests, use the dedicated runtime fake. It scripts only
+model output and deliberately does not record inspected text:
+
+```ts
+import { createLocalNerDetectorWithRuntime, FakeLocalNerRuntime } from '@purista/harness-guardrails-local-ner/testing'
+
+const runtime = new FakeLocalNerRuntime()
+runtime.enqueue([{ entity_group: 'PER', score: 0.99, start: 0, end: 5 }])
+const detector = createLocalNerDetectorWithRuntime(localNerOptions, async () => runtime)
+
+await expect(detector.inspect({ text: 'Alice', entities: ['PERSON'], scoreThreshold: 0.5, signal: new AbortController().signal }))
+  .resolves.toEqual({ findings: [{ category: 'PERSON', start: 0, end: 5, score: 0.99 }] })
+```
 
 ```ts
 import { FakeSensitiveDataDetector } from '@purista/harness-guardrails/testing'

@@ -6,6 +6,7 @@ on:
     paths:
       - 'packages/harness-guardrails/**'
       - 'packages/harness-guardrails-native-privacy/**'
+      - 'packages/harness-guardrails-local-ner/**'
       - '.github/workflows/native-privacy.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'packages/harness-guardrails/**'
       - 'packages/harness-guardrails-native-privacy/**'
+      - 'packages/harness-guardrails-local-ner/**'
       - '.github/workflows/native-privacy.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -52,13 +54,15 @@ jobs:
       - name: Install
         run: npm ci
       - name: Typecheck and unit tests
-        run: npm run typecheck --workspace @purista/harness-guardrails-native-privacy && npm run test --workspace @purista/harness-guardrails-native-privacy
+        run: npm run build --workspace @purista/harness-guardrails && npm run typecheck --workspace @purista/harness-guardrails-native-privacy && npm run test --workspace @purista/harness-guardrails-native-privacy && npm run typecheck --workspace @purista/harness-guardrails-local-ner && npm run test --workspace @purista/harness-guardrails-local-ner
       - name: Build native artifact
         run: npm run build --workspace @purista/harness-guardrails-native-privacy
       - name: Node smoke test
         run: npm run test:node --workspace @purista/harness-guardrails-native-privacy
       - name: Bun smoke test
         run: npm run test:bun --workspace @purista/harness-guardrails-native-privacy
+      - name: Build and smoke optional local NER adapter
+        run: npm run build --workspace @purista/harness-guardrails-local-ner && npm run test:node --workspace @purista/harness-guardrails-local-ner && npm run test:bun --workspace @purista/harness-guardrails-local-ner && npm pack --workspace @purista/harness-guardrails-local-ner --dry-run
       - name: Verify root package contents
         run: npm pack --workspace @purista/harness-guardrails-native-privacy --dry-run
       - name: Upload prebuild

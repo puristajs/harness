@@ -22,7 +22,7 @@ network configuration in policy YAML.
 | `@purista/harness-guardrails-local-ner` | Optional local token-classification/NER detector, explicit local model asset selection, label mapping, and dependency diagnostics | A bundled model, remote model download, model registry, cloud API, or core Guardrails import |
 | Application composition root | Detector choice, endpoint/auth transport, policy YAML, permitted entity categories, codecs and user-facing fallback | Disabling required failure handling or reimplementing rail ordering |
 
-The two detector packages are optional, independently published packages. The
+The detector packages are optional, independently published packages. The
 base addon imports neither of them and has no optional-peer dynamic import.
 All packages are ESM-only and support Node.js and Bun as specified below.
 
@@ -368,12 +368,16 @@ npm install @purista/harness-guardrails-local-ner @huggingface/transformers
 
 The public factory is `createLocalNerDetector(options)`. Its options MUST
 require a stable detector `id`, an absolute local `modelPath`, a stable local
-`modelId` for application inventory, and a non-empty mapping from model labels
-to portable upper-case entity identifiers. `modelPath` must name a local
-directory; URLs, relative paths, environment lookup, cache discovery and model
-repository identifiers are invalid. The adapter loads token-classification only
-with local-files-only mode. It MUST NOT configure a remote URL, call a registry,
-fall back to a remote model, download artifacts, or use a cloud provider.
+`modelId` for application inventory, a non-empty SHA-256 manifest of every
+model asset used by the selected runtime, and a non-empty mapping from model
+labels to portable upper-case entity identifiers. `modelPath` must name a local
+directory; manifest paths must be relative regular files below that directory
+with no traversal or symlink escape; URLs, relative paths, environment lookup,
+cache discovery and model repository identifiers are invalid. Warmup resolves
+and hashes every declared asset before loading the runtime. The adapter loads
+token-classification only with local-files-only mode. It MUST NOT configure a
+remote URL, call a registry, fall back to a remote model, download artifacts,
+or use a cloud provider.
 
 The declared `supportedEntities` is the unique mapped portable entity set. A
 configured policy that asks for an unmapped entity fails at Guardrails
@@ -389,7 +393,8 @@ The returned detector exposes `warmup(signal?)`. Operators call it at process
 startup to load and validate the locally provisioned model before accepting
 traffic. `warmup` and first inspection fail with a content-free
 `LocalNerDetectorError` whose `kind` is one of `missing_optional_dependency`,
-`invalid_configuration`, `model_load_failed`, `invalid_result`, or `aborted`.
+`invalid_configuration`, `invalid_request`, `model_integrity_failed`,
+`model_load_failed`, `invalid_result`, or `aborted`.
 The missing-dependency message MUST name `@huggingface/transformers` and the
 exact install command above. It must never include model input, local path,
 runtime stack, remote URL, headers, model output, or credentials.

@@ -1,6 +1,6 @@
 # Focused Native Privacy Gap-Closure Research and No-Drift Plan
 
-**Status:** Research complete — no implementation authorized by this research alone<br>
+**Status:** Research complete; tracks A and B approved and implemented on 2026-08-24. Track C remains separately specified work.<br>
 **Research date:** 2026-08-24<br>
 **Current baseline:** `@purista/harness-guardrails-native-privacy` and the Presidio Analyzer-only sidecar adapter<br>
 **Decision owner:** repository owner must approve a follow-up specification before any new capability package or public contract is implemented
@@ -22,7 +22,22 @@ Close gaps in three independent, optional tracks:
 3. **Sensitive-data transformation port** — a separate public port for
    explicit transformations such as HMAC pseudonyms or application-selected
    replacement values. It is not a detector extension and must not default to
-   realistic fake data.
+realistic fake data.
+
+## Implementation record — 2026-08-24
+
+The repository owner explicitly authorized implementation after this research.
+The following focused work is complete and follows the package boundaries above:
+
+| Track | Delivered | Intentionally not delivered |
+| --- | --- | --- |
+| A. Native deterministic hardening | `IP_ADDRESS` now accepts syntax-valid IPv4 and IPv6 through Rust standard-library parsing; Node and Bun smoke tests cover both. | Country-registry IBAN validation and international numbering-plan phone validation; they still need their own dependency audit and semantic specification. |
+| B. Optional local NER | New `@purista/harness-guardrails-local-ner` package with optional `@huggingface/transformers` peer, absolute local model path, explicit label mapping, `warmup()`, local-files-only pipeline loading, safe errors, deterministic `FakeLocalNerRuntime`, Node/Bun smoke tests, and fail-closed telemetry/log classifications. | Bundled model assets, remote model discovery/download, a model registry, a cloud fallback, a claim of entity recall/precision without model-specific evaluation, or Bun compiled-binary support. |
+| C. Transformation port | Not started. | HMAC pseudonyms, encryption/decryption, fake identities, per-entity replacement, and mapping persistence remain out of scope. |
+
+The base Guardrails package still imports neither Transformers.js nor any model
+asset. The optional NER package is selected only by the application composition
+root, so deployments without NER do not acquire its nested dependency graph.
 
 Structured/tabular and image/OCR processing are intentionally separate future
 products. They require different input contracts, resource limits, retention,

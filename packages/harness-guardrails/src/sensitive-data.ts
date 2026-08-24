@@ -6,6 +6,22 @@ import type { GuardrailAction, GuardrailActionContext, GuardrailActions, Guardra
 /** Whether the detector keeps inspection local or sends data to an application-selected cloud service. */
 export type SensitiveDataExecutionMode = 'local' | 'cloud'
 
+/** A stable, content-free failure classification emitted by an injected detector. */
+export class SensitiveDataDetectorError extends Error {
+  /** Stable detector-owned failure kind safe for logs, metrics, and traces. */
+  public readonly kind: string
+
+  /**
+   * @param kind A stable ASCII classification; the message must never contain inspected content.
+   * @param message A safe operator-facing remediation message.
+   */
+  public constructor(kind: string, message: string) {
+    super(message)
+    this.name = 'SensitiveDataDetectorError'
+    this.kind = kind
+  }
+}
+
 /** One content-free sensitive-data location using JavaScript UTF-16 string offsets. */
 export interface SensitiveDataFinding {
   readonly category: string
@@ -207,8 +223,9 @@ async function inspect(detector: SensitiveDataDetector, operation: Operation, ct
         span.setAttributes({ 'harness.sensitive_data.outcome': outcome, 'harness.sensitive_data.finding_count': String(Math.min(inspected.findings.length, 100)) })
         return inspected
       } catch (error) {
-        const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed')
-        span.setAttributes({ 'harness.sensitive_data.outcome': 'error', 'error.type': classified.code })
+        const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed', error)
+        const failureKind = detectorFailureKind(error)
+        span.setAttributes({ 'harness.sensitive_data.outcome': 'error', 'error.type': classified.code, ...(failureKind ? { 'harness.sensitive_data.failure_kind': failureKind } : {}) })
         throw classified
       }
     })
@@ -217,9 +234,10 @@ async function inspect(detector: SensitiveDataDetector, operation: Operation, ct
     if (outcome !== 'allow') logInspection(ctx, detector, operation, outcome, policy)
     return result
   } catch (error) {
-    const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed')
-    recordInspection(ctx, attrs, 'error', started, classified.code)
-    logInspection(ctx, detector, operation, 'error', policy, classified.code)
+    const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed', error)
+    const failureKind = detectorFailureKind(error)
+    recordInspection(ctx, attrs, 'error', started, classified.code, failureKind)
+    logInspection(ctx, detector, operation, 'error', policy, classified.code, failureKind)
     throw classified
   }
 }
@@ -283,21 +301,27 @@ function inspectionAttributes(detector: SensitiveDataDetector, operation: Operat
   }
 }
 
-function recordInspection(ctx: GuardrailActionContext, attrs: Record<string, string>, outcome: 'allow' | 'block' | 'transform' | 'error', started: number, errorType?: string): void {
-  const dimensions = { ...attrs, 'harness.sensitive_data.outcome': outcome, ...(errorType ? { 'error.type': errorType } : {}) }
+function recordInspection(ctx: GuardrailActionContext, attrs: Record<string, string>, outcome: 'allow' | 'block' | 'transform' | 'error', started: number, errorType?: string, failureKind?: string): void {
+  const dimensions = { ...attrs, 'harness.sensitive_data.outcome': outcome, ...(errorType ? { 'error.type': errorType } : {}), ...(failureKind ? { 'harness.sensitive_data.failure_kind': failureKind } : {}) }
   ctx.telemetry!.recordCounter('harness.sensitive_data.inspections', 1, dimensions)
   ctx.telemetry!.recordHistogram('harness.sensitive_data.duration', (Date.now() - started) / 1000, dimensions)
 }
 
-function logInspection(ctx: GuardrailActionContext, detector: SensitiveDataDetector, operation: Operation, outcome: 'block' | 'transform' | 'error', policy: NeMoSensitiveDataPolicy, errorCode?: string): void {
-  const fields = { sensitive_data_detector_id: detector.id, sensitive_data_execution_mode: detector.executionMode, sensitive_data_operation: operation, sensitive_data_outcome: outcome, sensitive_data_categories: [...policy.entities].sort().slice(0, 16).join(','), ...(errorCode ? { error_code: errorCode } : {}) }
+function logInspection(ctx: GuardrailActionContext, detector: SensitiveDataDetector, operation: Operation, outcome: 'block' | 'transform' | 'error', policy: NeMoSensitiveDataPolicy, errorCode?: string, failureKind?: string): void {
+  const fields = { sensitive_data_detector_id: detector.id, sensitive_data_execution_mode: detector.executionMode, sensitive_data_operation: operation, sensitive_data_outcome: outcome, sensitive_data_categories: [...policy.entities].sort().slice(0, 16).join(','), ...(errorCode ? { error_code: errorCode } : {}), ...(failureKind ? { sensitive_data_failure_kind: failureKind } : {}) }
   if (outcome === 'block') ctx.logger?.warn('Harness sensitive-data guardrail blocked execution.', fields)
   else if (outcome === 'transform') ctx.logger?.info('Harness sensitive-data guardrail transformed a value.', fields)
   else ctx.logger?.error('Harness sensitive-data guardrail failed closed.', fields)
 }
 
-function detectorError(ctx: GuardrailActionContext, reason: 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result'): GuardrailEvaluationError {
-  return new GuardrailEvaluationError('Sensitive-data inspection failed closed.', { rail_id: ctx.railId, phase: ctx.phase, reason })
+function detectorError(ctx: GuardrailActionContext, reason: 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result', cause?: unknown): GuardrailEvaluationError {
+  return new GuardrailEvaluationError('Sensitive-data inspection failed closed.', { rail_id: ctx.railId, phase: ctx.phase, reason }, cause)
+}
+
+function detectorFailureKind(error: unknown): string | undefined {
+  const source = error instanceof SensitiveDataDetectorError ? error : error instanceof Error ? error.cause : undefined
+  if (!(source instanceof SensitiveDataDetectorError) || !/^[a-z][a-z0-9_]{0,63}$/.test(source.kind)) return undefined
+  return source.kind
 }
 
 function codecError(ctx: GuardrailActionContext): GuardrailEvaluationError {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::Ipv4Addr, sync::{atomic::{AtomicBool, Ordering}, Arc, LazyLock, Mutex}};
+use std::{collections::HashMap, net::{IpAddr, Ipv4Addr}, sync::{atomic::{AtomicBool, Ordering}, Arc, LazyLock, Mutex}};
 
 use napi::{bindgen_prelude::*, Error, Status};
 use napi_derive::napi;
@@ -57,7 +57,10 @@ fn inspect_text(text: &str, entities: &[String], score_threshold: f64, cancelled
       "EMAIL_ADDRESS" => collect_regex(&mut matches, "EMAIL_ADDRESS", 3, &EMAIL, text, |_| true, cancelled)?,
       "PHONE_NUMBER" => collect_regex(&mut matches, "PHONE_NUMBER", 6, &PHONE, text, |_| true, cancelled)?,
       "CREDIT_CARD" => collect_regex(&mut matches, "CREDIT_CARD", 1, &CREDIT_CARD, text, is_luhn_card, cancelled)?,
-      "IP_ADDRESS" => collect_regex(&mut matches, "IP_ADDRESS", 2, &IPV4, text, |value| value.parse::<Ipv4Addr>().is_ok(), cancelled)?,
+      "IP_ADDRESS" => {
+        collect_regex(&mut matches, "IP_ADDRESS", 2, &IPV4, text, |value| value.parse::<Ipv4Addr>().is_ok(), cancelled)?;
+        collect_ipv6(&mut matches, text, cancelled)?;
+      },
       "IBAN_CODE" => collect_regex(&mut matches, "IBAN_CODE", 4, &IBAN, text, |_| true, cancelled)?,
       "US_SSN" => collect_regex(&mut matches, "US_SSN", 5, &US_SSN, text, |_| true, cancelled)?,
       "URL" => collect_regex(&mut matches, "URL", 7, &URL, text, |_| true, cancelled)?,
@@ -82,6 +85,32 @@ where F: Fn(&str) -> bool {
     if cancelled.load(Ordering::Acquire) { return Err(cancelled_error()); }
     let value = &text[found.start()..found.end()];
     if accept(value) { matches.push(Match { category, start: found.start(), end: found.end(), priority }); }
+    if matches.len() > 100 { return Err(invalid_request()); }
+  }
+  Ok(())
+}
+
+fn collect_ipv6(matches: &mut Vec<Match>, text: &str, cancelled: &AtomicBool) -> Result<()> {
+  let mut start: Option<usize> = None;
+  for (index, character) in text.char_indices() {
+    if cancelled.load(Ordering::Acquire) { return Err(cancelled_error()); }
+    if character.is_ascii_hexdigit() || character == ':' {
+      if start.is_none() { start = Some(index); }
+      continue;
+    }
+    if let Some(candidate_start) = start.take() {
+      collect_ipv6_candidate(matches, &text[candidate_start..index], candidate_start)?;
+    }
+  }
+  if let Some(candidate_start) = start {
+    collect_ipv6_candidate(matches, &text[candidate_start..], candidate_start)?;
+  }
+  Ok(())
+}
+
+fn collect_ipv6_candidate(matches: &mut Vec<Match>, value: &str, start: usize) -> Result<()> {
+  if value.len() <= 39 && value.contains(':') && matches!(value.parse::<IpAddr>(), Ok(IpAddr::V6(_))) {
+    matches.push(Match { category: "IP_ADDRESS", start, end: start + value.len(), priority: 2 });
     if matches.len() > 100 { return Err(invalid_request()); }
   }
   Ok(())

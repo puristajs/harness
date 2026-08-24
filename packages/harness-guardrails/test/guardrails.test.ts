@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { defineHarness, inMemorySandbox } from '@purista/harness'
 import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
 import { createModelRegistry } from '../../harness/src/models/registry.js'
-import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig, type SensitiveDataDetector } from '../src/index.js'
+import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig, SensitiveDataDetectorError, type SensitiveDataDetector } from '../src/index.js'
 import { FakeSensitiveDataDetector } from '../src/testing/index.js'
 
 it('scripts deterministic sensitive-data findings, failures, capabilities, and request recording', async () => {
@@ -459,6 +459,39 @@ it('blocks sensitive data and fails closed when a detector returns invalid coord
 
   await expect(rails.filterRetrievedChunks(['address@example.test'])).rejects.toMatchObject({ code: 'GUARDRAIL_BLOCKED', meta: { reason_code: 'sensitive_data_detected' } })
   await expect(rails.filterRetrievedChunks(['invalid'])).rejects.toMatchObject({ code: 'GUARDRAIL_EVALUATION_ERROR', meta: { reason: 'sensitive_data_invalid_result' } })
+})
+
+it('records only a stable safe detector failure kind when an optional dependency is missing', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  const detector: SensitiveDataDetector = {
+    id: 'local-ner',
+    executionMode: 'local',
+    supportedEntities: ['PERSON'],
+    async inspect() { throw new SensitiveDataDetectorError('missing_optional_dependency', 'Install package for customer@example.test') }
+  }
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { retrieval: { entities: ['PERSON'], mask_token: '<MASKED>', score_threshold: 0.5 } } },
+        retrieval: { flows: ['detect sensitive data on retrieval'] }
+      }
+    }),
+    actions: createSensitiveDataActions({ detector }),
+    observability: { telemetry, logger }
+  })
+
+  await expect(rails.filterRetrievedChunks(['customer@example.test'])).rejects.toMatchObject({
+    code: 'GUARDRAIL_EVALUATION_ERROR',
+    meta: { reason: 'sensitive_data_detector_failed' }
+  })
+  const recorded = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics, logs: logger.records })
+  expect(recorded).toContain('missing_optional_dependency')
+  expect(recorded).not.toContain('customer@example.test')
+  expect(logger.recordsAt('error')).toEqual(expect.arrayContaining([expect.objectContaining({
+    msg: 'Harness sensitive-data guardrail failed closed.',
+    fields: expect.objectContaining({ sensitive_data_failure_kind: 'missing_optional_dependency' })
+  })]))
 })
 
 it('rejects unimplemented sensitive-data YAML and unsupported detector capabilities at construction', () => {

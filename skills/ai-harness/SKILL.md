@@ -46,6 +46,17 @@ Keep these layers separate:
   agents/workflows are declared. Keep simple use cases on per-agent
   permissions; use governance only for composable/audited policy, approval, or
   external policy-pack interoperability.
+- For sensitive-data rails, keep `@purista/harness-guardrails` provider and
+  model-runtime agnostic. Install exactly one detector package at the
+  composition root. Use native privacy for its deterministic documented subset;
+  use `@purista/harness-guardrails-local-ner` only when local model NER is
+  required, then install its optional `@huggingface/transformers` peer, provide
+  an absolute pre-provisioned model directory, call `warmup()` during startup,
+  and map model labels explicitly. Never add model download, model-registry,
+  cloud fallback, local path, model output, or inspected content to YAML, logs,
+  errors, spans, metrics, fixtures, or examples. A missing optional peer must
+  fail closed with its safe remediation and be observable only through the
+  stable sensitive-data failure kind.
 - Use `@purista/harness-guardrails` for optional typed default-loop content
   rails. It accepts a documented NeMo-shaped YAML subset, requires
   application-owned actions/model aliases, fails closed, and never loads

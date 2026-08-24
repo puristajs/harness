@@ -68,7 +68,12 @@ Keep these layers separate:
   recognizers, provider configuration, or fallback rules there. Use the
   optional Presidio adapter for an application-owned authenticated internal
   sidecar, or the optional native Rust/Node-API adapter for its documented
-  local subset. Both must fail closed.
+  local subset. Both must fail closed. In user-facing material, describe them
+  with the outcome-oriented capability matrix: Presidio availability is
+  deployment recognizer/model dependent; native supports only its documented
+  regex/validator subset (including IPv4, not IPv6). Do not imply Presidio
+  Anonymizer, fake-value generation, hashing/encryption, structured-data,
+  image/PDF OCR, or batch support from the detection adapter.
 - Sensitive-data inspection has a nested content-free
   `harness.sensitive_data.inspect` GUARDRAIL span and inspection/duration
   metrics. It is not an LLM call: never add model/token/cost or raw

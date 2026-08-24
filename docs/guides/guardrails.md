@@ -133,6 +133,40 @@ is not a Presidio or NER/ML port. Use Presidio or another injected
 `SensitiveDataDetector` implementation when the policy requires entities such
 as people, organizations, locations, or custom recognizers.
 
+### What can I do with each detector?
+
+This matrix describes the current product behavior. “Deployment recognizer
+dependent” means the application-owned Presidio Analyzer deployment must
+already contain the relevant recognizer or model; this adapter neither installs
+nor configures it.
+
+| I want to… | Presidio sidecar | Native privacy |
+| --- | --- | --- |
+| Block PII before it crosses an agent, model, tool, or retrieval boundary | Yes | Yes |
+| Replace each detected whole value with a fixed configured token | Yes | Yes |
+| Remove each detected whole value | Yes, use an empty `mask_token` | Yes, use an empty `mask_token` |
+| Detect an email address | Deployment recognizer dependent | Built in, regex-based |
+| Detect a phone number | Deployment recognizer dependent | Built in, format-based |
+| Detect a payment-card number | Deployment recognizer dependent | Built in, Luhn-checked |
+| Detect an IPv4 address | Deployment recognizer dependent | Built in, IPv4 only |
+| Detect an IPv6 address | Deployment recognizer dependent | Not supplied |
+| Detect an IBAN | Deployment recognizer dependent | Built in, IBAN-shaped format |
+| Detect a US Social Security number | Deployment recognizer dependent | Built in, US-SSN-shaped format |
+| Detect an HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only |
+| Detect names, locations, organizations, medical entities, or other NER/model entities | Deployment recognizer/model dependent | Not supplied |
+| Detect an application-specific identifier | Custom recognizer dependent | Not supplied |
+| Choose a detection language | One fixed composition-root language per detector | No NLP language model |
+| Keep detector processing in-process with no detector network hop | Not supplied | Yes |
+| Protect reviewed text fields inside a structured tool value | Yes, through the same explicit codec | Yes, through the same explicit codec |
+| Script deterministic tests | `FakePresidioSidecar` | `FakeSensitiveDataDetector` |
+
+Neither current detector generates realistic replacement data, chooses a
+different replacement by entity type, partially masks a value, hashes or
+encrypts a value, processes a complete CSV/JSON dataset, redacts image/PDF
+OCR, or provides a batch API. Those are separate capabilities, not hidden
+sidecar features. In particular, the Presidio adapter intentionally uses only
+Analyzer detection; it does not call Presidio Anonymizer.
+
 ### Test rails and sidecars deterministically
 
 Use the public testing helpers for unit tests, workflow tests, tool tests, and

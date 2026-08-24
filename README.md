@@ -86,6 +86,7 @@ npm run test:failure
   - [Evaluating prompts](docs/guides/evaluating-prompts.md)
   - [MCP tools](docs/guides/mcp-tools.md)
   - [Agent Plugins](docs/guides/agent-plugins.md)
+  - [Guardrails](docs/guides/guardrails.md)
   - [Migrating to AI Harness 2.0](docs/guides/migrating-to-v2.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)

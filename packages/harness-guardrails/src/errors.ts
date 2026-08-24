@@ -9,7 +9,7 @@ export class GuardrailsConfigError extends HarnessError {
 
 /** A rail action failed outside a Harness default-loop interception hook. */
 export class GuardrailEvaluationError extends HarnessError {
-  public constructor(message: string, meta: { rail_id: string; phase: GuardrailPhase; reason: 'action_failed' | 'action_timeout' | 'invalid_outcome' | 'unsupported_transform' }, cause?: unknown) {
+  public constructor(message: string, meta: { rail_id: string; phase: GuardrailPhase; reason: 'action_failed' | 'action_timeout' | 'invalid_outcome' | 'unsupported_transform' | 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result' | 'sensitive_data_codec_failed' }, cause?: unknown) {
     super({ code: 'GUARDRAIL_EVALUATION_ERROR', category: 'interceptor', retriable: false, message, meta, cause })
   }
 }

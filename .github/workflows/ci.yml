@@ -119,7 +119,7 @@ jobs:
               const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
               return { dir, pkg }
             })
-            .filter(({ pkg }) => pkg.private !== true)
+            .filter(({ pkg }) => pkg.private !== true && pkg.name !== '@purista/harness-guardrails-native-privacy')
             .sort((a, b) => {
               if (a.pkg.name === '@purista/harness') return -1
               if (b.pkg.name === '@purista/harness') return 1
@@ -147,7 +147,7 @@ jobs:
               const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
               return { dir, pkg }
             })
-            .filter(({ pkg }) => pkg.private !== true)
+            .filter(({ pkg }) => pkg.private !== true && pkg.name !== '@purista/harness-guardrails-native-privacy')
             .sort((a, b) => {
               if (a.pkg.name === '@purista/harness') return -1
               if (b.pkg.name === '@purista/harness') return 1

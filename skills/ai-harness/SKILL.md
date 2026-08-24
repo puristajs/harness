@@ -60,6 +60,22 @@ Keep these layers separate:
   standard `LLM` span—not the GUARDRAIL parent—is the single source of truth
   for model/provider identity and reported `gen_ai.usage.*` /
   `llm.token_count.*` cost inputs.
+- For sensitive data, use the provider-neutral `SensitiveDataDetector` port
+  exported by `@purista/harness-guardrails` and bind it with
+  `createSensitiveDataActions({ detector })`. Put only exact
+  `rails.config.sensitive_data_detection` policy (entities, mask token, score
+  threshold) in YAML; never put endpoints, credentials, language,
+  recognizers, provider configuration, or fallback rules there. Use the
+  optional Presidio adapter for an application-owned authenticated internal
+  sidecar, or the optional native Rust/Node-API adapter for its documented
+  local subset. Both must fail closed.
+- Sensitive-data inspection has a nested content-free
+  `harness.sensitive_data.inspect` GUARDRAIL span and inspection/duration
+  metrics. It is not an LLM call: never add model/token/cost or raw
+  text/offset/endpoint/header attributes. Standard nested LLM spans remain the
+  only source of reported token/model attribution. For structured tool values,
+  require an explicit `SensitiveDataValueCodec`; never recursively inspect all
+  strings in arbitrary JSON.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { defineHarness, inMemorySandbox } from '@purista/harness'
 import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
 import { createModelRegistry } from '../../harness/src/models/registry.js'
-import { defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig } from '../src/index.js'
+import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig, type SensitiveDataDetector } from '../src/index.js'
 
 it('runs NeMo-shaped input and output rails with the Harness test adapter', async () => {
   const provider = new FakeModelProvider()
@@ -74,6 +74,70 @@ it('blocks a configured tool-input rail before the Harness tool has a side effec
   const session = await harness.getSession('guardrails-tool-block')
   await expect(session.agents.answer.prompt('transfer')).rejects.toMatchObject({ code: 'AGENT_INTERCEPTOR_ERROR' })
   expect(calls).toBe(0)
+})
+
+it('masks an explicitly selected structured tool-input field before the Harness tool executes', async () => {
+  const provider = new FakeModelProvider()
+  provider.enqueue({
+    object: {},
+    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100, memo: 'refund test@example.test' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls'
+  })
+  provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  const detector: SensitiveDataDetector = {
+    id: 'email-detector',
+    executionMode: 'local',
+    supportedEntities: ['EMAIL_ADDRESS'],
+    async inspect({ text }) {
+      const start = text.indexOf('test@example.test')
+      return { findings: start < 0 ? [] : [{ category: 'EMAIL_ADDRESS', start, end: start + 'test@example.test'.length }] }
+    }
+  }
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { input: { entities: ['EMAIL_ADDRESS'], mask_token: '<MASKED>', score_threshold: 0 } } },
+        tool_input: { flows: ['mask transfer memo'] }
+      }
+    }),
+    actions: createSensitiveDataActions({
+      detector,
+      toolInput: {
+        policy: 'input',
+        codec: {
+          id: 'transfer-memo',
+          extract: (value) => [{ id: 'memo', text: (value as { memo: string }).memo }],
+          replace: (value, replacements) => ({
+            ...(value as Record<string, unknown>),
+            memo: replacements.reduce((memo, replacement) => memo.slice(0, replacement.start) + replacement.value + memo.slice(replacement.end), (value as { memo: string }).memo)
+          })
+        },
+        maskFlow: 'mask transfer memo'
+      }
+    })
+  })
+  let receivedMemo: string | undefined
+  const harness = defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
+    .tools({
+      transfer: {
+        description: 'Transfer funds.',
+        input: z.object({ amount: z.number(), memo: z.string() }),
+        output: z.object({ ok: z.boolean() }),
+        handler: async (_context, { memo }) => {
+          receivedMemo = memo
+          return { ok: true }
+        }
+      }
+    })
+    .agents({ answer: rails.attach({ model: 'assistant', instructions: 'Answer.', tools: ['transfer'], builtinTools: false }) })
+    .build()
+
+  const session = await harness.getSession('guardrails-tool-mask')
+  await expect(session.agents.answer.prompt('transfer')).resolves.toBe('done')
+  expect(receivedMemo).toBe('refund <MASKED>')
 })
 
 it('filters caller-owned retrieval chunks without creating a vector store', async () => {
@@ -309,4 +373,105 @@ it('parents model-backed rail usage under the GUARDRAIL span with standard model
     expect.objectContaining({ name: 'gen_ai.client.token.usage', value: 11, attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }) }),
     expect.objectContaining({ name: 'gen_ai.client.token.usage', value: 7, attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }) })
   ]))
+})
+
+it('masks sensitive retrieval chunks with a provider-neutral detector and content-free child telemetry', async () => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new FakeLogger()
+  const detector: SensitiveDataDetector = {
+    id: 'test-local-detector',
+    executionMode: 'local',
+    supportedEntities: ['EMAIL_ADDRESS'],
+    async inspect({ text }) {
+      const at = text.indexOf('@')
+      const start = at < 0 ? -1 : text.lastIndexOf(' ', at) + 1
+      return start < 0 ? { findings: [] } : { findings: [{ category: 'EMAIL_ADDRESS', start, end: text.length, score: 0.99 }] }
+    }
+  }
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { retrieval: { entities: ['EMAIL_ADDRESS'], mask_token: '<MASKED>', score_threshold: 0.6 } } },
+        retrieval: { flows: ['mask sensitive data on retrieval'] }
+      }
+    }),
+    actions: createSensitiveDataActions({ detector }),
+    observability: { telemetry, logger }
+  })
+
+  await expect(rails.filterRetrievedChunks(['public', 'mail test@example.test', 'approved'])).resolves.toEqual(['public', 'mail <MASKED>', 'approved'])
+  const inspection = telemetry.spans.find((span) => span.name === 'harness.sensitive_data.inspect' && span.attrs['harness.sensitive_data.outcome'] === 'transform')
+  expect(inspection).toMatchObject({
+    attrs: expect.objectContaining({
+      'openinference.span.kind': 'GUARDRAIL',
+      'harness.sensitive_data.detector.id': 'test-local-detector',
+      'harness.sensitive_data.execution_mode': 'local',
+      'harness.sensitive_data.operation': 'mask',
+      'harness.sensitive_data.outcome': 'transform',
+      'harness.sensitive_data.finding_count': '1'
+    })
+  })
+  expect(telemetry.metrics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: 'harness.sensitive_data.inspections', attrs: expect.objectContaining({ 'harness.sensitive_data.outcome': 'transform' }) }),
+    expect.objectContaining({ name: 'harness.sensitive_data.duration', attrs: expect.objectContaining({ 'harness.sensitive_data.outcome': 'transform' }) })
+  ]))
+  const recorded = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics, logs: logger.records })
+  expect(recorded).not.toContain('test@example.test')
+  expect(recorded).not.toContain('gen_ai.')
+  expect(recorded).not.toContain('llm.')
+})
+
+it('blocks sensitive data and fails closed when a detector returns invalid coordinates', async () => {
+  const detector: SensitiveDataDetector = {
+    id: 'test-detector',
+    executionMode: 'local',
+    async inspect({ text }) {
+      if (text === 'invalid') return { findings: [{ category: 'EMAIL_ADDRESS', start: 0, end: 100 }] }
+      return { findings: [{ category: 'EMAIL_ADDRESS', start: 0, end: text.length }] }
+    }
+  }
+  const rails = defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { retrieval: { entities: ['EMAIL_ADDRESS'], mask_token: '<MASKED>', score_threshold: 0 } } },
+        retrieval: { flows: ['detect sensitive data on retrieval'] }
+      }
+    }),
+    actions: createSensitiveDataActions({ detector })
+  })
+
+  await expect(rails.filterRetrievedChunks(['address@example.test'])).rejects.toMatchObject({ code: 'GUARDRAIL_BLOCKED', meta: { reason_code: 'sensitive_data_detected' } })
+  await expect(rails.filterRetrievedChunks(['invalid'])).rejects.toMatchObject({ code: 'GUARDRAIL_EVALUATION_ERROR', meta: { reason: 'sensitive_data_invalid_result' } })
+})
+
+it('rejects unimplemented sensitive-data YAML and unsupported detector capabilities at construction', () => {
+  expect(() => parseGuardrailsConfig({
+    rails: { config: { sensitive_data_detection: { input: { entities: ['EMAIL_ADDRESS'], mask_token: '<MASKED>', score_threshold: 0.5, recognizers: [] } } } }
+  })).toThrow(/Unknown guardrails configuration field/)
+
+  const detector: SensitiveDataDetector = {
+    id: 'email-only',
+    executionMode: 'local',
+    supportedEntities: ['EMAIL_ADDRESS'],
+    async inspect() { return { findings: [] } }
+  }
+  expect(() => defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { input: { entities: ['PHONE_NUMBER'], mask_token: '<MASKED>', score_threshold: 0.5 } } },
+        input: { flows: ['detect sensitive data on input'] }
+      }
+    }),
+    actions: createSensitiveDataActions({ detector })
+  })).toThrow(/does not support every configured entity/)
+
+  expect(() => defineGuardrails({
+    config: parseGuardrailsConfig({
+      rails: {
+        config: { sensitive_data_detection: { input: { entities: ['EMAIL_ADDRESS'], mask_token: '<MASKED>', score_threshold: 0.5 } } },
+        input: { flows: ['detect sensitive data on input'] }
+      }
+    }),
+    actions: { 'detect sensitive data on input': { evaluate: () => ({ decision: 'allow' }) } }
+  })).toThrow(/must use createSensitiveDataActions/)
 })

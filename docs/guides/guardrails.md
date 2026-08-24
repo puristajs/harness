@@ -58,6 +58,111 @@ const safeChunks = await rails.filterRetrievedChunks(chunks, {
 
 The addon automatically creates a global-OTel fallback for standalone retrieval spans; pass a process logger in `defineGuardrails({ observability: { logger } })` or the run-scoped logger above when those decisions must be retained in structured logs. `modelCheckRail({ model, instructions })` provides a model-backed allow/block decision through configured Harness model handles. Its model value resolves through `modelAliases`; it never reads credentials or creates a provider from YAML.
 
+## Sensitive data: portable policy, injected detector
+
+Sensitive-data rails are configured in the compatible NeMo-shaped YAML subset,
+but detector choice remains an application composition-root decision. Install
+the base addon and exactly one optional detector package:
+
+```sh
+npm install @purista/harness-guardrails
+# Original Presidio Analyzer behind your authenticated internal gateway
+npm install @purista/harness-guardrails-presidio
+# Or the local deterministic Rust/Node-API subset for Node.js and Bun
+npm install @purista/harness-guardrails-native-privacy
+```
+
+```yaml
+rails:
+  config:
+    sensitive_data_detection:
+      input:
+        entities: [EMAIL_ADDRESS, PHONE_NUMBER]
+        mask_token: '<MASKED>'
+        score_threshold: 0.6
+      output:
+        entities: [EMAIL_ADDRESS]
+        mask_token: '<MASKED>'
+        score_threshold: 0.6
+      retrieval:
+        entities: [EMAIL_ADDRESS]
+        mask_token: '<MASKED>'
+        score_threshold: 0.6
+  input:
+    flows: ['mask sensitive data on input']
+  output:
+    flows: ['detect sensitive data on output']
+  retrieval:
+    flows: ['mask sensitive data on retrieval']
+```
+
+Bind the detector to the built-in action factory; policy YAML never carries an
+endpoint, credentials, language, recognizer configuration, or provider name.
+
+```ts
+import { createSensitiveDataActions, defineGuardrails, loadGuardrailsConfig } from '@purista/harness-guardrails'
+import { createPresidioDetector } from '@purista/harness-guardrails-presidio'
+
+const detector = createPresidioDetector({
+  id: 'presidio-private',
+  endpoint: 'https://presidio.internal/',
+  headers: { authorization: process.env.PRESIDIO_GATEWAY_TOKEN! },
+})
+
+const rails = defineGuardrails({
+  config: await loadGuardrailsConfig('./guardrails'),
+  actions: createSensitiveDataActions({ detector }),
+})
+```
+
+Detect flows block with `sensitive_data_detected`; mask flows replace only
+validated matches with `mask_token` and use `sensitive_data_masked`. Malformed
+results, detector failures, cancellation protocol failures, or codec faults
+fail closed. Neither matched text nor offsets cross the detector contract or
+appear in operational evidence.
+
+### Detector choices
+
+| Package | When to choose it | Entity coverage and runtime |
+| --- | --- | --- |
+| `@purista/harness-guardrails-presidio` | You require Presidio recognizers such as `PERSON`, custom deployment-side recognizers, or Presidio language support. | Calls only original Presidio `POST /analyze` through an injected internal HTTP(S) endpoint. It sends `return_decision_process: false`, validates every result, and converts Python code-point offsets to JavaScript UTF-16 indexes. Deploy the upstream service behind application-owned authentication; it has no built-in public-service security boundary. |
+| `@purista/harness-guardrails-native-privacy` | You need a local dependency with no detector network hop. | Deterministic first-release subset: `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `IP_ADDRESS`, `IBAN_CODE`, `US_SSN`, `URL`. One Node-API prebuild family is tested on Node.js and Bun for macOS, Linux glibc, and Windows. Missing platform artifacts fail during construction; there is no JavaScript, WASM, model, or remote fallback. |
+
+The native package rejects unsupported configured entities at construction. It
+is not a Presidio or NER/ML port. Use Presidio or another injected
+`SensitiveDataDetector` implementation when the policy requires entities such
+as people, organizations, locations, or custom recognizers.
+
+### Structured tools need an explicit codec
+
+The portable policy applies to string input, string output, and string
+retrieval chunks. A structured tool value is never recursively scanned. Bind a
+specific tool flow to a reviewed `SensitiveDataValueCodec` that extracts only
+the fields permitted for inspection and reconstructs only those fields after
+masking. This keeps tool schemas, authority, and data minimization explicit.
+
+```ts
+const actions = createSensitiveDataActions({
+  detector,
+  toolInput: {
+    policy: 'input',
+    maskFlow: 'mask transfer memo',
+    codec: {
+      id: 'transfer-memo-v1',
+      extract: (value) => [{ id: 'memo', text: value.memo }],
+      replace: (value, replacements) => ({
+        ...value,
+        memo: applyReplacements(value.memo, replacements.filter((entry) => entry.id === 'memo')),
+      }),
+    },
+  },
+})
+```
+
+Configure `tool_input.flows: ['mask transfer memo']` and retain normal Zod,
+permission, governance, and business-authorization checks. Codec errors fail
+closed before the tool side effect.
+
 ## Compatibility and safety
 
 The first release supports `config.yml`/`config.yaml`, `models`, `instructions`, `prompts`, `custom_data`, and input/output/tool/retrieval rail lists. `config.py`, `actions.py`, `.co` files, dialog rails, execution rails, LangChain, servers, and implicit vector stores are rejected with stable diagnostics rather than silently approximated.
@@ -65,6 +170,16 @@ The first release supports `config.yml`/`config.yaml`, `models`, `instructions`,
 Rail actions time out after 10 seconds by default (override globally with `actionTimeoutMs` or per action with `timeoutMs`) and failures are fail-closed. Every evaluation emits an `evaluate_guardrail {rail.id}` child span with `openinference.span.kind=GUARDRAIL`, rail identity, phase, and outcome (`allow`, `block`, `transform`, or `error`). It also emits `harness.guardrail.evaluations` and `harness.guardrail.duration`; blocks are successful guardrail evaluations (span status `UNSET`) while action failures are span errors. Blocks, transformations, and failures have content-free structured logs.
 
 `modelCheckRail` invokes the registered Harness model handle within that guardrail span. Its nested standard `LLM` model span carries the configured alias/provider/model plus `gen_ai.usage.*` and `llm.token_count.*` when the provider reports usage, and emits the normal `gen_ai.client.token.usage` metric. This deliberate nesting lets observability backends attribute safety-model spend to the exact guardrail without duplicating or inventing token counts on the guardrail span. Pricing remains application/backend policy because model price schedules are not stable telemetry data.
+
+Each sensitive-data inspection adds a nested
+`harness.sensitive_data.inspect` `GUARDRAIL` span plus
+`harness.sensitive_data.inspections` and `harness.sensitive_data.duration`.
+They contain only detector id, `local|cloud` execution mode,
+`detect|mask` operation, outcome, bounded finding count, configured category
+identifiers, and an error type on failure. A detector is not an LLM call: it
+never emits model, token, `gen_ai.*`, `llm.*`, or cost attributes. If a
+model-backed guardrail is also used, its nested normal LLM span remains the one
+authoritative token and provider record.
 
 Do not put prompts, completions, documents, tool inputs/results, or credentials into action errors, logs, span attributes, reason codes, or fixtures.
 

@@ -15,7 +15,7 @@ import type {
 } from '@purista/harness'
 import { z } from 'zod'
 import { GuardrailBlockedError, GuardrailsConfigError, GuardrailEvaluationError, type GuardrailPhase } from './errors.js'
-import type { NeMoGuardrailsConfig } from './config.js'
+import type { NeMoGuardrailsConfig, NeMoSensitiveDataPolicy } from './config.js'
 
 export type GuardrailTransformTarget = 'user_message' | 'bot_message' | 'tool_input' | 'tool_output' | 'relevant_chunks'
 
@@ -40,6 +40,8 @@ export interface GuardrailActionContext {
   signal?: AbortSignal
   models?: Record<string, GuardrailModelHandle>
   modelAliases?: Readonly<Record<string, string>>
+  /** Internal policy binding supplied only to built-in sensitive-data actions. */
+  sensitiveDataPolicy?: NeMoSensitiveDataPolicy
   telemetry?: TelemetryShim
   logger?: Logger
 }
@@ -92,7 +94,9 @@ export interface DefineGuardrailsOptions {
   actionTimeoutMs?: number
 }
 
-type CompiledRail = { id: string; phase: GuardrailPhase; action: GuardrailAction }
+type SensitiveDataPolicyPhase = 'input' | 'output' | 'retrieval'
+type PolicyBoundAction = GuardrailAction & { readonly sensitiveDataPolicyPhase?: SensitiveDataPolicyPhase; readonly sensitiveDataSupportedEntities?: readonly string[] }
+type CompiledRail = { id: string; phase: GuardrailPhase; action: GuardrailAction; sensitiveDataPolicy?: NeMoSensitiveDataPolicy }
 const DEFAULT_ACTION_TIMEOUT_MS = 10_000
 
 /**
@@ -193,6 +197,7 @@ export class Guardrails {
             ...context,
             value,
             modelAliases: this.modelAliases,
+            ...(rail.sensitiveDataPolicy ? { sensitiveDataPolicy: rail.sensitiveDataPolicy } : {}),
             ...(context.models ? { models: context.models } : {})
           }, this.actionTimeoutMs)
           validateOutcome(rail, result)
@@ -287,11 +292,36 @@ function compileRails(config: NeMoGuardrailsConfig, actions: GuardrailActions): 
       const action = actions[id]
       if (!action) throw new GuardrailsConfigError('A configured rail flow has no application-owned action.', { reason: 'action_missing', flow_id: id })
       if (action.timeoutMs !== undefined) requireTimeout(action.timeoutMs, `actions.${id}.timeoutMs`)
-      return { id, phase, action }
+      const policyPhase = sensitiveDataPolicyPhase(id, action)
+      const sensitiveDataPolicy = policyPhase ? config.rails.config?.sensitiveDataDetection?.[policyPhase] : undefined
+      if (policyPhase && !sensitiveDataPolicy) {
+        throw new GuardrailsConfigError('A sensitive-data action requires its configured sensitive_data_detection policy.', { reason: 'invalid_shape', field: `rails.${phase}.flows`, flow_id: id })
+      }
+      const supportedEntities = (action as PolicyBoundAction).sensitiveDataSupportedEntities
+      if (sensitiveDataPolicy && supportedEntities && sensitiveDataPolicy.entities.some((entity) => !supportedEntities.includes(entity))) {
+        throw new GuardrailsConfigError('The selected sensitive-data detector does not support every configured entity.', { reason: 'invalid_shape', field: `rails.config.sensitive_data_detection.${policyPhase}.entities`, flow_id: id })
+      }
+      return { id, phase, action, ...(sensitiveDataPolicy ? { sensitiveDataPolicy } : {}) }
     })
     if (rails.length > 0) compiled.set(phase, rails)
   }
   return compiled
+}
+
+function sensitiveDataPolicyPhase(flowId: string, action: GuardrailAction): SensitiveDataPolicyPhase | undefined {
+  const reserved: Readonly<Record<string, SensitiveDataPolicyPhase>> = {
+    'detect sensitive data on input': 'input',
+    'mask sensitive data on input': 'input',
+    'detect sensitive data on output': 'output',
+    'mask sensitive data on output': 'output',
+    'detect sensitive data on retrieval': 'retrieval',
+    'mask sensitive data on retrieval': 'retrieval'
+  }
+  const boundPhase = (action as PolicyBoundAction).sensitiveDataPolicyPhase
+  if (reserved[flowId] && !boundPhase) {
+    throw new GuardrailsConfigError('Reserved sensitive-data flows must use createSensitiveDataActions.', { reason: 'invalid_shape', field: `flows.${flowId}`, flow_id: flowId })
+  }
+  return boundPhase
 }
 
 function contextFromAgent(ctx: AgentBeforeInputInterceptorContext<any, JsonValue> | AgentAfterModelInterceptorContext<any, JsonValue> | AgentBeforeToolInterceptorContext<any, JsonValue> | AgentAfterToolInterceptorContext<any, JsonValue>, phase: GuardrailPhase, toolId?: string, callId?: string): GuardrailActionContext {

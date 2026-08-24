@@ -102,7 +102,9 @@ npm run test:failure
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
 - `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
-- `packages/harness-guardrails/` — Optional typed, NeMo-shaped input/output/tool/retrieval guardrails addon.
+- `packages/harness-guardrails/` — Optional typed, NeMo-shaped input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
+- `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter.
+- `packages/harness-guardrails-native-privacy/` — Optional local Rust/Node-API sensitive-data subset for Node.js and Bun.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.
 - `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, SSE, artifacts, MCP, and Jaeger.
@@ -110,7 +112,7 @@ npm run test:failure
 - `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
-- `examples/guardrails/` — Deterministic NeMo-shaped guardrails example using the Harness test adapter.
+- `examples/guardrails/` — Deterministic NeMo-shaped guardrails and local sensitive-data example using the Harness test adapter.
 - `packages/harness-agent-plugins/README.md` — Agent Plugins inspection, review digest, and explicit Skills/MCP binding example.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

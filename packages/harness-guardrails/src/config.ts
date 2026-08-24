@@ -15,10 +15,32 @@ export interface NeMoRailConfig {
   flows: readonly string[]
 }
 
+/** Strict portable policy for one sensitive-data rail phase. */
+export interface NeMoSensitiveDataPolicy {
+  readonly entities: readonly string[]
+  readonly maskToken: string
+  readonly scoreThreshold: number
+}
+
+/** The supported NeMo-shaped sensitive-data configuration subset. */
+export interface NeMoSensitiveDataDetectionConfig {
+  readonly input?: NeMoSensitiveDataPolicy
+  readonly output?: NeMoSensitiveDataPolicy
+  readonly retrieval?: NeMoSensitiveDataPolicy
+}
+
+export interface NeMoGuardrailsRuntimeConfig {
+  readonly sensitiveDataDetection?: NeMoSensitiveDataDetectionConfig
+}
+
+export type NeMoRailsConfig = Readonly<Partial<Record<GuardrailPhase, NeMoRailConfig>>> & {
+  readonly config?: NeMoGuardrailsRuntimeConfig
+}
+
 /** Portable YAML subset accepted from a NeMo Guardrails config directory. */
 export interface NeMoGuardrailsConfig {
   models: readonly NeMoModelConfig[]
-  rails: Readonly<Partial<Record<GuardrailPhase, NeMoRailConfig>>>
+  rails: NeMoRailsConfig
   instructions?: readonly string[]
   prompts?: JsonValue
   customData?: JsonValue
@@ -56,7 +78,12 @@ export function parseGuardrailsConfig(value: unknown, sourcePath?: string): NeMo
   const root = object(value, 'root', sourcePath)
   const railsSource = root['rails'] === undefined ? {} : object(root['rails'], 'rails', sourcePath)
   const rails: Partial<Record<GuardrailPhase, NeMoRailConfig>> = {}
+  let runtimeConfig: NeMoGuardrailsRuntimeConfig | undefined
   for (const [key, rail] of Object.entries(railsSource)) {
+    if (key === 'config') {
+      runtimeConfig = parseRuntimeConfig(rail, sourcePath)
+      continue
+    }
     if (key === 'dialog' || key === 'execution') {
       throw new GuardrailsConfigError('This NeMo rail category requires a runtime that is not included in the first TypeScript release.', { reason: 'unsupported_rail_category', field: `rails.${key}`, path: sourcePath })
     }
@@ -66,6 +93,7 @@ export function parseGuardrailsConfig(value: unknown, sourcePath?: string): NeMo
     const railObject = object(rail, `rails.${key}`, sourcePath)
     rails[key as GuardrailPhase] = { flows: strings(railObject['flows'], `rails.${key}.flows`, sourcePath) }
   }
+  validateSensitiveDataFlows(rails, runtimeConfig?.sensitiveDataDetection, sourcePath)
   const models = root['models'] === undefined ? [] : array(root['models'], 'models', sourcePath).map((model, index) => {
     const item = object(model, `models[${index}]`, sourcePath)
     return {
@@ -77,11 +105,68 @@ export function parseGuardrailsConfig(value: unknown, sourcePath?: string): NeMo
   })
   return {
     models,
-    rails,
+    rails: { ...rails, ...(runtimeConfig ? { config: runtimeConfig } : {}) },
     ...(root['instructions'] === undefined ? {} : { instructions: strings(root['instructions'], 'instructions', sourcePath) }),
     ...(root['prompts'] === undefined ? {} : { prompts: json(root['prompts'], 'prompts', sourcePath) }),
     ...(root['custom_data'] === undefined ? {} : { customData: json(root['custom_data'], 'custom_data', sourcePath) }),
     ...(sourcePath ? { sourcePath } : {})
+  }
+}
+
+function parseRuntimeConfig(value: unknown, path?: string): NeMoGuardrailsRuntimeConfig {
+  const config = object(value, 'rails.config', path)
+  rejectUnknownKeys(config, new Set(['sensitive_data_detection']), 'rails.config', path)
+  if (config['sensitive_data_detection'] === undefined) return {}
+  const source = object(config['sensitive_data_detection'], 'rails.config.sensitive_data_detection', path)
+  rejectUnknownKeys(source, new Set(['input', 'output', 'retrieval']), 'rails.config.sensitive_data_detection', path)
+  const parsed: { input?: NeMoSensitiveDataPolicy; output?: NeMoSensitiveDataPolicy; retrieval?: NeMoSensitiveDataPolicy } = {}
+  for (const phase of ['input', 'output', 'retrieval'] as const) {
+    if (source[phase] !== undefined) parsed[phase] = parseSensitiveDataPolicy(source[phase], `rails.config.sensitive_data_detection.${phase}`, path)
+  }
+  return { sensitiveDataDetection: parsed }
+}
+
+function parseSensitiveDataPolicy(value: unknown, field: string, path?: string): NeMoSensitiveDataPolicy {
+  const policy = object(value, field, path)
+  rejectUnknownKeys(policy, new Set(['entities', 'mask_token', 'score_threshold']), field, path)
+  const entities = array(policy['entities'], `${field}.entities`, path).map((item, index) => {
+    const entity = string(item, `${field}.entities[${index}]`, path)
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(entity)) throw new GuardrailsConfigError('Sensitive-data entity identifiers must be uppercase ASCII identifiers.', { reason: 'invalid_shape', field: `${field}.entities[${index}]`, path })
+    return entity
+  })
+  if (entities.length === 0 || new Set(entities).size !== entities.length) throw new GuardrailsConfigError('Sensitive-data entities must be a non-empty unique list.', { reason: 'invalid_shape', field: `${field}.entities`, path })
+  const maskToken = string(policy['mask_token'], `${field}.mask_token`, path)
+  if (maskToken.length > 128) throw new GuardrailsConfigError('Sensitive-data mask_token must be at most 128 UTF-16 code units.', { reason: 'invalid_shape', field: `${field}.mask_token`, path })
+  const scoreThreshold = policy['score_threshold']
+  if (typeof scoreThreshold !== 'number' || !Number.isFinite(scoreThreshold) || scoreThreshold < 0 || scoreThreshold > 1) {
+    throw new GuardrailsConfigError('Sensitive-data score_threshold must be a finite number between zero and one.', { reason: 'invalid_shape', field: `${field}.score_threshold`, path })
+  }
+  return { entities, maskToken, scoreThreshold }
+}
+
+function validateSensitiveDataFlows(rails: Partial<Record<GuardrailPhase, NeMoRailConfig>>, config: NeMoSensitiveDataDetectionConfig | undefined, path?: string): void {
+  const expected = new Map<string, 'input' | 'output' | 'retrieval'>([
+    ['detect sensitive data on input', 'input'],
+    ['mask sensitive data on input', 'input'],
+    ['detect sensitive data on output', 'output'],
+    ['mask sensitive data on output', 'output'],
+    ['detect sensitive data on retrieval', 'retrieval'],
+    ['mask sensitive data on retrieval', 'retrieval']
+  ])
+  for (const [phase, rail] of Object.entries(rails) as [GuardrailPhase, NeMoRailConfig][]) {
+    for (const flow of rail.flows) {
+      const expectedPhase = expected.get(flow)
+      if (!expectedPhase) continue
+      if (phase !== expectedPhase || !config?.[expectedPhase]) {
+        throw new GuardrailsConfigError('A sensitive-data flow requires the matching sensitive_data_detection policy.', { reason: 'invalid_shape', field: `rails.${phase}.flows`, path })
+      }
+    }
+  }
+}
+
+function rejectUnknownKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, field: string, path?: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new GuardrailsConfigError('Unknown guardrails configuration field.', { reason: 'invalid_shape', field: `${field}.${key}`, path })
   }
 }
 

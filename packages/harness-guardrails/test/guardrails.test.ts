@@ -5,6 +5,23 @@ import { defineHarness, inMemorySandbox } from '@purista/harness'
 import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
 import { createModelRegistry } from '../../harness/src/models/registry.js'
 import { createSensitiveDataActions, defineGuardrails, GuardrailBlockedError, modelCheckRail, parseGuardrailsConfig, type SensitiveDataDetector } from '../src/index.js'
+import { FakeSensitiveDataDetector } from '../src/testing/index.js'
+
+it('scripts deterministic sensitive-data findings, failures, capabilities, and request recording', async () => {
+  const detector = new FakeSensitiveDataDetector({ id: 'privacy-test', executionMode: 'cloud', supportedEntities: ['EMAIL_ADDRESS'] })
+  const request = { text: 'synthetic@example.test', entities: ['EMAIL_ADDRESS'], scoreThreshold: 0.6, signal: new AbortController().signal }
+  detector.enqueue([{ category: 'EMAIL_ADDRESS', start: 0, end: request.text.length, score: 0.99 }])
+  detector.enqueueError(new Error('intentional test failure'))
+
+  await expect(detector.inspect(request)).resolves.toEqual({ findings: [{ category: 'EMAIL_ADDRESS', start: 0, end: request.text.length, score: 0.99 }] })
+  await expect(detector.inspect(request)).rejects.toThrow('intentional test failure')
+  await expect(detector.inspect(request)).resolves.toEqual({ findings: [] })
+  expect(detector.executionMode).toBe('cloud')
+  expect(detector.supportedEntities).toEqual(['EMAIL_ADDRESS'])
+  expect(detector.requests).toHaveLength(3)
+  detector.reset()
+  expect(detector.requests).toEqual([])
+})
 
 it('runs NeMo-shaped input and output rails with the Harness test adapter', async () => {
   const provider = new FakeModelProvider()

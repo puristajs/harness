@@ -133,6 +133,44 @@ is not a Presidio or NER/ML port. Use Presidio or another injected
 `SensitiveDataDetector` implementation when the policy requires entities such
 as people, organizations, locations, or custom recognizers.
 
+### Test rails and sidecars deterministically
+
+Use the public testing helpers for unit tests, workflow tests, tool tests, and
+adapter contract tests. They do not recognize data or call a network: each
+test scripts exactly the findings, failure, or Presidio HTTP outcome it needs.
+The request record is test-only and can contain synthetic input, so never send
+it to logs, snapshots, or telemetry.
+
+```ts
+import { FakeSensitiveDataDetector } from '@purista/harness-guardrails/testing'
+
+const detector = new FakeSensitiveDataDetector({
+  supportedEntities: ['EMAIL_ADDRESS'],
+})
+detector.enqueue([{ category: 'EMAIL_ADDRESS', start: 0, end: 22, score: 0.99 }])
+
+// `createSensitiveDataActions({ detector })` now has one deterministic match.
+// The next unscripted inspection returns `{ findings: [] }`.
+```
+
+```ts
+import { createPresidioDetector } from '@purista/harness-guardrails-presidio'
+import { FakePresidioSidecar } from '@purista/harness-guardrails-presidio/testing'
+
+const sidecar = new FakePresidioSidecar()
+sidecar.enqueueAnalyzeResponse([
+  { entity_type: 'EMAIL_ADDRESS', start: 0, end: 22, score: 0.99 },
+])
+const detector = createPresidioDetector({
+  id: 'presidio-test',
+  endpoint: 'https://presidio.test/',
+  fetch: sidecar.fetch,
+})
+
+// Assert `sidecar.requests[0]` when verifying the exact POST /analyze contract.
+// `sidecar.enqueueTransportError()` scripts a safe fail-closed transport failure.
+```
+
 ### Structured tools need an explicit codec
 
 The portable policy applies to string input, string output, and string

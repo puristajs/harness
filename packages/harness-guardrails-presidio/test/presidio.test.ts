@@ -1,5 +1,23 @@
 import { expect, it } from 'vitest'
 import { createPresidioDetector, PresidioSidecarError } from '../src/index.js'
+import { FakePresidioSidecar } from '../src/testing/index.js'
+
+it('scripts the narrow Presidio wire contract without emulating recognizers', async () => {
+  const sidecar = new FakePresidioSidecar()
+  sidecar.enqueueAnalyzeResponse([{ entity_type: 'EMAIL_ADDRESS', start: 0, end: 22, score: 0.99 }])
+  const detector = createPresidioDetector({ id: 'presidio-test', endpoint: 'https://presidio.test/', fetch: sidecar.fetch })
+  const request = { text: 'synthetic@example.test', entities: ['EMAIL_ADDRESS'], scoreThreshold: 0.6, signal: new AbortController().signal }
+
+  await expect(detector.inspect(request)).resolves.toEqual({ findings: [{ category: 'EMAIL_ADDRESS', start: 0, end: 22, score: 0.99 }] })
+  expect(sidecar.requests).toHaveLength(1)
+  expect(sidecar.requests[0]).toMatchObject({ url: 'https://presidio.test/analyze', init: { method: 'POST', redirect: 'error' } })
+  expect(JSON.parse(String(sidecar.requests[0]?.init.body))).toEqual({ text: request.text, language: 'en', entities: ['EMAIL_ADDRESS'], score_threshold: 0.6, return_decision_process: false })
+
+  sidecar.enqueueTransportError()
+  await expect(detector.inspect(request)).rejects.toMatchObject({ kind: 'transport' } satisfies Partial<PresidioSidecarError>)
+  sidecar.reset()
+  await expect(detector.inspect(request)).resolves.toEqual({ findings: [] })
+})
 
 it('sends the narrow Presidio Analyzer contract and converts Python offsets to UTF-16', async () => {
   let init: RequestInit | undefined

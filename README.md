@@ -103,7 +103,7 @@ npm run test:failure
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
 - `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
 - `packages/harness-guardrails/` — Optional typed, NeMo-shaped input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
-- `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter.
+- `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter and deterministic protocol testing helper.
 - `packages/harness-guardrails-native-privacy/` — Optional local Rust/Node-API sensitive-data subset for Node.js and Bun.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.

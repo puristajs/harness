@@ -76,6 +76,13 @@ Keep these layers separate:
   only source of reported token/model attribution. For structured tool values,
   require an explicit `SensitiveDataValueCodec`; never recursively inspect all
   strings in arbitrary JSON.
+- For deterministic Guardrails tests, use
+  `@purista/harness-guardrails/testing`'s `FakeSensitiveDataDetector` to
+  script findings, full results, or failures. For Presidio wire-contract tests,
+  inject `FakePresidioSidecar.fetch` from
+  `@purista/harness-guardrails-presidio/testing`; it scripts HTTP outcomes but
+  does not emulate Presidio NLP. Test request records are in-memory only and
+  must never be copied to logs, telemetry, snapshots, or production fixtures.
 
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
@@ -85,7 +92,9 @@ Keep these layers separate:
 5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
 6. Decide which state is durable: session history/runs use `StateStore`, session memory uses `MemoryAdapter`, and provider context is transient. Bound durable history with whole-turn retention and bound request context with the model's context/token limits.
 7. Invoke through `harness.getSession(id)`, release idle sessions, and shut down the shared harness during process shutdown. Use destructive session close only for explicit conversation deletion.
-8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
+8. Test with `@purista/harness/testing` model/runtime fakes, the Guardrails
+   fake detector, and the Presidio scripted sidecar before live-provider or
+   live-sidecar smoke tests.
 9. For provider-loop regression tests, use the explicit sanitizer recorder and offline replay provider; do not capture production interaction content. Use diagnostic invariants only as explicitly invoked test checks.
 
 ## Quick Pattern

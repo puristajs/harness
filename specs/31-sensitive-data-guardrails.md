@@ -33,7 +33,7 @@ All packages are ESM-only and support Node.js and Bun as specified below.
 | SD-02 | Every detector is injected through one provider-neutral public port | compile-only consumer fixture |
 | SD-03 | A configured match blocks or masks before the protected boundary | agent, tool and retrieval side-effect tests |
 | SD-04 | Sidecar faults, malformed responses and codec faults fail closed without content leakage | error and recording-telemetry tests |
-| SD-05 | Original Presidio can be used through an application-owned internal HTTP(S) endpoint | fake-`fetch` contract suite |
+| SD-05 | Original Presidio can be used through an application-owned internal HTTP(S) endpoint | public scripted-sidecar contract suite |
 | SD-06 | Native privacy supports documented deterministic entity subset in Node and Bun | Node and Bun integration matrix |
 | SD-07 | Traces, metrics and logs describe enforcement without recording content or duplicate LLM cost data | OTel/log redaction assertions |
 
@@ -93,6 +93,30 @@ does not change the existing `defineGuardrails` construction or Harness core.
 If `supportedEntities` is declared, unknown configured entities fail at action
 factory construction with `GUARDRAILS_CONFIG_ERROR`. The public port remains
 open to detector packages other than Presidio and native privacy.
+
+## Deterministic testing surface
+
+`@purista/harness-guardrails/testing` MUST provide the deterministic
+`FakeSensitiveDataDetector` for application tests. It records inspection
+requests and supports queued valid findings, complete inspection results, and
+intentional failures. It has no built-in recognition, timing, network access,
+fallback, telemetry, logging, or content redaction behavior. Tests choose the
+exact outcome; a missing queued result is an empty finding list. The fake may
+declare the same stable id, execution mode, and capabilities as production
+detectors, so construction-time capability validation is testable.
+
+`@purista/harness-guardrails-presidio/testing` MUST provide a deterministic
+`FakePresidioSidecar`. It is a scripted `fetch` implementation for the one
+supported Presidio `POST /analyze` wire contract, not an imitation of
+Presidio's recognizer or NLP behavior. It records test-only outbound requests
+and supports queued HTTP responses and transport failures. It defaults to a
+successful empty Analyzer response. Test-recorded request and response content
+MUST remain in memory only; it must never be attached to telemetry, logs,
+errors, snapshots, or production package paths.
+
+Both testing subpaths are public development-only helpers. They are the
+default for unit, workflow, tool, skill, and adapter-contract tests; a live
+Presidio sidecar is reserved for explicitly configured integration tests.
 
 ## Portable policy and configuration
 
@@ -317,8 +341,9 @@ without duplicate metrics.
 The base package exports `createSensitiveDataActions`, all types in the public
 port, `SensitiveDataValueCodec`, `SensitiveDataTextSegment`,
 `SensitiveDataReplacement`, and a deterministic `FakeSensitiveDataDetector`
-from its testing subpath. The new adapter packages export only their factory,
-adapter options and public capability constants; neither redefines the port.
+from its testing subpath. The Presidio package additionally exports
+`FakePresidioSidecar` from its testing subpath. Production adapter entrypoints
+export only their factory and adapter options; neither redefines the port.
 
 All exported TypeScript APIs require TSDoc with a small safe example. Public
 documentation must cover policy setup, local Presidio deployment boundary,
@@ -328,7 +353,8 @@ state clearly that samples contain synthetic data only.
 
 Release requires root lint/typecheck/build/test/coverage, base parser/action/
 telemetry tests, Presidio fake-transport tests, native Node and Bun black-box
-tests, cross-platform artifact checks, package dry-run checks, docs link/build
+tests, public fake-detector/sidecar behavior tests, cross-platform artifact
+checks, package dry-run checks, docs link/build
 checks and skill/knowledge audits. CI must verify the published package file
 allowlist includes the loader and matching artifacts but excludes source,
 credentials, fixtures containing content, and unreviewed binaries.

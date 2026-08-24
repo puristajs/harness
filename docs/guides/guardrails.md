@@ -2,6 +2,39 @@
 
 `@purista/harness-guardrails` is an optional, typed addon for default-loop agents. It adapts the portable configuration vocabulary from NVIDIA NeMo Guardrails without importing a Python runtime, Colang, provider SDK, server, or vector database.
 
+## Lifecycle and automatic coverage
+
+```mermaid
+flowchart TD
+  request[Typed request] --> schema[Input schema and application authentication]
+  schema --> input[Ordered input rails]
+  input --> retrieve[Application retrieval, if used]
+  retrieve --> retrieval[Explicit retrieval filter]
+  retrieval --> model[Registered Harness model call]
+  model --> output[Ordered output rails]
+  output --> tool{Tool requested?}
+  tool -- yes --> toolInput[Ordered tool-input rails]
+  toolInput --> authority[Permissions, governance, schema validation]
+  authority --> sideEffect[Tool side effect]
+  sideEffect --> toolOutput[Ordered tool-output rails]
+  toolOutput --> model
+  tool -- no --> result[Output validation, persistence, or delivery]
+```
+
+Input, output, tool-input, and tool-output rails attach automatically to an
+attached default-loop agent. Retrieval is application-owned and only protected
+when the caller invokes `filterRetrievedChunks(...)`. Each phase runs
+sequentially in configured order: a transform becomes the next rail's input;
+a block, missing action, invalid outcome, timeout, detector/codec fault, or
+cancellation-protocol fault fails closed and stops the protected path.
+
+The output phase receives the completed structured model object, not arbitrary
+partial stream chunks. Direct `ctx.models.*` calls and custom-handler agents
+are outside automatic coverage; `attach(...)` rejects custom handlers. Tool
+permissions, governance, application authorization, tenancy, and rate limits
+remain independent controls. A sensitive-data rail needs a reviewed codec for
+structured values—it never recursively scans arbitrary tool JSON.
+
 ## Exact portable configuration subset
 
 The parser accepts only these root keys: `models`, `instructions`, `prompts`,

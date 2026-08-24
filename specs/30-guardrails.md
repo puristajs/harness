@@ -70,6 +70,16 @@ The parser is strict at every accepted mapping. It accepts only root
 `custom_data` are preserved compatibility metadata only: they do not select a
 provider, inject an agent prompt, render a template, or execute behavior.
 
+Public Guardrails documentation includes an architecture diagram and a phase
+coverage table. They show the exact default-loop order: parsed agent input,
+ordered input rails, application-owned retrieval plus an explicit retrieval
+filter, model call, the repeated tool-input/permission-governance-validation/
+side-effect/tool-output loop, ordered output rails, and output validation or
+delivery. The documentation explicitly marks that each phase runs sequentially
+(not in parallel), that blocked/failed actions end the protected path
+fail-closed, and that direct model calls, custom-handler agents, unfiltered
+retrieval, and uninspected structured fields are outside automatic coverage.
+
 When a directory is loaded, the directory tree is also an explicit migration
 boundary: the single root `config.yml`/`config.yaml` is the only consumed
 configuration source. Nested or root `.co`/`.py` files, `prompts.yml` or

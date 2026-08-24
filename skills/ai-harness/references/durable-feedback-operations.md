@@ -76,10 +76,8 @@ const local = localDurableExecution({ root: '.purista/harness', exec: false })
 
 const harness = defineHarness()
   .state(local.state)
-  .runtime(local.runtime)
   .sandbox(local.sandbox)
   .workspaceStore(local.workspaceStore)
-  .checkpoints(local.checkpoints)
   .requires([
     'runtime.persistent',
     'runtime.workspace_checkpoint',
@@ -93,8 +91,9 @@ const harness = defineHarness()
   .build()
 ```
 
-The local bundle uses built-in Node/Bun SQLite for state/runtime/context
-checkpoints and a host directory for workspace checkpoints. Host exec is off by
+The local bundle uses one built-in Node/Bun SQLite `DurableStateStore` for
+conversation state, runtime, waits, and context checkpoints, plus a host
+directory for workspace checkpoints. Host exec is off by
 default; this mode is durable local persistence, not a hardened sandbox. When
 exec is enabled, commands run without a shell (tokenized argv), unquoted shell
 metacharacters are rejected under an `allowCommands` allow-list, output capture
@@ -175,7 +174,10 @@ Rules:
   a new code path.
 
 ## Durable External Waits
-Use `.externalWait(adapter)` only with durable workflow invocations. A workflow
+Use one `DurableStateStore` through `.state(store)` in production; it derives
+the runtime, context-checkpoint, and external-wait facets from the same shared
+backing system. `.externalWait(adapter)` remains available for specialised
+legacy composition only. A workflow
 calls `ctx.externalWait.wait({ waitId, kind, schemaVersion, definitionVersion,
 deadline })`; a pending result throws `ExternalWaitPendingError`, releases the
 lease, and marks the run `waiting`. Deliver a terminal, idempotent

@@ -35,10 +35,8 @@ const local = localDurableExecution({
 
 const harness = defineHarness()
   .state(local.state)
-  .runtime(local.runtime)
   .sandbox(local.sandbox)
   .workspaceStore(local.workspaceStore)
-  .checkpoints(local.checkpoints)
   .requires([
     'runtime.persistent',
     'runtime.workspace_checkpoint',

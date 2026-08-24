@@ -30,7 +30,7 @@ import type {
   ContentPart,
   ModelCallOptions
 } from '../ports/model-provider.js'
-import type { StateStore } from '../ports/state.js'
+import { isDurableStateStore, type StateStore } from '../ports/state.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { sandboxMemory } from '../memory/sandbox/index.js'
@@ -1621,9 +1621,25 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const memory = this.configured.memory ?? sandboxMemory()
     validateMemoryAdapter(memory)
+    const state = this.configured.state ?? new InMemoryStateStore()
+    const durableState = isDurableStateStore(state) ? state : undefined
+    if (durableState) {
+      if (this.configured.runtime && this.configured.runtime !== durableState) {
+        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different runtime adapter.', { reason: 'conflicting_durable_state_adapter', path: 'runtime' })
+      }
+      if (this.configured.checkpoints && this.configured.checkpoints !== durableState) {
+        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different context checkpoint store.', { reason: 'conflicting_durable_state_adapter', path: 'checkpoints' })
+      }
+      if (this.configured.externalWait && this.configured.externalWait !== durableState) {
+        throw new HarnessConfigError('A DurableStateStore cannot be combined with a different external wait adapter.', { reason: 'conflicting_durable_state_adapter', path: 'externalWait' })
+      }
+    }
+    const runtime = this.configured.runtime ?? durableState
+    const checkpoints = this.configured.checkpoints ?? durableState
+    const externalWait = this.configured.externalWait ?? durableState
     if (this.configured.workspaceStore) validateDurableWorkspaceStore(this.configured.workspaceStore)
-    if (this.configured.checkpoints) validateContextCheckpointStore(this.configured.checkpoints)
-    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models)
+    if (checkpoints) validateContextCheckpointStore(checkpoints)
+    const inspection = this.resolveInspection(this.options.name ?? 'agent-harness', sandbox, memory, models, runtime, checkpoints, externalWait)
     const missing = missingCapabilities(inspection.requiredCapabilities, inspection.capabilities)
     if (missing.length > 0) {
       throw new HarnessConfigError('Required adapter capabilities are not available.', {
@@ -1637,13 +1653,13 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       name: this.options.name ?? 'agent-harness',
       logger: this.configured.logger ?? new JsonLogger(),
       ...(this.configured.telemetry ? { telemetry: this.configured.telemetry } : {}),
-      state: this.configured.state ?? new InMemoryStateStore(),
+      state,
       sandbox,
       memory,
-      ...(this.configured.runtime ? { runtime: this.configured.runtime } : {}),
+      ...(runtime ? { runtime } : {}),
       ...(this.configured.workspaceStore ? { workspaceStore: this.configured.workspaceStore } : {}),
-      ...(this.configured.checkpoints ? { checkpoints: this.configured.checkpoints } : {}),
-      ...(this.configured.externalWait ? { externalWait: this.configured.externalWait } : {}),
+      ...(checkpoints ? { checkpoints } : {}),
+      ...(externalWait ? { externalWait } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
@@ -1937,7 +1953,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
   }
 
-  private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {
+  private resolveInspection(name: string, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig, runtime: DurableRuntimeAdapter | undefined, checkpoints: ContextCheckpointStore | undefined, externalWait: DurableExternalWaitAdapter | undefined): HarnessInspection {
     const adapters: AdapterInspection[] = []
     const sandboxCapabilities = hasAdapterCapabilities(sandbox) ? uniqueCapabilities(sandbox.capabilities) : []
     adapters.push({
@@ -1955,11 +1971,11 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       }
     })
 
-    if (this.configured.runtime) {
+    if (runtime) {
       adapters.push({
         kind: 'runtime',
-        id: this.configured.runtime.id ?? 'runtime',
-        capabilities: uniqueCapabilities(this.configured.runtime.capabilities)
+        id: runtime.id ?? 'runtime',
+        capabilities: uniqueCapabilities(runtime.capabilities)
       })
     }
 
@@ -1975,22 +1991,22 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       })
     }
 
-    if (this.configured.checkpoints) {
+    if (checkpoints) {
       adapters.push({
         kind: 'context_checkpoint',
-        id: this.configured.checkpoints.info.id,
-        capabilities: uniqueCapabilities(this.configured.checkpoints.info.capabilities),
+        id: checkpoints.info.id,
+        capabilities: uniqueCapabilities(checkpoints.info.capabilities),
         metadata: {
-          packageName: this.configured.checkpoints.info.packageName
+          packageName: checkpoints.info.packageName
         }
       })
     }
 
-    if (this.configured.externalWait) {
+    if (externalWait) {
       adapters.push({
         kind: 'external_wait',
-        id: this.configured.externalWait.id ?? 'external_wait',
-        capabilities: uniqueCapabilities(this.configured.externalWait.capabilities)
+        id: externalWait.id ?? 'external_wait',
+        capabilities: uniqueCapabilities(externalWait.capabilities)
       })
     }
 

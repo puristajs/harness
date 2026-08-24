@@ -1,8 +1,10 @@
 # Durable human review gates
 
 Harness external waits are a provider-neutral checkpoint-and-signal primitive
-for application-owned review processes. Configure `.runtime(...)` and
-`.externalWait(...)`, then invoke a workflow with a stable durable run id.
+for application-owned review processes. In production, configure one
+`DurableStateStore` through `.state(store)`; it supplies the conversation,
+durable-runtime, checkpoint, and external-wait facets from one backing system.
+Then invoke a workflow with a stable durable run id.
 `ctx.externalWait.wait({ waitId, kind, schemaVersion, definitionVersion,
 deadline })` persists only that safe subset. A pending wait throws
 `ExternalWaitPendingError`, releases the lease, and leaves the run `waiting`.
@@ -16,9 +18,10 @@ notifications, and the final idempotent domain command. Do not put proposal
 text, tool input/output, comments, credentials, or reviewer IDs in the wait
 request or telemetry attributes.
 
-Use `inMemoryExternalWait()` for deterministic tests and
-`localDurableExecution().externalWait` for SQLite-backed Node.js/Bun local
-execution. The adapter has terminal outcomes `approved`, `rejected`, `expired`,
+Use `inMemoryExternalWait()` for deterministic unit tests. For local Node.js or
+Bun development, `SqliteDurableStateStore` is a zero-dependency, single-host
+implementation of the same contract. It is not a distributed production
+backend. The adapter has terminal outcomes `approved`, `rejected`, `expired`,
 and `cancelled`; duplicate/late event ids return typed no-op results.
 
 See the executable [`durable-human-review` example](../../examples/durable-human-review/README.md)

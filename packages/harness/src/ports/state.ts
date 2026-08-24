@@ -3,6 +3,9 @@ import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../mo
 import type { Logger } from '../logger/index.js'
 import type { TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from './harness-context.js'
+import type { DurableRuntime, FinishRunPatch as DurableFinishRunPatch } from '../runtime/durable.js'
+import type { ContextCheckpointStore } from './context-checkpoints.js'
+import type { DurableExternalWaitAdapter } from './external-wait.js'
 
 /** Fields allowed when marking a run as finished. */
 export type FinishRunPatch = Pick<RunRecord, 'status' | 'finishedAt' | 'output' | 'error'>
@@ -41,6 +44,42 @@ export interface StateStore {
   listEvents(runId: string, opts?: { limit?: number; after?: string }): Promise<PersistedRunEvent[]>
 
   close?(): Promise<void>
+}
+
+/**
+ * One authoritative persistence adapter for durable conversation execution.
+ *
+ * It keeps conversation/session state, run lifecycle, durable checkpoints, and
+ * opaque external waits in one backing system. Production implementations must
+ * make the advertised operations safe across application instances.
+ */
+export type DurableStateStore = Omit<StateStore, 'finishRun'>
+  & Omit<DurableRuntime, 'finishRun'>
+  & ContextCheckpointStore
+  & DurableExternalWaitAdapter
+  & {
+    /** Handles both persisted conversation-run and durable-run terminal patches. */
+    finishRun(runId: string, patch: FinishRunPatch | DurableFinishRunPatch): Promise<void>
+  }
+
+/** True when a conversation store supplies every durable execution facet. */
+export function isDurableStateStore(store: StateStore): store is DurableStateStore {
+  const candidate = store as Partial<DurableStateStore>
+  return Array.isArray(candidate.capabilities)
+    && typeof candidate.startRun === 'function'
+    && typeof candidate.loadCheckpoint === 'function'
+    && typeof candidate.commitCheckpoint === 'function'
+    && typeof candidate.finishRun === 'function'
+    && typeof candidate.withSessionLock === 'function'
+    && typeof candidate.register === 'function'
+    && typeof candidate.get === 'function'
+    && typeof candidate.signal === 'function'
+    && typeof candidate.cancel === 'function'
+    && typeof candidate.write === 'function'
+    && typeof candidate.list === 'function'
+    && typeof candidate.read === 'function'
+    && typeof candidate.delete === 'function'
+    && Boolean(candidate.info)
 }
 
 /**

@@ -122,8 +122,8 @@ export type {
 export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/harness-context.js'
 
 // State port + in-memory default
-export { StateStoreAdapterBase } from './ports/state.js'
-export type { StateStore } from './ports/state.js'
+export { StateStoreAdapterBase, isDurableStateStore } from './ports/state.js'
+export type { DurableStateStore, StateStore } from './ports/state.js'
 export { InMemoryStateStore } from './state/in-memory.js'
 export type { JsonValue } from './models/json.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
@@ -252,9 +252,11 @@ export {
   localDirectorySandbox,
   localDirectoryWorkspaceStore,
   localDurableExecution,
+  SqliteDurableStateStore,
   SqliteHarnessStorage,
   sqliteContextCheckpointStore,
   sqliteDurableRuntime,
+  sqliteDurableStateStore,
   sqliteStateStore
 } from './local/index.js'
 export type {

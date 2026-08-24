@@ -285,10 +285,8 @@ const local = localDurableExecution({ root: '.purista/harness', exec: false })
 
 const harness = defineHarness()
   .state(local.state)
-  .runtime(local.runtime)
   .sandbox(local.sandbox)
   .workspaceStore(local.workspaceStore)
-  .checkpoints(local.checkpoints)
   .requires([
     'runtime.persistent',
     'workspace_store.persistent',

@@ -6,7 +6,7 @@ import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
 import type { DurableExternalWaitAdapter } from '../ports/external-wait.js'
 import { createLocalWorkspaceCoordinator, localDirectoryWorkspaceStore } from './local-workspace.js'
 import { localDirectorySandbox, type LocalDurableSandbox, type LocalHostExecPolicy } from './local-sandbox.js'
-import { SqliteHarnessStorage, type SqliteDurableRuntimeOptions, type SqliteContextCheckpointStoreOptions, type SqliteStateStoreOptions, sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore } from './sqlite-storage.js'
+import { SqliteDurableStateStore, type SqliteDurableRuntimeOptions, type SqliteContextCheckpointStoreOptions, type SqliteStateStoreOptions, sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore } from './sqlite-storage.js'
 
 export type {
   LocalHostExecPolicy,
@@ -19,7 +19,7 @@ export type { LocalDirectoryWorkspaceStoreOptions } from './local-workspace.js'
 export type { SqliteDurableRuntimeOptions, SqliteContextCheckpointStoreOptions, SqliteStateStoreOptions } from './sqlite-storage.js'
 export { localDirectorySandbox } from './local-sandbox.js'
 export { localDirectoryWorkspaceStore } from './local-workspace.js'
-export { sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore, SqliteHarnessStorage } from './sqlite-storage.js'
+export { sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteDurableStateStore, sqliteStateStore, SqliteDurableStateStore, SqliteHarnessStorage } from './sqlite-storage.js'
 
 export interface LocalDurableExecutionOptions {
   /** Host directory used for SQLite files, active workspaces, and snapshots. */
@@ -52,7 +52,7 @@ export interface LocalDurableExecution {
 export function localDurableExecution(options: LocalDurableExecutionOptions): LocalDurableExecution {
   const root = resolve(options.root)
   const coordinator = createLocalWorkspaceCoordinator()
-  const storage = new SqliteHarnessStorage({
+  const storage = new SqliteDurableStateStore({
     file: options.databaseFile ?? resolve(root, 'runtime.sqlite'),
     ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {})
   })

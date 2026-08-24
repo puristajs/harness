@@ -7,6 +7,7 @@ import {
   inMemorySandbox,
   type DurableExternalWaitAdapter,
   type DurableRuntime,
+  isDurableStateStore,
   type StateStore,
   InMemoryStateStore,
   type JsonValue
@@ -23,13 +24,15 @@ export interface PaymentExecutor {
 }
 
 export function createPaymentReviewExample(input: { tasks: ReviewTaskStore; waits?: DurableExternalWaitAdapter; runtime?: DurableRuntime; state?: StateStore; payments: PaymentExecutor }) {
-  const waits = input.waits ?? inMemoryExternalWait()
-  const runtime = input.runtime ?? inMemoryDurableRuntime()
-  const harness = defineHarness({ name: 'durable-payment-review-example' })
+  const state = input.state ?? new InMemoryStateStore()
+  const durableState = isDurableStateStore(state) ? state : undefined
+  const waits: DurableExternalWaitAdapter = durableState ?? input.waits ?? inMemoryExternalWait()
+  const runtime: DurableRuntime = durableState ?? input.runtime ?? inMemoryDurableRuntime()
+  let builder = defineHarness({ name: 'durable-payment-review-example' })
     .sandbox(inMemorySandbox())
-    .state(input.state ?? new InMemoryStateStore())
-    .runtime(runtime)
-    .externalWait(waits)
+    .state(state)
+  if (!durableState) builder = builder.runtime(runtime).externalWait(waits)
+  const harness = builder
     .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
     .tools({})
     .skills({})

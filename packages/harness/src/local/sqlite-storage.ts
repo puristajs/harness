@@ -9,7 +9,7 @@ import type { ContextCheckpoint, ContextCheckpointQuery, ContextCheckpointRef, C
 import { ExternalWaitError, validateExternalWaitRequest, type DurableExternalWaitAdapter, type ExternalWaitOutcome, type ExternalWaitRegistration, type ExternalWaitRequest, type ExternalWaitSignal, type ExternalWaitSignalResult, type ExternalWaitSnapshot } from '../ports/external-wait.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
-import type { FinishRunPatch, StateStore } from '../ports/state.js'
+import type { DurableStateStore, FinishRunPatch, StateStore } from '../ports/state.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import {
   AsyncMutex,
@@ -19,6 +19,7 @@ import {
   type DurableRunLease,
   type DurableRunStart,
   type DurableRuntime,
+  type FinishRunPatch as DurableFinishRunPatch,
   type DurableTerminalRunStatus,
   type RunCheckpoint
 } from '../runtime/durable.js'
@@ -147,8 +148,16 @@ function requiredNumber(row: SqlRow, key: string, op: StateOp): number {
   return value
 }
 
-/** SQLite-backed local storage implementing StateStore, DurableRuntime, and ContextCheckpointStore. */
-export class SqliteHarnessStorage implements StateStore, DurableRuntime, ContextCheckpointStore, DurableExternalWaitAdapter {
+/**
+ * Native SQLite durable conversation-state store for one local host.
+ *
+ * @example
+ * ```ts
+ * const state = sqliteDurableStateStore({ file: '.purista/harness.sqlite' })
+ * const harness = defineHarness().state(state).models(models).build()
+ * ```
+ */
+export class SqliteDurableStateStore implements DurableStateStore {
   public readonly capabilities = [
     'runtime.checkpoint',
     'runtime.retry',
@@ -302,7 +311,7 @@ export class SqliteHarnessStorage implements StateStore, DurableRuntime, Context
     })
   }
 
-  public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
+  public async finishRun(runId: string, patch: FinishRunPatch | DurableFinishRunPatch): Promise<void> {
     return this.runtimeSpan('finish', {
       'harness.run.id': runId,
       'harness.run.status': patch.status
@@ -839,13 +848,21 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): DurableRuntime & { close(): Promise<void> } {
-  return new SqliteHarnessStorage(options)
+  return new SqliteDurableStateStore(options)
+}
+
+/** Creates the recommended zero-dependency SQLite conversation store for one local host. */
+export function sqliteDurableStateStore(options: SqliteDurableRuntimeOptions): DurableStateStore & { close(): Promise<void> } {
+  return new SqliteDurableStateStore(options)
 }
 
 export function sqliteStateStore(options: SqliteStateStoreOptions): StateStore & { close(): Promise<void> } {
-  return new SqliteHarnessStorage(options)
+  return new SqliteDurableStateStore(options)
 }
 
 export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> } {
-  return new SqliteHarnessStorage(options)
+  return new SqliteDurableStateStore(options)
 }
+
+/** @deprecated Use {@link SqliteDurableStateStore}; this alias is retained for source compatibility. */
+export const SqliteHarnessStorage = SqliteDurableStateStore

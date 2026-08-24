@@ -21,6 +21,10 @@ Use `inMemoryExternalWait()` for deterministic tests and
 execution. The adapter has terminal outcomes `approved`, `rejected`, `expired`,
 and `cancelled`; duplicate/late event ids return typed no-op results.
 
+See the executable [`durable-human-review` example](../../examples/durable-human-review/README.md)
+for application task CAS, action-digest binding, terminal signal delivery, and
+the final idempotent side-effect boundary.
+
 For a complete PURISTA application pattern—including safe queue handling of
 `ExternalWaitPendingError`, reauthorization on resume, and observability—see
 the official [Human Review Gates handbook page](https://purista.dev/handbook/harness/guide/human-review-gates/).

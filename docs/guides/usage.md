@@ -253,7 +253,7 @@ application or workflow code.
 
 A workflow call enters your orchestration code. That code can invoke one agent,
 invoke several agents in sequence or parallel, run deterministic checks, ask
-for human review, and decide whether to write state or artifacts.
+for application-owned human review, and decide whether to write state or artifacts.
 
 ```ts
 const result = await session.workflows.answer_with_review.prompt({

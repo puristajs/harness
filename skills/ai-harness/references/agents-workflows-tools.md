@@ -246,7 +246,7 @@ Use execution policies when a concrete tool call needs typed business rules:
           effect: 'require_approval',
           tools: ['transfer_funds'],
           when: ({ input }) => input.amount > 1_000,
-          reason: 'Large transfers need human review.',
+          reason: 'Large transfers require manual approval.',
           riskLevel: 'medium'
         }),
         rule({

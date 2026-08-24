@@ -34,7 +34,7 @@ should read.
 | Durable workspaces (spec 21) | Aligned | `DurableWorkspaceStore` port, lifecycle/idempotency/quota errors, in-memory reference store, and `durableWorkspaceStoreContract` are covered. |
 | Local durable execution (spec 22) | Aligned | `localDurableExecution()` bundle: SQLite runtime/state/context checkpoints, host-directory workspace store, jailed local sandbox, lease and resume semantics. |
 | Provider outcomes and retry (spec 23) | Aligned | Normalized `ModelOutcome`/`FinishReason`, active/deferred retry policy with `longRetry`, SDK retry disabling, rate-limit metadata, and the shared `modelProviderContract` across all four adapters. |
-| Living Wiki example | Aligned | Real app shell, review gates, artifacts, graph, SSE, Jaeger links, optional draw.io MCP. |
+| Living Wiki example | Aligned | Real app shell, application-owned review tasks, artifacts, graph, SSE, Jaeger links, optional draw.io MCP. |
 
 ## Verification Snapshot
 

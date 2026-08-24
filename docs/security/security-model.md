@@ -80,7 +80,7 @@ does not emit prompt/tool/file/context content in any mode; memory content is
 omitted by default and only follows the bounded memory-facade policy when
 non-`NO_CONTENT` modes are enabled.
 
-## Review Gates
+## Application-Owned Review Tasks
 
 Human-in-the-loop flows should enforce:
 
@@ -89,3 +89,7 @@ Human-in-the-loop flows should enforce:
 - idempotent decision submission;
 - stale review/run rejection;
 - audit log entry for applied, rejected, or revision decisions.
+
+The application owns the review record, reviewer authorization, user interface,
+and durable decision store. The Harness currently offers synchronous governance
+approval for a tool decision, not a durable, restart-safe review-gate runtime.

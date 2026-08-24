@@ -46,6 +46,11 @@ Keep these layers separate:
   agents/workflows are declared. Keep simple use cases on per-agent
   permissions; use governance only for composable/audited policy, approval, or
   external policy-pack interoperability.
+- A governance approval provider is a synchronous decision for one tool call.
+  It is not a durable human-review task: the application owns the review
+  record, reviewer identity, UI, expiry, decision persistence, and any
+  restart-safe continuation. Do not represent a long-lived review with an
+  in-process Promise.
 - For sensitive-data rails, keep `@purista/harness-guardrails` provider and
   model-runtime agnostic. Install exactly one detector package at the
   composition root. Use native privacy for its deterministic documented subset;

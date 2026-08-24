@@ -44,7 +44,7 @@ The `examples/quickstart` workspace is the recommended starting point.
 `examples/showcase` demonstrates mounted skills, custom TypeScript tools, and
 multiple workflows with the OpenAI adapter. `examples/living-wiki-jaeger`
 demonstrates a local file-backed research workspace with direct typed agent
-invocation, optional typed workflows, SSE run observation, review gates,
+invocation, optional typed workflows, SSE run observation, application-owned review tasks,
 artifacts, MCP, and Jaeger tracing. `examples/delm-shared-context` uses the
 OpenAI adapter by default to demonstrate a DeLM-inspired decentralized
 shared-context pattern with task claiming, admission-gated compact entries,

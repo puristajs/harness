@@ -106,7 +106,7 @@ const response = await session.agents.assistant.prompt({
 ```
 
 Use workflows when you need pre-processing, post-processing, fan-out/fan-in,
-human review, retries, durable writes, or a business process run.
+application-owned human review, retries, durable writes, or a business process run.
 
 ## Next Steps
 

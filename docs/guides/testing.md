@@ -9,7 +9,7 @@ fake providers, fake stores, and local fixtures.
 flowchart TD
   Unit["Unit tests: schemas, tools, skills, adapters"] --> Contract["Contract tests: state, sandbox, model providers"]
   Contract --> Integration["Integration tests: session agent/workflow runs"]
-  Integration --> UI["UI tests: SSE, review gates, artifacts"]
+  Integration --> UI["UI tests: SSE, application review tasks, artifacts"]
   UI --> Manual["Manual live-provider smoke test"]
 ```
 
@@ -147,15 +147,15 @@ Use local fake MCP servers for contract tests. Stdio MCP should prove:
 HTTP MCP should prove auth failures, protocol failures, schema validation, and
 normal success.
 
-## Test Review Gates
+## Test Application Review Tasks
 
-For human-in-the-loop flows:
+For application-owned human-in-the-loop flows:
 
 - assert no mutation happens before approval;
 - assert answer choices are submitted to the backend;
 - assert decisions are idempotent;
 - assert stale review ids and stale run ids fail cleanly.
 
-The Living Wiki example covers these patterns in
+The Living Wiki example implements and covers these application patterns in
 `examples/living-wiki-jaeger/src/backend/app.test.ts` and
 `examples/living-wiki-jaeger/src/frontend/app.ui.test.tsx`.

@@ -85,7 +85,7 @@ flowchart TB
     W1["Validate request"]
     W2["Invoke agent A"]
     W3["Invoke agent B or run in parallel"]
-    W4["Apply policy / review gate"]
+    W4["Apply policy / application review task"]
     W5["Write artifact or state"]
     W1 --> W2 --> W3 --> W4 --> W5
   end

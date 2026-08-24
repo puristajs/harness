@@ -58,13 +58,13 @@ flowchart TD
 
 - Start building
   - [Quickstart](./getting-started/quickstart.md): install, run the smallest example, and verify the harness works.
-  - [Living Wiki Jaeger Example](../examples/living-wiki-jaeger/README.md): explore a full research workspace with agents, workflows, review gates, artifacts, MCP, and Jaeger.
+  - [Living Wiki Jaeger Example](../examples/living-wiki-jaeger/README.md): explore a full research workspace with agents, workflows, application-owned review tasks, artifacts, MCP, and Jaeger.
   - [Modular Support Harness](../examples/modular-support-harness/README.md): compose typed local modules while retaining application-owned workflows and hermetic replay tests.
   - [Workflow Child Tasks](../examples/workflow-child-tasks/README.md): run bounded fan-out, isolated background tasks, and a short continuable task conversation without credentials.
   - [Agent Plugins](../examples/agent-plugins/README.md): inspect a local package, pin its reviewed digest, and explicitly bind selected Skills or MCP tools.
 - Learn the model
   - [Architecture](./concepts/architecture.md): understand sessions, agents, workflows, tools, skills, state, sandboxing, and telemetry.
-  - [Common Scenarios And Use Cases](./guides/common-scenarios.md): choose patterns for RAG, triage, human review, research, reports, and multi-agent work.
+  - [Common Scenarios And Use Cases](./guides/common-scenarios.md): choose patterns for RAG, triage, application-owned human review, research, reports, and multi-agent work.
 - Build applications
   - [Usage Guide](./guides/usage.md): define a harness, open sessions, invoke agents, stream runs, and orchestrate workflows.
   - [Conversation History and Retries](./guides/conversation-history.md): bound stored complete turns and make direct-agent delivery replay-safe.
@@ -77,10 +77,10 @@ flowchart TD
   - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
   - [Guardrails](./guides/guardrails.md): configure typed input, output, tool, retrieval, and sensitive-data protection; choose Presidio or native privacy by user outcome.
   - [Migrating To AI Harness 2.0](./guides/migrating-to-v2.md): make the clean MCP v2 and package-major upgrade.
-  - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and review gates.
+  - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and application-owned review tasks.
 - Operate and review
   - [Operations Runbook](./operations/runbook.md): readiness checks, failure handling, logs, traces, MCP operations, and shutdown.
-  - [Security Model](./security/security-model.md): trust boundaries, secret handling, sandbox execution, MCP risk, review gates, and telemetry privacy.
+  - [Security Model](./security/security-model.md): trust boundaries, secret handling, sandbox execution, MCP risk, application-owned review tasks, and telemetry privacy.
 - Reference
   - [Public API](./reference/public-api.md): package exports, builder shape, session API, run events, errors, and type inference.
   - [Spec Conformance](./reference/spec-conformance.md): current implementation status against the approved specs.
@@ -101,7 +101,7 @@ flowchart TD
 | `examples/workflow-child-tasks` | Bounded fan-out, isolated task ownership and lookup, and in-process continuables. |
 | `examples/agent-plugins` | Review, digest-pin, and explicitly bind an installed Agent Plugins package. |
 | `examples/bank-governance` | Optional typed governance policies, exposure-aware events, approvals, shadow-ready rollout, and blocked tool calls. |
-| `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, review gates, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
+| `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, application-owned review tasks, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
 | `specs/` | Approved technical specifications. Use specs for implementation detail, not first-time onboarding. |
 
 ## Runtime In One Diagram
@@ -131,5 +131,5 @@ In harness terminology, an **agent** is the typed LLM conversation loop: it
 builds prompts, calls a model, executes tool invocations, feeds tool results
 back into the model, validates the final output, and emits run events. A
 **workflow** is application orchestration: it decides which agents to invoke,
-in what order or parallel shape, where review gates happen, and when durable
+in what order or parallel shape, where application-owned review tasks happen, and when durable
 side effects such as wiki writes or report artifacts are allowed.

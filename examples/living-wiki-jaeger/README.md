@@ -10,7 +10,7 @@ It demonstrates:
 - structured object outputs for reports, review requests, graph highlights,
   and JSON-rendered panels;
 - optional workflows through `session.workflows`, where workflows orchestrate
-  multiple agent invocations, review gates, artifacts, and wiki mutations;
+  multiple agent invocations, application-owned review tasks, artifacts, and wiki mutations;
 - source upload and file-backed wiki pages;
 - human review before wiki mutation;
 - SSE run observation and a run inspector;
@@ -122,7 +122,9 @@ artifact storage, and governed writes:
 
 ## Human Review
 
-Review requests are backend-provided, not hard-coded in the UI.
+Review requests are application-owned and backend-provided, not hard-coded in
+the UI. This example persists its review state in the application; it is not a
+generic Harness review-gate API or a restart-safe suspended workflow.
 
 ```mermaid
 sequenceDiagram

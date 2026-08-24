@@ -19,6 +19,7 @@ network configuration in policy YAML.
 | `@purista/harness-guardrails` | Public detector port, strict portable config, flow actions, typed value codecs, enforcement and privacy telemetry | An endpoint, credentials, a detector implementation, cloud SDKs |
 | `@purista/harness-guardrails-presidio` | Original Presidio Analyzer REST translation, response validation and Unicode-index conversion | YAML parsing, global OTel configuration, endpoint discovery, retries, a public server |
 | `@purista/harness-guardrails-native-privacy` | Rust/Node-API local recognizer subset and its prebuilt platform artifacts | JavaScript fallback, model/NER downloads, Presidio-parity claims, network access |
+| `@purista/harness-guardrails-local-ner` | Optional local token-classification/NER detector, explicit local model asset selection, label mapping, and dependency diagnostics | A bundled model, remote model download, model registry, cloud API, or core Guardrails import |
 | Application composition root | Detector choice, endpoint/auth transport, policy YAML, permitted entity categories, codecs and user-facing fallback | Disabling required failure handling or reimplementing rail ordering |
 
 The two detector packages are optional, independently published packages. The
@@ -36,6 +37,8 @@ All packages are ESM-only and support Node.js and Bun as specified below.
 | SD-05 | Original Presidio can be used through an application-owned internal HTTP(S) endpoint | public scripted-sidecar contract suite |
 | SD-06 | Native privacy supports documented deterministic entity subset in Node and Bun | Node and Bun integration matrix |
 | SD-07 | Traces, metrics and logs describe enforcement without recording content or duplicate LLM cost data | OTel/log redaction assertions |
+| SD-08 | Native privacy validates both IPv4 and IPv6 values under the existing `IP_ADDRESS` category | Rust category fixtures and Node/Bun smoke tests |
+| SD-09 | An application can opt into local NER with a pinned local model and installed runtime, without remote fetch or a base-package dependency | scripted runtime, missing-dependency, and Node/Bun smoke tests |
 
 ## Public detector port
 
@@ -134,7 +137,7 @@ inventory. The current release MUST distinguish at least these user outcomes:
 | Detect phone number | Deployment recognizer dependent | Built in, format-based |
 | Detect payment-card number | Deployment recognizer dependent | Built in, Luhn-checked |
 | Detect IPv4 address | Deployment recognizer dependent | Built in, IPv4 only |
-| Detect IPv6 address | Deployment recognizer dependent | Not supplied |
+| Detect IPv6 address | Deployment recognizer dependent | Built in, syntax-validated |
 | Detect IBAN-shaped value | Deployment recognizer dependent | Built in, format-based |
 | Detect US SSN-shaped value | Deployment recognizer dependent | Built in, format-based |
 | Detect HTTP(S) URL | Deployment recognizer dependent | Built in, HTTP(S) only |
@@ -341,6 +344,64 @@ findings. It neither reads files nor accesses the network. Security updates to
 Rust, `napi-rs` and compiled dependencies follow the normal dependency update
 and native artifact rebuild/re-sign/retest process.
 
+`IP_ADDRESS` includes syntactically valid IPv4 and IPv6 addresses. It does not
+claim a network assignment, reachability, reputation, or address ownership.
+The other native recognizers retain their documented syntax/format semantics:
+only payment cards are additionally Luhn-checked. Country-registry IBAN
+validation and numbering-plan phone validation require a separately approved
+dependency and specification.
+
+## Optional local NER adapter
+
+`@purista/harness-guardrails-local-ner` is a separately published ESM package
+that implements the existing `SensitiveDataDetector` port. It is the only
+Guardrails package permitted to depend on `@huggingface/transformers`; neither
+`@purista/harness` nor `@purista/harness-guardrails` nor native privacy imports
+it, declares it as a dependency, or dynamically discovers it.
+
+The package declares `@huggingface/transformers` as an optional peer. An
+application that selects the detector installs both packages explicitly:
+
+```sh
+npm install @purista/harness-guardrails-local-ner @huggingface/transformers
+```
+
+The public factory is `createLocalNerDetector(options)`. Its options MUST
+require a stable detector `id`, an absolute local `modelPath`, a stable local
+`modelId` for application inventory, and a non-empty mapping from model labels
+to portable upper-case entity identifiers. `modelPath` must name a local
+directory; URLs, relative paths, environment lookup, cache discovery and model
+repository identifiers are invalid. The adapter loads token-classification only
+with local-files-only mode. It MUST NOT configure a remote URL, call a registry,
+fall back to a remote model, download artifacts, or use a cloud provider.
+
+The declared `supportedEntities` is the unique mapped portable entity set. A
+configured policy that asks for an unmapped entity fails at Guardrails
+construction before text inspection. On inspection the adapter invokes the
+loaded pipeline once, accepts only finite in-range aggregate token spans, maps
+only explicitly configured labels, discards mapped categories that were not
+requested, and returns UTF-16 ranges. Unknown labels are a no-match; malformed
+runtime output is a terminal detector failure. The adapter enforces the same
+65,536 UTF-16-unit input bound as native privacy and observes the supplied abort
+signal before, during, and after model work.
+
+The returned detector exposes `warmup(signal?)`. Operators call it at process
+startup to load and validate the locally provisioned model before accepting
+traffic. `warmup` and first inspection fail with a content-free
+`LocalNerDetectorError` whose `kind` is one of `missing_optional_dependency`,
+`invalid_configuration`, `model_load_failed`, `invalid_result`, or `aborted`.
+The missing-dependency message MUST name `@huggingface/transformers` and the
+exact install command above. It must never include model input, local path,
+runtime stack, remote URL, headers, model output, or credentials.
+
+`@purista/harness-guardrails/testing` exports the general scripted detector.
+`@purista/harness-guardrails-local-ner/testing` exports a deterministic
+`FakeLocalNerRuntime` for adapter-contract tests. It scripts pipeline load and
+token-classification results; it is not a recognizer, does not load a model, and
+never appears in production entrypoints. The package's own integration test may
+use an application-provided local fixture only when explicitly enabled; default
+CI remains hermetic and does not download a model.
+
 ## Telemetry, logging and cost attribution
 
 The existing outer `evaluate_guardrail {rail.id}` span remains the enforcement
@@ -365,6 +426,15 @@ dimensions. Blocks and transformations are successful enforcement decisions and
 leave span status `UNSET`; detector/codec/validation faults set `ERROR`.
 Structured logs occur only for block, transform and error and carry the same
 safe identity/outcome fields.
+
+When an injected detector throws a documented content-free detector error, the
+base action factory adds only its stable `kind` as
+`harness.sensitive_data.failure_kind` on the error child span and metrics, and
+as `sensitive_data_failure_kind` on the error log. No detector message is
+logged. `missing_optional_dependency` is therefore searchable in production
+logs and traces while the thrown error's safe remediation tells the operator
+which package to install. Unknown detector errors retain the existing
+`sensitive_data_detector_failed` classification without an inferred kind.
 
 No span, log, metric, event, error, fixture, snapshot or native error may
 contain source text, masked text, entity text, offsets, source URL, endpoint,

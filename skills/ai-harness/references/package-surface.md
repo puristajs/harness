@@ -41,7 +41,7 @@ Main core entry exports:
 - JSON/model persistence types
 - model registry and capability-projected model handles
 - sandbox factories and sandbox types
-- `sandboxMemory()` memory adapter
+- `inMemoryMemoryEngine()` default memory engine
 - MCP tool support
 - governance types for optional exposure policy, execution policy, approvals, audit sinks, and policy events
 - `defineHarness` and builder/session/agent/workflow types
@@ -73,8 +73,8 @@ Azure AI Foundry entry exports:
 - `FakeHarnessStorage`
 - `harnessStorageContract`
 - `durableWorkspaceContract`
-- `FakeMemoryAdapter`
-- `memoryAdapterContract`
+- `FakeMemoryEngine`
+- `memoryEngineContract`
 - `sandboxContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`

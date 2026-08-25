@@ -9,7 +9,7 @@ same session API.
 flowchart TD
   Harness["defineHarness"] --> Model["ModelProvider adapter"]
   Harness --> State["HarnessStorage adapter"]
-  Harness --> Memory["MemoryAdapter"]
+  Harness --> Memory["MemoryEngine"]
   Harness --> Sandbox["Sandbox adapter"]
   Harness --> Tools["TypeScript and MCP tools"]
   Harness --> Skills["Skill directories"]
@@ -42,15 +42,15 @@ transactional backend; do not split these operations across adapters.
 
 Durable adapters should pass the shared storage contract tests.
 
-## Add A Memory Adapter
+## Add A Memory Engine
 
-Implement `MemoryAdapter` when agent memory must live outside the default
-sandbox-backed `sandboxMemory()` adapter.
+Implement `MemoryEngine` when agent memory must live outside the dependency-free
+process-local default.
 
 Adapter responsibilities:
 
-- declare exact `memory.*` capabilities, including scopes and optional search,
-  TTL, and persistence;
+- declare exact `memory.*` capabilities, including TTL, text/vector/hybrid
+  search, persistence, and multi-instance behavior;
 - implement backend I/O only; core owns standard validation, telemetry, metrics,
   content-capture policy, and error wrapping;
 - respect `ctx.signal` on every backend call;
@@ -59,7 +59,7 @@ Adapter responsibilities:
 - keep Redis, Postgres, vector, graph, or product-specific adapters in separate
   `@purista/harness-memory-*` packages.
 
-Memory adapters should pass `memoryAdapterContract` from
+Memory engines should pass `memoryEngineContract` from
 `@purista/harness/testing`.
 
 ## Add A Sandbox Adapter

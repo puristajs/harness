@@ -9,7 +9,7 @@
 - Amazon Bedrock Provider
 - Azure AI Foundry Provider
 - Harness Storage Adapter
-- Memory Adapter
+- Memory Engine
 - Sandbox Adapter
 - Tool And MCP Adapters
 - Durable Workspace Adapter
@@ -25,7 +25,7 @@ Core ships the common ports, default local adapters, and testing contracts. Exte
 | --- | --- | --- | --- |
 | Model provider | `ModelProvider` / `BaseModelProvider` | `FakeModelProvider` for tests only | `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-{provider}` |
 | Harness storage | `HarnessStorage` | `InMemoryHarnessStorage`, `SqliteHarnessStorage` | `@purista/harness-storage-{backend}` |
-| Memory | `MemoryAdapter` / `MemoryStore` | `sandboxMemory()` | `@purista/harness-memory-{backend}` |
+| Memory | `MemoryEngine` | dependency-free `inMemoryMemoryEngine()` | `@purista/harness-memory-{backend}` |
 | Sandbox | `Sandbox` / `SandboxSession` | `inMemorySandbox()`, `bashSandbox()` | `@purista/harness-sandbox-{backend}` |
 | Durable workspace | `DurableWorkspace` | `InMemoryDurableWorkspace`, `LocalDirectoryWorkspace` | `@purista/harness-workspace-{backend}` |
 | Tool adapter | `TsToolDefinition`, MCP stdio/http definitions | built-in tools + TS tools | app-local tools or `@purista/harness-tools-{domain}` |
@@ -60,7 +60,7 @@ Use `.requires([...])` for capabilities the application needs to be correct. Do 
 
 Inside handlers, prefer high-level context helpers over raw adapter access:
 - `ctx.models.*` for model calls
-- `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, `ctx.memory.tenant()` for memory
+- `ctx.memory.application`, `ctx.memory.tenant()`, `ctx.memory.principal()`, `ctx.memory.session`, `ctx.memory.run`, and `ctx.memory.agent` for memory
 - `ctx.sandbox` in TypeScript tools for file/exec work
 - `ctx.metrics` for application metrics
 - `ctx.telemetry` only in adapter/tool internals that need custom spans
@@ -260,56 +260,50 @@ Adapters must pass `harnessStorageContract` from `@purista/harness/testing`,
 plus backend-specific multi-process contention, migration, retention, and outage
 tests. Keep message/event ordering stable and storage telemetry content-free.
 
-## Memory Adapter
-Implement `MemoryAdapter` when a project needs memory outside the default sandbox-backed `sandboxMemory()` adapter. Keep standard validation, spans, metrics, error mapping, and content-capture enforcement in core; adapters implement backend I/O only.
+## Memory Engine
+
+Implement `MemoryEngine` for a new storage backend. Core creates stable scoped
+keys, binds optional tenant/principal identity, validates values and capability
+requests, performs optional embedding/summarization model calls, and emits the
+standard content-free `harness.memory.*` spans. An engine performs backend I/O
+only.
 
 ```ts
 import type {
-  MemoryAdapter,
-  MemoryOpenContext,
-  MemoryOperationContext,
+  MemoryEngine,
+  MemoryEngineContext,
+  MemoryListOptions,
+  MemoryListResult,
+  MemoryRecord,
   MemoryScope,
-  MemoryStore
 } from '@purista/harness'
 
-export function redisMemory(options: RedisMemoryOptions): MemoryAdapter {
-  return new RedisMemoryAdapter(options)
-}
-
-class RedisMemoryAdapter implements MemoryAdapter {
-  readonly info = {
-    id: 'redis_memory',
-    packageName: '@purista/harness-memory-redis',
-    capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.session', 'memory.user', 'memory.persistent']
-  } as const
-
-  configureHarnessContext(context) {
-    this.logger ??= context.logger
-    this.metrics ??= context.metrics
-  }
-
-  async open(scope: MemoryScope, ctx: MemoryOpenContext): Promise<MemoryStore> {
-    const prefix = this.scopePrefix(scope)
-    return {
-      get: (key, op) => this.get(prefix, key, op),
-      set: (key, value, op) => this.set(prefix, key, value, op),
-      delete: (key, op) => this.delete(prefix, key, op),
-      list: (op) => this.list(prefix, op)
-    }
+export function redisMemoryEngine(): MemoryEngine<
+  readonly ['memory.kv', 'memory.list', 'memory.delete', 'memory.persistent']
+> {
+  return {
+    info: { id: 'redis_memory', packageName: '@myorg/harness-memory-redis' },
+    capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.persistent'] as const,
+    async get(scope, key, context) { context.signal.throwIfAborted(); return backend.get(scope.scopeKey, key) },
+    async put(scope, record, context) { context.signal.throwIfAborted(); await backend.put(scope.scopeKey, record) },
+    async delete(scope, key, context) { context.signal.throwIfAborted(); await backend.delete(scope.scopeKey, key) },
+    async list(scope, options, context): Promise<MemoryListResult> { context.signal.throwIfAborted(); return backend.list(scope.scopeKey, options) },
   }
 }
 ```
 
-Memory adapter rules:
-- Declare exact capabilities: `memory.kv`, `memory.list`, `memory.delete`, `memory.search`, `memory.ttl`, `memory.run`, `memory.session`, `memory.agent`, `memory.user`, `memory.tenant`, `memory.persistent`.
-- Honor `ctx.signal` on every backend call.
-- Do not emit standard `harness.memory.*` spans or metrics; core wraps facade calls.
-- Use `ctx.telemetry` and `ctx.metrics` only for adapter-specific nested spans/metrics.
-- Never add raw keys, values, queries, metadata, user ids, or tenant ids to logs/telemetry when `ctx.contentCaptureMode === 'NO_CONTENT'`.
-- Throw `HarnessError` instances when you can classify failures; otherwise let core wrap backend failures as memory `StateError`.
-- Put Redis/Postgres/vector/graph/product-specific memory adapters in their own TypeScript packages.
+Memory engine rules:
+- Declare only truthful capabilities: `memory.kv`, `memory.list`, `memory.delete`, `memory.ttl`, `memory.text_search`, `memory.vector_search`, `memory.hybrid_search`, `memory.persistent`, and `memory.multi_instance`.
+- Honor `context.signal` on every backend call and preserve `scope.scopeKey` exactly; do not reconstruct identity namespaces.
+- Persist the canonical `MemoryRecord`; atomically update its text/vector representation where the backend supports it.
+- Reject incompatible vector descriptors/dimensions without automatic reindex or downgrade.
+- Never add keys, values, queries, vectors, tenant ids, principal ids, or credentials to logs, attributes, metrics, or errors.
+- Keep backend SDKs in the engine package. Core has no database, provider, or embedding-SDK dependency.
 
-Use `memoryAdapterContract` and `FakeMemoryAdapter` from `@purista/harness/testing`. Cover scope isolation, cancellation, unsupported search/TTL gates, persistence behavior, and content-capture modes.
+Use `memoryEngineContract` and `FakeMemoryEngine` from
+`@purista/harness/testing`. Cover scope isolation, cancellation, TTL,
+pagination, restart/multi-instance behavior where advertised, descriptor
+consistency, and atomic index writes.
 
 ## Sandbox Adapter
 Implement `Sandbox` and `SandboxSession` for custom isolation:

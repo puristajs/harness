@@ -77,7 +77,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'redactProviderContent',
   'retainCompleteTurns',
   'safePartialJson',
-  'sandboxMemory',
+  'inMemoryMemoryEngine',
   'sanitizeProviderMessage',
   'serializeError',
   'sqliteHarnessStorage',
@@ -92,7 +92,7 @@ const EXPECTED_MAIN_EXPORTS = [
 /** Locked value-export surface of `@purista/harness/testing` per specs/13-public-api.md. */
 const EXPECTED_TESTING_EXPORTS = [
   'FakeLogger',
-  'FakeMemoryAdapter',
+  'FakeMemoryEngine',
   'FakeModelProvider',
   'FakeSandbox',
   'FakeHarnessStorage',
@@ -110,7 +110,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'inMemoryDurableWorkspace',
   'loggerContract',
   'makeHarness',
-  'memoryAdapterContract',
+  'memoryEngineContract',
   'modelProviderContract',
   'recordEvents',
   'ReplayFixtureError',

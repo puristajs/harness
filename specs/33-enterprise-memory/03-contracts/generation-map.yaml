@@ -1,0 +1,41 @@
+generation_map_version: 1
+sources:
+  - source_id: GEN-MEM-TYPES
+    contract_refs:
+      - CTR-MEM-IDENTITY
+      - CTR-MEM-MODEL-REF
+      - CTR-MEM-CONFIG
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+      - CTR-MEM-SEARCH
+      - CTR-MEM-SUMMARY
+      - CTR-MEM-SESSION
+    source: packages/harness/src
+    generated_outputs:
+      - packages/harness/dist
+    generator: TypeScript compiler through npm run build -w @purista/harness
+    drift_check: npm run test:types -w @purista/harness
+  - source_id: GEN-VENDOR-TYPES
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+      - CTR-MEM-SQLITE
+      - CTR-MEM-NATS
+    source: packages/harness-memory-sqlite, packages/harness-memory-postgres, packages/harness-memory-redis, and packages/harness-memory-nats
+    generated_outputs:
+      - package dist directories
+    generator: TypeScript compiler through each package build script
+    drift_check: npm run build for each @purista/harness-memory-* package
+  - source_id: GEN-PURISTA-TYPES
+    contract_refs:
+      - CTR-MEM-PURISTA
+    source: purista/packages/core/src/AgentQueueBuilder
+    generated_outputs:
+      - purista/packages/core/dist
+    generator: PURISTA core TypeScript build
+    drift_check: npm run build -w @purista/core
+non_generated:
+  - SQLite, PostgreSQL, Redis, and NATS schemas or migrations are reviewed versioned package assets.
+  - PGlite is a private test executor and does not generate a public contract or output.
+  - Documentation examples are compiled or imported by documentation checks.
+  - No OpenAPI, GraphQL, protobuf, event-schema, database-client, or UI-client generation applies to this package API.

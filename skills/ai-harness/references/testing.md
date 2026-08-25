@@ -70,12 +70,12 @@ Use `@ts-expect-error` for negative cases.
 ## Contract Tests
 Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `FakeModelProvider`
-- `FakeMemoryAdapter`
+- `FakeMemoryEngine`
 - `makeHarness`
 - `FakeHarnessStorage`
 - `harnessStorageContract`
 - `durableWorkspaceContract`
-- `memoryAdapterContract`
+- `memoryEngineContract`
 - `sandboxContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`

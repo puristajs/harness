@@ -14,6 +14,10 @@ adapter packages.
 | `@purista/harness-bedrock` | Amazon Bedrock model provider adapter. |
 | `@purista/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
 | `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection and explicit, application-owned Skill/MCP bindings. |
+| `@purista/harness-memory-sqlite` | Local durable SQLite/FTS5 memory; optional explicit sqlite-vec exact vectors. |
+| `@purista/harness-memory-postgres` | PostgreSQL 16+ and pgvector memory engine. |
+| `@purista/harness-memory-redis` | Redis Search memory engine with optional vector index. |
+| `@purista/harness-memory-nats` | JetStream KV memory engine without relevance search. |
 
 ## Application API
 
@@ -56,7 +60,7 @@ the simple in-process defaults.
 | `GovernanceDecision` | Normalized execution policy decision returned by native rules or adapters, including decision evidence fields. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `HarnessStorage` | Persistence port for sessions, messages, runs, events, workflow checkpoints, leases, and external waits. |
-| `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
+| `MemoryEngine` / `MemoryFacade` | Pluggable canonical-record storage port and scoped runtime facade. |
 | `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
 | `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
@@ -73,7 +77,7 @@ the simple in-process defaults.
 const harness = defineHarness()
   .storage(inMemoryHarnessStorage())
   .workspace(durableWorkspace)
-  .requires(['sandbox.fs', 'memory.session', 'storage.checkpoint', 'storage.workspace_checkpoint', 'workspace.durable'])
+  .requires(['sandbox.fs', 'memory.persistent', 'storage.checkpoint', 'storage.workspace_checkpoint', 'workspace.durable'])
   .models(...)
   .agents(...)
   .build()
@@ -85,8 +89,8 @@ console.log(inspection.capabilities)
 `harness.inspect()` is synchronous and data-only. It does not open sessions,
 call networks, or mutate adapters. Missing required adapter capabilities fail
 during `build()` with `HarnessConfigError`. Memory adapter capabilities use the
-same policy path, for example `memory.session`, `memory.search`, and
-`memory.persistent`.
+same policy path, for example `memory.text_search`, `memory.vector_search`,
+and `memory.persistent`.
 
 ## Tool Definitions
 
@@ -346,8 +350,9 @@ trace storage samples or drops spans.
 ## Memory
 
 `session.memory` exposes session-scoped JSON memory. Run contexts also receive
-`ctx.memory.session`, `ctx.memory.run`, optional `ctx.memory.agent`,
-`ctx.memory.user()`, `ctx.memory.tenant()`, and `ctx.memory.scope(...)`.
+`ctx.memory.application`, `ctx.memory.tenant()`, `ctx.memory.principal()`,
+`ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, and
+`ctx.memory.scope(...)`.
 
 ```ts
 await ctx.memory.session.write('last_topic', { value: 'pricing' })
@@ -355,14 +360,11 @@ const last = await ctx.memory.session.read<{ value: string }>('last_topic')
 const keys = await ctx.memory.session.list({ prefix: 'last_' })
 ```
 
-`sandboxMemory()` is the default adapter. It stores session memory under
-`/memory/session/<key>.json` and run memory under
-`/memory/runs/<runId>/<key>.json` inside the session sandbox. External memory
-adapters implement `MemoryAdapter`, declare exact `memory.*` capabilities, and
-keep backend-specific packages under the `@purista/harness-memory-*` pattern.
-
-Search is always present on `SessionMemory`; it throws `ModelCapabilityError`
-when the configured adapter does not advertise `memory.search`.
+The dependency-free process-local engine is the default. Durable engines
+implement `MemoryEngine`, persist canonical records, declare truthful
+`memory.*` capabilities, and live in `@purista/harness-memory-*` packages.
+Text, semantic, and hybrid search are explicit operations; a requested mode
+fails when its engine capability is absent.
 
 ## Model Provider Operations
 
@@ -479,11 +481,11 @@ draft implementation. It supports `type`, `const`, `enum`, object
 ## Testing Subpath
 
 `@purista/harness/testing` ships the fakes (`FakeModelProvider`,
-`FakeHarnessStorage`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
+`FakeHarnessStorage`, `FakeSandbox`, `FakeLogger`, `FakeMemoryEngine`,
 `fakeSnapshotSandbox`, `fakeCapabilityAdapter`,
 `InMemoryDurableWorkspace`), the port contract suites
 (`harnessStorageContract`, `sandboxContract`, `modelProviderContract`,
-`loggerContract`, `memoryAdapterContract`, `durableWorkspaceContract`,
+`loggerContract`, `memoryEngineContract`, `durableWorkspaceContract`,
 `adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
 `makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
 locked list lives in `specs/13-public-api.md`; adapter packages run the

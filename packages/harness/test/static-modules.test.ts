@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { HarnessConfigError, InMemoryHarnessStorage, JsonLogger, defineHarness, defineHarnessModule, inMemorySandbox, sandboxMemory } from '../src/index.js'
+import { HarnessConfigError, InMemoryHarnessStorage, JsonLogger, defineHarness, defineHarnessModule, inMemoryMemoryEngine, inMemorySandbox } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import type { BuilderState, ModelAlias } from '../src/index.js'
 
@@ -124,7 +124,7 @@ it('closes each configured closable resource once, continues after failure, and 
   sharedProvider.close = async () => { calls.push('provider'); throw new Error('provider close failed') }
   const state = new InMemoryHarnessStorage() as InMemoryHarnessStorage & { close: () => Promise<void> }
   state.close = async () => { calls.push('state') }
-  const memory = sandboxMemory() as ReturnType<typeof sandboxMemory> & { close: () => Promise<void> }
+  const memory = inMemoryMemoryEngine() as ReturnType<typeof inMemoryMemoryEngine> & { close: () => Promise<void> }
   memory.close = async () => { calls.push('memory') }
   const sandbox = inMemorySandbox() as ReturnType<typeof inMemorySandbox> & { close: () => Promise<void> }
   sandbox.close = async () => { calls.push('sandbox') }

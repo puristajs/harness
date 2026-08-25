@@ -190,8 +190,8 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async upsertSession(record: SessionRecord): Promise<void> {
-    this.stmt('insert into harness_sessions(id, created_at, updated_at, run_count, metadata_json) values(?, ?, ?, ?, ?) on conflict(id) do update set updated_at=excluded.updated_at, run_count=excluded.run_count, metadata_json=excluded.metadata_json')
-      .run(record.id, record.createdAt, record.updatedAt, record.runCount, stringify(record.metadata))
+    this.stmt('insert into harness_sessions(id, created_at, updated_at, run_count, identity_json, metadata_json) values(?, ?, ?, ?, ?, ?) on conflict(id) do update set updated_at=excluded.updated_at, run_count=excluded.run_count, identity_json=excluded.identity_json, metadata_json=excluded.metadata_json')
+      .run(record.id, record.createdAt, record.updatedAt, record.runCount, stringify(record.identity), stringify(record.metadata))
   }
 
   public async closeSession(id: string): Promise<void> {
@@ -473,7 +473,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       pragma journal_mode = WAL;
       pragma foreign_keys = ON;
       pragma busy_timeout = 5000;
-      create table if not exists harness_sessions(id text primary key, created_at text not null, updated_at text not null, run_count integer not null, metadata_json text);
+      create table if not exists harness_sessions(id text primary key, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, metadata_json text);
       create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null);
       create index if not exists idx_harness_messages_session_order on harness_messages(session_id, timestamp, id);
       create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, input_json text, output_json text, error_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text);
@@ -497,6 +497,11 @@ export class SqliteHarnessStorage implements HarnessStorage {
     if (runsTable) {
       const columns = new Set(this.db.prepare('pragma table_info(harness_runs)').all().map((row) => row['name']))
       if (!columns.has('attempt') || !columns.has('initial_step_id')) legacyTables.push('harness_runs')
+    }
+    const sessionsTable = this.db.prepare("select name from sqlite_master where type = 'table' and name = 'harness_sessions'").get()
+    if (sessionsTable) {
+      const columns = new Set(this.db.prepare('pragma table_info(harness_sessions)').all().map((row) => row['name']))
+      if (!columns.has('identity_json')) legacyTables.push('harness_sessions')
     }
     if (legacyTables.length > 0) {
       this.db.close()
@@ -635,6 +640,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       createdAt: requiredString(row, 'created_at', 'getSession'),
       updatedAt: requiredString(row, 'updated_at', 'getSession'),
       runCount: requiredNumber(row, 'run_count', 'getSession'),
+      ...optional('identity', parseJson<SessionRecord['identity']>(row['identity_json'])),
       ...optional('metadata', parseJson<Record<string, JsonValue>>(row['metadata_json']))
     }
   }

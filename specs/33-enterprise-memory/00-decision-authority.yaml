@@ -1,0 +1,55 @@
+decision_authority_version: 1
+default_allowed_classes:
+  - D0
+  - D1
+decisions:
+  - decision_id: DEC-MEM-001
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-vision.md
+    source_refs:
+      - 00-vision.md
+    decision: Core owns orchestration and vendor packages own database engines.
+  - decision_id: DEC-MEM-002
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-conventions.md
+    source_refs:
+      - 00-conventions.md
+    decision: Model aliases are selected through capability-branded model properties with no profile field.
+  - decision_id: DEC-MEM-003
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-architecture-overview.md
+    source_refs:
+      - 00-architecture-overview.md
+    decision: Tenant and principal are independent optional identity dimensions and principal replaces user vocabulary.
+  - decision_id: DEC-MEM-004
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-file-structure.md
+    source_refs:
+      - 00-file-structure.md
+    decision: The change is a clean break with no legacy symbols or compatibility forwarding.
+  - decision_id: DEC-MEM-005
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-stack.md
+      - 00-file-structure.md
+    source_refs:
+      - 00-stack.md
+    decision: SQLite, PostgreSQL, Redis, and NATS memory engines live as optional packages in the AI Harness repository; PURISTA StateStore packages remain independent framework components and Dapr is out of scope.
+  - decision_id: DEC-MEM-006
+    class: D2
+    authority: user
+    scope_refs:
+      - 00-stack.md
+      - 00-conventions.md
+    source_refs:
+      - 00-stack.md
+    decision: SQLite vectors use explicit optional sqlite-vec loading, and PostgreSQL uses private PGlite tests to avoid routine Docker while retaining a real PostgreSQL release contract.

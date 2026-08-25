@@ -4,7 +4,7 @@ import type { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { BaseModelProvider, InMemoryHarnessStorage, defineHarness, inMemorySandbox, JsonLogger, OperationTimeoutError, sandboxMemory, type MemoryAdapter, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../src/index.js'
+import { BaseModelProvider, InMemoryHarnessStorage, defineHarness, inMemoryMemoryEngine, inMemorySandbox, JsonLogger, OperationTimeoutError, type MemoryEngine, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { inMemoryDurableWorkspace } from '../src/index.js'
 import { AgentLoopBudgetError, HarnessConfigError, ModelCapabilityError, SessionBusyError, SkillManifestError } from '../src/errors/index.js'
@@ -331,16 +331,19 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
   let memoryConfigured = false
   let toolConfigured = false
   let toolSawContext = false
-  const baseMemory = sandboxMemory()
+  const baseMemory = inMemoryMemoryEngine()
   const memory = {
     info: baseMemory.info,
     capabilities: baseMemory.capabilities,
-    open: baseMemory.open.bind(baseMemory),
+    get: baseMemory.get.bind(baseMemory),
+    put: baseMemory.put.bind(baseMemory),
+    delete: baseMemory.delete.bind(baseMemory),
+    list: baseMemory.list.bind(baseMemory),
     ...(baseMemory.close ? { close: baseMemory.close.bind(baseMemory) } : {}),
     configureHarnessContext(context: HarnessAdapterContext) {
       memoryConfigured = context.harnessName === 'ctx-test' && Boolean(context.metrics) && context.contentCaptureMode === 'NO_CONTENT'
     }
-  } satisfies MemoryAdapter
+  } satisfies MemoryEngine
   const sandbox = {
     ...inMemorySandbox(),
     configureHarnessContext(context: HarnessAdapterContext) {
@@ -768,8 +771,7 @@ it('inspects effective adapter capabilities and validates requirements at build 
     'memory.kv',
     'memory.list',
     'memory.delete',
-    'memory.run',
-    'memory.session',
+    'memory.ttl',
     'workspace.durable',
     'workspace.checkpoint',
     'workspace.resume',
@@ -780,7 +782,7 @@ it('inspects effective adapter capabilities and validates requirements at build 
     'workspace.quota'
   ])
   expect(inspection.requiredCapabilities).toEqual(['sandbox.fs', 'storage.checkpoint', 'workspace.durable', 'workspace.resume'])
-  expect(inspection.adapters.some((adapter) => adapter.kind === 'memory' && adapter.id === 'sandbox_memory')).toBe(true)
+  expect(inspection.adapters.some((adapter) => adapter.kind === 'memory' && adapter.id === 'in_memory_memory')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'storage' && adapter.id === 'in_memory')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'workspace' && adapter.id === 'in_memory_workspace')).toBe(true)
   expect(inspection.adapters.some((adapter) => adapter.kind === 'model' && adapter.id === 'fast')).toBe(true)
@@ -800,8 +802,8 @@ it('inspects effective adapter capabilities and validates requirements at build 
     .build()).toThrow(HarnessConfigError)
 
   expect(() => defineHarness()
-    .memory(sandboxMemory())
-    .memory(sandboxMemory())).toThrow(HarnessConfigError)
+    .memory(inMemoryMemoryEngine())
+    .memory(inMemoryMemoryEngine())).toThrow(HarnessConfigError)
 
   expect(() => defineHarness()
     .workspace(inMemoryDurableWorkspace())

@@ -128,24 +128,30 @@ export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } 
 
 // Memory port
 export type {
-  MemoryAdapter,
-  MemoryAdapterInfo,
   MemoryCapability,
+  MemoryConfiguration,
+  MemoryConfigurationFor,
+  MemoryEngine,
+  MemoryEngineContext,
+  MemoryEngineInfo,
+  MemoryEngineSearchQuery,
   MemoryEntry,
   MemoryFacade,
+  MemoryIndexDescriptor,
   MemoryListOptions,
-  MemoryOpenContext,
+  MemoryListResult,
   MemoryOperation,
-  MemoryOperationContext,
+  MemoryModelReference,
+  MemoryRecord,
   MemoryScope,
   MemoryScopeKind,
   MemorySearchQuery,
   MemorySearchResult,
-  MemoryStore,
   MemoryWriteOptions,
   SessionMemory
 } from './ports/memory.js'
-export { sandboxMemory } from './memory/sandbox/index.js'
+export { inMemoryMemoryEngine } from './memory/in-memory.js'
+export type { HarnessIdentity } from './identity/index.js'
 
 // Feedback port
 export type { FeedbackRecord, FeedbackTarget } from './ports/feedback.js'

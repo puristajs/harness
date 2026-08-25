@@ -4,7 +4,7 @@ import type { Logger } from '../src/logger/index.js'
 import type { ObjectResponse, ModelProvider } from '../src/ports/model-provider.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
-import { sandboxMemory } from '../src/memory/sandbox/index.js'
+import { inMemoryMemoryEngine } from '../src/memory/in-memory.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import type { TelemetryOptions } from '../src/index.js'
 import type { AgentExecutionInterceptor } from '../src/harness/defineHarness.js'
@@ -60,7 +60,7 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
     telemetryShim: telemetry,
     storage: new InMemoryHarnessStorage(),
     sandbox: inMemorySandbox(),
-    memory: sandboxMemory(),
+    memory: inMemoryMemoryEngine(),
     defaults: {
       agentMaxIterations: 4,
       runTimeoutMs: 60_000,

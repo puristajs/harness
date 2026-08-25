@@ -44,7 +44,7 @@ backends differ:
 | --- | --- | --- |
 | PURISTA `StateStore` | `@purista/core` | General application/service key-value state used by AI and non-AI code. It is unchanged by this specification. |
 | `HarnessStorage` | `@purista/harness` | Harness conversations and recoverable execution state. |
-| `MemoryAdapter` | `@purista/harness` | Optional mutable run/session/agent/user/tenant recall, TTL, and semantic search. |
+| `MemoryAdapter` | `@purista/harness` | Optional core-orchestrated application/tenant/principal/session/run/agent recall, TTL, and search. Database engines implement the separate `MemoryEngine` contract from spec 33. |
 | `Sandbox` | `@purista/harness` | Active filesystem and process lifecycle. |
 | `DurableWorkspace` | `@purista/harness` | Optional durable file snapshots, quotas, retention, and encryption metadata. |
 | Review/domain records | Application service | Authorization, reviewer identity, evidence, revisions, expiry, and business invariants. |

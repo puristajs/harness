@@ -53,6 +53,68 @@ jobs:
       - name: Failure tests
         run: npm run test:failure
 
+  memory-live:
+    name: Live memory engines
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg16-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: harness_memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d harness_memory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis/redis-stack-server:7.4.0-v8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Start NATS JetStream
+        run: docker run --detach --rm --name purista-memory-nats --publish 4222:4222 --publish 8222:8222 nats:2.12.15-alpine -js -m 8222
+
+      - name: Wait for NATS JetStream
+        run: curl --fail --retry 20 --retry-connrefused http://localhost:8222/healthz
+
+      - name: PostgreSQL + pgvector contract
+        env:
+          POSTGRES_MEMORY_URL: postgresql://postgres:postgres@localhost:5432/harness_memory
+        run: npm run test:live -w @purista/harness-memory-postgres
+
+      - name: Redis Search contract
+        env:
+          REDIS_MEMORY_URL: redis://localhost:6379
+        run: npm run test:live -w @purista/harness-memory-redis
+
+      - name: NATS JetStream KV contract
+        env:
+          NATS_URL: nats://localhost:4222
+        run: npm run test:live -w @purista/harness-memory-nats
+
   verify-and-publish:
     name: Verify and publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'puristajs/harness'

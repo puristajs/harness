@@ -46,7 +46,7 @@ flowchart LR
 | Logger | `JsonLogger` | You need structured logs at a specific level or sink. |
 | Storage | `InMemoryHarnessStorage` | Runs/history must survive process restart or workflows need recovery. |
 | Sandbox | Auto-detect `bashSandbox()`, fallback to `inMemorySandbox()` | You need predictable execution policy. |
-| Memory | `sandboxMemory()` | Agents need persistent, searchable, user-scoped, or tenant-scoped memory. |
+| Memory | Dependency-free process-local engine | Agents need durable, searchable, tenant-scoped, or principal-scoped recall. |
 | Durable workspace | None | Runs must pause, resume, retry, or recover with workspace state intact. |
 | Context checkpoints | None | Long-horizon workflows need explicit durable summaries or handoff records. |
 | Models | Required | Every agent needs a model alias. |
@@ -326,32 +326,36 @@ workspace state, clean up terminal workspaces, or enforce quotas.
 
 ## Memory
 
-```ts
-import { sandboxMemory } from '@purista/harness'
+No `.memory(...)` call is required for deterministic tests, development, or a
+single process. Configure one dedicated engine when memory must survive a
+restart, be shared, or provide recall:
 
-.memory(sandboxMemory())
+```ts
+import { sqliteMemoryEngine } from '@purista/harness-memory-sqlite'
+
+.memory(sqliteMemoryEngine({ file: '.purista/memory.sqlite' }))
 ```
 
-`sandboxMemory()` is the default when `.memory(...)` is omitted. It stores
-session memory in `/memory/session/<key>.json` and run memory in
-`/memory/runs/<runId>/<key>.json` inside the session sandbox. Use a dedicated
-memory adapter package when the application needs persistence outside the
-sandbox, semantic search, user or tenant scopes, TTL handling, or shared memory
-across sessions.
+Use PostgreSQL/pgvector, Redis Search, or NATS JetStream packages for their
+matching deployment boundary. SQLite vectors are an explicit
+`sqlite-vec@0.1.9` opt-in; NATS intentionally has no search capability.
+
+Bind optional tenant/principal identity when opening the session:
 
 ```ts
-const result = await ctx.agents.answerer(ctx.input, {
-  metadata: { userId: account.id, tenantId: account.tenantId }
+const session = await harness.getSession('claim:42', {
+  tenantId: account.tenantId,
+  principalId: account.id,
 })
 ```
 
 The containing workflow still needs to opt into child-agent calls, for example
 with `delegation: { agents: ['answerer'] }`.
 
-Inside workflows, agents, and TypeScript tools, use `ctx.memory.session`,
-`ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and
-`ctx.memory.tenant()`. The `user()` and `tenant()` helpers use sanitized
-`metadata.userId` and `metadata.tenantId` when no explicit id is passed.
+Inside workflows, agents, and TypeScript tools, use
+`ctx.memory.application`, `ctx.memory.tenant()`, `ctx.memory.principal()`,
+`ctx.memory.session`, `ctx.memory.run`, and `ctx.memory.agent`. Tenant and
+principal helpers fail before engine I/O when that identity dimension is absent.
 
 ## Telemetry And Logs
 

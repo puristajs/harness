@@ -6,7 +6,7 @@
   deterministic step checkpoints, and external waits.
 - `DurableWorkspace` owns resumable filesystem snapshots.
 - `Sandbox` owns execution and filesystem access.
-- `MemoryAdapter` owns scoped agent/session memory.
+- `MemoryEngine` owns scoped application, tenant, principal, session, run, and agent memory records.
 - PURISTA's top-level `StateStore` remains ordinary framework application state;
   it is not a Harness adapter.
 

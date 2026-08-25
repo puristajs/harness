@@ -1,0 +1,92 @@
+reuse_inventory_version: 1
+discovery_revision: ai-harness-a1fd74a-purista-7a4107a-2026-08-25
+assets:
+  - asset_id: ASSET-MODEL-REGISTRY
+    kind: runtime
+    path: packages/harness/src/models/registry.ts
+    public_export: ModelHandle and createModelRegistry
+    owner: harness_core
+    stability: existing_public
+    consumers:
+      - memory_orchestrator
+      - purista_runtime
+    extension_policy: Add branded configuration references without duplicating provider invocation or telemetry.
+  - asset_id: ASSET-MEMORY-FACADE
+    kind: runtime
+    path: packages/harness/src/ports/memory/facade.ts
+    public_export: MemoryFacade and SessionMemory
+    owner: harness_core
+    stability: clean_break_revision
+    consumers:
+      - sessions
+      - agents
+      - workflows
+      - tools
+    extension_policy: Keep standard validation telemetry and errors in the core wrapper.
+  - asset_id: ASSET-HARNESS-STORAGE
+    kind: contract
+    path: packages/harness/src/storage/types.ts
+    public_export: HarnessStorage
+    owner: harness_core
+    stability: existing_public
+    consumers:
+      - sessions
+      - summary_refresh
+      - purista_runtime
+    extension_policy: Add session identity binding only; do not move memory search into storage.
+  - asset_id: ASSET-FAKE-MODEL
+    kind: testing
+    path: packages/harness/src/testing
+    public_export: Existing fake model provider surface
+    owner: harness_testing
+    stability: existing_public
+    consumers:
+      - memory_tests
+      - examples
+    extension_policy: Add deterministic embedding and summary fixtures through existing fake provider patterns.
+  - asset_id: ASSET-PURISTA-IDENTITY
+    kind: runtime
+    path: ../purista/packages/core/src/AgentQueueBuilder/runtime/identity.ts
+    public_export: PURISTA message tenantId and principalId propagation
+    owner: purista_core
+    stability: existing_internal
+    consumers:
+      - purista_harness_binding
+    extension_policy: Pass existing identity values to Harness without renaming or deriving new values.
+  - asset_id: ASSET-OTEL
+    kind: runtime
+    path: packages/harness/src/telemetry
+    public_export: TelemetryShim and model semantic convention spans
+    owner: harness_core
+    stability: existing_public
+    consumers:
+      - memory_orchestrator
+      - vendor_engines
+    extension_policy: Memory owns operation spans and nested model calls retain model token and cost ownership.
+  - asset_id: ASSET-HARNESS-SQLITE
+    kind: runtime_pattern
+    path: packages/harness/src/storage/sqlite.ts
+    public_export: sqliteHarnessStorage
+    owner: harness_core
+    stability: existing_public
+    consumers:
+      - sqlite_engine
+    extension_policy: Reuse runtime detection, built-in driver behavior, schema-version failure style, serialization, and close ownership as implementation evidence; do not import or re-export the storage implementation from the memory package.
+  - asset_id: ASSET-PURISTA-REDIS-STORE
+    kind: vendor_pattern
+    path: ../purista/packages/redis-state-store
+    public_export: RedisStateStore
+    owner: purista_core
+    stability: existing_public
+    consumers:
+      - redis_engine
+    extension_policy: Reuse official-client lifecycle and safe logging conventions as evidence only; the Harness engine is independent and does not import this package.
+  - asset_id: ASSET-PURISTA-NATS-STORE
+    kind: vendor_pattern
+    path: ../purista/packages/nats-state-store
+    public_export: NatsStateStore
+    owner: purista_core
+    stability: existing_public
+    consumers:
+      - nats_engine
+    extension_policy: Reuse JetStream readiness, JSON codec, shutdown, and error-handling lessons, but use the current official modular NATS v3 packages and do not import this StateStore.

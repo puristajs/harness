@@ -8,7 +8,7 @@ import { createModelRegistry } from '../src/models/registry.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
-import { sandboxMemory } from '../src/memory/sandbox/index.js'
+import { inMemoryMemoryEngine } from '../src/memory/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { startFakeHttpMcpServer } from '../src/testing/fixtures/mcp/fake-http-server.js'
 
@@ -116,7 +116,7 @@ it('adds content-free Agent Plugin provenance to the existing MCP tool span and 
     telemetryShim: telemetry,
     storage: new InMemoryHarnessStorage(),
     sandbox: inMemorySandbox(),
-    memory: sandboxMemory(),
+    memory: inMemoryMemoryEngine(),
     defaults: {
       agentMaxIterations: 4,
       runTimeoutMs: 60_000,
@@ -452,7 +452,7 @@ it('emits privacy-safe memory spans and metrics from the core wrapper', async ()
   ]))
   for (const span of memorySpans) {
     expect(span.attrs).toMatchObject({
-      'harness.memory.provider': 'sandbox_memory',
+      'harness.memory.provider': 'in_memory_memory',
       'harness.memory.content_captured': false,
       'harness.session.id': 'telemetry-session'
     })
@@ -469,7 +469,7 @@ it('emits privacy-safe memory spans and metrics from the core wrapper', async ()
     expect.objectContaining({
       kind: 'histogram',
       name: 'harness.memory.operation.duration',
-      attrs: expect.objectContaining({ 'harness.memory.provider': 'sandbox_memory' })
+      attrs: expect.objectContaining({ 'harness.memory.provider': 'in_memory_memory' })
     })
   ]))
 })

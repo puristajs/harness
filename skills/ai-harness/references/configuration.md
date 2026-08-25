@@ -140,7 +140,7 @@ observes `req.signal`, so adapters should still propagate that signal promptly.
 Defaults:
 - storage: `InMemoryHarnessStorage`
 - sandbox: `autoDetectSandbox()` when `.sandbox()` is omitted or called with no argument
-- memory: `sandboxMemory()` when `.memory(...)` is omitted
+- memory: dependency-free, process-local `inMemoryMemoryEngine()` when `.memory(...)` is omitted
 - logger: `JsonLogger`
 - telemetry shim: created internally; `.telemetry(...)` supplies options such as `contentCaptureMode`
 

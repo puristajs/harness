@@ -114,7 +114,7 @@ Keep these layers separate:
 3. Define Zod schemas at every agent, workflow, and tool boundary.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
 5. Attach tools, skill directories, permissions, sandbox, memory, Harness storage, optional durable workspace, requirements, logger, and telemetry explicitly.
-6. Decide which data is durable: conversation/run/checkpoint/wait records use `HarnessStorage`, session memory uses `MemoryAdapter`, durable files use `DurableWorkspace`, and provider context is transient. Do not adapt PURISTA's general-purpose `StateStore` into Harness storage.
+6. Decide which data is durable: conversation/run/checkpoint/wait records use `HarnessStorage`; scoped facts and recall use `MemoryEngine` (the dependency-free in-memory engine is the default); durable files use `DurableWorkspace`; provider context is transient. Do not adapt PURISTA's general-purpose `StateStore` into Harness storage.
 7. Invoke through `harness.getSession(id)`, release idle sessions, and shut down the shared harness during process shutdown. Use destructive session close only for explicit conversation deletion.
 8. Test with `@purista/harness/testing` model/runtime fakes, the Guardrails
    fake detector, and the Presidio scripted sidecar before live-provider or

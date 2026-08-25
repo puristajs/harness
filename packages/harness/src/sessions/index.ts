@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { z } from 'zod'
 
 import type { Logger } from '../logger/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
@@ -45,7 +46,7 @@ import type {
   GovernanceConfig,
   TelemetryOptions
 } from '../harness/defineHarness.js'
-import type { MemoryAdapter, MemoryFacade } from '../ports/memory.js'
+import type { MemoryEngine, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { HarnessInspection } from '../ports/capabilities.js'
 import type { DurableWorkspace } from '../ports/workspace.js'
@@ -66,6 +67,7 @@ import { abortError } from '../runtime/abort.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 import { validateContextProjection } from '../context-projection.js'
 import { retainCompleteTurns } from './history-retention.js'
+import { normalizeHarnessIdentity, sameHarnessIdentity, type HarnessIdentity } from '../identity/index.js'
 
 type ModelRunContext = {
   harnessName: string
@@ -92,7 +94,9 @@ type HarnessDefinition<S extends BuilderState> = {
   telemetryShim?: TelemetryShim
   storage: HarnessStorage
   sandbox: Sandbox
-  memory: MemoryAdapter
+  memory: MemoryEngine
+  memoryEmbeddingAlias?: string
+  memorySummary?: { alias: string; everyTurns: number; sourceTurns: number }
   workspace?: DurableWorkspace
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
@@ -367,6 +371,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
   const resolvedSkills = loadSkillsSync(definition.skills as Record<string, SkillDefinition>) as NonNullable<S['skills']> & Record<string, ResolvedSkill>
   const sessionStates = new Map<string, SessionState>()
+  // Identity is immutable after session creation. Keep only that verified
+  // record locally so idempotent replays do not add storage I/O on every turn.
+  const sessionRecords = new Map<string, SessionRecord>()
   // In-flight session-state creations, memoized so concurrent first-time callers
   // share one sandbox open (no orphaned sessions) and one SessionState object
   // (so the synchronous busy check/set below serializes runs correctly).
@@ -410,9 +417,25 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
 
-  async function ensureSessionRecord(sessionId: string): Promise<SessionRecord> {
+  async function ensureSessionRecord(sessionId: string, identity?: HarnessIdentity): Promise<SessionRecord> {
+    const normalizedIdentity = normalizeHarnessIdentity(identity)
+    const cached = sessionRecords.get(sessionId)
+    if (cached) {
+      if (!sameHarnessIdentity(cached.identity, normalizedIdentity)) {
+        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
+          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
+        })
+      }
+      return cached
+    }
     const existing = await definition.storage.getSession(sessionId)
     if (existing) {
+      if (!sameHarnessIdentity(existing.identity, normalizedIdentity)) {
+        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
+          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
+        })
+      }
+      sessionRecords.set(sessionId, existing)
       return existing
     }
 
@@ -421,9 +444,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       id: sessionId,
       createdAt,
       updatedAt: createdAt,
-      runCount: 0
+      runCount: 0,
+      ...(normalizedIdentity ? { identity: normalizedIdentity } : {})
     }
     await definition.storage.upsertSession(created)
+    sessionRecords.set(sessionId, created)
     return created
   }
 
@@ -488,6 +513,52 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       return
     }
     if (additions.length > 0) await definition.storage.appendMessages(sessionId, additions)
+  }
+
+  /** Best-effort enrichment: a summary failure never reverses a committed application run. */
+  async function refreshMemorySummary(sessionId: string, sandboxSession: SandboxSession, signal: AbortSignal, identity?: HarnessIdentity): Promise<void> {
+    const config = definition.memorySummary
+    if (!config) return
+    const history = await definition.storage.listMessages(sessionId)
+    const completeTurns = history.filter((message) => message.role === 'user').length
+    if (completeTurns === 0 || completeTurns % config.everyTurns !== 0) return
+    const source = history.slice(-config.sourceTurns * 2)
+    const handle = modelRegistry[config.alias] as { object?: (request: { messages: readonly { role: 'system' | 'user'; content: string }[]; schema: z.ZodTypeAny; schemaName: string }, signal: AbortSignal) => Promise<{ object: { summary: string } }> } | undefined
+    if (!handle?.object) {
+      definition.logger.error('Configured memory summary model has no object method.', { harness: definition.name, model_alias: config.alias })
+      return
+    }
+    try {
+      const response = await telemetry.span('harness.memory.summary', {
+        'harness.name': definition.name,
+        'harness.session.id': sessionId,
+        'harness.memory.summary.model_alias': config.alias
+      }, () => handle.object!({
+        messages: [
+          { role: 'system', content: 'Summarize the supplied conversation faithfully. Do not invent facts. Return a concise summary.' },
+          { role: 'user', content: source.map((message) => `${message.role}: ${message.content}`).join('\n') }
+        ],
+        schema: z.object({ summary: z.string().min(1).max(16000) }),
+        schemaName: 'harness_conversation_summary'
+      }, signal))
+      const model = definition.models[config.alias]!
+      const digest = createHash('sha256').update(JSON.stringify(source.map((message) => [message.id, message.content]))).digest('hex')
+      const memory = createMemoryFacade(memoryOptions(sessionId, sandboxSession, signal, identity ? { identity } : {})).session
+      await memory.write('_harness/conversation-summary', {
+        summary: response.object.summary,
+        sourceMessageIds: source.map((message) => message.id),
+        sourceDigest: digest,
+        generatedAt: now(),
+        modelAlias: config.alias,
+        providerId: model.provider.id,
+        model: model.model,
+        revision: 'harness.conversation-summary.v1'
+      }, { index: { text: response.object.summary } })
+      telemetry.recordCounter('harness.memory.summary.count', 1, { 'harness.name': definition.name })
+    } catch (error) {
+      telemetry.recordCounter('harness.memory.summary.failure_count', 1, { 'harness.name': definition.name })
+      definition.logger.error('Memory summary enrichment failed.', { harness: definition.name, session_id: sessionId, error: serializeError(error) })
+    }
   }
 
   async function readCommittedAgentOutput(sessionId: string, runId: string, agent: AgentDefinition<S>): Promise<JsonValue | undefined> {
@@ -612,22 +683,33 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       runId?: string
       agentId?: string
       workflowId?: string
-      metadata?: Readonly<Record<string, JsonValue>>
+      identity?: HarnessIdentity
     } = {}
   ): Parameters<typeof createSessionMemory>[0] {
+    const embeddingAlias = definition.memoryEmbeddingAlias
+    const embeddingModel = embeddingAlias ? definition.models[embeddingAlias] : undefined
+    const embeddingHandle = embeddingAlias ? modelRegistry[embeddingAlias] as { embed?: (input: { input: string }, signal: AbortSignal) => Promise<import('../ports/model-provider.js').EmbeddingResponse> } : undefined
     return {
-      adapter: definition.memory,
+      engine: definition.memory,
       logger: definition.logger,
       telemetry,
+      metrics: adapterMetrics,
       contentCaptureMode,
       signal,
-      sandbox: sandboxSession,
       harnessName: definition.name,
       sessionId,
       ...(opts.runId ? { runId: opts.runId } : {}),
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
-      metadata: opts.metadata ?? {}
+      ...(opts.identity ? { identity: opts.identity } : {}),
+      ...(embeddingAlias && embeddingModel && embeddingHandle?.embed ? {
+        embedding: {
+          alias: embeddingAlias,
+          providerId: embeddingModel.provider.id,
+          model: embeddingModel.model,
+          embed: (input: string, signal: AbortSignal) => embeddingHandle.embed!({ input }, signal)
+        }
+      } : {})
     }
   }
 
@@ -637,8 +719,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     signal: AbortSignal
     runId: string
     agentId?: string
-    workflowId?: string
-    metadata: Readonly<Record<string, JsonValue>>
+      workflowId?: string
+      identity?: HarnessIdentity
+      metadata?: Readonly<Record<string, JsonValue>>
   }): MemoryFacade {
     return createMemoryFacade(memoryOptions(opts.sessionId, opts.sandboxSession, opts.signal, opts))
   }
@@ -659,10 +742,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     inspect(): HarnessInspection {
       return definition.inspection
     },
-    async getSession(sessionId: string): Promise<Session<S>> {
-      await ensureSessionRecord(sessionId)
+    async getSession(sessionId: string, identity?: HarnessIdentity): Promise<Session<S>> {
+      const sessionRecord = await ensureSessionRecord(sessionId, identity)
       const state = await getSessionState(sessionId)
-      const memory = createSessionMemory(memoryOptions(sessionId, state.sandboxSession, NEVER_ABORT_SIGNAL), { kind: 'session', sessionId })
+      const memory = createMemoryFacade(memoryOptions(sessionId, state.sandboxSession, NEVER_ABORT_SIGNAL, sessionRecord.identity ? { identity: sessionRecord.identity } : {})).session
       const workflowEntries = Object.entries(definition.workflows).map(([workflowId, workflow]) => {
         const invoker = {
           prompt: (input: WorkflowInput<S, keyof NonNullable<S['workflows']>>, opts?: InvokeOptions) => runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts) as Promise<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>,
@@ -739,6 +822,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           const reopened = sessionStates.get(sessionId)
           if (reopened && reopened !== state) return
           await definition.storage.closeSession(sessionId)
+          sessionRecords.delete(sessionId)
           sessionStateOpenings.delete(sessionId)
         },
         async release(): Promise<void> {
@@ -771,6 +855,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         }
       }
       sessionStates.clear()
+      sessionRecords.clear()
       const closed = new Set<object>()
       const closeResource = async (kind: string, id: string, resource: unknown, allowLog = true): Promise<void> => {
         if (!resource || (typeof resource !== 'object' && typeof resource !== 'function') || closed.has(resource as object)) return
@@ -829,6 +914,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<AgentOutput<S, K>> {
     validateInvokeOptions(opts)
+    const boundSession = await ensureSessionRecord(sessionId)
     if (opts?.durable) {
       throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
     }
@@ -907,6 +993,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         agentId,
         signal: runSignal.signal,
         sandboxSession: state.sandboxSession,
+        ...(boundSession.identity ? { identity: boundSession.identity } : {}),
         metadata: opts?.metadata ?? {}
       })
       const runRecord: RunRecord = {
@@ -966,6 +1053,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         })
         if (run.emitted.length > 0) {
           await persistConversationTurn(sessionId, run.emitted)
+          await refreshMemorySummary(sessionId, state.sandboxSession, runSignal.signal, boundSession.identity)
         }
         return run.output
       }))
@@ -1039,6 +1127,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<WorkflowOutput<S, K>> {
     validateInvokeOptions(opts)
+    const boundSession = await ensureSessionRecord(sessionId)
     const durableStorage = resolveDurableStorage(opts)
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
@@ -1110,6 +1199,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         workflowId,
         signal: runSignal.signal,
         sandboxSession: runSandboxSession,
+        ...(boundSession.identity ? { identity: boundSession.identity } : {}),
         metadata: opts?.metadata ?? {}
       })
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () => telemetry.span('harness.session.prompt', {
@@ -1239,6 +1329,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       agentId,
                       signal: agentSignal.signal,
                       sandboxSession: runSandboxSession,
+                      ...(boundSession.identity ? { identity: boundSession.identity } : {}),
                       metadata: agentMetadata
                     })
                     const run = await runDefaultAgent({
@@ -1281,6 +1372,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                     })
                     if (run.emitted.length > 0) {
                       await persistConversationTurn(sessionId, run.emitted)
+                      await refreshMemorySummary(sessionId, runSandboxSession, agentSignal.signal, boundSession.identity)
                     }
                     return run.output
                   })()
@@ -1649,9 +1741,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
         slotAcquired = true
         taskSandbox = await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
+        const childSession = await ensureSessionRecord(args.sessionId)
         const memory = memoryFacade({
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
-          signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
+          signal: taskSignal.signal, sandboxSession: taskSandbox, ...(childSession.identity ? { identity: childSession.identity } : {}), metadata: args.metadata
         })
         const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
         const run = await runDefaultAgent({
@@ -1835,9 +1928,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
         slotAcquired = true
         taskSandbox ??= await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
+        const childSession = await ensureSessionRecord(args.sessionId)
         const memory = memoryFacade({
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
-          signal: taskSignal.signal, sandboxSession: taskSandbox, metadata: args.metadata
+          signal: taskSignal.signal, sandboxSession: taskSandbox, ...(childSession.identity ? { identity: childSession.identity } : {}), metadata: args.metadata
         })
         const contextProjection = definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
         const run = await runDefaultAgent({
@@ -2430,7 +2524,7 @@ function configureHarnessAdapters(
   models: ModelsConfig,
   storage: HarnessStorage,
   sandbox: Sandbox,
-  memory: MemoryAdapter,
+  memory: MemoryEngine,
   tools: ToolsConfig,
   workspace: DurableWorkspace | undefined
 ): void {

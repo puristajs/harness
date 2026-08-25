@@ -1,4 +1,5 @@
 import type { JsonValue } from './json.js'
+import type { HarnessIdentity } from '../identity/index.js'
 
 /** Session-level metadata persisted by Harness storage. */
 export interface SessionRecord {
@@ -6,6 +7,8 @@ export interface SessionRecord {
   createdAt: string
   updatedAt: string
   runCount: number
+  /** Identity is bound at creation and compared before any live resource opens. */
+  identity?: HarnessIdentity
   metadata?: Record<string, JsonValue>
 }
 

@@ -6,7 +6,7 @@ export { FakeHarnessStorage, type FakeHarnessStorageOp } from './fakeHarnessStor
 export { FakeSandbox, type FakeSandboxOptions } from './fakeSandbox.js'
 export { FakeLogger, type FakeLogRecord } from './fakeLogger.js'
 export { RecordingTelemetry, type RecordedTelemetryMetric, type RecordedTelemetrySpan } from './recordingTelemetry.js'
-export { FakeMemoryAdapter, memoryAdapterContract } from './fakeMemoryAdapter.js'
+export { FakeMemoryEngine, memoryEngineContract } from './fakeMemoryEngine.js'
 export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from '../workspace/index.js'
 export { adapterCapabilitiesContract, fakeCapabilityAdapter, type FakeCapabilityAdapter } from './capabilities.js'
 export { fakeSnapshotSandbox, sandboxSnapshotContract } from './sandboxSnapshot.js'

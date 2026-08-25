@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { defineHarness, defineHarnessModule } from '../src/harness/defineHarness.js'
 import { createModelRegistry } from '../src/models/registry.js'
-import { inMemoryDurableWorkspace, inMemoryHarnessStorage, inMemorySandbox, sandboxMemory } from '../src/index.js'
+import { inMemoryDurableWorkspace, inMemoryHarnessStorage, inMemoryMemoryEngine, inMemorySandbox } from '../src/index.js'
 import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
-import type { JsonValue, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { JsonValue, MemoryEngine, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
 import type { Logger } from '../src/logger/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
@@ -97,7 +97,7 @@ defineHarnessModule<{}>()('no-build-module', {
 })
 
 const harness = defineHarness()
-  .memory(sandboxMemory())
+  .memory(inMemoryMemoryEngine())
   .models({
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
     reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
@@ -152,7 +152,7 @@ const harness = defineHarness()
         ctx.log.debug('workflow handler logging is typed')
         await ctx.memory.session.write('workflow_task', { task: ctx.input.task })
         await ctx.memory.run.write('workflow_seen', true)
-        await ctx.memory.user('u1').write('workflow_user', 'ok')
+        await ctx.memory.principal().write('workflow_principal', 'ok')
 
         const plan = await ctx.agents.planner({ task: ctx.input.task, priority: 1 })
         type PlanOutput = typeof plan
@@ -379,4 +379,21 @@ defineHarness()
         return ctx.input
       }
     })
+  }))
+
+const vectorMemoryEngine = inMemoryMemoryEngine() as unknown as MemoryEngine<readonly ['memory.kv', 'memory.list', 'memory.delete', 'memory.vector_search']>
+defineHarness()
+  .models({
+    memoryEmbedding: { provider, model: 'type-test-model', capabilities: ['embeddings'] },
+    memorySummary: { provider, model: 'type-test-model', capabilities: ['object'] },
+    textOnlyMemory: { provider, model: 'type-test-model', capabilities: ['text'] }
+  })
+  .memory((model) => ({ engine: vectorMemoryEngine, embedding: model.memoryEmbedding, summary: model.memorySummary }))
+
+defineHarness()
+  .models({ memoryEmbedding: { provider, model: 'type-test-model', capabilities: ['embeddings'] } })
+  .memory((model) => ({
+    engine: inMemoryMemoryEngine(),
+    // @ts-expect-error embedding configuration requires a vector-search engine
+    embedding: model.memoryEmbedding
   }))

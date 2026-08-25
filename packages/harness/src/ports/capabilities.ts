@@ -63,22 +63,18 @@ export type AdapterCapability =
   | 'memory.list'
   /** Memory adapter supports key deletion. */
   | 'memory.delete'
-  /** Memory adapter supports text search over stored memory. */
-  | 'memory.search'
+  /** Memory engine supports text search over stored memory. */
+  | 'memory.text_search'
+  /** Memory engine supports vector similarity search. */
+  | 'memory.vector_search'
+  /** Memory engine supports native hybrid search. */
+  | 'memory.hybrid_search'
   /** Memory adapter supports entry expiration. */
   | 'memory.ttl'
-  /** Memory adapter supports run-scoped memory. */
-  | 'memory.run'
-  /** Memory adapter supports session-scoped memory. */
-  | 'memory.session'
-  /** Memory adapter supports agent-scoped memory. */
-  | 'memory.agent'
-  /** Memory adapter supports user-scoped memory. */
-  | 'memory.user'
-  /** Memory adapter supports tenant-scoped memory. */
-  | 'memory.tenant'
   /** Memory survives adapter close/reopen for the same logical scope. */
   | 'memory.persistent'
+  /** Memory is designed for coordinated multi-instance access. */
+  | 'memory.multi_instance'
 
 /** Data-only descriptor implemented by adapters that expose capability metadata. */
 export interface AdapterCapabilities {

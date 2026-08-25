@@ -33,13 +33,15 @@ import type {
 import { validateHarnessStorage, type HarnessStorage } from '../storage/types.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
-import { sandboxMemory } from '../memory/sandbox/index.js'
+import { inMemoryMemoryEngine } from '../memory/in-memory.js'
 import type {
-  MemoryAdapter,
+  MemoryConfiguration,
+  MemoryEngine,
   MemoryFacade,
+  MemoryModelReferences,
   SessionMemory
 } from '../ports/memory.js'
-import { validateMemoryAdapter } from '../ports/memory.js'
+import { validateMemoryEngine } from '../ports/memory.js'
 import type { DurableWorkspacePolicy, DurableWorkspace } from '../ports/workspace.js'
 import { validateDurableWorkspace } from '../ports/workspace.js'
 import type { ExternalWaitRequest, ExternalWaitSnapshot } from '../storage/external-wait.js'
@@ -66,6 +68,7 @@ import {
 import type { DurableStepOptions } from '../runtime/steps.js'
 import { type ContextProjectionPolicy, validateContextProjection } from '../context-projection.js'
 import { type SessionHistoryRetentionPolicy, validateSessionHistoryRetention } from '../sessions/history-retention.js'
+import type { HarnessIdentity } from '../identity/index.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
 export { HARNESS_VERSION } from '../version.js'
@@ -1189,7 +1192,7 @@ export type InferTypes<S extends BuilderState> = {
 /** Harness handle returned from `build()`. */
 export interface Harness<S extends BuilderState> {
   /** Opens or creates a fresh session facade bound to `id`. */
-  getSession(id: string): Promise<Session<S>>
+  getSession(id: string, identity?: HarnessIdentity): Promise<Session<S>>
   /** Returns a synchronous, data-only snapshot of resolved adapter setup. */
   inspect(): HarnessInspection
   /** Closes harness-owned adapters and returns any shutdown errors. */
@@ -1302,7 +1305,9 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   logger(logger: Logger): HarnessBuilder<S>
   storage(storage: HarnessStorage): HarnessBuilder<S>
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
-  memory(adapter: MemoryAdapter): HarnessBuilder<S>
+  memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(engine: MemoryEngine<C>): HarnessBuilder<S>
+  memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
+  memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: (model: MemoryModelReferences<NonNullable<S['models']>>) => MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
   workspace(workspace: DurableWorkspace): HarnessBuilder<S>
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
@@ -1361,7 +1366,7 @@ type BuilderStateInternal = {
   logger?: Logger
   storage?: HarnessStorage
   sandbox?: Sandbox<any>
-  memory?: MemoryAdapter
+  memory?: MemoryEngine | MemoryConfiguration | ((model: MemoryModelReferences<ModelsConfig>) => MemoryConfiguration)
   workspace?: DurableWorkspace
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
@@ -1455,12 +1460,24 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ sandbox })
   }
 
-  public memory(memory: MemoryAdapter): HarnessBuilder<S> {
+  public memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(engine: MemoryEngine<C>): HarnessBuilder<S>
+  public memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
+  public memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: (model: MemoryModelReferences<NonNullable<S['models']>>) => MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
+  public memory(memory: unknown): HarnessBuilder<S> {
     if (this.configured.memory) {
-      throw new HarnessConfigError('Memory adapter is already configured.', { reason: 'duplicate_adapter', path: 'memory' })
+      throw new HarnessConfigError('Memory engine is already configured.', { reason: 'duplicate_adapter', path: 'memory' })
     }
-    validateMemoryAdapter(memory)
-    return this.clone({ memory })
+    if (typeof memory !== 'function') {
+      if (!memory || typeof memory !== 'object') {
+        throw new HarnessConfigError('Memory must be a MemoryEngine, MemoryConfiguration, or configuration callback.', { reason: 'invalid_adapter', path: 'memory' })
+      }
+      const engine = 'engine' in memory ? memory.engine : memory
+      if (!isMemoryEngineCandidate(engine)) {
+        throw new HarnessConfigError('Memory configuration requires a valid MemoryEngine.', { reason: 'invalid_memory_engine', path: 'memory.engine' })
+      }
+      validateMemoryEngine(engine)
+    }
+    return this.clone({ memory: memory as NonNullable<typeof this.configured.memory> })
   }
 
   public workspace(workspace: DurableWorkspace): HarnessBuilder<S> {
@@ -1579,8 +1596,8 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     this.validateAgentModelAndToolReferences(models)
     this.validateGovernancePolicies()
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
-    const memory = this.configured.memory ?? sandboxMemory()
-    validateMemoryAdapter(memory)
+    const resolvedMemory = this.resolveMemory(models)
+    const memory = resolvedMemory.engine
     const storage = this.configured.storage ?? new InMemoryHarnessStorage()
     validateHarnessStorage(storage)
     if (this.configured.workspace) validateDurableWorkspace(this.configured.workspace)
@@ -1601,6 +1618,8 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       storage,
       sandbox,
       memory,
+      ...(resolvedMemory.embeddingAlias ? { memoryEmbeddingAlias: resolvedMemory.embeddingAlias } : {}),
+      ...(resolvedMemory.summary ? { memorySummary: resolvedMemory.summary } : {}),
       ...(this.configured.workspace ? { workspace: this.configured.workspace } : {}),
       defaults: {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
@@ -1624,6 +1643,41 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     })
 
     return harness
+  }
+
+  private resolveMemory(models: ModelsConfig): { engine: MemoryEngine; embeddingAlias?: string; summary?: { alias: string; everyTurns: number; sourceTurns: number } } {
+    const configured = this.configured.memory
+    if (!configured) return { engine: inMemoryMemoryEngine() }
+    const references = Object.fromEntries(Object.entries(models).map(([alias, model]) => [alias, Object.freeze({ alias, capabilities: Object.freeze([...model.capabilities]) })])) as MemoryModelReferences<ModelsConfig>
+    const definition = (typeof configured === 'function' ? configured(references) : configured) as MemoryConfiguration | MemoryEngine
+    const engine = 'engine' in definition ? definition.engine : definition
+    validateMemoryEngine(engine)
+    let embeddingAlias: string | undefined
+    if ('engine' in definition && definition.embedding !== undefined) {
+      if (!engine.capabilities.includes('memory.vector_search')) {
+        throw new HarnessConfigError('Memory embedding requires an engine with memory.vector_search.', { reason: 'missing_required_capability', path: 'memory.embedding', id: engine.info.id })
+      }
+      const ref = 'model' in (definition.embedding as object) ? (definition.embedding as { model: { alias: string } }).model : definition.embedding as { alias: string }
+      if (!models[ref.alias]?.capabilities.includes('embeddings')) {
+        throw new HarnessConfigError('Memory embedding reference must select an embedding-capable model.', { reason: 'invalid_memory_model_reference', path: 'memory.embedding', id: ref.alias })
+      }
+      embeddingAlias = ref.alias
+    }
+    let summary: { alias: string; everyTurns: number; sourceTurns: number } | undefined
+    if ('engine' in definition && definition.summary !== undefined) {
+      const advanced = definition.summary as { model?: { alias: string }; alias?: string; everyTurns?: number; sourceTurns?: number }
+      const ref = advanced.model ?? advanced as { alias: string }
+      if (!models[ref.alias]?.capabilities.includes('object')) {
+        throw new HarnessConfigError('Memory summary reference must select an object-capable model.', { reason: 'invalid_memory_model_reference', path: 'memory.summary', id: ref.alias })
+      }
+      const everyTurns = advanced.everyTurns ?? 20
+      const sourceTurns = advanced.sourceTurns ?? 50
+      if (!Number.isSafeInteger(everyTurns) || everyTurns < 1 || !Number.isSafeInteger(sourceTurns) || sourceTurns < 1) {
+        throw new HarnessConfigError('Memory summary intervals must be positive safe integers.', { reason: 'invalid_memory_summary', path: 'memory.summary' })
+      }
+      summary = { alias: ref.alias, everyTurns, sourceTurns }
+    }
+    return { engine, ...(embeddingAlias ? { embeddingAlias } : {}), ...(summary ? { summary } : {}) }
   }
 
   private toModuleBuilder<T extends BuilderState = S>(target: Builder<T> = this as unknown as Builder<T>, invocation?: symbol): HarnessModuleBuilder<T> {
@@ -1895,7 +1949,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
   }
 
-  private resolveInspection(name: string, storage: HarnessStorage, sandbox: Sandbox, memory: MemoryAdapter, models: ModelsConfig): HarnessInspection {
+  private resolveInspection(name: string, storage: HarnessStorage, sandbox: Sandbox, memory: MemoryEngine, models: ModelsConfig): HarnessInspection {
     const adapters: AdapterInspection[] = []
     adapters.push({
       kind: 'storage',
@@ -1912,7 +1966,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     adapters.push({
       kind: 'memory',
       id: memory.info.id,
-      capabilities: uniqueCapabilities(memory.info.capabilities),
+      capabilities: uniqueCapabilities(memory.capabilities),
       metadata: {
         packageName: memory.info.packageName,
         ...(memory.info.version ? { version: memory.info.version } : {})
@@ -1962,6 +2016,10 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       modules: Object.freeze([...(this.configured.modules ?? [])])
     }
   }
+}
+
+function isMemoryEngineCandidate(value: unknown): value is MemoryEngine {
+  return Boolean(value && typeof value === 'object' && 'info' in value && 'capabilities' in value && 'get' in value && 'put' in value && 'delete' in value && 'list' in value)
 }
 
 function moduleContributions(before: BuilderStateInternal, after: BuilderStateInternal): Array<{ kind: 'model' | 'tool' | 'skill' | 'agent' | 'workflow'; ids: string[] }> {

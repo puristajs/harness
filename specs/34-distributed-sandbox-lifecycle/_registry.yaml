@@ -1,0 +1,25 @@
+registry_version: 1
+feature_id: distributed-sandbox-lifecycle
+status: approved_contract_local_docker_and_bakeoff
+artifacts:
+  vision: 00-vision.md
+  architecture: 00-architecture-overview.md
+  conventions: 00-conventions.md
+  policy_profile: 00-policy-profile.yaml
+  decision_authority: 00-decision-authority.yaml
+  applicability: 00-applicability.yaml
+  reuse_inventory: 00-reuse-inventory.yaml
+  module_boundaries: 00-module-boundaries.yaml
+  file_structure: 00-file-structure.md
+  traceability: 00-traceability.yaml
+  capabilities: 02-capabilities/capability-inventory.md
+  contracts: 03-contracts/contracts.yaml
+  generation_map: 03-contracts/generation-map.yaml
+  representation_catalog: 03-contracts/representation-catalog.yaml
+  flows: 03-flows/e2e-coverage.md
+  nfr: 04-nfr/requirements.md
+  operations: 04-operations/runbook-requirements.md
+  migration: 04-delivery/migration-requirements.md
+  purista_integration: 05-integration/purista-boundary.md
+  local_docker: 05-integration/local-docker.md
+contract_ids: [CTR-SBX-SCOPE, CTR-SBX-OPEN, CTR-SBX-SANDBOX, CTR-SBX-DOCKER]

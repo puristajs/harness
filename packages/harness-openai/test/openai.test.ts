@@ -524,7 +524,7 @@ describe('openai provider factory', () => {
     })
   })
 
-  it('captures Responses API output items on tool-call responses as providerItems', async () => {
+  it('maps Responses API tool-call output into a canonical provider continuation', async () => {
     const output = [
       { type: 'reasoning', id: 'rs_1', summary: [] },
       { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
@@ -551,10 +551,16 @@ describe('openai provider factory', () => {
     })
 
     expect(response.toolCalls).toEqual([{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }])
-    expect(response.providerItems).toEqual({ providerId: 'openai', items: output })
+    expect(response.providerContinuation).toEqual({
+      providerId: 'openai',
+      items: [
+        { kind: 'opaque', data: { type: 'reasoning', id: 'rs_1', summary: [] } },
+        { kind: 'tool_call', callId: 'call_1', data: { itemId: 'fc_1' } }
+      ]
+    })
   })
 
-  it('omits providerItems on Responses API responses without tool calls', async () => {
+  it('omits provider continuation on Responses API responses without tool calls', async () => {
     const provider = openai({
       api: 'responses',
       client: {
@@ -575,7 +581,7 @@ describe('openai provider factory', () => {
       signal: mockSignal()
     })
 
-    expect(response.providerItems).toBeUndefined()
+    expect(response.providerContinuation).toBeUndefined()
   })
 
   it('maps Responses API incomplete details into length outcome metadata', async () => {
@@ -689,11 +695,7 @@ describe('openai provider factory', () => {
     })
   })
 
-  it('replays own providerItems verbatim instead of reconstructing the assistant turn', async () => {
-    const turnItems = [
-      { type: 'reasoning', id: 'rs_1', summary: [] },
-      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
-    ]
+  it('reconstructs own provider continuation with current canonical tool arguments', async () => {
     const calls: Array<{ payload: any; options: any }> = []
     const provider = openai({
       api: 'responses',
@@ -719,8 +721,14 @@ describe('openai provider factory', () => {
         {
           role: 'assistant',
           content: '',
-          toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }],
-          providerItems: { providerId: 'openai', items: turnItems }
+          toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'edited by rail' } }],
+          providerContinuation: {
+            providerId: 'openai',
+            items: [
+              { kind: 'opaque', data: { type: 'reasoning', id: 'rs_1', summary: [] } },
+              { kind: 'tool_call', callId: 'call_1', data: { itemId: 'fc_1' } }
+            ]
+          }
         },
         { role: 'tool', toolCallId: 'call_1', content: '{"answer":42}' }
       ],
@@ -730,12 +738,13 @@ describe('openai provider factory', () => {
 
     expect(calls[0]?.payload.input).toEqual([
       { type: 'message', role: 'user', content: 'use a tool' },
-      ...turnItems,
+      { type: 'reasoning', id: 'rs_1', summary: [] },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"edited by rail"}' },
       { type: 'function_call_output', call_id: 'call_1', output: '{"answer":42}' }
     ])
   })
 
-  it('ignores foreign providerItems and reconstructs the assistant turn', async () => {
+  it('ignores foreign provider continuation and reconstructs the assistant turn', async () => {
     const calls: Array<{ payload: any; options: any }> = []
     const provider = openai({
       api: 'responses',
@@ -762,7 +771,7 @@ describe('openai provider factory', () => {
           role: 'assistant',
           content: '',
           toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'hi' } }],
-          providerItems: { providerId: 'anthropic', items: [{ type: 'thinking', thinking: 'hmm' }] }
+          providerContinuation: { providerId: 'anthropic', items: [{ kind: 'opaque', data: { type: 'thinking', thinking: 'hmm' } }] }
         },
         { role: 'tool', toolCallId: 'call_1', content: '{"answer":42}' }
       ],
@@ -775,6 +784,175 @@ describe('openai provider factory', () => {
       { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}' },
       { type: 'function_call_output', call_id: 'call_1', output: '{"answer":42}' }
     ])
+  })
+
+  it('collapses multiple Responses assistant messages into one ordered content slot', async () => {
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: {
+          create: async () => ({
+            output: [
+              { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'first' }] },
+              { type: 'reasoning', id: 'rs_1', summary: [] },
+              { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{}' },
+              { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'second' }] }
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            status: 'completed'
+          })
+        }
+      } as any
+    })
+
+    const response = await provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'use a tool' }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(response.providerContinuation).toEqual({
+      providerId: 'openai',
+      items: [
+        { kind: 'assistant_content' },
+        { kind: 'opaque', data: { type: 'reasoning', id: 'rs_1', summary: [] } },
+        { kind: 'tool_call', callId: 'call_1', data: { itemId: 'fc_1' } }
+      ]
+    })
+  })
+
+  it('rejects malformed own continuation before provider I/O', async () => {
+    let providerCalls = 0
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => { providerCalls += 1; throw new Error('provider must not be called') } }
+      } as any
+    })
+
+    await expect(provider.text!({
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_1', name: 'lookup', arguments: {} }],
+        providerContinuation: {
+          providerId: 'openai',
+          items: [
+            { kind: 'tool_call', callId: 'call_1' },
+            { kind: 'tool_call', callId: 'call_1' }
+          ]
+        }
+      }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      defaults: { retry: false },
+      signal: mockSignal()
+    })).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: { provider: 'openai', method: 'text', reason: 'invalid_provider_continuation' }
+    })
+    expect(providerCalls).toBe(0)
+  })
+
+  it.each([
+    ['unknown tool call slot', { providerId: 'openai', items: [{ kind: 'tool_call', callId: 'call_unknown' }] }, [{ id: 'call_1', name: 'lookup', arguments: {} }]],
+    ['duplicate tool call slot', { providerId: 'openai', items: [{ kind: 'tool_call', callId: 'call_1' }, { kind: 'tool_call', callId: 'call_1' }] }, [{ id: 'call_1', name: 'lookup', arguments: {} }]],
+    ['missing canonical tool call slot', { providerId: 'openai', items: [{ kind: 'tool_call', callId: 'call_1' }] }, [{ id: 'call_1', name: 'lookup', arguments: {} }, { id: 'call_2', name: 'lookup', arguments: {} }]],
+    ['invalid envelope items shape', { providerId: 'openai', items: {} }, [{ id: 'call_1', name: 'lookup', arguments: {} }]],
+    ['unknown envelope field', { providerId: 'openai', items: [{ kind: 'tool_call', callId: 'call_1' }], extra: true }, [{ id: 'call_1', name: 'lookup', arguments: {} }]],
+    ['invalid OpenAI slot data', { providerId: 'openai', items: [{ kind: 'tool_call', callId: 'call_1', data: { itemId: 'fc_1', extra: true } }] }, [{ id: 'call_1', name: 'lookup', arguments: {} }]],
+    ['duplicate assistant-content slot', { providerId: 'openai', items: [{ kind: 'assistant_content' }, { kind: 'assistant_content' }, { kind: 'tool_call', callId: 'call_1' }] }, [{ id: 'call_1', name: 'lookup', arguments: {} }]]
+  ])('rejects %s before provider I/O', async (_title, providerContinuation, toolCalls) => {
+    let providerCalls = 0
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => { providerCalls += 1; throw new Error('provider must not be called') } }
+      } as any
+    })
+
+    await expect(provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'assistant', content: '', toolCalls, providerContinuation } as any],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      defaults: { retry: false },
+      signal: mockSignal()
+    })).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: { provider: 'openai', model: 'gpt-5.5', method: 'text', reason: 'invalid_provider_continuation' }
+    })
+    expect(providerCalls).toBe(0)
+  })
+
+  it('uses canonical reconstruction for a valid empty own continuation', async () => {
+    const calls: any[] = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async (payload: any) => { calls.push(payload); return { output: [], usage: {}, status: 'completed' } } }
+      } as any
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { query: 'current' } }],
+        providerContinuation: { providerId: 'openai', items: [] }
+      }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      signal: mockSignal()
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].input).toEqual([
+      { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"query":"current"}' }
+    ])
+  })
+
+  it.each([
+    ['textStream', async (provider: ReturnType<typeof openai>, request: any) => {
+      for await (const _chunk of provider.textStream!(request)) { /* consume */ }
+    }],
+    ['objectStream', async (provider: ReturnType<typeof openai>, request: any) => {
+      for await (const _chunk of provider.objectStream!({ ...request, schema: { type: 'object' } })) { /* consume */ }
+    }]
+  ])('rejects malformed own continuation before provider I/O through %s', async (method, invoke) => {
+    let providerCalls = 0
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat completions call') } } },
+        responses: { create: async () => { providerCalls += 1; throw new Error('provider must not be called') } }
+      } as any
+    })
+    const request = {
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_1', name: 'lookup', arguments: {} }],
+        providerContinuation: { providerId: 'openai', items: null }
+      }],
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
+      defaults: { retry: false },
+      signal: mockSignal()
+    }
+
+    await expect(invoke(provider, request)).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: { provider: 'openai', model: 'gpt-5.5', method, reason: 'invalid_provider_continuation' }
+    })
+    expect(providerCalls).toBe(0)
   })
 
   it('reconstructs Responses API tool-call round-trip input without a function_call item id', async () => {
@@ -902,11 +1080,11 @@ describe('openai provider factory', () => {
     expect(out.find((chunk) => chunk.kind === 'finish')).toMatchObject({
       usage: { totalTokens: 7 },
       finishReason: 'tool_calls',
-      providerItems: {
+      providerContinuation: {
         providerId: 'openai',
         items: [
-          { type: 'reasoning', id: 'rs_1', summary: [] },
-          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"hi"}', status: 'completed' }
+          { kind: 'opaque', data: { type: 'reasoning', id: 'rs_1', summary: [] } },
+          { kind: 'tool_call', callId: 'call_1', data: { itemId: 'fc_1' } }
         ]
       }
     })

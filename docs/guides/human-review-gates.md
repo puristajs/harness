@@ -27,8 +27,21 @@ and `cancelled`; duplicate/late event ids return typed no-op results.
 
 See the executable [`durable-human-review` example](../../examples/durable-human-review/README.md)
 for application task CAS, action-digest binding, terminal signal delivery, and
-the final idempotent side-effect boundary.
+the execution claim and receipt around the final idempotent side-effect boundary.
+
+Before a new claim, the application verifies current authorization, expiry,
+revision, and the approved action digest. Atomic claim acquisition fixes the
+execution key. If that claim already exists, resume the same execution and
+return its stored receipt when complete; do not strand an admitted effect by
+applying new authorization or expiry checks during recovery. A crash after the
+domain effect but before receipt/checkpoint persistence must replay through
+the same idempotent command key. The example tests each recovery window.
+
+Immediate `governance.approval.request` is bounded and returns approved/rejected
+for one prepared tool occurrence. Content rails cannot request it or create a
+durable wait. See the [decision table](./decisions-and-approval.md) and
+[composed agent example](../../examples/guardrails/README.md).
 
 For a complete PURISTA application pattern—including safe queue handling of
-`ExternalWaitPendingError`, reauthorization on resume, and observability—see
+`ExternalWaitPendingError`, authorization before a new claim, and observability—see
 the official [Human Review Gates handbook page](https://purista.dev/handbook/harness/human-review-gates/).

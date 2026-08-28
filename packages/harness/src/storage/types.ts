@@ -2,6 +2,7 @@ import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../mo
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { DurableRunLease, DurableRunStart, RunCheckpoint } from './execution.js'
 import type {
+  BoundExternalWaitRequest,
   ExternalWaitRegistration,
   ExternalWaitRequest,
   ExternalWaitSignal,
@@ -22,12 +23,6 @@ export interface HarnessStorageInfo {
   readonly capabilities: readonly AdapterCapability[]
 }
 
-/** Run/session binding added by the Harness when an external wait is stored. */
-export interface BoundExternalWaitRequest extends ExternalWaitRequest {
-  readonly runId: string
-  readonly sessionId: string
-}
-
 /**
  * Persistence port for sessions, history, recoverable runs, and streamed events.
  *
@@ -38,13 +33,25 @@ export interface HarnessStorage {
   readonly capabilities: readonly AdapterCapability[]
   configureHarnessContext?(context: HarnessAdapterContext): void
   getSession(id: string): Promise<SessionRecord | undefined>
-  upsertSession(record: SessionRecord): Promise<void>
+  /**
+   * Atomically inserts a session (`create`) or updates its summary (`update`).
+   * Creation never mutates an existing record; updates never insert one.
+   * Returns `true` only for the insertion winner. Instance id, creation time and exact
+   * optional identity are immutable until `closeSession`; identity conflicts
+   * fail with `StateError` (`session_identity_mismatch`). A different creation
+   * instance id never overwrites the stored incarnation. Missing or changed
+   * instances reject updates with `StateError` (`session_instance_mismatch`);
+   * older summaries leave the current record unchanged.
+   */
+  upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean>
   /**
    * Destructively removes all persisted data owned by one session, including
    * its session record, conversation history, runs, and run events.
+   * Only removes the record when its instance id matches `expectedInstanceId`;
+   * a stale close cannot delete a newly created session with the same id.
    * `Session.release()` intentionally does not call this operation.
    */
-  closeSession(id: string): Promise<void>
+  closeSession(id: string, expectedInstanceId: string): Promise<void>
 
   appendMessages(sessionId: string, messages: Message[]): Promise<void>
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<Message[]>
@@ -56,6 +63,15 @@ export interface HarnessStorage {
    */
   replaceMessages?(sessionId: string, messages: Message[]): Promise<void>
 
+  /**
+   * Atomically creates a run when its id is absent. A repeated creation for
+   * the same run identity is idempotent and must preserve the stored record;
+   * an incompatible identity fails with `StateError` (`run_conflict`).
+   *
+   * This is the creation fence for concurrent first durable invocations:
+   * callers may observe an absent run concurrently, but no caller may replace
+   * the record selected by the creation winner.
+   */
   createRun(record: RunRecord): Promise<void>
   finishRun(runId: string, patch: FinishRunPatch): Promise<void>
   getRun(runId: string): Promise<RunRecord | undefined>

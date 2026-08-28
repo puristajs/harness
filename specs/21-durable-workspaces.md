@@ -101,8 +101,9 @@ For a new durable run:
 For a resumed run:
 
 1. Storage returns the latest committed checkpoint and increments the attempt.
-2. Harness calls `resumeWorkspace` only when that checkpoint carries a
-   workspace reference; otherwise it starts a new workspace.
+2. With a configured workspace, Harness requires the committed workspace and
+   checkpoint references before `resumeWorkspace`. A previous attempt without
+   recoverable files fails with `SandboxStateLostError`; it never starts empty.
 3. `ctx.step(...)` returns already-committed outputs without rerunning their
    callbacks.
 4. New steps repeat pause-before-storage-commit ordering.
@@ -112,9 +113,13 @@ workspace checkpoint is an orphan and may be reclaimed by adapter retention.
 If storage commit succeeds, the checkpoint is authoritative even if the
 process crashes before returning to application code.
 
-Only `waiting` and `interrupted` runs resume. Terminal runs never open or resume
-a workspace. Cancellation calls `abortWorkspace`; successful terminal cleanup
-follows the adapter retention policy. Cleanup and abort are idempotent.
+Waiting/interrupted runs and an expired running attempt can reacquire ownership
+under the storage lease contract. Terminal runs never open or resume a workspace.
+Cancellation calls `abortWorkspace`; successful terminal cleanup follows the
+adapter retention policy. Cleanup and abort are idempotent. Once the terminal
+business outcome is committed, cleanup failure must not change it or replay the
+business work: emit a content-free warning and leave cleanup retry to the
+adapter/operator.
 
 ## 6. Sandbox binding
 
@@ -127,6 +132,13 @@ The local implementation maps `/workspace` into the active host directory.
 Remote implementations may mount, synchronize, or virtualize the same logical
 boundary. The model and tools receive only sandbox paths, never backend paths.
 
+Before Harness uses sandbox `mode: 'restore'`, it resumes the latest committed
+workspace and establishes this binding. The sandbox adapter receives restore
+intent, not workspace or provider references. A managed addon may return compatible
+`{ sandbox, workspace }` ports backed by shared private state, but the ports stay
+independently registered and testable. Failed resume/binding never falls back to
+an empty sandbox. See spec 34.
+
 ## 7. Idempotency and concurrency
 
 - Every mutating request includes a stable idempotency key.
@@ -136,9 +148,10 @@ boundary. The model and tools receive only sandbox paths, never backend paths.
 - Workspace operations validate run/session ownership.
 - A stale run lease cannot commit a storage checkpoint after another attempt
   takes ownership.
-- A workspace adapter must not claim multi-instance safety through workspace
-  capabilities; distributed execution coordination belongs to
-  `HarnessStorage` capability `storage.multi_instance`.
+- Workspace capabilities do not describe sandbox topology; distributed run
+  coordination remains the responsibility of `HarnessStorage` capability
+  `storage.multi_instance`, while sandbox compute coordination stays inside the
+  Sandbox adapter.
 
 ## 8. Security and enterprise controls
 

@@ -1,5 +1,7 @@
 # Sensitive-data Guardrails
 
+> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for configuration spelling and sensitive tool-action authoring. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+
 **Status:** approved implementation specification, 2026-08-24. The repository
 owner explicitly approved this specification before implementation in the
 initiating task. It is the more-specific authority for sensitive-data rails and
@@ -297,13 +299,7 @@ Thus a workflow-attached agent gets the same protection. Skills do not form a
 new boundary: skill text is protected when it enters a guarded model input, and
 skill tools are protected only through their selected explicit tool codec.
 
-Cancellation, detector rejection, malformed result, non-cooperative abort,
-codec fault and replacement validation fault all fail closed as
-`GUARDRAIL_EVALUATION_ERROR` with reason `sensitive_data_detector_failed`,
-`sensitive_data_invalid_result`, `sensitive_data_codec_failed`, or
-`action_timeout`. None may be turned into a model-visible tool error or an
-implicit allow. A `GUARDRAIL_BLOCKED` standalone retrieval error carries only
-the existing rail id, retrieval phase and `sensitive_data_detected` reason.
+Detector rejection, malformed result, codec fault and replacement validation fault fail closed with DecisionEvaluationError and the exact sensitive-data failureKind from [decision contracts](./37-decision-boundaries/03-contracts/decisions.md). Callback timeout maps to callback_timeout; parent cancellation/enclosing timeout retain their canonical errors. No failure becomes an allow or recoverable model-visible tool result. Retrieval block uses DecisionBlockedError with the same safe evidence as attached rails.
 
 ## Presidio sidecar adapter
 
@@ -511,3 +507,7 @@ portable YAML, persistence/auditing of findings, content capture, or changes to
 the supported native entity set. A proposal must explicitly define ownership,
 security, privacy, telemetry, packaging, Node/Bun compatibility and release
 evidence.
+
+## Approved decision-boundary alignment
+
+Sensitive-data detector and codec contracts stay unchanged. Actions use the shared decision error/evidence and phase contracts; the addon keeps no separate evaluation error class or timer. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

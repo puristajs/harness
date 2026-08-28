@@ -1,0 +1,15 @@
+provenance_version: 1
+authored_at: 2026-08-25
+source_revision: c378607de9e7
+sources:
+  - plans/2026-08-25-distributed-sandbox-architecture-research.md
+  - plans/2026-08-25-sandbox-and-evaluation-direction.md
+  - specs/05-sandbox.md
+  - specs/21-durable-workspaces.md
+  - specs/32-harness-storage.md
+external_research_date: 2026-08-25
+approval_carry_forward: forbidden
+spec_manifest:
+  content_digest: sha256:d5cf72b589728648eefb39a78cd393d80c14c4c382dc0a234fccc1a16a9af30f
+  source_revision: c378607de9e7
+  generated_at: 2026-08-26T09:10:06.084Z

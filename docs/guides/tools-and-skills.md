@@ -9,14 +9,14 @@ its definition names each tool and skill it may use.
 ```ts
 import { z } from 'zod'
 
-.tools({
-  find_order: {
+.tools(({ tool }) => ({
+  find_order: tool({
     description: 'Find one order visible to the current customer.',
     input: z.object({ orderId: z.string().min(1) }),
     output: z.object({ status: z.enum(['pending', 'shipped', 'delivered']) }),
     handler: async (_ctx, { orderId }) => orders.getVisibleOrder(orderId)
-  }
-})
+  })
+}))
 .agents(({ agent }) => ({
   support: agent({
     model: 'assistant',

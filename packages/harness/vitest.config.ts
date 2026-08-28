@@ -5,6 +5,9 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/errors/**/*.test.ts',
+      'src/sandbox/**/*.test.ts',
+      'src/local/**/*.test.ts',
+      'src/decisions/**/*.test.ts',
       'src/logger/**/*.test.ts',
       'src/telemetry/**/*.test.ts',
       'src/testing/**/*.test.ts',
@@ -13,7 +16,7 @@ export default defineConfig({
       'src/models/**/*.test.ts',
       'src/ports/**/*.test.ts',
       'src/sessions/**/*.test.ts',
-      'src/state/**/*.test.ts',
+      'src/storage/**/*.test.ts',
       'src/tools/**/*.test.ts',
       'test/**/*.test.ts'
     ],

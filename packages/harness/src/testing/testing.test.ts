@@ -26,8 +26,15 @@ import { FakeHarnessStorage } from './fakeHarnessStorage.js'
 import { loggerContract } from './loggerContract.js'
 import { modelProviderContract } from './modelProviderContract.js'
 import { recordEvents } from './recordEvents.js'
-import { sandboxContract } from './sandboxContract.js'
+import { sandboxActorBarrierContract, sandboxContract } from './sandboxContract.js'
 import { harnessStorageContract } from './harnessStorageContract.js'
+
+const fakeScope = { owner: { namespace: 'fake-test', id: 's1', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'r1' }
+
+async function openFake(sandbox: FakeSandbox) {
+  await sandbox.registerOwner({ owner: fakeScope.owner, mode: 'create' })
+  return await sandbox.open({ scope: fakeScope, mode: 'create' })
+}
 
 function usage(): TokenUsage {
   return { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
@@ -76,6 +83,7 @@ class ContractProvider extends BaseModelProvider {
 harnessStorageContract(() => new FakeHarnessStorage())
 
 sandboxContract(() => new FakeSandbox({ executor: 'unavailable' }), { executor: 'unavailable' })
+sandboxActorBarrierContract(() => new FakeSandbox({ executor: 'unavailable' }))
 
 loggerContract(() => new FakeLogger())
 loggerContract(() => new JsonLogger({ out: new Writable({ write(_chunk, _encoding, callback) { callback() } }) }))
@@ -87,7 +95,17 @@ modelProviderContract(() => new ContractProvider(), {
 describe('FakeHarnessStorage inspection helpers', () => {
   it('records invoked operations in order', async () => {
     const store = new FakeHarnessStorage()
-    await store.upsertSession({ id: 's1', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', runCount: 0 })
+    await store.upsertSession({
+      id: 's1',
+      instanceId: '01J00000000000000000000001',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      runCount: 0,
+      sandboxBinding: {
+        owner: { namespace: 'test', id: 's1', instanceId: '01J00000000000000000000001' },
+        relation: 'owned', registration: 'pending', policyDigest: 'a'.repeat(64), disposed: false,
+      },
+    }, 'create')
     await store.getSession('s1')
     expect(store.ops).toEqual(['upsertSession', 'getSession'])
     expect(store.opCount('getSession')).toBe(1)
@@ -103,14 +121,14 @@ describe('FakeSandbox executor', () => {
   })
 
   it('default exec echoes deterministically and fails unknown commands', async () => {
-    const session = await new FakeSandbox().open({ sessionId: 's1', runId: 'r1' })
+    const session = (await openFake(new FakeSandbox())).session
     expect(await session.exec('echo hi')).toMatchObject({ stdout: 'hi\n', exitCode: 0 })
     expect(await session.exec('curl example.com')).toMatchObject({ exitCode: 127 })
   })
 
   it('supports scripted exec handlers and pre-aborted signals', async () => {
     const sandbox = new FakeSandbox({ exec: () => ({ stdout: 'scripted', stderr: '', exitCode: 0, durationSeconds: 0 }) })
-    const session = await sandbox.open({ sessionId: 's1', runId: 'r1' })
+    const session = (await openFake(sandbox)).session
     expect(await session.exec('anything')).toMatchObject({ stdout: 'scripted' })
 
     const controller = new AbortController()

@@ -116,7 +116,10 @@ it('mounts skill directories to /skills/<name> once per session', async () => {
   await fs.mkdir(path.join(dir, 'scripts'))
   await fs.writeFile(path.join(dir, 'scripts', 'run.sh'), 'echo hi')
   const skills = await loadSkills({ 'example-skill': { directory: dir } })
-  const session = await inMemorySandbox().open({ sessionId: 's', runId: 'r' })
+  const adapter = inMemorySandbox()
+  const scope = { owner: { namespace: 'skills-test', id: 's', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'r' }
+  await adapter.registerOwner({ owner: scope.owner, mode: 'create' })
+  const session = (await adapter.open({ scope, mode: 'create' })).session
   const mounted = new Set<string>()
 
   await mountSkillsOnce(session, mounted, skills, ['example-skill'])

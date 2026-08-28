@@ -38,8 +38,16 @@ Streaming is an internal concern of the harness; there is no separate `Stream` p
 - Higher layers may import lower layers; the reverse is forbidden.
 - All layers may import error types and the logger interface.
 - Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
-- Provider and adapter packages MUST NOT depend on harness internals; they depend only on `@purista/harness` for port interfaces/types and their official provider SDKs.
+- Provider and adapter packages MUST NOT depend on harness internals; they use public `@purista/harness` ports and their official provider SDKs, except for the explicitly approved public contract-owner edges below.
 - Provider and adapter packages MUST NOT depend on each other (no provider-to-provider or adapter-to-adapter imports).
+- [Spec 31](./31-sensitive-data-guardrails.md) owns the provider-neutral detector
+  port in `@purista/harness-guardrails`. Exactly the `harness-guardrails-local-ner`,
+  `harness-guardrails-native-privacy`, and `harness-guardrails-presidio` packages
+  may depend on that public contract owner. This does not authorize reverse
+  edges, detector-to-detector imports, or other addon-to-addon dependencies.
+  Docker and other sandbox adapters continue to consume only public Harness
+  exports. Dependency checks cover runtime, peer, development, and optional
+  dependencies equally.
 - The harness package is the only package that may depend on `@modelcontextprotocol/client` v2 (optional peer, scoped to the MCP tool runners).
 - `@purista/harness-agent-plugins` is an opt-in first-party addon. It depends
   only on public core APIs and local parsing/validation dependencies; it does

@@ -20,13 +20,12 @@ type RunEvent =
   | { type: 'model.message';   runId: string; agentId: string; message: Message }
   | { type: 'model.object.partial'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; partial: JsonValue }
   | { type: 'model.object';    runId: string; agentId?: string; workflowId?: string; modelAlias?: string; streamId?: string; object: JsonValue }
+  | { type: 'model.completed'; runId: string; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text'|'object'|'textStream'|'objectStream'; usage?: TokenUsage; finishReason?: FinishReason }
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
 
-  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
-  | { type: 'policy.exposure'; runId: string; agentId: string; toolId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceExposureEffect; enforced: boolean; step: number; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
-  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string }
-  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; decision: 'approved'|'rejected'; approverId?: string; reason?: string }
+  // policy.evaluated, policy.exposure, approval.requested, approval.finished
+  // use the exact closed evidence/occurrence members in spec 37.
 
   | { type: 'tool.started';    runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished';   runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
@@ -120,7 +119,7 @@ Persisted event payloads are sanitized by default. `runId`, `at`, and `type` are
 
 When `telemetry.contentCaptureMode` is `NO_CONTENT` or omitted, prompts, model outputs, structured object payloads, tool inputs/results, memory, files, and user data MUST NOT be stored in persisted event payloads. Payloads may include operational metadata such as ids, status, counts, dimensions, `topN`, usage, stream source metadata (`streamId`, `modelAlias`, `workflowId`, `agentId`), child-agent lineage metadata (`delegationCallId`, `delegationDepth`, `parentAgentId`), and serialized harness errors.
 
-Governance event payloads may include `policyId`, `ruleId`, `effect`, `enforced`, approval `decision`, `approverId`, and `reason`. They MUST NOT include raw tool input or tool output.
+Governance/approval events contain only the closed evidence, occurrence and terminal fields in [decision contracts](./37-decision-boundaries/03-contracts/decisions.md). They exclude raw input/output, free-form reasons, reviewer identity and arbitrary metadata in every capture mode.
 
 When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT`, persisted run-event payloads still follow the `NO_CONTENT` rule unless a future spec adds a dedicated persisted-event content flag. Telemetry content capture controls spans and span events, not HarnessStorage audit retention.
 
@@ -134,3 +133,7 @@ Every `RunEvent` is also written to `storage.appendEvents(runId, [event])` from 
 - [11-sessions](./11-sessions.md) — `Session` API.
 - [14-otel-conventions](./14-otel-conventions.md).
 - [24-governance-policy](./24-governance-policy.md).
+
+## Approved decision-boundary alignment
+
+model.completed is the sole generative accounting event; safe policy/approval event payloads replace prior payloads, and final agent content follows beforeOutput. The session model wrapper owns completion emission, including nested/direct/stream calls. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

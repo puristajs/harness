@@ -30,7 +30,7 @@ import type {
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
-  ProviderItems,
+  ProviderContinuation,
   RerankRequest,
   RerankResponse,
   TextRequest,
@@ -86,6 +86,14 @@ type EmbeddingRequestInput = Omit<EmbeddingRequest, 'model' | 'signal'>
 type RerankRequestInput = Omit<RerankRequest, 'model' | 'signal'>
 type AliasCapabilities<A> = A extends { capabilities: readonly (infer C)[] } ? C : never
 type HasCapability<A, C extends ModelCapability> = C extends AliasCapabilities<A> ? true : false
+
+/** Returns whether a configured alias declares every requested capability. */
+export function hasModelCapabilities(
+  alias: Pick<ModelAlias, 'capabilities'>,
+  capabilities: readonly ModelCapability[]
+): boolean {
+  return capabilities.every((capability) => alias.capabilities.includes(capability))
+}
 type ContentPartFor<A> =
   | TextPart
   | (HasCapability<A, 'vision_input'> extends true ? VisionPart : never)
@@ -96,7 +104,7 @@ type ToolInputFor<A> = HasCapability<A, 'tool_use'> extends true ? { tools?: Mod
 type ModelMessageFor<A> =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPartFor<A>[] }
-  | ({ role: 'assistant'; content: string | ContentPartFor<A>[]; providerItems?: ProviderItems } & ToolCallsFor<A>)
+  | ({ role: 'assistant'; content: string | ContentPartFor<A>[]; providerContinuation?: ProviderContinuation } & ToolCallsFor<A>)
   | (HasCapability<A, 'tool_use'> extends true ? { role: 'tool'; toolCallId: string; content: string } : never)
 type TextRequestInputFor<A> = Omit<TextRequest, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
   messages: ModelMessageFor<A>[]
@@ -490,7 +498,7 @@ function openInferenceSpanKind(method: ModelCapability): string {
  * Throws {@link ModelCapabilityError} when required capabilities are missing.
  */
 function ensureCapabilities(aliasKey: string, alias: ModelAlias, method: ModelCapability, req: HandleRequest): void {
-  if (!alias.capabilities.includes(method)) {
+  if (!hasModelCapabilities(alias, [method])) {
     throw new ModelCapabilityError('Model alias does not provide requested capability.', {
       alias: aliasKey,
       method,

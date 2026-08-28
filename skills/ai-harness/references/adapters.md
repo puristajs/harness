@@ -221,40 +221,20 @@ checkpoints, session locking, and external waits. This port is specific to the
 Harness protocol; do not adapt PURISTA's general-purpose `StateStore` or an
 unstructured key/value store.
 
-```ts
-class PostgresHarnessStorage implements HarnessStorage {
-  readonly info = {
-    id: 'postgres',
-    packageName: '@purista/harness-storage-postgres',
-    capabilities: [
-      'storage.checkpoint',
-      'storage.resume',
-      'storage.external_wait',
-      'storage.persistent',
-      'storage.multi_instance'
-    ]
-  } as const
-  readonly capabilities = this.info.capabilities
+Use the public `HarnessStorage` type and implement its operations against one
+transactional backend. Important invariants are:
 
-  configureHarnessContext(context) { /* inherit logger and telemetry */ }
-  async getSession(id) { /* read session */ }
-  async upsertSession(record) { /* upsert session */ }
-  async appendMessages(sessionId, messages) { /* append atomically */ }
-  async listMessages(sessionId, opts) { /* stable ordering */ }
-  async createRun(record) { /* insert run */ }
-  async finishRun(runId, patch) { /* update terminal run */ }
-  async appendEvents(runId, events) { /* append event batch */ }
-  async listEvents(runId, opts) { /* cursor/after support */ }
-  async acquireRun(start) { /* transactional lease */ }
-  async loadCheckpoint(runId) { /* last committed checkpoint */ }
-  async commitCheckpoint(checkpoint) { /* compare lease + commit */ }
-  async withSessionLock(sessionId, fn) { /* serialize session */ }
-  async registerWait(request) { /* wait + status + lease in one transaction */ }
-  async getWait(waitId) { /* safe snapshot */ }
-  async signalWait(signal) { /* idempotent terminal signal */ }
-  async cancelWait(waitId, eventId, observedAt) { /* idempotent cancel */ }
-}
-```
+| Operations | Required behavior |
+| --- | --- |
+| `getSession`, `upsertSession(record, mode)` | Bind immutable `instanceId`, creation time, and exact optional identity. Required `create` mode inserts only and returns whether it won; `update` requires the matching active instance, never inserts, and returns `false`. |
+| `closeSession(id, expectedInstanceId)` | Delete only the matching instance and its owned records; stale closes must leave a newly recreated conversation intact. |
+| Message and event operations | Atomic batches, stable ordering, and documented cursor behavior. |
+| `acquireRun`, `commitCheckpoint` | Exclusive leases and fenced checkpoint commits; reacquiring an existing attempt reports `resumed` even without a committed checkpoint. |
+| Wait operations | Register the wait, change run status, and release its lease atomically; terminal signals are idempotent. |
+
+Keep `createdAt` as an actual timestamp. Never use it as a unique incarnation
+identifier or manufacture future timestamps to distinguish rapid recreation.
+Advertise only backend guarantees that the implementation enforces.
 
 Adapters must pass `harnessStorageContract` from `@purista/harness/testing`,
 plus backend-specific multi-process contention, migration, retention, and outage
@@ -311,8 +291,15 @@ Implement `Sandbox` and `SandboxSession` for custom isolation:
 ```ts
 const remoteSandbox = {
   capabilities: ['sandbox.fs', 'sandbox.exec'],
-  async open({ sessionId, runId, signal }) {
-    return remoteSession
+  async open({ scope, mode, signal }) {
+    return {
+      session: remoteSession,
+      disposition: mode === 'create' ? 'created' : 'attached',
+      liveProcessState: 'not_preserved'
+    }
+  },
+  async terminate({ scope, reason, signal }) {
+    // Idempotently clean only the provider resources mapped to this scope.
   }
 }
 ```
@@ -323,7 +310,17 @@ Make executor availability explicit:
 
 Snapshot-capable adapters may implement `snapshot`, `resume`, and `hibernate`, and should declare matching capabilities so applications can fail fast with `.requires([...])`.
 
-Use `sandboxContract` and optional snapshot contract tests from `@purista/harness/testing`. Cover POSIX absolute path rules, mount semantics, executor availability, timeout/cancellation, and close idempotency.
+The Harness owns stable logical scope; the adapter keeps provider IDs,
+generations, leases, fencing and topology private. `attach` and `restore` must
+fail with `SandboxStateLostError` when existing state is unavailable—never
+silently create a blank replacement. Checkpointed `DurableWorkspace` files are
+the recovery promise; retained processes or volumes are optional capabilities.
+
+Use `sandboxContract` and optional snapshot contract tests from
+`@purista/harness/testing`. Shared multi-instance adapters additionally run
+`sandboxMultiClientContract`. Cover POSIX absolute path rules, mount semantics,
+executor availability, timeout/cancellation, detach, idempotent termination,
+and state loss.
 
 ## Tool And MCP Adapters
 Use TypeScript tools for app-local deterministic capabilities and MCP stdio/http tools for external tool servers.

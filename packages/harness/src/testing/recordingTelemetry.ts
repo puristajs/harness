@@ -61,9 +61,12 @@ export class RecordingTelemetry implements TelemetryShim {
         record.attrs['harness.error.retriable'] = harnessError.retriable
         if (typeof harnessError.meta?.['scope'] === 'string') record.attrs['harness.error.scope'] = harnessError.meta['scope']
         if (typeof harnessError.meta?.['timeout_ms'] === 'number') record.attrs['harness.error.timeout_ms'] = harnessError.meta['timeout_ms']
-        if (harnessError.code === 'AGENT_INTERCEPTOR_ERROR') {
-          if (typeof harnessError.meta?.['interceptor_id'] === 'string') record.attrs['harness.interceptor.id'] = harnessError.meta['interceptor_id']
-          if (typeof harnessError.meta?.['phase'] === 'string') record.attrs['harness.interceptor.phase'] = harnessError.meta['phase']
+        const evidence = harnessError.meta?.['evidence']
+        if (evidence && typeof evidence === 'object' && !Array.isArray(evidence)) {
+          const evidenceRecord = evidence as Record<string, unknown>
+          const source = evidenceRecord['source']
+          if (source && typeof source === 'object' && !Array.isArray(source) && typeof (source as Record<string, unknown>)['id'] === 'string') record.attrs['harness.interceptor.id'] = (source as Record<string, unknown>)['id']
+          if (typeof evidenceRecord['phase'] === 'string') record.attrs['harness.interceptor.phase'] = evidenceRecord['phase']
         }
       }
       record.status = { code: SpanStatusCode.ERROR, message: errorType }

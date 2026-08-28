@@ -31,6 +31,14 @@ request human approval, persist durable workflow data, and create artifacts.
 
 ## Quick Start
 
+For content safety and tool authority, start with the
+[decision table and lifecycle](docs/guides/decisions-and-approval.md). The
+[guardrails composition](examples/guardrails/README.md) runs without credentials
+and combines input/tool/output rails with one immediate approval provider.
+[Durable review](examples/durable-human-review/README.md) keeps wait/claim/receipt
+state at the application boundary. See the
+[breaking contract notes](docs/releases/decision-boundaries.md).
+
 ```bash
 npm install
 cp .env.example .env
@@ -87,8 +95,8 @@ npm run test:failure
   - [MCP tools](docs/guides/mcp-tools.md)
   - [Agent Plugins](docs/guides/agent-plugins.md)
   - [Guardrails](docs/guides/guardrails.md)
-  - [Migrating to AI Harness 2.0](docs/guides/migrating-to-v2.md)
-  - [Migrating to AI Harness 3.0](docs/guides/migrating-to-v3.md)
+  - [Decisions and approval](docs/guides/decisions-and-approval.md)
+  - [Decision boundary release notes](docs/releases/decision-boundaries.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)
 - Operate and review
@@ -104,7 +112,7 @@ npm run test:failure
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
 - `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
-- `packages/harness-guardrails/` — Optional typed, NeMo-shaped input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
+- `packages/harness-guardrails/` — Optional inline, typed input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
 - `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter and deterministic protocol testing helper.
 - `packages/harness-guardrails-native-privacy/` — Optional local Rust/Node-API sensitive-data subset for Node.js and Bun.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
@@ -114,7 +122,7 @@ npm run test:failure
 - `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
-- `examples/guardrails/` — Deterministic NeMo-shaped guardrails and local sensitive-data example using the Harness test adapter.
+- `examples/guardrails/` — Deterministic inline guardrails and local sensitive-data example using the Harness test adapter.
 - `packages/harness-agent-plugins/README.md` — Agent Plugins inspection, review digest, and explicit Skills/MCP binding example.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

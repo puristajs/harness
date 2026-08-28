@@ -1,9 +1,9 @@
-import { mkdtemp, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   defineHarness,
   DurableRunLeaseError,
@@ -13,10 +13,11 @@ import {
   localDirectorySandbox,
   localDirectoryWorkspace,
   localDurableExecution,
+  SandboxStateLostError,
   SqliteHarnessStorage,
   sqliteHarnessStorage
 } from '../src/index.js'
-import type { JsonValue } from '../src/index.js'
+import type { AdapterCapability, JsonValue, Sandbox, SandboxSessionFor } from '../src/index.js'
 import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
@@ -25,6 +26,28 @@ import { RecordingLogger, RecordingTelemetry } from './telemetryFlowHarness.js'
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'purista-harness-'))
+}
+
+function durableOwner(sessionId: string) {
+  return { namespace: 'local-durable-test', id: sessionId, instanceId: '01J00000000000000000000000' } as const
+}
+
+const durablePolicyDigest = 'a'.repeat(64)
+const sharedPartition = [{ kind: 'shared' as const }] as const
+
+async function localSandboxFiles(root: string): Promise<string> {
+  const directories = await readdir(join(root, 'sandboxes'))
+  expect(directories).toHaveLength(1)
+  return join(root, 'sandboxes', directories[0]!, 'files')
+}
+
+async function openLocalSandbox<C extends readonly AdapterCapability[]>(sandbox: Sandbox<C>, sessionId: string, runId: string, mode: 'create' | 'attach' | 'restore' = 'create'): Promise<SandboxSessionFor<C>> {
+  const scope = { owner: { namespace: 'local-durable-test', id: sessionId, instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId }
+  await sandbox.registerOwner({ owner: scope.owner, mode: mode === 'create' ? 'create' : 'attach' })
+  return (await sandbox.open({
+    scope,
+    mode
+  })).session
 }
 
 harnessStorageContract(() => sqliteHarnessStorage({ file: ':memory:' }))
@@ -53,15 +76,39 @@ function configureForTelemetry(adapter: unknown, telemetry: RecordingTelemetry, 
 }
 
 describe('local durable execution', () => {
+  it('attaches across independent local adapters and never recreates terminated state', async () => {
+    const root = await tempRoot()
+    try {
+      const firstAdapter = localDirectorySandbox({ root })
+      const secondAdapter = localDirectorySandbox({ root })
+      const scope = { owner: { namespace: 'local-multi-client', id: 'shared', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'shared-run' }
+      await firstAdapter.registerOwner({ owner: scope.owner, mode: 'create' })
+      await secondAdapter.registerOwner({ owner: scope.owner, mode: 'attach' })
+      const first = (await firstAdapter.open({ scope, mode: 'create' })).session
+      await first.write('/workspace/retained.txt', 'retained')
+      const second = (await secondAdapter.open({ scope, mode: 'attach' })).session
+      await expect(second.readText('/workspace/retained.txt')).resolves.toBe('retained')
+      await first.close()
+      await expect(first.readText('/workspace/retained.txt')).rejects.toMatchObject({ meta: { reason: 'session_closed' } })
+      await expect(second.readText('/workspace/retained.txt')).resolves.toBe('retained')
+      await secondAdapter.terminate({ scope, reason: 'run_disposed' })
+      await expect(second.readText('/workspace/retained.txt')).rejects.toBeInstanceOf(SandboxStateLostError)
+      await expect(secondAdapter.open({ scope, mode: 'attach' })).rejects.toBeInstanceOf(SandboxStateLostError)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('creates only the unified storage schema', async () => {
     const root = await tempRoot()
     const file = join(root, 'schema.sqlite')
     const storage = sqliteHarnessStorage({ file })
     await storage.close()
     const require = createRequire(import.meta.url)
-    const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (file: string) => { prepare(sql: string): { all(): Array<{ name: string }> }; close(): void } }
+    const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (file: string) => { prepare(sql: string): { all(): Array<Record<string, unknown>> }; close(): void } }
     const db = new DatabaseSync(file)
-    const tables = db.prepare("select name from sqlite_master where type = 'table' order by name").all().map((row) => row.name)
+    const tables = db.prepare("select name from sqlite_master where type = 'table' order by name").all().map((row) => row['name'])
+    const sessionColumns = db.prepare('pragma table_info(harness_sessions)').all().map((row) => row['name'])
     db.close()
     expect(tables).toEqual(expect.arrayContaining([
       'harness_sessions', 'harness_messages', 'harness_runs', 'harness_run_events',
@@ -69,6 +116,7 @@ describe('local durable execution', () => {
     ]))
     expect(tables).not.toContain('harness_durable_runs')
     expect(tables).not.toContain('harness_context_checkpoints')
+    expect(sessionColumns).toContain('sandbox_binding_json')
   })
 
   it('rejects a Harness 2 SQLite schema instead of silently retaining legacy tables', async () => {
@@ -80,6 +128,22 @@ describe('local durable execution', () => {
     }
     const db = new DatabaseSync(file)
     db.exec('create table harness_durable_runs (run_id text primary key)')
+    db.close()
+
+    expect(() => sqliteHarnessStorage({ file })).toThrowError(
+      expect.objectContaining({ meta: expect.objectContaining({ reason: 'sqlite_schema_incompatible' }) })
+    )
+  })
+
+  it('rejects a session layout without the immutable sandbox binding before writing', async () => {
+    const root = await tempRoot()
+    const file = join(root, 'legacy-session.sqlite')
+    const require = createRequire(import.meta.url)
+    const { DatabaseSync } = require('node:sqlite') as {
+      DatabaseSync: new (file: string) => { exec(sql: string): void; close(): void }
+    }
+    const db = new DatabaseSync(file)
+    db.exec('create table harness_sessions(id text primary key, instance_id text not null, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, metadata_json text)')
     db.close()
 
     expect(() => sqliteHarnessStorage({ file })).toThrowError(
@@ -151,13 +215,16 @@ describe('local durable execution', () => {
     const handle = await workspace.startWorkspace({
       runId: 'run-files',
       sessionId: 'session-files',
+      sandboxOwner: durableOwner('session-files'),
+      sandboxPolicyDigest: durablePolicyDigest,
       attempt: 1,
       idempotencyKey: 'start'
     })
-    const session = await sandbox.open({ runId: 'run-files', sessionId: 'session-files' })
+    const session = await openLocalSandbox(sandbox, 'session-files', 'run-files')
     await session.write('/workspace/note.txt', 'first')
     const checkpoint = await workspace.pauseWorkspace({
       handle,
+      sandboxPartitions: sharedPartition,
       stepId: 'write-note',
       sequence: 1,
       attempt: 1,
@@ -174,8 +241,48 @@ describe('local durable execution', () => {
       attempt: 2,
       idempotencyKey: 'resume'
     })
-    const resumed = await sandbox.open({ runId: 'run-files', sessionId: 'session-files' })
+    const resumed = await openLocalSandbox(sandbox, 'session-files', 'run-files', 'restore')
     await expect(resumed.readText('/workspace/note.txt')).resolves.toBe('first')
+  })
+
+  it('rejects a missing committed sandbox partition before replacing the active workspace', async () => {
+    const root = await tempRoot()
+    const coordinator = createLocalWorkspaceCoordinator()
+    const workspace = localDirectoryWorkspace({ root, coordinator })
+    const sandbox = localDirectorySandbox({ root, coordinator, exec: false })
+    const handle = await workspace.startWorkspace({
+      runId: 'run-missing-member',
+      sessionId: 'session-missing-member',
+      sandboxOwner: durableOwner('session-missing-member'),
+      sandboxPolicyDigest: durablePolicyDigest,
+      attempt: 1,
+      idempotencyKey: 'start'
+    })
+    const session = await openLocalSandbox(sandbox, 'session-missing-member', 'run-missing-member')
+    await session.write('/workspace/note.txt', 'committed')
+    const checkpoint = await workspace.pauseWorkspace({
+      handle,
+      sandboxPartitions: sharedPartition,
+      stepId: 'write-note',
+      sequence: 1,
+      attempt: 1,
+      reason: 'step_completed',
+      idempotencyKey: 'pause'
+    })
+    await session.write('/workspace/note.txt', 'active-before-failed-restore')
+    const checkpointPartitions = join(root, 'workspaces', handle.workspaceRef, 'checkpoints', checkpoint.checkpointRef, 'partitions')
+    const [partition] = await readdir(checkpointPartitions)
+    await rm(join(checkpointPartitions, partition!), { recursive: true, force: true })
+
+    await expect(workspace.resumeWorkspace({
+      workspaceRef: handle.workspaceRef,
+      checkpointRef: checkpoint.checkpointRef,
+      runId: 'run-missing-member',
+      sessionId: 'session-missing-member',
+      attempt: 2,
+      idempotencyKey: 'resume'
+    })).rejects.toBeInstanceOf(SandboxStateLostError)
+    await expect(session.readText('/workspace/note.txt')).resolves.toBe('active-before-failed-restore')
   })
 
   it('replays durable workflow steps across harness rebuilds with the local bundle', async () => {
@@ -230,6 +337,80 @@ describe('local durable execution', () => {
     await second.harness.shutdown()
   })
 
+  it('enforces the checkpoint payload quota for durable workflow step output', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root, policy: { quota: { maxCheckpointPayloadBytes: 8 } } })
+    const harness = defineHarness()
+      .storage(local.storage)
+      .sandbox(local.sandbox)
+      .workspace(local.workspace)
+      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({ noop: { model: 'fast', instructions: 'x', builtinTools: false } })
+      .workflows({
+        oversized_checkpoint: {
+          input: z.string(), output: z.string(),
+          handler: async (ctx) => await ctx.step('oversized', async () => '1234567')
+        }
+      })
+      .build()
+
+    try {
+      const session = await harness.getSession('payload-limit-session')
+      await expect(session.workflows.oversized_checkpoint.prompt('go', { durable: { runId: 'payload-limit-run' } })).rejects.toMatchObject({
+        code: 'WORKSPACE_QUOTA_EXCEEDED',
+        meta: { quota: 'maxCheckpointPayloadBytes', limit: 8, actual: 9 }
+      })
+    } finally {
+      await harness.shutdown()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails a durable checkpoint before copying files while an unjoined child task is active', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    let child: import('../src/index.js').ChildTaskHandle<string> | undefined
+    const harness = defineHarness()
+      .storage(local.storage)
+      .sandbox(local.sandbox)
+      .workspace(local.workspace)
+      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents({
+        worker: {
+          model: 'fast', input: z.string(), output: z.string(), builtinTools: false,
+          handler: async (ctx) => await new Promise<string>((_resolve, reject) => {
+            ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason), { once: true })
+          })
+        }
+      })
+      .workflows({
+        checkpoint: {
+          input: z.string(), output: z.string(), delegation: { agents: ['worker'] },
+          handler: async (ctx) => {
+            child = await ctx.childTasks.start('worker', ctx.input, { idempotencyKey: 'background-worker' })
+            await ctx.step('checkpoint', async () => ({ written: true }))
+            return 'unreachable'
+          }
+        }
+      })
+      .build()
+
+    try {
+      const session = await harness.getSession('session-child-checkpoint')
+      await expect(session.workflows.checkpoint.prompt('work', { durable: { runId: 'run-child-checkpoint' } })).rejects.toMatchObject({
+        code: 'SANDBOX_CONFLICT', meta: { reason: 'checkpoint_busy' }
+      })
+      await child?.cancel('test cleanup')
+    } finally {
+      await harness.shutdown()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('emits privacy-safe telemetry for local runtime, workspace, sandbox, and context checkpoints', async () => {
     const root = await tempRoot()
     const telemetry = new RecordingTelemetry()
@@ -251,15 +432,18 @@ describe('local durable execution', () => {
     const handle = await local.workspace.startWorkspace({
       runId: 'run-otel',
       sessionId: 'session-otel',
+      sandboxOwner: durableOwner('session-otel'),
+      sandboxPolicyDigest: durablePolicyDigest,
       attempt: lease.attempt,
       idempotencyKey: 'start-otel'
     })
-    const sandboxSession = await local.sandbox.open({ runId: 'run-otel', sessionId: 'session-otel' })
+    const sandboxSession = await openLocalSandbox(local.sandbox, 'session-otel', 'run-otel')
     await sandboxSession.write('/workspace/private.txt', 'payload content that must not leak')
     await expect(sandboxSession.readText('/workspace/private.txt')).resolves.toBe('payload content that must not leak')
 
     const workspaceCheckpoint = await local.workspace.pauseWorkspace({
       handle,
+      sandboxPartitions: sharedPartition,
       stepId: 'collect',
       sequence: 1,
       attempt: lease.attempt,
@@ -319,7 +503,13 @@ describe('local durable execution', () => {
     const sandboxOpen = telemetry.spans.find((span) => span.name === 'harness.local_sandbox.open')
     expect(sandboxOpen?.attrs['harness.sandbox.adapter']).toBe('local_directory_sandbox')
     expect(sandboxOpen?.attrs['harness.sandbox.exec_enabled']).toBe(false)
-    expect(sandboxOpen?.attrs['harness.workspace.ref_hash']).toMatch(sha256Pattern)
+    expect(sandboxOpen?.attrs).not.toHaveProperty('harness.workspace.ref_hash')
+    const sandboxMetrics = telemetry.metrics.filter(metric => metric.name.startsWith('harness.local_sandbox.'))
+    expect(sandboxMetrics.length).toBeGreaterThan(0)
+    for (const metric of sandboxMetrics) {
+      expect(Object.keys(metric.attrs ?? {})).not.toEqual(expect.arrayContaining(['harness.workspace.ref_hash']))
+      expect(JSON.stringify(metric.attrs)).not.toMatch(/[0-9a-f]{64}/)
+    }
     const telemetryJson = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics })
     expect(telemetryJson).not.toContain(root)
     expect(telemetryJson).not.toContain(handle.workspaceRef)
@@ -335,8 +525,8 @@ describe('local durable execution', () => {
     await writeFile(outsideFile, 'outside')
 
     const sandbox = localDirectorySandbox({ root, exec: false })
-    const session = await sandbox.open({ runId: 'run-symlink', sessionId: 'session-symlink' })
-    await symlink(outsideFile, join(root, 'sessions', 'session-symlink', 'run-symlink', 'workspace', 'escape.txt'))
+    const session = await openLocalSandbox(sandbox, 'session-symlink', 'run-symlink')
+    await symlink(outsideFile, join(await localSandboxFiles(root), 'workspace', 'escape.txt'))
 
     await expect(session.readText('/workspace/escape.txt')).rejects.toMatchObject({
       code: 'SANDBOX_ERROR',
@@ -350,21 +540,15 @@ describe('local durable execution', () => {
 
   it('keeps host command execution disabled by default and enforces allow-lists when enabled', async () => {
     const root = await tempRoot()
-    const disabled = await localDirectorySandbox({ root, exec: false }).open({
-      runId: 'run-exec-disabled',
-      sessionId: 'session-exec-disabled'
-    })
+    const disabled = await openLocalSandbox(localDirectorySandbox({ root, exec: false }), 'session-exec-disabled', 'run-exec-disabled')
     await expect(disabled.exec?.('node -e "process.stdout.write(1)"')).rejects.toMatchObject({
       code: 'SANDBOX_NO_EXECUTOR'
     })
 
-    const enabled = await localDirectorySandbox({
+    const enabled = await openLocalSandbox(localDirectorySandbox({
       root,
       exec: { allowCommands: ['node'], timeoutMs: 5_000 }
-    }).open({
-      runId: 'run-exec-enabled',
-      sessionId: 'session-exec-enabled'
-    })
+    }), 'session-exec-enabled', 'run-exec-enabled')
     await expect(enabled.exec?.('echo nope')).rejects.toMatchObject({
       code: 'SANDBOX_ERROR',
       meta: { reason: 'exec_failed' }
@@ -588,7 +772,7 @@ describe('local durable workspace hardening (spec 22 §4/§8)', () => {
     const outside = await tempRoot()
     const store = localDirectoryWorkspace({ root })
     // Materialize the store root, then plant a symlink that "looks like" a ref.
-    await store.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start', signal })
+    await store.startWorkspace({ runId: 'r', sessionId: 's', sandboxOwner: durableOwner('s'), sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'start', signal })
     await symlink(outside, join(root, 'workspaces', 'workspace_FAKE'))
     await expect(store.cleanupWorkspace({ workspaceRef: 'workspace_FAKE', reason: 'manual', idempotencyKey: 'cleanup', signal })).rejects.toMatchObject({
       code: 'WORKSPACE_ERROR',
@@ -600,36 +784,110 @@ describe('local durable workspace hardening (spec 22 §4/§8)', () => {
   it('persists idempotency replay and conflicts across store rebuilds', async () => {
     const root = await tempRoot()
     const first = localDirectoryWorkspace({ root })
-    const handle = await first.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start-key', signal })
+    const handle = await first.startWorkspace({ runId: 'r', sessionId: 's', sandboxOwner: durableOwner('s'), sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'start-key', signal })
 
     const second = localDirectoryWorkspace({ root })
-    const replayed = await second.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start-key', signal })
+    const replayed = await second.startWorkspace({ runId: 'r', sessionId: 's', sandboxOwner: durableOwner('s'), sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'start-key', signal })
     expect(replayed.workspaceRef).toBe(handle.workspaceRef)
-    await expect(second.startWorkspace({ runId: 'other-run', sessionId: 'other-session', attempt: 1, idempotencyKey: 'start-key', signal })).rejects.toMatchObject({
+    await expect(second.startWorkspace({ runId: 'other-run', sessionId: 'other-session', sandboxOwner: durableOwner('other-session'), sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'start-key', signal })).rejects.toMatchObject({
       code: 'WORKSPACE_ERROR',
       meta: { reason: 'idempotency_conflict' }
     })
   })
 
-  it('enforces a configured maxWorkspaceBytes quota on pause', async () => {
+  it('rejects unenforceable live-filesystem byte quotas at construction', async () => {
     const root = await tempRoot()
-    const store = localDirectoryWorkspace({ root, policy: { quota: { maxWorkspaceBytes: 8 } } })
-    const handle = await store.startWorkspace({ runId: 'r', sessionId: 's', attempt: 1, idempotencyKey: 'start', signal })
-    await writeFile(join(root, 'workspaces', handle.workspaceRef, 'active', 'workspace', 'big.txt'), 'way more than eight bytes')
-    await expect(store.pauseWorkspace({ handle, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })).rejects.toMatchObject({
-      code: 'WORKSPACE_QUOTA_EXCEEDED',
-      meta: { quota: 'maxWorkspaceBytes' }
-    })
+    try {
+      localDirectoryWorkspace({ root, policy: { quota: { maxWorkspaceBytes: 8 } } })
+      throw new Error('Expected unsupported policy rejection.')
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'unsupported_workspace_policy', path: 'quota' } })
+    }
+  })
+
+  it('rejects orphan TTLs because a local workspace cannot confirm an orphan safely', async () => {
+    const root = await tempRoot()
+    try {
+      expect(() => localDirectoryWorkspace({ root, policy: { retention: { cleanupMode: 'application_scheduled', orphanTtlMs: 1 } } })).toThrowError(expect.objectContaining({
+        code: 'HARNESS_CONFIG_ERROR',
+        meta: { reason: 'unsupported_workspace_policy', path: 'retention.orphanTtlMs' }
+      }))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects an oversized checkpoint payload before publishing a local checkpoint', async () => {
+    const root = await tempRoot()
+    try {
+      const store = localDirectoryWorkspace({ root, policy: { quota: { maxCheckpointPayloadBytes: 8 } } })
+      const handle = await store.startWorkspace({ runId: 'payload-run', sessionId: 'payload-session', sandboxOwner: durableOwner('payload'), sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'payload-start', signal })
+
+      await expect(store.pauseWorkspace({
+        handle,
+        sandboxPartitions: sharedPartition,
+        stepId: 'payload-step',
+        sequence: 1,
+        attempt: 1,
+        checkpointPayload: '1234567',
+        reason: 'step_completed',
+        idempotencyKey: 'payload-pause',
+        signal
+      })).rejects.toMatchObject({
+        code: 'WORKSPACE_QUOTA_EXCEEDED',
+        meta: { quota: 'maxCheckpointPayloadBytes', limit: 8, actual: 9 }
+      })
+      await expect(store.inspectWorkspace?.({ workspaceRef: handle.workspaceRef, signal })).resolves.toMatchObject({ checkpoints: [] })
+      await expect(store.administration.list({ selector: { kind: 'owner', owner: durableOwner('payload') }, kind: 'snapshot', signal })).resolves.toMatchObject({ items: [] })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps recovery-pinned checkpoints through an expired scheduled sweep', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-28T00:00:00.000Z'))
+    const root = await tempRoot()
+    try {
+      const store = localDirectoryWorkspace({ root, policy: { retention: { cleanupMode: 'application_scheduled', terminalSuccessTtlMs: 1 } } })
+      const owner = durableOwner('retention')
+      const handle = await store.startWorkspace({ runId: 'retention-run', sessionId: 'retention-session', sandboxOwner: owner, sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'retention-start', signal })
+      const checkpoint = await store.pauseWorkspace({ handle, sandboxPartitions: sharedPartition, stepId: 'retention-step', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'retention-pause', signal })
+      await store.pinCheckpoint({ workspaceRef: handle.workspaceRef, checkpointRef: checkpoint.checkpointRef, runId: handle.runId, idempotencyKey: 'retention-pin', signal })
+      await store.finish({ workspaceRef: handle.workspaceRef, runId: handle.runId, status: 'succeeded', idempotencyKey: 'retention-finish', signal })
+
+      vi.advanceTimersByTime(2)
+      await expect(store.administration.sweep({ limit: 10, signal })).resolves.toMatchObject({ examinedResources: 0, deletedResources: 0, pendingResources: 0 })
+      await expect(store.inspectWorkspace?.({ workspaceRef: handle.workspaceRef, signal })).resolves.toMatchObject({
+        state: 'terminal', checkpoints: [expect.objectContaining({ checkpointRef: checkpoint.checkpointRef })]
+      })
+
+      await store.releaseCheckpoint({ workspaceRef: handle.workspaceRef, checkpointRef: checkpoint.checkpointRef, runId: handle.runId, idempotencyKey: 'retention-release', signal })
+      await expect(store.administration.sweep({ limit: 10, signal })).resolves.toMatchObject({ deletedResources: 2, pendingResources: 0 })
+      await expect(store.inspectWorkspace?.({ workspaceRef: handle.workspaceRef, signal })).rejects.toMatchObject({ meta: { reason: 'not_found' } })
+    } finally {
+      vi.useRealTimers()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a durable, content-free checkpoint inventory for operators', async () => {
+    const root = await tempRoot()
+    const store = localDirectoryWorkspace({ root })
+    const owner = durableOwner('operator')
+    const handle = await store.startWorkspace({ runId: 'r', sessionId: 's', sandboxOwner: owner, sandboxPolicyDigest: durablePolicyDigest, attempt: 1, idempotencyKey: 'start', signal })
+    const checkpoint = await store.pauseWorkspace({ handle, sandboxPartitions: sharedPartition, stepId: 'step-1', sequence: 1, attempt: 1, reason: 'step_completed', idempotencyKey: 'pause', signal })
+    const listed = await store.administration.list({ selector: { kind: 'owner', owner }, kind: 'snapshot' })
+    expect(listed.items).toEqual([expect.objectContaining({ resourceId: checkpoint.checkpointRef, kind: 'snapshot', pinned: false })])
+    await store.administration.deleteSnapshot({ owner, snapshotId: checkpoint.checkpointRef, signal })
+    await expect(store.inspectWorkspace!({ workspaceRef: handle.workspaceRef, signal })).resolves.toMatchObject({ checkpoints: [] })
   })
 })
 
 describe('local sandbox hardening (spec 22 §5/§8)', () => {
   it('blocks shell-metacharacter bypasses of the exec allow-list', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }).open({
-      runId: 'run-bypass',
-      sessionId: 'session-bypass'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }), 'session-bypass', 'run-bypass')
     const probe = join(root, 'bypass-proof.txt')
     for (const command of [
       `node -v; touch ${probe}`,
@@ -649,10 +907,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('runs commands without a shell so expansions and substitutions stay literal', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }).open({
-      runId: 'run-argv',
-      sessionId: 'session-argv'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }), 'session-argv', 'run-argv')
     const result = await session.exec('node -e "process.stdout.write(process.argv[1])" literal-$HOME')
     expect(result.stdout).toBe('literal-$HOME')
   })
@@ -663,8 +918,8 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
     const danglingTarget = join(outsideRoot, 'does-not-exist-yet.txt')
 
     const sandbox = localDirectorySandbox({ root, exec: false })
-    const session = await sandbox.open({ runId: 'run-dangling', sessionId: 'session-dangling' })
-    await symlink(danglingTarget, join(root, 'sessions', 'session-dangling', 'run-dangling', 'workspace', 'dangling.txt'))
+    const session = await openLocalSandbox(sandbox, 'session-dangling', 'run-dangling')
+    await symlink(danglingTarget, join(await localSandboxFiles(root), 'workspace', 'dangling.txt'))
 
     await expect(session.write('/workspace/dangling.txt', 'escape')).rejects.toMatchObject({
       code: 'SANDBOX_ERROR',
@@ -675,10 +930,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('rejects aborted exec with OperationCancelledError and signal-killed exec as failure', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: {} }).open({
-      runId: 'run-abort',
-      sessionId: 'session-abort'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: {} }), 'session-abort', 'run-abort')
 
     const controller = new AbortController()
     const pending = session.exec('node -e "setTimeout(() => {}, 30000)"', { signal: controller.signal })
@@ -694,24 +946,21 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
     })
   })
 
-  it('rejects session and run ids containing path segments', async () => {
+  it('hashes logical owner and run identifiers instead of using them as host paths', async () => {
     const root = await tempRoot()
     const sandbox = localDirectorySandbox({ root, exec: false })
-    await expect(sandbox.open({ runId: 'run-ok', sessionId: '../escape' })).rejects.toMatchObject({
-      code: 'SANDBOX_ERROR',
-      meta: { reason: 'invalid_path' }
-    })
-    await expect(sandbox.open({ runId: '..', sessionId: 'session-ok' })).rejects.toMatchObject({
-      code: 'SANDBOX_ERROR',
-      meta: { reason: 'invalid_path' }
-    })
+    const first = await openLocalSandbox(sandbox, '../escape', 'run-ok')
+    const second = await openLocalSandbox(sandbox, 'session-ok', '..')
+    await first.write('/workspace/first', 'first')
+    await expect(second.exists('/workspace/first')).resolves.toBe(false)
+    expect((await readdir(join(root, 'sandboxes'))).every((entry) => /^[a-f0-9]{64}$/.test(entry))).toBe(true)
   })
 
   it('falls back to the configured harness toolTimeoutMs for exec', async () => {
     const root = await tempRoot()
     const sandbox = localDirectorySandbox({ root, exec: {} })
     configureForTelemetry(sandbox, new RecordingTelemetry(), { toolTimeoutMs: 200 })
-    const session = await sandbox.open({ runId: 'run-timeout', sessionId: 'session-timeout' })
+    const session = await openLocalSandbox(sandbox, 'session-timeout', 'run-timeout')
     await expect(session.exec('node -e "setTimeout(() => {}, 30000)"')).rejects.toMatchObject({
       code: 'OPERATION_TIMEOUT',
       meta: { scope: 'sandbox_run', timeout_ms: 200 }
@@ -720,10 +969,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('caps captured exec output and appends a truncation marker', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 30_000 } }).open({
-      runId: 'run-cap',
-      sessionId: 'session-cap'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: { timeoutMs: 30_000 } }), 'session-cap', 'run-cap')
     const result = await session.exec('node -e "process.stdout.write(Buffer.alloc(11 * 1024 * 1024, 97))"')
     expect(result.exitCode).toBe(0)
     expect(result.stdout.length).toBeLessThanOrEqual(10 * 1024 * 1024 + 100)
@@ -732,10 +978,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('supports mount, glob list, stat, and remove inside the jail', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: false }).open({
-      runId: 'run-fs',
-      sessionId: 'session-fs'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: false }), 'session-fs', 'run-fs')
     await session.mount(new Map<string, string>([
       ['a.txt', 'alpha'],
       ['b.log', 'beta']
@@ -749,9 +992,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('provides a spawn-capable local process boundary without claiming immutable package mounts', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }).open({
-      runId: 'run-plugin', sessionId: 'session-plugin'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: { allowCommands: ['node'], timeoutMs: 5_000 } }), 'session-plugin', 'run-plugin')
     expect(isReadOnlyMountCapableSession(session)).toBe(false)
     if (!('spawn' in session) || typeof session.spawn !== 'function') throw new Error('Expected local spawn capability.')
     const process = await session.spawn('node', { args: ['-e', 'process.stdout.write("ready")'] })
@@ -763,10 +1004,7 @@ describe('local sandbox hardening (spec 22 §5/§8)', () => {
 
   it('jails exec cwd to the sandbox root', async () => {
     const root = await tempRoot()
-    const session = await localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }).open({
-      runId: 'run-cwd',
-      sessionId: 'session-cwd'
-    })
+    const session = await openLocalSandbox(localDirectorySandbox({ root, exec: { timeoutMs: 5_000 } }), 'session-cwd', 'run-cwd')
     const result = await session.exec('node -e "process.stdout.write(process.cwd())"', { cwd: '/workspace/../workspace' })
     expect(result.stdout.endsWith('/workspace')).toBe(true)
     await expect(session.exec('node -v', { cwd: '/missing' })).rejects.toMatchObject({

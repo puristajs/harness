@@ -46,34 +46,23 @@ taxonomy and are never emitted by normal harness execution.
 - code: `PERMISSION_DENIED`
 - category: `permission`
 - retriable: `false`
-- when: An agent's permission policy denied a tool call (mode `'deny'`, an `'ask'` hook returned `'deny'`, or the hook itself failed). Recoverable in the loop: the harness informs the model via a tool result message and continues the run.
-- meta: `tool_name: string`, `agent_id: string`, `reason?: 'mode_deny'|'hook_deny'|'hook_failed'`.
+- when: An enforced permission denied a tool occurrence or its combined immediate approval was rejected. This is a recoverable safe tool result, while malformed decision callbacks are terminal decision-evaluation failures.
+- constructor: `PermissionDeniedError(evidence, cause?)`.
+- message: fixed `Permission denied.`
+- meta: exactly `{evidence: DecisionEvidence}`, validated before serialization; causes are omitted.
 
 ### `PolicyDeniedError`
 - code: `POLICY_DENIED`
 - category: `permission`
 - retriable: `false`
 - when: configured governance denied a tool call, rejected required approval, or required approval without an approval provider. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run.
-- meta: `tool_name: string`, `agent_id: string`, `policy_id: string`, `rule_id?: string`, `effect: 'deny'|'require_approval'`, `reason?: 'policy_deny'|'approval_rejected'|'approval_unavailable'`.
+- constructor: `PolicyDeniedError(evidence, reason, cause?)`.
+- message: fixed `Tool call denied by governance policy.`
+- meta: exactly `{evidence: DecisionEvidence, reason: 'policy_deny'|'approval_rejected'|'approval_unavailable'}`, validated before serialization; causes are omitted.
 
-### `PolicyEvaluationError`
-- code: `POLICY_EVALUATION_ERROR`
-- category: `permission`
-- retriable: `false`
-- when: a native governance predicate throws, an external policy adapter throws, or an adapter returns an invalid decision effect.
-- meta: `tool_name: string`, `agent_id: string`, `policy_id?: string`, `rule_id?: string`, `reason: 'adapter_failed'|'predicate_failed'|'invalid_decision'`.
+### Decision boundary errors
 
-### `AgentInterceptorError`
-- code: `AGENT_INTERCEPTOR_ERROR`
-- category: `interceptor`
-- retriable: `false`
-- when: an ordered default-loop interceptor blocks guarded input/model/tool work, returns an invalid result, or throws. It is terminal for that agent invocation and is never converted into a model-visible tool error.
-- meta: `interceptor_id: string`, `phase: 'before_input'|'before_model'|'after_model'|'before_tool'|'after_tool'`, `reason: 'blocked'|'failed'|'invalid_result'`.
-
-### Addon-owned guardrail errors
-- `GUARDRAILS_CONFIG_ERROR`: non-retriable `config` error for an unsupported NeMo-shaped configuration, missing action, or invalid action timeout.
-- `GUARDRAIL_EVALUATION_ERROR`: non-retriable `interceptor` error for a guardrail action failure, timeout, malformed outcome, unsupported transform, or a sensitive-data detector/codec fault. Meta is `rail_id`, `phase`, and `reason: 'action_failed'|'action_timeout'|'invalid_outcome'|'unsupported_transform'|'sensitive_data_detector_failed'|'sensitive_data_invalid_result'|'sensitive_data_codec_failed'`. Meta never contains text, offsets, endpoint/transport details, headers, request/response bodies, or credentials.
-- `GUARDRAIL_BLOCKED`: non-retriable `interceptor` error returned only by standalone retrieval evaluation. Meta is `rail_id`, `phase:'retrieval'`, and optional validated `reason_code`; attached default-loop rails still terminate with the generic `AgentInterceptorError` contract.
+`DecisionBlockedError` and `DecisionEvaluationError` are terminal non-retriable interceptor-category errors with fixed messages and validated evidence. The [decision evidence contract](./37-decision-boundaries/03-contracts/decisions.md) defines exact codes, fields and failure kinds for core and addons. GuardrailsConfigError remains addon-owned for configuration failures. ExternalWaitError adds invalid_snapshot for malformed adapter records; wait request/signal validation uses invalid_request.
 
 ### `SandboxError`
 - code: `SANDBOX_ERROR`
@@ -88,6 +77,22 @@ taxonomy and are never emitted by normal harness execution.
 - retriable: `false`
 - when: `SandboxSession.exec` is invoked on a session whose `executor === 'unavailable'` (e.g. the in-memory files-only fallback when `just-bash` is not installed).
 - meta: `session_id: string`.
+
+### `SandboxStateLostError`
+- code: `SANDBOX_STATE_LOST`
+- category: `sandbox`
+- retriable: `false`
+- when: a Sandbox adapter lacks lifecycle state for an existing scope or
+  authoritatively reports that known provider compute is missing, and Harness
+  has not established and authorized recovery from a committed durable
+  workspace.
+- meta: `reason: 'lifecycle_state_missing'|'provider_missing'|'durable_workspace_required'|'durable_workspace_recovery_unavailable'`, `lifetime: 'session'|'run'`, `adapter_id: string`.
+- forbidden meta: logical scope fields, tenant/principal values, generation,
+  lease/fence values, provider references, checkpoint references, paths,
+  commands, content, credentials, and provider response bodies.
+
+Provider outage, timeout, quota, unauthorized, and cancellation retain their
+existing error classification and must not be converted to state loss.
 
 ### `ModelError`
 - code: `MODEL_ERROR`
@@ -219,14 +224,20 @@ tokens, raw headers, or attachments.
 - category: `timeout`
 - retriable: `true`
 - when: any timed budget elapsed.
-- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'|'memory'|'workspace'`, `timeout_ms: number`.
+- meta: `scope: 'run'|'model'|'tool'|'decision'|'sandbox_run'|'memory'|'workspace'|'evaluation_run'|'evaluation_task'|'evaluation_scorer'`, `timeout_ms: number`.
 
 ### `OperationCancelledError`
 - code: `OPERATION_CANCELLED`
 - category: `cancelled`
 - retriable: `false`
 - when: AbortSignal aborted (including pre-aborted signals at entry points).
-- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'`.
+- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'|'evaluation'`.
+
+Generic evaluation callbacks use these existing error classes as abort reasons.
+The runner serializes terminal callback errors into the content-free
+`EvaluationErrorRecord` from
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md); it does not add an
+evaluation-specific public error class.
 
 ### `McpProtocolError`
 - code: `MCP_PROTOCOL_ERROR`

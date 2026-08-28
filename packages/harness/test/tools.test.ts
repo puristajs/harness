@@ -3,13 +3,20 @@ import { inMemorySandbox } from '../src/sandbox/index.js'
 import { invokeBuiltinTool } from '../src/tools/index.js'
 import { SandboxNoExecutorError, ValidationError } from '../src/errors/index.js'
 
+async function openSandbox() {
+  const sandbox = inMemorySandbox()
+  const scope = { owner: { namespace: 'tools-test', id: 's1', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'r1' }
+  await sandbox.registerOwner({ owner: scope.owner, mode: 'create' })
+  return (await sandbox.open({ scope, mode: 'create' })).session
+}
+
 it('dispatches alias and enforces bash availability', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
   await expect(invokeBuiltinTool('Bash', { command: 'echo hi' }, session)).rejects.toBeInstanceOf(SandboxNoExecutorError)
 })
 
 it('grep falls back to read+match when executor unavailable', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
   await session.write('/workspace/a.txt', 'hello\nworld\nhello again')
   const result = await invokeBuiltinTool('grep', { pattern: 'hello', path: '/workspace', maxResults: 10 }, session) as { matches: Array<{ path: string }> }
   expect(result.matches.length).toBe(2)
@@ -17,7 +24,7 @@ it('grep falls back to read+match when executor unavailable', async () => {
 })
 
 it('grep scans through sandbox fs APIs when executor is available', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
   await session.write('/workspace/a.txt', 'safe\nneedle')
 
   const execCalls: string[] = []
@@ -38,7 +45,7 @@ it('grep scans through sandbox fs APIs when executor is available', async () => 
 })
 
 it('grep converts invalid regex patterns into tool input validation errors', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
 
   await expect(invokeBuiltinTool('grep', { pattern: '[', path: '/workspace' }, session)).rejects.toMatchObject({
     meta: { where: 'tool_input' }
@@ -47,7 +54,7 @@ it('grep converts invalid regex patterns into tool input validation errors', asy
 })
 
 it('grep rejects oversized patterns and nested unbounded quantifiers before compiling', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
   await session.write('/workspace/a.txt', 'abab')
 
   await expect(invokeBuiltinTool('grep', { pattern: 'a'.repeat(1_001), path: '/workspace' }, session)).rejects.toMatchObject({
@@ -63,7 +70,7 @@ it('grep rejects oversized patterns and nested unbounded quantifiers before comp
 })
 
 it('edit writes new_string literally when it contains regex replacement patterns', async () => {
-  const session = await inMemorySandbox().open({ sessionId: 's1', runId: 'r1' })
+  const session = await openSandbox()
   await session.write('/workspace/file.txt', 'price = OLD;')
 
   const result = await invokeBuiltinTool('edit', {

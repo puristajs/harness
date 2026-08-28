@@ -9,6 +9,7 @@ adapter packages.
 | Package | Purpose |
 |---|---|
 | `@purista/harness` | Core runtime: builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
+| `@purista/harness-guardrails` | Optional typed content rails; concrete privacy detectors remain separate addons. |
 | `@purista/harness-openai` | OpenAI model provider adapter. |
 | `@purista/harness-anthropic` | Anthropic model provider adapter. |
 | `@purista/harness-bedrock` | Amazon Bedrock model provider adapter. |
@@ -57,11 +58,21 @@ the simple in-process defaults.
 | `ContinuableChildTaskHandle` | In-process isolated task conversation with serialized `send(...)` turns and explicit `close()`. |
 | `GovernanceConfig` | Optional policy layer for tool exposure, tool-call deny/audit, shadow mode, and approvals. |
 | `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
-| `GovernanceDecision` | Normalized execution policy decision returned by native rules or adapters, including decision evidence fields. |
+| `GovernanceDecision` | Strict policy result: `effect` and optional `reasonCode`/`ruleId`; evidence is runtime-owned. |
+| `DecisionEvidence` / `createDecisionEvidence` | Shared content-free source, phase, optional reason code, and deterministic occurrence identity. |
+| `DecisionExecutionContext` | Linked `signal` and absolute `deadline` for bounded callbacks. |
+| `GovernanceApprovalRequest` / `GovernanceApprovalSubject` | One correlated prepared tool subject plus approval id and safe demands. |
+| `GovernanceApprovalProvider` / `GovernanceApprovalResult` | Shared immediate callback returning approved/rejected and optional reason code. |
+| `AgentExecutionInterceptor` | Phase-specific default-loop hooks; `afterModel` allows/blocks, `beforeOutput` owns final transforms. |
+| `ProviderContinuation` / `ProviderContinuationItem` | Transient provider-neutral slots for opaque state and canonical tool-call reconstruction. |
+| `ExternalWaitOutcome` / `ExternalWaitResolved` | Durable terminal wait outcome and resolved metadata, separate from application review/execution state. |
 | `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
 | `HarnessStorage` | Persistence port for sessions, messages, runs, events, workflow checkpoints, leases, and external waits. |
 | `MemoryEngine` / `MemoryFacade` | Pluggable canonical-record storage port and scoped runtime facade. |
-| `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
+| `Sandbox` / `SandboxSession` | One logical file and optional command boundary; `Sandbox.registerOwner` records authorized ownership before direct lifecycle work, while deployment topology stays adapter-private. |
+| `SandboxScope` / `SandboxOwner` | Exact logical owner, partition, and lifetime used by `create`, `attach`, `restore`, and termination. |
+| `SandboxPolicy` / `SandboxBindingOptions` | Application-selected sharing policy and Harness binding options; neither contains provider references. |
+| `SandboxAdministration` | Explicit application-owned exact list/purge/sweep/snapshot cleanup and offboarding surface. |
 | `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
@@ -70,6 +81,13 @@ the simple in-process defaults.
 | `DurableWorkspace` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
+
+Sandbox identifiers and provider handles are opaque adapter internals. Register
+an application-authorized owner before direct adapter lifecycle calls. Use
+`SandboxAdministration` for bounded cleanup and offboarding; authorize it in
+the application before calling it. A purge may report `cleanup_pending` and a
+retry delay instead of claiming a resource was deleted. Never place provider
+references, identities, cursors, file contents, or snapshots in logs/telemetry.
 
 ## Adapter Capabilities
 
@@ -104,7 +122,12 @@ flowchart LR
   Http --> Remote["Remote MCP server"]
 ```
 
-TypeScript tools validate with Zod before and after handler execution.
+TypeScript tools validate with Zod before and after handler execution. Builtin
+schemas and MCP adapters/schemas also prepare input once before permission,
+policy, and approval. Tool-input transforms change wire arguments first;
+handler-output validation precedes tool-output presentation rails. Read the
+[decision table and exact lifecycle](../guides/decisions-and-approval.md) for
+batch dispatch, deadlines, evidence, and durable review ownership.
 
 ## Skills
 
@@ -183,6 +206,10 @@ Streaming invokers yield `RunEvent` values:
 | `child_task.started` / `child_task.settled` | Content-free isolated task lifecycle in the child task's run. |
 | `agent.started` / `agent.finished` | Agent lifecycle. |
 | `tool.started` / `tool.finished` | Tool lifecycle and normalized errors. |
+| `model.completed` | Sole generative model-call and token accounting event; independent of content admission. |
+| `policy.exposure` / `policy.evaluated` | Safe exposure/execution decision evidence and enforcement state. |
+| `approval.requested` | Approval occurrence correlation and safe `demands`, never the subject input. |
+| `approval.finished` | Matching approval id and terminal outcome, optional safe reason/error code. |
 | `model.message` | Persisted model message metadata. |
 | `model.delta` | Text delta from a `textStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
 | `model.object.partial` | Structured partial from an `objectStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
@@ -191,7 +218,11 @@ Streaming invokers yield `RunEvent` values:
 | `stream.overflow` | Stream buffer dropped old events. |
 
 `text(...)` and `object(...)` are final request-response operations and do not
-produce partial run events. `textStream(...)` and `objectStream(...)` expose
+produce partial run events. They do emit `model.completed` on successful
+invocation, including direct and nested calls. Fully consumed successful model
+streams also emit it once, independent of `emitRunEvents`; failed attempts and
+streams that later fail do not. Presentation events have no accounting role.
+`textStream(...)` and `objectStream(...)` expose
 provider chunks directly to workflow or custom agent-handler code. Those chunks
 stay private to the run by default; harness mirrors supported chunks as
 provider-neutral run events only when that model stream call passes
@@ -419,6 +450,10 @@ Common codes:
 - `SANDBOX_NO_EXECUTOR`
 - `OPERATION_TIMEOUT`
 - `OPERATION_CANCELLED`
+- `DECISION_BLOCKED`
+- `DECISION_EVALUATION_ERROR`
+- `PERMISSION_DENIED`
+- `POLICY_DENIED`
 - `SESSION_BUSY`
 
 ## Telemetry Options
@@ -448,35 +483,28 @@ non-`NO_CONTENT` modes opt into bounded `harness.memory.key`,
 `harness.memory.value`, and `harness.memory.query` fields on memory spans or
 span events according to the selected mode.
 
-## Eval Helpers
+## Evaluations
 
-```ts
-import { evaluateDeterministicScorer, evaluatePromptCandidates } from '@purista/harness'
+`runEvaluation(...)` executes candidate/case/trial rows and scores their
+observations. `scoreEvaluation(...)` applies scorer adapters to application-owned
+observations without task execution. `EvaluationScorer` is the shared async
+adapter contract for deterministic checks, LLM judges, external metrics, and
+human-provided judgments.
 
-const scores = await evaluatePromptCandidates({
-  candidates: [{ id: 'concise', prompt: 'Answer in one paragraph.' }],
-  items: [{ id: 'item-1', input: { question: 'What changed?' } }],
-  runCandidate: async (candidate, item) => runPrompt(candidate.prompt, item.input),
-  scorer: async (target) => evaluateDeterministicScorer({
-    type: 'contains',
-    path: '/answer',
-    value: 'changed'
-  }, target),
-  signal: new AbortController().signal
-})
-```
+`createDeterministicEvaluationScorer(...)` creates a one-dimension typed
+predicate adapter and is also exported from `@purista/harness/testing`.
+`evaluationResultToFeedbackRecords(...)` is an explicit, lossy projection for
+authorized Harness feedback targets.
 
-`evaluatePromptCandidates` is deterministic: it evaluates candidates in input
-order, items in input order, and sorts final scores by mean score descending,
-pass rate descending, then candidate id ascending.
+Public contracts include versioned datasets/cases/candidates/trials,
+observations, scorers/dimensions, task/scorer accounting, per-case result
+records, aggregates, coverage, timeouts/retries/failure policy, and feedback
+projection options. Assessment material remains scorer-only; results and
+telemetry omit task output and other evaluation content.
 
-`@purista/harness/testing` exports `evaluateDeterministicScorer(...)` for
-unit-testing `regex`, `contains`, `json-schema`, and `attribute-equality`
-scorers without invoking a model provider.
-
-The `json-schema` scorer is a deterministic subset, not a full JSON Schema
-draft implementation. It supports `type`, `const`, `enum`, object
-`properties`, object `required`, and `additionalProperties: false`.
+See [Evaluating AI systems](../guides/evaluating-prompts.md) for a focused API
+example and the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/)
+for methodology and use-case recipes.
 
 ## Testing Subpath
 
@@ -488,8 +516,7 @@ draft implementation. It supports `type`, `const`, `enum`, object
 `loggerContract`, `memoryEngineContract`, `durableWorkspaceContract`,
 `adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
 `makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
-locked list lives in `specs/13-public-api.md`; adapter packages run the
-matching contract suites in their own test suites.
+adapter packages run the matching contract suites in their own test suites.
 
 ## OpenAI Adapter
 

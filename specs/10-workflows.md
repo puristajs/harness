@@ -1,5 +1,7 @@
 # Workflows
 
+> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for callback and invocation schema direction. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+
 **Purpose.** Defines the inline `WorkflowDefinition` shape used in `defineHarness().workflows({...})`, the `WorkflowContext`, parallel agent invocation rules, and cancellation semantics. There is no standalone `defineWorkflow` factory; only inline-in-builder objects achieve cross-key type constraints (the workflow handler's `ctx.agents` typed by the registered agent keys).
 
 ## `WorkflowDefinition` (inline in builder)

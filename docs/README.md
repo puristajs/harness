@@ -17,8 +17,8 @@ observability.
 | Run my first typed agent | [Quickstart](./getting-started/quickstart.md) | [Configuration](./guides/configuration.md) and [Usage](./guides/usage.md) |
 | Give an agent safe capabilities | [Tools and skills](./guides/tools-and-skills.md) | [Security](./security/security-model.md) |
 | Coordinate agents or durable work | [Workflows](./guides/workflows.md) | [Durable workspaces](./guides/durable-workspaces.md) |
-| Protect content and tool boundaries | [Guardrails](./guides/guardrails.md) | [Security](./security/security-model.md) |
-| Prove behavior and operate it | [Testing](./guides/testing.md) | [Evaluations](./guides/evaluating-prompts.md) and [Operations](./operations/runbook.md) |
+| Protect content and tool boundaries | [Decisions and approval](./guides/decisions-and-approval.md) | [Guardrails](./guides/guardrails.md) and [Security](./security/security-model.md) |
+| Prove behavior and operate it | [Testing](./guides/testing.md) | [Evaluations](./guides/evaluating-prompts.md), the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/), and [Operations](./operations/runbook.md) |
 
 ## Learning Sequence
 
@@ -32,7 +32,7 @@ observability.
 4. **Control** — [Guardrails](./guides/guardrails.md) and the
    [security model](./security/security-model.md).
 5. **Prove and operate** — [Testing](./guides/testing.md),
-   [evaluations](./guides/evaluating-prompts.md), and the
+   [evaluations](./guides/evaluating-prompts.md), the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/), and the
    [operations runbook](./operations/runbook.md).
 
 For PURISTA service integration, use the **AI Agent** card in the framework
@@ -71,19 +71,21 @@ flowchart TD
   - [Workflow Guide](./guides/workflows.md): design fan-out/fan-in, durable steps, streaming, cancellation, and testing for workflow orchestration.
   - [Configuration Guide](./guides/configuration.md): configure models, defaults, sandboxing, timeouts, logging, and OpenTelemetry.
   - [Durable Workspaces](./guides/durable-workspaces.md): configure production replay workspaces, checkpoint references, retention, encryption, cleanup, and quotas.
-  - [Evaluating Prompts](./guides/evaluating-prompts.md): compare prompt candidates with local deterministic or custom scorers.
+  - [Evaluating AI systems](./guides/evaluating-prompts.md): run or re-score versioned cases with interchangeable scorer adapters. The [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/) owns methods, recipes, and optional platform integrations.
   - [Extending And Customizing](./guides/extending-and-customizing.md): add adapters, TypeScript tools, skills, workflows, and custom state/sandbox implementations.
   - [MCP Tools](./guides/mcp-tools.md): register stdio and HTTP MCP tools, install stdio servers inside the sandbox, and map MCP failures.
   - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
   - [Guardrails](./guides/guardrails.md): configure typed input, output, tool, retrieval, and sensitive-data protection; choose Presidio or native privacy by user outcome.
-  - [Migrating To AI Harness 2.0](./guides/migrating-to-v2.md): make the clean MCP v2 and package-major upgrade.
-  - [Migrating To AI Harness 3.0](./guides/migrating-to-v3.md): replace overlapping state/runtime/wait/checkpoint adapters with one `HarnessStorage`.
+  - [Decisions and Approval](./guides/decisions-and-approval.md): one current decision table, composed rails/governance, safe evidence, and durable review ownership.
+  - [Guardrails Composition](../examples/guardrails/README.md): tested input/tool/output rails with one shared immediate approval provider.
+  - [Durable Human Review](./guides/human-review-gates.md): safe external waits and application claim/receipt recovery.
   - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and application-owned review tasks.
 - Operate and review
   - [Operations Runbook](./operations/runbook.md): readiness checks, failure handling, logs, traces, MCP operations, and shutdown.
   - [Security Model](./security/security-model.md): trust boundaries, secret handling, sandbox execution, MCP risk, application-owned review tasks, and telemetry privacy.
 - Reference
   - [Public API](./reference/public-api.md): package exports, builder shape, session API, run events, errors, and type inference.
+  - [Decision Boundary Release Notes](./releases/decision-boundaries.md): current breaking contracts with no compatibility recipes.
   - [Spec Conformance](./reference/spec-conformance.md): current implementation status against the approved specs.
 
 ## Repository Map

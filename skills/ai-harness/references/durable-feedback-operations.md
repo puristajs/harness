@@ -114,6 +114,16 @@ idempotent and return `applied`, `duplicate`, `already_terminal`, or
 `not_found`. Do not persist review text, tool payloads, reviewer identities, or
 credentials in the wait record.
 
+`ExternalWaitOutcome` is approved/rejected/expired/cancelled; it is not an
+immediate approval-provider result. Validate authorization, current revision,
+expiry, and approved action digest only before acquiring a new atomic execution
+claim. An existing claim resumes its original execution key and a completed
+claim returns its stored receipt; never strand admitted effects with fresh
+policy/expiry checks during recovery. The application invokes the domain command
+idempotently and stores the execution receipt. Harness owns neither reviewer
+CRUD nor the claim/receipt store. A crash between effect, receipt, and checkpoint
+must remain safe to replay under that same binding.
+
 ## Production Adapters
 
 Implement one shared `HarnessStorage` with transactional run acquisition,
@@ -149,9 +159,9 @@ should fail when required storage/workspace capabilities are absent or a
 persistent adapter cannot initialize. Application health checks should test the
 configured backend without exposing content.
 
-## Migration Rule
+## Storage Schema Readiness
 
-Harness 3 rejects Harness 2 SQLite schemas, including
-`harness_durable_runs` and `harness_context_checkpoints`. Start a new database
-and migrate only approved conversation data through an explicit export/import.
-There are no compatibility aliases for removed builders or adapters.
+SQLite storage rejects incompatible schema layouts with
+`HarnessConfigError` reason `sqlite_schema_incompatible`; it never silently
+rewrites an existing database. Configure a database using the current storage
+schema. Keep application business state in application-owned storage.

@@ -15,7 +15,7 @@ export function createMemoryExample(file = '.purista/memory-example.sqlite') {
 
 async function main(): Promise<void> {
   const harness = createMemoryExample()
-  const session = await harness.getSession('claim:42', { tenantId: 'acme', principalId: 'ada' })
+  const session = await harness.getSession('claim:42', { identity: { tenantId: 'acme', principalId: 'ada' } })
   await session.memory.write('claim-status', { status: 'open' }, { tags: ['claim'], ttlMs: 3_600_000 })
   console.log(await session.memory.read('claim-status'))
   await harness.shutdown()

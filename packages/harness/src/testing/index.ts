@@ -13,7 +13,7 @@ export { fakeSnapshotSandbox, sandboxSnapshotContract } from './sandboxSnapshot.
 
 // Contract suites
 export { harnessStorageContract } from './harnessStorageContract.js'
-export { sandboxContract } from './sandboxContract.js'
+export { sandboxContract, sandboxMultiClientContract } from './sandboxContract.js'
 export { modelProviderContract } from './modelProviderContract.js'
 export { loggerContract } from './loggerContract.js'
 export { durableWorkspaceContract } from './durableWorkspaceContract.js'
@@ -27,8 +27,8 @@ export { DiagnosticInvariantError, assertDiagnosticInvariants } from './diagnost
 export type { DiagnosticInvariantSnapshot, HarnessDiagnosticFinding, HarnessDiagnosticInvariant } from './diagnostics.js'
 
 // AI eval test helpers (re-exported from the main entry for test ergonomics)
-export { evaluateDeterministicScorer } from '../eval/index.js'
-export type { DeterministicScorerDefinition, ScorerResult, ScorerTarget } from '../eval/index.js'
+export { createDeterministicEvaluationScorer } from '../eval/index.js'
+export type { DeterministicEvaluationScorerDefinition } from '../eval/index.js'
 
 /** Returns a fresh harness builder for tests. */
 export function makeHarness() {

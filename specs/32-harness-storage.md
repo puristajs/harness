@@ -35,6 +35,17 @@ record, persisted run events, durable step checkpoints, run/session leases,
 and external wait/signal state. These are one transactional consistency
 boundary and are never independently configured by an application.
 
+Session creation binds an immutable opaque `SessionRecord.instanceId` and
+exact optional identity. `upsertSession(record, 'create' | 'update')` atomically
+returns a boolean insertion result. Create never mutates existing records;
+update requires the exact active instance and never inserts, so late summary
+writes cannot resurrect a closed session. Destructive
+`closeSession(id, expectedInstanceId)` is conditional on the same persisted
+instance, so stale clients cannot delete a newly recreated conversation. These
+are session record semantics, not sandbox lifecycle state. A reacquired durable
+run reports `resumed: true` even without a checkpoint; a genuinely first
+acquisition remains `false` even when the caller supplies a higher attempt.
+
 ## 2. Boundaries
 
 The following concepts remain separate because their semantics, lifecycle, or
@@ -48,6 +59,12 @@ backends differ:
 | `Sandbox` | `@purista/harness` | Active filesystem and process lifecycle. |
 | `DurableWorkspace` | `@purista/harness` | Optional durable file snapshots, quotas, retention, and encryption metadata. |
 | Review/domain records | Application service | Authorization, reviewer identity, evidence, revisions, expiry, and business invariants. |
+
+Distributed sandbox generations, leases, fencing tokens, provider references,
+retention, and cleanup queues are also outside `HarnessStorage`. An adapter
+owns any required coordination behind the public Sandbox port. Harness and
+PURISTA do not inspect sandbox topology, and Harness storage implementations do
+not add lifecycle methods for spec 34.
 
 The PURISTA `StateStore` MUST NOT be expanded with Harness operations and MUST
 NOT be automatically adapted to `HarnessStorage`. Its `getState`, `setState`,
@@ -317,3 +334,7 @@ version with a safe remediation telling the developer to recreate the local
 database. Production data migration is not applicable because SQLite is not a
 supported production multi-instance backend and the affected API has not been
 released.
+
+## Approved decision-boundary alignment
+
+Wait requests, signals and snapshots have strict schema-derived closed shapes. Workflow wait returns ExternalWaitResolved, while storage retains the waiting/terminal union. Application execution claims and receipts remain outside HarnessStorage. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

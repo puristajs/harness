@@ -1,0 +1,20 @@
+module_boundary_version: 1
+modules:
+  - module_id: harness
+    owner: harness
+    public_entrypoint: @purista/harness
+    owned_concepts: [selection, sessions, public_contracts]
+    allowed_dependencies: []
+    forbidden_dependencies: [purista, docker]
+  - module_id: docker
+    owner: docker
+    public_entrypoint: @purista/harness-sandbox-docker
+    owned_concepts: [engine, catalog, resource_cleanup]
+    allowed_dependencies: [harness]
+    forbidden_dependencies: [purista]
+  - module_id: purista
+    owner: purista
+    public_entrypoint: @purista/core
+    owned_concepts: [framework_mapping, trusted_message_identity]
+    allowed_dependencies: [harness]
+    forbidden_dependencies: [docker]

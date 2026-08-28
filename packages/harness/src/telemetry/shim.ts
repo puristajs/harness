@@ -82,13 +82,7 @@ function errorAttributes(error: unknown): SpanAttrs {
       'harness.error.model_provider_param': stringAttr(meta?.['providerParam']),
       'harness.error.model_provider_request_id': stringAttr(meta?.['providerRequestId']),
       'harness.error.model_provider_body': providerBody,
-      // Interceptor ids and phases are configuration-controlled, content-free
-      // identifiers. They make a failed agent span attributable without
-      // promoting action-provided messages or inputs into telemetry.
-      ...(error.code === 'AGENT_INTERCEPTOR_ERROR' ? {
-        'harness.interceptor.id': stringAttr(meta?.['interceptor_id']),
-        'harness.interceptor.phase': stringAttr(meta?.['phase'])
-      } : {})
+      ...decisionTelemetryAttrs(meta)
     }
   }
   const name = telemetryErrorType(error)
@@ -97,6 +91,22 @@ function errorAttributes(error: unknown): SpanAttrs {
     'harness.error.code': name,
     'harness.error.category': 'internal',
     'harness.error.retriable': false
+  }
+}
+
+function decisionTelemetryAttrs(meta: Record<string, unknown> | undefined): SpanAttrs {
+  const evidence = meta?.['evidence']
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return {}
+  const record = evidence as Record<string, unknown>
+  const source = record['source']
+  const interceptorId = source && typeof source === 'object' && !Array.isArray(source)
+    ? (source as Record<string, unknown>)['id']
+    : undefined
+  // Decision evidence contains only configuration and correlation identifiers.
+  // Preserve attribution without adding inputs, prompts, or matched content.
+  return {
+    'harness.interceptor.id': stringAttr(interceptorId),
+    'harness.interceptor.phase': stringAttr(record['phase'])
   }
 }
 

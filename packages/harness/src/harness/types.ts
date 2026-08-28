@@ -1,4 +1,4 @@
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type { JsonValue } from '../models/json.js'
 
 export interface ExecOptions {
   cwd?: string

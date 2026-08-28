@@ -1,0 +1,63 @@
+findings:
+  - id: REVIEW-003-001
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-003
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+    impacted_path: "Purge cancelled after its selector revocation barrier commits"
+    location: "ai-harness/packages/harness-sandbox-docker/src/administration.ts:56-65,113-116"
+    expected: "After the barrier commits, cancellation stops further cleanup, preserves the barrier and private references, and returns a truthful cleanup_pending result with the committed progress."
+    actual: "purge calls checkCancelled after beginPurge and cleanup rethrows OperationCancelledError, so the caller receives no cleanup_pending result despite the already-committed barrier."
+    evidence: "administration.test.ts currently asserts rejection for this path, contradicting the canonical offboarding rule."
+    fix_boundary: "ai-harness/packages/harness-sandbox-docker/src/administration.ts and administration.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness run test --workspace @purista/harness-sandbox-docker"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness-sandbox-docker"
+    agent_instruction: "Differentiate cancellation before the barrier from cancellation after it. Preserve revocation and return the contract's cleanup_pending shape after a committed barrier; replace the contradictory rejection assertion with an exact result/progress assertion."
+  - id: REVIEW-003-002
+    severity: blocking
+    category: BOUNDS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-003
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#bounds--dec-sown-bounds
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-BOUNDS
+    impacted_path: "Normal catalog at capacity followed by exact-owner purge or registration after a matching revocation"
+    location: "ai-harness/packages/harness-sandbox-docker/src/ownership.ts:75-82,122-144,205-220"
+    expected: "An admitted owner reserves every owner-specific terminal/barrier/job entry required for later destructive cleanup. A revoked unknown owner is denied without allocating a new owner record. Tombstone/catalog capacity must never block or bypass offboarding."
+    actual: "An owner is charged three slots, but beginPurge subsequently adds both a selector barrier and a purge record. With maxCatalogEntries 5 and reserve 1, one owner plus one resource occupies four slots, revoke reaches five, and the purge job allocation fails. registerOwner also inserts a revoked record before any capacity check when an unknown owner matches an existing selector barrier."
+    evidence: "The arithmetic follows directly from occupiedSlots and the beginPurge sequence; existing tests cover a standalone revoke but not a full-catalog owner purge or an unknown owner blocked by a selector barrier."
+    fix_boundary: "ai-harness/packages/harness-sandbox-docker/src/ownership.ts and ownership.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness run test --workspace @purista/harness-sandbox-docker"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness-sandbox-docker"
+    agent_instruction: "Make reservation accounting correspond exactly to actual retained owner/barrier/job records, including a resource at normal capacity; deny a never-registered owner matched by a revocation without inserting it. Add deterministic boundary tests proving exact-owner purge remains admissible and no rejected registration grows the catalog."
+  - id: REVIEW-003-003
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-003
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#inventory--dec-sown-admin
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-SAFETY
+    impacted_path: "Cleanup state transitions for a private Docker resource"
+    location: "ai-harness/packages/harness-sandbox-docker/src/ownership.ts:110-120,167-174"
+    expected: "Only provisioning -> active/paused/terminal -> cleanup_pending -> deleted transitions are accepted; invalid or final-state resurrection fails closed."
+    actual: "updateState writes any allowed target state regardless of the current one, allowing deleted -> active and other illegal lifecycle jumps."
+    evidence: "markDeleted followed by markActive succeeds because updateState performs no current-state transition validation; no test covers an illegal transition."
+    fix_boundary: "ai-harness/packages/harness-sandbox-docker/src/ownership.ts and ownership.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness run test --workspace @purista/harness-sandbox-docker"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness-sandbox-docker"
+    agent_instruction: "Encode the approved lifecycle transition table in the private journal, reject illegal transitions with the existing safe error family, and add at least deleted-to-active plus another illegal-transition test."

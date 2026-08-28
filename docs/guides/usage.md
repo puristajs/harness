@@ -46,16 +46,16 @@ const harness = defineHarness({ name: 'docs-example' })
       capabilities: ['object', 'tool_use']
     }
   })
-  .tools({
-    search_docs: {
+  .tools(({ tool }) => ({
+    search_docs: tool({
       description: 'Search internal documentation.',
       input: z.object({ query: z.string() }),
       output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
       handler: async (_ctx, input) => ({
         hits: [{ id: 'intro', text: `Result for ${input.query}` }]
       })
-    }
-  })
+    })
+  }))
   .agents(({ agent }) => ({
     answerer: agent({
       model: 'fast',
@@ -239,8 +239,8 @@ when the stream call opts in with `{ emitRunEvents: true }`.
     provider: customRanker,
     model: 'ranker-v1',
     capabilities: ['rerank']
-  }
-})
+  })
+}))
 ```
 
 Object generation is the typed structured-output path. Multimodal inputs are

@@ -6,9 +6,29 @@ import type { HarnessStorage } from '../storage/types.js'
 
 const session: SessionRecord = {
   id: 'session_1',
+  instanceId: '01J00000000000000000000001',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
-  runCount: 0
+  runCount: 0,
+  sandboxBinding: {
+    owner: { namespace: 'harness', id: 'session_1', instanceId: '01J00000000000000000000001' },
+    relation: 'owned',
+    registration: 'pending',
+    policyDigest: 'a'.repeat(64),
+    disposed: false
+  }
+}
+
+const pendingSandboxBinding = {
+  owner: {
+    namespace: 'harness',
+    id: session.id,
+    instanceId: session.instanceId
+  },
+  relation: 'owned' as const,
+  registration: 'pending' as const,
+  policyDigest: 'a'.repeat(64),
+  disposed: false
 }
 
 const messages: Message[] = [
@@ -44,7 +64,124 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
 
     it('upsertSession and getSession round-trip', async () => {
       const store = await make()
-      await store.upsertSession(session)
+      await expect(store.upsertSession(session, 'create')).resolves.toBe(true)
+      await expect(store.getSession(session.id)).resolves.toEqual(session)
+    })
+
+    it('selects one insertion winner even when concurrent creation timestamps match', async () => {
+      const store = await make()
+      const results = await Promise.all([store.upsertSession(session, 'create'), store.upsertSession(session, 'create')])
+      expect(results.filter(Boolean)).toHaveLength(1)
+      await expect(store.getSession(session.id)).resolves.toEqual(session)
+    })
+
+    it('keeps creation identity immutable and rejects conflicting optional dimensions', async () => {
+      const store = await make()
+      const bound = { ...session, identity: { tenantId: 'tenant', principalId: 'principal' } }
+      await store.upsertSession(bound, 'create')
+      for (const identity of [undefined, { tenantId: 'other', principalId: 'principal' }, { tenantId: 'tenant' }, { principalId: 'principal' }]) {
+        await expect(store.upsertSession({ ...session, ...(identity ? { identity } : {}) }, 'create')).rejects.toMatchObject({
+          code: 'STATE_ERROR', meta: { op: 'upsertSession', reason: 'session_identity_mismatch' }
+        })
+      }
+      await expect(store.getSession(session.id)).resolves.toEqual(bound)
+    })
+
+    it('allows only the owned sandbox-binding acknowledgement and disposal transitions', async () => {
+      const store = await make()
+      const pending = { ...session, sandboxBinding: pendingSandboxBinding }
+      await store.upsertSession(pending, 'create')
+
+      const registered = {
+        ...pending,
+        updatedAt: '2026-01-01T00:00:01.000Z',
+        sandboxBinding: { ...pendingSandboxBinding, registration: 'registered' as const }
+      }
+      await expect(store.upsertSession(registered, 'update')).resolves.toBe(false)
+
+      const disposed = {
+        ...registered,
+        updatedAt: '2026-01-01T00:00:02.000Z',
+        sandboxBinding: { ...registered.sandboxBinding, disposed: true }
+      }
+      await expect(store.upsertSession(disposed, 'update')).resolves.toBe(false)
+      await expect(store.upsertSession({
+        ...disposed,
+        updatedAt: '2026-01-01T00:00:03.000Z',
+        sandboxBinding: { ...disposed.sandboxBinding, owner: { ...disposed.sandboxBinding.owner, id: 'other' } }
+      }, 'update')).rejects.toMatchObject({
+        code: 'STATE_ERROR', meta: { op: 'upsertSession', reason: 'session_sandbox_binding_mismatch' }
+      })
+      await expect(store.upsertSession({
+        ...disposed,
+        updatedAt: '2026-01-01T00:00:03.000Z',
+        sandboxBinding: { ...disposed.sandboxBinding, disposed: false }
+      }, 'update')).rejects.toMatchObject({
+        code: 'STATE_ERROR', meta: { op: 'upsertSession', reason: 'session_sandbox_binding_mismatch' }
+      })
+    })
+
+    it('updates mutable fields without letting competing creation reset the winning record', async () => {
+      const store = await make()
+      await store.upsertSession(session, 'create')
+      const updated = { ...session, updatedAt: '2026-01-01T00:00:10.000Z', runCount: 2, metadata: { retained: true } }
+      await expect(store.upsertSession(updated, 'update')).resolves.toBe(false)
+      await expect(store.upsertSession({ ...session, instanceId: 'competing-instance' }, 'create')).resolves.toBe(false)
+      await expect(store.upsertSession({ ...session, createdAt: '2026-01-01T00:00:01.000Z' }, 'create')).resolves.toBe(false)
+      await expect(store.upsertSession(session, 'update')).resolves.toBe(false)
+      await expect(store.getSession(session.id)).resolves.toEqual(updated)
+    })
+
+    it('does not expose mutable references to persisted session identity', async () => {
+      const store = await make()
+      const proposed = { ...session, identity: { tenantId: 'tenant' } }
+      await store.upsertSession(proposed, 'create')
+      proposed.identity.tenantId = 'changed-through-input'
+      const read = await store.getSession(session.id)
+      if (read) read.createdAt = 'changed-through-read'
+      await expect(store.getSession(session.id)).resolves.toEqual({ ...session, identity: { tenantId: 'tenant' } })
+    })
+
+    it('keeps a newly recreated session and its history when an old instance closes', async () => {
+      const store = await make()
+      await store.upsertSession(session, 'create')
+      await store.closeSession(session.id, session.instanceId)
+      const recreated = { ...session, instanceId: 'session-instance-2' }
+      await store.upsertSession(recreated, 'create')
+      await store.appendMessages(session.id, messages)
+      await store.closeSession(session.id, session.instanceId)
+      await expect(store.getSession(session.id)).resolves.toEqual(recreated)
+      await expect(store.listMessages(session.id)).resolves.toEqual(messages)
+      await store.closeSession(session.id, recreated.instanceId)
+      await expect(store.getSession(session.id)).resolves.toBeUndefined()
+      await expect(store.listMessages(session.id)).resolves.toEqual([])
+    })
+
+    it('never resurrects a closed record through a late summary update', async () => {
+      const store = await make()
+      await store.upsertSession(session, 'create')
+      await store.closeSession(session.id, session.instanceId)
+      const late = { ...session, updatedAt: '2026-01-01T00:00:10.000Z', runCount: 1 }
+      await expect(store.upsertSession(late, 'update')).rejects.toMatchObject({
+        code: 'STATE_ERROR', meta: { reason: 'session_instance_mismatch' }
+      })
+      await expect(store.getSession(session.id)).resolves.toBeUndefined()
+      const fresh = { ...session, instanceId: 'new-instance' }
+      await store.upsertSession(fresh, 'create')
+      await expect(store.upsertSession(late, 'update')).rejects.toMatchObject({
+        code: 'STATE_ERROR', meta: { reason: 'session_instance_mismatch' }
+      })
+      await expect(store.getSession(session.id)).resolves.toEqual(fresh)
+    })
+
+    it('never mutates an existing record through repeated creation', async () => {
+      const store = await make()
+      await store.upsertSession(session, 'create')
+      await expect(store.upsertSession({ ...session, runCount: 3, metadata: { unexpected: true } }, 'create')).resolves.toBe(false)
+      await expect(store.getSession(session.id)).resolves.toEqual(session)
+      await expect(store.upsertSession({ ...session, createdAt: '2026-01-01T00:00:01.000Z' }, 'update')).rejects.toMatchObject({
+        code: 'STATE_ERROR', meta: { reason: 'session_instance_mismatch' }
+      })
       await expect(store.getSession(session.id)).resolves.toEqual(session)
     })
 

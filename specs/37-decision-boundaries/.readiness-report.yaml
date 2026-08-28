@@ -1,0 +1,153 @@
+status: "approved"
+language: "en"
+open_decisions: []
+human_approval:
+  status: "approved"
+approval_evidence:
+  status: "approved"
+  approver_id: "repository-owner"
+  approved_at: "2026-08-26"
+  approval_ref: "codex-task-01a03d51-6262-7480-89eb-baa163905ef6#owner-approved-clean-refactor"
+  manifest_digest: "sha256:b5323335237da8fac896a1d42efeac1df47f9438f48cebdc8241565ede67724f"
+  scope_refs:
+    - "CAP-DB-FOUNDATION"
+    - "CAP-DB-GOVERNANCE"
+    - "CAP-DB-PROVIDERS"
+    - "CAP-DB-TOOLS"
+    - "CAP-DB-RAILS"
+    - "CAP-DB-WAITS"
+    - "CAP-DB-REVIEW"
+    - "CAP-DB-CONSUMERS"
+    - "CAP-DB-DOCS"
+    - "CAP-DB-CLEANUP"
+gates:
+  no_drift_gate:
+    status: "passed"
+  ambiguity_gate:
+    status: "passed"
+  semantic_alignment_gate:
+    status: "passed"
+  spec_structure_gate:
+    status: "passed"
+  visualization_gate:
+    status: "passed"
+  requirements_quality_gate:
+    status: "passed"
+  end_to_end_definition_gate:
+    status: "passed"
+  file_structure_gate:
+    status: "passed"
+  current_dependency_research_gate:
+    status: "passed"
+  concise_spec_gate:
+    status: "passed"
+  client_consumer_coverage_gate:
+    status: "passed"
+  frontend_ux_integration_gate:
+    status: "passed"
+  standards_first_gate:
+    status: "passed"
+  machine_readable_contract_gate:
+    status: "passed"
+  async_semantics_gate:
+    status: "passed"
+  clean_rebuild_boundary_gate:
+    status: "passed"
+  generation_map_gate:
+    status: "passed"
+  strong_boundary_type_gate:
+    status: "passed"
+  representation_reuse_gate:
+    status: "passed"
+  interface_gate:
+    status: "passed"
+  e2e_gate:
+    status: "passed"
+  unhappy_path_gate:
+    status: "passed"
+  security_privacy_gate:
+    status: "passed"
+  observability_gate:
+    status: "passed"
+  performance_resilience_gate:
+    status: "passed"
+  data_integrity_recovery_gate:
+    status: "passed"
+  production_readiness_gate:
+    status: "passed"
+  supply_chain_gate:
+    status: "passed"
+  wave_readiness:
+    status: "passed"
+  migration_gate:
+    status: "passed"
+  checklist_walk_gate:
+    status: "passed"
+  contradiction_check:
+    status: "passed"
+  spec_judge_loop:
+    status: "passed"
+  semantic_judge_gate:
+    status: "passed"
+  self_audit_gate:
+    status: "passed"
+  gate_simulation:
+    status: "passed"
+spec_judge_loop:
+  run_timing: "approval_only"
+  reviewed_flows:
+    - "PATH-DB-FOUNDATION-SUCCESS"
+    - "PATH-DB-FOUNDATION-FAILURE"
+    - "PATH-DB-FOUNDATION-RECOVERY"
+    - "PATH-DB-GOVERNANCE-SUCCESS"
+    - "PATH-DB-GOVERNANCE-FAILURE"
+    - "PATH-DB-GOVERNANCE-RECOVERY"
+    - "PATH-DB-PROVIDERS-SUCCESS"
+    - "PATH-DB-PROVIDERS-FAILURE"
+    - "PATH-DB-PROVIDERS-RECOVERY"
+    - "PATH-DB-TOOLS-SUCCESS"
+    - "PATH-DB-TOOLS-FAILURE"
+    - "PATH-DB-TOOLS-RECOVERY"
+    - "PATH-DB-RAILS-SUCCESS"
+    - "PATH-DB-RAILS-FAILURE"
+    - "PATH-DB-RAILS-RECOVERY"
+    - "PATH-DB-WAITS-SUCCESS"
+    - "PATH-DB-WAITS-FAILURE"
+    - "PATH-DB-WAITS-RECOVERY"
+    - "PATH-DB-REVIEW-SUCCESS"
+    - "PATH-DB-REVIEW-FAILURE"
+    - "PATH-DB-REVIEW-RECOVERY"
+    - "PATH-DB-CONSUMERS-SUCCESS"
+    - "PATH-DB-CONSUMERS-FAILURE"
+    - "PATH-DB-CONSUMERS-RECOVERY"
+    - "PATH-DB-DOCS-SUCCESS"
+    - "PATH-DB-DOCS-FAILURE"
+    - "PATH-DB-DOCS-RECOVERY"
+    - "PATH-DB-CLEANUP-SUCCESS"
+    - "PATH-DB-CLEANUP-FAILURE"
+    - "PATH-DB-CLEANUP-RECOVERY"
+  blocking_findings_count: 0
+checklist_walk:
+  topics:
+    architecture: "covered"
+    contracts: "covered"
+    async_cancellation: "covered"
+    security_privacy: "covered"
+    data_integrity: "covered"
+    performance: "covered"
+    operations: "covered"
+    dependencies: "covered"
+    consumers: "covered"
+    documentation: "covered"
+    clean_cut: "covered"
+  blocking_findings_count: 0
+semantic_judge_evidence:
+  status: "passed"
+  judge: "Independent scoped governance and durable reviewers plus root semantic integration review"
+  evidence_ref: "evidence/readiness-review.md"
+  reviewed_at: "2026-08-26"
+review_notes:
+  - "Owner explicitly approved spec updates, breaking changes and clean removal in the initiating request. Approval is newly bound to this scoped digest, not inherited from an older workstream."
+  - "Owner explicitly excluded Voyage from this workstream on 2026-08-26. The revised consumer and cleanup contracts make it not applicable and remove it from all acceptance gates."
+  - "Runtime implementation is pending; this report attests definition readiness only."
+  - "Other workstreams and uncommitted source changes are preserved."

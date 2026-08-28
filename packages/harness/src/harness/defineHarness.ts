@@ -44,7 +44,7 @@ import type {
 import { validateMemoryEngine } from '../ports/memory.js'
 import type { DurableWorkspacePolicy, DurableWorkspace } from '../ports/workspace.js'
 import { validateDurableWorkspace } from '../ports/workspace.js'
-import type { ExternalWaitRequest, ExternalWaitSnapshot } from '../storage/external-wait.js'
+import type { ExternalWaitOutcome, ExternalWaitRequest, ExternalWaitResolved } from '../storage/external-wait.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
@@ -52,8 +52,10 @@ import { validateModelRetrySetting } from '../models/retry-policy.js'
 import type { RunStatus } from '../models/state.js'
 import type { HarnessError } from '../errors/harness-error.js'
 import { HarnessConfigError, SkillManifestError } from '../errors/catalog.js'
-import { BUILTIN_TOOL_NAMES } from '../tools/index.js'
-import { autoDetectSandbox, type Sandbox } from '../sandbox/index.js'
+import { BUILTIN_TOOL_NAMES, resolveEnabledBuiltinTools } from '../tools/index.js'
+import { agentExecutionRequirementsSchema, compileAgentExecutionRequirements, type AgentExecutionRequirementDeclaration, type AgentExecutionRequirements } from './agent-requirements.js'
+import { hasModelCapabilities } from '../models/registry.js'
+import { autoDetectSandbox, type Sandbox, type SandboxSessionFor } from '../sandbox/index.js'
 import { createSessionHarness } from '../sessions/index.js'
 import type { ModelHandle } from '../models/registry.js'
 import {
@@ -69,6 +71,15 @@ import type { DurableStepOptions } from '../runtime/steps.js'
 import { type ContextProjectionPolicy, validateContextProjection } from '../context-projection.js'
 import { type SessionHistoryRetentionPolicy, validateSessionHistoryRetention } from '../sessions/history-retention.js'
 import type { HarnessIdentity } from '../identity/index.js'
+import {
+  sandboxBindingOptionsSchema,
+  type SandboxBindingOptions,
+  type SandboxPolicy,
+  type SessionOptions
+} from '../sandbox/ownership.js'
+import type { DecisionExecutionContext } from '../decisions/types.js'
+import { agentPermissionsSchema, governanceConfigSchema } from '../decisions/schemas.js'
+import { brandToolDefinition, registeredToolDefinition, validateToolDefinitions } from './tool-definition.js'
 
 /** Stable harness version string for diagnostics and generated documentation. */
 export { HARNESS_VERSION } from '../version.js'
@@ -95,6 +106,8 @@ export interface HarnessDefaults {
   runTimeoutMs?: number
   /** Per-tool timeout in milliseconds. Default: `120_000`. */
   toolTimeoutMs?: number
+  /** Per-decision callback timeout in milliseconds. Default: `10_000`. */
+  decisionTimeoutMs?: number
   /** Per-skill timeout in milliseconds. Default: `60_000`. */
   skillTimeoutMs?: number
   /** Per-model timeout in milliseconds. Default: `300_000`. */
@@ -205,47 +218,14 @@ export interface InvokeOptions {
 export type BuiltinToolName = 'bash' | 'read' | 'write' | 'edit' | 'glob' | 'grep' | 'list'
 
 /** Permission modes for sandbox-mutating tools. */
-export type PermissionMode = 'allow' | 'ask' | 'deny'
+export type PermissionMode = Extract<z.output<typeof import('../decisions/schemas.js').permissionPolicySchema>, string>
 
 /** Structured permission policy for a single tool family. */
-export interface PermissionPolicy {
-  /** Base decision mode for the tool family. */
-  mode: PermissionMode
-  /** Optional allowlist evaluated by harness-specific policy hooks. */
-  allow?: readonly string[]
-  /** Optional denylist evaluated by harness-specific policy hooks. */
-  deny?: readonly string[]
-}
+export type PermissionPolicy = Exclude<z.output<typeof import('../decisions/schemas.js').permissionPolicySchema>, string>
 
 /** Per-agent permission configuration for built-in mutating tools. */
-export interface AgentPermissions {
-  /** Permission mode or policy for the `bash` built-in tool. */
-  bash?: PermissionMode | PermissionPolicy
-  /** Permission mode or policy for the `write` built-in tool. */
-  write?: PermissionMode | PermissionPolicy
-  /** Permission mode or policy for the `edit` built-in tool. */
-  edit?: PermissionMode | PermissionPolicy
-}
+export type AgentPermissions = z.output<typeof agentPermissionsSchema>
 
-/** Context passed to custom permission hooks. */
-export interface PermissionContext {
-  /** Tool name under evaluation. */
-  toolName: string
-  /** Raw input proposed for the tool call. */
-  input: unknown
-  /** Current agent id. */
-  agentId: string
-  /** Current run id. */
-  runId: string
-  /** Current session id. */
-  sessionId: string
-}
-
-/** Final decision returned from a permission hook. */
-export type PermissionDecision = 'allow' | 'deny'
-
-/** Async permission hook used for interactive approvals or custom policy engines. */
-export type OnPermission = (ctx: PermissionContext) => Promise<PermissionDecision>
 
 /** Skill frontmatter parsed from `SKILL.md`. */
 export interface SkillFrontmatter {
@@ -308,22 +288,48 @@ export interface ConversationHistory {
   list(opts?: { limit?: number; before?: string }): Promise<Message[]>
 }
 
-/** Context provided to custom TypeScript tools. */
-export interface ToolHandlerContext {
+/** @inline */
+type ToolHandlerContextBase = {
+  /** Cancellation signal for the current tool invocation. */
   signal: AbortSignal
-  sandbox: import('../sandbox/index.js').SandboxSession
+  /** Sandbox attachment for the current run. */
+  sandbox: import('../sandbox/index.js').SandboxSessionBase
+  /** Logger scoped to the invocation. */
   logger: Logger
+  /** Harness telemetry helpers. */
   telemetry: TelemetryShim
+  /** Harness metrics helpers. */
   metrics: Metrics
+  /** Memory operations available to this invocation. */
   memory: MemoryFacade
+  /** Current run identifier. */
   runId: string
+  /** Current session identifier. */
   sessionId: string
+  /** Agent invoking the tool. */
   agentId: string
+  /** Tool alias registered with the Harness. */
   toolId: string
 }
 
+/**
+ * Context provided to custom tools, including the current sandbox attachment.
+ *
+ * Register `.sandbox(adapter)` before `.tools(...)` to infer supported sandbox
+ * operations in inline handlers. Without a precise capability tuple, `sandbox`
+ * exposes file operations; use the sandbox capability guards before exec or spawn.
+ *
+ * @typeParam C - Capability tuple of the sandbox registered on the builder.
+ * @example
+ * ```ts
+ * type ShellToolContext = ToolHandlerContext<readonly ['sandbox.fs', 'sandbox.exec']>
+ * ```
+ */
+export type ToolHandlerContext<C extends readonly AdapterCapability[] = readonly AdapterCapability[]> =
+  number extends C['length'] ? ToolHandlerContextBase : Omit<ToolHandlerContextBase, 'sandbox'> & { sandbox: SandboxSessionFor<C> }
+
 /** TypeScript-native tool definition. */
-export interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.ZodTypeAny = z.ZodTypeAny> {
+export interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.ZodTypeAny = z.ZodTypeAny, C extends ToolContextShape = ToolHandlerContext> {
   /** Tool kind discriminator. Defaults to `ts`. */
   kind?: 'ts'
   /** Short model-facing description. */
@@ -333,7 +339,7 @@ export interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O exten
   /** Output schema validated after handler invocation. */
   output: O
   /** Async tool implementation running inside the current session sandbox. */
-  handler: (ctx: ToolHandlerContext, input: z.infer<I>) => Promise<z.infer<O>>
+  handler: (ctx: C, input: z.output<I>) => Promise<z.input<O>>
   /** Optional adapter hook for inheriting harness logger, telemetry, and defaults. */
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
@@ -417,11 +423,68 @@ export interface McpHttpToolDefinition {
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
-/** Any tool definition accepted by `.tools(...)`. */
-export type ToolDefinition = TsToolDefinition<any, any> | McpStdioToolDefinition | McpHttpToolDefinition
+/** @inline */
+type ToolContextShape = Omit<ToolHandlerContext, 'sandbox'> & { sandbox: import('../sandbox/index.js').SandboxSessionBase }
 
-/** Full tool registry shape. */
-export type ToolsConfig = Record<string, ToolDefinition>
+/** A TypeScript-native tool created by a builder-local {@link ToolDefinitionHelpers.tool} helper. */
+export type RegisteredTsToolDefinition<
+  I extends z.ZodTypeAny = z.ZodTypeAny,
+  O extends z.ZodTypeAny = z.ZodTypeAny,
+  C extends ToolContextShape = ToolHandlerContext
+> = TsToolDefinition<I, O, C> & { readonly [registeredToolDefinition]: true }
+
+/**
+ * Contextual helpers supplied only to `.tools(...)` callbacks.
+ *
+ * @example
+ * ```ts
+ * builder.tools(({ tool }) => ({
+ *   lookup: tool({ input: z.object({ id: z.string() }), output: z.string(), description: 'Lookup.', handler: async (_ctx, input) => input.id })
+ * }))
+ * ```
+ */
+export interface ToolDefinitionHelpers<C extends ToolContextShape> {
+  tool<const I extends z.ZodTypeAny, const O extends z.ZodTypeAny>(
+    definition: TsToolDefinition<I, O, C>
+  ): RegisteredTsToolDefinition<I, O, C>
+}
+
+/** Runtime union of native and MCP tool definitions. */
+export type ToolDefinition<C extends ToolContextShape = ToolHandlerContext> =
+  | TsToolDefinition<any, any, C>
+  | McpStdioToolDefinition
+  | McpHttpToolDefinition
+
+type RegisteredNativeToolDefinition<C extends ToolContextShape> =
+  Extract<ToolDefinition<C>, { kind?: 'ts' }> & { readonly [registeredToolDefinition]: true }
+
+type ToolRegistrationEntry<C extends ToolContextShape> =
+  | RegisteredNativeToolDefinition<C>
+  | Extract<ToolDefinition<C>, { kind: 'mcp_stdio' | 'mcp_http' }>
+
+type CheckedTool<T, C extends ToolContextShape> =
+  T extends { input: infer I extends z.ZodTypeAny; output: infer O extends z.ZodTypeAny; handler: unknown }
+    ? T extends RegisteredTsToolDefinition<I, O, C>
+      ? RegisteredTsToolDefinition<I, O, C>
+      : never
+    : T extends McpStdioToolDefinition | McpHttpToolDefinition
+      ? T
+      : never
+
+type CheckedTools<T extends Record<string, unknown>, C extends ToolContextShape> = {
+  [K in keyof T]: CheckedTool<T[K], C>
+}
+
+/** Full tool registry shape accepted by `.tools(...)`. */
+export type ToolsConfig<C extends ToolContextShape = ToolHandlerContext> = Record<string, ToolRegistrationEntry<C>>
+
+function createToolDefinitionHelpers<C extends ToolContextShape>(): ToolDefinitionHelpers<C> {
+  return {
+    tool<I extends z.ZodTypeAny, O extends z.ZodTypeAny>(definition: TsToolDefinition<I, O, C>): RegisteredTsToolDefinition<I, O, C> {
+      return brandToolDefinition(definition) as RegisteredTsToolDefinition<I, O, C>
+    }
+  }
+}
 
 /** Skill definition registered on the harness builder. */
 export interface SkillDefinition {
@@ -463,17 +526,32 @@ export type ModelsConfig = Record<string, ModelAlias>
 /** Builder-state accumulator used for type propagation across the fluent harness builder. */
 export interface BuilderState {
   models?: ModelsConfig
-  tools?: ToolsConfig
+  tools?: ToolsConfig<never>
+  /** Capability tuple of the explicitly configured sandbox, propagated to tool handlers. */
+  sandboxCapabilities?: readonly AdapterCapability[]
+  /** Literal sandbox-sharing groups declared with the configured sandbox. */
+  sandboxGroups?: readonly string[]
   skills?: SkillsConfig
   agents?: Record<string, AgentDefinition<any, any, any>>
   workflows?: Record<string, WorkflowDefinition<any, any, any>>
 }
 
-type InferSchemaOrString<T> = T extends z.ZodTypeAny ? z.infer<T> : string
+/** @inline */
+type SandboxCapabilitiesFor<S extends BuilderState> = S extends { sandboxCapabilities: infer C extends readonly AdapterCapability[] } ? C : readonly AdapterCapability[]
 
-type DefinitionInput<D> = D extends { input: infer I } ? InferSchemaOrString<I> : D extends { input?: infer I } ? InferSchemaOrString<I> : string
+/** Literal groups declared at the composition root. */
+export type ConfiguredSandboxGroups<S extends BuilderState> =
+  S extends { sandboxGroups: infer G extends readonly string[] } ? G[number] : never
 
-type DefinitionOutput<D> = D extends { output: infer O } ? InferSchemaOrString<O> : D extends { output?: infer O } ? InferSchemaOrString<O> : string
+type ToolContextFor<S extends BuilderState> = ToolHandlerContext<SandboxCapabilitiesFor<S>>
+
+type SchemaInputOrString<T> = T extends z.ZodTypeAny ? z.input<T> : string
+
+type SchemaOutputOrString<T> = T extends z.ZodTypeAny ? z.output<T> : string
+
+type DefinitionInput<D> = D extends { input: infer I } ? SchemaInputOrString<I> : D extends { input?: infer I } ? SchemaInputOrString<I> : string
+
+type DefinitionOutput<D> = D extends { output: infer O } ? SchemaOutputOrString<O> : D extends { output?: infer O } ? SchemaOutputOrString<O> : string
 
 /** Helper to infer workflow input type from a workflow definition. */
 export type WorkflowInput<S extends BuilderState, K extends keyof NonNullable<S['workflows']>> =
@@ -493,7 +571,7 @@ export type AgentOutput<S extends BuilderState, K extends keyof NonNullable<S['a
 
 /** Helper to infer custom TypeScript tool input from the configured Zod schema. */
 export type ToolInput<S extends BuilderState, K extends keyof NonNullable<S['tools']> & string> =
-  NonNullable<S['tools']>[K] extends TsToolDefinition<infer I, any> ? z.infer<I> : JsonValue
+  NonNullable<S['tools']>[K] extends TsToolDefinition<infer I, z.ZodTypeAny, infer _C> ? z.output<I> : JsonValue
 
 /** Capability-filtered model handles keyed by configured model alias. */
 export type ModelHandles<S extends BuilderState> = {
@@ -573,6 +651,8 @@ export interface AgentExecutionInterceptorContext<S extends BuilderState, I> ext
   agentInput: I
   /** Stable interceptor id registered on the agent definition. */
   interceptorId: string
+  /** Runtime-owned occurrence id: the delegated call id, or the direct run id. */
+  invocationId: string
   /** Current default-loop model step. `0` for input validation hooks. */
   step: number
   /** Model alias selected for the current model step, when applicable. */
@@ -585,17 +665,26 @@ export interface AgentExecutionInterceptorContext<S extends BuilderState, I> ext
   models: ModelHandles<S>
   /** Cooperative cancellation signal for this invocation. */
   signal: AbortSignal
+  /**
+   * Bounded lifecycle for the current interceptor decision.
+   * Interceptors that invoke nested decision callbacks must forward this exact
+   * context so tool and run cancellation retain their original identity.
+   */
+  decision: DecisionExecutionContext
   /** Harness logger; interceptor implementations must keep content out of logs by default. */
   logger: Logger
   /** Harness telemetry shim; interceptor implementations must use content-free attributes by default. */
   telemetry: TelemetryShim
 }
 
-/** Allow, block, or replace a value at one default-loop interception point. */
-export type AgentExecutionInterception<T> =
-  | { decision: 'allow' }
-  | { decision: 'block'; reason?: string; metadata?: Record<string, JsonValue> }
-  | { decision: 'transform'; value: T; metadata?: Record<string, JsonValue> }
+/** A content-free allow or block result from one default-loop interceptor. */
+export type AgentInterceptorDecision = z.output<typeof import('../decisions/schemas.js').decisionResultSchema>
+
+/** A content-free phase-specific replacement from one default-loop interceptor. */
+export type AgentInterceptorTransform<T> = Omit<AgentInterceptorDecision, 'decision'> & { decision: 'transform'; value: T }
+
+/** Allow, block, or replace the value owned by one default-loop interception point. */
+export type AgentExecutionInterception<T> = AgentInterceptorDecision | AgentInterceptorTransform<T>
 
 /** Input gate invoked after the agent input schema has parsed and before any handler or model work. */
 export interface AgentBeforeInputInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
@@ -627,6 +716,11 @@ export interface AgentAfterToolInterceptorContext<S extends BuilderState, I> ext
   output: JsonValue
 }
 
+/** Final-output gate invoked before final output validation, persistence, or delivery. */
+export interface AgentBeforeOutputInterceptorContext<S extends BuilderState, I> extends AgentExecutionInterceptorContext<S, I> {
+  output: JsonValue
+}
+
 /**
  * Provider-neutral interception points for the built-in agent loop.
  *
@@ -638,24 +732,28 @@ export interface AgentAfterToolInterceptorContext<S extends BuilderState, I> ext
 export interface AgentExecutionInterceptor<S extends BuilderState = BuilderState, I = JsonValue> {
   /** Stable, content-free identifier used in errors and telemetry. */
   id: string
-  beforeInput?: (ctx: AgentBeforeInputInterceptorContext<S, I>) => AgentExecutionInterception<I> | void | Promise<AgentExecutionInterception<I> | void>
-  beforeModel?: (ctx: AgentBeforeModelInterceptorContext<S, I>) => AgentExecutionInterception<AgentModelRequest> | void | Promise<AgentExecutionInterception<AgentModelRequest> | void>
-  afterModel?: (ctx: AgentAfterModelInterceptorContext<S, I>) => AgentExecutionInterception<ObjectResponse<JsonValue>> | void | Promise<AgentExecutionInterception<ObjectResponse<JsonValue>> | void>
+  /**
+   * Tool and model declarations checked against the completed registry during
+   * `.build()`. Requirements only validate configuration; they cannot widen
+   * an agent's runtime permissions or activate a disabled tool.
+   */
+  requirements?: AgentExecutionRequirements
+  beforeInput?: (ctx: AgentBeforeInputInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
+  beforeModel?: (ctx: AgentBeforeModelInterceptorContext<S, I>) => AgentExecutionInterception<{ messages: readonly ModelMessage[] }> | void | Promise<AgentExecutionInterception<{ messages: readonly ModelMessage[] }> | void>
+  afterModel?: (ctx: AgentAfterModelInterceptorContext<S, I>) => AgentInterceptorDecision | void | Promise<AgentInterceptorDecision | void>
   beforeTool?: (ctx: AgentBeforeToolInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
   afterTool?: (ctx: AgentAfterToolInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
+  beforeOutput?: (ctx: AgentBeforeOutputInterceptorContext<S, I>) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
 }
 
 /** Governance mode for policy evaluation. `shadow` records decisions without enforcement. */
-export type GovernanceMode = 'enforce' | 'shadow'
+export type GovernanceMode = NonNullable<z.output<typeof governanceConfigSchema>['mode']>
 
 /** Policy effects supported by the built-in governance evaluator. */
-export type GovernanceEffect = 'allow' | 'audit' | 'require_approval' | 'deny'
+export type GovernanceEffect = GovernanceDecision['effect']
 
 /** Policy decision for model-facing tool exposure before a model step. */
-export type GovernanceExposureEffect = 'expose' | 'hide'
-
-/** Optional risk severity attached to policy decisions for audit and review UX. */
-export type GovernanceRiskLevel = 'critical' | 'high' | 'medium' | 'low'
+export type GovernanceExposureEffect = NonNullable<NonNullable<z.output<typeof governanceConfigSchema>['exposure']>['defaultEffect']>
 
 /** Tool ids policy rules may target. Includes configured custom tools and built-in tools. */
 export type GovernanceToolId<S extends BuilderState> = (keyof NonNullable<S['tools']> & string) | BuiltinToolName
@@ -663,37 +761,30 @@ export type GovernanceToolId<S extends BuilderState> = (keyof NonNullable<S['too
 type GovernanceToolInput<S extends BuilderState, K extends GovernanceToolId<S>> =
   K extends keyof NonNullable<S['tools']> & string ? ToolInput<S, K> : JsonValue
 
-/** Context passed to native policy predicates and policy adapter evaluators. */
-export interface GovernanceContext<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> {
-  /** Canonical tool id under evaluation. */
-  toolId: K
-  /** Parsed tool input when a custom TypeScript tool schema is available; otherwise the raw JSON-compatible input. */
-  input: GovernanceToolInput<S, K>
-  /** Current agent id. */
-  agentId: string
-  /** Current run id. */
-  runId: string
-  /** Current session id. */
-  sessionId: string
-  /** Current workflow id when the agent is invoked from a workflow. */
-  workflowId?: string
-  /** Scalar invocation metadata. */
-  metadata: Readonly<Record<string, JsonValue>>
-}
+/**
+ * Correlated, transient context for one parsed tool invocation.
+ *
+ * The harness never serializes `input` or `metadata` into decision events,
+ * errors, or audit records.
+ */
+export type GovernanceContext<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> =
+  K extends GovernanceToolId<S> ? Readonly<{
+    toolId: K
+    input: GovernanceToolInput<S, K>
+    callId: string
+    invocationId: string
+    agentId: string
+    runId: string
+    sessionId: string
+    workflowId?: string
+    step: number
+    metadata: Readonly<Record<string, JsonValue>>
+    signal: AbortSignal
+    deadline: number
+  }> : never
 
-/** Decision returned by a policy adapter or native policy rule. */
-export interface GovernanceDecision {
-  decisionId?: string
-  effect: GovernanceEffect
-  policyId: string
-  policyVersion?: string
-  ruleId?: string
-  message?: string
-  reason?: string
-  riskLevel?: GovernanceRiskLevel
-  tags?: readonly string[]
-  metadata?: Record<string, JsonValue>
-}
+/** Strict decision returned by a policy adapter or native rule. */
+export type GovernanceDecision = z.output<typeof import('../decisions/schemas.js').governanceDecisionSchema>
 
 /** External policy adapter contract for OPA, Cedar, Eve-compatible engines, or bespoke evaluators. */
 export interface GovernancePolicyEvaluator<S extends BuilderState = BuilderState> {
@@ -703,7 +794,7 @@ export interface GovernancePolicyEvaluator<S extends BuilderState = BuilderState
 }
 
 /** Context passed to tool-exposure policy rules before the model sees a step's tool list. */
-export interface GovernanceToolExposureContext<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> {
+export interface GovernanceToolExposureContext<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> extends DecisionExecutionContext {
   /** Canonical tool id whose model exposure is under evaluation. */
   toolId: K
   /** Current agent id. */
@@ -727,17 +818,10 @@ export interface GovernanceToolExposureRuleForTool<S extends BuilderState, K ext
   effect: GovernanceExposureEffect
   tools?: readonly K[]
   when?: (ctx: GovernanceToolExposureContext<S, K>) => boolean | Promise<boolean>
-  message?: string
-  reason?: string
-  riskLevel?: GovernanceRiskLevel
-  tags?: readonly string[]
-  metadata?: Record<string, JsonValue>
 }
 
-/** Native tool-exposure rule union with context narrowed by the selected tool id. */
-export type GovernanceToolExposureRule<S extends BuilderState> = {
-  [K in GovernanceToolId<S>]: GovernanceToolExposureRuleForTool<S, K>
-}[GovernanceToolId<S>]
+/** Native tool-exposure rule with a full tool-context union. */
+export type GovernanceToolExposureRule<S extends BuilderState> = GovernanceToolExposureRuleForTool<S, GovernanceToolId<S>>
 
 /** Optional pre-model tool-exposure policy. */
 export interface GovernanceToolExposurePolicy<S extends BuilderState = BuilderState> {
@@ -754,17 +838,15 @@ export interface NativePolicyRuleForTool<S extends BuilderState, K extends Gover
   effect: GovernanceEffect
   tools?: readonly K[]
   when?: (ctx: GovernanceContext<S, K>) => boolean | Promise<boolean>
-  message?: string
-  reason?: string
-  riskLevel?: GovernanceRiskLevel
-  tags?: readonly string[]
-  metadata?: Record<string, JsonValue>
+  reasonCode?: GovernanceDecision['reasonCode']
 }
 
-/** Native policy rule union with predicate input narrowed by the selected tool id. */
-export type NativePolicyRule<S extends BuilderState> = {
-  [K in GovernanceToolId<S>]: NativePolicyRuleForTool<S, K>
-}[GovernanceToolId<S>]
+/** Native policy rule with a full correlated context union. */
+export type NativePolicyRule<S extends BuilderState> = NativePolicyRuleForTool<S, GovernanceToolId<S>>
+
+/** Correlated approval subject without callback-only execution fields. */
+export type GovernanceApprovalSubject<S extends BuilderState = BuilderState, K extends GovernanceToolId<S> = GovernanceToolId<S>> =
+  K extends GovernanceToolId<S> ? Omit<GovernanceContext<S, K>, 'metadata' | 'signal' | 'deadline'> : never
 
 /** Native policy definition evaluated by the harness without an external policy engine. */
 export interface NativePolicyDefinition<S extends BuilderState = BuilderState> {
@@ -779,44 +861,39 @@ export type GovernancePolicyDefinition<S extends BuilderState = BuilderState> =
   | NativePolicyDefinition<S>
   | GovernancePolicyEvaluator<S>
 
-/** Approval request emitted when the winning policy effect is `require_approval`. */
-export interface GovernanceApprovalRequest {
+/** Approval request for exactly one tool occurrence. */
+export type GovernanceApprovalRequest<S extends BuilderState = BuilderState> = S extends BuilderState ? {
   approvalId: string
-  toolId: string
-  callId: string
-  agentId: string
-  runId: string
-  sessionId: string
-  workflowId?: string
-  decisions: readonly GovernanceDecision[]
-  metadata: Readonly<Record<string, JsonValue>>
-}
+  subject: GovernanceApprovalSubject<S>
+  demands: readonly import('../decisions/types.js').DecisionEvidence[]
+} : never
 
-/** Approval provider result. */
-export type GovernanceApprovalResult =
-  | { decision: 'approved'; approverId?: string; reason?: string; metadata?: Record<string, JsonValue> }
-  | { decision: 'rejected'; approverId?: string; reason?: string; metadata?: Record<string, JsonValue> }
+/** Strict result from an immediate approval provider. */
+export type GovernanceApprovalResult = z.output<typeof import('../decisions/schemas.js').governanceApprovalResultSchema>
 
 /** Optional approval adapter used only by policies that return `require_approval`. */
-export interface GovernanceApprovalProvider {
-  request(request: GovernanceApprovalRequest): Promise<GovernanceApprovalResult>
-}
+export type GovernanceApprovalProvider<S extends BuilderState = BuilderState> = S extends BuilderState ? {
+  request: (request: GovernanceApprovalRequest<S>, execution: DecisionExecutionContext) => Promise<GovernanceApprovalResult>
+} : never
 
-/** Context passed to governance audit sinks for every evaluated execution policy decision. */
-export interface GovernanceAuditContext {
+/** Content-free audit record emitted after governance validation. */
+export interface GovernanceAuditRecord {
+  evidence: import('../decisions/types.js').DecisionEvidence
   toolId: string
   callId: string
+  invocationId: string
   agentId: string
   runId: string
   sessionId: string
   workflowId?: string
-  metadata: Readonly<Record<string, JsonValue>>
+  step: number
+  effect: GovernanceEffect
   enforced: boolean
 }
 
 /** Optional audit sink for policy decisions. */
 export interface GovernanceAuditSink {
-  record(decision: GovernanceDecision, ctx: GovernanceAuditContext): Promise<void>
+  record(record: GovernanceAuditRecord, execution: import('../decisions/types.js').DecisionExecutionContext): Promise<void>
 }
 
 /** Optional policy-driven governance layer. Omitted config leaves the harness behavior unchanged. */
@@ -826,13 +903,15 @@ export interface GovernanceConfig<S extends BuilderState = BuilderState> {
   defaultEffect?: 'allow' | 'deny'
   policies?: readonly GovernancePolicyDefinition<S>[]
   exposure?: GovernanceToolExposurePolicy<S>
-  approval?: GovernanceApprovalProvider
+  approval?: GovernanceApprovalProvider<S>
   audit?: GovernanceAuditSink
 }
 
 export interface GovernanceDefinitionHelpers<S extends BuilderState> {
-  rule<const K extends GovernanceToolId<S>>(definition: NativePolicyRuleForTool<S, K>): NativePolicyRuleForTool<S, K>
-  exposureRule<const K extends GovernanceToolId<S>>(definition: GovernanceToolExposureRuleForTool<S, K>): GovernanceToolExposureRuleForTool<S, K>
+  rule<const K extends readonly GovernanceToolId<S>[]>(definition: NativePolicyRuleForTool<S, NoInfer<K[number]>> & { tools: K }): NativePolicyRule<S>
+  rule(definition: NativePolicyRuleForTool<S, GovernanceToolId<S>> & { tools?: undefined }): NativePolicyRule<S>
+  exposureRule<const K extends readonly GovernanceToolId<S>[]>(definition: GovernanceToolExposureRuleForTool<S, NoInfer<K[number]>> & { tools: K }): GovernanceToolExposureRule<S>
+  exposureRule(definition: GovernanceToolExposureRuleForTool<S, GovernanceToolId<S>> & { tools?: undefined }): GovernanceToolExposureRule<S>
   native<const P extends Omit<NativePolicyDefinition<S>, 'kind'>>(definition: P): P & { kind: 'native' }
   adapter<const P extends GovernancePolicyEvaluator<S>>(definition: P): P
 }
@@ -855,7 +934,7 @@ export interface WorkflowContext<S extends BuilderState, I, O> {
    * review content or authenticates a reviewer; those remain application code.
    */
   externalWait: {
-    wait(request: ExternalWaitRequest): Promise<ExternalWaitSnapshot>
+    wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved>
   }
   metrics: Metrics
   /**
@@ -941,6 +1020,8 @@ export type ChildTaskStartOptions<S extends BuilderState, K extends keyof NonNul
   model?: keyof NonNullable<S['models']> & string
   /** Only isolated history is supported; raw parent-history inheritance is intentionally absent. */
   context?: ChildTaskContextPolicy
+  /** Filesystem partition policy for this child invocation only. */
+  sandbox?: SandboxPolicy<ConfiguredSandboxGroups<S>>
   /** Runs exactly one agent turn and then settles the task. */
   mode?: 'one_shot'
 }
@@ -1011,12 +1092,13 @@ export interface AgentDefinition<
   input?: I
   output?: O
   model: keyof NonNullable<S['models']> & string
-  instructions: string | ((ctx: AgentContextMinimal<S, z.infer<I>>) => string)
+  instructions: string | ((ctx: AgentContextMinimal<S, z.output<I>>) => string)
   tools?: readonly (keyof NonNullable<S['tools']> & string)[]
   builtinTools?: readonly BuiltinToolName[] | false
   skills?: readonly (keyof NonNullable<S['skills']> & string)[]
   permissions?: AgentPermissions
-  onPermission?: OnPermission
+  /** Filesystem partition policy for this agent. Omit to inherit its caller. */
+  sandbox?: SandboxPolicy<ConfiguredSandboxGroups<S>>
   /**
    * Maximum model iterations for this default-loop agent. Falls back to
    * `defaults.agentMaxIterations`. Must be a positive integer; explicit values
@@ -1031,7 +1113,7 @@ export interface AgentDefinition<
    * prepareStep: ({ step }) => step === 0 ? { activeTools: ['lookup'] } : {}
    * ```
    */
-  prepareStep?: AgentPrepareStep<S, z.infer<I>>
+  prepareStep?: AgentPrepareStep<S, z.output<I>>
   /**
    * Optional hook that can stop the default loop after a model call.
    *
@@ -1040,10 +1122,10 @@ export interface AgentDefinition<
    * stopWhen: ({ step }) => step >= 2
    * ```
    */
-  stopWhen?: AgentStopWhen<S, z.infer<I>>
+  stopWhen?: AgentStopWhen<S, z.output<I>>
   /** Ordered, fail-closed interception hooks for the built-in agent loop. */
-  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
-  handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+  interceptors?: readonly AgentExecutionInterceptor<S, z.output<I>>[]
+  handler?: (ctx: AgentContext<S, z.output<I>, z.input<O>>) => Promise<z.input<O>>
 }
 
 /** Workflow definition registered inline within `.workflows(...)`. */
@@ -1055,7 +1137,9 @@ export interface WorkflowDefinition<
   input?: I
   output?: O
   delegation?: WorkflowDelegationPolicy<S>
-  handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+  /** Filesystem partition policy for this workflow. Omit to inherit its caller. */
+  sandbox?: SandboxPolicy<ConfiguredSandboxGroups<S>>
+  handler: (ctx: WorkflowContext<S, z.output<I>, z.input<O>>) => Promise<z.input<O>>
 }
 
 type AgentSchemaFields = {
@@ -1063,22 +1147,7 @@ type AgentSchemaFields = {
   output?: z.ZodTypeAny
 }
 
-type AgentDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = {
-  input?: I
-  output?: O
-  model: keyof NonNullable<S['models']> & string
-  instructions: string | ((ctx: AgentContextMinimal<S, z.infer<I>>) => string)
-  tools?: readonly (keyof NonNullable<S['tools']> & string)[]
-  builtinTools?: readonly BuiltinToolName[] | false
-  skills?: readonly (keyof NonNullable<S['skills']> & string)[]
-  permissions?: AgentPermissions
-  onPermission?: OnPermission
-  maxSteps?: number
-  prepareStep?: AgentPrepareStep<S, z.infer<I>>
-  stopWhen?: AgentStopWhen<S, z.infer<I>>
-  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
-  handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
-}
+type AgentDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = AgentDefinition<S, I, O>
 
 type AgentDefinitionFor<S extends BuilderState, D> =
   D extends { input: infer I extends z.ZodTypeAny; output: infer O extends z.ZodTypeAny }
@@ -1101,12 +1170,7 @@ type WorkflowSchemaFields = {
   output?: z.ZodTypeAny
 }
 
-type WorkflowDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = {
-  input?: I
-  output?: O
-  delegation?: WorkflowDelegationPolicy<S>
-  handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
-}
+type WorkflowDefinitionResolved<S extends BuilderState, I extends z.ZodTypeAny, O extends z.ZodTypeAny> = WorkflowDefinition<S, I, O>
 
 /** Policy for workflow-local child-agent delegation through `ctx.agents`. */
 export interface WorkflowDelegationPolicy<S extends BuilderState = BuilderState> {
@@ -1191,8 +1255,16 @@ export type InferTypes<S extends BuilderState> = {
 
 /** Harness handle returned from `build()`. */
 export interface Harness<S extends BuilderState> {
-  /** Opens or creates a fresh session facade bound to `id`. */
-  getSession(id: string, identity?: HarnessIdentity): Promise<Session<S>>
+  /**
+   * Opens or creates a session facade bound to `id` and its immutable owner.
+   *
+   * ```ts
+   * const session = await harness.getSession('ticket-123', {
+   *   identity: { tenantId: 'acme' }
+   * })
+   * ```
+   */
+  getSession(id: string, options?: SessionOptions): Promise<Session<S>>
   /** Returns a synchronous, data-only snapshot of resolved adapter setup. */
   inspect(): HarnessInspection
   /** Closes harness-owned adapters and returns any shutdown errors. */
@@ -1213,6 +1285,14 @@ export interface Session<S extends BuilderState> {
   getRunSummary(runId: string): Promise<RunSummary | undefined>
   clearHistory(): Promise<void>
   replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void>
+  /**
+   * Removes compute owned by this session while retaining its history and run receipts.
+   *
+   * Borrowed owners are only detached, so another authorized session can keep
+   * using the shared owner. A later live invocation of an implicitly owned,
+   * disposed session fails closed instead of allocating an empty replacement.
+   */
+  disposeSandbox(): Promise<void>
   /**
    * Releases live, session-scoped resources without deleting persisted state.
    *
@@ -1274,7 +1354,7 @@ export type RunEvent =
   | { type: 'run.finished'; runId: string; at: string; output?: JsonValue; error?: SerializedError }
   | { type: 'external_wait.requested'; runId: string; at: string; waitId: string; kind: string; schemaVersion: string; definitionVersion: string; deadline: string }
   | { type: 'external_wait.waiting'; runId: string; at: string; waitId: string; kind: string; deadline: string }
-  | { type: 'external_wait.resolved'; runId: string; at: string; waitId: string; kind: string; outcome: 'approved' | 'rejected' | 'expired' | 'cancelled'; deadline: string }
+  | { type: 'external_wait.resolved'; runId: string; at: string; waitId: string; kind: string; outcome: ExternalWaitOutcome; deadline: string }
   | { type: 'fanout.started'; runId: string; batchId: string; at: string; count: number; concurrency: number }
   | { type: 'fanout.finished'; runId: string; batchId: string; at: string; count: number; status: 'succeeded' | 'failed' | 'cancelled' }
   | { type: 'child_task.started'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; modelAlias: string; contextPolicy: ChildTaskContextPolicy; mode: ChildTaskMode }
@@ -1282,15 +1362,16 @@ export type RunEvent =
   | { type: 'agent.started'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
   | { type: 'agent.finished'; runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.delta'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
-  | { type: 'policy.evaluated'; runId: string; agentId: string; toolId: string; callId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceEffect; enforced: boolean; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
-  | { type: 'policy.exposure'; runId: string; agentId: string; toolId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; effect: GovernanceExposureEffect; enforced: boolean; step: number; message?: string; reason?: string; riskLevel?: GovernanceRiskLevel; tags?: readonly string[] }
-  | { type: 'approval.requested'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string }
-  | { type: 'approval.finished'; runId: string; agentId: string; toolId: string; callId: string; approvalId: string; decisionId: string; policyId: string; policyVersion?: string; ruleId?: string; decision: 'approved' | 'rejected'; approverId?: string; reason?: string }
+  | { type: 'policy.evaluated'; runId: string; agentId: string; invocationId: string; toolId: string; callId: string; step: number; evidence: import('../decisions/types.js').DecisionEvidence; effect: GovernanceEffect; enforced: boolean }
+  | { type: 'policy.exposure'; runId: string; agentId: string; invocationId: string; toolId: string; step: number; evidence: import('../decisions/types.js').DecisionEvidence; effect: GovernanceExposureEffect; enforced: boolean }
+  | { type: 'approval.requested'; runId: string; agentId: string; invocationId: string; toolId: string; callId: string; step: number; approvalId: string; demands: readonly import('../decisions/types.js').DecisionEvidence[] }
+  | { type: 'approval.finished'; runId: string; agentId: string; invocationId: string; toolId: string; callId: string; step: number; approvalId: string; outcome: 'approved' | 'rejected' | 'cancelled' | 'timed_out' | 'failed'; reasonCode?: string; errorCode?: string }
   | { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
   | { type: 'tool.finished'; runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
   | { type: 'model.message'; runId: string; agentId: string; message: Message }
   | { type: 'model.object.partial'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; partial: JsonValue }
-  | { type: 'model.object'; runId: string; agentId?: string; workflowId?: string; modelAlias?: string; streamId?: string; object: JsonValue; usage?: TokenUsage }
+  | { type: 'model.completed'; runId: string; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: TokenUsage; finishReason?: import('../ports/model-provider.js').FinishReason }
+  | { type: 'model.object'; runId: string; agentId?: string; workflowId?: string; modelAlias?: string; streamId?: string; object: JsonValue }
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
   | { type: 'stream.overflow'; runId: string; at: string; dropped: number }
@@ -1300,11 +1381,16 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   /** Applies a local, static harness module to this builder. */
   use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
     module: S extends Required ? HarnessModule<Required, Result, Id> : never
-  ): HarnessBuilder<Result>
+  ): HarnessBuilder<S & Result>
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
   storage(storage: HarnessStorage): HarnessBuilder<S>
-  sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
+  /** Register the sandbox before tools to infer their supported file, exec, and spawn operations. */
+  sandbox(): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[] }>
+  /** Auto-detect a sandbox while applying the service-owned sharing and owner-authorization policy. */
+  sandbox<const G extends string>(sandbox: undefined, options: SandboxBindingOptions<G>): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[]; sandboxGroups: readonly G[] }>
+  sandbox<const A extends Sandbox>(sandbox: A): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']> }>
+  sandbox<const A extends Sandbox, const G extends string>(sandbox: A, options: SandboxBindingOptions<G>): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']>; sandboxGroups: readonly G[] }>
   memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(engine: MemoryEngine<C>): HarnessBuilder<S>
   memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
   memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(configuration: (model: MemoryModelReferences<NonNullable<S['models']>>) => MemoryConfiguration<C, NonNullable<S['models']>>): HarnessBuilder<S>
@@ -1312,7 +1398,14 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
   requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(defaults: HarnessDefaults): HarnessBuilder<S>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
-  tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }>
+  /** Registers captured tools that were created with a builder-local `tool(...)` helper. */
+  tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    tools: T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
+  /** Registers tools with contextual input, output, and sandbox capability inference. */
+  tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    factory: (helpers: ToolDefinitionHelpers<ToolContextFor<S>>) => T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
   agents<const A extends { [K in keyof A]: AgentDefinition<any, any, any> }>(
     agents: (helpers: AgentDefinitionHelpers<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }>) => A
@@ -1331,7 +1424,14 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 /** Builder surface exposed to a static harness module. It deliberately has no build or use method. */
 export interface HarnessModuleBuilder<S extends BuilderState = {}> {
   models<const M extends ModelsConfig>(models: M): HarnessModuleBuilder<S & { models: M }>
-  tools<const T extends ToolsConfig>(tools: T): HarnessModuleBuilder<S & { tools: T }>
+  /** Registers captured module tools created by a builder-local `tool(...)` helper. */
+  tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    tools: T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessModuleBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
+  /** Registers module tools with contextual input, output, and sandbox capability inference. */
+  tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    factory: (helpers: ToolDefinitionHelpers<ToolContextFor<S>>) => T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessModuleBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
   skills<const K extends SkillsConfig>(skills: K): HarnessModuleBuilder<S & { skills: K }>
   agents<const A extends { [K in keyof A]: AgentDefinition<any, any, any> }>(
     agents: (helpers: AgentDefinitionHelpers<S & { models: NonNullable<S['models']>; tools: NonNullable<S['tools']>; skills: NonNullable<S['skills']> }>) => A
@@ -1365,19 +1465,49 @@ type BuilderStateInternal = {
   telemetry?: TelemetryOptions
   logger?: Logger
   storage?: HarnessStorage
-  sandbox?: Sandbox<any>
+  sandbox?: Sandbox
+  sandboxBinding?: SandboxBindingOptions<string>
   memory?: MemoryEngine | MemoryConfiguration | ((model: MemoryModelReferences<ModelsConfig>) => MemoryConfiguration)
   workspace?: DurableWorkspace
   requiredCapabilities?: readonly AdapterCapability[]
   defaults?: HarnessDefaults
   models?: ModelsConfig
-  tools?: ToolsConfig
+  tools?: ToolsConfig<never>
   skills?: SkillsConfig
   agents?: Record<string, AgentDefinition<any, any, any>>
   workflows?: Record<string, WorkflowDefinition<any, any, any>>
   governance?: GovernanceConfig<any>
   modules?: readonly HarnessModuleInspection[]
   moduleRequirements?: readonly AdapterCapability[]
+}
+
+/** Internal selector guard shared by native-rule normalization and evaluation. */
+export function isSelectedGovernanceTool(toolId: string, tools: readonly string[] | undefined): boolean {
+  return tools === undefined || tools.includes(toolId)
+}
+
+function normalizeNativePolicyRule<S extends BuilderState>(definition: NativePolicyRule<S>): NativePolicyRule<S> {
+  if (!definition.tools || !definition.when) return definition
+  const predicate = definition.when
+  return {
+    ...definition,
+    when: (context) => isSelectedGovernanceTool(context.toolId, definition.tools) ? predicate(context) : false
+  }
+}
+
+function normalizeExposureRule<S extends BuilderState>(definition: GovernanceToolExposureRule<S>): GovernanceToolExposureRule<S> {
+  if (!definition.tools || !definition.when) return definition
+  const predicate = definition.when
+  return {
+    ...definition,
+    when: (context) => isSelectedGovernanceTool(context.toolId, definition.tools) ? predicate(context) : false
+  }
+}
+
+function validateGovernanceConfiguration(value: unknown): void {
+  if (!governanceConfigSchema.safeParse(value).success) {
+    throw new HarnessConfigError('Governance configuration is invalid.', { reason: 'invalid_governance' })
+  }
 }
 
 const moduleBuilderTargets = new WeakMap<object, { builder: Builder<any>; invocation: symbol | undefined }>()
@@ -1395,7 +1525,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   public use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
     module: S extends Required ? HarnessModule<Required, Result, Id> : never
-  ): HarnessBuilder<Result> {
+  ): HarnessBuilder<S & Result> {
     this.validateModule(module)
     const existing = this.configured.modules ?? []
     if (existing.some((entry) => entry.id === module.id)) {
@@ -1437,7 +1567,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       ...target.builder.configured,
       modules: Object.freeze([...existing, inspection]),
       moduleRequirements: uniqueCapabilities([...(this.configured.moduleRequirements ?? []), ...(module.requires ?? [])])
-    }) as unknown as HarnessBuilder<Result>
+    }) as unknown as HarnessBuilder<S & Result>
   }
 
   public telemetry(opts: TelemetryOptions): HarnessBuilder<S> {
@@ -1456,8 +1586,28 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ storage })
   }
 
-  public sandbox(sandbox: Sandbox<any> = autoDetectSandbox()): HarnessBuilder<S> {
-    return this.clone({ sandbox })
+  public sandbox(): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[] }>
+  public sandbox<const G extends string>(sandbox: undefined, options: SandboxBindingOptions<G>): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[]; sandboxGroups: readonly G[] }>
+  public sandbox<const A extends Sandbox>(sandbox: A): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']> }>
+  public sandbox<const A extends Sandbox, const G extends string>(sandbox: A, options: SandboxBindingOptions<G>): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']>; sandboxGroups: readonly G[] }>
+  public sandbox(sandbox?: Sandbox, options?: SandboxBindingOptions<string>): HarnessBuilder<any> {
+    if (this.configured.sandbox) {
+      throw new HarnessConfigError('Sandbox is already configured.', { reason: 'duplicate_adapter', path: 'sandbox' })
+    }
+    const parsed = sandboxBindingOptionsSchema.safeParse(options ?? {})
+    if (!parsed.success) {
+      throw new HarnessConfigError('Sandbox binding options are invalid.', { reason: 'invalid_adapter', path: 'sandbox' })
+    }
+    const sandboxBinding: SandboxBindingOptions<string> = {
+      ...(parsed.data.groups ? { groups: parsed.data.groups } : {}),
+      ...(parsed.data.defaultPolicy ? { defaultPolicy: parsed.data.defaultPolicy } : {}),
+      ...(parsed.data.authorizeOwner ? { authorizeOwner: parsed.data.authorizeOwner } : {})
+    }
+    return new Builder(this.options, {
+      ...this.configured,
+      sandbox: sandbox ?? autoDetectSandbox(),
+      ...(Object.keys(sandboxBinding).length > 0 ? { sandboxBinding } : {})
+    }, this.activeModuleId)
   }
 
   public memory<const C extends readonly import('../ports/memory.js').MemoryCapability[]>(engine: MemoryEngine<C>): HarnessBuilder<S>
@@ -1493,6 +1643,9 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
   }
 
   public defaults(defaults: HarnessDefaults): HarnessBuilder<S> {
+    if (defaults.decisionTimeoutMs !== undefined && (!Number.isSafeInteger(defaults.decisionTimeoutMs) || defaults.decisionTimeoutMs <= 0)) {
+      throw new HarnessConfigError('decisionTimeoutMs must be a positive safe integer', { reason: 'invalid_defaults', path: 'defaults.decisionTimeoutMs' })
+    }
     if (defaults.historyWindow !== undefined && defaults.historyWindow < 0) {
       throw new HarnessConfigError('historyWindow must be >= 0', { reason: 'invalid_defaults', path: 'defaults.historyWindow' })
     }
@@ -1528,7 +1681,19 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     return this.clone({ models: this.mergeDefinitions('models', models) }) as unknown as HarnessBuilder<S & { models: M }>
   }
 
-  public tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }> {
+  public tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    tools: T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
+  public tools<const T extends Record<string, ToolRegistrationEntry<ToolContextFor<S>>>>(
+    factory: (helpers: ToolDefinitionHelpers<ToolContextFor<S>>) => T & CheckedTools<T, ToolContextFor<S>>
+  ): HarnessBuilder<S & { tools: T & CheckedTools<T, ToolContextFor<S>> }>
+  public tools(
+    source: ToolsConfig<ToolContextFor<S>> | ((helpers: ToolDefinitionHelpers<ToolContextFor<S>>) => ToolsConfig<ToolContextFor<S>>)
+  ): HarnessBuilder<S & { tools: ToolsConfig<ToolContextFor<S>> }> {
+    const tools = typeof source === 'function'
+      ? source(createToolDefinitionHelpers<ToolContextFor<S>>())
+      : source
+    validateToolDefinitions(tools)
     for (const id of Object.keys(tools)) {
       if (!/^[a-z][a-z0-9_]*$/.test(id) || id.length > 64) {
         throw new HarnessConfigError(
@@ -1537,7 +1702,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         )
       }
     }
-    return this.clone({ tools: this.mergeDefinitions('tools', tools) }) as unknown as HarnessBuilder<S & { tools: T }>
+    return this.clone({ tools: this.mergeDefinitions('tools', tools) }) as unknown as HarnessBuilder<S & { tools: ToolsConfig<ToolContextFor<S>> }>
   }
 
   public skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }> {
@@ -1576,12 +1741,13 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       throw new HarnessConfigError('Governance is already configured.', { reason: 'duplicate_adapter', path: 'governance' })
     }
     const helpers: GovernanceDefinitionHelpers<S> = {
-      rule: (definition) => definition,
-      exposureRule: (definition) => definition,
+      rule: (definition: NativePolicyRule<S>) => normalizeNativePolicyRule(definition),
+      exposureRule: (definition: GovernanceToolExposureRule<S>) => normalizeExposureRule(definition),
       native: (definition) => ({ ...definition, kind: 'native' }),
       adapter: (definition) => definition
     }
     const resolved = typeof config === 'function' ? config(helpers) : config
+    validateGovernanceConfiguration(resolved)
     return this.clone({ governance: resolved })
   }
 
@@ -1591,9 +1757,11 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       throw new HarnessConfigError('At least one model alias is required.', { reason: 'missing_models', path: 'models' })
     }
     this.validateToolSkillNamespace()
+    this.validateSandboxPolicies()
     // Validated at build time (not in `.agents(...)`) because models may be
     // declared later in the builder chain.
     this.validateAgentModelAndToolReferences(models)
+    this.validateAgentPermissions()
     this.validateGovernancePolicies()
     const sandbox = this.configured.sandbox ?? autoDetectSandbox()
     const resolvedMemory = this.resolveMemory(models)
@@ -1617,6 +1785,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
       ...(this.configured.telemetry ? { telemetry: this.configured.telemetry } : {}),
       storage,
       sandbox,
+      ...(this.configured.sandboxBinding ? { sandboxBinding: this.configured.sandboxBinding } : {}),
       memory,
       ...(resolvedMemory.embeddingAlias ? { memoryEmbeddingAlias: resolvedMemory.embeddingAlias } : {}),
       ...(resolvedMemory.summary ? { memorySummary: resolvedMemory.summary } : {}),
@@ -1625,6 +1794,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
         agentMaxIterations: this.configured.defaults?.agentMaxIterations ?? 16,
         runTimeoutMs: this.configured.defaults?.runTimeoutMs ?? 600_000,
         toolTimeoutMs: this.configured.defaults?.toolTimeoutMs ?? 120_000,
+        decisionTimeoutMs: this.configured.defaults?.decisionTimeoutMs ?? 10_000,
         skillTimeoutMs: this.configured.defaults?.skillTimeoutMs ?? 60_000,
         modelTimeoutMs: this.configured.defaults?.modelTimeoutMs ?? 300_000,
         maxParallelToolCalls: this.configured.defaults?.maxParallelToolCalls ?? 8,
@@ -1684,7 +1854,7 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     const builder = target
     const facade = {
       models: (models: ModelsConfig) => builder.toModuleBuilder(builder.models(models) as unknown as Builder<T & { models: ModelsConfig }>, invocation),
-      tools: (tools: ToolsConfig) => builder.toModuleBuilder(builder.tools(tools) as unknown as Builder<T & { tools: ToolsConfig }>, invocation),
+      tools: (tools: ToolsConfig<ToolHandlerContext<SandboxCapabilitiesFor<T>>>) => builder.toModuleBuilder(builder.tools(tools) as unknown as Builder<T & { tools: typeof tools }>, invocation),
       skills: (skills: SkillsConfig) => builder.toModuleBuilder(builder.skills(skills) as unknown as Builder<T & { skills: SkillsConfig }>, invocation),
       agents: (agents: unknown) => builder.toModuleBuilder(builder.agents(agents as never) as unknown as Builder<T & { agents: Record<string, AgentDefinition<any, any, any>> }>, invocation),
       workflows: (workflows: unknown) => builder.toModuleBuilder(builder.workflows(workflows as never) as unknown as Builder<T & { workflows: Record<string, WorkflowDefinition<any, any, any>> }>, invocation)
@@ -1772,6 +1942,29 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
     }
   }
 
+  /** Rejects JavaScript-defined policies that are not part of the composition root's group vocabulary. */
+  private validateSandboxPolicies(): void {
+    const binding = this.configured.sandboxBinding
+    const validate = (policy: unknown, path: string): void => {
+      if (policy === undefined) return
+      const parsed = sandboxBindingOptionsSchema.safeParse({
+        ...(binding?.groups ? { groups: binding.groups } : {}),
+        defaultPolicy: policy
+      })
+      if (!parsed.success) {
+        throw new HarnessConfigError('Sandbox sharing policy is invalid.', {
+          reason: 'invalid_adapter', path
+        })
+      }
+    }
+    for (const [id, agent] of Object.entries(this.configured.agents ?? {})) {
+      validate(agent.sandbox, `agents.${id}.sandbox`)
+    }
+    for (const [id, workflow] of Object.entries(this.configured.workflows ?? {})) {
+      validate(workflow.sandbox, `workflows.${id}.sandbox`)
+    }
+  }
+
   private validateAgentModelAndToolReferences(models: ModelsConfig): void {
     const configuredTools = new Set(Object.keys(this.configured.tools ?? {}))
     for (const [agentId, agent] of Object.entries(this.configured.agents ?? {})) {
@@ -1791,6 +1984,60 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
           })
         }
       }
+      this.validateAgentInterceptorRequirements(agentId, agent, models, configuredTools)
+    }
+  }
+
+  private validateAgentInterceptorRequirements(
+    agentId: string,
+    agent: AgentDefinition<any, any, any>,
+    models: ModelsConfig,
+    configuredTools: ReadonlySet<string>
+  ): void {
+    const declarations: AgentExecutionRequirementDeclaration[] = []
+    for (const [index, interceptor] of (agent.interceptors ?? []).entries()) {
+      if (interceptor.requirements === undefined) continue
+      const path = `agents.${agentId}.interceptors.${index}.requirements`
+      const parsed = agentExecutionRequirementsSchema.safeParse(interceptor.requirements)
+      if (!parsed.success) {
+        throw new HarnessConfigError('Agent interceptor requirements are invalid.', {
+          reason: 'invalid_agent', path, id: interceptor.id
+        })
+      }
+      declarations.push({ path, requirements: parsed.data })
+    }
+
+    const compiled = compileAgentExecutionRequirements(declarations)
+    const enabledTools = new Set<string>([
+      ...resolveEnabledBuiltinTools(agent.builtinTools),
+      ...(agent.tools ?? [])
+    ])
+    for (const tool of compiled.tools) {
+      if (!configuredTools.has(tool.id) && !BUILTIN_TOOL_NAMES.includes(tool.id as BuiltinToolName)) {
+        throw new HarnessConfigError('Agent interceptor requires an unknown tool.', {
+          reason: 'invalid_agent', path: tool.path, id: tool.id
+        })
+      }
+      if (!enabledTools.has(tool.id)) {
+        throw new HarnessConfigError('Agent interceptor requires a disabled tool.', {
+          reason: 'invalid_agent', path: tool.path, id: tool.id
+        })
+      }
+    }
+    for (const model of compiled.models) {
+      const configured = models[model.alias]
+      if (!configured) {
+        throw new HarnessConfigError('Agent interceptor requires an unknown model alias.', {
+          reason: 'invalid_agent', path: model.path, id: model.alias
+        })
+      }
+      const capabilities = model.capabilities.map((entry) => entry.capability)
+      if (!hasModelCapabilities(configured, capabilities)) {
+        const missing = model.capabilities.find((entry) => !hasModelCapabilities(configured, [entry.capability]))
+        throw new HarnessConfigError('Agent interceptor requires unavailable model capabilities.', {
+          reason: 'invalid_agent', path: missing?.path ?? model.path, id: model.alias
+        })
+      }
     }
   }
 
@@ -1805,6 +2052,14 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
             id: skillId
           })
         }
+      }
+    }
+  }
+
+  private validateAgentPermissions(): void {
+    for (const agent of Object.values(this.configured.agents ?? {})) {
+      if (agent.permissions !== undefined && !agentPermissionsSchema.safeParse(agent.permissions).success) {
+        throw new HarnessConfigError('Agent permissions are invalid or reference an unsupported tool.', { reason: 'invalid_agent' })
       }
     }
   }
@@ -1876,74 +2131,62 @@ class Builder<S extends BuilderState> implements HarnessBuilder<S> {
 
   private validateGovernancePolicies(): void {
     const governance = this.configured.governance
-    if (!governance || governance.enabled === false) return
+    const permissionApprovalRequired = Object.values(this.configured.agents ?? {}).some((agent) =>
+      Object.values(agent.permissions ?? {}).some((permission) =>
+        permission === 'require_approval' || (typeof permission === 'object' && permission?.mode === 'require_approval')
+      )
+    )
+    if (!governance) {
+      if (permissionApprovalRequired) {
+        throw new HarnessConfigError('Permission approval requires a governance approval provider.', { reason: 'invalid_governance', path: 'governance.approval' })
+      }
+      return
+    }
+    validateGovernanceConfiguration(governance)
     const policies = governance.policies ?? []
     const exposureRules = governance.exposure?.rules ?? []
-    if (policies.length === 0 && exposureRules.length === 0) {
-      throw new HarnessConfigError('Governance requires at least one execution policy or exposure rule.', { reason: 'invalid_governance', path: 'governance' })
+    if (policies.length === 0 && exposureRules.length === 0 && !governance.approval) {
+      throw new HarnessConfigError('Governance requires an execution policy, exposure rule, or approval provider.', { reason: 'invalid_governance', path: 'governance' })
+    }
+    if (permissionApprovalRequired && !governance.approval) {
+      throw new HarnessConfigError('Permission approval requires a governance approval provider.', { reason: 'invalid_governance', path: 'governance.approval' })
     }
 
     const configuredTools = new Set<string>([...BUILTIN_TOOL_NAMES, ...Object.keys(this.configured.tools ?? {})])
     const policyIds = new Set<string>()
-    for (const [policyIndex, policy] of policies.entries()) {
-      if (!policy.id || typeof policy.id !== 'string') {
-        throw new HarnessConfigError('Governance policy id is required.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.id` })
-      }
+    for (const policy of policies) {
       if (policyIds.has(policy.id)) {
-        throw new HarnessConfigError('Governance policy ids must be unique.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.id`, id: policy.id })
+        throw new HarnessConfigError('Governance policy ids must be unique.', { reason: 'invalid_governance' })
       }
       policyIds.add(policy.id)
-
       if ('kind' in policy && policy.kind === 'native') {
-        if (!Array.isArray(policy.rules) || policy.rules.length === 0) {
-          throw new HarnessConfigError('Native governance policies require at least one rule.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.rules` })
-        }
         const ruleIds = new Set<string>()
-        for (const [ruleIndex, rule] of policy.rules.entries()) {
-          if (!rule.id || typeof rule.id !== 'string') {
-            throw new HarnessConfigError('Governance rule id is required.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.rules.${ruleIndex}.id` })
+        for (const rule of policy.rules) {
+          if (rule.effect === 'require_approval' && governance.mode !== 'shadow' && !governance.approval) {
+            throw new HarnessConfigError('Governance approval rules require an approval provider.', { reason: 'invalid_governance', path: 'governance.approval' })
           }
           if (ruleIds.has(rule.id)) {
-            throw new HarnessConfigError('Governance rule ids must be unique within a policy.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.rules.${ruleIndex}.id`, id: rule.id })
+            throw new HarnessConfigError('Governance rule ids must be unique within a policy.', { reason: 'invalid_governance' })
           }
           ruleIds.add(rule.id)
           for (const toolId of rule.tools ?? []) {
             if (!configuredTools.has(toolId)) {
-              throw new HarnessConfigError('Governance policy references an unknown tool.', {
-                reason: 'invalid_governance',
-                path: `governance.policies.${policyIndex}.rules.${ruleIndex}.tools`,
-                id: toolId
-              })
+              throw new HarnessConfigError('Governance policy references an unknown tool.', { reason: 'invalid_governance' })
             }
           }
         }
-      } else if (typeof (policy as GovernancePolicyEvaluator<any>).evaluate !== 'function') {
-        throw new HarnessConfigError('Governance adapter policies require an evaluate function.', { reason: 'invalid_governance', path: `governance.policies.${policyIndex}.evaluate`, id: policy.id })
       }
     }
 
-    if (governance.exposure) {
-      const exposure = governance.exposure
-      if (exposure.defaultEffect !== undefined && exposure.defaultEffect !== 'expose' && exposure.defaultEffect !== 'hide') {
-        throw new HarnessConfigError('Governance exposure defaultEffect must be "expose" or "hide".', { reason: 'invalid_governance', path: 'governance.exposure.defaultEffect' })
+    const exposureRuleIds = new Set<string>()
+    for (const rule of exposureRules) {
+      if (exposureRuleIds.has(rule.id)) {
+        throw new HarnessConfigError('Governance exposure rule ids must be unique.', { reason: 'invalid_governance' })
       }
-      const exposureRuleIds = new Set<string>()
-      for (const [ruleIndex, rule] of exposureRules.entries()) {
-        if (!rule.id || typeof rule.id !== 'string') {
-          throw new HarnessConfigError('Governance exposure rule id is required.', { reason: 'invalid_governance', path: `governance.exposure.rules.${ruleIndex}.id` })
-        }
-        if (exposureRuleIds.has(rule.id)) {
-          throw new HarnessConfigError('Governance exposure rule ids must be unique.', { reason: 'invalid_governance', path: `governance.exposure.rules.${ruleIndex}.id`, id: rule.id })
-        }
-        exposureRuleIds.add(rule.id)
-        for (const toolId of rule.tools ?? []) {
-          if (!configuredTools.has(toolId)) {
-            throw new HarnessConfigError('Governance exposure rule references an unknown tool.', {
-              reason: 'invalid_governance',
-              path: `governance.exposure.rules.${ruleIndex}.tools`,
-              id: toolId
-            })
-          }
+      exposureRuleIds.add(rule.id)
+      for (const toolId of rule.tools ?? []) {
+        if (!configuredTools.has(toolId)) {
+          throw new HarnessConfigError('Governance exposure rule references an unknown tool.', { reason: 'invalid_governance' })
         }
       }
     }

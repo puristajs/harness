@@ -4,11 +4,18 @@ import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import type { BuiltinToolName } from '../harness/defineHarness.js'
 import type { ModelToolSpec } from '../ports/model-provider.js'
-import type { SandboxSession } from '../sandbox/index.js'
+import { isExecCapableSession, type SandboxSessionBase } from '../sandbox/index.js'
 import { ulid } from '../ulid/index.js'
 
 /** Canonical built-in tool names. Custom tool ids and skill ids must not collide with these. */
 export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']
+
+/** Resolves an agent's enabled built-ins without expanding any custom tools. */
+export function resolveEnabledBuiltinTools(
+  builtinTools: readonly BuiltinToolName[] | false | undefined
+): readonly BuiltinToolName[] {
+  return builtinTools === false ? [] : builtinTools ?? BUILTIN_TOOL_NAMES
+}
 
 /** Per-file and total byte caps for the built-in `grep` read-and-match fallback. */
 const GREP_MAX_FILE_BYTES = 2_000_000
@@ -48,24 +55,52 @@ const schemas = {
   list: { input: z.object({ path: z.string().min(1) }), output: z.object({ entries: z.array(z.object({ name: z.string(), kind: z.enum(['file', 'directory']), size: z.number().int().optional() })) }), description: 'List directory entries (non-recursive).' }
 } as const
 
-export function getBuiltinToolSpecs(enabled: readonly BuiltinToolName[], session: SandboxSession): ModelToolSpec[] {
-  return enabled.filter((name) => !(name === 'bash' && session.executor === 'unavailable')).map((name) => ({
+export function getBuiltinToolSpecs(enabled: readonly BuiltinToolName[], session: SandboxSessionBase): ModelToolSpec[] {
+  return enabled.filter((name) => !(name === 'bash' && !isExecCapableSession(session))).map((name) => ({
     name,
     description: schemas[name].description,
     parameters: z.toJSONSchema(schemas[name].input) as JsonValue
   }))
 }
 
-export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, session: SandboxSession, signal?: AbortSignal): Promise<JsonValue> {
+/** Internal prepared binding; the input schema is evaluated before authorization. */
+export type PreparedBuiltinTool = {
+  [K in BuiltinToolName]: { name: K; input: z.output<(typeof schemas)[K]['input']> } & (K extends 'grep' ? { pattern: RegExp } : {})
+}[BuiltinToolName]
+
+/** Parses one built-in proposal without executing sandbox operations. */
+export function prepareBuiltinTool(nameOrAlias: string, input: unknown): PreparedBuiltinTool {
   const canonical = BUILTIN_ALIAS_TO_CANONICAL[nameOrAlias]
   if (!canonical) throw new ToolNotFoundError('Built-in tool was not found.', { tool_id: nameOrAlias, where: 'model_response' })
-  const name = canonical
-
   try {
-    switch (name) {
+    switch (canonical) {
+      case 'bash': return { name: canonical, input: schemas.bash.input.parse(input) }
+      case 'read': return { name: canonical, input: schemas.read.input.parse(input) }
+      case 'write': return { name: canonical, input: schemas.write.input.parse(input) }
+      case 'edit': return { name: canonical, input: schemas.edit.input.parse(input) }
+      case 'glob': return { name: canonical, input: schemas.glob.input.parse(input) }
+      case 'list': return { name: canonical, input: schemas.list.input.parse(input) }
+      case 'grep': {
+        const parsed = schemas.grep.input.parse(input)
+        return { name: canonical, input: parsed, pattern: parseGrepPattern(parsed.pattern) }
+      }
+    }
+  } catch (error) {
+    throwBuiltinError(error)
+  }
+}
+
+export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, session: SandboxSessionBase, signal?: AbortSignal): Promise<JsonValue> {
+  return invokePreparedBuiltinTool(prepareBuiltinTool(nameOrAlias, input), session, signal)
+}
+
+/** Executes the already parsed binding without repeating input normalization. */
+export async function invokePreparedBuiltinTool(prepared: PreparedBuiltinTool, session: SandboxSessionBase, signal?: AbortSignal): Promise<JsonValue> {
+  try {
+    switch (prepared.name) {
       case 'bash': {
-        if (session.executor === 'unavailable') throw new SandboxNoExecutorError('Sandbox executor unavailable.', { session_id: 'unknown' })
-        const parsed = schemas.bash.input.parse(input)
+        if (!isExecCapableSession(session)) throw new SandboxNoExecutorError('Sandbox executor unavailable.', { session_id: 'unknown' })
+        const parsed = prepared.input
         const res = await session.exec(parsed.command, {
           ...(parsed.cwd !== undefined ? { cwd: parsed.cwd } : {}),
           ...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
@@ -74,16 +109,16 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
         return schemas.bash.output.parse({ stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode })
       }
       case 'read': {
-        const parsed = schemas.read.input.parse(input)
+        const parsed = prepared.input
         return schemas.read.output.parse({ content: await session.readText(parsed.path, parsed.encoding) })
       }
       case 'write': {
-        const parsed = schemas.write.input.parse(input)
+        const parsed = prepared.input
         await session.write(parsed.path, parsed.content)
         return schemas.write.output.parse({ bytesWritten: new TextEncoder().encode(parsed.content).byteLength })
       }
       case 'edit': {
-        const parsed = schemas.edit.input.parse(input)
+        const parsed = prepared.input
         const content = await session.readText(parsed.path)
         const count = content.split(parsed.old_string).length - 1
         if (count !== 1) throw new ValidationError('edit requires exactly one match', { where: 'tool_input', issues: { path: parsed.path, matches: count } })
@@ -92,33 +127,13 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
         return { replaced: 1 }
       }
       case 'glob': {
-        const parsed = schemas.glob.input.parse(input)
+        const parsed = prepared.input
         const files = await session.list(parsed.root, { recursive: true, glob: parsed.pattern })
         return schemas.glob.output.parse({ paths: files.map((f) => f.path) })
       }
       case 'grep': {
-        const parsed = schemas.grep.input.parse(input)
-        if (parsed.pattern.length > GREP_MAX_PATTERN_LENGTH) {
-          throw new ValidationError('grep pattern exceeds the maximum supported length', {
-            where: 'tool_input',
-            issues: [{ path: 'pattern', message: `Pattern must be at most ${GREP_MAX_PATTERN_LENGTH} characters.` }]
-          })
-        }
-        if (GREP_NESTED_UNBOUNDED_QUANTIFIER.test(parsed.pattern)) {
-          throw new ValidationError('grep pattern contains a nested unbounded quantifier', {
-            where: 'tool_input',
-            issues: [{ path: 'pattern', message: 'Patterns like (x+)+ can cause catastrophic backtracking and are rejected.' }]
-          })
-        }
-        let rx: RegExp
-        try {
-          rx = new RegExp(parsed.pattern)
-        } catch (error) {
-          throw new ValidationError('grep pattern must be a valid regular expression', {
-            where: 'tool_input',
-            issues: [{ path: 'pattern', message: error instanceof Error ? error.message : 'Invalid regular expression' }]
-          })
-        }
+        const parsed = prepared.input
+        const rx = prepared.pattern
         const entries = await session.list(parsed.path, { recursive: true })
         const matches: Array<{ path: string; line: number; text: string }> = []
         let scannedBytes = 0
@@ -140,19 +155,39 @@ export async function invokeBuiltinTool(nameOrAlias: string, input: unknown, ses
         return schemas.grep.output.parse({ matches }) as JsonValue
       }
       case 'list': {
-        const parsed = schemas.list.input.parse(input)
+        const parsed = prepared.input
         const entries = await session.list(parsed.path)
         return schemas.list.output.parse({
           entries: entries.map((entry) => ({ name: entry.name, kind: entry.kind, ...(entry.size !== undefined ? { size: entry.size } : {}) }))
         }) as JsonValue
       }
-      default:
-        throw new ToolNotFoundError('Built-in tool was not found.', { tool_id: name, where: 'registry' })
     }
   } catch (error) {
-    if (error instanceof z.ZodError) throw new ValidationError('Tool input validation failed', { where: 'tool_input', issues: JSON.parse(JSON.stringify(error.issues)) as JsonValue })
-    throw error
+    throwBuiltinError(error)
   }
+}
+
+function parseGrepPattern(pattern: string): RegExp {
+  if (pattern.length > GREP_MAX_PATTERN_LENGTH) {
+    throw new ValidationError('grep pattern exceeds the maximum supported length', {
+      where: 'tool_input', issues: [{ path: 'pattern', message: `Pattern must be at most ${GREP_MAX_PATTERN_LENGTH} characters.` }]
+    })
+  }
+  if (GREP_NESTED_UNBOUNDED_QUANTIFIER.test(pattern)) {
+    throw new ValidationError('grep pattern contains a nested unbounded quantifier', {
+      where: 'tool_input', issues: [{ path: 'pattern', message: 'Patterns like (x+)+ can cause catastrophic backtracking and are rejected.' }]
+    })
+  }
+  try { return new RegExp(pattern) } catch {
+    throw new ValidationError('grep pattern must be a valid regular expression', {
+      where: 'tool_input', issues: [{ path: 'pattern', message: 'Invalid regular expression' }]
+    })
+  }
+}
+
+function throwBuiltinError(error: unknown): never {
+  if (error instanceof z.ZodError) throw new ValidationError('Tool input validation failed', { where: 'tool_input', issues: JSON.parse(JSON.stringify(error.issues)) as JsonValue })
+  throw error
 }
 
 export function toToolErrorMessage(toolCallId: string, error: unknown): Message {

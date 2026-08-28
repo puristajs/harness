@@ -1,4 +1,7 @@
 import { HarnessError } from './harness-error.js'
+import { decisionEvidenceSchema, decisionFailureKindSchema, policyDenialReasonSchema } from '../decisions/schemas.js'
+import { z } from 'zod'
+import type { DecisionEvidence, DecisionFailureKind } from '../decisions/types.js'
 
 /** Configuration validation and assembly failures. */
 export class HarnessConfigError extends HarnessError {
@@ -32,6 +35,7 @@ export class ValidationError extends HarnessError {
         /** Session history shape validation failed. */ | 'session_history'
         /** Invocation options are invalid. */ | 'invoke_options'
         /** Evaluation helper input is invalid. */ | 'eval_input'
+        /** Sandbox ownership, administration, or retention options are invalid. */ | 'sandbox_options'
       issues: unknown
     },
     cause?: unknown
@@ -40,55 +44,89 @@ export class ValidationError extends HarnessError {
   }
 }
 
-/** Tool execution denied by policy or approval hook. */
+/** Tool execution denied by a configured coarse permission. */
 export class PermissionDeniedError extends HarnessError {
-  public constructor(message: string, meta: { tool_name: string; agent_id: string; reason?: 'mode_deny' | 'hook_deny' | 'hook_failed' }, cause?: unknown) {
-    super({ code: 'PERMISSION_DENIED', category: 'permission', retriable: false, message, meta, cause })
+  public constructor(evidence: DecisionEvidence, cause?: unknown) {
+    super({ code: 'PERMISSION_DENIED', category: 'permission', retriable: false, message: 'Permission denied.', meta: { evidence: parseDecisionEvidence(evidence) }, cause })
   }
 }
 
 /** Tool execution denied by a configured governance policy or approval decision. */
 export class PolicyDeniedError extends HarnessError {
   public constructor(
-    message: string,
-    meta: {
-      tool_name: string
-      agent_id: string
-      policy_id: string
-      rule_id?: string
-      effect: 'deny' | 'require_approval'
-      reason?: 'policy_deny' | 'approval_rejected' | 'approval_unavailable'
-    },
+    evidence: DecisionEvidence,
+    reason: z.output<typeof policyDenialReasonSchema>,
     cause?: unknown
   ) {
-    super({ code: 'POLICY_DENIED', category: 'permission', retriable: false, message, meta, cause })
+    const parsedReason = policyDenialReasonSchema.safeParse(reason)
+    if (!parsedReason.success) throw decisionConfigError()
+    super({ code: 'POLICY_DENIED', category: 'permission', retriable: false, message: 'Tool call denied by governance policy.', meta: { evidence: parseDecisionEvidence(evidence), reason: parsedReason.data }, cause })
   }
 }
 
-/** Governance policy adapter or native predicate evaluation failed. */
-export class PolicyEvaluationError extends HarnessError {
-  public constructor(
-    message: string,
-    meta: { tool_name: string; agent_id: string; policy_id?: string; rule_id?: string; reason: 'adapter_failed' | 'predicate_failed' | 'invalid_decision' },
-    cause?: unknown
-  ) {
-    super({ code: 'POLICY_EVALUATION_ERROR', category: 'permission', retriable: false, message, meta, cause })
+/** A decision boundary explicitly blocked execution. */
+export class DecisionBlockedError extends HarnessError {
+  public constructor(evidence: DecisionEvidence, cause?: unknown) {
+    const safeEvidence = parseDecisionEvidence(evidence)
+    super({
+      code: 'DECISION_BLOCKED',
+      category: 'interceptor',
+      retriable: false,
+      message: 'Decision blocked execution.',
+      meta: { evidence: safeEvidence },
+      cause
+    })
   }
 }
 
-/** A default-agent interception hook blocked work or failed while enforcing a boundary. */
-export class AgentInterceptorError extends HarnessError {
-  public constructor(
-    message: string,
-    meta: {
-      interceptor_id: string
-      phase: 'before_input' | 'before_model' | 'after_model' | 'before_tool' | 'after_tool'
-      reason: 'blocked' | 'failed' | 'invalid_result'
-    },
-    cause?: unknown
-  ) {
-    super({ code: 'AGENT_INTERCEPTOR_ERROR', category: 'interceptor', retriable: false, message, meta, cause })
+/** A decision callback failed closed before it could safely continue. */
+export class DecisionEvaluationError extends HarnessError {
+  public constructor(evidence: DecisionEvidence, failureKind: DecisionFailureKind, cause?: unknown) {
+    const safeEvidence = parseDecisionEvidence(evidence)
+    const safeFailureKind = parseDecisionFailureKind(failureKind)
+    super({
+      code: 'DECISION_EVALUATION_ERROR',
+      category: 'interceptor',
+      retriable: false,
+      message: 'Decision evaluation failed closed.',
+      meta: { evidence: safeEvidence, failureKind: safeFailureKind },
+      cause
+    })
   }
+}
+
+function parseDecisionEvidence(value: unknown): DecisionEvidence {
+  try {
+    return decisionEvidenceSchema.parse(value)
+  } catch {
+    throw decisionConfigError()
+  }
+}
+
+function parseDecisionFailureKind(value: unknown): DecisionFailureKind {
+  try {
+    return decisionFailureKindSchema.parse(value)
+  } catch {
+    throw decisionConfigError()
+  }
+}
+
+function decisionConfigError(): HarnessConfigError {
+  return new HarnessConfigError('Decision evidence configuration is invalid.', { reason: 'invalid_decision_evidence' })
+}
+
+const sandboxPermissionDeniedReasonSchema = z.enum(['scope_mismatch', 'owner_not_authorized', 'owner_revoked', 'principal_revoked'])
+const sandboxConflictReasonSchema = z.enum(['binding_changed', 'policy_changed', 'checkpoint_busy', 'snapshot_pinned', 'idempotency_conflict'])
+const sandboxQuotaMetadataSchema = z.strictObject({
+  quota: z.enum(['catalog_entries', 'active_sandboxes', 'snapshots', 'snapshot_bytes']),
+  limit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  actual: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional()
+})
+
+function parseSandboxErrorMetadata<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value)
+  if (parsed.success) return parsed.data
+  throw new HarnessConfigError('Sandbox error metadata is invalid.', { reason: 'invalid_sandbox_error_metadata' })
 }
 
 /** Sandbox filesystem or command execution failed. */
@@ -102,6 +140,52 @@ export class SandboxError extends HarnessError {
 export class SandboxNoExecutorError extends HarnessError {
   public constructor(message: string, meta: { session_id: string }, cause?: unknown) {
     super({ code: 'SANDBOX_NO_EXECUTOR', category: 'sandbox', retriable: false, message, meta, cause })
+  }
+}
+
+/** Sandbox ownership or acting-principal admission was denied without leaking owner data. */
+export class SandboxPermissionDeniedError extends HarnessError {
+  public constructor(
+    reason: z.input<typeof sandboxPermissionDeniedReasonSchema>,
+    cause?: unknown
+  ) {
+    super({ code: 'SANDBOX_PERMISSION_DENIED', category: 'permission', retriable: false, message: 'Sandbox access denied.', meta: { reason: parseSandboxErrorMetadata(sandboxPermissionDeniedReasonSchema, reason) }, cause })
+  }
+}
+
+/** A sandbox mutation conflicts with an immutable binding, active checkpoint, or snapshot state. */
+export class SandboxConflictError extends HarnessError {
+  public constructor(
+    reason: z.input<typeof sandboxConflictReasonSchema>,
+    cause?: unknown
+  ) {
+    const safeReason = parseSandboxErrorMetadata(sandboxConflictReasonSchema, reason)
+    super({ code: 'SANDBOX_CONFLICT', category: 'sandbox', retriable: safeReason === 'checkpoint_busy', message: 'Sandbox operation conflicts with current state.', meta: { reason: safeReason }, cause })
+  }
+}
+
+/** A finite sandbox catalog, active allocation, or snapshot capacity was exhausted. */
+export class SandboxQuotaExceededError extends HarnessError {
+  public constructor(
+    meta: z.input<typeof sandboxQuotaMetadataSchema>,
+    cause?: unknown
+  ) {
+    super({ code: 'SANDBOX_QUOTA_EXCEEDED', category: 'sandbox', retriable: false, message: 'Sandbox quota exceeded.', meta: parseSandboxErrorMetadata(sandboxQuotaMetadataSchema, meta), cause })
+  }
+}
+
+/** A known sandbox scope cannot be attached or safely recovered. */
+export class SandboxStateLostError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      reason: 'lifecycle_state_missing' | 'provider_missing' | 'durable_workspace_required' | 'durable_workspace_recovery_unavailable' | 'owner_missing' | 'scope_terminated' | 'creation_indeterminate'
+      lifetime: 'session' | 'run'
+      adapter_id?: string
+    },
+    cause?: unknown
+  ) {
+    super({ code: 'SANDBOX_STATE_LOST', category: 'sandbox', retriable: false, message, meta, cause })
   }
 }
 
@@ -124,6 +208,7 @@ export class ModelError extends HarnessError {
         | 'context_length_exceeded'
         | 'embedding_count_mismatch'
         | 'rerank_result_mismatch'
+        | 'invalid_provider_continuation'
       retryKind?: 'none' | 'active' | 'deferred'
       retryAfterMs?: number
       retryAttempt?: number
@@ -365,7 +450,7 @@ export class WorkspaceCleanupError extends HarnessError {
 
 /** Timed execution budget expired. */
 export class OperationTimeoutError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run' | 'memory' | 'workspace'; timeout_ms: number }, cause?: unknown) {
+  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'decision' | 'sandbox_run' | 'memory' | 'workspace'; timeout_ms: number }, cause?: unknown) {
     super({ code: 'OPERATION_TIMEOUT', category: 'timeout', retriable: true, message, meta, cause })
   }
 }

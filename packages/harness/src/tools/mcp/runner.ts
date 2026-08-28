@@ -7,9 +7,9 @@ import {
   ValidationError
 } from '../../errors/index.js'
 import type { McpHttpToolDefinition, McpPluginProvenance, McpStdioToolDefinition, ToolDefinition, ToolsConfig } from '../../harness/defineHarness.js'
-import type { JsonValue } from '../../models/json.js'
+import { isJsonValue, type JsonValue } from '../../models/json.js'
 import type { ModelToolSpec } from '../../ports/model-provider.js'
-import type { SandboxSession } from '../../sandbox/index.js'
+import type { SandboxSessionBase } from '../../sandbox/index.js'
 import { assertMcpJsonSchema, validateMcpJsonSchema, type McpSchemaWarning } from './schema.js'
 
 export type McpToolKind = 'mcp_stdio' | 'mcp_http'
@@ -38,7 +38,7 @@ export interface ResolvedMcpStdioTool extends ResolvedMcpTool {
   env?: Record<string, string>
   prepareLaunch?: McpStdioToolDefinition['prepareLaunch']
   install?: McpStdioToolDefinition['install']
-  sandbox: SandboxSession
+  sandbox: SandboxSessionBase
 }
 
 export interface ResolvedMcpHttpTool extends ResolvedMcpTool {
@@ -74,13 +74,25 @@ export interface McpRunnerRegistry {
 export interface McpFacadeContext {
   signal?: AbortSignal
   toolTimeoutMs?: number
-  sandbox?: SandboxSession
+  sandbox?: SandboxSessionBase
   sandboxKey?: string
   registry?: McpRunnerRegistry
   warn?: (warning: McpSchemaWarning) => void
 }
 
 const discoveredCache = new WeakMap<McpTransportRunner, Promise<McpDiscoveredTool[]>>()
+
+/** Internal binding with one adapted, validated input and deferred transport I/O. */
+export interface PreparedMcpTool {
+  readonly input: JsonValue
+  invoke(): Promise<JsonValue>
+}
+
+/** Prepares an MCP proposal using the invocation owner's existing registry. */
+export async function prepareMcpTool(toolId: string, tool: McpStdioToolDefinition | McpHttpToolDefinition, input: unknown, ctx: McpFacadeContext & { registry: McpRunnerRegistry }): Promise<PreparedMcpTool> {
+  const config = resolveMcpTool(toolId, tool, ctx)
+  return prepareResolvedMcpTool(config, ctx.registry.getRunner(config), input, ctx.signal, ctx.warn)
+}
 
 export async function getMcpToolSpecs(tools: ToolsConfig, allowlist: Iterable<string>, ctx: McpFacadeContext = {}): Promise<ModelToolSpec[]> {
   const allowed = new Set(allowlist)
@@ -184,10 +196,20 @@ async function getResolvedModelToolSpec(config: ResolvedMcpToolConfig, runner: M
 }
 
 async function invokeResolvedMcpTool(config: ResolvedMcpToolConfig, runner: McpTransportRunner, input: unknown, signal?: AbortSignal, warn?: (warning: McpSchemaWarning) => void): Promise<JsonValue> {
+  return (await prepareResolvedMcpTool(config, runner, input, signal, warn)).invoke()
+}
+
+async function prepareResolvedMcpTool(config: ResolvedMcpToolConfig, runner: McpTransportRunner, input: unknown, signal?: AbortSignal, warn?: (warning: McpSchemaWarning) => void): Promise<PreparedMcpTool> {
   const tool = await discoverConfiguredTool(config, runner, signal, warn)
+  signal?.throwIfAborted()
   const adaptedInput = config.inputAdapter ? config.inputAdapter(input) : input
   const validatedInput = validateMcpJsonSchema({ toolId: config.localToolId, where: 'mcp_input', schema: tool.inputSchema, value: adaptedInput, ...(warn ? { warn } : {}) })
-  const result = await runner.callTool(config.upstreamToolName, validatedInput, { ...(signal ? { signal } : {}), timeoutMs: config.timeoutMs })
+  return { input: validatedInput, invoke: () => executeResolvedMcpTool(config, runner, tool, validatedInput, signal, warn) }
+}
+
+async function executeResolvedMcpTool(config: ResolvedMcpToolConfig, runner: McpTransportRunner, tool: McpDiscoveredTool, input: JsonValue, signal?: AbortSignal, warn?: (warning: McpSchemaWarning) => void): Promise<JsonValue> {
+  signal?.throwIfAborted()
+  const result = await runner.callTool(config.upstreamToolName, input, { ...(signal ? { signal } : {}), timeoutMs: config.timeoutMs })
   if (isRecord(result) && result.isError === true) {
     throw new ToolError(`MCP tool returned an error.${describeMcpErrorResult(result)}`, { tool_id: config.localToolId, tool_kind: config.kind })
   }
@@ -385,12 +407,4 @@ type LooseRecord = Record<string, unknown> & {
 
 function isRecord(value: unknown): value is LooseRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (Array.isArray(value)) return value.every(isJsonValue)
-  if (isRecord(value)) return Object.values(value).every(isJsonValue)
-  return false
 }

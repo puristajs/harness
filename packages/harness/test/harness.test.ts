@@ -129,14 +129,14 @@ it('lets prepareStep switch model aliases and restrict active tools', async () =
       primary: { provider: primary, model: 'primary-model', capabilities: ['object', 'tool_use'] },
       fallback: { provider: fallback, model: 'fallback-model', capabilities: ['object'] }
     })
-    .tools({
-      lookup: {
+    .tools(({ tool }) => ({
+      lookup: tool({
         description: 'Lookup a value.',
         input: z.object({ id: z.string() }),
         output: z.object({ value: z.string() }),
         handler: async (_ctx, input) => ({ value: input.id })
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({
       a1: {
@@ -172,8 +172,8 @@ it('lets stopWhen end the default loop without executing requested tools', async
   const harness = await defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      lookup: {
+    .tools(({ tool }) => ({
+      lookup: tool({
         description: 'Lookup a value.',
         input: z.object({ id: z.string() }),
         output: z.object({ value: z.string() }),
@@ -181,8 +181,8 @@ it('lets stopWhen end the default loop without executing requested tools', async
           toolCalls += 1
           return { value: input.id }
         }
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({
       a1: {
@@ -201,16 +201,16 @@ it('lets stopWhen end the default loop without executing requested tools', async
   expect(toolCalls).toBe(0)
 })
 
-it('replays model providerItems on the next agent loop round without persisting them', async () => {
+it('replays model provider continuation on the next agent loop round without persisting it', async () => {
   const model = new FakeModelProvider()
-  const providerItems = {
+  const providerContinuation = {
     providerId: 'fake',
-    items: [{ type: 'reasoning', id: 'rs_1' }, { type: 'function_call', id: 'fc_1', call_id: 'c1' }]
+    items: [{ kind: 'opaque', data: { type: 'reasoning', id: 'rs_1' } }, { kind: 'tool_call', callId: 'c1' }]
   }
   model.enqueue({
     object: {},
     toolCalls: [{ id: 'c1', name: 'read', arguments: { path: '/workspace/a.txt' } }],
-    providerItems,
+    providerContinuation,
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls'
   })
@@ -230,10 +230,10 @@ it('replays model providerItems on the next agent loop round without persisting 
 
   const secondRound = model.requests[1] as ObjectRequest
   const assistantTurn = secondRound.messages.find((m) => m.role === 'assistant')
-  expect(assistantTurn).toMatchObject({ role: 'assistant', providerItems })
+  expect(assistantTurn).toMatchObject({ role: 'assistant', providerContinuation })
   const persisted = await s.history.list()
   for (const message of persisted) {
-    expect('providerItems' in message).toBe(false)
+    expect('providerContinuation' in message).toBe(false)
   }
 })
 
@@ -357,8 +357,8 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
     .sandbox(sandbox)
     .memory(memory)
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      ctx_tool: {
+    .tools(({ tool }) => ({
+      ctx_tool: tool({
         kind: 'ts',
         description: 'Context test tool.',
         input: z.object({ value: z.string() }),
@@ -370,8 +370,8 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
           toolSawContext = Boolean(ctx.logger && ctx.telemetry && ctx.memory.session && ctx.runId && ctx.sessionId)
           return { ok: true }
         }
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['ctx_tool'], builtinTools: false } })
     .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
@@ -414,8 +414,8 @@ it('executes tool calls from the same model response concurrently and preserves 
   const harness = defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      timed_tool: {
+    .tools(({ tool }) => ({
+      timed_tool: tool({
         kind: 'ts',
         description: 'Records overlapping tool execution.',
         input: z.object({ id: z.string(), delayMs: z.number().int().nonnegative() }),
@@ -428,8 +428,8 @@ it('executes tool calls from the same model response concurrently and preserves 
           completionOrder.push(input.id)
           return { id: input.id }
         }
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({
       a1: {
@@ -477,8 +477,8 @@ it('limits parallel tool execution with maxParallelToolCalls', async () => {
     .defaults({ maxParallelToolCalls: 2 })
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      timed_tool: {
+    .tools(({ tool }) => ({
+      timed_tool: tool({
         kind: 'ts',
         description: 'Records bounded overlapping tool execution.',
         input: z.object({ id: z.string(), delayMs: z.number().int().nonnegative() }),
@@ -490,8 +490,8 @@ it('limits parallel tool execution with maxParallelToolCalls', async () => {
           activeTools -= 1
           return { id: input.id }
         }
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({
       a1: {
@@ -529,11 +529,15 @@ it('uses persistent stdio MCP transport through the agent sandbox telemetry wrap
   model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 
   const sandbox = hostSpawnExecSandbox()
+  const sandboxCatalog = inMemorySandbox()
   const harness = defineHarness()
     .defaults({ maxParallelToolCalls: 1 })
     .sandbox({
       ...sandbox,
-      open: async () => sandbox
+      administration: sandboxCatalog.administration,
+      registerOwner: async (options) => await sandboxCatalog.registerOwner(options),
+      open: async () => ({ session: sandbox, disposition: 'created', liveProcessState: 'not_preserved' }),
+      terminate: async () => undefined
     })
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
     .tools({
@@ -583,14 +587,18 @@ it('preserves sandbox spawn capability through the agent sandbox telemetry wrapp
   model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 
   const sandbox = hostSpawnExecSandbox()
+  const sandboxCatalog = inMemorySandbox()
   const harness = defineHarness()
     .sandbox({
       ...sandbox,
-      open: async () => sandbox
+      administration: sandboxCatalog.administration,
+      registerOwner: async (options) => await sandboxCatalog.registerOwner(options),
+      open: async () => ({ session: sandbox, disposition: 'created', liveProcessState: 'not_preserved' }),
+      terminate: async () => undefined
     })
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      spawn_probe: {
+    .tools(({ tool }) => ({
+      spawn_probe: tool({
         kind: 'ts',
         description: 'Reports whether the sandbox still exposes spawn.',
         input: z.object({}),
@@ -598,8 +606,8 @@ it('preserves sandbox spawn capability through the agent sandbox telemetry wrapp
         handler: async (ctx) => ({
           hasSpawn: typeof (ctx.sandbox as Partial<SpawnCapableSandboxSession>).spawn === 'function'
         })
-      }
-    })
+      })
+    }))
     .skills({})
     .agents({
       a1: {
@@ -631,7 +639,27 @@ it('rejects invalid maxParallelToolCalls defaults', () => {
   expect(() => defineHarness().defaults({ maxParallelToolCalls: 1.5 })).toThrow(HarnessConfigError)
 })
 
-it('reports static permission denials with mode_deny instead of hook_deny', async () => {
+it('rejects invalid and legacy JavaScript permission configuration at build time', () => {
+  const model = new FakeModelProvider()
+  const build = (permissions: unknown) => defineHarness()
+    .sandbox(inMemorySandbox())
+    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+    .agents({
+      a1: {
+        model: 'fast', input: z.string(), output: z.string(), instructions: 'x',
+        permissions
+      } as never
+    })
+    .build()
+
+  expect(() => build({ write: 'ask' })).toThrow(HarnessConfigError)
+  expect(() => build({ write: 'unexpected' })).toThrow(HarnessConfigError)
+  expect(() => build({ read: 'deny' })).toThrow(HarnessConfigError)
+  expect(() => build({ write: { mode: 'allow', legacy: true } })).toThrow(HarnessConfigError)
+  expect(() => build({ write: { mode: 'deny', allow: ['ok', 1] } })).toThrow(HarnessConfigError)
+})
+
+it('reports static permission denials with safe occurrence evidence', async () => {
   const model = new FakeModelProvider()
   model.enqueue({
     object: {},
@@ -665,7 +693,7 @@ it('reports static permission denials with mode_deny instead of hook_deny', asyn
   expect(toolMessage?.toolCallId).toBe('call-write')
   expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
     code: 'PERMISSION_DENIED',
-    meta: { reason: 'mode_deny' }
+    meta: { evidence: { phase: 'permission', source: { kind: 'permission', id: 'write' } } }
   })
 })
 
@@ -702,49 +730,7 @@ it('enforces permission deny patterns before mutating built-in tools run', async
   const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
   expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
     code: 'PERMISSION_DENIED',
-    meta: { reason: 'mode_deny' }
-  })
-})
-
-it('bounds permission hooks with the tool timeout and lets the model recover', async () => {
-  const model = new FakeModelProvider()
-  model.enqueue({
-    object: {},
-    toolCalls: [{ id: 'call-write', name: 'write', arguments: { path: '/workspace/slow.txt', content: 'slow' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls'
-  })
-  model.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-
-  const harness = defineHarness()
-    .defaults({ toolTimeoutMs: 5 })
-    .sandbox(inMemorySandbox())
-    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .agents({
-      a1: {
-        model: 'fast',
-        input: z.string(),
-        output: z.string(),
-        instructions: 'Try the write tool, then recover.',
-        builtinTools: ['write'],
-        permissions: { write: 'ask' },
-        onPermission: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 50))
-          return 'allow'
-        }
-      }
-    })
-    .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
-    .build()
-
-  const s = await harness.getSession('permission-timeout')
-  await expect(s.workflows.wf.prompt('hello')).resolves.toBe('done')
-
-  const secondModelRequest = model.requests[1] as ObjectRequest
-  const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
-  expect(JSON.parse(toolMessage?.content ?? '{}')).toMatchObject({
-    code: 'OPERATION_TIMEOUT',
-    meta: { scope: 'tool', timeout_ms: 5 }
+    meta: { evidence: { phase: 'permission', source: { kind: 'permission', id: 'write' } } }
   })
 })
 
@@ -813,8 +799,8 @@ it('inspects effective adapter capabilities and validates requirements at build 
 it('rejects malformed custom tool ids at the .tools() call', () => {
   const model = new FakeModelProvider()
   const base = () => defineHarness().models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
-  expect(() => base().tools({ 'Bad-Id': { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })).toThrow(HarnessConfigError)
-  expect(() => base().tools({ '1leading': { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })).toThrow(HarnessConfigError)
+  expect(() => base().tools(({ tool }) => ({ 'Bad-Id': tool({ description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) }) }))).toThrow(HarnessConfigError)
+  expect(() => base().tools(({ tool }) => ({ '1leading': tool({ description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) }) }))).toThrow(HarnessConfigError)
 })
 
 it('rejects a custom tool id that collides with a built-in tool name', () => {
@@ -822,7 +808,7 @@ it('rejects a custom tool id that collides with a built-in tool name', () => {
   expect(() => defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
-    .tools({ read: { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) } as any })
+    .tools(({ tool }) => ({ read: tool({ description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) }) }))
     .build()).toThrow(SkillManifestError)
 })
 

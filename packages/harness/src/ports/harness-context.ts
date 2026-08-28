@@ -13,6 +13,7 @@ export interface HarnessAdapterContext {
     agentMaxIterations: number
     runTimeoutMs: number
     toolTimeoutMs: number
+    decisionTimeoutMs: number
     skillTimeoutMs: number
     modelTimeoutMs: number
     maxParallelToolCalls: number

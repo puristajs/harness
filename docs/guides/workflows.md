@@ -114,7 +114,12 @@ const review = await task?.result()
 ```
 
 Tasks retain the selected agent's existing tools, skills, model allowlists, and
-permissions, but have their own sandbox and never inherit parent history. They
+permissions, but never inherit parent history. Without an explicit sandbox
+policy, a task gets a new task-run shared sandbox partition. Select
+`sandbox: { sharing: 'inherit' }` to use the parent partition, `private` for
+a child-private partition, or `group` with an application-authorized group id.
+The adapter never exposes or selects its topology; a child can detach but never
+terminates a partition it does not own. Tasks
 queue under `maxParallelChildAgentCalls`; creating a task reserves the total
 call budget without turning a temporary parallel limit into a start failure.
 

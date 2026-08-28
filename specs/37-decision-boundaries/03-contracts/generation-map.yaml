@@ -1,0 +1,38 @@
+generation_map_version: 1
+source_contract: "03-contracts/contracts.yaml"
+outputs:
+  - contract_ids:
+      - "CTR-DB-EVIDENCE"
+      - "CTR-DB-LIFECYCLE"
+      - "CTR-DB-IDENTITY"
+      - "CTR-DB-GOVERNANCE"
+      - "CTR-DB-CONTINUATION"
+      - "CTR-DB-TOOLS"
+      - "CTR-DB-RAILS"
+      - "CTR-DB-WAITS"
+      - "CTR-DB-REVIEW"
+      - "CTR-DB-CONSUMERS"
+      - "CTR-DB-DOCS"
+      - "CTR-DB-CLEANUP"
+    destination: "packages/harness/src/decisions and governed module owners"
+    mode: "zod_source_derived"
+    reason: "No approved generator emits generic TypeScript callbacks or runtime sequencing; author exact Zod schemas once from this contract and infer non-generic aliases. Do not build a new YAML code generator."
+    checks:
+      - "existing tsc build declarations"
+      - "public-api export tests"
+      - "type-tests/harness-typing.ts"
+      - "strict result and projection tests"
+generated_outputs:
+  - "existing package dist declarations via tsc"
+  - "existing PURISTA package skill mirrors via syncPackageSkills"
+  - "existing architecture capability catalog"
+manual_boundaries:
+  - "generic distributive context types"
+  - "runtime reducers and cancellation coordination"
+  - "provider wire mapping"
+  - "application review claim and receipt example"
+forbidden_outputs:
+  - "duplicate handwritten non-generic schema interfaces"
+  - "legacy aliases or converters"
+  - "a new contracts package"
+  - "new generated provider clients"

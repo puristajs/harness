@@ -1,0 +1,145 @@
+findings:
+  - id: REVIEW-002-001
+    severity: blocking
+    category: SECURITY
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-OWNER
+    impacted_path: "Principal purge with omitted tenantId"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:256"
+    expected: "A principal selector whose tenantId is omitted matches only identities with that principal and an absent tenant; it never means every tenant."
+    actual: "The tenant predicate is `selector.tenantId === undefined || ...`, so an omitted tenant matches all owners with the selected principal in the namespace."
+    evidence: "catalog.test.ts exercises only a principal selector with tenantId: 'tenant-a'; no absent-tenant/cross-tenant negative fixture exists."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Make optional tenant matching exact by presence: omitted selects only an absent tenant. Add a fixture containing the same principal in absent-tenant and tenant-bound owners and prove the purge/barrier affects only the absent-tenant owner."
+  - id: REVIEW-002-002
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+    impacted_path: "Purge cancelled or interrupted after selector-barrier admission"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:159-201,239-245"
+    expected: "The selector revocation barrier and cleanup progress persist before provider deletion. Cancellation before that commit has no effect; cancellation after it stops further deletion and returns cleanup_pending with durable progress."
+    actual: "purge mutates an in-memory journal, invokes deleteResource, and writes only after the entire callback loop returns. OperationCancelledError escapes mutate, so no barrier/progress is written; an already-deleted backing resource can therefore be forgotten."
+    evidence: "mutate writes at line 240 only after operation resolves, while purge invokes deleteResource at line 182 and rethrows OperationCancelledError at line 188. The test covers only a generic failure, not post-barrier cancellation or write ordering."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+    agent_instruction: "Separate the durable barrier/progress commit from provider side effects. Preserve the committed barrier and cleanup-pending resource record on cancellation or provider failure, and add exact pre-commit versus post-commit cancellation tests, including restart/retry."
+  - id: REVIEW-002-003
+    severity: blocking
+    category: BOUNDS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#bounds--dec-sown-bounds
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-BOUNDS
+    impacted_path: "Normal catalog at capacity followed by owner purge"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:108,129,167,260-261"
+    expected: "Every admitted owner reserves the durable terminal barrier and purge-progress entries needed for later destructive cleanup, while selector reserve remains unavailable to normal allocation. A full normal catalog must still offboard an admitted owner."
+    actual: "registerOwner and provision consume only their present records. purge later needs two additional entries, so normal admission can fill the available catalog and make the required purge fail with SandboxQuotaExceededError."
+    evidence: "assertCatalogCapacity uses maxCatalogEntries - selectorRevocationReserve for allocation but does not reserve the two later owner records; catalog.test.ts:74-81 leaves enough capacity for its purge."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Account explicitly for every retained owner/barrier/purge record before normal owner/resource admission. Add a small-limit test that reaches normal capacity and still completes an exact-owner purge without dropping tombstones or barriers."
+  - id: REVIEW-002-004
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/00-vision.md#REQ-SOWN-DELIVERY
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#inventory--dec-sown-admin
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+    impacted_path: "Two local catalog processes mutate one durable journal"
+    location: "ai-harness/packages/harness/src/local/local-sandbox-catalog.ts:8,59-66"
+    expected: "Local catalog read-modify-write operations are serialized by an authority shared by all clients using the durable catalog, not merely objects in one process."
+    actual: "exclusive uses a module-global Map keyed by path. Separate Node processes each have their own Map and can read the same journal then atomically rename conflicting updates, losing one mutation."
+    evidence: "The implementation contains no file lock, SQLite transaction, or other cross-process exclusion; atomic rename alone protects torn writes but not competing read-modify-write operations."
+    fix_boundary: "ai-harness/packages/harness/src/local/local-sandbox-catalog.ts and ai-harness/packages/harness/src/local/local-sandbox-catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/local/local-sandbox-catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Reuse an existing local cross-process transactional/locking authority within the allowed module boundary; do not add a generic registry. Add a deterministic two-client/process-equivalent test that proves no registration, barrier, or resource record is lost."
+  - id: REVIEW-002-005
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-OWNER
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-SAFETY
+    impacted_path: "Cancelled registration or sweep"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:97-113,217-236"
+    expected: "Every signal-bearing catalog operation observes cancellation before mutation and during bounded work, without falsely reporting a completed deletion."
+    actual: "registerOwner never reads options.signal. sweep checks only before the transaction and never checks between callback/deletion iterations, so an aborted signal can still register an owner or delete later resources."
+    evidence: "throwIfAborted is called by list, purge, deleteSnapshot, and only once by sweep, but not registerOwner; catalog.test.ts:83-88 tests only a pre-aborted list."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Add cancellation checks before registration mutation and between sweep resource operations. Cover pre-aborted registration and an abort triggered during a multi-resource sweep; preserve truthful pending state where side effects have already begun."
+  - id: REVIEW-002-006
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+    impacted_path: "Operator deletes an existing unpinned snapshot"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:204-215"
+    expected: "An unpinned snapshot delete uses the adapter-private cleanup callback and retains truthful retryable state if backing deletion fails; an absent snapshot remains idempotent and a pinned snapshot remains denied."
+    actual: "deleteSnapshot flips only the journal state to deleted and never calls callbacks.deleteResource, so it can report a removed snapshot while its backing resource remains."
+    evidence: "The only callback invocation sites are purge at line 182 and sweep at line 230; there is no deleteSnapshot test."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Route existing-snapshot deletion through the typed private callback, preserving a retryable cleanup-pending record when deletion fails. Add tests for callback success, failure, pinned denial, and absent-snapshot idempotency."
+  - id: REVIEW-002-007
+    severity: blocking
+    category: TRACEABILITY
+    root_cause: tooling_gap
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-delivery.md#autonomous-execution-constraints
+    impacted_path: "Independent review evidence handoff"
+    location: "ai-harness/plans/implementation-evidence/TICKET-002.json:6"
+    expected: "Ticket evidence pins the current nested plan-manifest content digest so review can prove the implementation was checked against the approved ticket and indexes."
+    actual: "The evidence records sha256:525d3ec4a0a8f88ca85d5c3a041ab01bd3d7d9f1bd4e31ab6ede08e5ab022e98, while the current plan manifest is sha256:8670786e09d95437637dbfb7fdb3d45a6d6a4a51e8a088febf45cea32ec703cf."
+    evidence: "Direct comparison of implementation-evidence/TICKET-002.json and sandbox-ownership/plan-manifest.yaml."
+    fix_boundary: "ai-harness/plans/implementation-evidence/TICKET-002.json only"
+    required_verification:
+      - "node /Users/sebastianwessel/.agents/skills/spec-implementation-planner/references/check_plan.mjs . ai-harness/plans/sandbox-ownership ai-harness/specs/36-sandbox-ownership-and-administration"
+    agent_instruction: "After controller-approved remediation and manifest regeneration, update the evidence's plan_manifest_digest to the exact current nested manifest digest. Do not alter ticket lifecycle or accept the ticket."

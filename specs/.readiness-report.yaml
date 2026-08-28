@@ -108,6 +108,142 @@ deterministic_check:
   command: "rg -n \"TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort\" specs/10-workflows.md specs/21-durable-workspaces.md specs/22-local-durable-execution.md specs/23-provider-outcomes-and-retry.md"
   status: passed
 follow_up_waves:
+  - id: "2026-08-25-distributed-sandbox-lifecycle"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-26"
+      approver: "repo owner (interactive Codex task)"
+      source: "User auto-approved the sandbox lifecycle specifications and clean-break plan, including the independent local Docker adapter package."
+      approval_ref: "codex-task-01a038ca-2438-7573-b474-3a3b3319bf34#owner-clean-break-tightening-and-standing-auto-approval"
+      manifest_digest: "sha256:d5cf72b589728648eefb39a78cd393d80c14c4c382dc0a234fccc1a16a9af30f"
+    scope:
+      specs:
+        - specs/34-distributed-sandbox-lifecycle
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/04-state-queue-stream.md
+        - specs/05-sandbox.md
+        - specs/11-sessions.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/21-durable-workspaces.md
+        - specs/22-local-durable-execution.md
+        - specs/25-static-harness-modules.md
+        - specs/32-harness-storage.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-26"
+      purpose: "Specify one topology-transparent Sandbox lifecycle with adapter-private coordination, an optional local Docker/OrbStack package, durable-file recovery boundaries, PURISTA dependency boundaries, shared tests, and separate production provider gates."
+    confirmed_decisions:
+      - "Harness remains standalone; PURISTA Core depends only on the public Harness API and maps framework identity/policy at its integration boundary."
+      - "HarnessStorage gains immutable session incarnation and explicit write/delete intent; it never stores sandbox generations, leases, fences, provider references, retention, or cleanup work."
+      - "There is one topology-transparent Sandbox lifecycle interface with no runtime multi-instance capability, subtype, alternate method family, or business-logic branch."
+      - "A production Sandbox adapter or its private control plane owns coordination and must reject stale mutations at the compute boundary; distributed behavior is verified by adapter conformance tests."
+      - "Create, attach, and restore modes make creation authority explicit, so an existing persisted scope never becomes an empty first-use sandbox after local or provider state loss."
+      - "Committed DurableWorkspace files are the recovery guarantee; a missing sandbox is never silently replaced with empty state."
+      - "Lifecycle configuration, retention, cleanup retry, and orphan reclamation belong to the adapter, not Harness defaults or a Harness maintenance API."
+      - "Production provider implementation remains blocked until the common E2B/Daytona bake-off produces an approved provider/control-plane decision."
+      - "The optional @purista/harness-sandbox-docker package targets one local engine, including OrbStack via Docker context, without a second interface or production-provider gate dependency."
+      - "Initial Docker scope is retained local files and real container execution, not checkpoint recovery; unsupported restore and missing state fail without empty replacement."
+      - "Every existing sandbox variant, fake, caller, and active guide must use the one new contract, with no compatibility layer; the local-directory rewrite has an explicit implementation owner and one complete integration gate."
+      - "The owner subsequently authorized end-to-end implementation except E2B/Daytona; standing auto-approval is freshly bound to the audited lifecycle specification digest."
+    gates:
+      deterministic_spec_check:
+        status: passed
+      independent_readiness_review:
+        status: passed
+        evidence: "The repository owner supplied standing auto-approval and waived a separate approval round; the boundary-simplification semantic review has zero blocking findings."
+      human_approval:
+        status: passed
+      implementation_wave_readiness:
+        status: pending_ticket_format
+      provider_adapter_implementation:
+        status: blocked
+      sandbox_ticket_format:
+        status: pending
+        evidence: "Unexecuted sandbox tickets remain planned or provider-blocked. The generic planner check fails the pre-existing compact plan/index layout and unrelated stale hashes; machine-executable promotion requires separate format reconciliation."
+      local_implementation_verification:
+        status: passed
+        evidence: "plans/2026-08-26-sandbox-completion-audit.md; scoped contract/runtime tests and live OrbStack evidence, with publication and untested engines explicitly excluded."
+  - id: "2026-08-25-generic-evaluation-runs"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-28"
+      approver: "repo owner (interactive Codex task)"
+      source: "Repository owner explicitly auto-approved this workstream, selected clean-breaking refactoring over legacy/migration/compatibility, and authorized end-to-end implementation after the revised observation, score-only, trial, accounting, and OTel contract."
+      approval_ref: "codex-task-01a038ca-2055-7ce0-9110-06a4502dee31#evaluation-observation-contract-and-implementation-authorization"
+      scope_digest: "sha256:5c10b24dad67e626629acb7dcb7127976e81615ee5bea6c74d263078c958c7dc"
+      digest_algorithm: "SHA-256 over the LC_ALL=C-sorted shasum -a 256 output for every file in scope.specs; order independent."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/06-models.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/17-implementation-plan.md
+        - specs/19-ai-eval-core.md
+        - specs/35-generic-evaluation-runs.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-28"
+      purpose: "Specify generic provider-neutral execution and score-only evaluation, application-owned observations, trials, multi-scorer assessment outcomes, separated model accounting, aggregates, failure control, feedback projection, and privacy-safe telemetry."
+    confirmed_decisions:
+      - "runEvaluation executes and scores; scoreEvaluation re-scores application-owned observations; createDeterministicEvaluationScorer is an optional typed predicate factory."
+      - "The aggregate evaluator and standalone scorer functions/types are deleted with no aliases, wrappers, overloads, deprecation period, transition guide, or dual behavior."
+      - "Harness core owns provider-neutral in-process execution/scoring, observations, bounded evidence, assessment coverage, operational aggregates, failure control, FeedbackRecord projection, and privacy-safe telemetry only."
+      - "Task input excludes assessment material; dimensions explicitly distinguish scored, not applicable, and inconclusive outcomes; trials are not retries."
+      - "Existing TokenUsage and nested model telemetry remain canonical; task, scorer, and invocation wall measurements are separate and unknown accounting is never zero."
+      - "Dataset/experiment storage and UI, annotation, dashboards, hosted judges, reporter/sink ports, and vendor SDKs remain outside Harness core."
+      - "Owner authorization covers implementation of this clean-break contract; vendor SDKs, persistence, dashboards, annotation, and dataset UIs remain outside core."
+    gates:
+      deterministic_check:
+        status: passed_with_flat_spec_exception
+        evidence: "Targeted ambiguity, link, stale-reference, diff-whitespace, and scope-digest checks pass. The repository-wide modern checker expects a structured manifest tree not used by this existing flat specification set."
+      independent_readiness_review:
+        status: passed
+        evidence: "The repository owner supplied standing auto-approval for this spec workstream and waived a separate approval round; Codex completed the semantic checklist review with zero blocking evaluation findings."
+      human_approval:
+        status: passed
+      contradiction_check:
+        status: passed
+      public_api_alignment:
+        status: passed
+        evidence: "Specs 06, 13, 14, 16, 17, 19, and 35 define one clean-break execute-and-score/score-only surface, existing TokenUsage reuse, and an explicit obsolete-symbol removal list."
+      clean_rebuild_boundary_gate:
+        status: passed
+        evidence: "The evaluation module is rebuilt behind the new contracts; stale aliases, callback mirrors, compatibility wrappers, and old behavior tests are prohibited."
+      representation_reuse_gate:
+        status: passed
+        evidence: "The in-process observation is application-owned content and the result is a distinct content-minimized projection; the only further mapping is the explicitly lossy EvaluationRunResult-to-FeedbackRecord projection. No wire or persistence representation is in scope."
+      async_semantics_gate:
+        status: passed
+      end_to_end_definition_gate:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      observability_gate:
+        status: passed
+      performance_resilience_gate:
+        status: passed
+      current_dependency_research_gate:
+        status: passed
+        evidence: "Core adds no dependency; optional provider examples are sequenced after the substrate and cite current official Langfuse, Datadog, and Phoenix documentation in the approved plan."
+      checklist_walk_gate:
+        status: passed
+        blocking_findings_count: 0
+        evidence: "Core, execute-and-score/score-only end-to-end behavior, architecture/structure, contracts, testing, privacy, AI automation, async/trials, model cost/usage, OTel, and reporting/aggregation are covered or explicitly outside the in-process core boundary."
+      semantic_judge_gate:
+        status: passed
+        reviewer: "Codex spec semantic review under repository-owner auto-approval"
+        blocking_findings_count: 0
+      implementation_wave_readiness:
+        status: passed
   - id: "2026-08-14-static-modules-context-testing"
     status: approved
     human_approval:
@@ -256,3 +392,47 @@ follow_up_waves:
         status: passed
       implementation_wave_readiness:
         status: passed
+
+  - id: "2026-08-26-sandbox-ownership-and-administration"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-26"
+      source: "Repository owner requested specs and autonomous implementation plan only under standing specification auto-approval."
+    scope:
+      specs:
+        - specs/36-sandbox-ownership-and-administration
+    approval_evidence:
+      manifest_digest: sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb
+      evidence_ref: specs/36-sandbox-ownership-and-administration/06-readiness-evidence.md
+    summary:
+      purpose: "One Sandbox contract with definition sharing, exact owner identity, bounded administration and public-only PURISTA integration."
+      implementation_authority: not_started_specs_and_plan_only
+      plan_ref: plans/sandbox-ownership/implementation-plan.md
+      strict_spec_check: passed
+      strict_plan_check: passed
+      production_provider_gate: unchanged
+      release_prerequisites: "Fresh authorized local Docker evidence and strict packed Core consumer declarations; existing dependency failures are not waived."
+
+decision_boundary_refactor_2026_08_26:
+  status: approved
+  source: repository-owner explicitly approved updated specs and clean breaking refactor in task 01a03d51-6262-7480-89eb-baa163905ef6
+  authority: specs/37-decision-boundaries/.readiness-report.yaml
+  manifest: specs/37-decision-boundaries/spec-manifest.yaml
+  plan: plans/decision-boundaries/implementation-plan.md
+  scope: shared decision evidence and cancellation, permissions/governance/immediate approval, canonical tool replay, final-output rails, strict waits, application review claims, consumers, docs and cleanup
+  precedence: This scoped approval supersedes earlier guardrail/governance callback, error, event and lifecycle definitions; unrelated approved workstreams remain unchanged.
+  compatibility: no aliases, legacy paths, migrations, data resets or dual readers
+  implementation_status: pending
+
+guardrail_authoring_2026_08_26:
+  status: approved
+  source: Repository owner explicitly requested updated auto-approved specs and an implementation plan only in task 01a03d51-6262-7480-89eb-baa163905ef6.
+  authority: specs/38-guardrail-authoring/.readiness-report.yaml
+  manifest: specs/38-guardrail-authoring/spec-manifest.yaml
+  plan: plans/guardrail-authoring/implementation-plan.md
+  scope: Optional YAML and canonical config, action tokens, build dependency preflight, callback/schema inference, docs/skills/website and cleanup.
+  precedence: Scoped spec38 supersedes authoring/config declarations only; spec37 runtime decision semantics remain authoritative.
+  compatibility: No legacy aliases, compatibility or migrations.
+  implementation_status: not_started
+  voyage: excluded

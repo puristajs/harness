@@ -106,8 +106,11 @@ Every harness-created span carries when available:
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
+| Sandbox lifecycle | `harness.sandbox.{open|detach|terminate}` | Harness attributes only |
 | Harness storage lifecycle | `harness.storage.{operation}` | `harness.*` |
-| Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
+| Generic evaluation run | `harness.eval.run` | Harness attributes only |
+| Generic evaluation case | `harness.eval.case` | Harness attributes only |
+| Generic evaluation scorer | `harness.eval.scorer` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
 | Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
 | Agent Plugin inspection/loading | `harness.plugin.{operation}` | `harness.*` |
 
@@ -153,7 +156,7 @@ The harness emits:
 | `RERANKER` | Rerank model call |
 | `TOOL` | Tool call |
 | `GUARDRAIL` | Optional governance policy evaluation |
-| `EVALUATOR` | Prompt candidate evaluation helper |
+| `EVALUATOR` | Generic evaluation scorer |
 
 The harness does not emit `RETRIEVER` or `PROMPT` in v3 because core has no
 retrieval store or prompt store. `GUARDRAIL` is emitted only when optional
@@ -266,22 +269,43 @@ Emitted only when `.governance(...)` is configured.
 Policy spans never emit raw policy input, tool input, tool output, prompts,
 completion content, approval comments, headers, credentials, or sandbox output.
 
-## Evaluator span attributes
+## Evaluation span attributes
 
-Span: `harness.eval.candidate`
+Spans: `harness.eval.run`, `harness.eval.case`, and `harness.eval.scorer`.
 
-Emitted by `evaluatePromptCandidates`.
+The exact approved attribute and privacy contract is defined in
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md). Task and scorer
+IDs/versions, ordinals, counts, policy, attempts, terminal status, and stable
+`error.type` are allowed. Evaluation run, dataset, case, candidate, trial,
+observation, feedback target, output, assessment, scorer context, evidence,
+score, label, segment, model identity, usage, cost, and correlation fields are
+not emitted. Content capture mode never widens this rule.
 
-| Key | Type |
-| --- | --- |
-| `openinference.span.kind` | string, `EVALUATOR` |
-| `harness.eval.candidate.id` | string |
-| `harness.eval.item.id` | string |
-| `harness.eval.score` | double |
-| `harness.eval.passed` | boolean |
+| Key | Type | Spans |
+| --- | --- | --- |
+| `openinference.span.kind` | string, `EVALUATOR` | scorer in `dual`/`openinference_only` |
+| `harness.eval.task.id` | string | run, case, scorer |
+| `harness.eval.task.version` | string | run, case, scorer |
+| `harness.eval.mode` | string, `execute_and_score` or `score_only` | run, case, scorer |
+| `harness.eval.candidate.count` | integer | run |
+| `harness.eval.case.count` | integer | run |
+| `harness.eval.scorer.count` | integer | run |
+| `harness.eval.max_concurrency` | integer | run |
+| `harness.eval.failure_policy` | string, `continue` or `fail_fast` | run |
+| `harness.eval.candidate.ordinal` | integer | case |
+| `harness.eval.case.ordinal` | integer | case |
+| `harness.eval.trial.count` | integer | run |
+| `harness.eval.scorer.id` | string | scorer |
+| `harness.eval.scorer.version` | string | scorer |
+| `harness.eval.scorer.ordinal` | integer | scorer |
+| `harness.eval.attempts` | integer | scorer |
+| `harness.eval.status` | string, terminal enum from spec 35 | run, case, scorer |
+| `error.type` | string | failed/timed-out/cancelled case or scorer |
 
-No prompt, input, expected output, or context content is emitted by v3 core,
-regardless of `contentCaptureMode`.
+`harness.eval.scorer` carries `openinference.span.kind = EVALUATOR` in `dual`
+and `openinference_only`. The previously declared `harness.eval.candidate`
+span was never implemented and is removed together with the obsolete
+aggregate evaluator. No replacement alias or compatibility instrument exists.
 
 ## Memory span attributes
 
@@ -350,6 +374,27 @@ checkpoint records; spans, metrics, and logs emit only hashes.
 | --- | --- |
 | `harness.exec.exit_code` | integer |
 | `harness.exec.duration` | double seconds |
+
+### Sandbox lifecycle
+
+Spans: `harness.sandbox.open`, `harness.sandbox.detach`, and
+`harness.sandbox.terminate`.
+
+| Key | Type |
+| --- | --- |
+| `harness.sandbox.adapter` | string |
+| `harness.sandbox.operation` | string: `open`, `detach`, or `terminate` |
+| `harness.sandbox.disposition` | string: `created`, `attached`, `resumed`, or `restored`; open only |
+| `harness.sandbox.live_process_state` | string: `preserved`, `restarted`, `not_preserved`, or `unknown`; open only |
+| `harness.status` | string |
+| `error.type` | string, failures only |
+
+Scope fields, tenant/principal values, generations, leases, fencing tokens,
+provider references, checkpoint references, paths, commands, content,
+credentials, and provider response bodies are forbidden regardless of content
+capture mode. Existing trace, session, and run context supplies correlation; no
+new lifecycle correlation id is added. Provider-specific child spans may exist,
+but adapters do not duplicate these standard spans.
 
 ### `harness.plugin.{operation}`
 
@@ -520,7 +565,12 @@ aggregating metrics.
 | `harness.policy.evaluations` | Counter | `1` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
 | `harness.policy.denials` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id` |
 | `harness.approval.requests` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id`, `harness.approval.status` |
-| `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
+| `harness.eval.runs` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status`, `harness.eval.failure_policy` |
+| `harness.eval.run.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.cases` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.case.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.scorer.results` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.scorer.id`, `harness.eval.scorer.version`, `harness.eval.status` |
+| `harness.eval.scorer.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.scorer.id`, `harness.eval.scorer.version`, `harness.eval.status` |
 | `harness.memory.operation.duration` | Histogram | `s` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `error.type` |
 | `harness.memory.operations` | Counter | `1` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `harness.memory.hit`, `error.type` |
 | `harness.memory.search.results` | Histogram | `1` | `harness.memory.provider`, `harness.memory.scope` |
@@ -533,6 +583,8 @@ aggregating metrics.
 | `harness.storage.operations` | Counter | `1` | `harness.storage.adapter`, `harness.storage.operation`, `error.type` |
 | `harness.local_sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 | `harness.local_sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
+| `harness.sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.disposition`, `harness.sandbox.live_process_state`, `harness.status`, `error.type` |
+| `harness.sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.disposition`, `harness.sandbox.live_process_state`, `harness.status`, `error.type` |
 | `harness.plugin.operation.duration` | Histogram | `s` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
 | `harness.plugin.operations` | Counter | `1` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
 
@@ -576,3 +628,7 @@ Known warning codes:
 - [12-streaming](./12-streaming.md)
 - [19-ai-eval-core](./19-ai-eval-core.md)
 - [21-durable-workspaces](./21-durable-workspaces.md)
+
+## Approved decision-boundary alignment
+
+Decision events/audit/errors share safe evidence only; provider spans remain the sole token metric source. model.completed owns generative run-summary accounting, not model.object. Guardrail action timers reuse the core decision executor. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

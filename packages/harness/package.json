@@ -45,7 +45,7 @@
     "test": "vitest run",
     "test:unit": "vitest run src",
     "test:coverage": "vitest run --coverage",
-    "test:contracts": "vitest run src/ports test/sandbox.test.ts",
+    "test:contracts": "vitest run src/ports src/storage test/sandbox.test.ts",
     "test:integration": "vitest run test/harness.test.ts test/tools.test.ts test/skills.test.ts test/telemetry-flow.test.ts",
     "test:failure": "vitest run test/failure"
   },

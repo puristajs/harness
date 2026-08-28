@@ -1,25 +1,37 @@
 import { HarnessError } from '@purista/harness'
+import { z } from 'zod'
 
-/** NeMo-compatible configuration could not be loaded or compiled safely. */
+/** Stable safe reason codes emitted by configuration and compilation boundaries. */
+export const guardrailsConfigErrorReasonSchema = z.enum([
+  'invalid_shape', 'action_missing', 'invalid_action', 'missing_policy', 'unsupported_entity', 'model_missing', 'model_capability_missing'
+])
+
+/** A stable safe reason code emitted by configuration and compilation boundaries. */
+export type GuardrailsConfigErrorReason = z.output<typeof guardrailsConfigErrorReasonSchema>
+
+/** Redacted structured metadata for a guardrails configuration failure. */
+export const guardrailsConfigErrorMetaSchema = z.strictObject({
+  reason: guardrailsConfigErrorReasonSchema,
+  field: z.string().optional(),
+  flowId: z.string().optional(),
+  modelAlias: z.string().optional()
+})
+
+/** Redacted structured metadata for a guardrails configuration failure. */
+export type GuardrailsConfigErrorMeta = z.output<typeof guardrailsConfigErrorMetaSchema>
+
+/** Fixed safe configuration error with no caller-controlled message or cause. */
 export class GuardrailsConfigError extends HarnessError {
-  public constructor(message: string, meta: { reason: string; path?: string | undefined; field?: string | undefined; flow_id?: string | undefined }, cause?: unknown) {
-    super({ code: 'GUARDRAILS_CONFIG_ERROR', category: 'config', retriable: false, message, meta, cause })
+  public constructor(meta: GuardrailsConfigErrorMeta) {
+    super({ code: 'GUARDRAILS_CONFIG_ERROR', category: 'config', retriable: false, message: 'Guardrails configuration is invalid.', meta: normalizeMeta(meta) })
   }
 }
 
-/** A rail action failed outside a Harness default-loop interception hook. */
-export class GuardrailEvaluationError extends HarnessError {
-  public constructor(message: string, meta: { rail_id: string; phase: GuardrailPhase; reason: 'action_failed' | 'action_timeout' | 'invalid_outcome' | 'unsupported_transform' | 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result' | 'sensitive_data_codec_failed' }, cause?: unknown) {
-    super({ code: 'GUARDRAIL_EVALUATION_ERROR', category: 'interceptor', retriable: false, message, meta, cause })
+function normalizeMeta(meta: unknown): GuardrailsConfigErrorMeta {
+  try {
+    const parsed = guardrailsConfigErrorMetaSchema.safeParse(meta)
+    return parsed.success ? parsed.data : { reason: 'invalid_shape' }
+  } catch {
+    return { reason: 'invalid_shape' }
   }
 }
-
-/** A configured rail intentionally denied caller-owned data before it could be used. */
-export class GuardrailBlockedError extends HarnessError {
-  public constructor(meta: { rail_id: string; phase: GuardrailPhase; reason_code?: string | undefined }) {
-    super({ code: 'GUARDRAIL_BLOCKED', category: 'interceptor', retriable: false, message: 'Guardrail blocked execution.', meta })
-  }
-}
-
-/** The stable phases understood by the first `@purista/harness-guardrails` release. */
-export type GuardrailPhase = 'input' | 'output' | 'tool_input' | 'tool_output' | 'retrieval'

@@ -5,6 +5,13 @@ messages, run records, events, workflow step checkpoints, leases, and opaque
 external waits. `DurableWorkspace` is separate because file snapshots have a
 different lifecycle. `Sandbox` remains the execution boundary.
 
+Checkpointed workspace files are the only promised sandbox recovery mechanism.
+Live processes, containers, and provider volumes may improve availability, but
+they are not a recovery contract. On a resumed run, Harness opens the sandbox
+in `restore` mode only when its adapter declares `sandbox.workspace_binding`;
+otherwise the adapter must report `SandboxStateLostError` rather than silently
+starting an empty replacement.
+
 ```mermaid
 flowchart LR
   Workflow["Workflow ctx.step"] --> Storage["HarnessStorage"]
@@ -82,6 +89,22 @@ The storage must serialize each session, enforce one active lease per run and
 session, commit checkpoints atomically, and register a wait together with the
 `waiting` transition and lease release.
 
+## Sandbox checkpoint boundary
+
+At a committed durable step, Harness snapshots the run-owned sandbox
+partitions together with the workspace checkpoint. The checkpoint records the
+exact scope membership and sharing-policy digest; an adapter must restore that
+state before executing the next step. It must not substitute a missing sandbox,
+snapshot, or provider resource with empty files. That condition is
+`SandboxStateLostError` and requires an explicit application recovery choice.
+
+Harness only promises durable files. It does not promise a running process,
+container, provider volume, or external shared partition across recovery.
+Sandbox resources required for recovery are pinned while checkpoint metadata is
+being committed and released only after retention metadata is safely updated.
+Bound retention through the configured workspace policy; unsupported retention
+controls fail at setup rather than looking accepted while doing nothing.
+
 ## Production Adapter
 
 For multiple processes or hosts, implement `HarnessStorage` against one shared
@@ -101,9 +124,11 @@ Attributes are content-free: record adapter, operation, run/session correlation,
 attempt, sequence, wait kind/outcome, duration, and normalized errors—never
 prompt text, checkpoint output, files, wait IDs, credentials, or tool data.
 
-## SQLite Compatibility
+## SQLite Schema Readiness
 
-Harness 3 intentionally rejects Harness 2 SQLite schemas, including
-`harness_durable_runs` and `harness_context_checkpoints`. Create a new database
-and migrate only application-approved conversation data through an explicit
-export/import process. See [Migrating To Harness 3](./migrating-to-v3.md).
+SQLite storage rejects incompatible schema layouts with `HarnessConfigError`
+reason `sqlite_schema_incompatible`; it does not rewrite existing databases.
+Use the current storage schema and verify lease, checkpoint, external-wait,
+signal, and resume behavior before accepting work. Keep application business
+state in application storage; PURISTA's general-purpose `StateStore` is not a
+Harness persistence adapter.

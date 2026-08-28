@@ -41,7 +41,7 @@ Default agent loop requirements:
 - `maxSteps` defaults from harness defaults; both are positive integer budgets with no hidden upper cap
 - `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
 - `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
-- `interceptors` are ordered, fail-closed default-loop hooks. `beforeInput` runs before dynamic instructions/transcript work; `afterModel` runs before events, output validation, persistence, and tool dispatch; tool hooks wrap the actual side effect. Use them through `@purista/harness-guardrails` unless an application owns a different generic boundary concern.
+- `interceptors` are ordered, fail-closed default-loop hooks. `beforeInput` runs before instructions/transcript work; `afterModel` allows/blocks after model completion accounting and before content events or dispatch. `beforeOutput` transforms only a final candidate before final validation/persistence. Tool-input hooks run before binding preparation; tool-output hooks run after handler-output validation. Use `@purista/harness-guardrails` for content concerns.
 - Guardrails produce content-free `evaluate_guardrail {rail.id}` OpenInference `GUARDRAIL` spans plus `harness.guardrail.evaluations` and `harness.guardrail.duration`. Treat `outcome='block'` as an expected enforced policy decision and reserve span errors for action failures/timeouts. Retrieval remains caller-owned; pass its run-scoped models, abort signal, and logger to `filterRetrievedChunks`.
 
 Use a custom `handler` only when the default loop is the wrong execution model.
@@ -125,8 +125,8 @@ Workflow docs and examples should cover:
 Use TypeScript tools for application APIs and deterministic logic:
 
 ```ts
-.tools({
-  search_docs: {
+.tools(({ tool }) => ({
+  search_docs: tool({
     description: 'Search internal docs for relevant passages.',
     input: z.object({ query: z.string() }),
     output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
@@ -135,8 +135,8 @@ Use TypeScript tools for application APIs and deterministic logic:
       ctx.signal.throwIfAborted()
       return { hits: [] }
     }
-  }
-})
+  })
+}))
 ```
 
 Rules:
@@ -179,14 +179,15 @@ Use permissions for mutating or risky built-ins:
 
 ```ts
 permissions: {
-  bash: { mode: 'ask', allow: ['npm test', 'npm run *'], deny: ['rm *'] },
+  bash: { mode: 'require_approval', allow: ['npm test', 'npm run *'], deny: ['rm *'] },
   write: 'deny',
   edit: 'allow'
-},
-onPermission: async (ctx) => ctx.toolName === 'bash' ? 'allow' : 'deny'
+}
 ```
 
 Read-only built-ins are intentionally available so agents can navigate mounted skills and sandbox files.
+Required builtin approval uses the same `governance.approval` provider as policy
+approval. Missing configuration denies the demand; there is no second hook.
 
 ## Optional Governance Policies
 Governance is an opt-in business policy layer. Do not add `.governance(...)`
@@ -198,8 +199,8 @@ Keep the layers distinct:
 - agent `tools` and `builtinTools` define the maximum tool set an agent may use
 - built-in `permissions` gate risky built-ins such as `bash`, `write`, and `edit`
 - governance `exposure` can hide configured tools before a model step
-- governance `policies` evaluate a specific tool call after permissions,
-  allowlists, and TypeScript input validation but before handler execution
+- governance `policies` evaluate a specific prepared tool call after permission
+  and allowlist checks and binding input validation, before approval/handler execution
 
 Use exposure rules when the model should not even see a capability for a
 tenant, plan, workflow, rollout, or step:
@@ -214,10 +215,7 @@ tenant, plan, workflow, rollout, or step:
         id: 'hide-transfers-for-readonly-tenants',
         effect: 'hide',
         tools: ['transfer_funds'],
-        when: ({ metadata }) => metadata.plan === 'readonly',
-        reason: 'Readonly tenants cannot use transfer tools.',
-        riskLevel: 'high',
-        tags: ['tenant-policy']
+        when: ({ metadata }) => metadata.plan === 'readonly'
       })
     ]
   }
@@ -236,10 +234,11 @@ Use execution policies when a concrete tool call needs typed business rules:
   mode: 'enforce',
   defaultEffect: 'allow',
   approval: {
-    request: async (request) => ({
-      decision: request.input.amount <= 5_000 ? 'approved' : 'rejected',
-      approverId: 'ops-console'
-    })
+    // Synthetic test provider; replace with the application's bounded reviewer adapter.
+    async request(request, execution) {
+      execution.signal.throwIfAborted()
+      return { decision: 'approved', reasonCode: 'review_approved' }
+    }
   },
   policies: [
     native({
@@ -251,16 +250,14 @@ Use execution policies when a concrete tool call needs typed business rules:
           effect: 'require_approval',
           tools: ['transfer_funds'],
           when: ({ input }) => input.amount > 1_000,
-          reason: 'Large transfers require manual approval.',
-          riskLevel: 'medium'
+          reasonCode: 'large_transfer'
         }),
         rule({
           id: 'insufficient-funds',
           effect: 'deny',
           tools: ['transfer_funds'],
           when: ({ input }) => input.amount > input.balance,
-          reason: 'Transfer amount exceeds available balance.',
-          riskLevel: 'high'
+          reasonCode: 'insufficient_funds'
         })
       ]
     }),
@@ -273,10 +270,11 @@ Use execution policies when a concrete tool call needs typed business rules:
 }))
 ```
 
-`rule(...)` narrows `ctx.input` to the parsed Zod input for the selected
-TypeScript tool. MCP and built-in tool policy input is JSON-compatible raw
-input. `exposureRule(...)` narrows `ctx.toolId`; exposure rules do not receive
-tool input because no call exists yet.
+`rule(...)` narrows `ctx.input` to parsed input for the selected TypeScript tool.
+For multiple tools, retain `ctx` and branch on `ctx.toolId` before reading its
+input. Builtins and MCP also receive prepared JSON input (including builtin
+defaults or the MCP adapter/schema result), not the original wire arguments.
+`exposureRule(...)` narrows `ctx.toolId`; it has no input because no call exists.
 
 Execution effects resolve by precedence:
 `deny > require_approval > audit > allow`.
@@ -292,9 +290,40 @@ into the engine input document and return `GovernanceDecision` values; the
 harness does not own policy language syntax, bundle distribution, or rule-store
 deployment.
 
-Governance stream/audit evidence includes stable `decisionId`, optional
-`policyVersion`, `approvalId` for approvals, `reason`, `riskLevel`, and `tags`.
-Do not include raw tool input or output in policy events, logs, or telemetry.
+Approval receives `{ approvalId, subject, demands }` and `{ signal, deadline }`.
+The correlated `subject` contains one occurrence and its frozen parsed input;
+`demands` contains safe evidence, including both permission and policy demands
+when applicable. The provider runs once per occurrence, returns exactly
+approved/rejected plus optional `reasonCode`, and cannot rewrite input or
+override a denial. Reviewer identity/comments belong in application storage.
+
+All calls in a tool turn pass ordered content/schema preflight before any
+approval or handler starts. Prepared calls then execute concurrently within
+the configured limit. Independent admitted effects are not rolled back when
+a sibling is denied. Tool-input transforms change canonical wire arguments;
+policy, approval, and handler share the one prepared value without reparsing.
+
+`DecisionEvidence` contains only `decisionId`, `source`, `phase`, optional
+`reasonCode`; `source` contains `kind`, `id`, optional `version`/`ruleId`.
+Use stable content-free codes matching `^[a-z][a-z0-9_]{0,63}$`. Never record
+subject input, reviewer content, prompts, matched text, or raw callback errors
+in events/audit/logs. The runtime derives occurrence identity and evidence.
+
+Callbacks are bounded by `defaults.decisionTimeoutMs` (10,000 by default) and
+remaining run/tool budgets. Forward `signal` and absolute `deadline`; a tool's
+total budget includes preflight, queueing, policy, approval, handler, and output
+hooks. Parent cancellation/timeouts preserve their original operation error.
+Own callback expiry, throws, malformed outcomes, and invalid transforms fail
+closed with `DecisionEvaluationError`; content blocks use `DecisionBlockedError`.
+Denied permissions/policies and rejected approval remain recoverable tool errors.
+
+Content rails return allow/block/phase-specific transform, not approval or
+durable suspension. Each action declares its phase; output rails see only a
+final candidate. Direct model calls/custom handlers are outside automatic
+coverage. Opaque provider reasoning cannot be inspected or rewritten, and no
+decision guarantees post-admission revocation. For long human review, use a
+durable external wait plus application-owned claim/receipt recovery, not a
+callback held open indefinitely.
 
 ## MCP Tools
 Use `mcp_stdio` when the MCP server should run inside the sandbox executor:

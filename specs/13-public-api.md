@@ -1,5 +1,7 @@
 # Public API
 
+> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for the changed public authoring exports. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+
 **Purpose.** Single source of truth for every symbol exported from the v3 package set. The published package set includes the core package plus independent provider addons:
 
 - `@purista/harness` — harness, types, errors, in-memory adapters, local durable adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
@@ -64,11 +66,20 @@ export function inMemoryHarnessStorage(): InMemoryHarnessStorage
 
 // Sandbox factories (default adapters)
 export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs']>
-export function bashSandbox(opts?: {
-  network?: { allow?: string[]; deny?: string[] }
-  executionLimits?: { wallClockMs?: number; memoryMb?: number }
-  python?: boolean
-}): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+export interface BashSandboxOptions {
+  readonly network?: { readonly allow?: readonly string[] }
+  readonly executionLimits?: { readonly wallClockMs?: number; readonly maxFileSystemBytes?: number }
+  readonly python?: boolean
+}
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+export type SandboxTelemetryOperation = 'register_owner' | 'open' | 'detach' | 'terminate' | 'list' | 'purge' | 'sweep' | 'delete_snapshot'
+export function withSandboxTelemetry<T>(
+  telemetry: TelemetryShim | undefined,
+  adapterId: string,
+  operation: SandboxTelemetryOperation,
+  action: () => Promise<T>,
+  successAttributes?: (result: T) => SpanAttrs
+): Promise<T>
 
 // Memory factory (default reference adapter)
 export function sandboxMemory(): MemoryAdapter
@@ -114,10 +125,11 @@ export class HarnessConfigError extends HarnessError {}
 export class ValidationError extends HarnessError {}
 export class PermissionDeniedError extends HarnessError {}
 export class PolicyDeniedError extends HarnessError {}
-export class PolicyEvaluationError extends HarnessError {}
-export class AgentInterceptorError extends HarnessError {}
+export class DecisionEvaluationError extends HarnessError {}
+export class DecisionBlockedError extends HarnessError {}
 export class SandboxError extends HarnessError {}
 export class SandboxNoExecutorError extends HarnessError {}
+export class SandboxStateLostError extends HarnessError {}
 export class ModelError extends HarnessError {}
 export class ModelCapabilityError extends HarnessError {}
 export class ToolError extends HarnessError {}
@@ -178,7 +190,7 @@ export type ModelsConfig
 export interface ModelAlias
 export type ToolsConfig
 export type ToolDefinition
-export interface TsToolDefinition<I, O>
+export interface TsToolDefinition<I, O, Context = ToolHandlerContext>
 export interface McpStdioToolDefinition
 export interface McpHttpToolDefinition
 export interface McpPluginProvenance
@@ -228,7 +240,6 @@ export interface GovernanceConfig<S>
 export type GovernanceMode
 export type GovernanceEffect
 export type GovernanceExposureEffect
-export type GovernanceRiskLevel
 export type GovernanceToolId<S>
 export interface GovernanceContext<S, K>
 export interface GovernanceDecision
@@ -242,10 +253,10 @@ export type NativePolicyRule<S>
 export interface NativePolicyRuleForTool<S, K>
 export type GovernancePolicyDefinition<S>
 export interface GovernanceDefinitionHelpers<S>
-export interface GovernanceApprovalProvider
-export interface GovernanceApprovalRequest
+export interface GovernanceApprovalProvider<S>
+export type GovernanceApprovalRequest<S>
 export type GovernanceApprovalResult
-export interface GovernanceAuditContext
+export type GovernanceAuditRecord
 export interface GovernanceAuditSink
 export type ToolInput<S, K>
 
@@ -259,7 +270,7 @@ export interface SessionHistoryRetentionPolicy
 export interface AgentContext<S, I, O>
 export interface AgentContextMinimal<S, I>
 export interface WorkflowContext<S, I, O>
-export interface ToolHandlerContext
+export type ToolHandlerContext<C extends readonly AdapterCapability[] = readonly AdapterCapability[]>
 export interface Metrics
 export type SpanAttrs
 export interface TelemetryShim
@@ -274,30 +285,8 @@ export type BuiltinToolName
 export type PermissionMode
 export interface PermissionPolicy
 export interface AgentPermissions
-export interface PermissionContext
-export type PermissionDecision
-export type OnPermission
 
-// Governance policy
-export interface GovernanceConfig<S>
-export interface GovernanceDefinitionHelpers<S>
-export type GovernanceMode
-export type GovernanceEffect
-export interface PolicyEvaluator<S>
-export interface PolicyEvaluatorInfo
-export type PolicyCapability
-export interface PolicyDecision
-export interface PolicyEvaluationContext<S>
-export type GovernanceToolId<S>
-export interface NativePolicy<S>
-export interface NativePolicyConfig<S>
-export interface NativePolicyRule<S, T>
-export interface NativeRuleContext<S, T>
-export interface GovernanceApprovalAdapter
-export interface GovernanceApprovalRequest
-export type GovernanceApprovalDecision
-export interface GovernanceAuditSink
-export interface GovernanceAuditRecord
+// Governance public types are inventoried above; no alternate policy/approval aliases.
 
 // Resolved skill (after frontmatter parse)
 export interface ResolvedSkill
@@ -331,7 +320,8 @@ export interface ModelCallOptions
 export type ModelMessage
 export type ContentPart
 export interface ToolCallSpec
-export interface ProviderItems
+export type ProviderContinuation
+export type ProviderContinuationItem
 export interface ModelToolSpec
 export interface TextRequest
 export interface TextResponse
@@ -432,22 +422,29 @@ export interface AdapterInspection
 export interface HarnessInspection
 export interface HarnessModuleInspection
 export interface HarnessModuleContribution
-export interface Sandbox
+export type Sandbox
 export interface SandboxSessionBase
 export interface ReadOnlyMountOptions
 export interface ReadOnlyMountCapableSandboxSession
 export function isReadOnlyMountCapableSession
 export interface ExecCapableSandboxSession
-export interface SandboxSession
+export function isExecCapableSession
+export type SandboxSession
 export type SandboxSessionFor
 export interface SnapshotResult
 export interface SandboxResumeOptions
 export interface SnapshotCapableSandbox
 export interface ResumeCapableSandbox
 export interface HibernateCapableSandbox
+export type SandboxScope
+export type SandboxOpenMode
+export interface SandboxOpenOptions
+export type SandboxOpenResult
+export interface SandboxTerminateOptions
 export interface SpawnOptions
 export interface SandboxProcess
 export interface SpawnCapableSandboxSession
+export function isSpawnCapableSession
 export interface ExecOptions
 export interface ExecResult
 export interface DirEntry
@@ -474,16 +471,62 @@ export interface McpStdioLaunchPreparation
 // Inference helper
 export type InferTypes<S>
 
-// AI evaluation core
-export interface PromptCandidate
-export interface EvaluationItem
-export interface CandidateScore
-export interface ScorerTarget
-export interface ScorerResult
-export interface EvaluatePromptCandidatesInput
-export function evaluatePromptCandidates<I = unknown>(
-  input: EvaluatePromptCandidatesInput<I>
-): Promise<CandidateScore[]>
+// Generic evaluations
+export interface EvaluationCase
+export interface EvaluationDataset
+export interface EvaluationCandidate
+export interface EvaluationTrial
+export type EvaluationDimensionDefinition
+export interface EvaluationCorrelation
+export interface EvaluationCost
+export interface EvaluationModelIdentity
+export interface EvaluationModelCall
+export interface EvaluationAccounting
+export interface EvaluationExecutionProvenance
+export interface EvaluationObservation
+export interface EvaluationTaskTarget
+export interface EvaluationTaskOutput
+export interface EvaluationTask
+export type EvaluationEvidence
+export type EvaluationDimensionResult
+export interface EvaluationScorerOutput
+export interface EvaluationScorerTarget
+export interface EvaluationScorer
+export interface DeterministicEvaluationScorerDefinition
+export type EvaluationFailurePolicy
+export interface EvaluationRetryPolicy
+export interface EvaluationTimeouts
+export interface EvaluationRunInput
+export interface EvaluationScoreInput
+export type EvaluationRunMode
+export type EvaluationRunStatus
+export type EvaluationCaseStatus
+export type EvaluationScorerStatus
+export interface EvaluationErrorRecord
+export interface EvaluationScorerResultRecord
+export interface EvaluationTaskResultRecord
+export interface EvaluationCaseResult
+export type EvaluationAggregateScope
+export interface EvaluationDistribution
+export interface EvaluationCoverage
+export interface EvaluationAccountingSummary
+export interface EvaluationCandidateAggregate
+export interface EvaluationDimensionAggregate
+export interface EvaluationRunResult
+export interface EvaluationFeedbackProjectionOptions
+export function runEvaluation<I, Assessment, Candidate, O, ScorerContext = unknown>(
+  input: EvaluationRunInput<I, Assessment, Candidate, O, ScorerContext>
+): Promise<EvaluationRunResult>
+export function scoreEvaluation<Assessment, O, ScorerContext = unknown>(
+  input: EvaluationScoreInput<Assessment, O, ScorerContext>
+): Promise<EvaluationRunResult>
+export function createDeterministicEvaluationScorer<Assessment = unknown, O = unknown, ScorerContext = unknown>(
+  definition: DeterministicEvaluationScorerDefinition<Assessment, O, ScorerContext>
+): EvaluationScorer<Assessment, O, ScorerContext>
+export function evaluationResultToFeedbackRecords(
+  result: EvaluationRunResult,
+  options: EvaluationFeedbackProjectionOptions
+): readonly FeedbackRecord[]
 ```
 
 ### `HarnessBuilder<S>` (locked)
@@ -496,12 +539,13 @@ interface HarnessBuilder<S extends BuilderState> {
   use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
     this: S extends Required ? HarnessBuilder<S> : never,
     module: HarnessModule<Required, Result, Id>
-  ): HarnessBuilder<Result>
+  ): HarnessBuilder<S & Result>
   // Foundation — optional, called at most once each
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
   storage(storage: HarnessStorage): HarnessBuilder<S>
-  sandbox(sandbox: Sandbox): HarnessBuilder<S>
+  sandbox(): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[] }>
+  sandbox<const A extends Sandbox>(sandbox: A): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']> }>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
   workspace(workspace: DurableWorkspace): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
@@ -510,7 +554,7 @@ interface HarnessBuilder<S extends BuilderState> {
   // Domain — direct calls follow staged ordering. Module contributions append
   // in caller order and reject duplicate keys; see 25-static-harness-modules.
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
-  tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }>
+  tools<const T extends ToolsConfig<ToolHandlerContext<SandboxCapabilitiesFor<S>>>>(tools: T): HarnessBuilder<S & { tools: T }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
   agents<const A extends AgentsConfig<S & { models: any; tools: any; skills: any }>>(
     agents: A
@@ -529,7 +573,8 @@ interface HarnessBuilder<S extends BuilderState> {
 `HarnessModuleBuilder<S>` is `HarnessBuilder<S>` without `build` and `use`.
 `HarnessModule<Required, Result, Id>.register` receives the declared minimum
 state and returns its inferred result. `.use()` is callable only when the
-accumulated state extends `Required`, and returns `HarnessBuilder<Result>`.
+accumulated state extends `Required`, and returns `HarnessBuilder<S & Result>`
+so existing definitions and sandbox capability inference are retained.
 The shipped declaration must preserve literal model/tool/skill/agent keys
 without public `any`/`unknown` escape hatches. Direct
 builder types omit already-set or out-of-order methods so incorrect direct
@@ -723,9 +768,11 @@ type AdapterCapability =
   | 'sandbox.fs'
   | 'sandbox.exec'
   | 'sandbox.persistent_fs'
+  | 'sandbox.workspace_binding'
   | 'sandbox.snapshot'
   | 'sandbox.resume'
   | 'sandbox.hibernate'
+  | 'sandbox.live_process_preservation'
   | 'storage.checkpoint'
   | 'storage.retry'
   | 'storage.multi_instance'
@@ -907,46 +954,16 @@ one or more completed model events reported them.
 `Session.getRunSummary(runId)` derives this from the configured `HarnessStorage`; it
 does not inspect OTel spans.
 
-### AI evaluation core
+### Generic evaluation runs
 
-```ts
-interface PromptCandidate<I = unknown> {
-  id: string
-  prompt: string
-  metadata?: Record<string, JsonValue>
-}
-
-interface EvaluationItem<I = unknown> {
-  id: string
-  input: I
-  expected?: unknown
-  context?: unknown[]
-}
-
-interface CandidateScore {
-  candidateId: string
-  meanScore: number
-  passRate: number
-  itemCount: number
-  scorerCount: number
-}
-
-interface EvaluatePromptCandidatesInput<I = unknown> {
-  candidates: PromptCandidate<I>[]
-  items: EvaluationItem<I>[]
-  scorer: (target: ScorerTarget, signal: AbortSignal) => Promise<ScorerResult>
-  runCandidate: (
-    candidate: PromptCandidate<I>,
-    item: EvaluationItem<I>,
-    signal: AbortSignal
-  ) => Promise<unknown>
-  signal: AbortSignal
-}
-```
-
-`evaluatePromptCandidates` is provider-neutral and product-neutral. It does not
-generate candidates, persist datasets, call external optimizers, or know about
-Cloudgrid.
+The complete closed type unions, field optionality, validation, failure,
+ordering, aggregation, privacy, feedback-projection, and telemetry semantics for
+the exports above are authoritative in
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md). That approved
+specification replaces the previous aggregate prompt evaluator and standalone
+scorer types as one breaking cleanup. No dataset persistence, reporter/sink
+port, vendor SDK, UI, annotation, dashboard, or hosted judge export is added by
+this API.
 
 ## Type inference and DX
 
@@ -1019,6 +1036,9 @@ export function durableWorkspaceContract(
 ): void
 export function adapterCapabilitiesContract(make: () => AdapterCapabilities | Promise<AdapterCapabilities>): void
 export function sandboxSnapshotContract(make: () => Sandbox | Promise<Sandbox>): void
+export function sandboxMultiClientContract(
+  makePair: () => readonly [Sandbox, Sandbox] | Promise<readonly [Sandbox, Sandbox]>
+): void
 
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness() returning a fresh builder
@@ -1044,36 +1064,26 @@ export function assertDiagnosticInvariants(
   invariants: readonly HarnessDiagnosticInvariant[]
 ): void
 
-// AI eval test helpers
-export type DeterministicScorerDefinition
-export interface ScorerTarget
-export interface ScorerResult
-export function evaluateDeterministicScorer(
-  definition: DeterministicScorerDefinition,
-  target: ScorerTarget
-): ScorerResult
+// Generic evaluation test ergonomics; exact re-exports from the main package
+export interface DeterministicEvaluationScorerDefinition
+export function createDeterministicEvaluationScorer<Assessment = unknown, O = unknown, ScorerContext = unknown>(
+  definition: DeterministicEvaluationScorerDefinition<Assessment, O, ScorerContext>
+): EvaluationScorer<Assessment, O, ScorerContext>
 ```
 
 ```ts
-export type DeterministicScorerDefinition =
-  | { type: 'regex'; path: string; pattern: string; flags?: 'i' | 'm' | 'im' }
-  | { type: 'json-schema'; schema: JsonValue }
-  | { type: 'contains'; path: string; value: string; caseInsensitive?: boolean }
-  | { type: 'attribute-equality'; leftPath: string; rightPath: string }
-
-export interface ScorerTarget {
-  input: unknown
-  output: unknown
-  expected?: unknown
-  context?: unknown[]
-}
-
-export interface ScorerResult {
-  score: number
-  passed: boolean
-  evidence?: JsonValue
+export interface DeterministicEvaluationScorerDefinition<Assessment = unknown, O = unknown, ScorerContext = unknown> {
+  id: string
+  version: string
+  dimension: EvaluationDimensionDefinition
+  evaluate(observation: EvaluationObservation<Assessment, O, ScorerContext>): EvaluationDimensionResult
 }
 ```
+
+The factory returns a normal `EvaluationScorer`, has exactly the one declared
+dimension, and does not define a second callback, target, or result
+representation. Its callback is synchronous by design; asynchronous and
+model-backed judgments implement `EvaluationScorer.score` directly.
 
 ### Testing replay and diagnostic contracts
 
@@ -1143,7 +1153,7 @@ testing helper.
 
 The fake adapters and contract suites are only reachable via
 `@purista/harness/testing`, with two deliberate overlaps:
-`evaluateDeterministicScorer` (plus its deterministic scorer types) and
+`createDeterministicEvaluationScorer` (plus its definition types) and
 `InMemoryDurableWorkspace`/`inMemoryDurableWorkspace` are main-entry
 exports re-exported by the testing subpath for ergonomics.
 Implementation agents must add a CI test that verifies the actual exports of
@@ -1281,3 +1291,7 @@ The reverse conversion (JSON Schema → Zod) is not implemented; MCP tool input 
 ## Cross-references
 
 - All other spec files. This is the index of types they collectively define.
+
+## Decision boundary public inventory
+
+The [shared ABI, phase, governance, wait and continuation inventory](./37-decision-boundaries/03-contracts/decisions.md) adds the core decisions exports, beforeOutput hook/types, ProviderContinuation and ExternalWaitResolved. Its clean removals are mandatory; this index does not authorize old aliases.

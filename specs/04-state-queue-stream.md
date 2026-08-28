@@ -20,8 +20,8 @@ interface HarnessStorage {
 
   // Sessions
   getSession(id: string): Promise<SessionRecord | undefined>
-  upsertSession(record: SessionRecord): Promise<void>
-  closeSession(id: string): Promise<void>
+  upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean>
+  closeSession(id: string, expectedInstanceId: string): Promise<void>
 
   // Messages (append-only, plus full-clear / bulk-replace for history management)
   appendMessages(sessionId: string, messages: Message[]): Promise<void>
@@ -67,9 +67,11 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [k: string]:
 
 interface SessionRecord {
   id: string
+  instanceId: string  // opaque immutable id generated for each new session record
   createdAt: string   // ISO 8601 UTC
   updatedAt: string
   runCount: number
+  identity?: HarnessIdentity
   metadata?: Record<string, JsonValue>
 }
 
@@ -135,7 +137,20 @@ interface PersistedRunEvent {
 - `listRuns` returns runs in descending order by `startedAt` then by `id` descending. `before` cursor is a run id; pagination is exclusive.
 - `appendEvents` / `listEvents` preserve insertion order; `after` cursor is an event id; pagination is exclusive.
 - Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted regardless of telemetry span content capture until a future spec adds a dedicated persisted-event content flag.
-- `upsertSession` is idempotent: if `id` exists, `updatedAt` and `runCount` are overwritten with the supplied record.
+- `upsertSession(record, mode)` requires explicit `create` or `update` intent.
+  Create atomically returns `true` only for the first insert, which
+  binds immutable `instanceId`, `createdAt`, and exact optional identity. Existing identity
+  mismatch fails with `StateError`; creation against an existing same-identity
+  record returns `false` without mutating it. Update requires the exact stored
+  instance, creation time, and identity; missing or changed instances fail with
+  `StateError` (`session_instance_mismatch`) and never insert. Valid updates
+  return `false` and cannot regress `updatedAt` or `runCount`. Callers reread the
+  stored record after creation to obtain the winning instance id. A proposed
+  different instance cannot overwrite the stored record. This is ordinary
+  session binding; storage owns no sandbox lifecycle records.
+- `closeSession(id, expectedInstanceId)` atomically deletes the session and its
+  owned records only when the stored instance matches. Stale and absent closes
+  are no-ops; they never delete a new conversation that reused the same id.
 - `createRun` is normally insert-only. For durable workflow retries, if a
   non-terminal run with the same id already exists and the new record matches
   `sessionId`, `kind`, and `target`, `createRun` is idempotent and must not

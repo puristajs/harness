@@ -1,0 +1,34 @@
+module_boundary_version: 1
+modules:
+  - module_id: core
+    owner: harness
+    public_entrypoint: '@purista/harness'
+    owned_concepts:
+      - registry requirements
+      - typed native tool registration
+      - decisions
+    allowed_dependencies: []
+    forbidden_dependencies:
+      - guardrails
+      - website
+  - module_id: guardrails
+    owner: harness-guardrails
+    public_entrypoint: '@purista/harness-guardrails'
+    owned_concepts:
+      - config
+      - action tokens
+      - selectors
+      - sensitive policies
+    allowed_dependencies:
+      - core
+    forbidden_dependencies:
+      - website
+  - module_id: website
+    owner: purista
+    public_entrypoint: existing handbook and harness pages
+    owned_concepts:
+      - public explanatory content
+    allowed_dependencies:
+      - core
+      - guardrails
+    forbidden_dependencies: []

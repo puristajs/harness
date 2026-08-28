@@ -1,9 +1,19 @@
 import { StateError } from '../errors/index.js'
+import { sameHarnessIdentity } from '../identity/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
-import type { BoundExternalWaitRequest, FinishRunPatch, HarnessStorage } from '../storage/types.js'
+import { assertSessionSandboxBindingTransition } from './session-binding.js'
+import type { FinishRunPatch, HarnessStorage } from '../storage/types.js'
 import {
+  createExternalWaitCancellation,
   ExternalWaitError,
-  validateExternalWaitRequest,
+  asExternalWaitResolved,
+  projectExternalWaitRequest,
+  validateBoundExternalWaitRequest,
+  validateExternalWaitId,
+  validateExternalWaitSignal,
+  validateExternalWaitSignalResult,
+  validateExternalWaitSnapshot,
+  type BoundExternalWaitRequest,
   type ExternalWaitRegistration,
   type ExternalWaitSignal,
   type ExternalWaitSignalResult,
@@ -60,7 +70,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   private readonly checkpoints = new Map<string, Map<string, RunCheckpoint>>()
   private readonly runLeases = new Map<string, { leaseId: string; sessionId: string; workerId: string }>()
   private readonly sessionLeases = new Map<string, { leaseId: string; runId: string; workerId: string }>()
-  private readonly waits = new Map<string, ExternalWaitSnapshot & { runId: string; sessionId: string }>()
+  private readonly waits = new Map<string, StoredExternalWait>()
   private readonly waitSignals = new Map<string, Set<string>>()
   private leaseCounter = 0
   private checkpointCommitCount = 0
@@ -73,14 +83,36 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async getSession(id: string): Promise<SessionRecord | undefined> {
-    return this.sessions.get(id)
+    const record = this.sessions.get(id)
+    return record ? structuredClone(record) : undefined
   }
 
-  public async upsertSession(record: SessionRecord): Promise<void> {
-    this.sessions.set(record.id, record)
+  public async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
+    if (mode !== 'create' && mode !== 'update') {
+      throw new StateError('Session write mode is invalid.', { op: 'upsertSession', reason: 'invalid_session_write_mode' })
+    }
+    assertSessionSandboxBindingTransition(record.sandboxBinding, record.sandboxBinding, 'upsertSession')
+    const existing = this.sessions.get(record.id)
+    if (!existing && mode === 'update') {
+      throw new StateError('Session instance is no longer active.', { op: 'upsertSession', reason: 'session_instance_mismatch' })
+    }
+    if (existing) {
+      if (!sameHarnessIdentity(existing.identity, record.identity)) {
+        throw new StateError('Session identity cannot be changed.', { op: 'upsertSession', reason: 'session_identity_mismatch' })
+      }
+      if (mode === 'create') return false
+      if (existing.instanceId !== record.instanceId || existing.createdAt !== record.createdAt) {
+        throw new StateError('Session instance is no longer active.', { op: 'upsertSession', reason: 'session_instance_mismatch' })
+      }
+      assertSessionSandboxBindingTransition(existing.sandboxBinding, record.sandboxBinding, 'upsertSession')
+      if (record.updatedAt < existing.updatedAt || record.runCount < existing.runCount) return false
+    }
+    this.sessions.set(record.id, structuredClone(record))
+    return existing === undefined
   }
 
-  public async closeSession(id: string): Promise<void> {
+  public async closeSession(id: string, expectedInstanceId: string): Promise<void> {
+    if (this.sessions.get(id)?.instanceId !== expectedInstanceId) return
     this.sessions.delete(id)
     this.messages.delete(id)
     this.messageLocks.delete(id)
@@ -156,7 +188,17 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async createRun(record: RunRecord): Promise<void> {
-    this.runs.set(record.id, record)
+    const existing = this.runs.get(record.id)
+    if (existing) {
+      if (existing.status === 'succeeded' || existing.status === 'cancelled') {
+        throw new StateError('Terminal run already exists.', { op: 'createRun', reason: 'terminal_run_exists' })
+      }
+      if (existing.sessionId === record.sessionId && existing.kind === record.kind && existing.target === record.target) {
+        return
+      }
+      throw new StateError('Run id already exists for a different run.', { op: 'createRun', reason: 'run_conflict' })
+    }
+    this.runs.set(record.id, structuredClone(record))
   }
 
   public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
@@ -169,7 +211,8 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async getRun(runId: string): Promise<RunRecord | undefined> {
-    return this.runs.get(runId)
+    const record = this.runs.get(runId)
+    return record ? structuredClone(record) : undefined
   }
 
   public async listRuns(sessionId: string, opts: { limit?: number; before?: string } = {}): Promise<RunRecord[]> {
@@ -251,7 +294,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
         workerId: record.workerId,
         leaseId,
         attempt,
-        resumed: committed.length > 0 || run.status === 'waiting' || run.status === 'interrupted',
+        resumed: run.attempt !== undefined || committed.length > 0 || run.status === 'waiting' || run.status === 'interrupted',
         start: {
           ...record,
           stepId: updated.initialStepId ?? record.stepId,
@@ -317,41 +360,49 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async registerWait(request: BoundExternalWaitRequest): Promise<ExternalWaitRegistration> {
-    validateExternalWaitRequest(request)
+    const validated = validateBoundExternalWaitRequest(request)
     return this.storageSpan('register_wait', {
-      'harness.run.id': request.runId,
-      'harness.wait.kind': request.kind
-    }, () => this.withSessionLock(request.sessionId, async () => {
-      const existing = this.expireWait(this.waits.get(request.waitId))
+      'harness.run.id': validated.runId,
+      'harness.wait.kind': validated.kind
+    }, () => this.withSessionLock(validated.sessionId, async () => {
+      const existing = this.expireWait(this.waits.get(validated.waitId))
       if (existing) {
-        if (!sameWait(existing, request)) throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
+        if (!sameWait(existing, validated)) throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
         return { created: false, snapshot: externalSnapshot(existing) }
       }
-      const run = this.runs.get(request.runId)
-      if (!run || run.sessionId !== request.sessionId) throw new ExternalWaitError('External wait run binding is invalid.', 'invalid_request')
+      const run = this.runs.get(validated.runId)
+      if (!run || run.sessionId !== validated.sessionId) throw new ExternalWaitError('External wait run binding is invalid.', 'invalid_request')
       if (run.status !== 'running') throw new ExternalWaitError('External waits can only suspend a running durable run.', 'durable_required')
-      const stored = { ...request, status: 'waiting' as const, createdAt: this.now().toISOString() }
-      this.waits.set(request.waitId, stored)
-      this.waitSignals.set(request.waitId, new Set())
-      this.runs.set(request.runId, { ...run, status: 'waiting' })
-      this.releaseRunLease(request.runId)
+      const stored: StoredExternalWait = {
+        ...projectExternalWaitRequest(validated),
+        runId: validated.runId,
+        sessionId: validated.sessionId,
+        status: 'waiting',
+        createdAt: this.now().toISOString()
+      }
+      this.waits.set(validated.waitId, stored)
+      this.waitSignals.set(validated.waitId, new Set())
+      this.runs.set(validated.runId, { ...run, status: 'waiting' })
+      this.releaseRunLease(validated.runId)
       return { created: true, snapshot: externalSnapshot(stored) }
     }))
   }
 
   public async getWait(waitId: string): Promise<ExternalWaitSnapshot | undefined> {
-    const wait = this.expireWait(this.waits.get(waitId))
+    const validatedWaitId = validateExternalWaitId(waitId)
+    const wait = this.expireWait(this.waits.get(validatedWaitId))
     return wait ? externalSnapshot(wait) : undefined
   }
 
   public async signalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
-    return this.storageSpan('signal_wait', { 'harness.wait.outcome': signal.outcome }, async () => (
-      this.resolveWait(signal.waitId, signal.eventId, signal.outcome, signal.observedAt)
+    const validated = validateExternalWaitSignal(signal)
+    return this.storageSpan('signal_wait', { 'harness.wait.outcome': validated.outcome }, async () => (
+      this.resolveWait(validated)
     ))
   }
 
   public async cancelWait(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult> {
-    return this.resolveWait(waitId, eventId, 'cancelled', observedAt)
+    return this.resolveWait(createExternalWaitCancellation(waitId, eventId, observedAt))
   }
 
   public async close(): Promise<void> {
@@ -415,25 +466,49 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     if (sessionLease?.leaseId === lease.leaseId) this.sessionLeases.delete(lease.sessionId)
   }
 
-  private resolveWait(waitId: string, eventId: string, outcome: 'approved' | 'rejected' | 'expired' | 'cancelled', observedAt?: string): ExternalWaitSignalResult {
-    if (!/^[A-Za-z0-9_.:@/-]{1,200}$/.test(eventId)) throw new ExternalWaitError('External wait eventId must be a bounded identifier.', 'invalid_request')
-    const wait = this.expireWait(this.waits.get(waitId))
-    if (!wait) return { kind: 'not_found' }
-    const delivered = this.waitSignals.get(waitId) ?? new Set<string>()
-    this.waitSignals.set(waitId, delivered)
-    if (delivered.has(eventId)) return { kind: 'duplicate', snapshot: externalSnapshot(wait) }
-    delivered.add(eventId)
-    if (wait.status !== 'waiting') return { kind: 'already_terminal', snapshot: externalSnapshot(wait) }
-    const resolved = { ...wait, status: outcome, resolvedAt: observedAt ?? this.now().toISOString(), eventId }
-    this.waits.set(waitId, resolved)
-    return { kind: 'applied', snapshot: externalSnapshot(resolved) }
+  private resolveWait(signal: ExternalWaitSignal): ExternalWaitSignalResult {
+    const wait = this.expireWait(this.waits.get(signal.waitId))
+    if (!wait) return validateExternalWaitSignalResult({ kind: 'not_found' })
+    const delivered = this.waitSignals.get(signal.waitId) ?? new Set<string>()
+    this.waitSignals.set(signal.waitId, delivered)
+    if (delivered.has(signal.eventId)) return validateExternalWaitSignalResult({ kind: 'duplicate', snapshot: externalSnapshot(wait) })
+    delivered.add(signal.eventId)
+    if (wait.status !== 'waiting') return validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot: externalSnapshot(wait) })
+    const resolvedSnapshot = validateExternalWaitSnapshot({
+      waitId: wait.waitId,
+      kind: wait.kind,
+      schemaVersion: wait.schemaVersion,
+      definitionVersion: wait.definitionVersion,
+      deadline: wait.deadline,
+      createdAt: wait.createdAt,
+      status: signal.outcome,
+      resolvedAt: signal.observedAt ?? this.now().toISOString(),
+      eventId: signal.eventId
+    })
+    const resolved = asExternalWaitResolved(resolvedSnapshot)
+    if (!resolved) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+    const stored: StoredExternalWait = { ...resolved, runId: wait.runId, sessionId: wait.sessionId }
+    this.waits.set(signal.waitId, stored)
+    return validateExternalWaitSignalResult({ kind: 'applied', snapshot: externalSnapshot(stored) })
   }
 
-  private expireWait(wait: (ExternalWaitSnapshot & { runId: string; sessionId: string }) | undefined): (ExternalWaitSnapshot & { runId: string; sessionId: string }) | undefined {
+  private expireWait(wait: StoredExternalWait | undefined): StoredExternalWait | undefined {
     if (!wait || wait.status !== 'waiting' || Date.parse(wait.deadline) > this.now().getTime()) return wait
-    const expired = { ...wait, status: 'expired' as const, resolvedAt: this.now().toISOString() }
-    this.waits.set(wait.waitId, expired)
-    return expired
+    const expiredSnapshot = validateExternalWaitSnapshot({
+      waitId: wait.waitId,
+      kind: wait.kind,
+      schemaVersion: wait.schemaVersion,
+      definitionVersion: wait.definitionVersion,
+      deadline: wait.deadline,
+      status: 'expired',
+      createdAt: wait.createdAt,
+      resolvedAt: this.now().toISOString()
+    })
+    const expired = asExternalWaitResolved(expiredSnapshot)
+    if (!expired) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+    const stored: StoredExternalWait = { ...expired, runId: wait.runId, sessionId: wait.sessionId }
+    this.waits.set(wait.waitId, stored)
+    return stored
   }
 }
 
@@ -442,7 +517,9 @@ export function inMemoryHarnessStorage(options: { now?: () => Date; failAfterChe
   return new InMemoryHarnessStorage(options)
 }
 
-function sameWait(existing: ExternalWaitSnapshot & { runId: string; sessionId: string }, request: BoundExternalWaitRequest): boolean {
+type StoredExternalWait = ExternalWaitSnapshot & { readonly runId: string; readonly sessionId: string }
+
+function sameWait(existing: StoredExternalWait, request: BoundExternalWaitRequest): boolean {
   return existing.runId === request.runId
     && existing.sessionId === request.sessionId
     && existing.kind === request.kind
@@ -451,7 +528,7 @@ function sameWait(existing: ExternalWaitSnapshot & { runId: string; sessionId: s
     && existing.deadline === request.deadline
 }
 
-function externalSnapshot(wait: ExternalWaitSnapshot & { runId: string; sessionId: string }): ExternalWaitSnapshot {
+function externalSnapshot(wait: StoredExternalWait): ExternalWaitSnapshot {
   const { runId: _runId, sessionId: _sessionId, ...snapshot } = wait
-  return snapshot
+  return validateExternalWaitSnapshot(snapshot)
 }

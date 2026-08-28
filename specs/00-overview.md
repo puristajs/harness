@@ -95,12 +95,25 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Optional policy-driven governance for tool exposure and tool calls, including typed native rules, external policy adapters, shadow rollout, audit events, and approval gates. See [24-governance-policy](./24-governance-policy.md).
 - Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
 - Durable storage checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
+- One topology-transparent, lifecycle-aware Sandbox port with adapter-private
+  generations, leases, fencing, provider references, retention, and cleanup.
+  Harness and PURISTA business logic do not branch on local versus distributed
+  operation. Process-local adapters implement the same contract as a
+  development/test edge case; production adapters prove multi-client behavior
+  in their conformance tests. Durable workspace files are the recovery
+  guarantee; HarnessStorage adds session-incarnation and conditional-write
+  integrity, not sandbox lifecycle storage. See
+  [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
 - Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
-- Harness-owned AI evaluation primitives: trace-context propagation, run
-  summaries, telemetry interop, deterministic local scorer helpers, and prompt
-  candidate evaluation helpers. See [19-ai-eval-core](./19-ai-eval-core.md).
+- Harness-owned runtime telemetry foundations plus the approved generic
+  evaluation run/result substrate: versioned identities, multiple scorers,
+  per-case evidence, deterministic aggregation, bounded execution, safe
+  telemetry, and feedback projection. See
+  [19-ai-eval-core](./19-ai-eval-core.md) and
+  [35-generic-evaluation-runs](./35-generic-evaluation-runs.md). The obsolete
+  aggregate evaluator and standalone scorer API are removed as a clean break.
 - Opt-in transient context projection and one bounded context-length recovery;
   durable history remains unchanged. See
   [26-context-projection-and-compaction](./26-context-projection-and-compaction.md).
@@ -134,6 +147,8 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No pluggable stream adapter — the streaming generator is internal.
 - No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
   prompt-version store, or experiment database in this repository.
+- No evaluation dataset UI, annotation queue, experiment dashboard, hosted
+  judge, or vendor evaluation SDK in Harness core.
 - No Python/Colang runtime, implicit safety provider, vector store, or guardrail
   server. The optional guardrails addon is in-process only; its separately
   configured Presidio adapter may call an application-owned internal sidecar as
@@ -171,7 +186,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [11-sessions](./11-sessions.md) — conversation history and threads.
 - [13-public-api](./13-public-api.md) — authoritative export list and `$infer` namespace.
 - [17-implementation-plan](./17-implementation-plan.md) — build order.
-- [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.
+- [19-ai-eval-core](./19-ai-eval-core.md) — runtime telemetry and evaluation foundation boundary.
 - [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
 - [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.

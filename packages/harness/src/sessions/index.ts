@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import type { Logger } from '../logger/index.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
-import type { JsonValue } from '../models/json.js'
+import { isJsonValue, type JsonValue } from '../models/json.js'
 import {
   InternalError,
   OperationCancelledError,
@@ -11,6 +11,10 @@ import {
   HarnessError,
   SessionBusyError,
   StateError,
+  SandboxConflictError,
+  SandboxError,
+  SandboxPermissionDeniedError,
+  SandboxStateLostError,
   ValidationError,
   DelegationPolicyError,
   serializeError
@@ -50,14 +54,34 @@ import type { MemoryEngine, MemoryFacade } from '../ports/memory.js'
 import { createMemoryFacade, createSessionMemory } from '../ports/memory.js'
 import type { HarnessInspection } from '../ports/capabilities.js'
 import type { DurableWorkspace } from '../ports/workspace.js'
-import { ExternalWaitError, ExternalWaitPendingError, type ExternalWaitRequest, type ExternalWaitSnapshot } from '../storage/external-wait.js'
+import {
+  ExternalWaitError,
+  ExternalWaitPendingError,
+  asExternalWaitResolved,
+  assertExternalWaitSnapshotRequest,
+  validateExternalWaitRegistration,
+  validateExternalWaitRequest,
+  validateExternalWaitSnapshot,
+  type ExternalWaitRequest,
+  type ExternalWaitResolved
+} from '../storage/external-wait.js'
 import { beginDurableWorkflow, DURABLE_RUN_ID_PATTERN, type DurableWorkflowBinding } from '../runtime/sessionDurable.js'
 import { runStepWithRetry, type DurableStepOptions } from '../runtime/steps.js'
 import { HarnessConfigError } from '../errors/catalog.js'
-import type { Sandbox, SandboxSession } from '../sandbox/index.js'
+import type { Sandbox, SandboxOpenOptions, SandboxOpenResult, SandboxScope, SandboxSessionBase, SandboxTerminateOptions } from '../sandbox/index.js'
+import { withSandboxTelemetry } from '../sandbox/telemetry.js'
+import {
+  sessionOptionsSchema,
+  type SandboxBindingOptions,
+  type SandboxOwner,
+  type SandboxPartition,
+  type SandboxPolicy,
+  type SessionOptions
+} from '../sandbox/ownership.js'
+import type { AdapterCapability } from '../ports/capabilities.js'
 import type { HarnessStorage } from '../storage/types.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
-import type { TokenUsage } from '../ports/model-provider.js'
+import { finishReasonSchema, tokenUsageSchema, type FinishReason, type TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
 import { createMetrics, createTelemetryShim, telemetryErrorType, type TelemetryShim } from '../telemetry/index.js'
@@ -68,6 +92,13 @@ import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 import { validateContextProjection } from '../context-projection.js'
 import { retainCompleteTurns } from './history-retention.js'
 import { normalizeHarnessIdentity, sameHarnessIdentity, type HarnessIdentity } from '../identity/index.js'
+import {
+  acknowledgeSandboxOwnerRegistration,
+  createSessionSandboxBinding,
+  resolveSandboxPartition,
+  sameSessionSandboxBindingIdentity,
+  sandboxScopeForBinding
+} from './sandboxBindings.js'
 
 type ModelRunContext = {
   harnessName: string
@@ -87,6 +118,13 @@ function directAgentIdempotencyRunId(sessionId: string, agentId: string, idempot
   return `agent_${digest}`
 }
 
+function workflowIdempotencyRunId(sessionId: string, workflowId: string, idempotencyKey: string): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([sessionId, workflowId, idempotencyKey]))
+    .digest('hex')
+  return `workflow_${digest}`
+}
+
 type HarnessDefinition<S extends BuilderState> = {
   name: string
   logger: Logger
@@ -94,6 +132,7 @@ type HarnessDefinition<S extends BuilderState> = {
   telemetryShim?: TelemetryShim
   storage: HarnessStorage
   sandbox: Sandbox
+  sandboxBinding?: SandboxBindingOptions<string>
   memory: MemoryEngine
   memoryEmbeddingAlias?: string
   memorySummary?: { alias: string; everyTurns: number; sourceTurns: number }
@@ -109,11 +148,14 @@ type HarnessDefinition<S extends BuilderState> = {
 }
 
 type SessionState = {
+  sessionId: string
   busy: boolean
   /** Prevents a new run from reopening resources while session cleanup is in progress. */
   releasing: boolean
-  sandboxSession: SandboxSession
+  sandboxSession: SandboxSessionBase
   mountedSkills: Set<string>
+  scope: SandboxScope
+  attachmentKey: string
 }
 
 type EffectiveDelegationPolicy = {
@@ -131,6 +173,8 @@ type DelegationRunState = {
   activeChildAgentCalls: number
   /** In-flight child-agent call promises, settled before the run terminalizes. */
   inFlightChildCalls: Set<Promise<unknown>>
+  /** Durable checkpoints reject while a background child may still mutate a run partition. */
+  checkpointBlockingChildTasks: Set<Promise<unknown>>
   /** Background-task turns waiting for a child-agent concurrency slot. */
   slotWaiters: Array<{
     signal: AbortSignal
@@ -374,6 +418,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   // Identity is immutable after session creation. Keep only that verified
   // record locally so idempotent replays do not add storage I/O on every turn.
   const sessionRecords = new Map<string, SessionRecord>()
+  const sessionAttachmentEpochs = new Map<string, number>()
+  // Share first-record allocation while validating each caller's identity
+  // independently before it receives a sandbox attachment.
+  const sessionRecordOpenings = new Map<string, Promise<SessionRecord>>()
   // In-flight session-state creations, memoized so concurrent first-time callers
   // share one sandbox open (no orphaned sessions) and one SessionState object
   // (so the synchronous busy check/set below serializes runs correctly).
@@ -395,6 +443,27 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   const durableWorkerId = `worker_${ulid()}`
   const contentCaptureMode = resolveContentCaptureMode(definition.telemetry)
   const telemetry = withTelemetryFlavor(definition.telemetryShim ?? createTelemetryShim(), definition.telemetry)
+  async function sandboxLifecycle<T>(operation: 'open' | 'detach' | 'terminate', action: () => Promise<T>, outcome?: (result: T) => Record<string, string>): Promise<T> {
+    return await withSandboxTelemetry(
+      telemetry,
+      definition.sandbox.telemetryAdapterId ?? 'custom_sandbox',
+      operation,
+      action,
+      outcome
+    )
+  }
+  function openSandbox(options: SandboxOpenOptions): Promise<SandboxOpenResult<readonly AdapterCapability[]>> {
+    return sandboxLifecycle('open', () => definition.sandbox.open(options), result => ({
+      'harness.sandbox.disposition': result.disposition,
+      'harness.sandbox.live_process_state': result.liveProcessState
+    }))
+  }
+  function detachSandbox(session: SandboxSessionBase): Promise<void> {
+    return sandboxLifecycle('detach', () => session.close())
+  }
+  function terminateSandbox(options: SandboxTerminateOptions): Promise<void> {
+    return sandboxLifecycle('terminate', () => definition.sandbox.terminate(options))
+  }
   const adapterMetrics = createMetrics(telemetry, { 'harness.name': definition.name })
   const adapterContext: HarnessAdapterContext = {
     harnessName: definition.name,
@@ -406,6 +475,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       agentMaxIterations: definition.defaults.agentMaxIterations ?? 16,
       runTimeoutMs: definition.defaults.runTimeoutMs ?? 600_000,
       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+      decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
       skillTimeoutMs: definition.defaults.skillTimeoutMs ?? 60_000,
       modelTimeoutMs: definition.defaults.modelTimeoutMs ?? 300_000,
       maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
@@ -417,61 +487,313 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
 
-  async function ensureSessionRecord(sessionId: string, identity?: HarnessIdentity): Promise<SessionRecord> {
-    const normalizedIdentity = normalizeHarnessIdentity(identity)
+  async function ensureSessionRecord(sessionId: string, options?: SessionOptions): Promise<SessionRecord> {
+    const parsedOptions = sessionOptionsSchema.safeParse(options ?? {})
+    if (!parsedOptions.success) {
+      throw new ValidationError('Session options are invalid.', { where: 'sandbox_options', issues: parsedOptions.error.issues })
+    }
+    const normalizedIdentity = normalizeHarnessIdentity(parsedOptions.data.identity)
+    const requireIdentity = (record: SessionRecord): SessionRecord => {
+      if (!sameHarnessIdentity(record.identity, normalizedIdentity)) {
+        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
+          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
+        })
+      }
+      if (!record.sandboxBinding) {
+        throw new SandboxStateLostError('Session sandbox binding is unavailable.', {
+          reason: 'owner_missing', lifetime: 'session'
+        })
+      }
+      const requestedBinding = createSessionSandboxBinding({
+        harnessName: definition.name,
+        record,
+        ...(parsedOptions.data.sandboxOwner ? { sandboxOwner: parsedOptions.data.sandboxOwner } : {})
+      })
+      if (!sameSessionSandboxBindingIdentity(record.sandboxBinding, requestedBinding)) {
+        throw new SandboxConflictError('binding_changed')
+      }
+      return record
+    }
     const cached = sessionRecords.get(sessionId)
-    if (cached) {
-      if (!sameHarnessIdentity(cached.identity, normalizedIdentity)) {
-        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
-          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
-        })
-      }
-      return cached
-    }
-    const existing = await definition.storage.getSession(sessionId)
-    if (existing) {
-      if (!sameHarnessIdentity(existing.identity, normalizedIdentity)) {
-        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
-          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
-        })
-      }
-      sessionRecords.set(sessionId, existing)
-      return existing
-    }
+    if (cached) return requireIdentity(cached)
+    const pending = sessionRecordOpenings.get(sessionId)
+    if (pending) return requireIdentity(await pending)
 
-    const createdAt = now()
-    const created: SessionRecord = {
-      id: sessionId,
-      createdAt,
-      updatedAt: createdAt,
-      runCount: 0,
-      ...(normalizedIdentity ? { identity: normalizedIdentity } : {})
+    const opening = (async (): Promise<SessionRecord> => {
+      const existing = await definition.storage.getSession(sessionId)
+      if (existing) {
+        requireIdentity(existing)
+        const acknowledged = await acknowledgeOwnedSessionRegistration(existing)
+        sessionRecords.set(sessionId, acknowledged)
+        return acknowledged
+      }
+      const createdAt = now()
+      const instanceId = ulid()
+      const proposed: SessionRecord = {
+        id: sessionId,
+        instanceId,
+        createdAt,
+        updatedAt: createdAt,
+        runCount: 0,
+        ...(normalizedIdentity ? { identity: normalizedIdentity } : {}),
+        sandboxBinding: createSessionSandboxBinding({
+          harnessName: definition.name,
+          record: { id: sessionId, instanceId, ...(normalizedIdentity ? { identity: normalizedIdentity } : {}) },
+          ...(parsedOptions.data.sandboxOwner ? { sandboxOwner: parsedOptions.data.sandboxOwner } : {})
+        })
+      }
+      let inserted: boolean
+      try {
+        inserted = await definition.storage.upsertSession(proposed, 'create')
+      } catch (error) {
+        if (!(error instanceof StateError) || error.meta?.['reason'] !== 'session_identity_mismatch') throw error
+        throw new ValidationError('Session identity does not match the identity bound when the session was created.', {
+          where: 'memory_scope', issues: { reason: 'session_identity_mismatch', sessionId }
+        })
+      }
+      // Another storage client may have won the insert, even with the same
+      // timestamp. Only the atomic insertion result grants create authority.
+      const stored = await definition.storage.getSession(sessionId)
+      if (!stored) throw new StateError('Session record disappeared during creation.', { op: 'getSession', reason: 'session_missing' })
+      if (inserted && stored.instanceId !== proposed.instanceId) {
+        throw new StateError('Session instance changed during creation.', { op: 'getSession', reason: 'session_instance_mismatch' })
+      }
+      requireIdentity(stored)
+      const acknowledged = await acknowledgeOwnedSessionRegistration(stored)
+      sessionRecords.set(sessionId, acknowledged)
+      return acknowledged
+    })()
+    sessionRecordOpenings.set(sessionId, opening)
+    try {
+      return await opening
+    } finally {
+      sessionRecordOpenings.delete(sessionId)
     }
-    await definition.storage.upsertSession(created)
-    sessionRecords.set(sessionId, created)
-    return created
   }
 
-  function getSessionState(sessionId: string): Promise<SessionState> {
-    const existing = sessionStates.get(sessionId)
+  /**
+   * Registers an implicit session owner before exposing its facade.  This is
+   * deliberately independent from opening compute: a session that is only
+   * released or closed must still leave the sandbox adapter with enough durable
+   * ownership state to perform its administration lifecycle safely.
+   */
+  async function acknowledgeOwnedSessionRegistration(record: SessionRecord): Promise<SessionRecord> {
+    const binding = record.sandboxBinding
+    if (binding.relation !== 'owned' || binding.registration === 'registered') return record
+
+    await definition.sandbox.registerOwner({ owner: binding.owner, mode: 'create' })
+
+    // A failed acknowledgement write intentionally leaves the durable record
+    // pending.  Retrying acquisition replays the idempotent create registration
+    // rather than treating an unacknowledged owner as safe to administer.
+    const current = await definition.storage.getSession(record.id)
+    if (!current) {
+      throw new StateError('Session record disappeared during owner registration.', {
+        op: 'getSession', reason: 'session_missing'
+      })
+    }
+    if (current.instanceId !== record.instanceId || !sameHarnessIdentity(current.identity, record.identity)) {
+      throw new StateError('Session instance changed during owner registration.', {
+        op: 'getSession', reason: 'session_instance_mismatch'
+      })
+    }
+    if (!sameSessionSandboxBindingIdentity(current.sandboxBinding, binding)) {
+      throw new SandboxConflictError('binding_changed')
+    }
+    if (current.sandboxBinding.disposed || current.sandboxBinding.registration === 'registered') return current
+
+    const acknowledged: SessionRecord = {
+      ...current,
+      sandboxBinding: acknowledgeSandboxOwnerRegistration(current.sandboxBinding)
+    }
+    await definition.storage.upsertSession(acknowledged, 'update')
+
+    const persisted = await definition.storage.getSession(record.id)
+    if (!persisted) {
+      throw new StateError('Session record disappeared while acknowledging owner registration.', {
+        op: 'getSession', reason: 'session_missing'
+      })
+    }
+    if (persisted.instanceId !== record.instanceId || !sameHarnessIdentity(persisted.identity, record.identity)) {
+      throw new StateError('Session instance changed while acknowledging owner registration.', {
+        op: 'getSession', reason: 'session_instance_mismatch'
+      })
+    }
+    if (!sameSessionSandboxBindingIdentity(persisted.sandboxBinding, binding)) {
+      throw new SandboxConflictError('binding_changed')
+    }
+    if (persisted.sandboxBinding.registration !== 'registered') {
+      throw new StateError('Session owner registration was not acknowledged.', {
+        op: 'getSession', reason: 'owner_registration_pending'
+      })
+    }
+    return persisted
+  }
+
+  async function requireSessionRecord(sessionId: string): Promise<SessionRecord> {
+    const bound = sessionRecords.get(sessionId)
+    const stored = await definition.storage.getSession(sessionId)
+    if (!bound || !stored || stored.instanceId !== bound.instanceId || !sameHarnessIdentity(stored.identity, bound.identity)) {
+      throw new StateError('Session is no longer bound to this client.', { op: 'getSession', reason: 'session_instance_mismatch' })
+    }
+    return stored
+  }
+
+  function sandboxScope(record: SessionRecord, lifetime: 'session' | 'run', options?: { runId?: string; partition?: SandboxPartition }): SandboxScope {
+    const partition = options?.partition ?? { kind: 'shared' }
+    if (lifetime === 'session') return sandboxScopeForBinding(record.sandboxBinding, partition, lifetime)
+    if (!options?.runId) throw new InternalError('Run sandbox scope requires a run id.')
+    return sandboxScopeForBinding(record.sandboxBinding, partition, lifetime, options.runId)
+  }
+
+  function sandboxAttachmentKey(sessionId: string, scope: SandboxScope): string {
+    return createHash('sha256').update(JSON.stringify([
+      sessionId,
+      scope.owner,
+      scope.partition,
+      scope.lifetime,
+      scope.lifetime === 'run' ? scope.runId : undefined
+    ])).digest('hex')
+  }
+
+  function definitionPartition(
+    target: { kind: 'agent' | 'workflow'; id: string },
+    policy: SandboxPolicy | undefined,
+    inherited?: SandboxPartition,
+    useDefault = false
+  ): SandboxPartition {
+    return resolveSandboxPartition(
+      policy ?? (useDefault ? definition.sandboxBinding?.defaultPolicy : undefined),
+      { kind: target.kind, id: target.id, harnessName: definition.name },
+      inherited
+    )
+  }
+
+  /** Resolves a background task without allowing its default cleanup to touch a parent partition. */
+  function childTaskSandboxScope(
+    record: SessionRecord,
+    parentScope: SandboxScope,
+    target: { kind: 'agent'; id: string },
+    override: SandboxPolicy | undefined,
+    definitionPolicy: SandboxPolicy | undefined,
+    taskId: string
+  ): { readonly scope: SandboxScope; readonly taskOwned: boolean } {
+    const policy = override ?? definitionPolicy
+    if (policy === undefined) {
+      return {
+        scope: sandboxScope(record, 'run', { runId: taskId, partition: { kind: 'shared' } }),
+        taskOwned: true
+      }
+    }
+    const partition = definitionPartition(target, policy, parentScope.partition)
+    return {
+      scope: parentScope.lifetime === 'run'
+        ? sandboxScope(record, 'run', { runId: parentScope.runId, partition })
+        : sandboxScope(record, 'session', { partition }),
+      taskOwned: false
+    }
+  }
+
+  function digestDurableSandboxPolicy(current: HarnessDefinition<S>, workflowId: string): string {
+    const entries = (definitions: Record<string, { sandbox?: SandboxPolicy }>) => Object.entries(definitions)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, item]) => [id, item.sandbox ?? current.sandboxBinding?.defaultPolicy ?? 'inherit'])
+    return createHash('sha256').update(JSON.stringify({
+      layout: 'purista.harness.durable-sandbox-policy/v1',
+      workflowId,
+      defaultPolicy: current.sandboxBinding?.defaultPolicy ?? 'inherit',
+      agents: entries(current.agents),
+      workflows: entries(current.workflows)
+    })).digest('hex')
+  }
+
+  async function authorizeBorrowedOwner(record: SessionRecord): Promise<void> {
+    const binding = record.sandboxBinding
+    if (binding.relation !== 'borrowed') return
+    const owner = binding.owner
+    const actor = record.identity
+    const ownerIdentity = owner.identity
+    if (ownerIdentity?.tenantId !== undefined) {
+      if (actor?.tenantId !== ownerIdentity.tenantId) throw new SandboxPermissionDeniedError('scope_mismatch')
+    } else if (actor?.tenantId !== undefined) {
+      throw new SandboxPermissionDeniedError('scope_mismatch')
+    }
+    if (ownerIdentity?.principalId !== undefined && actor?.principalId !== ownerIdentity.principalId) {
+      throw new SandboxPermissionDeniedError('scope_mismatch')
+    }
+    if (!ownerIdentity && actor && (actor.tenantId !== undefined || actor.principalId !== undefined)) {
+      throw new SandboxPermissionDeniedError('scope_mismatch')
+    }
+    const authorizeOwner = definition.sandboxBinding?.authorizeOwner
+    if (!authorizeOwner) {
+      throw new HarnessConfigError('Explicit sandbox owners require sandbox.authorizeOwner.', {
+        reason: 'invalid_adapter', path: 'sandbox.authorizeOwner'
+      })
+    }
+    if (!await authorizeOwner({ owner, ...(actor ? { identity: actor } : {}), harnessName: definition.name, sessionId: record.id })) {
+      throw new SandboxPermissionDeniedError('owner_not_authorized')
+    }
+  }
+
+  function getSessionState(sessionId: string, selection?: { partition?: SandboxPartition; lifetime?: 'session' | 'run'; runId?: string }): Promise<SessionState> {
+    const record = sessionRecords.get(sessionId)
+    if (!record) return Promise.reject(new InternalError('Session sandbox opened before its session record was loaded.', { session_id: sessionId }))
+    const partition = selection?.partition ?? { kind: 'shared' }
+    const lifetime = selection?.lifetime ?? 'session'
+    const attachmentKey = createHash('sha256').update(JSON.stringify([sessionId, record.sandboxBinding.owner, partition, lifetime, selection?.runId])).digest('hex')
+    const existing = sessionStates.get(attachmentKey)
     if (existing) {
       return Promise.resolve(existing)
     }
-    const pending = sessionStateOpenings.get(sessionId)
+    const pending = sessionStateOpenings.get(attachmentKey)
     if (pending) {
       return pending
     }
 
     const opening = (async () => {
-      const sandboxSession = await definition.sandbox.open({ sessionId, runId: `init_${ulid()}` })
-      const created: SessionState = { busy: false, releasing: false, sandboxSession, mountedSkills: new Set<string>() }
-      sessionStates.set(sessionId, created)
-      sessionStateOpenings.delete(sessionId)
+      let record = sessionRecords.get(sessionId)
+      if (!record) throw new InternalError('Session sandbox opened before its session record was loaded.', { session_id: sessionId })
+      if (record.sandboxBinding.disposed) {
+        throw new SandboxStateLostError('Session sandbox was disposed and cannot be recreated.', {
+          reason: 'scope_terminated', lifetime: 'session'
+        })
+      }
+      await authorizeBorrowedOwner(record)
+      const binding = record.sandboxBinding
+      if (binding.registration === 'pending') {
+        // New sessions are acknowledged before the façade is returned. This
+        // branch is only for a recovered record whose acknowledgement was
+        // interrupted; `open()` performs the active-owner attach check.
+        await definition.sandbox.registerOwner({ owner: binding.owner, mode: 'create' })
+        record = { ...record, sandboxBinding: acknowledgeSandboxOwnerRegistration(binding) }
+        await definition.storage.upsertSession(record, 'update')
+        sessionRecords.set(sessionId, record)
+      }
+      const selectedRunId = selection?.runId
+      if (lifetime === 'run' && !selectedRunId) {
+        throw new InternalError('Run sandbox attachment requires a run id.')
+      }
+      const resolvedScope = lifetime === 'run'
+        ? sandboxScope(record, lifetime, { partition, runId: selectedRunId! })
+        : sandboxScope(record, lifetime, { partition })
+		const opened = await openSandbox({
+			scope: resolvedScope,
+			// `create` is idempotent for an existing active partition and is the
+			// only safe lazy-first-use mode for both owned and authorized borrowed
+			// owners. It never recreates terminated state.
+			mode: 'create',
+        ...(record.identity ? { identity: record.identity } : {})
+      })
+      const sandboxSession = opened.session
+      const created: SessionState = { sessionId, busy: false, releasing: false, sandboxSession, mountedSkills: new Set<string>(), scope: resolvedScope, attachmentKey }
+      sessionStates.set(attachmentKey, created)
+      sessionAttachmentEpochs.set(sessionId, (sessionAttachmentEpochs.get(sessionId) ?? 0) + 1)
+      sessionStateOpenings.delete(attachmentKey)
       return created
     })()
     // Let a failed open be retried instead of caching the rejection forever.
-    opening.catch(() => sessionStateOpenings.delete(sessionId))
-    sessionStateOpenings.set(sessionId, opening)
+    opening.catch(() => sessionStateOpenings.delete(attachmentKey))
+    sessionStateOpenings.set(attachmentKey, opening)
     return opening
   }
 
@@ -516,7 +838,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   /** Best-effort enrichment: a summary failure never reverses a committed application run. */
-  async function refreshMemorySummary(sessionId: string, sandboxSession: SandboxSession, signal: AbortSignal, identity?: HarnessIdentity): Promise<void> {
+  async function refreshMemorySummary(sessionId: string, sandboxSession: SandboxSessionBase, signal: AbortSignal, identity?: HarnessIdentity): Promise<void> {
     const config = definition.memorySummary
     if (!config) return
     const history = await definition.storage.listMessages(sessionId)
@@ -584,6 +906,49 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     await Promise.allSettled(selected.map((task) => task.cancel(reason)))
   }
 
+  function attachmentStatesForSession(sessionId: string): SessionState[] {
+    return [...sessionStates.values()].filter((candidate) => candidate.sessionId === sessionId)
+  }
+
+  async function releaseAllSessionResources(sessionId: string, reason: string): Promise<void> {
+    const states = attachmentStatesForSession(sessionId)
+    const results = await Promise.allSettled(states.map((candidate) => releaseSessionResources(sessionId, candidate, reason)))
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map((result) => result.reason)
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'Failed to release session resources.')
+  }
+
+  async function disposeSessionSandbox(sessionId: string, record: SessionRecord): Promise<void> {
+    await releaseAllSessionResources(sessionId, 'sandbox disposed')
+    if (record.sandboxBinding.relation === 'borrowed') return
+    const selector = { kind: 'owner' as const, owner: record.sandboxBinding.owner }
+    const result = await definition.sandbox.administration.purge({
+      selector,
+      idempotencyKey: `session:${record.instanceId}:dispose`
+    })
+    if (result.state !== 'completed') {
+      throw new SandboxError('Sandbox cleanup is pending.', { reason: 'cleanup_pending' })
+    }
+    if (definition.workspace) {
+      const workspaceResult = await definition.workspace.administration.purge({
+        selector,
+        idempotencyKey: `session:${record.instanceId}:dispose:workspace`
+      })
+      if (workspaceResult.state !== 'completed') {
+        throw new SandboxError('Workspace cleanup is pending.', { reason: 'cleanup_pending' })
+      }
+    }
+    const stored = await definition.storage.getSession(sessionId)
+    if (!stored || stored.instanceId !== record.instanceId) return
+    const updated = {
+      ...stored,
+      sandboxBinding: { ...stored.sandboxBinding, disposed: true },
+      updatedAt: now()
+    }
+    await definition.storage.upsertSession(updated, 'update')
+    sessionRecords.set(sessionId, updated)
+  }
+
   /**
    * Frees only process-local resources. Persisted session, message, and run
    * records deliberately remain intact so callers can reopen the same session
@@ -595,7 +960,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     // Facades are generation-bound. An older facade must never release a
     // sandbox opened by a later getSession(id) call for the same logical id.
-    if (sessionStates.get(sessionId) !== state) return Promise.resolve()
+    if (sessionStates.get(state.attachmentKey) !== state) return Promise.resolve()
     if (state.busy || state.releasing) {
       return Promise.reject(new SessionBusyError('Session is busy.', {
         session_id: sessionId,
@@ -612,12 +977,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
       const failures: unknown[] = []
       try {
-        await mcpRegistry.closeForSandboxKey(sessionId)
+        await mcpRegistry.closeForSandboxKey(state.attachmentKey)
       } catch (error) {
         failures.push(error)
       }
       try {
-        await state.sandboxSession.close()
+        await detachSandbox(state.sandboxSession)
       } catch (error) {
         failures.push(error)
       }
@@ -626,7 +991,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       // never be reused after a release attempt, and the next getSession call
       // receives a fresh sandbox/MCP binding rather than a potentially closed
       // handle. The original error is still surfaced to the caller.
-      if (sessionStates.get(sessionId) === state) sessionStates.delete(sessionId)
+      if (sessionStates.get(state.attachmentKey) === state) sessionStates.delete(state.attachmentKey)
       if (failures.length === 1) throw failures[0]
       if (failures.length > 1) throw new AggregateError(failures, 'Failed to release session resources.')
     })()
@@ -650,10 +1015,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     for (const event of events) {
       if (event.type === 'agent.started') agentCalls += 1
       if (event.type === 'tool.started') toolCalls += 1
-      if (event.type.startsWith('model.') && event.type.endsWith('.completed')) modelCalls += 1
-      if (event.type === 'model.object') modelCalls += 1
+      if (event.type === 'model.completed') modelCalls += 1
       const payload = event.payload
-      if (isJsonRecord(payload) && isTokenUsage(payload['usage'])) {
+      if ((event.type === 'model.completed' || event.type === 'model.embedding.completed' || event.type === 'model.rerank.completed') && isJsonRecord(payload) && isTokenUsage(payload['usage'])) {
         tokenTotals.inputTokens += payload['usage'].inputTokens
         tokenTotals.outputTokens += payload['usage'].outputTokens
         tokenTotals.totalTokens += payload['usage'].totalTokens
@@ -677,7 +1041,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   function memoryOptions(
     sessionId: string,
-    sandboxSession: SandboxSession,
+    sandboxSession: SandboxSessionBase,
     signal: AbortSignal,
     opts: {
       runId?: string
@@ -715,7 +1079,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   function memoryFacade(opts: {
     sessionId: string
-    sandboxSession: SandboxSession
+    sandboxSession: SandboxSessionBase
     signal: AbortSignal
     runId: string
     agentId?: string
@@ -742,14 +1106,73 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     inspect(): HarnessInspection {
       return definition.inspection
     },
-    async getSession(sessionId: string, identity?: HarnessIdentity): Promise<Session<S>> {
-      const sessionRecord = await ensureSessionRecord(sessionId, identity)
-      const state = await getSessionState(sessionId)
-      const memory = createMemoryFacade(memoryOptions(sessionId, state.sandboxSession, NEVER_ABORT_SIGNAL, sessionRecord.identity ? { identity: sessionRecord.identity } : {})).session
+    async getSession(sessionId: string, options?: SessionOptions): Promise<Session<S>> {
+      const sessionRecord = await ensureSessionRecord(sessionId, options)
+      // A borrowed owner is an application-owned capability, not merely a
+      // sandbox-open concern. Authorize it before returning a facade so
+      // history and memory APIs cannot be used before the application has
+      // admitted the caller.
+      await authorizeBorrowedOwner(sessionRecord)
+      let attachmentEpoch = sessionAttachmentEpochs.get(sessionId) ?? 0
+      let state: SessionState | undefined
+      let released = false
+      const requireSessionState = async (): Promise<SessionState> => {
+        if (released) {
+          throw new StateError('Session attachment is no longer active.', { op: 'getSession', reason: 'session_attachment_closed' })
+        }
+        const stored = await definition.storage.getSession(sessionId)
+        if (!stored || stored.instanceId !== sessionRecord.instanceId || !sameHarnessIdentity(stored.identity, sessionRecord.identity)) {
+          throw new StateError('Session instance is no longer active.', { op: 'getSession', reason: 'session_instance_changed' })
+        }
+        const attached = await getSessionState(sessionId)
+        if (state && state !== attached) {
+          throw new StateError('Session attachment is no longer active.', { op: 'getSession', reason: 'session_attachment_closed' })
+        }
+        state = attached
+        attachmentEpoch = sessionAttachmentEpochs.get(sessionId) ?? attachmentEpoch
+        return attached
+      }
+      const requireCurrentRecord = async (): Promise<void> => {
+        const stored = await definition.storage.getSession(sessionId)
+        if (!stored || stored.instanceId !== sessionRecord.instanceId || !sameHarnessIdentity(stored.identity, sessionRecord.identity)) {
+          throw new StateError('Session instance is no longer active.', { op: 'getSession', reason: 'session_instance_changed' })
+        }
+      }
+      const requireCurrentInstance = async (attachmentRequired = false): Promise<void> => {
+        await requireCurrentRecord()
+        if (released) {
+          throw new StateError('Session attachment is no longer active.', { op: 'getSession', reason: 'session_attachment_closed' })
+        }
+        if (attachmentRequired) await requireSessionState()
+      }
+      const lazySandboxSession: SandboxSessionBase = {
+        executor: 'unavailable',
+        read: async (path) => await (await requireSessionState()).sandboxSession.read(path),
+        readText: async (path, encoding) => await (await requireSessionState()).sandboxSession.readText(path, encoding),
+        write: async (path, data) => await (await requireSessionState()).sandboxSession.write(path, data),
+        remove: async (path, removeOptions) => await (await requireSessionState()).sandboxSession.remove(path, removeOptions),
+        list: async (path, listOptions) => await (await requireSessionState()).sandboxSession.list(path, listOptions),
+        stat: async (path) => await (await requireSessionState()).sandboxSession.stat(path),
+        exists: async (path) => await (await requireSessionState()).sandboxSession.exists(path),
+        mount: async (files, path) => await (await requireSessionState()).sandboxSession.mount(files, path),
+        close: async () => {
+          if (state) await releaseSessionResources(sessionId, state, 'memory session released')
+          released = true
+        }
+      }
+      const memory = createMemoryFacade(memoryOptions(sessionId, lazySandboxSession, NEVER_ABORT_SIGNAL, sessionRecord.identity ? { identity: sessionRecord.identity } : {})).session
       const workflowEntries = Object.entries(definition.workflows).map(([workflowId, workflow]) => {
         const invoker = {
-          prompt: (input: WorkflowInput<S, keyof NonNullable<S['workflows']>>, opts?: InvokeOptions) => runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts) as Promise<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>,
+          prompt: async (input: WorkflowInput<S, keyof NonNullable<S['workflows']>>, opts?: InvokeOptions) => {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed || !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts))
+            )
+            return runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts) as Promise<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>
+          },
           async *stream(input: WorkflowInput<S, keyof NonNullable<S['workflows']>>, opts?: InvokeOptions): AsyncIterable<RunEvent> {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed || !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts))
+            )
             for await (const event of streamWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts)) {
               yield event
             }
@@ -760,8 +1183,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const workflows = Object.fromEntries(workflowEntries) as Session<S>['workflows']
       const agentEntries = Object.entries(definition.agents).map(([agentId, agent]) => {
         const invoker = {
-          prompt: (input: AgentInput<S, keyof NonNullable<S['agents']>>, opts?: InvokeOptions) => runAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts) as Promise<AgentOutput<S, keyof NonNullable<S['agents']>>>,
+          prompt: async (input: AgentInput<S, keyof NonNullable<S['agents']>>, opts?: InvokeOptions) => {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed || !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts))
+            )
+            return runAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts) as Promise<AgentOutput<S, keyof NonNullable<S['agents']>>>
+          },
           async *stream(input: AgentInput<S, keyof NonNullable<S['agents']>>, opts?: InvokeOptions): AsyncIterable<RunEvent> {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed || !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts))
+            )
             for await (const event of streamAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts)) {
               yield event
             }
@@ -781,19 +1212,24 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         },
         memory,
         history: {
-          list: (opts) => definition.storage.listMessages(sessionId, opts)
+          list: async (opts) => {
+            await requireCurrentRecord()
+            return definition.storage.listMessages(sessionId, opts)
+          }
         },
         async getRunSummary(runId: string): Promise<RunSummary | undefined> {
           return getRunSummary(runId)
         },
         async clearHistory(): Promise<void> {
-          if (state.busy || state.releasing) {
+          await requireCurrentInstance()
+          if (state?.busy || state?.releasing) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'history_clear_during_run' })
           }
           await definition.storage.clearMessages(sessionId)
         },
         async replaceHistory(messages: ReadonlyArray<Omit<Message, 'id' | 'timestamp'>>): Promise<void> {
-          if (state.busy || state.releasing) {
+          await requireCurrentInstance()
+          if (state?.busy || state?.releasing) {
             throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: 'history_replace_during_run' })
           }
           const parsed = messages.map((message) => {
@@ -816,17 +1252,36 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         async close(): Promise<void> {
           // A stale facade is a no-op. In particular, it must not delete the
           // persisted conversation that a newer getSession(id) has reopened.
-          const current = sessionStates.get(sessionId)
-          if (current && current !== state) return
-          await releaseSessionResources(sessionId, state, 'session closed')
-          const reopened = sessionStates.get(sessionId)
-          if (reopened && reopened !== state) return
-          await definition.storage.closeSession(sessionId)
-          sessionRecords.delete(sessionId)
-          sessionStateOpenings.delete(sessionId)
+          if (state && sessionStates.get(state.attachmentKey) !== state && (sessionAttachmentEpochs.get(sessionId) ?? 0) !== attachmentEpoch) return
+          if (!state && released && (sessionAttachmentEpochs.get(sessionId) ?? 0) !== attachmentEpoch) return
+          await releaseAllSessionResources(sessionId, 'session closed')
+          const currentRecord = sessionRecords.get(sessionId)
+          if (!currentRecord || currentRecord.instanceId !== sessionRecord.instanceId) return
+          if (currentRecord.sandboxBinding.relation === 'owned') {
+            if (state) {
+              await terminateSandbox({ scope: state.scope, reason: 'session_closed' })
+            }
+            await disposeSessionSandbox(sessionId, currentRecord)
+          }
+          await definition.storage.closeSession(sessionId, sessionRecord.instanceId)
+          if (sessionRecords.get(sessionId)?.instanceId === sessionRecord.instanceId) {
+            sessionRecords.delete(sessionId)
+            sessionStateOpenings.delete(sessionId)
+          }
         },
         async release(): Promise<void> {
+          if (!state) {
+            released = true
+            return
+          }
           await releaseSessionResources(sessionId, state, 'session released')
+          released = true
+        },
+        async disposeSandbox(): Promise<void> {
+          await requireCurrentRecord()
+          const currentRecord = await requireSessionRecord(sessionId)
+          await disposeSessionSandbox(sessionId, currentRecord)
+          released = true
         }
       }
     },
@@ -849,7 +1304,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       for (const [sessionId, state] of sessionStates) {
         try {
-          await state.sandboxSession.close()
+          await detachSandbox(state.sandboxSession)
         } catch (error) {
           errors.push(error instanceof HarnessError ? error : new InternalError('Failed to close sandbox session.', { session_id: sessionId }, error))
         }
@@ -914,7 +1369,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<AgentOutput<S, K>> {
     validateInvokeOptions(opts)
-    const boundSession = await ensureSessionRecord(sessionId)
+    const boundSession = await requireSessionRecord(sessionId)
+    await authorizeBorrowedOwner(boundSession)
     if (opts?.durable) {
       throw new ValidationError('Durable execution is only supported for workflow runs.', { where: 'invoke_options', issues: { durable: 'agent_run' } })
     }
@@ -971,7 +1427,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     // Busy check precedes createRunSignal so an early SessionBusyError cannot
     // leak the run-timeout timer or the caller-signal abort listener.
-    const state = await getSessionState(sessionId)
+    const state = await getSessionState(sessionId, {
+      partition: definitionPartition({ kind: 'agent', id: agentId }, agent.sandbox, undefined, true)
+    })
     if (state.busy || state.releasing) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: state.releasing ? 'session_release_in_progress' : 'concurrent_run' })
     }
@@ -1038,13 +1496,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
           mcpRegistry,
           session: state.sandboxSession,
+          sandboxKey: state.attachmentKey,
           memory,
           mountedSkills: state.mountedSkills,
           ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
           ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: runSignal.signal,
+          runDeadline: runSignal.deadline,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
           maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
           telemetry,
@@ -1061,8 +1522,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finishedAt = now()
       await emit({ type: 'run.finished', runId, at: finishedAt, output: result as JsonValue })
       await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
-      const sessionRecord = await ensureSessionRecord(sessionId)
-      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+      const sessionRecord = await requireSessionRecord(sessionId)
+      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 }, 'update')
       return result as AgentOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
@@ -1093,8 +1554,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           error: serialized
         }),
         upsertSession: async () => {
-          const sessionRecord = await ensureSessionRecord(sessionId)
-          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+          const sessionRecord = await requireSessionRecord(sessionId)
+          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 }, 'update')
         }
       })
       throw finalError
@@ -1102,6 +1563,38 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       runSignal.cleanup()
       state.busy = false
     }
+  }
+
+  async function isSuccessfulAgentReplay(
+    sessionId: string,
+    agentId: string,
+    input: unknown,
+    opts: InvokeOptions | undefined
+  ): Promise<boolean> {
+    if (!opts?.idempotencyKey) return false
+    const previous = await definition.storage.getRun(directAgentIdempotencyRunId(sessionId, agentId, opts.idempotencyKey))
+    return previous?.status === 'succeeded'
+      && previous.sessionId === sessionId
+      && previous.kind === 'agent'
+      && previous.target === agentId
+      && JSON.stringify(previous.input) === JSON.stringify(input)
+  }
+
+  async function isSuccessfulWorkflowReplay(
+    sessionId: string,
+    workflowId: string,
+    input: unknown,
+    opts: InvokeOptions | undefined
+  ): Promise<boolean> {
+    const runId = opts?.durable?.runId
+      ?? (opts?.idempotencyKey ? workflowIdempotencyRunId(sessionId, workflowId, opts.idempotencyKey) : undefined)
+    if (!runId) return false
+    const previous = await definition.storage.getRun(runId)
+    return previous?.status === 'succeeded'
+      && previous.sessionId === sessionId
+      && previous.kind === 'workflow'
+      && previous.target === workflowId
+      && JSON.stringify(previous.input) === JSON.stringify(input)
   }
 
   async function* streamWorkflowCall<K extends keyof NonNullable<S['workflows']>>(
@@ -1127,15 +1620,46 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     onEvent?: (event: RunEvent) => Promise<void>
   ): Promise<WorkflowOutput<S, K>> {
     validateInvokeOptions(opts)
-    const boundSession = await ensureSessionRecord(sessionId)
+    const boundSession = await requireSessionRecord(sessionId)
+    await authorizeBorrowedOwner(boundSession)
     const durableStorage = resolveDurableStorage(opts)
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
+    const runId = opts?.durable?.runId
+      ?? (opts?.idempotencyKey ? workflowIdempotencyRunId(sessionId, workflowId, opts.idempotencyKey) : ulid())
+    const previous = await definition.storage.getRun(runId)
+    if (previous) {
+      const sameInvocation = previous.sessionId === sessionId
+        && previous.kind === 'workflow'
+        && previous.target === workflowId
+        && JSON.stringify(previous.input) === JSON.stringify(input)
+      if (!sameInvocation) {
+        throw new ValidationError('Workflow idempotency key is already bound to a different invocation.', {
+          where: 'invoke_options', issues: { ...(opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : { 'durable.runId': runId }) }
+        })
+      }
+      if (previous.status === 'succeeded') {
+        if (onEvent) {
+          const replayedAt = now()
+          await onEvent({ type: 'run.started', runId, at: replayedAt })
+          await onEvent({ type: 'run.finished', runId, at: replayedAt, output: previous.output ?? null })
+        }
+        return previous.output as WorkflowOutput<S, K>
+      }
+      if (previous.status === 'cancelled') {
+        throw new StateError('A cancelled workflow invocation cannot be replayed with the same idempotency key.', {
+          op: 'createRun', reason: 'idempotency_terminal_run'
+        })
+      }
+    }
+
     // Busy check precedes createRunSignal so an early SessionBusyError cannot
     // leak the run-timeout timer or the caller-signal abort listener.
-    const state = await getSessionState(sessionId)
+    const state = await getSessionState(sessionId, opts?.durable ? undefined : {
+      partition: definitionPartition({ kind: 'workflow', id: workflowId }, workflow.sandbox, undefined, true)
+    })
     if (state.busy || state.releasing) {
       throw new SessionBusyError('Session is busy.', { session_id: sessionId, reason: state.releasing ? 'session_release_in_progress' : 'concurrent_run' })
     }
@@ -1143,7 +1667,20 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const runSignal = createRunSignal(opts?.signal, opts?.timeoutMs ?? definition.defaults.runTimeoutMs)
 
     const startedAt = now()
-    const runId = opts?.durable ? opts.durable.runId : ulid()
+    const durableSandboxScope = opts?.durable
+      ? sandboxScope(boundSession, 'run', {
+          runId,
+          partition: definitionPartition({ kind: 'workflow', id: workflowId }, workflow.sandbox, undefined, true)
+        })
+      : undefined
+    if (opts?.durable && boundSession.sandboxBinding.relation === 'borrowed') {
+      throw new HarnessConfigError('Durable workflow execution requires an implicitly owned sandbox.', {
+        reason: 'invalid_sandbox_policy', path: 'session.sandboxOwner'
+      })
+    }
+    const durableSandboxPolicyDigest = durableSandboxScope
+      ? digestDurableSandboxPolicy(definition, workflowId)
+      : undefined
     const runRecord: RunRecord = {
       id: runId,
       sessionId,
@@ -1162,19 +1699,35 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
     let durableBinding: DurableWorkflowBinding | undefined
     let runSandboxSession = state.sandboxSession
+    let runSandboxScope: SandboxScope | undefined
     let runMountedSkills = state.mountedSkills
     let closeRunSandbox = false
+    let runSandboxTerminal = false
     let runCreated = false
+    let durableAttemptOwned = false
+    const durableSandboxPartitions = new Map<string, SandboxPartition>()
+    const retainDurablePartition = (scope: SandboxScope): void => {
+      if (scope.lifetime !== 'run' || scope.runId !== runId) return
+      durableSandboxPartitions.set(JSON.stringify(scope.partition), scope.partition)
+    }
     const delegationState: DelegationRunState = {
       totalChildAgentCalls: 0,
       activeChildAgentCalls: 0,
       inFlightChildCalls: new Set<Promise<unknown>>(),
+      checkpointBlockingChildTasks: new Set<Promise<unknown>>(),
       slotWaiters: []
     }
     try {
-      await definition.storage.createRun(runRecord)
-      runCreated = true
       if (durableStorage && opts?.durable) {
+        // A durable retry is owned by its existing run record. A competing
+        // worker must neither overwrite that record nor terminalize it when
+        // acquireRun rejects because another lease is active.
+        const existingDurableRun = await durableStorage.getRun(runId)
+        if (!existingDurableRun) {
+          await definition.storage.createRun(runRecord)
+          runCreated = true
+        }
+        if (!durableSandboxScope || !durableSandboxPolicyDigest) throw new InternalError('Durable sandbox scope was not resolved.')
         durableBinding = await beginDurableWorkflow({
           storage: durableStorage,
           ...(definition.workspace ? { workspace: definition.workspace } : {}),
@@ -1185,13 +1738,36 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           input: input as JsonValue,
           signal: runSignal.signal,
           logger: definition.logger,
-          harnessName: definition.name
+          harnessName: definition.name,
+          sandbox: {
+            owner: durableSandboxScope.owner,
+            partition: durableSandboxScope.partition,
+            policyDigest: durableSandboxPolicyDigest,
+            partitions: () => [...durableSandboxPartitions.values()]
+          },
+          beforeStepCheckpoint: () => {
+            if (delegationState.checkpointBlockingChildTasks.size > 0) {
+              throw new SandboxConflictError('checkpoint_busy')
+            }
+          }
         })
-        if (definition.workspace) {
-          runSandboxSession = await definition.sandbox.open({ sessionId, runId, signal: runSignal.signal }) as SandboxSession
+        retainDurablePartition(durableSandboxScope)
+        durableAttemptOwned = true
+        if (definition.workspace && definition.sandbox.capabilities?.includes('sandbox.workspace_binding')) {
+          runSandboxScope = durableSandboxScope
+          const opened = await openSandbox({
+            scope: runSandboxScope,
+            mode: durableBinding.resumed ? 'restore' : 'create',
+            ...(boundSession.identity ? { identity: boundSession.identity } : {}),
+            signal: runSignal.signal
+          })
+          runSandboxSession = opened.session as SandboxSessionBase
           runMountedSkills = new Set<string>()
           closeRunSandbox = true
         }
+      } else {
+        await definition.storage.createRun(runRecord)
+        runCreated = true
       }
       const memory = memoryFacade({
         sessionId,
@@ -1268,6 +1844,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                 sessionId,
                 parentRunId: runId,
                 workflowId,
+                parentSandboxScope: runSandboxScope ?? state.scope,
                 agentId: agentId as string,
                 agentInput,
                 agent: definition.agents[agentId as string] as AgentDefinition<S>,
@@ -1275,7 +1852,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                 workflowPolicy: delegationPolicy,
                 delegationState,
                 parentSignal: runSignal.signal,
+                parentDeadline: runSignal.deadline,
                 durable: durableBinding !== undefined,
+                onSandboxScope: retainDurablePartition,
                 metadata: opts?.metadata ?? {}
               }) as Promise<ChildTaskHandle<AgentOutput<S, K>>>
             },
@@ -1311,28 +1890,51 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                   })
                   // Compose signals before consuming budget so a composition
                   // failure can never leak an active delegation slot.
-                  const combinedSignal = combineSignals(runSignal.signal, agentOpts?.signal)
+                  const combinedSignal = combineSignals(runSignal.signal, agentOpts?.signal, runSignal.deadline)
                   const agentSignal = agentOpts?.timeoutMs !== undefined
-                    ? createRunSignal(combinedSignal.signal, agentOpts.timeoutMs)
+                    ? createRunSignal(combinedSignal.signal, agentOpts.timeoutMs, combinedSignal.deadline)
                     : combinedSignal
                   delegationState.totalChildAgentCalls += 1
                   delegationState.activeChildAgentCalls += 1
                   const delegationCallId = `delegate_${ulid()}`
                   const childCall = (async () => {
+                    await authorizeBorrowedOwner(boundSession)
+                    const parentScope = runSandboxScope ?? state.scope
+                    const inlineScope = sandboxScope(boundSession, parentScope.lifetime, {
+                      partition: definitionPartition({ kind: 'agent', id: agentId }, (agent as AgentDefinition<S>).sandbox, parentScope.partition),
+                      ...(parentScope.lifetime === 'run' ? { runId: parentScope.runId } : {})
+                    })
+                    retainDurablePartition(inlineScope)
+                    const inlineAttachmentKey = sandboxAttachmentKey(sessionId, inlineScope)
+                    let inlineSandbox = runSandboxSession
+                    let inlineMountedSkills = runMountedSkills
+                    let closeInlineSandbox = false
+                    if (inlineAttachmentKey !== (runSandboxScope ? sandboxAttachmentKey(sessionId, runSandboxScope) : state.attachmentKey)) {
+                      const opened = await openSandbox({
+                        scope: inlineScope,
+                        mode: 'create',
+                        ...(boundSession.identity ? { identity: boundSession.identity } : {}),
+                        signal: agentSignal.signal
+                      })
+                      inlineSandbox = opened.session as SandboxSessionBase
+                      inlineMountedSkills = new Set<string>()
+                      closeInlineSandbox = true
+                    }
                     const resolvedHistoryWindow = agentOpts?.historyWindow ?? opts?.historyWindow ?? definition.defaults.historyWindow
                     const contextProjection = agentOpts?.contextProjection ?? opts?.contextProjection ?? (selectedModelAlias ? definition.models[selectedModelAlias]?.contextProjection : undefined) ?? definition.defaults.contextProjection
                     const agentMetadata = { ...(opts?.metadata ?? {}), ...(agentOpts?.metadata ?? {}) }
-                    const agentMemory = memoryFacade({
-                      sessionId,
-                      runId,
-                      workflowId,
-                      agentId,
-                      signal: agentSignal.signal,
-                      sandboxSession: runSandboxSession,
-                      ...(boundSession.identity ? { identity: boundSession.identity } : {}),
-                      metadata: agentMetadata
-                    })
-                    const run = await runDefaultAgent({
+                    try {
+                      const agentMemory = memoryFacade({
+                        sessionId,
+                        runId,
+                        workflowId,
+                        agentId,
+                        signal: agentSignal.signal,
+                        sandboxSession: inlineSandbox,
+                        ...(boundSession.identity ? { identity: boundSession.identity } : {}),
+                        metadata: agentMetadata
+                      })
+                      const run = await runDefaultAgent({
                       harnessName: definition.name,
                       agentId,
                       runId,
@@ -1356,25 +1958,34 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       customTools: definition.tools as ToolsConfig,
                       ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
                       mcpRegistry,
-                      session: runSandboxSession,
+                      session: inlineSandbox,
+                      sandboxKey: inlineAttachmentKey,
                       memory: agentMemory,
-                      mountedSkills: runMountedSkills,
+                      mountedSkills: inlineMountedSkills,
                       ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
                       ...(contextProjection ? { contextProjection } : {}),
                       maxSteps: definition.defaults.agentMaxIterations ?? 16,
                       signal: agentSignal.signal,
+                      runDeadline: agentSignal.deadline,
                       toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+                      decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
                       maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
                       logger: definition.logger,
                       telemetry,
                       emitEvent: emit,
                       metadata: agentMetadata
-                    })
-                    if (run.emitted.length > 0) {
-                      await persistConversationTurn(sessionId, run.emitted)
-                      await refreshMemorySummary(sessionId, runSandboxSession, agentSignal.signal, boundSession.identity)
+                      })
+                      if (run.emitted.length > 0) {
+                        await persistConversationTurn(sessionId, run.emitted)
+                        await refreshMemorySummary(sessionId, inlineSandbox, agentSignal.signal, boundSession.identity)
+                      }
+                      return run.output
+                    } finally {
+                      if (closeInlineSandbox) {
+                        await mcpRegistry.closeForSandboxKey(inlineAttachmentKey)
+                        await detachSandbox(inlineSandbox)
+                      }
                     }
-                    return run.output
                   })()
                   delegationState.inFlightChildCalls.add(childCall)
                   try {
@@ -1444,12 +2055,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const finishedAt = now()
       if (durableBinding) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_success' }, () => durableBinding!.finishSuccess(result as JsonValue))
+        runSandboxTerminal = true
       }
       const runFinished: RunEvent = { type: 'run.finished', runId, at: finishedAt, output: result as JsonValue }
       await emit(runFinished)
       await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: result as JsonValue })
-      const sessionRecord = await ensureSessionRecord(sessionId)
-      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+      const sessionRecord = await requireSessionRecord(sessionId)
+      await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 }, 'update')
       return result as WorkflowOutput<S, K>
     } catch (error) {
       const finalError = normalizeRunError(error, runSignal.signal)
@@ -1462,7 +2074,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       const finishedAt = now()
       const serialized = serializeError(finalError)
-      if (!runCreated) {
+      if (!runCreated && !durableAttemptOwned) {
+        throw finalError
+      }
+      // `beginDurableWorkflow` either acquired a binding or released its own
+      // provisional lease before it throws. Without a binding this invocation
+      // cannot safely finish a durable run record.
+      if (durableStorage && opts?.durable && !durableBinding) {
         throw finalError
       }
       if (finalError instanceof ExternalWaitPendingError) {
@@ -1474,6 +2092,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       if (durableBinding && finalError instanceof OperationCancelledError) {
         await guardDurableStep({ sessionId, runId, workflowId, operation: 'finish_cancelled' }, () => durableBinding!.finishCancelled(finalError))
+        runSandboxTerminal = true
       }
       const log = finalError instanceof OperationCancelledError ? definition.logger.warn.bind(definition.logger) : definition.logger.error.bind(definition.logger)
       log('Harness workflow run failed.', {
@@ -1497,28 +2116,36 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           error: serialized
         }),
         upsertSession: async () => {
-          const sessionRecord = await ensureSessionRecord(sessionId)
-          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 })
+          const sessionRecord = await requireSessionRecord(sessionId)
+          await definition.storage.upsertSession({ ...sessionRecord, updatedAt: finishedAt, runCount: sessionRecord.runCount + 1 }, 'update')
         }
       })
       throw finalError
     } finally {
       // Releases the lease for a non-cancel failure so a retry with the same run
       // id can resume; a no-op once the run was settled (success/cancel).
-      if (durableBinding) await durableBinding.dispose()
       if (closeRunSandbox) {
         try {
-          await runSandboxSession.close()
+          await detachSandbox(runSandboxSession)
         } catch (error) {
           definition.logger.warn('Failed to close durable run sandbox.', {
-            harness: definition.name,
-            session_id: sessionId,
-            run_id: runId,
-            workflow_id: workflowId,
-            error: serializeError(error)
+            error_type: telemetryErrorType(error)
           })
         }
       }
+      if (durableSandboxScope && runSandboxTerminal) {
+        for (const partition of durableSandboxPartitions.values()) {
+          const scope = sandboxScope(boundSession, 'run', { runId, partition })
+          try {
+            await terminateSandbox({ scope, reason: 'run_disposed' })
+          } catch (error) {
+            definition.logger.warn('Failed to terminate durable run sandbox.', {
+              error_type: telemetryErrorType(error)
+            })
+          }
+        }
+      }
+      if (durableBinding) await durableBinding.dispose()
       runSignal.cleanup()
       state.busy = false
     }
@@ -1534,48 +2161,57 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     runId: string
     workflowId: string
     emit: (event: RunEvent) => Promise<void>
-  }): { wait(request: ExternalWaitRequest): Promise<ExternalWaitSnapshot> } {
+  }): { wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> } {
     return {
       wait: async (request) => {
         if (!args.durable) {
           throw new ExternalWaitError('External waits require a durable workflow invocation.', 'durable_required')
         }
+        const validatedRequest = validateExternalWaitRequest(request)
         return args.telemetry.span('harness.external_wait.wait', {
           'harness.name': args.harnessName,
           'harness.session.id': args.sessionId,
           'harness.run.id': args.runId,
           'harness.workflow.id': args.workflowId,
-          'harness.external_wait.kind': request.kind,
-          'harness.external_wait.schema_version': request.schemaVersion,
-          'harness.external_wait.definition_version': request.definitionVersion,
-          'harness.external_wait.deadline_expired': Date.parse(request.deadline) <= Date.now()
+          'harness.external_wait.kind': validatedRequest.kind,
+          'harness.external_wait.schema_version': validatedRequest.schemaVersion,
+          'harness.external_wait.definition_version': validatedRequest.definitionVersion,
+          'harness.external_wait.deadline_expired': Date.parse(validatedRequest.deadline) <= Date.now()
         }, async () => {
-          const registration = await args.storage.registerWait({ ...request, runId: args.runId, sessionId: args.sessionId })
+          const registration = validateExternalWaitRegistration(await args.storage.registerWait({
+            ...validatedRequest,
+            runId: args.runId,
+            sessionId: args.sessionId
+          }))
+          assertExternalWaitSnapshotRequest(registration.snapshot, validatedRequest)
+          const readback = await args.storage.getWait(validatedRequest.waitId)
+          if (!readback) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+          const snapshot = validateExternalWaitSnapshot(readback)
+          assertExternalWaitSnapshotRequest(snapshot, validatedRequest)
           if (registration.created) {
             await args.emit({
-              type: 'external_wait.requested', runId: args.runId, at: now(), waitId: request.waitId,
-              kind: request.kind, schemaVersion: request.schemaVersion,
-              definitionVersion: request.definitionVersion, deadline: request.deadline
+              type: 'external_wait.requested', runId: args.runId, at: now(), waitId: validatedRequest.waitId,
+              kind: validatedRequest.kind, schemaVersion: validatedRequest.schemaVersion,
+              definitionVersion: validatedRequest.definitionVersion, deadline: validatedRequest.deadline
             })
           }
-          const snapshot = registration.snapshot.status === 'waiting'
-            ? (await args.storage.getWait(request.waitId) ?? registration.snapshot)
-            : registration.snapshot
           if (snapshot.status === 'waiting') {
             await args.emit({ type: 'external_wait.waiting', runId: args.runId, at: now(), waitId: snapshot.waitId, kind: snapshot.kind, deadline: snapshot.deadline })
             throw new ExternalWaitPendingError(snapshot)
           }
+          const resolved = asExternalWaitResolved(snapshot)
+          if (!resolved) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
           await args.emit({
-            type: 'external_wait.resolved', runId: args.runId, at: now(), waitId: snapshot.waitId,
-            kind: snapshot.kind, outcome: snapshot.status, deadline: snapshot.deadline
+            type: 'external_wait.resolved', runId: args.runId, at: now(), waitId: resolved.waitId,
+            kind: resolved.kind, outcome: resolved.status, deadline: resolved.deadline
           })
           args.telemetry.recordCounter('harness.external_wait.resolved', 1, {
             'harness.name': args.harnessName,
             'harness.workflow.id': args.workflowId,
-            'harness.external_wait.kind': snapshot.kind,
-            'harness.external_wait.outcome': snapshot.status
+            'harness.external_wait.kind': resolved.kind,
+            'harness.external_wait.outcome': resolved.status
           })
-          return snapshot
+          return resolved
         })
       }
     }
@@ -1595,14 +2231,17 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     sessionId: string
     parentRunId: string
     workflowId: string
+    parentSandboxScope: SandboxScope
     agentId: string
     agentInput: unknown
     agent: AgentDefinition<S>
-    options?: { idempotencyKey?: string; timeoutMs?: number; model?: string; context?: 'isolated'; mode?: 'one_shot' | 'continuable' }
+    options?: { idempotencyKey?: string; timeoutMs?: number; model?: string; context?: 'isolated'; sandbox?: SandboxPolicy; mode?: 'one_shot' | 'continuable' }
     workflowPolicy: EffectiveDelegationPolicy
     delegationState: DelegationRunState
     parentSignal: AbortSignal
+    parentDeadline: number
     durable: boolean
+    onSandboxScope?: (scope: SandboxScope) => void
     metadata: Readonly<Record<string, JsonValue>>
   }): Promise<ChildTaskHandle<JsonValue>> {
     if (args.parentSignal.aborted) throw abortError(args.parentSignal, 'run', 'Run was cancelled.')
@@ -1669,9 +2308,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
 
     const controller = new AbortController()
-    const parentAndTask = combineSignals(args.parentSignal, controller.signal)
+    const parentAndTask = combineSignals(args.parentSignal, controller.signal, args.parentDeadline)
     const taskSignal = args.options?.timeoutMs !== undefined
-      ? createRunSignal(parentAndTask.signal, args.options.timeoutMs)
+      ? createRunSignal(parentAndTask.signal, args.options.timeoutMs, parentAndTask.deadline)
       : parentAndTask
     const createdAt = now()
     const descriptor: ChildTaskDescriptor = Object.freeze({
@@ -1729,7 +2368,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       await definition.storage.finishRun(taskId, { status, finishedAt, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) })
     }
     const result = (async (): Promise<JsonValue> => {
-      let taskSandbox: SandboxSession | undefined
+      let taskSandbox: SandboxSessionBase | undefined
+      let taskSandboxScope: SandboxScope | undefined
+      let taskSandboxOwned = false
       let slotAcquired = false
       try {
         await emit({
@@ -1740,8 +2381,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         await emit({ type: 'run.started', runId: taskId, at: createdAt })
         await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
         slotAcquired = true
-        taskSandbox = await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
-        const childSession = await ensureSessionRecord(args.sessionId)
+        const childSession = await requireSessionRecord(args.sessionId)
+        await authorizeBorrowedOwner(childSession)
+        const selected = childTaskSandboxScope(childSession, args.parentSandboxScope, { kind: 'agent', id: args.agentId }, args.options?.sandbox, args.agent.sandbox, taskId)
+        taskSandboxScope = selected.scope
+        args.onSandboxScope?.(taskSandboxScope)
+        taskSandboxOwned = selected.taskOwned
+        const opened = await openSandbox({ scope: taskSandboxScope, mode: 'create', ...(childSession.identity ? { identity: childSession.identity } : {}), signal: taskSignal.signal })
+        taskSandbox = opened.session as SandboxSessionBase
         const memory = memoryFacade({
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
           signal: taskSignal.signal, sandboxSession: taskSandbox, ...(childSession.identity ? { identity: childSession.identity } : {}), metadata: args.metadata
@@ -1769,12 +2416,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
           mcpRegistry,
           session: taskSandbox,
+          sandboxKey: taskSandboxScope ? sandboxAttachmentKey(args.sessionId, taskSandboxScope) : args.sessionId,
           memory,
           mountedSkills: new Set<string>(),
           ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: taskSignal.signal,
+          runDeadline: taskSignal.deadline,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
           maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
           telemetry,
@@ -1793,13 +2443,22 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         taskSignal.cleanup()
         if (taskSignal !== parentAndTask) parentAndTask.cleanup()
         if (taskSandbox) {
-          try { await taskSandbox.close() } catch (error) {
-            definition.logger.warn('Failed to close child-task sandbox.', { task_id: taskId, error: serializeError(error) })
+          try { await detachSandbox(taskSandbox) } catch (error) {
+            definition.logger.warn('Failed to close child-task sandbox.', { error_type: telemetryErrorType(error) })
+          }
+        }
+        if (taskSandboxScope && taskSandboxOwned) {
+          try { await terminateSandbox({ scope: taskSandboxScope, reason: 'run_disposed' }) } catch (error) {
+            definition.logger.warn('Failed to terminate child-task sandbox.', { error_type: telemetryErrorType(error) })
           }
         }
         childTasks.delete(taskId)
       }
     })()
+    if (args.durable) {
+      args.delegationState.checkpointBlockingChildTasks.add(result)
+      result.finally(() => args.delegationState.checkpointBlockingChildTasks.delete(result)).catch(() => undefined)
+    }
     live = {
       descriptor,
       controller,
@@ -1857,6 +2516,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     agentId: string
     agentInput: unknown
     agent: AgentDefinition<S>
+    options?: { sandbox?: SandboxPolicy }
+    parentSandboxScope: SandboxScope
     workflowPolicy: EffectiveDelegationPolicy
     delegationState: DelegationRunState
     metadata: Readonly<Record<string, JsonValue>>
@@ -1870,7 +2531,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }): ChildTaskHandle<JsonValue> {
     const { taskId, descriptor, controller, taskSignal, parentAndTask, modelAlias } = args
     const history: Message[] = []
-    let taskSandbox: SandboxSession | undefined
+    let taskSandbox: SandboxSessionBase | undefined
+    let taskSandboxScope: SandboxScope | undefined
+    let taskSandboxOwned = false
     let settled = false
     let closing = false
     let lastOutput: JsonValue | undefined
@@ -1893,11 +2556,17 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       if (taskSignal !== parentAndTask) parentAndTask.cleanup()
       if (taskSandbox) {
         try {
-          await taskSandbox.close()
+          await detachSandbox(taskSandbox)
         } catch (error) {
-          definition.logger.warn('Failed to close continuable child-task sandbox.', { task_id: taskId, error: serializeError(error) })
+          definition.logger.warn('Failed to close continuable child-task sandbox.', { error_type: telemetryErrorType(error) })
         }
         taskSandbox = undefined
+      }
+      if (taskSandboxScope && taskSandboxOwned) {
+        try { await terminateSandbox({ scope: taskSandboxScope, reason: 'run_disposed' }) } catch (error) {
+          definition.logger.warn('Failed to terminate continuable child-task sandbox.', { error_type: telemetryErrorType(error) })
+        }
+        taskSandboxScope = undefined
       }
       childTasks.delete(taskId)
     }
@@ -1927,8 +2596,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       try {
         await acquireDelegationSlot(args.delegationState, args.workflowPolicy, taskSignal.signal)
         slotAcquired = true
-        taskSandbox ??= await definition.sandbox.open({ sessionId: args.sessionId, runId: taskId, signal: taskSignal.signal }) as SandboxSession
-        const childSession = await ensureSessionRecord(args.sessionId)
+        const childSession = await requireSessionRecord(args.sessionId)
+        if (!taskSandbox) {
+          await authorizeBorrowedOwner(childSession)
+          const selected = childTaskSandboxScope(childSession, args.parentSandboxScope, { kind: 'agent', id: args.agentId }, args.options?.sandbox, args.agent.sandbox, taskId)
+          taskSandboxScope = selected.scope
+          taskSandboxOwned = selected.taskOwned
+          const opened = await openSandbox({ scope: taskSandboxScope, mode: 'create', ...(childSession.identity ? { identity: childSession.identity } : {}), signal: taskSignal.signal })
+          taskSandbox = opened.session as SandboxSessionBase
+        }
         const memory = memoryFacade({
           sessionId: args.sessionId, runId: taskId, workflowId: args.workflowId, agentId: args.agentId,
           signal: taskSignal.signal, sandboxSession: taskSandbox, ...(childSession.identity ? { identity: childSession.identity } : {}), metadata: args.metadata
@@ -1955,12 +2631,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           ...(definition.governance ? { governance: definition.governance as GovernanceConfig<any> } : {}),
           mcpRegistry,
           session: taskSandbox,
+          sandboxKey: taskSandboxScope ? sandboxAttachmentKey(args.sessionId, taskSandboxScope) : args.sessionId,
           memory,
           mountedSkills: new Set<string>(),
           ...(contextProjection ? { contextProjection } : {}),
           maxSteps: definition.defaults.agentMaxIterations ?? 16,
           signal: taskSignal.signal,
+          runDeadline: taskSignal.deadline,
           toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+          decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
           maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
           telemetry,
@@ -2342,8 +3021,12 @@ function withRunEventModelHandle(
 
   const text = source['text']
   if (typeof text === 'function') {
-    wrapped['text'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) =>
-      text.call(source, req, signal, mergeModelRunContext(context, ctx))
+    wrapped['text'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = await text.call(source, req, signal, runContext) as { usage?: TokenUsage; finishReason?: FinishReason }
+      await emitModelCompleted(emitEvent, context, alias, 'text', response)
+      return response
+    }
   }
 
   const object = source['object']
@@ -2351,17 +3034,7 @@ function withRunEventModelHandle(
     wrapped['object'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
       const runContext = mergeModelRunContext(context, ctx)
       const response = await object.call(source, req, signal, runContext) as { object: JsonValue; usage?: TokenUsage }
-      if (runContext.emitRunEvents === true) {
-        await emitEvent({
-          type: 'model.object',
-          runId: context.runId,
-          ...(context.agentId ? { agentId: context.agentId } : {}),
-          ...(context.workflowId ? { workflowId: context.workflowId } : {}),
-          modelAlias: alias,
-          object: response.object,
-          ...(response.usage ? { usage: response.usage } : {})
-        })
-      }
+      await emitModelCompleted(emitEvent, context, alias, 'object', response)
       return response
     }
   }
@@ -2411,7 +3084,8 @@ function withRunEventModelHandle(
       return emitTextStreamRunEvents(
         textStream.call(source, req, signal, streamContext) as AsyncIterable<unknown>,
         streamContext,
-        emitEvent
+        emitEvent,
+        signal
       )
     }
   }
@@ -2423,7 +3097,8 @@ function withRunEventModelHandle(
       return emitObjectStreamRunEvents(
         objectStream.call(source, req, signal, streamContext) as AsyncIterable<unknown>,
         streamContext,
-        emitEvent
+        emitEvent,
+        signal
       )
     }
   }
@@ -2450,16 +3125,17 @@ function modelStreamRunContext(context: ModelRunContext, override: Partial<Model
   return {
     ...merged,
     modelAlias: alias,
-    ...(merged.emitRunEvents === true ? { streamId: `model_${ulid()}` } : {})
+    streamId: `model_${ulid()}`
   }
 }
 
 async function* emitTextStreamRunEvents(
   stream: AsyncIterable<unknown>,
   context: ModelRunContext,
-  emitEvent: (event: RunEvent) => Promise<void>
+  emitEvent: (event: RunEvent) => Promise<void>,
+  signal: AbortSignal
 ): AsyncIterable<unknown> {
-  for await (const chunk of stream) {
+  for await (const chunk of withSuccessfulStreamFinish(stream, signal)) {
     if (context.emitRunEvents === true && isTextDeltaChunk(chunk)) {
       await emitEvent({
         type: 'model.delta',
@@ -2470,6 +3146,8 @@ async function* emitTextStreamRunEvents(
         streamId: context.streamId!,
         delta: chunk.text
       })
+    } else if (isTextFinishChunk(chunk)) {
+      await emitModelCompleted(emitEvent, context, context.modelAlias!, 'textStream', chunk)
     }
     yield chunk
   }
@@ -2478,9 +3156,10 @@ async function* emitTextStreamRunEvents(
 async function* emitObjectStreamRunEvents(
   stream: AsyncIterable<unknown>,
   context: ModelRunContext,
-  emitEvent: (event: RunEvent) => Promise<void>
+  emitEvent: (event: RunEvent) => Promise<void>,
+  signal: AbortSignal
 ): AsyncIterable<unknown> {
-  for await (const chunk of stream) {
+  for await (const chunk of withSuccessfulStreamFinish(stream, signal)) {
     if (context.emitRunEvents === true && isObjectPartialChunk(chunk)) {
       await emitEvent({
         type: 'model.object.partial',
@@ -2491,7 +3170,10 @@ async function* emitObjectStreamRunEvents(
         streamId: context.streamId!,
         partial: chunk.partial
       })
-    } else if (context.emitRunEvents === true && isObjectFinishChunk(chunk)) {
+    } else if (isTextFinishChunk(chunk)) {
+      if (!isObjectFinishChunk(chunk)) throw invalidModelCompletion()
+      await emitModelCompleted(emitEvent, context, context.modelAlias!, 'objectStream', chunk)
+      if (context.emitRunEvents !== true) { yield chunk; continue }
       await emitEvent({
         type: 'model.object',
         runId: context.runId,
@@ -2499,16 +3181,36 @@ async function* emitObjectStreamRunEvents(
         ...(context.workflowId ? { workflowId: context.workflowId } : {}),
         ...(context.modelAlias ? { modelAlias: context.modelAlias } : {}),
         ...(context.streamId ? { streamId: context.streamId } : {}),
-        object: chunk.object,
-        ...(chunk.usage ? { usage: chunk.usage } : {})
+        object: chunk.object
       })
     }
     yield chunk
   }
 }
 
+/** Delay the terminal chunk until the source has successfully exhausted. */
+async function* withSuccessfulStreamFinish(stream: AsyncIterable<unknown>, signal: AbortSignal): AsyncIterable<unknown> {
+  let finish: { kind: 'finish' } | undefined
+  for await (const chunk of stream) {
+    if (signal.aborted) throw abortError(signal, 'model', 'Model stream was cancelled.')
+    if (finish) {
+      throw new ValidationError('Model stream emitted a chunk after its finish.', {
+        where: 'model_response', issues: [{ code: 'invalid_stream_completion' }]
+      })
+    }
+    if (isTextFinishChunk(chunk)) finish = chunk
+    else yield chunk
+  }
+  if (signal.aborted) throw abortError(signal, 'model', 'Model stream was cancelled.')
+  if (finish) yield finish
+}
+
 function isTextDeltaChunk(chunk: unknown): chunk is { kind: 'delta'; text: string } {
   return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'delta' && typeof (chunk as { text?: unknown }).text === 'string')
+}
+
+function isTextFinishChunk(chunk: unknown): chunk is { kind: 'finish'; usage?: TokenUsage; finishReason?: FinishReason } {
+  return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'finish')
 }
 
 function isObjectPartialChunk(chunk: unknown): chunk is { kind: 'partial'; partial: JsonValue } {
@@ -2516,7 +3218,44 @@ function isObjectPartialChunk(chunk: unknown): chunk is { kind: 'partial'; parti
 }
 
 function isObjectFinishChunk(chunk: unknown): chunk is { kind: 'finish'; object: JsonValue; usage?: TokenUsage } {
-  return Boolean(chunk && typeof chunk === 'object' && (chunk as { kind?: unknown }).kind === 'finish' && Object.prototype.hasOwnProperty.call(chunk, 'object'))
+  if (!isTextFinishChunk(chunk)) return false
+  // Inspect the own data property without invoking an adapter-supplied getter.
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(chunk, 'object')
+    return Boolean(descriptor && 'value' in descriptor && isJsonValue(descriptor.value))
+  } catch { return false }
+}
+
+const modelCompletionMetadataSchema = z.object({
+  usage: tokenUsageSchema.optional(),
+  finishReason: finishReasonSchema.optional()
+})
+
+function invalidModelCompletion(): ValidationError {
+  return new ValidationError('Model completion is invalid.', {
+    where: 'model_response', issues: [{ code: 'invalid_model_completion' }]
+  })
+}
+
+async function emitModelCompleted(
+  emitEvent: (event: RunEvent) => Promise<void>,
+  context: ModelRunContext,
+  alias: string,
+  operation: 'text' | 'object' | 'textStream' | 'objectStream',
+  response: unknown
+): Promise<void> {
+  let metadata: z.infer<typeof modelCompletionMetadataSchema>
+  try {
+    metadata = modelCompletionMetadataSchema.parse(response)
+  } catch {
+    // Never preserve parser details or adapter-thrown accessor errors as content metadata.
+    throw invalidModelCompletion()
+  }
+  await emitEvent({
+    type: 'model.completed', runId: context.runId, ...(context.agentId ? { agentId: context.agentId } : {}), ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+    modelAlias: alias, operation, ...(operation.endsWith('Stream') && context.streamId ? { streamId: context.streamId } : {}),
+    ...(metadata.usage ? { usage: metadata.usage } : {}), ...(metadata.finishReason ? { finishReason: metadata.finishReason } : {})
+  })
 }
 
 function configureHarnessAdapters(
@@ -2716,59 +3455,45 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
     case 'policy.evaluated':
       return {
         agentId: event.agentId,
+        invocationId: event.invocationId,
         toolId: event.toolId,
         callId: event.callId,
-        decisionId: event.decisionId,
-        policyId: event.policyId,
-        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
-        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
+        step: event.step,
+        evidence: event.evidence,
         effect: event.effect,
-        enforced: event.enforced,
-        ...(event.message ? { message: event.message } : {}),
-        ...(event.reason ? { reason: event.reason } : {}),
-        ...(event.riskLevel ? { riskLevel: event.riskLevel } : {}),
-        ...(event.tags ? { tags: event.tags } : {})
+        enforced: event.enforced
       } as unknown as JsonValue
     case 'policy.exposure':
       return {
         agentId: event.agentId,
+        invocationId: event.invocationId,
         toolId: event.toolId,
-        decisionId: event.decisionId,
-        policyId: event.policyId,
-        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
-        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
+        evidence: event.evidence,
         effect: event.effect,
         enforced: event.enforced,
-        step: event.step,
-        ...(event.message ? { message: event.message } : {}),
-        ...(event.reason ? { reason: event.reason } : {}),
-        ...(event.riskLevel ? { riskLevel: event.riskLevel } : {}),
-        ...(event.tags ? { tags: event.tags } : {})
+        step: event.step
       } as unknown as JsonValue
     case 'approval.requested':
       return {
         agentId: event.agentId,
+        invocationId: event.invocationId,
         toolId: event.toolId,
         callId: event.callId,
+        step: event.step,
         approvalId: event.approvalId,
-        decisionId: event.decisionId,
-        policyId: event.policyId,
-        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
-        ...(event.ruleId ? { ruleId: event.ruleId } : {})
+        demands: event.demands
       } as unknown as JsonValue
     case 'approval.finished':
       return {
         agentId: event.agentId,
+        invocationId: event.invocationId,
         toolId: event.toolId,
         callId: event.callId,
+        step: event.step,
         approvalId: event.approvalId,
-        decisionId: event.decisionId,
-        policyId: event.policyId,
-        ...(event.policyVersion ? { policyVersion: event.policyVersion } : {}),
-        ...(event.ruleId ? { ruleId: event.ruleId } : {}),
-        decision: event.decision,
-        ...(event.approverId ? { approverId: event.approverId } : {}),
-        ...(event.reason ? { reason: event.reason } : {})
+        outcome: event.outcome,
+        ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
+        ...(event.errorCode ? { errorCode: event.errorCode } : {})
       } as unknown as JsonValue
     case 'external_wait.requested':
       return { waitId: event.waitId, kind: event.kind, schemaVersion: event.schemaVersion, definitionVersion: event.definitionVersion, deadline: event.deadline }
@@ -2778,11 +3503,20 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
       return { waitId: event.waitId, kind: event.kind, outcome: event.outcome, deadline: event.deadline }
     case 'model.object.partial':
       return { ...modelStreamEventMeta(event), partial: '[redacted]' }
+    case 'model.completed':
+      return {
+        ...(event.agentId ? { agentId: event.agentId } : {}),
+        ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+        modelAlias: event.modelAlias,
+        operation: event.operation,
+        ...(event.streamId ? { streamId: event.streamId } : {}),
+        ...(event.usage ? { usage: event.usage } : {}),
+        ...(event.finishReason ? { finishReason: event.finishReason } : {})
+      } as unknown as JsonValue
     case 'model.object':
       return {
         ...modelStreamEventMeta(event),
-        object: '[redacted]',
-        ...(event.usage ? { usage: event.usage } : {})
+        object: '[redacted]'
       } as unknown as JsonValue
     case 'model.embedding.completed':
       return {
@@ -2862,8 +3596,10 @@ function normalizeSerializedRunError(error: RunRecord['error']): NonNullable<Run
   }
 }
 
-function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): { signal: AbortSignal; cleanup: () => void; abort: (reason: unknown) => void } {
+function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined, parentDeadline = Number.POSITIVE_INFINITY): { signal: AbortSignal; deadline: number; cleanup: () => void; abort: (reason: unknown) => void } {
   const controller = new AbortController()
+  const startedAt = Date.now()
+  const deadline = Math.min(parentDeadline, timeoutMs && timeoutMs > 0 ? startedAt + timeoutMs : Number.POSITIVE_INFINITY)
   const relay = () => controller.abort(runAbortReason(parent?.reason))
   if (parent) parent.addEventListener('abort', relay, { once: true })
   if (parent?.aborted) relay()
@@ -2872,6 +3608,7 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
     : undefined
   return {
     signal: controller.signal,
+    deadline,
     /** Harness-initiated abort, e.g. to cancel in-flight child-agent calls. */
     abort: (reason: unknown) => controller.abort(runAbortReason(reason)),
     cleanup: () => {
@@ -2881,8 +3618,8 @@ function createRunSignal(parent: AbortSignal | undefined, timeoutMs: number | un
   }
 }
 
-function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined): { signal: AbortSignal; cleanup: () => void } {
-  if (!secondary) return { signal: primary, cleanup: () => undefined }
+function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined, deadline = Number.POSITIVE_INFINITY): { signal: AbortSignal; deadline: number; cleanup: () => void } {
+  if (!secondary) return { signal: primary, deadline, cleanup: () => undefined }
   const controller = new AbortController()
   const relayPrimary = () => controller.abort(runAbortReason(primary.reason))
   const relaySecondary = () => controller.abort(runAbortReason(secondary.reason))
@@ -2892,6 +3629,7 @@ function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined
   else if (secondary.aborted) relaySecondary()
   return {
     signal: controller.signal,
+    deadline,
     cleanup: () => {
       primary.removeEventListener('abort', relayPrimary)
       secondary.removeEventListener('abort', relaySecondary)

@@ -31,6 +31,7 @@ writes. A schema validates shape; it does not grant authorization.
 | `inMemorySandbox()` | Per-session memory filesystem | No executor or `spawn` | No command execution through the sandbox | Host/process/network isolation, persistence, authorization |
 | `bashSandbox()` | Per-session memory filesystem | `exec` through optional `just-bash`; no `spawn` | An in-process execution helper | Container/VM/tenant isolation or stdio MCP support |
 | `localDirectorySandbox()` / local durable bundle | Host-directory workspace; files-only by default | Host child process when `exec` is configured | Traversal and symlink-escape checks; tokenized command execution | Hardened isolation for untrusted commands or trusted plugin processes |
+| `@purista/harness-sandbox-docker` | Private Docker volume per logical scope | Docker guest `exec` and `spawn` | Trusted local guest with non-root identity, digest-pinned image, default-deny network, and resource limits | A hostile multi-tenant boundary, durable-workspace recovery, or immutable plugin package mount |
 | Custom container, microVM, or remote adapter | Adapter-defined | Adapter-defined, including `spawn` if declared | Only the controls the adapter/platform enforces | Controls that are merely documented but not enforced/tested |
 
 Use `inMemorySandbox()` for file-only agents. Treat `bashSandbox()` and local
@@ -72,9 +73,18 @@ Built-in `bash`, `write`, and `edit` can mutate state or execute commands.
   transaction boundary, and an application-owned durable review task where
   human review is required.
 
-Harness governance can make a synchronous tool decision. It is not a durable,
-restart-safe human-review runtime; the application owns reviewer identity, UI,
-decision storage, expiry, stale-decision rejection, and audit records.
+Harness governance makes a bounded immediate tool decision. Static permission
+and policy approval demands use one provider. The application owns durable
+review identity, UI, decision storage, expiry, action binding, and execution
+claim/receipt state. Check authorization before a new claim; an existing claim
+must recover the same idempotent execution rather than reauthorize away a
+possibly completed effect. See [decisions and approval](../guides/decisions-and-approval.md).
+
+Content rails are separate from authorization. Their transforms cannot grant
+authority, inspect opaque provider reasoning, undo a prior effect, or revoke
+an already admitted operation. Direct model calls and custom handlers do not
+receive automatic rail coverage. Log only safe decision evidence, never the
+transient approval subject or raw callback exception.
 
 ## Secrets And Telemetry Privacy
 
@@ -97,4 +107,4 @@ expired credential, resource limit, cancellation/process cleanup, immutable
 plugin package, and workspace retention cleanup.
 
 The canonical developer implementation guide is the official PURISTA website:
-[/handbook/harness/guide/sandboxing-and-mcp/](https://purista.dev/handbook/harness/guide/sandboxing-and-mcp/).
+[/handbook/harness/secure-and-govern/sandbox-and-mcp/](https://purista.dev/handbook/harness/secure-and-govern/sandbox-and-mcp/).

@@ -48,6 +48,9 @@ defineHarness({ name: 'app-name' })
 ```
 
 Models must exist before agents reference them. Agents must exist before workflows call them. Tools and skills must exist before agents allowlist them.
+Register the sandbox before tools so `ctx.sandbox` exposes precisely its
+declared file, exec, and spawn operations. Auto-detection does not guarantee an
+executor; narrow dynamic sessions with the public capability guards.
 Governance is optional and should be added only when the app needs policy-driven exposure, execution decisions, approvals, audits, or an external policy engine.
 
 ## Model Setup
@@ -91,6 +94,7 @@ Set explicit budgets for production:
   runTimeoutMs: 600_000,
   modelTimeoutMs: 300_000,
   toolTimeoutMs: 120_000,
+  decisionTimeoutMs: 10_000,
   skillTimeoutMs: 60_000,
   agentMaxIterations: 16,
   maxParallelToolCalls: 8,
@@ -104,6 +108,13 @@ Set explicit budgets for production:
 `contentCaptureMode` defaults to `NO_CONTENT`. Model providers, tools, Harness
 storage, and sandboxes can inherit logger and telemetry via
 `configureHarnessContext`.
+
+`decisionTimeoutMs` must be a positive safe integer. Each decision callback gets
+a linked signal and absolute deadline bounded by the remaining run/tool budget.
+The tool budget covers preflight, waiting for dispatch, policy, approval,
+handler, and output hooks without restarting. Forward cancellation to external
+reviewers/policy engines. Use durable external waits and application claims for
+reviews that outlive the immediate budget.
 
 `agentMaxIterations` and an agent's `maxSteps` are positive integer budgets.
 Explicit values have no hard upper cap, so choose a finite limit appropriate to
@@ -149,7 +160,7 @@ Use explicit infrastructure in production:
 ```ts
 defineHarness({ name: 'research-service' })
   .storage(distributedHarnessStorage)
-  .sandbox(bashSandbox({ network: { deny: ['169.254.169.254'] } }))
+  .sandbox(applicationSandbox)
   .memory(persistentMemory)
   .workspace(distributedWorkspace)
   .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'storage.multi_instance', 'workspace.persistent'])
@@ -162,6 +173,13 @@ defineHarness({ name: 'research-service' })
 fast when a required sandbox, memory, storage, or workspace capability is
 missing. `HarnessStorage` is the Harness persistence port; it is not PURISTA's
 general-purpose `StateStore`.
+
+`applicationSandbox` is chosen at the composition root for the deployment's
+trust and recovery requirements. The process-local Bash emulator and local
+Docker adapter are useful for their documented local use cases; neither
+implicitly binds a distributed durable workspace. For Bash, networking is
+disabled unless reviewed URL prefixes are explicitly configured in
+`network.allow`.
 
 ## Streaming
 Harness stream methods return typed `RunEvent` values:

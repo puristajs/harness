@@ -28,14 +28,14 @@ export class FakeHarnessStorage extends InMemoryHarnessStorage {
     return super.getSession(id)
   }
 
-  public override async upsertSession(record: SessionRecord): Promise<void> {
+  public override async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
     this.ops.push('upsertSession')
-    return super.upsertSession(record)
+    return super.upsertSession(record, mode)
   }
 
-  public override async closeSession(id: string): Promise<void> {
+  public override async closeSession(id: string, expectedInstanceId: string): Promise<void> {
     this.ops.push('closeSession')
-    return super.closeSession(id)
+    return super.closeSession(id, expectedInstanceId)
   }
 
   public override async appendMessages(sessionId: string, messages: Message[]): Promise<void> {

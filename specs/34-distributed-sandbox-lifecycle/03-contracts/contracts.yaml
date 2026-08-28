@@ -1,0 +1,85 @@
+contract_version: 4
+public_contracts:
+  - contract_id: CTR-SBX-SCOPE
+    name: SandboxScope
+    owner: harness_core
+    kind: closed_type
+    fields:
+      harnessName: required existing validated Harness name
+      sessionId: required existing validated session id
+      sessionInstanceId: required opaque persisted SessionRecord instanceId
+      identity: optional exact HarnessIdentity
+      lifetime: session or run
+      runId: required only for run lifetime and forbidden for session lifetime
+      role: primary or child_task
+    semantics: Core builds the scope from persisted already-bound session/run context. sessionInstanceId distinguishes a new SessionRecord from a closed scope with the same sessionId. Omitted identity dimensions remain omitted; callers do not supply generations, fences, or provider references.
+  - contract_id: CTR-SBX-OPEN
+    name: SandboxOpenMode, SandboxOpenOptions, and SandboxOpenResult
+    owner: sandbox_adapter
+    kind: interface
+    request:
+      scope: SandboxScope
+      mode: create attach or restore
+      signal: optional AbortSignal
+    result:
+      session: SandboxSessionFor adapter capabilities
+      disposition: created attached resumed or restored
+      liveProcessState: preserved restarted not_preserved or unknown
+    semantics: Create is restricted to a newly allocated logical scope and is idempotent for concurrent calls. Attach is used for a persisted scope and never creates when lifecycle state or provider compute is missing. Restore may advance the generation only after core resumed and bound a committed workspace. SandboxSession.close detaches attachment-local transports/handles without terminating logical compute. Results never expose generation fence lease or provider reference.
+  - contract_id: CTR-SBX-SANDBOX
+    name: Sandbox
+    owner: sandbox_adapter
+    kind: interface
+    operations:
+      - open(options): required and returns SandboxOpenResult
+      - terminate(options): required; accepts scope reason and optional AbortSignal and is idempotent for absent or already terminated provider compute
+    semantics: Every local or remote adapter implements the same lifecycle interface. Deployment topology is adapter-private and adds neither capabilities nor methods. Existing snapshot resume and hibernate remain separate optional capability interfaces; snapshot resume names the full target SandboxScope and its attachment participates in that target lifecycle, not the origin lifecycle.
+  - contract_id: CTR-SBX-DOCKER
+    name: dockerSandbox and DockerSandboxOptions
+    owner: harness_docker_addon
+    kind: closed_type
+    entrypoint: "@purista/harness-sandbox-docker"
+    fields:
+      root: required absolute caller-owned local directory for private lifecycle metadata; not mounted into the guest
+      image: required repository@sha256 digest or immutable local sha256 image ID already present in the selected engine
+      context: optional non-empty Docker context name; omitted resolves the active context once at initialization
+      user: optional numeric non-root UID:GID; default 1000:1000
+      network: optional none or bridge; default none
+      resources: optional closed object with positive finite cpus and positive safe integer memoryMb pids and tmpfsMb; omitted fields default to 1 CPU 512 MiB 128 PIDs and 64 MiB
+    result: Sandbox with sandbox.fs sandbox.exec sandbox.spawn and sandbox.persistent_fs; no wrapper bundle
+    semantics: All configuration is composition-root only and validated before resource creation. Timeout defaults reuse Harness toolTimeoutMs; no arbitrary Docker flags, provider references, raw mounts, or topology field are accepted. Existing Sandbox scope/result types are reused without a Docker representation. Restore fails durable_workspace_recovery_unavailable before mutation until a compatible binding is approved.
+errors:
+  - name: SandboxStateLostError
+    code: SANDBOX_STATE_LOST
+    retriable: false
+    reasons: [lifecycle_state_missing, provider_missing, durable_workspace_required, durable_workspace_recovery_unavailable]
+    safe_meta: [reason, lifetime, adapter_id]
+capabilities:
+  sandbox.live_process_preservation: Detach or provider-supported hibernation preserves live provider processes; process objects and stream handles are never portable.
+  sandbox.workspace_binding: Sandbox mounts a compatible active DurableWorkspace into a run-scoped attachment; only these adapters receive a run sandbox during durable workflow execution.
+base_adapter_invariants:
+  - lifecycle states are absent active paused lost terminating and terminated; transient provider steps remain private and do not add public states
+  - the logical directory distinguishes never-created active lost explicitly terminated and temporarily unavailable state within the adapter's declared process host or distributed authority
+  - generation starts at 1 and advances only when authorized committed workspace recovery replaces the prior generation; identical restore retries do not advance it; termination is final for that scope
+  - handoff does not change generation
+  - provider references never leave adapter-owned state
+  - adapter cleanup may compact a terminated directory to a content-free tombstone but does not let the same sessionInstanceId scope become first use again within the declared authority
+  - provider unavailable timeout quota unauthorized and cancelled are not provider missing
+  - unsupported lifecycle restore rejects active as well as missing scopes without mutation; optional snapshot resume does not imply committed workspace recovery
+  - snapshot resume into the same target and snapshot is idempotent; an existing conflicting target cannot be replaced; target termination invalidates resumed attachments
+distributed_adapter_invariants:
+  - shared lifecycle state survives client process loss and replica routing
+  - lease renewal or equivalent ownership transfer does not change generation
+  - stale filesystem exec spawn snapshot resume hibernate and termination mutations are rejected at the provider or adapter-control-plane boundary
+  - retention and orphan cleanup preserve enough shared state to prevent missing compute from being mistaken for first use
+harness_invariants:
+  - HarnessStorage has no sandbox lifecycle methods or records
+  - create mode is used only for a newly allocated session or run scope
+  - attach mode is used for persisted scopes and never creates missing state
+  - restore mode is used only for a run after committed DurableWorkspace resume and sandbox binding
+  - reacquisition of an existing durable run is resumed even without a checkpoint; when workspace recovery data is absent core fails state loss before starting or restoring files
+  - SessionRecord.instanceId is allocated once with the existing ULID helper and remains immutable; storage create cannot update existing records and update cannot recreate missing records
+  - session deletion requires the expected instanceId and cannot delete a replacement conversation
+  - session release closes/detaches its SandboxSession; session close terminates before deleting SessionRecord
+  - Harness shutdown detaches active sessions and closes adapter clients but does not terminate retained logical sandboxes
+  - adapter topology does not change Harness session run model-call or conversation semantics

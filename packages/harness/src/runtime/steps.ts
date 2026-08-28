@@ -22,6 +22,8 @@ export interface DurableWorkflowContextOptions {
    * "workspace state first, storage checkpoint second" ordering.
    */
   readonly onStepCommit?: (commit: DurableStepCommit) => Promise<DurableReplayCheckpoint | undefined>
+  /** Runs only after the corresponding storage checkpoint is durably committed. */
+  readonly onStepCommitted?: (checkpoint: RunCheckpoint) => Promise<void>
 }
 
 /** Retry policy for a single explicit workflow step. */
@@ -121,6 +123,7 @@ export function createDurableWorkflowContext(
         ...(replayCheckpoint ? { replay: replayCheckpoint } : {})
       }
       await storage.commitCheckpoint(checkpoint)
+      await options.onStepCommitted?.(checkpoint)
       return output
     }
   }

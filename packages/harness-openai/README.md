@@ -43,13 +43,20 @@ the adapter drops `reasoning_effort` and emits a warning instead of sending a
 request that OpenAI rejects. Use `api: 'responses'` when you need reasoning
 effort and tool calls together.
 
-On the Responses API, tool-call responses carry the turn's raw output items
-(including reasoning items) as `providerItems`. The harness agent loop passes
-them back on the follow-up round and the adapter echoes them verbatim, as
-OpenAI recommends for reasoning models with manually managed conversation
-state. For stateless requests (`store: false`), additionally set
+On the Responses API, tool-call responses carry a canonical
+`providerContinuation`. The harness agent loop retains provider-required
+reasoning transiently, then reconstructs the follow-up request from current
+canonical tool calls and arguments. For stateless requests (`store: false`), additionally set
 `providerOptions: { store: false, include: ['reasoning.encrypted_content'] }`
 so the encrypted reasoning content rides along in the replayed items.
+
+Opaque reasoning is transient provider state, not text that content rails can
+inspect or rewrite. Tool-call slots are rebuilt from canonical transformed
+arguments; no raw argument copy is an alternate source of truth. Attached
+guardrails protect default-loop agents, not direct `ctx.models.*` calls.
+Successful model invocations emit `model.completed` for accounting even when
+a later content decision blocks delivery. See the
+[decision boundary guide](../../docs/guides/decisions-and-approval.md).
 
 ## Package Format
 

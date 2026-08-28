@@ -8,7 +8,7 @@ import type {
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
-  ProviderItems,
+  ProviderContinuation,
   TextRequest,
   TextResponse,
   TextStreamChunk,
@@ -22,8 +22,10 @@ import {
   accumulateStreamToolCallDeltas,
   createStreamToolCallState,
   finalizeStreamToolCalls,
+  isJsonValue,
   malformedResponseError,
   parseProviderJson,
+  parseProviderContinuation,
   safePartialJson,
   sanitizeProviderMessage,
   toTokenUsage
@@ -115,7 +117,7 @@ class OpenAiModelProvider extends BaseModelProvider {
   protected override async doText(req: TextRequest): Promise<TextResponse> {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
-        const response = await createResponse(this.client, req, false)
+        const response = await createResponse(this.client, req, false, 'text')
         throwIfResponsesFailure(response, req, 'text')
         return mapResponsesTextResponse(response, req)
       }
@@ -162,15 +164,15 @@ class OpenAiModelProvider extends BaseModelProvider {
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
-        const response = await createResponse(this.client, req, false)
+        const response = await createResponse(this.client, req, false, 'object')
         throwIfResponsesFailure(response, req, 'object')
         const content = extractResponsesText(response)
         const toolCalls = extractResponsesToolCalls(response, req, 'object')
-        const providerItems = toResponsesProviderItems(response.output, toolCalls)
+        const providerContinuation = toResponsesProviderContinuation(response.output, toolCalls, req, 'object')
         return {
         object: parseJson(content || '{}', req, 'object') as T,
         ...(toolCalls ? { toolCalls } : {}),
-        ...(providerItems ? { providerItems } : {}),
+        ...(providerContinuation ? { providerContinuation } : {}),
         usage: toResponsesUsage(response.usage),
         finishReason: toResponsesFinishReason(response),
         outcome: toResponsesOutcome(response),
@@ -324,7 +326,7 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
   }, { ...requestOptions, signal: req.signal })
 }
 
-async function createResponse(client: any, req: ChatRequest, stream: boolean): Promise<any> {
+async function createResponse(client: any, req: ChatRequest, stream: boolean, method: string): Promise<any> {
   if (!client.responses?.create) {
     throw new ModelError('OpenAI client does not expose the Responses API.', {
       provider: 'openai',
@@ -343,7 +345,7 @@ async function createResponse(client: any, req: ChatRequest, stream: boolean): P
 
   return client.responses.create({
     model: req.model,
-    input: toResponsesInput(req.messages),
+    input: toResponsesInput(req.messages, req, method),
     stream,
     tools: toResponsesTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
@@ -456,7 +458,7 @@ function toOpenAiMessages(messages: ModelMessage[]): any[] {
   })
 }
 
-function toResponsesInput(messages: ModelMessage[]): any[] {
+function toResponsesInput(messages: ModelMessage[], req: ChatRequest, method: string): any[] {
   const input: any[] = []
   for (const message of messages) {
     if (message.role === 'tool') {
@@ -468,12 +470,14 @@ function toResponsesInput(messages: ModelMessage[]): any[] {
       continue
     }
 
-    if (message.role === 'assistant' && message.providerItems?.providerId === 'openai' && message.providerItems.items.length > 0) {
-      // Echo the captured turn (reasoning, message, and function_call items)
-      // verbatim, as the Responses API expects for manually managed state.
-      // Foreign provider items fall through to provider-neutral reconstruction.
-      input.push(...message.providerItems.items)
-      continue
+    if (message.role === 'assistant' && message.providerContinuation?.providerId === 'openai') {
+      const continuation = parseProviderContinuation(message.providerContinuation, (message.toolCalls ?? []).map((call) => call.id))
+      if (!continuation) throw invalidProviderContinuation(req, method)
+      validateOpenAiContinuation(continuation, req, method)
+      if (continuation.items.length > 0) {
+        input.push(...toOpenAiContinuationInput(message, req, method))
+        continue
+      }
     }
 
     if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
@@ -563,11 +567,11 @@ function toResponsesTools(tools: TextRequest['tools'] | ObjectRequest['tools']):
 
 function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse {
   const toolCalls = extractResponsesToolCalls(response, req, 'text')
-  const providerItems = toResponsesProviderItems(response.output, toolCalls)
+  const providerContinuation = toResponsesProviderContinuation(response.output, toolCalls, req, 'text')
   return {
     content: extractResponsesText(response),
     ...(toolCalls ? { toolCalls } : {}),
-    ...(providerItems ? { providerItems } : {}),
+    ...(providerContinuation ? { providerContinuation } : {}),
     usage: toResponsesUsage(response.usage),
     finishReason: toResponsesFinishReason(response),
     outcome: toResponsesOutcome(response),
@@ -575,21 +579,133 @@ function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse
   }
 }
 
-/**
- * Captures the turn's raw Responses output items on tool-call responses so
- * they can be replayed verbatim on the follow-up round. OpenAI requires
- * reasoning items returned with tool calls to be passed back with the tool
- * outputs for reasoning models; echoing `response.output` unchanged is the
- * pattern documented in the Responses migration guide.
- */
-function toResponsesProviderItems(output: unknown, toolCalls: ToolCallSpec[] | undefined): ProviderItems | undefined {
+function toResponsesProviderContinuation(
+  output: unknown,
+  toolCalls: ToolCallSpec[] | undefined,
+  req: ChatRequest,
+  method: string
+): ProviderContinuation | undefined {
   if (!toolCalls || toolCalls.length === 0) return undefined
-  if (!Array.isArray(output) || output.length === 0) return undefined
-  return { providerId: 'openai', items: output as JsonValue[] }
+  if (!Array.isArray(output)) throw invalidProviderContinuation(req, method)
+
+  const items: ProviderContinuation['items'][number][] = []
+  let assistantContentCaptured = false
+  for (const outputItem of output) {
+    if (!isOpenAiRecord(outputItem)) throw invalidProviderContinuation(req, method)
+    if (outputItem['type'] === 'reasoning') {
+      if (!isStrictJsonValue(outputItem)) throw invalidProviderContinuation(req, method)
+      items.push({ kind: 'opaque', data: outputItem })
+      continue
+    }
+    if (outputItem['type'] === 'function_call') {
+      if (typeof outputItem['call_id'] !== 'string' || outputItem['call_id'].length === 0 || typeof outputItem['name'] !== 'string' || outputItem['name'].length === 0) {
+        throw invalidProviderContinuation(req, method)
+      }
+      if (outputItem['id'] !== undefined && typeof outputItem['id'] !== 'string') throw invalidProviderContinuation(req, method)
+      items.push({
+        kind: 'tool_call',
+        callId: outputItem['call_id'],
+        ...(typeof outputItem['id'] === 'string' ? { data: { itemId: outputItem['id'] } } : {})
+      })
+      continue
+    }
+    if (outputItem['type'] === 'message') {
+      if (!assistantContentCaptured) {
+        items.push({ kind: 'assistant_content' })
+        assistantContentCaptured = true
+      }
+      continue
+    }
+    throw invalidProviderContinuation(req, method)
+  }
+
+  const continuation = { providerId: 'openai', items }
+  const parsed = parseProviderContinuation(continuation, toolCalls.map((call) => call.id))
+  if (!parsed) throw invalidProviderContinuation(req, method)
+  validateOpenAiContinuation(parsed, req, method)
+  return parsed
+}
+
+function toOpenAiContinuationInput(message: Extract<ModelMessage, { role: 'assistant' }>, req: ChatRequest, method: string): any[] {
+  const toolCalls = message.toolCalls ?? []
+  const continuation = parseProviderContinuation(message.providerContinuation, toolCalls.map((call) => call.id))
+  if (!continuation) throw invalidProviderContinuation(req, method)
+  validateOpenAiContinuation(continuation, req, method)
+
+  const calls = new Map(toolCalls.map((call) => [call.id, call]))
+  const input: any[] = []
+  for (const item of continuation.items) {
+    if (item.kind === 'opaque') {
+      input.push(item.data)
+      continue
+    }
+    if (item.kind === 'assistant_content') {
+      if (typeof message.content === 'string' ? message.content.length > 0 : message.content.length > 0) {
+        input.push({
+          type: 'message',
+          role: 'assistant',
+          content: typeof message.content === 'string' ? message.content : toResponsesMessageContent(message)
+        })
+      }
+      continue
+    }
+    const call = calls.get(item.callId)
+    if (!call) throw invalidProviderContinuation(req, method)
+    const itemId = openAiToolCallItemId(item.data, req, method)
+    input.push({
+      type: 'function_call',
+      ...(itemId ? { id: itemId } : {}),
+      call_id: call.id,
+      name: call.name,
+      arguments: JSON.stringify(call.arguments)
+    })
+  }
+  return input
+}
+
+function validateOpenAiContinuation(
+  continuation: ProviderContinuation,
+  req: ChatRequest,
+  method: string
+): void {
+  for (const item of continuation.items) {
+    if (item.kind === 'opaque') {
+      if (!isOpenAiRecord(item.data) || item.data['type'] !== 'reasoning' || !isJsonValue(item.data)) throw invalidProviderContinuation(req, method)
+      continue
+    }
+    if (item.kind === 'tool_call') openAiToolCallItemId(item.data, req, method)
+  }
+}
+
+function openAiToolCallItemId(data: JsonValue | undefined, req: ChatRequest, method: string): string | undefined {
+  if (data === undefined) return undefined
+  if (!isOpenAiRecord(data) || !isJsonValue(data)) throw invalidProviderContinuation(req, method)
+  const keys = Object.keys(data)
+  if (keys.length !== 1 || keys[0] !== 'itemId' || typeof data['itemId'] !== 'string' || data['itemId'].length === 0) {
+    throw invalidProviderContinuation(req, method)
+  }
+  return data['itemId']
+}
+
+function isOpenAiRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStrictJsonValue(value: unknown): value is JsonValue {
+  return isJsonValue(value)
+}
+
+function invalidProviderContinuation(req: ChatRequest, method: string): ModelError {
+  return new ModelError('OpenAI provider continuation is invalid.', {
+    provider: 'openai',
+    model: req.model,
+    method,
+    reason: 'invalid_provider_continuation'
+  })
 }
 
 async function* streamResponsesText(client: any, req: TextRequest): AsyncIterable<TextStreamChunk> {
-  const stream = await createResponse(client, req, true)
+  const stream = await createResponse(client, req, true, 'textStream')
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
   let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop')
@@ -626,12 +742,12 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
   for (const call of toolCalls) {
     yield { kind: 'tool_call', call }
   }
-  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
+  const providerContinuation = toResponsesProviderContinuation(completedOutput, toolCalls, req, 'textStream')
+  yield { kind: 'finish', usage, finishReason, outcome, ...(providerContinuation ? { providerContinuation } : {}) }
 }
 
 async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: any, req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
-  const stream = await createResponse(client, req, true)
+  const stream = await createResponse(client, req, true, 'objectStream')
   let partial = ''
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
@@ -671,8 +787,8 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
     yield { kind: 'tool_call', call }
   }
   const object = parseJson(partial || '{}', req, 'objectStream') as T
-  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', object, usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
+  const providerContinuation = toResponsesProviderContinuation(completedOutput, toolCalls, req, 'objectStream')
+  yield { kind: 'finish', object, usage, finishReason, outcome, ...(providerContinuation ? { providerContinuation } : {}) }
 }
 
 function extractResponsesText(response: any): string {

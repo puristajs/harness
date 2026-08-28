@@ -181,7 +181,7 @@ Deliverables:
 - Tool-call integration in the default loop and typed tool invocation path:
   permission check first, input validation second, `phase:'pre'` policy third,
   tool invocation, then `phase:'post'` policy.
-- `PolicyDeniedError` and `PolicyEvaluationError` from
+- `PolicyDeniedError` and `DecisionEvaluationError` from
   [15-error-catalog](./15-error-catalog.md).
 - `policy.evaluated`, `approval.requested`, and `approval.finished` run events.
 - Testing helpers/fakes for native policies, approval adapters, audit sinks, and
@@ -242,19 +242,29 @@ Constraints:
 
 Exit: example runs against `FakeModelProvider` in CI.
 
-## Phase 16 — AI evaluation core helpers
+## Phase 16 — Generic evaluation substrate
 
 Deliverables:
-- `evaluatePromptCandidates` in the main `@purista/harness` export, with stable
-  ordering, abort propagation, aggregate score calculation, and deterministic
-  sorting.
-- `evaluateDeterministicScorer` plus deterministic scorer types in the main
-  `@purista/harness` export, re-exported by `@purista/harness/testing`.
+- `runEvaluation` and `scoreEvaluation` in the main `@purista/harness` export:
+  the former constructs observations from the approved matrix and scores them;
+  the latter re-scores application-owned observations through the same scorer
+  engine. Both implement identity/trials, result/error/coverage, deterministic
+  ordering, aggregation, concurrency, cancellation, timeout, failure policy,
+  optional OTel, separate task/scorer accounting, and feedback behavior.
+- `createDeterministicEvaluationScorer` plus its definition types in the main
+  export, re-exported by `@purista/harness/testing`; it is a typed predicate
+  adapter, not a partial schema/pointer implementation.
+- Delete the previous aggregate evaluator, standalone scorer API, old tests,
+  exports, documentation, and telemetry declarations with no alias, wrapper,
+  overload, or alternate entrypoint.
 - No Cloudgrid adapter package, HTTP endpoint, dataset store, prompt-version
   store, product scorer registry, Python, Optuna, or external optimizer
   dependency.
 
-Exit: AI eval core tests in [19-ai-eval-core](./19-ai-eval-core.md) green.
+Exit: all acceptance requirements in
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md) pass and the stale
+symbol scan is empty outside explicit removal requirements in specifications
+and the approved implementation plan.
 
 ## Post-1.5 reliability hardening — Provider retry DX
 
@@ -375,3 +385,7 @@ docs are exact, and the full CI matrix is green.
 ## Cross-references
 
 - All other spec files. This is the build order.
+
+## Decision-boundary implementation authority
+
+The approved [decision-boundary plan](../plans/decision-boundaries/implementation-plan.md) owns current guardrail/governance/approval refactoring and cleanup. Earlier completed wave descriptions do not authorize retaining replaced callback or event shapes.

@@ -14,7 +14,16 @@ npm run test:types
 npm run test:contracts
 npm run test:integration
 npm run test:failure
+npm run verify:architecture
 ```
+
+For sandbox package changes, also run `npm run verify:sandbox-packages`. This
+opt-in contributor check builds and packs Harness and the Docker addon, installs
+their tarballs into an isolated temporary consumer, and checks runtime behavior
+and public declarations without Framework or source aliases. It uses cached npm
+dependencies (`--offline`) and the repository compiler; populate the dependency
+cache first. It does not require Docker, publish packages, or prove a registry
+release. Its temporary consumer is removed when the check finishes.
 
 ## Service Readiness
 
@@ -69,6 +78,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 | `ValidationError` | Input/output schema mismatch. | Check Zod issues in logs and traces. |
 | `ModelError` | Provider HTTP/network/error response. | Inspect normalized metadata: status, provider type, request id, retry kind, retry-after, rate-limit summary, body summary. |
 | `SandboxNoExecutorError` | Command execution requested in files-only sandbox. | Use `bashSandbox()` or disable exec-backed tools. |
+| `SandboxStateLostError` | An existing sandbox scope or recoverable workspace binding is unavailable. | Do not retry by creating empty state; surface recovery failure or restart from an application-approved checkpoint. |
 | `McpProtocolError` | MCP list/call/protocol failure. | Check MCP command/url, schema, timeout, stderr/logs. |
 | `McpAuthError` | HTTP MCP auth failed. | Rotate/check token and auth config. |
 
@@ -90,6 +100,12 @@ For `mcp_http`:
 - verify request bodies are not logged by default.
 
 ## Recovery
+
+Sandbox state loss is not permission to create an empty replacement. Durable
+file recovery requires the latest committed workspace checkpoint; an interrupted
+attempt without one needs an application decision. A cleanup warning after a
+terminal run does not undo its result. Retry the adapter's idempotent cleanup
+under operator policy; do not replay completed business work for cleanup.
 
 1. Identify `run_id` from the UI, logs, or API response.
 2. Inspect structured logs for the matching `run_id`.

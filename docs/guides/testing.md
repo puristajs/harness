@@ -110,30 +110,35 @@ Also test application startup with `.requires(...)` so missing
 `storage.workspace_checkpoint`, `workspace.durable`, `workspace.resume`, or
 cleanup/retention/quota capabilities fail before work is queued.
 
-## Test Eval Scorers
+## Test evaluation scorers
 
-Use the testing subpath to validate deterministic scorer definitions before
-running expensive prompt comparisons:
+Use the testing subpath's predicate factory for deterministic scorer fixtures;
+it creates the same `EvaluationScorer` contract used by `runEvaluation` and
+`scoreEvaluation`:
 
 ```ts
-import { evaluateDeterministicScorer } from '@purista/harness/testing'
+import { createDeterministicEvaluationScorer } from '@purista/harness/testing'
 
-await expect(evaluateDeterministicScorer({
-  type: 'contains',
-  path: '/answer',
-  value: 'policy'
-}, {
-  candidateId: 'candidate-a',
-  itemId: 'item-1',
-  output: { answer: 'The policy allows it.' }
-})).resolves.toMatchObject({ score: 1, passed: true })
+const hasPolicy = createDeterministicEvaluationScorer({
+  id: 'contains-policy',
+  version: 'v1',
+  dimension: { id: 'mentions-policy', kind: 'boolean' },
+  evaluate: (observation) => ({
+    outcome: 'scored',
+    dimensionId: 'mentions-policy',
+    kind: 'boolean',
+    value: observation.output.answer.includes('policy'),
+  }),
+})
 ```
 
-Use `evaluatePromptCandidates(...)` from `@purista/harness` when a test must
-compare multiple candidate prompts against the same item set. Candidate order,
-item order, and tie-breaking are stable so CI output remains deterministic.
-See [Evaluating Prompts](./evaluating-prompts.md) for the full helper contract
-and scorer limitations.
+Test scorer outcomes separately from task behavior. Cover a scored result, a
+legitimate `not_applicable` or `inconclusive` result where relevant, and a
+technical scorer failure. Use a fake model/provider for deterministic task
+tests; use `runEvaluation` only when exercising execution, scheduling, and
+result integration. See [Evaluating AI systems](./evaluating-prompts.md) and
+the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/)
+for the complete workflow.
 
 ## Test MCP
 

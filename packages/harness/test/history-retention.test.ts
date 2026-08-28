@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { BaseModelProvider, InMemoryHarnessStorage, ModelError, defineHarness, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
+import { BaseModelProvider, InMemoryHarnessStorage, ModelError, defineHarness, inMemorySandbox, retainCompleteTurns, type Message, type ObjectRequest, type ObjectResponse } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { FakeHarnessStorage } from '../src/testing/fakeHarnessStorage.js'
+import { createSessionSandboxBinding } from '../src/sessions/sandboxBindings.js'
 
 function message(id: string, role: Message['role'], content: string): Message {
   return { id, sessionId: 'history', role, content, timestamp: '2026-08-19T00:00:00.000Z' }
@@ -104,7 +105,8 @@ describe('durable conversation history', () => {
       { type: 'run.started', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream') },
       { type: 'run.finished', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream'), output: 'done' }
     ])
-    expect(storage.ops).toEqual(['getRun'])
+    // Instance validation may read the session; replay still performs no writes.
+    expect(storage.ops.filter(operation => operation !== 'getSession')).toEqual(['getRun'])
     expect(provider.requests).toHaveLength(1)
   })
 
@@ -113,14 +115,33 @@ describe('durable conversation history', () => {
     const storage = new InMemoryHarnessStorage()
     const key = 'queue-message-2'
     const runId = directAgentRunId('crash-recovery', 'answer', key)
-    await storage.upsertSession({ id: 'crash-recovery', createdAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', runCount: 0 })
+    const instanceId = '01J00000000000000000000004'
+    await storage.upsertSession({
+      id: 'crash-recovery',
+      instanceId,
+      createdAt: '2026-08-19T00:00:00.000Z',
+      updatedAt: '2026-08-19T00:00:00.000Z',
+      runCount: 0,
+      sandboxBinding: createSessionSandboxBinding({
+        harnessName: 'agent-harness',
+        record: { id: 'crash-recovery', instanceId }
+      })
+    }, 'create')
     await storage.createRun({ id: runId, sessionId: 'crash-recovery', kind: 'agent', target: 'answer', startedAt: '2026-08-19T00:00:00.000Z', status: 'running', input: 'work' })
     await storage.appendMessages('crash-recovery', [
       { ...message(`msg_${runId}_01_user`, 'user', 'work'), sessionId: 'crash-recovery', runId },
       { ...message(`msg_${runId}_99_assistant_final`, 'assistant', '"done"'), sessionId: 'crash-recovery', runId }
     ])
+    const sandbox = inMemorySandbox()
+    const sandboxScope = { owner: { namespace: 'agent-harness', id: 'crash-recovery', instanceId }, partition: { kind: 'shared' as const }, lifetime: 'session' as const }
+    await sandbox.registerOwner({ owner: sandboxScope.owner, mode: 'create' })
+    await sandbox.open({
+      scope: sandboxScope,
+      mode: 'create'
+    })
     const harness = defineHarness()
       .storage(storage)
+      .sandbox(sandbox)
       .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
       .agents({ answer: { model: 'fake', instructions: 'Answer.', builtinTools: false, input: z.string(), output: z.string() } })
       .build()

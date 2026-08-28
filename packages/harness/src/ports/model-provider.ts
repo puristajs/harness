@@ -1,5 +1,7 @@
+import { z } from 'zod'
 import type { JsonValue } from '../models/json.js'
 import type { ContextProjectionPolicy } from '../context-projection.js'
+import type { ProviderContinuation, ProviderContinuationItem } from '../decisions/types.js'
 
 /**
  * Model capabilities declared by aliases in `.models(...)`.
@@ -139,17 +141,7 @@ export interface ToolCallSpec {
   arguments: JsonValue
 }
 
-/**
- * Opaque provider wire items returned with a tool-call response and replayed
- * verbatim on the follow-up request of the same turn (e.g. OpenAI Responses
- * API reasoning items). Adapters only replay items tagged with their own
- * provider id; foreign or empty items are ignored and the assistant turn is
- * reconstructed provider-neutrally from `content`/`toolCalls`.
- */
-export interface ProviderItems {
-  providerId: string
-  items: JsonValue[]
-}
+export type { ProviderContinuation, ProviderContinuationItem }
 
 /** Multimodal message content part. */
 export type ContentPart =
@@ -194,7 +186,7 @@ export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
 export type ModelMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerItems?: ProviderItems }
+  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerContinuation?: ProviderContinuation }
   | { role: 'tool'; toolCallId: string; content: string }
 
 /** Base request shape for all model-provider methods. */
@@ -207,48 +199,55 @@ export interface BaseRequest {
   traceparent?: string | undefined
 }
 
-/** Token usage accounting normalized across providers. */
-export interface TokenUsage {
+/** Internal projection of normalized token counts; undeclared provider fields are discarded. */
+export const tokenUsageSchema = z.object({
   /**
    * Total input tokens consumed across normal input, provider cache reads, and
    * provider cache writes. The optional detail fields identify the cache
    * channels without changing this total.
    */
-  inputTokens: number
+  inputTokens: z.number().finite(),
   /** Output tokens charged or consumed by the provider, including reasoning output tokens when the provider reports them in the aggregate. */
-  outputTokens: number
+  outputTokens: z.number().finite(),
   /** Provider-reported normalized total tokens, or `inputTokens + outputTokens` when omitted. */
-  totalTokens: number
+  totalTokens: z.number().finite(),
   /** Input tokens served from a provider-managed prompt/context cache. */
-  cachedInputTokens?: number
+  cachedInputTokens: z.number().finite().optional(),
   /** Input tokens written to a provider-managed prompt/context cache. */
-  cacheCreationInputTokens?: number
+  cacheCreationInputTokens: z.number().finite().optional(),
   /** Output tokens used for hidden reasoning or extended thinking. */
-  reasoningTokens?: number
-}
+  reasoningTokens: z.number().finite().optional()
+})
+
+/** Token usage accounting normalized across providers. */
+export type TokenUsage = z.infer<typeof tokenUsageSchema>
+
+/** Internal validation of the provider-neutral finish-reason vocabulary. */
+export const finishReasonSchema = z.enum([
+  /** Natural model stop sequence. */
+  'stop',
+  /** Token budget reached. */
+  'length',
+  /** Context window reached before a valid answer could be produced. */
+  'context_limit',
+  /** Model requested tool calls. */
+  'tool_calls',
+  /** Provider content filter interrupted generation. */
+  'content_filter',
+  /** Provider/model refused the requested output. */
+  'refusal',
+  /** Provider asked the caller to resume/continue later. */
+  'pause',
+  /** Provider produced malformed output or malformed tool use. */
+  'malformed',
+  /** Cooperative cancellation interrupted generation. */
+  'cancelled',
+  /** Provider or adapter error fallback. */
+  'error'
+])
 
 /** Normalized finish reasons from model providers. */
-export type FinishReason =
-  /** Natural model stop sequence. */
-  'stop'
-  /** Token budget reached. */
-  | 'length'
-  /** Context window reached before a valid answer could be produced. */
-  | 'context_limit'
-  /** Model requested tool calls. */
-  | 'tool_calls'
-  /** Provider content filter interrupted generation. */
-  | 'content_filter'
-  /** Provider/model refused the requested output. */
-  | 'refusal'
-  /** Provider asked the caller to resume/continue later. */
-  | 'pause'
-  /** Provider produced malformed output or malformed tool use. */
-  | 'malformed'
-  /** Cooperative cancellation interrupted generation. */
-  | 'cancelled'
-  /** Provider or adapter error fallback. */
-  | 'error'
+export type FinishReason = z.infer<typeof finishReasonSchema>
 
 /** Tool declaration exposed to model adapters. */
 export interface ModelToolSpec {
@@ -266,7 +265,7 @@ export interface TextRequest extends BaseRequest {
 export interface TextResponse {
   content: string
   toolCalls?: ToolCallSpec[]
-  providerItems?: ProviderItems
+  providerContinuation?: ProviderContinuation
   usage: TokenUsage
   finishReason: FinishReason
   outcome?: ModelOutcome
@@ -277,7 +276,7 @@ export interface TextResponse {
 export type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerContinuation?: ProviderContinuation }
 
 /** Request for object/object-stream model methods. */
 export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequest {
@@ -290,7 +289,7 @@ export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequ
 export interface ObjectResponse<T extends JsonValue = JsonValue> {
   object: T
   toolCalls?: ToolCallSpec[]
-  providerItems?: ProviderItems
+  providerContinuation?: ProviderContinuation
   usage: TokenUsage
   finishReason: FinishReason
   outcome?: ModelOutcome
@@ -302,7 +301,7 @@ export type ObjectStreamChunk<T extends JsonValue = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerContinuation?: ProviderContinuation }
 
 /** Request for embedding generation. */
 export interface EmbeddingRequest {

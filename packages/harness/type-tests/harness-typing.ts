@@ -1,18 +1,162 @@
 import { z } from 'zod'
 import { defineHarness, defineHarnessModule } from '../src/harness/defineHarness.js'
 import { createModelRegistry } from '../src/models/registry.js'
-import { inMemoryDurableWorkspace, inMemoryHarnessStorage, inMemoryMemoryEngine, inMemorySandbox } from '../src/index.js'
-import type { BuilderState, Harness, HarnessBuilder, ModelsConfig } from '../src/harness/defineHarness.js'
+import {
+  bashSandbox,
+  createDeterministicEvaluationScorer,
+  createDecisionEvidence,
+  inMemoryDurableWorkspace,
+  inMemoryHarnessStorage,
+  inMemoryMemoryEngine,
+  inMemorySandbox,
+  isExecCapableSession,
+  isJsonValue,
+  isSpawnCapableSession,
+  PermissionDeniedError,
+  PolicyDeniedError,
+  runDecisionOperation,
+  runEvaluation,
+  scoreEvaluation
+} from '../src/index.js'
+import type { AgentPermissions, BuilderState, GovernanceApprovalProvider, GovernanceApprovalSubject, Harness, HarnessBuilder, ModelsConfig, PermissionPolicy } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
-import type { JsonValue, MemoryEngine, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { AgentExecutionRequirements, DecisionEvidence, DecisionExecutionContext, DecisionOccurrence, DecisionSource, EvaluationObservation, EvaluationScorer, HibernateCapableSandbox, JsonValue, MemoryEngine, ModelAlias, ModelProvider, ObjectRequest, ObjectResponse, ResumeCapableSandbox, Sandbox, SandboxResumeOptions, SandboxScope, SandboxSessionBase, SandboxSessionFor, SnapshotCapableSandbox, SnapshotResult, ToolHandlerContext, TsToolDefinition } from '../src/index.js'
 import type { Logger } from '../src/logger/index.js'
+import type { ExternalWaitResolved, ExternalWaitSnapshot } from '../src/storage/external-wait.js'
+
+const readonlyPermission: PermissionPolicy = { mode: 'require_approval', allow: ['npm test'] as const, deny: ['rm *'] as const }
+const readonlyAgentPermissions: AgentPermissions = { bash: readonlyPermission }
+// @ts-expect-error permission allowlists remain read-only public configuration.
+readonlyPermission.allow?.push('npm run *')
+// @ts-expect-error decision-boundaries: removed API permission modes do not accept ask.
+const invalidPermission: AgentPermissions = { write: 'ask' }
+
+const waitingWait: ExternalWaitSnapshot = {
+  waitId: 'wait', kind: 'human_review', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z', status: 'waiting', createdAt: '2029-01-01T00:00:00.000Z'
+}
+// @ts-expect-error a workflow wait can only resolve to a terminal wait state.
+const unresolvedWait: ExternalWaitResolved = waitingWait
+void unresolvedWait
+const automaticExpiry: ExternalWaitResolved = {
+  waitId: 'wait', kind: 'human_review', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z', status: 'expired', createdAt: '2029-01-01T00:00:00.000Z', resolvedAt: '2030-01-01T00:00:00.000Z'
+}
+// @ts-expect-error non-expiry terminal states require an opaque event id.
+const missingTerminalEvent: ExternalWaitResolved = { ...automaticExpiry, status: 'approved' }
+void missingTerminalEvent
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
 type IsAny<T> = 0 extends 1 & T ? true : false
 
+type EvaluationAssessment = { readonly expected: string }
+type EvaluationOutput = { readonly answer: string }
+type EvaluationScorerContext = { readonly retrievedIds: readonly string[] }
+
+const exactMatchScorer = createDeterministicEvaluationScorer<EvaluationAssessment, EvaluationOutput, EvaluationScorerContext>({
+  id: 'exact-match',
+  version: 'v1',
+  dimension: { id: 'correct', kind: 'boolean' },
+  evaluate: (observation) => ({
+    outcome: 'scored',
+    dimensionId: 'correct',
+    kind: 'boolean',
+    value: observation.output.answer === observation.assessment?.expected,
+  }),
+})
+
+const typedEvaluationScorer: EvaluationScorer<EvaluationAssessment, EvaluationOutput, EvaluationScorerContext> = exactMatchScorer
+const typedObservation: EvaluationObservation<EvaluationAssessment, EvaluationOutput, EvaluationScorerContext> = {
+  id: 'observation-1',
+  datasetId: 'support', datasetVersion: 'v1', caseId: 'case-1',
+  candidateId: 'candidate', candidateVersion: 'v1', taskId: 'answer', taskVersion: 'v1',
+  trialId: 'default', trialOrdinal: 0,
+  output: { answer: 'approved' }, assessment: { expected: 'approved' }, scorerContext: { retrievedIds: ['doc-1'] },
+}
+
+const evaluatedRun = runEvaluation({
+  runId: 'evaluation-run',
+  dataset: { id: 'support', version: 'v1', cases: [{ id: 'case-1', input: { question: 'status' }, assessment: { expected: 'approved' } }] },
+  candidates: [{ id: 'candidate', version: 'v1', config: { prompt: 'answer' } }],
+  task: {
+    id: 'answer', version: 'v1',
+    async run(target) {
+      const question: string = target.input.question
+      // @ts-expect-error assessment material is scorer-only.
+      target.assessment
+      return { output: { answer: question === 'status' ? 'approved' : 'unknown' }, scorerContext: { retrievedIds: [] } }
+    }
+  },
+  scorers: [typedEvaluationScorer],
+})
+const rescoredRun = scoreEvaluation({ runId: 'rescore-run', observations: [typedObservation], scorers: [typedEvaluationScorer] })
+void evaluatedRun
+void rescoredRun
+
+const decisionOccurrence: DecisionOccurrence = { invocationId: 'invocation-1', step: 0 }
+const decisionSource: DecisionSource = { kind: 'interceptor', id: 'typed-boundary' }
+const decisionEvidence: DecisionEvidence = createDecisionEvidence({ occurrence: decisionOccurrence, source: decisionSource, phase: 'input', ordinal: 0 })
+const decisionExecution: DecisionExecutionContext = { signal: new AbortController().signal, deadline: Date.now() + 100 }
+const decisionResult: Promise<string> = runDecisionOperation(decisionExecution, async () => decisionEvidence.decisionId)
+void decisionResult
+new PermissionDeniedError(decisionEvidence)
+new PolicyDeniedError(decisionEvidence, 'policy_deny')
+// @ts-expect-error denial messages are fixed and callers provide evidence, not prose.
+new PermissionDeniedError('private prose')
+// @ts-expect-error policy denial classifications are closed.
+new PolicyDeniedError(decisionEvidence, 'private prose')
+const opaqueValue: unknown = { safe: true }
+if (isJsonValue(opaqueValue)) {
+  const narrowedJson: JsonValue = opaqueValue
+  void narrowedJson
+}
+// @ts-expect-error decision sources are closed and do not accept arbitrary metadata.
+const invalidDecisionSource: DecisionSource = { kind: 'interceptor', id: 'typed-boundary', metadata: {} }
+void invalidDecisionSource
+
 defineHarness().storage(inMemoryHarnessStorage())
 defineHarness().workspace(inMemoryDurableWorkspace())
+
+async function snapshotCapabilityTypes(sandbox: SnapshotCapableSandbox & ResumeCapableSandbox & HibernateCapableSandbox, session: SandboxSessionBase, scope: SandboxScope) {
+  const snapshot = await sandbox.snapshot(session)
+  const resumed = await sandbox.resume({ snapshotId: snapshot.snapshotId, scope })
+  await resumed.readText('/workspace/file.txt')
+  // @ts-expect-error optional snapshot resume does not guarantee an executor
+  await resumed.exec('echo hi')
+  await sandbox.hibernate(session)
+  // @ts-expect-error resume requires full target identity, not unscoped session/run ids
+  const invalid: SandboxResumeOptions = { snapshotId: snapshot.snapshotId, sessionId: 'session', runId: 'run' }
+  // @ts-expect-error snapshot metadata must contain JSON values
+  const invalidMetadata: SnapshotResult = { snapshotId: 'snapshot', metadata: { callback: () => {} } }
+  return { resumed, invalid, invalidMetadata }
+}
+
+async function sessionStorageTypes() {
+  const storage = inMemoryHarnessStorage()
+  const record = {
+    id: 'session',
+    instanceId: '01J00000000000000000000001',
+    createdAt: '2026-08-26T00:00:00.000Z',
+    updatedAt: '2026-08-26T00:00:00.000Z',
+    runCount: 0,
+    sandboxBinding: {
+      owner: { namespace: 'type-test', id: 'session', instanceId: '01J00000000000000000000001' },
+      relation: 'owned' as const,
+      registration: 'pending' as const,
+      policyDigest: 'a'.repeat(64),
+      disposed: false,
+    },
+  }
+  const inserted: boolean = await storage.upsertSession(record, 'create')
+  await storage.upsertSession(record, 'update')
+  // @ts-expect-error writes must declare creation versus update authority
+  await storage.upsertSession(record)
+  await storage.closeSession(record.id, record.instanceId)
+  // @ts-expect-error destructive close requires the expected record instance
+  await storage.closeSession(record.id)
+  // @ts-expect-error every persisted session requires an opaque instance id and sandbox binding
+  await storage.upsertSession({ id: 'session', createdAt: record.createdAt, updatedAt: record.updatedAt, runCount: 0 }, 'create')
+  return inserted
+}
 
 // @ts-expect-error clean-break API: structured persistence is configured through storage
 defineHarness().state(inMemoryHarnessStorage())
@@ -60,6 +204,9 @@ const agentModule = defineHarnessModule<SupportModelsState>()('support-agent', {
 const moduleHarness = defineHarness().use(modelModule).use(agentModule).build()
 type ModuleAgentInput = typeof moduleHarness.$infer.agents.respond.input
 const _moduleAgentInputExact: Expect<Equal<ModuleAgentInput, { question: string }>> = true
+void moduleHarness.getSession('typed-session', { identity: { tenantId: 'acme' } })
+// @ts-expect-error clean-break API: identity belongs in SessionOptions.
+void moduleHarness.getSession('typed-session', { tenantId: 'acme' })
 
 const interceptorHarness = defineHarness()
   .models({ guarded: { provider, model: 'guarded-model', capabilities: ['object'] } })
@@ -88,6 +235,17 @@ const interceptorHarness = defineHarness()
 
 const _interceptorAgentInputExact: Expect<Equal<typeof interceptorHarness.$infer.agents.guarded.input, { question: string }>> = true
 
+const interceptorRequirements: AgentExecutionRequirements = {
+  tools: ['read'],
+  models: [{ alias: 'guarded', capabilities: ['object'] }]
+}
+void interceptorRequirements
+const emptyInterceptorTools: AgentExecutionRequirements = { tools: [] }
+// @ts-expect-error requirements reuse the closed model capability vocabulary.
+const invalidInterceptorCapability: AgentExecutionRequirements = { models: [{ alias: 'guarded', capabilities: ['json'] }] }
+void emptyInterceptorTools
+void invalidInterceptorCapability
+
 defineHarnessModule<{}>()('no-build-module', {
   register(builder) {
     // @ts-expect-error static module builders intentionally cannot build a harness
@@ -102,14 +260,14 @@ const harness = defineHarness()
     assistant: { provider, model: 'type-test-model', capabilities: ['object'] },
     reviewer: { provider, model: 'type-test-reviewer-model', capabilities: ['object'] }
   })
-  .tools({
-    transfer_funds: {
+  .tools(({ tool }) => ({
+    transfer_funds: tool({
       description: 'Transfer funds between accounts.',
       input: z.object({ amount: z.number(), balance: z.number() }),
       output: z.object({ approved: z.boolean() }),
       handler: async () => ({ approved: true })
-    }
-  })
+    })
+  }))
   .agents(({ agent }) => ({
     planner: agent({
       model: 'assistant',
@@ -217,14 +375,14 @@ defineHarness()
   .models({
     assistant: { provider, model: 'type-test-model', capabilities: ['object', 'tool_use'] }
   })
-  .tools({
-    transfer_funds: {
+  .tools(({ tool }) => ({
+    transfer_funds: tool({
       description: 'Transfer funds.',
       input: z.object({ amount: z.number(), balance: z.number() }),
       output: z.object({ ok: z.boolean() }),
       handler: async () => ({ ok: true })
-    }
-  })
+    })
+  }))
   .agents(({ agent }) => ({
     banker: agent({
       model: 'assistant',
@@ -341,11 +499,215 @@ richCapabilityRegistry['visionToolModel']!.text({
 richCapabilityRegistry['visionToolModel']!.text({ messages: [{ role: 'user', content: [{ kind: 'audio', mimeType: 'audio/wav', dataBase64: 'abc' }] }] }, new AbortController().signal)
 
 async function sandboxCapabilityTypes() {
-  const session = await inMemorySandbox().open({ sessionId: 'type-session', runId: 'type-run' })
+  const session = (await inMemorySandbox().open({
+    scope: { owner: { namespace: 'type-test', id: 'type-session', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' }, lifetime: 'run', runId: 'type-run' },
+    mode: 'create'
+  })).session
   await session.readText('/workspace/file.txt')
   // @ts-expect-error files-only sandbox sessions do not expose exec
   await session.exec('echo hi')
 }
+
+const sessionSandboxScope: SandboxScope = { owner: { namespace: 'types', id: 'session', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' }, lifetime: 'session' }
+// @ts-expect-error a session scope cannot carry a run id
+const invalidSessionSandboxScope: SandboxScope = { ...sessionSandboxScope, runId: 'run' }
+// @ts-expect-error run scopes require a run id
+const invalidRunSandboxScope: SandboxScope = { ...sessionSandboxScope, lifetime: 'run' }
+// @ts-expect-error child tasks always have a run lifetime
+const invalidChildSandboxScope: SandboxScope = { ...sessionSandboxScope, partition: { kind: 'unknown' } }
+// @ts-expect-error unsupported sandbox configuration is rejected in the clean API
+bashSandbox({ network: { deny: ['https://example.com'] } })
+// @ts-expect-error filesystem limits do not promise host-memory isolation
+bashSandbox({ executionLimits: { memoryMb: 128 } })
+
+declare const processSandbox: Sandbox<readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn']>
+declare const dynamicSandbox: Sandbox
+export function inferredPublicSandboxResult() {
+  return inMemorySandbox().open({ scope: sessionSandboxScope, mode: 'create' })
+}
+export function inferredPublicDynamicSandboxResult() {
+  return dynamicSandbox.open({ scope: sessionSandboxScope, mode: 'attach' })
+}
+// @ts-expect-error auto-detection cannot be given fabricated capability types
+defineHarness().sandbox<readonly ['sandbox.fs', 'sandbox.spawn']>()
+async function inferredSandboxOperations() {
+  const precise = (await processSandbox.open({ scope: sessionSandboxScope, mode: 'create' })).session
+  await precise.exec('echo hi')
+  await precise.spawn('server', { args: ['--stdio'] })
+  const dynamic = (await dynamicSandbox.open({ scope: sessionSandboxScope, mode: 'attach' })).session
+  await dynamic.readText('/workspace/file')
+  // @ts-expect-error widened capabilities do not guarantee an executor
+  await dynamic.exec('echo hi')
+  // @ts-expect-error widened capabilities do not guarantee process spawning
+  await dynamic.spawn('server')
+  if (isExecCapableSession(dynamic)) await dynamic.exec('echo hi')
+  if (isSpawnCapableSession(dynamic)) await dynamic.spawn('server')
+}
+type _SandboxSessionNeverAny = Expect<Equal<IsAny<SandboxSessionFor<readonly AdapterCapability[]>>, false>>
+const widenedFilesAdapter: Sandbox = inMemorySandbox()
+async function partiallyKnownCapabilities(session: SandboxSessionFor<readonly ['sandbox.fs', 'sandbox.exec' | 'sandbox.spawn']>) {
+  // @ts-expect-error a union capability is not a guarantee that exec is present
+  await session.exec('echo hi')
+  // @ts-expect-error a union capability is not a guarantee that spawn is present
+  await session.spawn('server')
+}
+
+defineHarness().sandbox(inMemorySandbox()).tools(({ tool }) => ({
+  files_only: tool({
+    description: 'Read files with precise sandbox types', input: z.string(), output: z.string(),
+    handler: async (ctx) => {
+      const executor: 'unavailable' = ctx.sandbox.executor
+      // @ts-expect-error registered files-only sandbox does not provide exec
+      await ctx.sandbox.exec('echo hi')
+      // @ts-expect-error registered files-only sandbox does not provide spawn
+      await ctx.sandbox.spawn('server')
+      return ctx.sandbox.readText('/workspace/file')
+    }
+  })
+}))
+defineHarness().sandbox(processSandbox).models({ primary: { provider, model: 'type-test-model', capabilities: ['text'] } }).tools(({ tool }) => ({
+  process_tool: tool({
+    description: 'Process capabilities survive subsequent builder calls', input: z.string(), output: z.string(),
+    handler: async (ctx) => {
+      type _InferredSandboxNotAny = Expect<Equal<IsAny<typeof ctx.sandbox>, false>>
+      await ctx.sandbox.spawn('server')
+      return (await ctx.sandbox.exec('echo hi')).stdout
+    }
+  })
+}))
+defineHarness().tools(({ tool }) => ({
+  default_sandbox: tool({
+    description: 'Auto-detected capabilities must be narrowed', input: z.string(), output: z.string(),
+    handler: async (ctx) => {
+      // @ts-expect-error auto-detection does not guarantee exec
+      await ctx.sandbox.exec('echo hi')
+      return isExecCapableSession(ctx.sandbox) ? (await ctx.sandbox.exec('echo hi')).stdout : 'files only'
+    }
+  })
+}))
+declare const shellTool: TsToolDefinition<z.ZodString, z.ZodString, ToolHandlerContext<readonly ['sandbox.fs', 'sandbox.exec']>>
+// @ts-expect-error unregistered native definitions cannot cross a builder boundary.
+defineHarness().sandbox(inMemorySandbox()).tools({ shell_tool: shellTool })
+declare const reusableFilesTool: TsToolDefinition<z.ZodString, z.ZodString>
+// @ts-expect-error unregistered native definitions cannot cross a builder boundary.
+defineHarness().sandbox(inMemorySandbox()).tools({ reusable_files_tool: reusableFilesTool })
+declare const chosenSandbox: Sandbox<readonly ['sandbox.fs']> | Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+defineHarness().sandbox(chosenSandbox).tools(({ tool }) => ({
+  conditional_adapter: tool({
+    description: 'A runtime adapter choice preserves only guaranteed operations', input: z.string(), output: z.string(),
+    handler: async (ctx) => {
+      // @ts-expect-error one branch is files-only, so exec requires narrowing
+      await ctx.sandbox.exec('echo hi')
+      return ctx.sandbox.readText('/workspace/file')
+    }
+  })
+}))
+
+const sandboxTypeModule = defineHarnessModule()('sandbox-types', {
+  register: (builder) => builder.models({ moduleModel: { provider, model: 'type-test-model', capabilities: ['text'] } })
+})
+
+const callbackToolsModule = defineHarnessModule()('callback-tools', {
+  register: (builder) => builder.tools(({ tool }) => ({
+    module_lookup: tool({
+      description: 'A static module registers native tools through the callback helper.',
+      input: z.object({ id: z.string() }),
+      output: z.object({ value: z.string() }),
+      handler: async (_ctx, input) => ({ value: input.id })
+    })
+  }))
+})
+
+defineHarness().use(callbackToolsModule).build()
+
+defineHarness().tools(({ tool }) => ({
+  inferred_tool: tool({
+    description: 'Contextually typed native tool.',
+    input: z.object({ query: z.string().default('all') }),
+    output: z.object({ count: z.coerce.number() }),
+    handler: async (_ctx, input) => {
+      type Input = typeof input
+      const _inputExact: Expect<Equal<Input, { query: string }>> = true
+      // @ts-expect-error native handler input is inferred from its schema.
+      input.missing
+      return { count: '1' }
+    }
+  })
+}))
+
+// @ts-expect-error copied native definitions cannot replace their registered input schema.
+defineHarness().tools(({ tool }) => {
+  const registered = tool({ description: 'Registered.', input: z.string(), output: z.string(), handler: async (_ctx, input) => input })
+  return { changed_input: { ...registered, input: z.number() } }
+})
+
+const callbackSpreadValidationModule = defineHarnessModule()('callback-spread-validation', {
+  register: (builder) => {
+    // @ts-expect-error copied native definitions cannot replace their registered handler output.
+    return builder.tools(({ tool }) => {
+      const registered = tool({ description: 'Registered.', input: z.string(), output: z.object({ value: z.string() }), handler: async (_ctx, input) => ({ value: input }) })
+      return { changed_handler: { ...registered, handler: async () => ({ unexpected: true }) } }
+    })
+  }
+})
+void callbackSpreadValidationModule
+
+// @ts-expect-error raw native definitions cannot cross the tools registration boundary.
+defineHarness().tools({ raw_native: { description: 'Raw.', input: z.string(), output: z.string(), handler: async (_ctx, input) => input } })
+defineHarness().sandbox(processSandbox).use(sandboxTypeModule).tools(({ tool }) => ({
+  preserved_capabilities: tool({
+    description: 'Module composition preserves the configured sandbox', input: z.string(), output: z.string(),
+    handler: async (ctx) => {
+      await ctx.sandbox.spawn('server')
+      return (await ctx.sandbox.exec('echo hi')).stdout
+    }
+  })
+}))
+
+const transformedInvocationHarness = defineHarness()
+  .models({ transformed: { provider, model: 'type-test-model', capabilities: ['object'] } })
+  .agents(({ agent }) => ({
+    worker: agent({
+      model: 'transformed',
+      input: z.string().transform(Number),
+      output: z.string().transform(Number),
+      instructions: 'Transform the input.',
+      handler: async (ctx) => {
+        const _contextInput: Expect<Equal<typeof ctx.input, number>> = true
+        return String(ctx.input)
+      }
+    })
+  }))
+  .workflows(({ workflow }) => ({
+    delegated: workflow({
+      input: z.string().default('3').transform(Number),
+      output: z.string().transform(Number),
+      delegation: { agents: ['worker'] },
+      handler: async (ctx) => {
+        const _workflowContextInput: Expect<Equal<typeof ctx.input, number>> = true
+        const delegated: number = await ctx.agents.worker('5')
+        const child = await ctx.childTasks.start('worker', '5')
+        const childResult: Promise<number> = child.result()
+        void delegated
+        void childResult
+        // @ts-expect-error delegated agent invocation accepts the raw input schema type.
+        await ctx.agents.worker(5)
+        // @ts-expect-error child tasks retain the delegated agent raw input schema type.
+        await ctx.childTasks.start('worker', 5)
+        return '6'
+      }
+    })
+  }))
+  .build()
+
+type TransformedAgentInput = typeof transformedInvocationHarness.$infer.agents.worker.input
+type TransformedAgentOutput = typeof transformedInvocationHarness.$infer.agents.worker.output
+type TransformedWorkflowInput = typeof transformedInvocationHarness.$infer.workflows.delegated.input
+type TransformedWorkflowOutput = typeof transformedInvocationHarness.$infer.workflows.delegated.output
+const _transformedAgentInput: Expect<Equal<TransformedAgentInput, string>> = true
+const _transformedAgentOutput: Expect<Equal<TransformedAgentOutput, number>> = true
+const _transformedWorkflowInput: Expect<Equal<TransformedWorkflowInput, string | undefined>> = true
+const _transformedWorkflowOutput: Expect<Equal<TransformedWorkflowOutput, number>> = true
 
 defineHarness()
   .models({
@@ -397,3 +759,110 @@ defineHarness()
     // @ts-expect-error embedding configuration requires a vector-search engine
     embedding: model.memoryEmbedding
   }))
+
+defineHarness()
+  .models({ assistant: { provider, model: 'type-test-model', capabilities: ['object', 'tool_use'] } })
+  .tools(({ tool }) => ({
+    transfer: tool({ description: 'Transfer.', input: z.object({ amount: z.number() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) }),
+    archive: tool({ description: 'Archive.', input: z.object({ ticket: z.string() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) })
+  }))
+  .agents({ governance_types: { model: 'assistant', input: z.string(), output: z.string(), instructions: 'Use a tool.', tools: ['transfer', 'archive'], builtinTools: false } })
+  .governance(({ native, rule }) => ({
+    policies: [native({
+      id: 'selector-types',
+      rules: [
+        // @ts-expect-error raw stored rules must accept the full correlated context union.
+        { id: 'raw-narrow-rule', effect: 'audit', when: (ctx: { toolId: 'transfer'; input: { amount: number } }) => ctx.input.amount > 0 },
+        rule({
+          id: 'multi-tool-rule', effect: 'audit', tools: ['transfer', 'archive'] as const,
+          when: (ctx) => {
+            if (ctx.toolId === 'transfer') return ctx.input.amount > 0
+            if (ctx.toolId === 'archive') return ctx.input.ticket.length > 0
+            return false
+          }
+        }),
+        rule({
+          id: 'no-selector-full-union', effect: 'audit',
+          when: (ctx) => {
+            // @ts-expect-error input is correlated and requires toolId narrowing.
+            return ctx.input.amount > 0
+          }
+        }),
+        rule({
+          id: 'selector-mismatch', effect: 'audit',
+          // @ts-expect-error selector cannot be inferred from an incompatible predicate.
+          tools: ['archive'] as const,
+          // @ts-expect-error a transfer-only predicate cannot be selected for archive.
+          when: (ctx: { toolId: 'transfer'; input: { amount: number } }) => ctx.input.amount > 0
+        })
+      ]
+    })]
+  }))
+
+const approvalSubjectBuilder = defineHarness()
+  .models({ approval_subject_model: { provider, model: 'type-test-model', capabilities: ['object'] } })
+  .tools(({ tool }) => ({
+    approval_transfer: tool({ description: 'Transfer.', input: z.object({ amount: z.number() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) }),
+    approval_archive: tool({ description: 'Archive.', input: z.object({ ticket: z.string() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) })
+  }))
+type ApprovalSubjectState = typeof approvalSubjectBuilder extends HarnessBuilder<infer S> ? S : never
+declare const approvalSubject: GovernanceApprovalSubject<ApprovalSubjectState>
+if (approvalSubject.toolId === 'approval_transfer') approvalSubject.input.amount
+if (approvalSubject.toolId === 'approval_archive') approvalSubject.input.ticket
+
+approvalSubjectBuilder.governance({
+  approval: {
+    async request(request, execution) {
+      const signal: AbortSignal = execution.signal
+      const deadline: number = execution.deadline
+      void signal
+      void deadline
+      // @ts-expect-error the input must be narrowed by its correlated tool id.
+      request.subject.input.amount
+      if (request.subject.toolId === 'approval_transfer') {
+        const amount: number = request.subject.input.amount
+        void amount
+        // @ts-expect-error transfer input does not contain archive fields.
+        request.subject.input.ticket
+      }
+      if (request.subject.toolId === 'approval_archive') {
+        const ticket: string = request.subject.input.ticket
+        void ticket
+        // @ts-expect-error archive input does not contain transfer fields.
+        request.subject.input.amount
+      }
+      // @ts-expect-error execution is a bounded callback context, not arbitrary configuration.
+      execution.missing
+      return { decision: 'approved' }
+    }
+  }
+})
+
+const standaloneApprovalProvider: GovernanceApprovalProvider = {
+  async request(request, execution) {
+    const toolId: string = request.subject.toolId
+    const signal: AbortSignal = execution.signal
+    void toolId
+    void signal
+    return { decision: 'approved' }
+  }
+}
+approvalSubjectBuilder.governance({ approval: standaloneApprovalProvider })
+approvalSubjectBuilder.governance(() => ({ approval: {
+  async request(request, execution) {
+    if (request.subject.toolId === 'approval_transfer') {
+      const amount: number = request.subject.input.amount
+      void amount
+      // @ts-expect-error helper callback retains the selected tool input shape.
+      request.subject.input.ticket
+    }
+    const deadline: number = execution.deadline
+    void deadline
+    return { decision: 'approved' }
+  }
+} }))
+
+declare const toolSpecificApprovalProvider: GovernanceApprovalProvider<ApprovalSubjectState>
+// @ts-expect-error an adapter for a specific tool set cannot handle arbitrary builder subjects.
+const unsafeStandaloneApprovalProvider: GovernanceApprovalProvider = toolSpecificApprovalProvider
+void unsafeStandaloneApprovalProvider

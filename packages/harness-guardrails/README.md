@@ -2,26 +2,17 @@
 
 Typed, optional guardrails for the default `@purista/harness` agent loop.
 
-It accepts the portable YAML vocabulary used by NVIDIA NeMo Guardrails for
-`models`, `rails.input`, `rails.output`, `rails.tool_input`,
-`rails.tool_output`, and `rails.retrieval`. Applications provide the actions
-and model aliases explicitly; configuration never creates a provider, loads
-Python, executes Colang, starts a server, or opens a vector database.
+Configure rails inline with `defineGuardrails({ config, actions })`. The
+exported Zod schema validates the same TypeScript object that the addon
+compiles. Applications provide action implementations and direct model aliases
+explicitly; guardrail configuration never creates a provider, starts a server,
+or opens a vector database.
 
-```ts
-const config = await loadGuardrailsConfig('./guardrails')
-const rails = defineGuardrails({
-  config,
-  actions: {
-    'block secrets': { evaluate: ({ value }) => containsSecret(value) ? { decision: 'block' } : { decision: 'allow' } }
-  }
-})
-
-const harness = defineHarness()
-  .models({ assistant: { provider, model: 'gpt-5-mini', capabilities: ['object'] } })
-  .agents({ support: rails.attach({ model: 'assistant', instructions: 'Help safely.', builtinTools: false }) })
-  .build()
-```
+Use the [runnable composition](../../examples/guardrails/README.md) and its
+[typed action map](../../examples/guardrails/src/index.ts). Each action declares
+its `phase`; configuration flow names must match actions of that phase. The
+example attaches input, tool-input, tool-output, and final-output rails to one
+agent alongside a shared governance approval provider.
 
 Rail actions return `allow`, `block`, or a phase-appropriate `transform`.
 They are ordered, have a 10-second fail-closed evaluation budget by default,
@@ -32,15 +23,19 @@ evaluations, while failed actions are error spans. Use
 `filterRetrievedChunks(chunks, { models, signal, logger })` after
 application-owned retrieval; the addon has no vector-store integration.
 
-Unsupported NeMo executable features (`.co` and `.py` files, `prompts.yml`,
-`prompts.yaml`, `actions`/`kb` directories, and dialog/execution rails) fail
-at config load/compile time with stable diagnostics instead of being
-approximated.
+Output rails run only on a final candidate. Tool-input rails transform wire
+arguments before binding schemas/adapters prepare input for policy, approval,
+and the handler; tool-output rails run after handler-output validation.
+`DecisionBlockedError` and `DecisionEvaluationError` come from core and retain
+rail-owned safe evidence. A block does not request approval or suspend a run.
+Attached actions honor the enclosing deadline and cancellation; no rail can
+undo an effect or inspect opaque provider reasoning. Direct model calls and
+custom handlers are outside automatic coverage. See the
+[decision guide](../../docs/guides/decisions-and-approval.md) for exact boundaries.
 
-The accepted YAML is intentionally strict: root `models`, `instructions`,
-`prompts`, `custom_data`, and `rails`; model `type`, `engine`, `model`, and
-`parameters`; phase `flows`; and the documented sensitive-data subtree only.
-`models`, `instructions`, `prompts`, and `custom_data` are preserved migration
-metadata, not executable provider/prompt/template configuration. Use Harness
-model aliases, typed agent instructions, actions, workflows, and
-application-owned retrieval for the executable behavior.
+The configuration has only `rails` and `sensitiveData`. `rails` defaults to an
+empty object and binds ordered action IDs to input, output, tool-input,
+tool-output, or retrieval phases. Sensitive-data policies are explicit,
+application-selected values. Harness model aliases, typed agent instructions,
+actions, workflows, and application-owned retrieval remain the executable
+surface.

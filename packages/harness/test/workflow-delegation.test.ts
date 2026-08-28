@@ -31,6 +31,55 @@ function hangingProvider(onStarted?: () => void) {
 }
 
 describe('workflow delegation policy', () => {
+  it('passes transformed workflow input through a delegated transformed custom agent', async () => {
+    const model = new FakeModelProvider()
+    const parseWorkflowInput = vi.fn((value: string) => Number(value))
+    const parseAgentInput = vi.fn((value: string) => Number(value))
+    const parseAgentOutput = vi.fn((value: string) => Number(value))
+    const parseWorkflowOutput = vi.fn((value: string) => Number(value))
+    const workflowInputs: unknown[] = []
+    const agentInputs: unknown[] = []
+
+    const harness = defineHarness()
+      .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
+      .tools({})
+      .skills({})
+      .agents(({ agent }) => ({
+        worker: agent({
+          model: 'fast',
+          instructions: '',
+          input: z.string().transform(parseAgentInput),
+          output: z.string().transform(parseAgentOutput),
+          handler: async (ctx) => {
+            agentInputs.push(ctx.input)
+            return '5'
+          }
+        })
+      }))
+      .workflows(({ workflow }) => ({
+        delegated: workflow({
+          input: z.string().default('3').transform(parseWorkflowInput),
+          output: z.string().transform(parseWorkflowOutput),
+          delegation: { agents: ['worker'] },
+          handler: async (ctx) => {
+            workflowInputs.push(ctx.input)
+            await ctx.agents.worker('5')
+            return '6'
+          }
+        })
+      }))
+      .build()
+
+    await expect((await harness.getSession('delegated-transforms')).workflows.delegated.prompt(undefined)).resolves.toBe(6)
+    expect(workflowInputs).toEqual([3])
+    expect(agentInputs).toEqual([5])
+    expect(parseWorkflowInput).toHaveBeenCalledTimes(1)
+    expect(parseAgentInput).toHaveBeenCalledTimes(1)
+    expect(parseAgentOutput).toHaveBeenCalledTimes(1)
+    expect(parseWorkflowOutput).toHaveBeenCalledTimes(1)
+    expect(model.requests).toEqual([])
+  })
+
   it('denies child-agent calls by default', async () => {
     const model = new FakeModelProvider()
 

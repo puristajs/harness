@@ -67,6 +67,31 @@ Add type tests for builder inference:
 
 Use `@ts-expect-error` for negative cases.
 
+## Guardrails Tests
+
+Treat Guardrails configuration as one inline TypeScript object passed to
+`defineGuardrails({ config, actions })`. Test the action map and configuration
+together: a flow id must resolve to an opaque `defineGuardrailAction(...)`
+token with the matching phase, action outcomes must use the phase's transform
+target, and invalid configuration must produce the safe
+`GuardrailsConfigError` without exposing policy content or parser diagnostics.
+Tool-input and tool-output action tests must reject missing or empty `tools`
+selectors before a protected value can be evaluated.
+
+Use the existing fake provider and detector helpers to prove both protected and
+unprotected paths. Cover an action allow, block, transform, timeout, and
+callback failure. For structured sensitive-data values, test the reviewed codec
+against the exact schema/value it protects; do not test a recursive scan of
+arbitrary JSON.
+
+Test build preflight separately from invocation. Construct the complete Harness
+with `defineHarness(...).build()` and assert missing active model/tool
+requirements fail before creating a session or requesting a model. The runnable
+`examples/guardrails` composition exposes `preflightGuardrailsExample()` for a
+real zero-effect check: before shutdown, model requests, detector inspections,
+tool invocations, and approval requests must all be zero. A no-effect preflight
+does not replace the separate invocation tests for ordering and handler output.
+
 ## Contract Tests
 Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `FakeModelProvider`

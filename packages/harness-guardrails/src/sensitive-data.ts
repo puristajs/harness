@@ -1,7 +1,11 @@
-import type { JsonValue } from '@purista/harness'
-import { GuardrailEvaluationError, GuardrailsConfigError, type GuardrailPhase } from './errors.js'
-import type { NeMoSensitiveDataPolicy } from './config.js'
-import type { GuardrailAction, GuardrailActionContext, GuardrailActions, GuardrailOutcome } from './rails.js'
+import { decisionResultSchema, isJsonValue } from '@purista/harness'
+import type { DecisionFailureKind, JsonValue } from '@purista/harness'
+import { z } from 'zod'
+import { createGuardrailAction } from './action.js'
+import { GuardrailsConfigError } from './errors.js'
+import type { SensitiveDataPolicy } from './config-schema.js'
+import type { GuardrailAction, GuardrailActionContext, GuardrailOutcome, GuardrailValue } from './rails.js'
+import type { GuardrailPhase } from './config-schema.js'
 
 /** Whether the detector keeps inspection local or sends data to an application-selected cloud service. */
 export type SensitiveDataExecutionMode = 'local' | 'cloud'
@@ -68,39 +72,65 @@ export interface SensitiveDataReplacement {
 /** Application-owned extraction and replacement boundary for structured tool values. */
 export interface SensitiveDataValueCodec<T extends JsonValue = JsonValue> {
   readonly id: string
-  extract(value: T): readonly SensitiveDataTextSegment[]
-  replace(value: T, replacements: readonly SensitiveDataReplacement[]): T
+  readonly extract: (value: T) => readonly SensitiveDataTextSegment[]
+  readonly replace: (value: T, replacements: readonly SensitiveDataReplacement[]) => T
 }
 
-/** Configures explicit sensitive-data protection for a selected tool phase. */
-export interface SensitiveDataToolActionOptions<T extends JsonValue = JsonValue> {
+/** Configures one selected structured tool rail with a schema-bound codec. */
+export interface SensitiveDataToolRailOptions<P extends 'tool_input' | 'tool_output', Schema extends z.ZodType<JsonValue>> {
+  readonly detector: SensitiveDataDetector
+  readonly phase: P
+  readonly tools: readonly [string, ...string[]]
   readonly policy: 'input' | 'output'
-  readonly codec: SensitiveDataValueCodec<T>
-  readonly detectFlow?: string
-  readonly maskFlow?: string
+  readonly operation: Operation
+  readonly valueSchema: Schema
+  readonly codec: SensitiveDataValueCodec<z.output<Schema>>
 }
 
 /** Factory options for the built-in provider-neutral sensitive-data rail actions. */
 export interface CreateSensitiveDataActionsOptions {
   readonly detector: SensitiveDataDetector
-  readonly toolInput?: SensitiveDataToolActionOptions
-  readonly toolOutput?: SensitiveDataToolActionOptions
 }
 
 type Operation = 'detect' | 'mask'
 type PolicyPhase = 'input' | 'output' | 'retrieval'
-type PolicyBoundAction = GuardrailAction & { readonly sensitiveDataPolicyPhase: PolicyPhase; readonly sensitiveDataSupportedEntities?: readonly string[] }
+type SensitiveDataMetadata = Readonly<{ policyPhase: PolicyPhase; supportedEntities?: readonly string[] }>
+const metadata = new WeakMap<object, SensitiveDataMetadata>()
+
+/** Internal rail compiler metadata for sensitive-data tokens. */
+export function sensitiveDataMetadata(action: GuardrailAction): SensitiveDataMetadata | undefined {
+  return metadata.get(action)
+}
+
+/** Private action classification consumed by the rail boundary's safe error projection. */
+class SensitiveDataActionError extends Error {
+  public constructor(readonly failureKind: Extract<DecisionFailureKind, 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result' | 'sensitive_data_codec_failed'>, cause?: unknown) {
+    super('Sensitive-data inspection failed closed.', { cause })
+  }
+}
+
+/** Returns the stable failure class without exposing detector text or payloads. */
+export function sensitiveDataFailureKind(error: unknown): Extract<DecisionFailureKind, 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result' | 'sensitive_data_codec_failed'> | undefined {
+  return error instanceof SensitiveDataActionError ? error.failureKind : undefined
+}
 
 /**
- * Creates the six exact portable sensitive-data actions and any explicitly
- * configured tool actions. The detector remains injected and provider-neutral.
+ * Creates the six exact portable sensitive-data actions. Structured tool
+ * protection is authored explicitly with `sensitiveDataToolRail`.
  *
  * @example
  * const actions = createSensitiveDataActions({ detector })
  */
-export function createSensitiveDataActions(options: CreateSensitiveDataActionsOptions): GuardrailActions {
+export function createSensitiveDataActions(options: CreateSensitiveDataActionsOptions): Readonly<{
+  'detect sensitive data on input': GuardrailAction<'input'>
+  'mask sensitive data on input': GuardrailAction<'input'>
+  'detect sensitive data on output': GuardrailAction<'output'>
+  'mask sensitive data on output': GuardrailAction<'output'>
+  'detect sensitive data on retrieval': GuardrailAction<'retrieval'>
+  'mask sensitive data on retrieval': GuardrailAction<'retrieval'>
+}> {
   validateDetector(options.detector)
-  const actions: Record<string, GuardrailAction> = {
+  return {
     'detect sensitive data on input': stringAction(options.detector, 'detect', 'input'),
     'mask sensitive data on input': stringAction(options.detector, 'mask', 'input'),
     'detect sensitive data on output': stringAction(options.detector, 'detect', 'output'),
@@ -108,40 +138,27 @@ export function createSensitiveDataActions(options: CreateSensitiveDataActionsOp
     'detect sensitive data on retrieval': retrievalAction(options.detector, 'detect'),
     'mask sensitive data on retrieval': retrievalAction(options.detector, 'mask')
   }
-  addToolActions(actions, options.detector, 'tool_input', options.toolInput)
-  addToolActions(actions, options.detector, 'tool_output', options.toolOutput)
-  return actions
 }
 
-function addToolActions(actions: Record<string, GuardrailAction>, detector: SensitiveDataDetector, phase: 'tool_input' | 'tool_output', options: SensitiveDataToolActionOptions | undefined): void {
-  if (!options) return
-  if (!options.detectFlow && !options.maskFlow) throw new GuardrailsConfigError('A sensitive-data tool binding needs a detectFlow or maskFlow.', { reason: 'invalid_shape', field: `${phase}` })
-  if (!isStableId(options.codec.id)) throw new GuardrailsConfigError('Sensitive-data codec id must be a stable ASCII identifier.', { reason: 'invalid_shape', field: `${phase}.codec.id` })
-  for (const [operation, flow] of [['detect', options.detectFlow], ['mask', options.maskFlow]] as const) {
-    if (!flow) continue
-    if (!flow.trim() || actions[flow]) throw new GuardrailsConfigError('Sensitive-data tool action flow names must be unique non-empty strings.', { reason: 'invalid_shape', field: `${phase}.${operation}Flow` })
-    actions[flow] = toolAction(detector, operation, phase, options)
-  }
+function bindSensitiveDataMetadata<P extends GuardrailPhase>(action: GuardrailAction<P>, detector: SensitiveDataDetector, policyPhase: PolicyPhase): GuardrailAction<P> {
+  metadata.set(action, Object.freeze({ policyPhase, ...(detector.supportedEntities ? { supportedEntities: Object.freeze([...detector.supportedEntities]) } : {}) }))
+  return action
 }
 
-function stringAction(detector: SensitiveDataDetector, operation: Operation, policy: PolicyPhase): PolicyBoundAction {
-  return {
-    mayTransform: operation === 'mask',
-    sensitiveDataPolicyPhase: policy,
-    ...(detector.supportedEntities ? { sensitiveDataSupportedEntities: detector.supportedEntities } : {}),
-    async evaluate(ctx) {
-      if (typeof ctx.value !== 'string') throw codecError(ctx)
-      return evaluateText(detector, operation, ctx, policyFor(ctx), ctx.value)
-    }
-  }
+function stringAction<P extends 'input' | 'output'>(detector: SensitiveDataDetector, operation: 'detect', policy: P): GuardrailAction<P>
+function stringAction<P extends 'input' | 'output'>(detector: SensitiveDataDetector, operation: 'mask', policy: P): GuardrailAction<P>
+function stringAction<P extends 'input' | 'output'>(detector: SensitiveDataDetector, operation: Operation, policy: P): GuardrailAction<P> {
+  const action = operation === 'detect'
+    ? createGuardrailAction<P>({ phase: policy, valueSchema: z.string(), mayTransform: false, evaluate: async (ctx: GuardrailActionContext<P, string>) => evaluateText(detector, operation, ctx, policyFor(ctx), ctx.value) })
+    : createGuardrailAction<P>({ phase: policy, valueSchema: z.string(), evaluate: async (ctx: GuardrailActionContext<P, string>) => evaluateText(detector, operation, ctx, policyFor(ctx), ctx.value) })
+  return bindSensitiveDataMetadata(action, detector, policy)
 }
 
-function retrievalAction(detector: SensitiveDataDetector, operation: Operation): PolicyBoundAction {
-  return {
-    mayTransform: operation === 'mask',
-    sensitiveDataPolicyPhase: 'retrieval',
-    ...(detector.supportedEntities ? { sensitiveDataSupportedEntities: detector.supportedEntities } : {}),
-    async evaluate(ctx) {
+function retrievalAction(detector: SensitiveDataDetector, operation: 'detect'): GuardrailAction<'retrieval'>
+function retrievalAction(detector: SensitiveDataDetector, operation: 'mask'): GuardrailAction<'retrieval'>
+function retrievalAction(detector: SensitiveDataDetector, operation: Operation): GuardrailAction<'retrieval'> {
+  const action = operation === 'detect'
+    ? createGuardrailAction<'retrieval'>({ phase: 'retrieval', valueSchema: z.array(z.string()), mayTransform: false, evaluate: async (ctx: GuardrailActionContext<'retrieval', readonly string[]>) => {
       if (!Array.isArray(ctx.value)) throw codecError(ctx)
       const policy = policyFor(ctx)
       const transformed: JsonValue[] = []
@@ -162,16 +179,30 @@ function retrievalAction(detector: SensitiveDataDetector, operation: Operation):
         changed = true
       }
       return changed ? transformedOutcome(transformed) : allow()
-    }
-  }
+    } })
+    : createGuardrailAction<'retrieval'>({ phase: 'retrieval', valueSchema: z.array(z.string()), evaluate: async (ctx: GuardrailActionContext<'retrieval', readonly string[]>) => {
+      if (!Array.isArray(ctx.value)) throw codecError(ctx)
+      const policy = policyFor(ctx)
+      const transformed: JsonValue[] = []
+      let changed = false
+      for (const chunk of ctx.value) {
+        if (typeof chunk !== 'string') throw codecError(ctx)
+        if (chunk.length === 0) { transformed.push(chunk); continue }
+        const outcome = await inspect(detector, operation, ctx, policy, chunk)
+        if (outcome.findings.length === 0) { transformed.push(chunk); continue }
+        transformed.push(mask(chunk, outcome.findings, policy.maskToken))
+        changed = true
+      }
+      return changed ? transformedOutcome(transformed) : allow()
+    } })
+  return bindSensitiveDataMetadata(action, detector, 'retrieval')
 }
 
-function toolAction(detector: SensitiveDataDetector, operation: Operation, phase: 'tool_input' | 'tool_output', options: SensitiveDataToolActionOptions): PolicyBoundAction {
-  return {
-    mayTransform: operation === 'mask',
-    sensitiveDataPolicyPhase: options.policy,
-    ...(detector.supportedEntities ? { sensitiveDataSupportedEntities: detector.supportedEntities } : {}),
-    async evaluate(ctx) {
+/** Creates one schema-bound sensitive-data action for explicitly selected tools. */
+export function sensitiveDataToolRail<const P extends 'tool_input' | 'tool_output', const Schema extends z.ZodType<JsonValue>>(options: SensitiveDataToolRailOptions<P, Schema>): GuardrailAction<P> {
+  validateDetector(options.detector)
+  if (!isStableId(options.codec.id)) throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'codec.id' })
+  const evaluate = async (ctx: GuardrailActionContext<P, z.output<Schema>>): Promise<GuardrailOutcome<P, z.output<Schema>>> => {
       const policy = policyFor(ctx)
       let segments: readonly SensitiveDataTextSegment[]
       try {
@@ -182,23 +213,26 @@ function toolAction(detector: SensitiveDataDetector, operation: Operation, phase
       }
       const replacements: SensitiveDataReplacement[] = []
       for (const segment of segments) {
-        const outcome = await inspect(detector, operation, ctx, policy, segment.text)
+        const outcome = await inspect(options.detector, options.operation, ctx, policy, segment.text)
         if (outcome.findings.length === 0) continue
-        if (operation === 'detect') return blocked()
+        if (options.operation === 'detect') return blocked()
         replacements.push(...outcome.findings.map((finding) => ({ id: segment.id, start: finding.start, end: finding.end, value: policy.maskToken })))
       }
       if (replacements.length === 0) return allow()
       try {
         const value = options.codec.replace(ctx.value, replacements)
-        return transformed(phase, value)
+        return transformed(options.phase, value)
       } catch {
         throw codecError(ctx)
       }
-    }
   }
+  const action = options.operation === 'detect'
+    ? createGuardrailAction<P>({ phase: options.phase, tools: options.tools, valueSchema: options.valueSchema, mayTransform: false, evaluate })
+    : createGuardrailAction<P>({ phase: options.phase, tools: options.tools, valueSchema: options.valueSchema, evaluate })
+  return bindSensitiveDataMetadata(action, options.detector, options.policy)
 }
 
-async function evaluateText(detector: SensitiveDataDetector, operation: Operation, ctx: GuardrailActionContext, policy: NeMoSensitiveDataPolicy, text: string): Promise<GuardrailOutcome> {
+async function evaluateText<P extends 'input' | 'output'>(detector: SensitiveDataDetector, operation: Operation, ctx: GuardrailActionContext<P, string>, policy: SensitiveDataPolicy, text: string): Promise<GuardrailOutcome<P, string>> {
   if (text.length === 0) return allow()
   const outcome = await inspect(detector, operation, ctx, policy, text)
   if (outcome.findings.length === 0) return allow()
@@ -206,7 +240,7 @@ async function evaluateText(detector: SensitiveDataDetector, operation: Operatio
   return transformed(ctx.phase, mask(text, outcome.findings, policy.maskToken))
 }
 
-async function inspect(detector: SensitiveDataDetector, operation: Operation, ctx: GuardrailActionContext, policy: NeMoSensitiveDataPolicy, text: string): Promise<SensitiveDataInspectionResult> {
+async function inspect(detector: SensitiveDataDetector, operation: Operation, ctx: GuardrailActionContext, policy: SensitiveDataPolicy, text: string): Promise<SensitiveDataInspectionResult> {
   const telemetry = ctx.telemetry
   const started = Date.now()
   const attrs = inspectionAttributes(detector, operation, policy)
@@ -217,15 +251,15 @@ async function inspect(detector: SensitiveDataDetector, operation: Operation, ct
         try {
           validateResult(inspected, text, policy.entities)
         } catch {
-          throw detectorError(ctx, 'sensitive_data_invalid_result')
+          throw detectorError('sensitive_data_invalid_result')
         }
         const outcome = inspected.findings.length === 0 ? 'allow' : operation === 'detect' ? 'block' : 'transform'
         span.setAttributes({ 'harness.sensitive_data.outcome': outcome, 'harness.sensitive_data.finding_count': String(Math.min(inspected.findings.length, 100)) })
         return inspected
       } catch (error) {
-        const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed', error)
+        const classified = error instanceof SensitiveDataActionError ? error : detectorError('sensitive_data_detector_failed', error)
         const failureKind = detectorFailureKind(error)
-        span.setAttributes({ 'harness.sensitive_data.outcome': 'error', 'error.type': classified.code, ...(failureKind ? { 'harness.sensitive_data.failure_kind': failureKind } : {}) })
+        span.setAttributes({ 'harness.sensitive_data.outcome': 'error', 'error.type': 'DECISION_EVALUATION_ERROR', ...(failureKind ? { 'harness.sensitive_data.failure_kind': failureKind } : {}) })
         throw classified
       }
     })
@@ -234,25 +268,25 @@ async function inspect(detector: SensitiveDataDetector, operation: Operation, ct
     if (outcome !== 'allow') logInspection(ctx, detector, operation, outcome, policy)
     return result
   } catch (error) {
-    const classified = error instanceof GuardrailEvaluationError ? error : detectorError(ctx, 'sensitive_data_detector_failed', error)
+    const classified = error instanceof SensitiveDataActionError ? error : detectorError('sensitive_data_detector_failed', error)
     const failureKind = detectorFailureKind(error)
-    recordInspection(ctx, attrs, 'error', started, classified.code, failureKind)
-    logInspection(ctx, detector, operation, 'error', policy, classified.code, failureKind)
+    recordInspection(ctx, attrs, 'error', started, 'DECISION_EVALUATION_ERROR', failureKind)
+    logInspection(ctx, detector, operation, 'error', policy, 'DECISION_EVALUATION_ERROR', failureKind)
     throw classified
   }
 }
 
-function policyFor(ctx: GuardrailActionContext): NeMoSensitiveDataPolicy {
-  if (!ctx.sensitiveDataPolicy) throw new GuardrailsConfigError('Sensitive-data action has no matching sensitive_data_detection policy.', { reason: 'invalid_shape', field: `rails.${ctx.phase}` })
+function policyFor(ctx: GuardrailActionContext): SensitiveDataPolicy {
+  if (!ctx.sensitiveDataPolicy) throw new GuardrailsConfigError({ reason: 'missing_policy', field: `rails.${ctx.phase}` })
   return ctx.sensitiveDataPolicy
 }
 
 function validateDetector(detector: SensitiveDataDetector): void {
   if (!detector || !isStableId(detector.id) || !['local', 'cloud'].includes(detector.executionMode) || typeof detector.inspect !== 'function') {
-    throw new GuardrailsConfigError('Sensitive-data detector must expose a stable id, execution mode, and inspect method.', { reason: 'invalid_shape', field: 'detector' })
+    throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'detector' })
   }
   if (detector.supportedEntities && (detector.supportedEntities.length === 0 || detector.supportedEntities.some((entity) => !/^[A-Z][A-Z0-9_]{0,63}$/.test(entity)))) {
-    throw new GuardrailsConfigError('Sensitive-data detector capabilities must use stable entity identifiers.', { reason: 'invalid_shape', field: 'detector.supportedEntities' })
+    throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'detector.supportedEntities' })
   }
 }
 
@@ -279,19 +313,23 @@ function mask(text: string, findings: readonly SensitiveDataFinding[], maskToken
   return [...findings].sort((a, b) => b.start - a.start || b.end - a.end).reduce((current, finding) => current.slice(0, finding.start) + maskToken + current.slice(finding.end), text)
 }
 
-function transformed(phase: GuardrailPhase, value: JsonValue): GuardrailOutcome {
-  const target = phase === 'input' ? 'user_message' : phase === 'output' ? 'bot_message' : phase === 'tool_input' ? 'tool_input' : phase === 'tool_output' ? 'tool_output' : 'relevant_chunks'
+function transformed<P extends GuardrailPhase, V>(phase: P, value: V): GuardrailOutcome<P, V> {
+  const target = targetFor(phase)
   return { decision: 'transform', target, value, reasonCode: 'sensitive_data_masked' }
 }
 
-function transformedOutcome(value: JsonValue): GuardrailOutcome {
+function transformedOutcome(value: readonly JsonValue[]): GuardrailOutcome<'retrieval'> {
   return { decision: 'transform', target: 'relevant_chunks', value, reasonCode: 'sensitive_data_masked' }
 }
 
-function allow(): GuardrailOutcome { return { decision: 'allow' } }
-function blocked(): GuardrailOutcome { return { decision: 'block', reasonCode: 'sensitive_data_detected' } }
+function allow(): Readonly<{ decision: 'allow' }> { return { decision: 'allow' } }
+function blocked(): Readonly<{ decision: 'block'; reasonCode: string }> { return { decision: 'block', reasonCode: 'sensitive_data_detected' } }
 
-function inspectionAttributes(detector: SensitiveDataDetector, operation: Operation, policy: NeMoSensitiveDataPolicy): Record<string, string> {
+function targetFor<P extends GuardrailPhase>(phase: P): import('./rails.js').GuardrailTransformTarget<P> {
+  return (phase === 'input' ? 'user_message' : phase === 'output' ? 'bot_message' : phase === 'tool_input' ? 'tool_input' : phase === 'tool_output' ? 'tool_output' : 'relevant_chunks') as import('./rails.js').GuardrailTransformTarget<P>
+}
+
+function inspectionAttributes(detector: SensitiveDataDetector, operation: Operation, policy: SensitiveDataPolicy): Record<string, string> {
   return {
     'openinference.span.kind': 'GUARDRAIL',
     'harness.sensitive_data.detector.id': detector.id,
@@ -307,25 +345,36 @@ function recordInspection(ctx: GuardrailActionContext, attrs: Record<string, str
   ctx.telemetry!.recordHistogram('harness.sensitive_data.duration', (Date.now() - started) / 1000, dimensions)
 }
 
-function logInspection(ctx: GuardrailActionContext, detector: SensitiveDataDetector, operation: Operation, outcome: 'block' | 'transform' | 'error', policy: NeMoSensitiveDataPolicy, errorCode?: string, failureKind?: string): void {
+function logInspection(ctx: GuardrailActionContext, detector: SensitiveDataDetector, operation: Operation, outcome: 'block' | 'transform' | 'error', policy: SensitiveDataPolicy, errorCode?: string, failureKind?: string): void {
   const fields = { sensitive_data_detector_id: detector.id, sensitive_data_execution_mode: detector.executionMode, sensitive_data_operation: operation, sensitive_data_outcome: outcome, sensitive_data_categories: [...policy.entities].sort().slice(0, 16).join(','), ...(errorCode ? { error_code: errorCode } : {}), ...(failureKind ? { sensitive_data_failure_kind: failureKind } : {}) }
   if (outcome === 'block') ctx.logger?.warn('Harness sensitive-data guardrail blocked execution.', fields)
   else if (outcome === 'transform') ctx.logger?.info('Harness sensitive-data guardrail transformed a value.', fields)
   else ctx.logger?.error('Harness sensitive-data guardrail failed closed.', fields)
 }
 
-function detectorError(ctx: GuardrailActionContext, reason: 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result', cause?: unknown): GuardrailEvaluationError {
-  return new GuardrailEvaluationError('Sensitive-data inspection failed closed.', { rail_id: ctx.railId, phase: ctx.phase, reason }, cause)
+function detectorError(reason: 'sensitive_data_detector_failed' | 'sensitive_data_invalid_result', cause?: unknown): SensitiveDataActionError {
+  return new SensitiveDataActionError(reason, cause)
 }
 
 function detectorFailureKind(error: unknown): string | undefined {
   const source = error instanceof SensitiveDataDetectorError ? error : error instanceof Error ? error.cause : undefined
-  if (!(source instanceof SensitiveDataDetectorError) || !/^[a-z][a-z0-9_]{0,63}$/.test(source.kind)) return undefined
-  return source.kind
+  if (!(source instanceof SensitiveDataDetectorError)) return undefined
+  const parsed = decisionResultSchema.options[0].shape.reasonCode.safeParse(source.kind)
+  return parsed.success ? parsed.data : undefined
 }
 
-function codecError(ctx: GuardrailActionContext): GuardrailEvaluationError {
-  return new GuardrailEvaluationError('Sensitive-data codec failed closed.', { rail_id: ctx.railId, phase: ctx.phase, reason: 'sensitive_data_codec_failed' })
+function codecError(_ctx: GuardrailActionContext): SensitiveDataActionError {
+  return new SensitiveDataActionError('sensitive_data_codec_failed')
+}
+
+function jsonValueForCodec(value: JsonValue | readonly JsonValue[]): JsonValue {
+  if (isReadonlyJsonArray(value)) return [...value]
+  if (isJsonValue(value)) return value
+  throw new Error('Invalid protected tool value.')
+}
+
+function isReadonlyJsonArray(value: JsonValue | readonly JsonValue[]): value is readonly JsonValue[] {
+  return Array.isArray(value)
 }
 
 function isStableId(value: string): boolean {

@@ -1,5 +1,7 @@
 # Tools
 
+> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for native tool registration and handler schema direction. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+
 **Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered via `defineHarness().tools({...})`. There is no standalone `defineTool` factory; only inline-in-builder objects achieve cross-key type safety. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md).
 
 ## Built-in tools
@@ -235,7 +237,7 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 | `ValidationError`      | input or output schema mismatch                          | no        |
 | `PermissionDeniedError`| permission policy denied the call (per-call; recoverable)| no        |
 | `PolicyDeniedError`    | governance policy or approval denied the call (recoverable)| no      |
-| `PolicyEvaluationError`| governance adapter or predicate failed                   | no        |
+| `DecisionEvaluationError`| governance adapter or predicate failed                   | no        |
 | `ToolError`            | handler threw a non-harness error                        | as cause  |
 | `SandboxNoExecutorError`| `bash` invoked when sandbox executor is unavailable     | no        |
 | `McpProtocolError`     | MCP connection/list/call protocol failure                | yes       |
@@ -251,3 +253,7 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 - [09-agents](./09-agents.md) — agent context `tools`, default loop, permissions.
 - [15-error-catalog](./15-error-catalog.md).
 - [14-otel-conventions](./14-otel-conventions.md) — `execute_tool {tool.name}` span (GenAI conv).
+
+## Effective-input execution boundary
+
+The [prepared-tool contract](./37-decision-boundaries/03-contracts/decisions.md) supersedes lifecycle ordering here: preflight rails and schema before approval/effects; one deadline; transformed wire history; parsed authority/handler input; validated output then JSON presentation rails.

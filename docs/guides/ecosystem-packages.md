@@ -7,11 +7,12 @@ that enforce a boundary your application actually needs.
 | Package | Purpose | Minimal setup | More detail |
 | --- | --- | --- | --- |
 | `@purista/harness` | Typed runtime for models, tools, skills, agents, workflows, sessions, state, sandboxes, evaluation, and telemetry. | `npm install @purista/harness`; build through `defineHarness()`. | [Configuration](./configuration.md), [tools & skills](./tools-and-skills.md), [workflows](./workflows.md) |
+| `@purista/harness-sandbox-docker` | Trusted single-host Docker/OrbStack sandbox adapter. | Pin a preloaded image by digest and set a private metadata root. | [Adapter guide](../../packages/harness-sandbox-docker/README.md), [standalone example](../../examples/local-docker-sandbox/README.md) |
 | `@purista/harness-openai` | OpenAI and compatible model provider. | `openai({ apiKey, api? })`; register under a model alias. | [Configuration](./configuration.md) |
 | `@purista/harness-anthropic` | Anthropic model provider. | `anthropic({ apiKey })`; register under a model alias. | Package README |
 | `@purista/harness-bedrock` | Amazon Bedrock provider. | `bedrock({ region })`; use the AWS credential chain. | Package README |
 | `@purista/harness-azure-foundry` | Azure AI Foundry provider. | `azureFoundry({ endpoint, apiKey or credential })`. | Package README |
-| `@purista/harness-guardrails` | Ordered fail-closed input, output, tool, retrieval, and model-check controls. | Load policy YAML, provide TypeScript actions, call `rails.attach(...)`. | [Guardrails](./guardrails.md) |
+| `@purista/harness-guardrails` | Ordered fail-closed input, output, tool, retrieval, and model-check controls. | Define inline typed configuration and action tokens, then call `rails.attach(...)`. | [Guardrails](./guardrails.md) |
 | `@purista/harness-guardrails-presidio` | Original Presidio Analyzer sidecar detector. | Inject an authenticated internal `POST /analyze` endpoint. | [Guardrails](./guardrails.md) |
 | `@purista/harness-guardrails-native-privacy` | Local Rust Node-API common-identifier detector. | `createNativePrivacyDetector({ id })`. | [Guardrails](./guardrails.md) |
 | `@purista/harness-guardrails-local-ner` | Optional local Transformers.js NER detector. | Install optional peer, pin local assets and labels, call `warmup()`. | [Guardrails](./guardrails.md) |

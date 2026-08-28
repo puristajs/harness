@@ -116,9 +116,10 @@ Responses API when using function tools with `providerOptions.reasoning_effort`
 for models such as `gpt-5.5`. On the Chat Completions path, the adapter drops
 `reasoning_effort` when tools are present and emits a warning instead of
 letting the provider reject the request. On the Responses API, tool-call
-responses carry the turn's raw output items as `providerItems`; the agent loop
-replays them on the follow-up round so reasoning items reach the model again,
-as OpenAI recommends for reasoning models with manually managed state.
+responses carry a typed `providerContinuation` template. The adapter retains
+opaque reasoning items and reconstructs tool-call slots from the current
+canonical tool calls, so transformed arguments replace the original wire
+arguments. Opaque reasoning is not content a rail can inspect or rewrite.
 
 Capabilities gate runtime calls:
 
@@ -199,6 +200,14 @@ flow and `outcome` for operations or provider-specific handling.
 Use smaller budgets for user-facing request/response paths and larger budgets
 for background research workflows.
 
+`defaults.decisionTimeoutMs` defaults to `10_000` and must be a positive safe
+integer. Policy, approval, exposure, and interceptor callbacks receive a
+bounded signal and deadline. The earliest remaining decision, run, or tool
+deadline wins. `toolTimeoutMs` covers preparation, execution queueing, policy,
+approval, handler, and output hooks; approval does not restart the clock.
+See [decisions and approval](./decisions-and-approval.md) for cancellation,
+fail-closed errors, and the separate durable-review boundary.
+
 `agentMaxIterations` and an agent's `maxSteps` must be positive integers. An
 explicit value is honored as configured rather than silently capped; pair large
 budgets with appropriate run and model timeouts.
@@ -270,6 +279,26 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 .sandbox(inMemorySandbox()) // file-only, no command execution
 .sandbox(bashSandbox())     // command execution through just-bash
 ```
+
+Register the sandbox before `.tools(...)` to infer `ctx.sandbox` from its
+declared capabilities. Files-only sessions have no typed `exec` or `spawn`;
+adapters declaring both expose both. Auto-detected or dynamically widened
+adapters expose only base filesystem operations until narrowed with
+`isExecCapableSession` or `isSpawnCapableSession`.
+
+Bash networking and Python are disabled by default. Optional
+`network.allow` entries are reviewed URL prefixes. Use
+`executionLimits.wallClockMs` for command duration and
+`executionLimits.maxFileSystemBytes` for retained emulator filesystem bytes;
+the latter is not a host-memory quota. Invalid or unknown options fail early.
+Bash inherits `toolTimeoutMs` from Harness, using 120 seconds when called
+independently.
+
+For an optional local Docker adapter, see its
+[configuration and engine requirements](../../packages/harness-sandbox-docker/README.md)
+and the [standalone lifecycle example](../../examples/local-docker-sandbox/README.md).
+The example uses only the public sandbox packages, without a model or PURISTA
+framework dependency.
 
 ## Local Durable Bundle
 

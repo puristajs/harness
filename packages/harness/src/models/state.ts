@@ -1,14 +1,19 @@
 import type { JsonValue } from './json.js'
 import type { HarnessIdentity } from '../identity/index.js'
+import type { SessionSandboxBinding } from '../sandbox/ownership.js'
 
 /** Session-level metadata persisted by Harness storage. */
 export interface SessionRecord {
   id: string
+  /** Opaque immutable identity of this record; changes when a closed id is reused. */
+  instanceId: string
   createdAt: string
   updatedAt: string
   runCount: number
   /** Identity is bound at creation and compared before any live resource opens. */
   identity?: HarnessIdentity
+  /** Immutable sandbox ownership binding for this session incarnation. */
+  sandboxBinding: SessionSandboxBinding
   metadata?: Record<string, JsonValue>
 }
 

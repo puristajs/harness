@@ -10,10 +10,14 @@ export {
   ValidationError,
   PermissionDeniedError,
   PolicyDeniedError,
-  PolicyEvaluationError,
-  AgentInterceptorError,
+  DecisionBlockedError,
+  DecisionEvaluationError,
   SandboxError,
   SandboxNoExecutorError,
+  SandboxPermissionDeniedError,
+  SandboxConflictError,
+  SandboxQuotaExceededError,
+  SandboxStateLostError,
   ModelError,
   ModelCapabilityError,
   ToolError,
@@ -82,7 +86,8 @@ export type {
   ObjectResponse,
   ObjectStreamChunk,
   OutputMode,
-  ProviderItems,
+  ProviderContinuation,
+  ProviderContinuationItem,
   RerankDocument,
   RerankRequest,
   RerankResponse,
@@ -123,8 +128,33 @@ export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/
 // Harness-owned persistence + in-memory default
 export type { FinishRunPatch, HarnessStorage, HarnessStorageInfo } from './storage/types.js'
 export { InMemoryHarnessStorage, inMemoryHarnessStorage } from './storage/in-memory.js'
+export { isJsonValue } from './models/json.js'
 export type { JsonValue } from './models/json.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
+
+// Shared decision-boundary contracts
+export {
+  createDecisionEvidence,
+  decisionEvidenceSchema,
+  decisionFailureKindSchema,
+  decisionOccurrenceSchema,
+  parseProviderContinuation,
+  decisionResultSchema,
+  decisionSourceSchema,
+  governanceApprovalResultSchema,
+  governanceDecisionSchema,
+  providerContinuationItemSchema,
+  providerContinuationSchema,
+  runDecisionOperation
+} from './decisions/index.js'
+export type {
+  CreateDecisionEvidenceInput,
+  DecisionEvidence,
+  DecisionExecutionContext,
+  DecisionFailureKind,
+  DecisionOccurrence,
+  DecisionSource
+} from './decisions/index.js'
 
 // Memory port
 export type {
@@ -165,7 +195,8 @@ export type {
   ExternalWaitSignal,
   ExternalWaitSignalResult,
   ExternalWaitStatus,
-  ExternalWaitRegistration
+  ExternalWaitRegistration,
+  ExternalWaitResolved
 } from './storage/external-wait.js'
 
 // Durable workspace port
@@ -216,24 +247,67 @@ export type {
 } from './runtime/index.js'
 
 // Sandbox port + default factories
-export { bashSandbox, inMemorySandbox, isReadOnlyMountCapableSession } from './sandbox/index.js'
+export { bashSandbox, inMemorySandbox, isExecCapableSession, isReadOnlyMountCapableSession, isSpawnCapableSession } from './sandbox/index.js'
 export type {
+  BashSandboxOptions,
   ExecCapableSandboxSession,
   HibernateCapableSandbox,
   ResumeCapableSandbox,
   ReadOnlyMountCapableSandboxSession,
   ReadOnlyMountOptions,
   Sandbox,
+  SandboxOpenMode,
+  SandboxOpenOptions,
+  SandboxOpenResult,
   SandboxProcess,
   SandboxResumeOptions,
+  SandboxScope,
   SandboxSession,
   SandboxSessionBase,
   SandboxSessionFor,
   SnapshotCapableSandbox,
   SnapshotResult,
   SpawnCapableSandboxSession,
-  SpawnOptions
+  SpawnOptions,
+  SandboxTerminateOptions
 } from './sandbox/index.js'
+export type {
+  SandboxBindingOptions,
+  SandboxOwner,
+  SandboxOwnerAuthorizationContext,
+  SandboxOwnerRegistrationOptions,
+  SandboxPartition,
+  SandboxPolicy,
+  SessionOptions,
+  SessionSandboxBinding
+} from './sandbox/ownership.js'
+export {
+  sandboxOwnerRegistrationOptionsSchema,
+  sandboxScopeSchema
+} from './sandbox/ownership.js'
+export type {
+  SandboxAdministration,
+  SandboxAdministrationOptions,
+  SandboxListOptions,
+  SandboxPurgeOptions,
+  SandboxPurgeResult,
+  SandboxResourcePage,
+  SandboxResourceSummary,
+  SandboxSelector,
+  SandboxSnapshotDeleteOptions,
+  SandboxSnapshotPolicy,
+  SandboxSweepOptions,
+  SandboxSweepResult,
+  WorkspaceAdministrationOptions
+} from './sandbox/administration.js'
+export {
+  sandboxListOptionsSchema,
+  sandboxPurgeOptionsSchema,
+  sandboxSnapshotDeleteOptionsSchema,
+  sandboxSweepOptionsSchema
+} from './sandbox/administration.js'
+export { withSandboxTelemetry } from './sandbox/telemetry.js'
+export type { SandboxTelemetryOperation } from './sandbox/telemetry.js'
 export type { DirEntry, ExecOptions, ExecResult, FileStat } from './harness/types.js'
 
 // Local durable execution
@@ -261,19 +335,61 @@ export type {
 export { discoverSkills } from './skills/index.js'
 
 // AI evaluation core
-export { evaluateDeterministicScorer, evaluatePromptCandidates } from './eval/index.js'
+export {
+  createDeterministicEvaluationScorer,
+  evaluationResultToFeedbackRecords,
+  runEvaluation,
+  scoreEvaluation
+} from './eval/index.js'
 export type {
-  CandidateScore,
-  DeterministicScorerDefinition,
-  EvaluatePromptCandidatesInput,
-  EvaluationItem,
-  PromptCandidate,
-  ScorerResult,
-  ScorerTarget
+  DeterministicEvaluationScorerDefinition,
+  EvaluationAccounting,
+  EvaluationAccountingSummary,
+  EvaluationAggregateScope,
+  EvaluationCandidate,
+  EvaluationCandidateAggregate,
+  EvaluationCase,
+  EvaluationCaseResult,
+  EvaluationCaseStatus,
+  EvaluationCorrelation,
+  EvaluationCost,
+  EvaluationCoverage,
+  EvaluationDataset,
+  EvaluationDimensionAggregate,
+  EvaluationDimensionDefinition,
+  EvaluationDimensionResult,
+  EvaluationDistribution,
+  EvaluationErrorRecord,
+  EvaluationEvidence,
+  EvaluationExecutionProvenance,
+  EvaluationFailurePolicy,
+  EvaluationFeedbackProjectionOptions,
+  EvaluationModelCall,
+  EvaluationModelIdentity,
+  EvaluationObservation,
+  EvaluationRetryPolicy,
+  EvaluationRunInput,
+  EvaluationRunMode,
+  EvaluationRunResult,
+  EvaluationRunStatus,
+  EvaluationScoreInput,
+  EvaluationScorer,
+  EvaluationScorerOutput,
+  EvaluationScorerResultRecord,
+  EvaluationScorerStatus,
+  EvaluationScorerTarget,
+  EvaluationTask,
+  EvaluationTaskOutput,
+  EvaluationTaskResultRecord,
+  EvaluationTaskTarget,
+  EvaluationTimeouts,
+  EvaluationTrial
 } from './eval/index.js'
 
 // Builder, harness, session, and handler context types
 export { defineHarness, defineHarnessModule } from './harness/defineHarness.js'
+export { agentExecutionRequirementsSchema } from './harness/agent-requirements.js'
+export type { AgentExecutionRequirements } from './harness/agent-requirements.js'
 export type {
   AgentContext,
   AgentContextMinimal,
@@ -282,7 +398,10 @@ export type {
   AgentAfterToolInterceptorContext,
   AgentBeforeInputInterceptorContext,
   AgentBeforeModelInterceptorContext,
+  AgentBeforeOutputInterceptorContext,
   AgentBeforeToolInterceptorContext,
+  AgentInterceptorDecision,
+  AgentInterceptorTransform,
   AgentExecutionInterception,
   AgentExecutionInterceptor,
   AgentExecutionInterceptorContext,
@@ -317,7 +436,8 @@ export type {
   GovernanceApprovalProvider,
   GovernanceApprovalRequest,
   GovernanceApprovalResult,
-  GovernanceAuditContext,
+  GovernanceApprovalSubject,
+  GovernanceAuditRecord,
   GovernanceAuditSink,
   GovernanceConfig,
   GovernanceContext,
@@ -328,7 +448,6 @@ export type {
   GovernanceMode,
   GovernancePolicyDefinition,
   GovernancePolicyEvaluator,
-  GovernanceRiskLevel,
   GovernanceToolExposureContext,
   GovernanceToolExposurePolicy,
   GovernanceToolExposureRule,
@@ -351,9 +470,6 @@ export type {
   NativePolicyDefinition,
   NativePolicyRule,
   NativePolicyRuleForTool,
-  OnPermission,
-  PermissionContext,
-  PermissionDecision,
   PermissionMode,
   PermissionPolicy,
   ResolvedSkill,
@@ -370,9 +486,11 @@ export type {
   TelemetryFlavor,
   TelemetryOptions,
   ToolDefinition,
+  ToolDefinitionHelpers,
   ToolHandlerContext,
   ToolInput,
   ToolsConfig,
+  RegisteredTsToolDefinition,
   TsToolDefinition,
   WorkflowAgentInvokeOptions,
   WorkflowChildTasks,

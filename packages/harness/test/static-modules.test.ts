@@ -30,6 +30,19 @@ const agentsModule = defineHarnessModule<SupportModelState>()('support.agents', 
   }
 })
 
+const callbackToolsModule = defineHarnessModule<{}>()('support.callback-tools', {
+  register(builder) {
+    return builder.tools(({ tool }) => ({
+      lookup: tool({
+        description: 'Looks up one support record.',
+        input: z.object({ id: z.string() }),
+        output: z.object({ value: z.string() }),
+        handler: async (_ctx, input) => ({ value: input.id })
+      })
+    }))
+  }
+})
+
 it('composes local modules and exposes immutable, ordered provenance', async () => {
   const harness = defineHarness().use(modelsModule).use(agentsModule).build()
   const inspection = harness.inspect()
@@ -50,6 +63,38 @@ it('composes local modules and exposes immutable, ordered provenance', async () 
   expect(Object.isFrozen(inspection.modules[0]?.contributions)).toBe(true)
   const session = await harness.getSession('static-modules')
   await expect(session.agents.answer.prompt({ question: 'How are you?' })).resolves.toEqual({ answer: 'How are you?' })
+})
+
+it('registers native tools through the static-module callback helper', () => {
+  const harness = defineHarness()
+    .models({ support: { provider: model, model: 'support-v1', capabilities: ['object'] } })
+    .use(callbackToolsModule)
+    .build()
+  expect(harness.inspect().modules).toEqual([
+    {
+      id: 'support.callback-tools',
+      requires: [],
+      contributions: [{ kind: 'tool', ids: ['lookup'] }]
+    }
+  ])
+})
+
+it('rejects a raw static-module native tool with an undefined kind', () => {
+  const invalidCallbackToolsModule = defineHarnessModule<{}>()('support.invalid-callback-tools', {
+    register: (builder) => builder.tools(() => ({
+      lookup: {
+        kind: undefined,
+        description: 'Raw lookup.',
+        input: z.string(),
+        output: z.string(),
+        handler: async (_ctx: unknown, input: string) => input
+      } as never
+    }))
+  })
+
+  expect(() => defineHarness().use(invalidCallbackToolsModule)).toThrow(
+    expect.objectContaining({ meta: { reason: 'invalid_tool', path: 'tools.lookup', id: 'lookup' } })
+  )
 })
 
 it('rejects duplicate module ids and definition ids without overwriting earlier state', () => {

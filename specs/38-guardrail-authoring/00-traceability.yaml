@@ -1,0 +1,656 @@
+traceability_version: 1
+requirements:
+  - requirement_id: REQ-GA-CALLBACKS
+    capability_ids:
+      - CAP-GA-CALLBACKS
+    path_ids:
+      - PATH-GA-CALLBACKS-SUCCESS
+      - PATH-GA-CALLBACKS-FAILURE
+      - PATH-GA-CALLBACKS-RECOVERY
+    acceptance_ids:
+      - AC-GA-CALLBACKS-SUCCESS
+      - AC-GA-CALLBACKS-FAILURE
+      - AC-GA-CALLBACKS-RECOVERY
+  - requirement_id: REQ-GA-CONFIG
+    capability_ids:
+      - CAP-GA-CONFIG
+    path_ids:
+      - PATH-GA-CONFIG-SUCCESS
+      - PATH-GA-CONFIG-FAILURE
+      - PATH-GA-CONFIG-RECOVERY
+    acceptance_ids:
+      - AC-GA-CONFIG-SUCCESS
+      - AC-GA-CONFIG-FAILURE
+      - AC-GA-CONFIG-RECOVERY
+  - requirement_id: REQ-GA-REQUIREMENTS
+    capability_ids:
+      - CAP-GA-REQUIREMENTS
+    path_ids:
+      - PATH-GA-REQUIREMENTS-SUCCESS
+      - PATH-GA-REQUIREMENTS-FAILURE
+      - PATH-GA-REQUIREMENTS-RECOVERY
+    acceptance_ids:
+      - AC-GA-REQUIREMENTS-SUCCESS
+      - AC-GA-REQUIREMENTS-FAILURE
+      - AC-GA-REQUIREMENTS-RECOVERY
+  - requirement_id: REQ-GA-ACTIONS
+    capability_ids:
+      - CAP-GA-ACTIONS
+    path_ids:
+      - PATH-GA-ACTIONS-SUCCESS
+      - PATH-GA-ACTIONS-FAILURE
+      - PATH-GA-ACTIONS-RECOVERY
+    acceptance_ids:
+      - AC-GA-ACTIONS-SUCCESS
+      - AC-GA-ACTIONS-FAILURE
+      - AC-GA-ACTIONS-RECOVERY
+  - requirement_id: REQ-GA-BINDING
+    capability_ids:
+      - CAP-GA-BINDING
+    path_ids:
+      - PATH-GA-BINDING-SUCCESS
+      - PATH-GA-BINDING-FAILURE
+      - PATH-GA-BINDING-RECOVERY
+    acceptance_ids:
+      - AC-GA-BINDING-SUCCESS
+      - AC-GA-BINDING-FAILURE
+      - AC-GA-BINDING-RECOVERY
+  - requirement_id: REQ-GA-DOCS
+    capability_ids:
+      - CAP-GA-DOCS
+    path_ids:
+      - PATH-GA-DOCS-SUCCESS
+      - PATH-GA-DOCS-FAILURE
+      - PATH-GA-DOCS-RECOVERY
+    acceptance_ids:
+      - AC-GA-DOCS-SUCCESS
+      - AC-GA-DOCS-FAILURE
+      - AC-GA-DOCS-RECOVERY
+  - requirement_id: REQ-GA-WEBSITE
+    capability_ids:
+      - CAP-GA-WEBSITE
+    path_ids:
+      - PATH-GA-WEBSITE-SUCCESS
+      - PATH-GA-WEBSITE-FAILURE
+      - PATH-GA-WEBSITE-RECOVERY
+    acceptance_ids:
+      - AC-GA-WEBSITE-SUCCESS
+      - AC-GA-WEBSITE-FAILURE
+      - AC-GA-WEBSITE-RECOVERY
+  - requirement_id: REQ-GA-CLEANUP
+    capability_ids:
+      - CAP-GA-CLEANUP
+    path_ids:
+      - PATH-GA-CLEANUP-SUCCESS
+      - PATH-GA-CLEANUP-FAILURE
+      - PATH-GA-CLEANUP-RECOVERY
+    acceptance_ids:
+      - AC-GA-CLEANUP-SUCCESS
+      - AC-GA-CLEANUP-FAILURE
+      - AC-GA-CLEANUP-RECOVERY
+capabilities:
+  - capability_id: CAP-GA-CALLBACKS
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    path_ids:
+      - PATH-GA-CALLBACKS-SUCCESS
+      - PATH-GA-CALLBACKS-FAILURE
+      - PATH-GA-CALLBACKS-RECOVERY
+  - capability_id: CAP-GA-CONFIG
+    requirement_ids:
+      - REQ-GA-CONFIG
+    path_ids:
+      - PATH-GA-CONFIG-SUCCESS
+      - PATH-GA-CONFIG-FAILURE
+      - PATH-GA-CONFIG-RECOVERY
+  - capability_id: CAP-GA-REQUIREMENTS
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    path_ids:
+      - PATH-GA-REQUIREMENTS-SUCCESS
+      - PATH-GA-REQUIREMENTS-FAILURE
+      - PATH-GA-REQUIREMENTS-RECOVERY
+  - capability_id: CAP-GA-ACTIONS
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    path_ids:
+      - PATH-GA-ACTIONS-SUCCESS
+      - PATH-GA-ACTIONS-FAILURE
+      - PATH-GA-ACTIONS-RECOVERY
+  - capability_id: CAP-GA-BINDING
+    requirement_ids:
+      - REQ-GA-BINDING
+    path_ids:
+      - PATH-GA-BINDING-SUCCESS
+      - PATH-GA-BINDING-FAILURE
+      - PATH-GA-BINDING-RECOVERY
+  - capability_id: CAP-GA-DOCS
+    requirement_ids:
+      - REQ-GA-DOCS
+    path_ids:
+      - PATH-GA-DOCS-SUCCESS
+      - PATH-GA-DOCS-FAILURE
+      - PATH-GA-DOCS-RECOVERY
+  - capability_id: CAP-GA-WEBSITE
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    path_ids:
+      - PATH-GA-WEBSITE-SUCCESS
+      - PATH-GA-WEBSITE-FAILURE
+      - PATH-GA-WEBSITE-RECOVERY
+  - capability_id: CAP-GA-CLEANUP
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    path_ids:
+      - PATH-GA-CLEANUP-SUCCESS
+      - PATH-GA-CLEANUP-FAILURE
+      - PATH-GA-CLEANUP-RECOVERY
+paths:
+  - path_id: PATH-GA-CALLBACKS-SUCCESS
+    capability_ids:
+      - CAP-GA-CALLBACKS
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    kind: success
+    contract_refs:
+      - CTR-GA-CALLBACKS
+    acceptance_ids:
+      - AC-GA-CALLBACKS-SUCCESS
+  - path_id: PATH-GA-CALLBACKS-FAILURE
+    capability_ids:
+      - CAP-GA-CALLBACKS
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-CALLBACKS
+    acceptance_ids:
+      - AC-GA-CALLBACKS-FAILURE
+  - path_id: PATH-GA-CALLBACKS-RECOVERY
+    capability_ids:
+      - CAP-GA-CALLBACKS
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    kind: recovery
+    contract_refs:
+      - CTR-GA-CALLBACKS
+    acceptance_ids:
+      - AC-GA-CALLBACKS-RECOVERY
+  - path_id: PATH-GA-CONFIG-SUCCESS
+    capability_ids:
+      - CAP-GA-CONFIG
+    requirement_ids:
+      - REQ-GA-CONFIG
+    kind: success
+    contract_refs:
+      - CTR-GA-CONFIG
+      - CTR-GA-GENERATION
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-CONFIG-SUCCESS
+  - path_id: PATH-GA-CONFIG-FAILURE
+    capability_ids:
+      - CAP-GA-CONFIG
+    requirement_ids:
+      - REQ-GA-CONFIG
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-CONFIG
+      - CTR-GA-GENERATION
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-CONFIG-FAILURE
+  - path_id: PATH-GA-CONFIG-RECOVERY
+    capability_ids:
+      - CAP-GA-CONFIG
+    requirement_ids:
+      - REQ-GA-CONFIG
+    kind: recovery
+    contract_refs:
+      - CTR-GA-CONFIG
+      - CTR-GA-GENERATION
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-CONFIG-RECOVERY
+  - path_id: PATH-GA-REQUIREMENTS-SUCCESS
+    capability_ids:
+      - CAP-GA-REQUIREMENTS
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    kind: success
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-REQUIREMENTS-SUCCESS
+  - path_id: PATH-GA-REQUIREMENTS-FAILURE
+    capability_ids:
+      - CAP-GA-REQUIREMENTS
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-REQUIREMENTS-FAILURE
+  - path_id: PATH-GA-REQUIREMENTS-RECOVERY
+    capability_ids:
+      - CAP-GA-REQUIREMENTS
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    kind: recovery
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-REQUIREMENTS-RECOVERY
+  - path_id: PATH-GA-ACTIONS-SUCCESS
+    capability_ids:
+      - CAP-GA-ACTIONS
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    kind: success
+    contract_refs:
+      - CTR-GA-ACTIONS
+      - CTR-GA-CONFIG
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-ACTIONS-SUCCESS
+  - path_id: PATH-GA-ACTIONS-FAILURE
+    capability_ids:
+      - CAP-GA-ACTIONS
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-ACTIONS
+      - CTR-GA-CONFIG
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-ACTIONS-FAILURE
+  - path_id: PATH-GA-ACTIONS-RECOVERY
+    capability_ids:
+      - CAP-GA-ACTIONS
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    kind: recovery
+    contract_refs:
+      - CTR-GA-ACTIONS
+      - CTR-GA-CONFIG
+      - CTR-GA-ERRORS
+    acceptance_ids:
+      - AC-GA-ACTIONS-RECOVERY
+  - path_id: PATH-GA-BINDING-SUCCESS
+    capability_ids:
+      - CAP-GA-BINDING
+    requirement_ids:
+      - REQ-GA-BINDING
+    kind: success
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ACTIONS
+      - CTR-GA-DOCS
+    acceptance_ids:
+      - AC-GA-BINDING-SUCCESS
+  - path_id: PATH-GA-BINDING-FAILURE
+    capability_ids:
+      - CAP-GA-BINDING
+    requirement_ids:
+      - REQ-GA-BINDING
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ACTIONS
+      - CTR-GA-DOCS
+    acceptance_ids:
+      - AC-GA-BINDING-FAILURE
+  - path_id: PATH-GA-BINDING-RECOVERY
+    capability_ids:
+      - CAP-GA-BINDING
+    requirement_ids:
+      - REQ-GA-BINDING
+    kind: recovery
+    contract_refs:
+      - CTR-GA-BINDING
+      - CTR-GA-ACTIONS
+      - CTR-GA-DOCS
+    acceptance_ids:
+      - AC-GA-BINDING-RECOVERY
+  - path_id: PATH-GA-DOCS-SUCCESS
+    capability_ids:
+      - CAP-GA-DOCS
+    requirement_ids:
+      - REQ-GA-DOCS
+    kind: success
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-DOCS-SUCCESS
+  - path_id: PATH-GA-DOCS-FAILURE
+    capability_ids:
+      - CAP-GA-DOCS
+    requirement_ids:
+      - REQ-GA-DOCS
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-DOCS-FAILURE
+  - path_id: PATH-GA-DOCS-RECOVERY
+    capability_ids:
+      - CAP-GA-DOCS
+    requirement_ids:
+      - REQ-GA-DOCS
+    kind: recovery
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-DOCS-RECOVERY
+  - path_id: PATH-GA-WEBSITE-SUCCESS
+    capability_ids:
+      - CAP-GA-WEBSITE
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    kind: success
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-WEBSITE-SUCCESS
+  - path_id: PATH-GA-WEBSITE-FAILURE
+    capability_ids:
+      - CAP-GA-WEBSITE
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-WEBSITE-FAILURE
+  - path_id: PATH-GA-WEBSITE-RECOVERY
+    capability_ids:
+      - CAP-GA-WEBSITE
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    kind: recovery
+    contract_refs:
+      - CTR-GA-DOCS
+      - CTR-GA-CLEANUP
+    acceptance_ids:
+      - AC-GA-WEBSITE-RECOVERY
+  - path_id: PATH-GA-CLEANUP-SUCCESS
+    capability_ids:
+      - CAP-GA-CLEANUP
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    kind: success
+    contract_refs:
+      - CTR-GA-CLEANUP
+      - CTR-GA-GENERATION
+    acceptance_ids:
+      - AC-GA-CLEANUP-SUCCESS
+  - path_id: PATH-GA-CLEANUP-FAILURE
+    capability_ids:
+      - CAP-GA-CLEANUP
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    kind: validation_failure
+    contract_refs:
+      - CTR-GA-CLEANUP
+      - CTR-GA-GENERATION
+    acceptance_ids:
+      - AC-GA-CLEANUP-FAILURE
+  - path_id: PATH-GA-CLEANUP-RECOVERY
+    capability_ids:
+      - CAP-GA-CLEANUP
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    kind: recovery
+    contract_refs:
+      - CTR-GA-CLEANUP
+      - CTR-GA-GENERATION
+    acceptance_ids:
+      - AC-GA-CLEANUP-RECOVERY
+acceptance:
+  - acceptance_id: AC-GA-CALLBACKS-SUCCESS
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    path_ids:
+      - PATH-GA-CALLBACKS-SUCCESS
+    verification_refs:
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+      - ai-harness/packages/harness/test/tools.test.ts
+      - ai-harness/packages/harness/test/harness.test.ts
+      - ai-harness/packages/harness/test/workflow-delegation.test.ts
+      - ai-harness/packages/harness/test/static-modules.test.ts
+    expected_outcome: Helper/captured-map/native-plus-MCP/module registrations preserve exact schemas, registry keys and sandbox capabilities; transformed input/output crosses each parser once.
+  - acceptance_id: AC-GA-CALLBACKS-FAILURE
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    path_ids:
+      - PATH-GA-CALLBACKS-FAILURE
+    verification_refs:
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+      - ai-harness/packages/harness/test/tools.test.ts
+      - ai-harness/packages/harness/test/harness.test.ts
+      - ai-harness/packages/harness/test/workflow-delegation.test.ts
+      - ai-harness/packages/harness/test/static-modules.test.ts
+    expected_outcome: Unknown fields, wrong handler output, files-only exec, unsafe narrow extracted callbacks and raw native objects in either registration form fail typechecking or config validation.
+  - acceptance_id: AC-GA-CALLBACKS-RECOVERY
+    requirement_ids:
+      - REQ-GA-CALLBACKS
+    path_ids:
+      - PATH-GA-CALLBACKS-RECOVERY
+    verification_refs:
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+      - ai-harness/packages/harness/test/tools.test.ts
+      - ai-harness/packages/harness/test/harness.test.ts
+      - ai-harness/packages/harness/test/workflow-delegation.test.ts
+      - ai-harness/packages/harness/test/static-modules.test.ts
+    expected_outcome: Omitted agent/workflow schemas still default to string; reuse of registered definitions and canonical indexed callback types preserves inferred Harness return types.
+  - acceptance_id: AC-GA-CONFIG-SUCCESS
+    requirement_ids:
+      - REQ-GA-CONFIG
+    path_ids:
+      - PATH-GA-CONFIG-SUCCESS
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+    expected_outcome: A literal inline object has action and phase correlation, normalizes defaults, and compiles to the canonical immutable config.
+  - acceptance_id: AC-GA-CONFIG-FAILURE
+    requirement_ids:
+      - REQ-GA-CONFIG
+    path_ids:
+      - PATH-GA-CONFIG-FAILURE
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+    expected_outcome: Old metadata/names/keys, unknown fields, non-JSON values, duplicate flows, and invalid policy values fail with safe errors.
+  - acceptance_id: AC-GA-CONFIG-RECOVERY
+    requirement_ids:
+      - REQ-GA-CONFIG
+    path_ids:
+      - PATH-GA-CONFIG-RECOVERY
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+    expected_outcome: A corrected inline declaration recompiles without cached state; source mutation cannot change a compiled config; removed file APIs, artifacts, dependency and scripts are absent.
+  - acceptance_id: AC-GA-REQUIREMENTS-SUCCESS
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    path_ids:
+      - PATH-GA-REQUIREMENTS-SUCCESS
+    verification_refs:
+      - ai-harness/packages/harness/test/build-validation.test.ts
+      - ai-harness/packages/harness/test/agent-interceptors.test.ts
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+    expected_outcome: Build validates declared model aliases/capabilities and agent-enabled configured tool IDs across direct, helper and static-module registrations.
+  - acceptance_id: AC-GA-REQUIREMENTS-FAILURE
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    path_ids:
+      - PATH-GA-REQUIREMENTS-FAILURE
+    verification_refs:
+      - ai-harness/packages/harness/test/build-validation.test.ts
+      - ai-harness/packages/harness/test/agent-interceptors.test.ts
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+    expected_outcome: Missing/disabled tool, missing alias, missing capability or malformed requirement fails before any callback/session/provider/MCP/sandbox work.
+  - acceptance_id: AC-GA-REQUIREMENTS-RECOVERY
+    requirement_ids:
+      - REQ-GA-REQUIREMENTS
+    path_ids:
+      - PATH-GA-REQUIREMENTS-RECOVERY
+    verification_refs:
+      - ai-harness/packages/harness/test/build-validation.test.ts
+      - ai-harness/packages/harness/test/agent-interceptors.test.ts
+      - ai-harness/packages/harness/type-tests/harness-typing.ts
+    expected_outcome: Models registered after agents succeed; builtin defaults/false use one resolver; dynamic turn narrowing still cannot expand permissions.
+  - acceptance_id: AC-GA-ACTIONS-SUCCESS
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    path_ids:
+      - PATH-GA-ACTIONS-SUCCESS
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Literal action phase and schema output infer in inline and extracted callbacks; heterogeneous tokens compile with phase-constrained configuration; fixed and tool sensitive actions share algorithms.
+  - acceptance_id: AC-GA-ACTIONS-FAILURE
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    path_ids:
+      - PATH-GA-ACTIONS-FAILURE
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Wrong phase target, false-transform, dynamic boolean, forged token, unsafe callback narrowing, missing codec schema and mistyped flow ID fail at their declared validation stage.
+  - acceptance_id: AC-GA-ACTIONS-RECOVERY
+    requirement_ids:
+      - REQ-GA-ACTIONS
+    path_ids:
+      - PATH-GA-ACTIONS-RECOVERY
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Existing decisions/evidence/timeouts/transforms remain single-owned; an unrelated tool is skipped before schema/codec/model work while a selected mismatch fails closed.
+  - acceptance_id: AC-GA-BINDING-SUCCESS
+    requirement_ids:
+      - REQ-GA-BINDING
+    path_ids:
+      - PATH-GA-BINDING-SUCCESS
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Attached actions emit active-phase requirements; the inline example builds and executes two differently shaped tools with selective protection.
+  - acceptance_id: AC-GA-BINDING-FAILURE
+    requirement_ids:
+      - REQ-GA-BINDING
+    path_ids:
+      - PATH-GA-BINDING-FAILURE
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Missing model/tool/capability fails build before requests; retrieval checks only retrieval dependencies; schema-incompatible selected payload still fails at invocation with zero protected effects.
+  - acceptance_id: AC-GA-BINDING-RECOVERY
+    requirement_ids:
+      - REQ-GA-BINDING
+    path_ids:
+      - PATH-GA-BINDING-RECOVERY
+    verification_refs:
+      - ai-harness/packages/harness-guardrails/test/guardrails.test.ts
+      - ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts
+      - ai-harness/examples/guardrails/src/index.test.ts
+    expected_outcome: Manual core interceptor declarations retain requirements; preflight script calls the real composition then shutdown with zero model/detector/tool invocations; corrected policy can rebuild.
+  - acceptance_id: AC-GA-DOCS-SUCCESS
+    requirement_ids:
+      - REQ-GA-DOCS
+    path_ids:
+      - PATH-GA-DOCS-SUCCESS
+    verification_refs:
+      - ai-harness/examples/guardrails/src/index.test.ts
+      - ai-harness/scripts/check-decision-boundaries.mjs
+    expected_outcome: Public guides teach inline TypeScript configuration, actual phase values, direct aliases, selectors and the same build preflight path.
+  - acceptance_id: AC-GA-DOCS-FAILURE
+    requirement_ids:
+      - REQ-GA-DOCS
+    path_ids:
+      - PATH-GA-DOCS-FAILURE
+    verification_refs:
+      - ai-harness/examples/guardrails/src/index.test.ts
+      - ai-harness/scripts/check-decision-boundaries.mjs
+    expected_outcome: No active native raw registration, inert metadata, file configuration, schema artifact, schema-compatibility promise, universal arrow rule or runtime type-safety claim remains.
+  - acceptance_id: AC-GA-DOCS-RECOVERY
+    requirement_ids:
+      - REQ-GA-DOCS
+    path_ids:
+      - PATH-GA-DOCS-RECOVERY
+    verification_refs:
+      - ai-harness/examples/guardrails/src/index.test.ts
+      - ai-harness/scripts/check-decision-boundaries.mjs
+    expected_outcome: Canonical Harness skill and focused examples typecheck against current public exports; docs have no removed configuration leftovers.
+  - acceptance_id: AC-GA-WEBSITE-SUCCESS
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    path_ids:
+      - PATH-GA-WEBSITE-SUCCESS
+    verification_refs:
+      - purista/scripts/knowledge-audit.mjs
+      - purista/scripts/guardrails-knowledge.test.mjs
+      - purista/scripts/skills-audit.mjs
+      - purista/web/scripts/audit-internal-links.mjs
+    expected_outcome: HTML architecture, diagram, Markdown projection, handbook and canonical PURISTA skills agree on final-only output, new authoring and preflight limits.
+  - acceptance_id: AC-GA-WEBSITE-FAILURE
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    path_ids:
+      - PATH-GA-WEBSITE-FAILURE
+    verification_refs:
+      - purista/scripts/knowledge-audit.mjs
+      - purista/scripts/guardrails-knowledge.test.mjs
+      - purista/scripts/skills-audit.mjs
+      - purista/web/scripts/audit-internal-links.mjs
+    expected_outcome: Focused audit detects stale phase/projection or removed API text; no blanket entity decoding or renderer change is introduced for the unreproduced report.
+  - acceptance_id: AC-GA-WEBSITE-RECOVERY
+    requirement_ids:
+      - REQ-GA-WEBSITE
+    path_ids:
+      - PATH-GA-WEBSITE-RECOVERY
+    verification_refs:
+      - purista/scripts/knowledge-audit.mjs
+      - purista/scripts/guardrails-knowledge.test.mjs
+      - purista/scripts/skills-audit.mjs
+      - purista/web/scripts/audit-internal-links.mjs
+    expected_outcome: Existing routes/layout/accessibility survive site build and link audit; rendered/copied factory snippet matches source; package skills regenerate through existing sync.
+  - acceptance_id: AC-GA-CLEANUP-SUCCESS
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    path_ids:
+      - PATH-GA-CLEANUP-SUCCESS
+    verification_refs:
+      - ai-harness/scripts/check-decision-boundaries.test.mjs
+      - ai-harness/scripts/verify-decision-consumers.test.mjs
+    expected_outcome: Fresh package declarations, generated schema/export, real PURISTA consumers, both type suites and all hermetic regression gates pass without reduced thresholds.
+  - acceptance_id: AC-GA-CLEANUP-FAILURE
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    path_ids:
+      - PATH-GA-CLEANUP-FAILURE
+    verification_refs:
+      - ai-harness/scripts/check-decision-boundaries.test.mjs
+      - ai-harness/scripts/verify-decision-consumers.test.mjs
+    expected_outcome: Architecture/CI checks reject removed aliases/raw actions/duplicate shapes/stale generated schema and fail on incomplete consumer alignment.
+  - acceptance_id: AC-GA-CLEANUP-RECOVERY
+    requirement_ids:
+      - REQ-GA-CLEANUP
+    path_ids:
+      - PATH-GA-CLEANUP-RECOVERY
+    verification_refs:
+      - ai-harness/scripts/check-decision-boundaries.test.mjs
+      - ai-harness/scripts/verify-decision-consumers.test.mjs
+    expected_outcome: Example/starter/scaffolder zero-match scan is recorded; no Voyage access, migration/compatibility layer, source reset, unapproved install or publish occurs.

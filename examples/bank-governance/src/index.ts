@@ -67,8 +67,7 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
   const approval = opts.approval ?? {
     request: async () => ({
       decision: 'approved' as const,
-      approverId: 'branch-manager',
-      reason: 'Within daily operating policy.'
+      reasonCode: 'approved_by_policy'
     })
   }
 
@@ -93,9 +92,9 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
     .logger(new JsonLogger({ level: 'error' }))
     .sandbox(inMemorySandbox())
     .models({ banker_model: { provider, model: 'scripted-bank-model', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      transfer_funds: transferFundsTool
-    })
+    .tools(({ tool }) => ({
+      transfer_funds: tool(transferFundsTool)
+    }))
     .agents(({ agent }) => ({
       banker: agent({
         model: 'banker_model',
@@ -119,21 +118,21 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
               effect: 'deny',
               tools: ['transfer_funds'],
               when: ({ input }) => input.balance < input.amount,
-              message: 'Transfers are blocked when the source balance is too low.'
+              reasonCode: 'insufficient_funds'
             }),
             rule({
               id: 'hard-transfer-limit',
               effect: 'deny',
               tools: ['transfer_funds'],
               when: ({ input }) => input.amount > hardLimit,
-              message: 'Transfers above the hard limit are forbidden.'
+              reasonCode: 'hard_limit'
             }),
             rule({
               id: 'large-transfer-approval',
               effect: 'require_approval',
               tools: ['transfer_funds'],
               when: ({ input }) => input.amount > approvalThreshold,
-              message: 'Large transfers require human approval.'
+              reasonCode: 'large_transfer'
             })
           ]
         })

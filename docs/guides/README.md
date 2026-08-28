@@ -11,7 +11,7 @@ real requirement appears.
 5. [Human review gates](./human-review-gates.md) — restart-safe external decisions without a built-in reviewer system.
 5. [Guardrails](./guardrails.md) — content, tool, retrieval, and sensitive-data controls.
 6. [Ecosystem and packages](./ecosystem-packages.md) — first-party packages, optional peers, and execution boundaries.
-7. [Testing](./testing.md) and [evaluations](./evaluating-prompts.md) — deterministic evidence.
+7. [Testing](./testing.md) and [evaluations](./evaluating-prompts.md) — test code deterministically, then run or re-score versioned cases with scorer adapters. Continue with the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/) for methods and recipes.
 8. [Observability](./observability.md) — traces, metrics, logs, and model-cost evidence.
 
 Focused advanced references: [conversation history](./conversation-history.md),

@@ -96,7 +96,10 @@ describe('stdio MCP runner', () => {
   })
 
   it('does not run stdio MCP outside a sandbox executor', async () => {
-    const sandbox = await inMemorySandbox().open({ sessionId: 'mcp-test', runId: 'r1' })
+    const adapter = inMemorySandbox()
+    const scope = { owner: { namespace: 'mcp-test', id: 'mcp-test', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'r1' }
+    await adapter.registerOwner({ owner: scope.owner, mode: 'create' })
+    const sandbox = (await adapter.open({ scope, mode: 'create' })).session
     const localConfig = config(sandbox as any)
     const runner = createStdioMcpTransportRunner(localConfig)
     try {

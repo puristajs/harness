@@ -94,8 +94,14 @@ Application-facing execution is session-centric. The harness owns registries, ad
 
 - `harness.getSession(id)`:
   1. Looks up `storage.getSession(id)`.
-  2. If absent, calls `storage.upsertSession({id, createdAt: now, updatedAt: now, runCount: 0})`.
-  3. Returns a `Session` instance bound to that id.
+  2. If absent, proposes a new opaque `instanceId` with `storage.upsertSession({id, instanceId, createdAt: now, updatedAt: now, runCount: 0}, 'create')`; only its atomic insertion winner may create the sandbox.
+  3. Reads the stored winning record, validates exact optional identity, and returns a `Session` facade bound to that record instance.
+- `Session.close()` terminates that instance's sandbox before calling
+  `storage.closeSession(id, instanceId)`. A stale close never deletes a newer
+  instance. Recreating a closed caller-facing id generates a fresh opaque
+  instance id even when the clock has not advanced.
+- Run summary persistence always calls `upsertSession(record, 'update')`; a
+  late writer cannot resurrect a closed session or modify another instance.
 - `Session` instances are not cached by the harness — each call returns a fresh facade. They are cheap to construct.
 
 ## Per-call lifecycle (locked order)

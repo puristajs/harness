@@ -1,7 +1,7 @@
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateRawSync } from 'node:zlib'
-import { bashSandbox, defineHarness, inMemorySandbox, JsonLogger, type Harness, type HarnessAdapterContext, type JsonValue, type ObjectRequest, type ObjectResponse, type ModelProvider, type Sandbox, type ToolDefinition, type ToolsConfig } from '../../../../packages/harness/src/index.js'
+import { bashSandbox, defineHarness, inMemorySandbox, JsonLogger, type Harness, type HarnessAdapterContext, type JsonValue, type McpHttpToolDefinition, type McpStdioToolDefinition, type ObjectRequest, type ObjectResponse, type ModelProvider, type Sandbox } from '../../../../packages/harness/src/index.js'
 import { createFileWikiStore, type FileWikiStore } from './data.js'
 import { loadRootEnv as loadRepositoryRootEnv, requireOpenAiKey as requireRepositoryOpenAiKey } from './env.js'
 import { createLivingWikiTools, makePanelSpec } from './tools.js'
@@ -131,8 +131,8 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
   const skillDirectory = options.skillDirectory ?? join(exampleRoot, 'skills/wiki-curator')
   const skillsRoot = join(exampleRoot, 'skills')
   const drawioMcpTool = createDrawioMcpTool()
-  const tools: ToolsConfig = { ...createLivingWikiTools(store), ...(drawioMcpTool ? { drawio_mcp_diagram: drawioMcpTool } : {}) }
-  const agentTools = ['read_source', 'search_wiki', 'read_wiki_page', 'write_wiki_page', 'append_log', 'list_backlinks', 'render_panel_spec', ...(drawioMcpTool ? ['drawio_mcp_diagram'] : [])] as const
+  const builtInAgentTools = ['read_source', 'search_wiki', 'read_wiki_page', 'write_wiki_page', 'append_log', 'list_backlinks', 'render_panel_spec'] as const
+  const agentTools = drawioMcpTool ? [...builtInAgentTools, 'drawio_mcp_diagram'] as const : builtInAgentTools
   const baseInstructions = [
     'Use the mounted wiki-curator skill.',
     'Keep markdown compact and linked with [[page-slug]] syntax.',
@@ -151,7 +151,7 @@ export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}):
         capabilities: ['text', 'object', 'tool_use']
       }
     })
-    .tools(tools)
+    .tools(({ tool }) => ({ ...createLivingWikiTools({ tool }, store), ...(drawioMcpTool ? { drawio_mcp_diagram: drawioMcpTool } : {}) }))
     .skills({
       'wiki-curator': { directory: skillDirectory },
       'research-brief-writer': { directory: join(skillsRoot, 'research-brief-writer') },
@@ -755,7 +755,7 @@ function drawioMcpStatus(): string {
   return mcpConfigured ? 'configured-optional-tool' : 'unavailable-mermaid-is-canonical'
 }
 
-function createDrawioMcpTool(): ToolDefinition | undefined {
+function createDrawioMcpTool(): McpHttpToolDefinition | McpStdioToolDefinition | undefined {
   const httpUrl = process.env['LIVING_WIKI_DRAWIO_MCP_URL']
   if (httpUrl) {
     const token = process.env['LIVING_WIKI_DRAWIO_MCP_AUTH_TOKEN']

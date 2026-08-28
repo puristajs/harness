@@ -386,7 +386,6 @@ interface AgentDefinition<
   builtinTools?: readonly BuiltinToolName[] | false   // default: all enabled
   skills?: readonly (keyof S['skills'] & string)[]
   permissions?: AgentPermissions
-  onPermission?: OnPermission
   maxSteps?: number                           // default 16; positive integer, no hard upper cap
   prepareStep?: AgentPrepareStep<S, z.infer<I>>
   stopWhen?: AgentStopWhen<S, z.infer<I>>
@@ -397,9 +396,8 @@ interface AgentDefinition<
 
 `interceptors` are ordered, default-loop-only hooks. `beforeInput` executes
 after input-schema validation and before instructions, transcript, or a model
-call. `afterModel` executes before model events, output validation,
-persistence, and tool dispatch; tool hooks wrap the actual side effect. A block
-or hook exception is terminal and throws non-retriable `AgentInterceptorError`.
+call. `afterModel` executes after content-free model.completed accounting and before final content processing or tool dispatch. `beforeOutput` gates final content before schema validation, content events and persistence; tool hooks wrap the prepared execution boundary. A block
+or hook exception is terminal and throws non-retriable `DecisionBlockedError` or `DecisionEvaluationError`.
 Custom handlers deliberately do not receive interceptors because they own their
 own provider and tool lifecycle. The optional NeMo-shaped addon is specified in
 [30-guardrails](./30-guardrails.md).
@@ -511,3 +509,7 @@ not make network calls or mutate runtime state.
 - [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md)
 - [09-agents](./09-agents.md), [10-workflows](./10-workflows.md), [11-sessions](./11-sessions.md)
 - [13-public-api](./13-public-api.md), [15-error-catalog](./15-error-catalog.md)
+
+## Approved decision defaults
+
+`defaults.decisionTimeoutMs` is a positive safe integer, default 10_000. The [decision contract](./37-decision-boundaries/03-contracts/decisions.md) owns its relation to run/tool deadlines and the new final-output hook.

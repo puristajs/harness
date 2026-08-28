@@ -73,7 +73,8 @@ Important emitted spans:
 - `invoke_agent {agent.name}`
 - `{operation} {request.model}` for model calls (for example `chat model-a` or `embeddings model-b`)
 - `execute_tool {tool.name}`
-- `harness.sandbox.exec`
+- `harness.sandbox.open`, `harness.sandbox.detach`, and `harness.sandbox.terminate`
+- `harness.sandbox.register_owner`, `harness.sandbox.list`, `harness.sandbox.purge`, `harness.sandbox.sweep`, and `harness.sandbox.delete_snapshot`
 - `harness.state.op`
 
 Every relevant span should carry `harness.name`, `harness.session.id`, `harness.run.id`, and when available `harness.workflow.id` / `harness.agent.id`.
@@ -100,6 +101,14 @@ cache-read, cache-creation, and reasoning token details are included when the
 provider reports them. The `gen_ai.client.token.usage` metric is emitted in
 addition because production trace backends may sample or drop spans while still
 aggregating metrics.
+
+For persisted run summaries, `model.completed` is the sole generative
+invocation/token owner across direct, nested, text/object, and successful fully
+consumed streaming calls. Content events do not contribute counts or usage.
+A later guardrail block does not erase the completed model operation; failed
+attempts and failed/abandoned streams do not emit a successful completion.
+Approval subjects and reviewer content never belong in decision telemetry;
+use the runtime's content-free evidence and terminal reason/error codes.
 
 Successful harness spans intentionally leave OpenTelemetry status `UNSET`.
 Errors set status `ERROR`; the same low-cardinality `error.type` is attached to

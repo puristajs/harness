@@ -1,10 +1,22 @@
 # `@purista/harness` — Specification v3
 
-This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. All persistence-related specs have been reconciled with the v3 `HarnessStorage` clean break in `32-harness-storage.md`.
+This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. All persistence-related specs have been reconciled with the v3 `HarnessStorage` clean break in `32-harness-storage.md`. Proposed specs remain non-implementable until their matching readiness scope is approved.
 
-The folder contains 33 numbered specifications plus this index; spec 33 is a structured, manifest-bound feature folder. The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, and the planned `@purista/harness-memory-postgres` and `@purista/harness-memory-redis` engines. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains numbered specifications through 36 plus this index; spec 33 is a structured, manifest-bound feature folder, spec 34 is the approved distributed sandbox contract/bake-off scope, and spec 35 is the approved clean-break generic evaluation contract. Spec 34 keeps provider selection and production adapter work behind a separate bake-off decision. The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, and the planned `@purista/harness-memory-postgres` and `@purista/harness-memory-redis` engines. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
-## Reading order
+## Active sandbox follow-up
+
+[Spec 36: sandbox ownership and administration](./36-sandbox-ownership-and-administration/00-vision.md)
+is approved and extends the numbered set through 36. It is the canonical source
+for inherited/private/group sharing, exact owner versus actor identity, indexed
+offboarding, bounded retention, and PURISTA mapping. Its explicit precedence map
+supersedes the listed parts of specs 05/09/10/11/13/14/15/16/21/22/25/28/32/34;
+all other requirements and spec 34's production-provider gate remain in force.
+Earlier manifest-bound spec 34 and its accepted audit stay historical, not
+retroactively rewritten. Use the [new scoped plan](../plans/sandbox-ownership/implementation-plan.md)
+for this follow-up. It authorizes no implementation during the planning turn.
+
+## Detailed reading order
 
 For an implementation agent starting cold, read in this order:
 
@@ -27,7 +39,7 @@ For an implementation agent starting cold, read in this order:
 17. [16-testing.md](./16-testing.md) — vitest, contract suites, gates.
 18. [17-implementation-plan.md](./17-implementation-plan.md) — ordered build phases.
 19. [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) — canonical Living Wiki intelligence workspace with direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger tracing.
-20. [19-ai-eval-core.md](./19-ai-eval-core.md) — harness-owned AI eval core, telemetry interop, run summaries, trace-context propagation, and local scorer/candidate helpers.
+20. [19-ai-eval-core.md](./19-ai-eval-core.md) — runtime telemetry configuration, trace-context propagation, run summaries, and the generic evaluation ownership boundary.
 21. [20-memory-adapters.md](./20-memory-adapters.md) — redirect to the clean-break enterprise memory contract.
 22. [21-durable-workspaces.md](./21-durable-workspaces.md) — production durable workspace lifecycle, checkpoint references, retention, encryption, cleanup, quotas, fallback, telemetry, and contract tests.
 23. [22-local-durable-execution.md](./22-local-durable-execution.md) — built-in local durable execution with native SQLite Harness storage, host-directory workspace/sandbox binding, and secure defaults.
@@ -42,6 +54,8 @@ For an implementation agent starting cold, read in this order:
 32. [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md) — sensitive-data adapters and privacy behavior.
 33. [32-harness-storage.md](./32-harness-storage.md) — one Harness storage boundary, one run model, local SQLite, external waits, and PURISTA integration contract.
 34. [33-enterprise-memory](./33-enterprise-memory/00-vision.md) — core memory orchestration, typed model references, tenant/principal identity, search, summaries, SQLite/PostgreSQL/Redis/NATS engines, PURISTA integration, and release gates.
+35. [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) — approved topology-transparent Sandbox lifecycle with adapter-private distributed coordination, local development/test adapters, durable-file recovery, PURISTA boundary, telemetry, tests, and provider bake-off gate.
+36. [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) — provider-neutral execute-and-score and score-only observation contract, versioned trials, multi-scorer outcomes, separate task/judge accounting, aggregates, cancellation, feedback projection, and safe telemetry.
 
 ## File index (one-liners)
 
@@ -68,7 +82,7 @@ For an implementation agent starting cold, read in this order:
 | [16-testing.md](./16-testing.md) | Vitest, contract suites, fakes, coverage gates. |
 | [17-implementation-plan.md](./17-implementation-plan.md) | Phased build order with exit criteria. |
 | [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) | Canonical living-wiki intelligence workspace contract covering Hono, React/Vite, OpenAI, direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger. |
-| [19-ai-eval-core.md](./19-ai-eval-core.md) | Harness-owned AI eval core functionality and explicit non-ownership of Cloudgrid adapter concerns. |
+| [19-ai-eval-core.md](./19-ai-eval-core.md) | Runtime telemetry, trace-context, run-summary, and generic evaluation ownership foundation. |
 | [20-memory-adapters.md](./20-memory-adapters.md) | Redirect to the approved clean-break enterprise memory specification. |
 | [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace contract for production replay across storage checkpoints and sandbox workspace state. |
 | [22-local-durable-execution.md](./22-local-durable-execution.md) | Local durable execution bundle using native SQLite Harness storage, host-directory workspaces, and durable sandbox binding. |
@@ -81,6 +95,8 @@ For an implementation agent starting cold, read in this order:
 | [29-agent-plugins.md](./29-agent-plugins.md) | First-party Agent Plugins client: trusted local package inspection, Skills/MCP binding, portable filesystem behavior, MCP, telemetry, testing, and release/docs scope. |
 | [32-harness-storage.md](./32-harness-storage.md) | Clean-break Harness storage contract replacing separately configured state, runtime, context-checkpoint, and external-wait persistence. |
 | [33-enterprise-memory](./33-enterprise-memory/00-vision.md) | Manifest-bound memory orchestration, identity, search, summary, SQLite, PostgreSQL, Redis, NATS, PURISTA, testing, operations, and migration contract. |
+| [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) | Approved topology-transparent Sandbox lifecycle, adapter conformance boundaries, and provider bake-off criteria; production adapter selection remains blocked. |
+| [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) | Clean-break generic evaluation run/observation/result contract, including score-only reuse, trials, assessment coverage, accounting, and optional OTel. |
 
 ## Authoritative anchors
 
@@ -98,6 +114,16 @@ For an implementation agent starting cold, read in this order:
 - Agent Plugins client behavior, trust, and portable package semantics → [29-agent-plugins.md](./29-agent-plugins.md).
 - Harness structured persistence and PURISTA `ai.storage` integration → [32-harness-storage.md](./32-harness-storage.md).
 - Memory orchestration, typed model references, database engines, and PURISTA `ai.memory` integration → [33-enterprise-memory](./33-enterprise-memory/00-vision.md).
+- Distributed sandbox scope, adapter-private generations/leases/fencing, durable recovery, PURISTA boundary, and provider bake-off → [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
+- Generic evaluation execution and result behavior → [35-generic-evaluation-runs](./35-generic-evaluation-runs.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.
+
+## Approved decision-boundary refactor (2026-08-26)
+
+[Scope and approval](./37-decision-boundaries/00-vision.md), [contracts](./37-decision-boundaries/03-contracts/decisions.md), and [implementation plan](../plans/decision-boundaries/implementation-plan.md). This scope replaces guardrail/governance/approval callback and replay definitions without compatibility paths; other approved workstreams remain unchanged.
+
+## Guardrail authoring and callback inference
+
+[Approved scoped target](./38-guardrail-authoring/00-vision.md) and [implementation plan](../plans/guardrail-authoring/implementation-plan.md): optional YAML, source-derived config, action tokens, build preflight, callback inference and clean consumer alignment. Definition-ready; implementation not started. Voyage excluded.

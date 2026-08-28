@@ -3,7 +3,12 @@ import path from 'node:path'
 import { OperationCancelledError, SandboxError, SandboxNoExecutorError } from '../errors/index.js'
 import type { DirEntry, ExecOptions, ExecResult, FileStat } from '../harness/types.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
-import type { ExecCapableSandboxSession, Sandbox, SandboxSession } from '../sandbox/index.js'
+import type { HarnessAdapterContext } from '../ports/harness-context.js'
+import type { Sandbox, SandboxSession, SandboxOpenOptions, SandboxOpenResult, SandboxTerminateOptions } from '../sandbox/index.js'
+import { SandboxAdapterCatalog } from '../sandbox/adapter-catalog.js'
+import type { SandboxAdministration } from '../sandbox/administration.js'
+import type { SandboxOwnerRegistrationOptions } from '../sandbox/ownership.js'
+import { ProcessLocalSandboxLifecycle } from '../sandbox/lifecycle.js'
 
 /** Options for {@link FakeSandbox}. */
 export interface FakeSandboxOptions {
@@ -18,6 +23,7 @@ type FakeNode = { kind: 'file'; data: Uint8Array; modifiedAt: string } | { kind:
 function now(): string {
   return new Date().toISOString()
 }
+
 
 function normalizePath(input: string): string {
   if (!input.startsWith('/')) throw new SandboxError('Invalid path', { reason: 'invalid_path' })
@@ -149,6 +155,59 @@ class FakeSandboxSession implements SandboxSession {
   }
 }
 
+class FakeSandboxAttachment implements SandboxSession {
+  public readonly executor: 'available' | 'unavailable'
+  private closed = false
+  private readonly controller = new AbortController()
+
+  public constructor(private readonly backing: FakeSandboxSession, private readonly assertActive: () => void | Promise<void>) {
+    this.executor = backing.executor
+  }
+
+  public async read(path: string): Promise<Uint8Array> { return this.use(() => this.backing.read(path)) }
+  public async readText(path: string, _encoding?: 'utf-8'): Promise<string> { return this.use(() => this.backing.readText(path)) }
+  public async write(path: string, data: Uint8Array | string): Promise<void> { return this.use(() => this.backing.write(path, data)) }
+  public async remove(path: string, opts?: { recursive?: boolean }): Promise<void> { return this.use(() => this.backing.remove(path, opts)) }
+  public async list(path: string, opts?: { recursive?: boolean; glob?: string }): Promise<DirEntry[]> { return this.use(() => this.backing.list(path, opts)) }
+  public async stat(path: string): Promise<FileStat> { return this.use(() => this.backing.stat(path)) }
+  public async exists(path: string): Promise<boolean> { return this.use(() => this.backing.exists(path)) }
+  public async mount(files: ReadonlyMap<string, Uint8Array | string>, atPath: string): Promise<void> {
+    await this.assertOpen()
+    const base = normalizePath(atPath)
+    for (const [relative, data] of files) await this.write(`${base}/${relative.startsWith('/') ? relative.slice(1) : relative}`, data)
+  }
+  public async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
+    await this.assertExecOpen(this.closed)
+    const result = await this.backing.exec(command, { ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, this.controller.signal]) : this.controller.signal })
+    await this.assertOpen()
+    return result
+  }
+  public async close(): Promise<void> { this.closed = true; this.controller.abort() }
+
+  private async use<T>(operation: () => Promise<T>): Promise<T> {
+    await this.assertOpen()
+    const result = await operation()
+    await this.assertOpen()
+    return result
+  }
+
+  private async assertOpen(): Promise<void> {
+    await this.assertActive()
+    if (this.closed) throw new SandboxError('Sandbox attachment is closed.', { reason: 'session_closed' })
+  }
+
+  private async assertExecOpen(wasClosed: boolean): Promise<void> {
+    try {
+      await this.assertOpen()
+    } catch (error) {
+      if (!wasClosed && this.controller.signal.aborted) {
+        throw new OperationCancelledError('Sandbox execution was cancelled.', { scope: 'sandbox' })
+      }
+      throw error
+    }
+  }
+}
+
 /**
  * Deterministic in-memory sandbox fake with a configurable executor flag.
  *
@@ -157,7 +216,14 @@ class FakeSandboxSession implements SandboxSession {
  * `SandboxNoExecutorError`, matching the sandbox contract.
  */
 export class FakeSandbox implements Sandbox {
+  public readonly telemetryAdapterId = 'in_memory_sandbox'
   public readonly capabilities: readonly AdapterCapability[]
+  private readonly lifecycle = new ProcessLocalSandboxLifecycle<FakeSandboxSession>()
+  private readonly catalog = SandboxAdapterCatalog.inMemory(async (resource) => {
+    if (resource.kind === 'sandbox' && resource.scope) await this.lifecycle.terminate({ scope: resource.scope, reason: 'manual' })
+  })
+
+  public get administration(): SandboxAdministration { return this.catalog.administration }
 
   public constructor(private readonly options: FakeSandboxOptions = {}) {
     this.capabilities = (options.executor ?? 'available') === 'available'
@@ -165,9 +231,21 @@ export class FakeSandbox implements Sandbox {
       : ['sandbox.fs']
   }
 
-  public async open(opts: { sessionId: string; runId: string; signal?: AbortSignal }): Promise<ExecCapableSandboxSession> {
-    // The session reports the configured executor flag at runtime; the static
-    // exec-capable session type mirrors `SandboxSession` dynamic widening.
-    return new FakeSandboxSession(opts.sessionId, this.options) as ExecCapableSandboxSession
+  public async registerOwner(options: SandboxOwnerRegistrationOptions): Promise<void> {
+    await this.catalog.registerOwner(options)
+  }
+
+  public configureHarnessContext(context: HarnessAdapterContext): void {
+    this.catalog.configureHarnessContext(context, 'in_memory_sandbox')
+  }
+
+
+  public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<readonly AdapterCapability[]> & { session: SandboxSession }> {
+    const { session, disposition, assertActive } = await this.catalog.open(options, async () => await this.lifecycle.open(options, () => new FakeSandboxSession(options.scope.owner.id, this.options)))
+    return { session: new FakeSandboxAttachment(session, assertActive), disposition, liveProcessState: 'not_preserved' }
+  }
+
+  public async terminate(options: SandboxTerminateOptions): Promise<void> {
+    await this.catalog.terminate(options, async () => await this.lifecycle.terminate(options))
   }
 }

@@ -27,20 +27,27 @@ Keep these layers separate:
 - MCP is a clean v2 integration pinned to `2026-07-28`: use `@modelcontextprotocol/client`, modern stateless Streamable HTTP, and a spawn-capable sandbox for stdio. Do not add legacy MCP, HTTP+SSE, one-shot exec, or compatibility fallbacks.
 - Module definition ids compose additively. Treat duplicate module/definition ids as configuration errors; inspect only `harness.inspect().modules` for content-free provenance.
 - Preserve builder inference by declaring models before agents and agents before workflows.
+- Register native TypeScript tools only with `.tools(({ tool }) => ({ name:
+  tool({ ... }) }))`. The builder-local helper preserves exact schemas,
+  handlers, and sandbox capabilities; raw native tool objects fail during
+  `.tools(...)` registration. MCP literal tools remain their explicit
+  integration boundary.
 - Use inline helper callbacks for agents and workflows: `.agents(({ agent }) => ({ ... }))` and `.workflows(({ workflow }) => ({ ... }))`.
 - Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
 - Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
+- Sandbox sharing is an explicit workflow policy: the default child-task partition is fresh task-run shared state; select `inherit`, `private`, or an application-authorized `group` only when needed. Adapters keep multi-instance allocation, generations, leases, fencing, and provider references private.
 - `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
 - Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `HarnessStorage.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
 - For at-least-once direct-agent delivery, pass the transport's stable message or delivery id as `InvokeOptions.idempotencyKey`. Replaying the same successful invocation returns its recorded output without a second provider call or transcript; never derive this key from prompt content.
-- Use `session.release()` at the end of an idle request to close live sandbox/MCP resources while preserving `HarnessStorage`-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, and persisted events.
+- Use `session.release()` at the end of an idle request to detach live sandbox/MCP clients while preserving `HarnessStorage`-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, persisted events, and terminates the session sandbox.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
 - Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Use `.storage(HarnessStorage)` as the only Harness persistence boundary. Do not reintroduce `.state(...)`, `.runtime(...)`, `.checkpoints(...)`, `.externalWait(...)`, or `.workspaceStore(...)`; do not adapt PURISTA's unrelated general-purpose `StateStore` into Harness storage.
-- Use `.workspace(DurableWorkspace)` only for resumable filesystem/workspace state. `localDurableExecution(...)` returns exactly `{ storage, sandbox, workspace, close }` and is for local development or a trusted single-host worker, not distributed production.
+- Use `.workspace(DurableWorkspace)` only for resumable filesystem/workspace state. Checkpointed files are the recovery guarantee; live processes, containers, and volumes are optional adapter optimizations. Missing `attach`/`restore` state must raise `SandboxStateLostError`, never become an empty replacement. `localDurableExecution(...)` returns exactly `{ storage, sandbox, workspace, close }` and is for local development or a trusted single-host worker, not distributed production.
+- Register direct sandbox owners through the application-authorized `SandboxAdministration` boundary. Perform bounded, exact cleanup/offboarding there; do not leak provider references, owner identities, cursors, snapshots, or file data into telemetry/logs.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
 - Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
 - Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
@@ -48,11 +55,24 @@ Keep these layers separate:
   agents/workflows are declared. Keep simple use cases on per-agent
   permissions; use governance only for composable/audited policy, approval, or
   external policy-pack interoperability.
-- A governance approval provider is a synchronous decision for one tool call.
+- A governance approval provider is a bounded immediate decision for one prepared
+  tool occurrence: `request({ approvalId, subject, demands }, { signal, deadline })`
+  returns approved/rejected plus optional content-free `reasonCode`. Static
+  permissions and governance demands share this one provider.
   It is not a durable human-review task: the application owns the review
   record, reviewer identity, UI, expiry, decision persistence, and any
   restart-safe continuation. Do not represent a long-lived review with an
   in-process Promise.
+- Content actions declare their phase and return allow/block/phase-specific
+  transform. `afterModel` allows/blocks after `model.completed` accounting;
+  `beforeOutput`/output rails transform only the final candidate. Whole-batch
+  preflight precedes dispatch; tool schemas/adapters prepare input once before
+  permission/policy/approval, and output validation precedes tool-output rails.
+  Preserve safe `DecisionEvidence`; never serialize approval subjects or raw
+  callback errors. Use `model.completed`, not content events, for generative
+  accounting. Direct model calls/custom handlers are not automatically railed;
+  opaque reasoning cannot be inspected or rewritten. Admitted effects cannot
+  be revoked or rolled back by a later rail.
 - For sensitive-data rails, keep `@purista/harness-guardrails` provider and
   model-runtime agnostic. Install exactly one detector package at the
   composition root. Use native privacy for its deterministic documented subset;
@@ -60,14 +80,16 @@ Keep these layers separate:
   required, then install its optional `@huggingface/transformers` peer, provide
   an absolute pre-provisioned model directory, call `warmup()` during startup,
   and map model labels explicitly. Never add model download, model-registry,
-  cloud fallback, local path, model output, or inspected content to YAML, logs,
+  cloud fallback, local path, model output, or inspected content to configuration,
+  logs,
   errors, spans, metrics, fixtures, or examples. A missing optional peer must
   fail closed with its safe remediation and be observable only through the
   stable sensitive-data failure kind.
 - Use `@purista/harness-guardrails` for optional typed default-loop content
-  rails. It accepts a documented NeMo-shaped YAML subset, requires
-  application-owned actions/model aliases, fails closed, and never loads
-  Python, Colang, providers, servers, or vector stores from configuration.
+  rails. Configure its one inline TypeScript object with opaque action tokens,
+  direct registered model aliases, and nonempty explicit selectors for
+  tool-input/tool-output actions. It fails closed and never loads providers,
+  servers, or vector stores.
 - Treat every guardrail evaluation as an operational security decision: use
   its content-free `GUARDRAIL` span, outcome metric, and structured decision
   log; blocks are expected enforcement decisions rather than span errors.
@@ -80,10 +102,10 @@ Keep these layers separate:
   `llm.token_count.*` cost inputs.
 - For sensitive data, use the provider-neutral `SensitiveDataDetector` port
   exported by `@purista/harness-guardrails` and bind it with
-  `createSensitiveDataActions({ detector })`. Put only exact
-  `rails.config.sensitive_data_detection` policy (entities, mask token, score
-  threshold) in YAML; never put endpoints, credentials, language,
-  recognizers, provider configuration, or fallback rules there. Use the
+  `createSensitiveDataActions({ detector })`. Put exact inline `sensitiveData`
+  policy (`entities`, `maskToken`, `scoreThreshold`) beside its selected flows;
+  never put endpoints, credentials, language, recognizers, provider
+  configuration, or fallback rules in a rail policy. Use the
   optional Presidio adapter for an application-owned authenticated internal
   sidecar, or the optional native Rust/Node-API adapter for its documented
   local subset. Both must fail closed. In user-facing material, describe them
@@ -141,14 +163,14 @@ const harness = defineHarness({ name: 'support-ai' })
       capabilities: ['object', 'tool_use']
     }
   })
-  .tools({
-    lookup_ticket: {
+  .tools(({ tool }) => ({
+    lookup_ticket: tool({
       description: 'Look up one support ticket by id.',
       input: z.object({ id: z.string() }),
       output: z.object({ status: z.string(), summary: z.string() }),
       handler: async (_ctx, input) => ({ status: 'open', summary: `Ticket ${input.id}` })
-    }
-  })
+    })
+  }))
   .agents(({ agent }) => ({
     triage: agent({
       model: 'assistant',

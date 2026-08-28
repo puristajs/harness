@@ -1,0 +1,57 @@
+tickets:
+  TICKET-001:
+    depends_on: []
+    blocked_by: []
+    unblocks: [TICKET-002, TICKET-003, TICKET-013]
+  TICKET-002:
+    depends_on: [TICKET-001]
+    blocked_by: []
+    unblocks: [TICKET-004]
+  TICKET-003:
+    depends_on: [TICKET-001]
+    blocked_by: []
+    unblocks: [TICKET-004, TICKET-014]
+  TICKET-014:
+    depends_on: [TICKET-003]
+    blocked_by: [TICKET-003]
+    unblocks: [TICKET-004]
+  TICKET-004:
+    depends_on: [TICKET-002, TICKET-003, TICKET-013, TICKET-014]
+    blocked_by: [TICKET-014]
+    unblocks: [TICKET-005]
+  TICKET-005:
+    depends_on: [TICKET-004]
+    blocked_by: [TICKET-004]
+    unblocks: [TICKET-006]
+  TICKET-006:
+    depends_on: [TICKET-005]
+    blocked_by: [TICKET-005]
+    unblocks: [TICKET-007]
+  TICKET-007:
+    depends_on: [TICKET-006]
+    blocked_by: [TICKET-006]
+    unblocks: [TICKET-008]
+  TICKET-008:
+    depends_on: [TICKET-007]
+    blocked_by: [TICKET-007]
+    unblocks: [TICKET-009]
+  TICKET-009:
+    depends_on: [TICKET-008]
+    blocked_by: [TICKET-008]
+    unblocks: [TICKET-010]
+  TICKET-010:
+    depends_on: [TICKET-009]
+    blocked_by: [TICKET-009]
+    unblocks: [TICKET-011]
+  TICKET-011:
+    depends_on: [TICKET-010]
+    blocked_by: [TICKET-010]
+    unblocks: [TICKET-012]
+  TICKET-012:
+    depends_on: [TICKET-011]
+    blocked_by: [TICKET-011]
+    unblocks: []
+  TICKET-013:
+    depends_on: [TICKET-001]
+    blocked_by: []
+    unblocks: [TICKET-004]

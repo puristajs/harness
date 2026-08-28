@@ -11,6 +11,8 @@ export type AdapterCapability =
   | 'sandbox.exec'
   /** Sandbox filesystem survives adapter-level close/reopen for the same session. */
   | 'sandbox.persistent_fs'
+  /** Sandbox mounts the active DurableWorkspace into a run-scoped session. */
+  | 'sandbox.workspace_binding'
   /** Sandbox can create durable snapshots. */
   | 'sandbox.snapshot'
   /** Sandbox can resume a session from a durable snapshot. */
@@ -19,6 +21,8 @@ export type AdapterCapability =
   | 'sandbox.hibernate'
   /** Sandbox can host a long-lived process with streaming stdin/stdout. */
   | 'sandbox.spawn'
+  /** Sandbox may preserve provider-managed live processes across detach. */
+  | 'sandbox.live_process_preservation'
   /** Storage can commit stable durable-step checkpoints. */
   | 'storage.checkpoint'
   /** Storage can retry interrupted durable runs. */

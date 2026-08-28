@@ -23,8 +23,8 @@ interface HarnessStorage {
   readonly info: HarnessStorageInfo
   readonly capabilities: readonly AdapterCapability[]
   getSession(id): Promise<SessionRecord | undefined>
-  upsertSession(record): Promise<void>
-  closeSession(id): Promise<void>
+  upsertSession(record, mode: 'create' | 'update'): Promise<boolean>
+  closeSession(id, expectedInstanceId): Promise<void>
   appendMessages(sessionId, messages): Promise<void>
   listMessages(sessionId, opts?): Promise<Message[]>
   clearMessages(sessionId): Promise<void>
@@ -61,7 +61,7 @@ Custom adapters must pass `harnessStorageContract` from
 
 ## Persisted Shapes
 Important records:
-- `SessionRecord`: `id`, `createdAt`, `updatedAt`, `runCount`, optional `metadata`
+- `SessionRecord`: `id`, opaque immutable `instanceId`, `createdAt`, `updatedAt`, `runCount`, optional `identity` and `metadata`. `upsertSession(record, 'create')` returns `true` only for creation; the winner's identity and instance are immutable. `update` requires that instance and cannot recreate missing records. Conditional close prevents stale clients deleting a new instance.
 - `Message`: `id`, `sessionId`, optional `runId`, `role`, `content`, optional `toolCalls` / `toolResults`, `timestamp`
 - `RunRecord`: `id`, `sessionId`, `kind`, `target`, `startedAt`, status, input/output/error
 - `PersistedRunEvent`: `id`, `runId`, `at`, `type`, `payload`
@@ -172,6 +172,7 @@ for await (const event of session.workflows.audit.stream(input)) {
     case 'tool.started':
     case 'tool.finished':
     case 'model.message':
+    case 'model.completed':
     case 'model.delta':
     case 'model.object.partial':
     case 'model.object':
@@ -209,10 +210,18 @@ Do not expose `RunEvent` directly as a provider protocol unless your application
 
 Governance events are audit-oriented and privacy-safe. `policy.exposure`
 records pre-model tool exposure decisions. `policy.evaluated` records
-execution-policy decisions for a concrete tool call. Approval events include
-`approvalId` and `decisionId`. Persisted policy payloads may include
-`policyVersion`, rule id, effect, enforcement state, reason, risk level, and
-tags, but must not include raw tool input or output.
+execution-policy decisions for a concrete tool call. Approval events retain
+`approvalId`, tool/call correlation, and safe evidence. `DecisionEvidence`
+contains `decisionId`, `source`, `phase`, and optional `reasonCode`; source has
+kind/id and optional version/ruleId. Policy events add effect/enforcement
+state. Approval subjects, tool input/output, reviewer identity/comments, and
+arbitrary callback errors are not audit data.
+
+`model.completed` is the sole generative model-call/token accounting event.
+Successful direct, nested, and fully consumed streaming calls emit it once
+independent of content-event opt-in; failed attempts and failed/abandoned
+streams do not. A later content block does not erase completed model work.
+Do not count `model.message`, `model.object`, or deltas again.
 
 ## Error Families
 All `HarnessError` instances carry `code`, `category`, `retriable`, `message`, and optional sanitized `meta`.
@@ -221,7 +230,8 @@ Common classes:
 - `HarnessConfigError`
 - `ValidationError`
 - `PermissionDeniedError`
-- `PolicyEvaluationError`
+- `DecisionBlockedError`
+- `DecisionEvaluationError`
 - `PolicyDeniedError`
 - `SandboxError`
 - `SandboxNoExecutorError`

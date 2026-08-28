@@ -2,13 +2,30 @@ import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { HarnessConfigError, StateError, WorkspaceError } from '../errors/index.js'
+import { sameHarnessIdentity } from '../identity/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message, PersistedRunEvent, RunRecord, RunStatus, SerializedError, SessionRecord } from '../models/state.js'
+import { assertSessionSandboxBindingTransition } from './session-binding.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
-import { ExternalWaitError, validateExternalWaitRequest, type ExternalWaitOutcome, type ExternalWaitRegistration, type ExternalWaitSignal, type ExternalWaitSignalResult, type ExternalWaitSnapshot } from '../storage/external-wait.js'
+import {
+  createExternalWaitCancellation,
+  ExternalWaitError,
+  asExternalWaitResolved,
+  projectExternalWaitRequest,
+  validateBoundExternalWaitRequest,
+  validateExternalWaitId,
+  validateExternalWaitSignal,
+  validateExternalWaitSignalResult,
+  validateExternalWaitSnapshot,
+  type BoundExternalWaitRequest,
+  type ExternalWaitRegistration,
+  type ExternalWaitSignal,
+  type ExternalWaitSignalResult,
+  type ExternalWaitSnapshot
+} from '../storage/external-wait.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
-import type { BoundExternalWaitRequest, FinishRunPatch, HarnessStorage } from '../storage/types.js'
+import type { FinishRunPatch, HarnessStorage } from '../storage/types.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import {
   AsyncMutex,
@@ -189,13 +206,41 @@ export class SqliteHarnessStorage implements HarnessStorage {
     return row ? this.rowToSession(row) : undefined
   }
 
-  public async upsertSession(record: SessionRecord): Promise<void> {
-    this.stmt('insert into harness_sessions(id, created_at, updated_at, run_count, identity_json, metadata_json) values(?, ?, ?, ?, ?, ?) on conflict(id) do update set updated_at=excluded.updated_at, run_count=excluded.run_count, identity_json=excluded.identity_json, metadata_json=excluded.metadata_json')
-      .run(record.id, record.createdAt, record.updatedAt, record.runCount, stringify(record.identity), stringify(record.metadata))
+  public async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
+    if (mode !== 'create' && mode !== 'update') {
+      throw new StateError('Session write mode is invalid.', { op: 'upsertSession', reason: 'invalid_session_write_mode' })
+    }
+    assertSessionSandboxBindingTransition(record.sandboxBinding, record.sandboxBinding, 'upsertSession')
+    return this.transaction(() => {
+      const row = this.stmt('select * from harness_sessions where id = ?').get(record.id)
+      if (row) {
+        const existing = this.rowToSession(row)
+        if (!sameHarnessIdentity(existing.identity, record.identity)) {
+          throw new StateError('Session identity cannot be changed.', { op: 'upsertSession', reason: 'session_identity_mismatch' })
+        }
+        if (mode === 'create') return false
+        if (existing.instanceId !== record.instanceId || existing.createdAt !== record.createdAt) {
+          throw new StateError('Session instance is no longer active.', { op: 'upsertSession', reason: 'session_instance_mismatch' })
+        }
+        assertSessionSandboxBindingTransition(existing.sandboxBinding, record.sandboxBinding, 'upsertSession')
+        if (record.updatedAt < existing.updatedAt || record.runCount < existing.runCount) return false
+        this.stmt('update harness_sessions set updated_at = ?, run_count = ?, sandbox_binding_json = ?, metadata_json = ? where id = ?')
+          .run(record.updatedAt, record.runCount, stringify(record.sandboxBinding), stringify(record.metadata), record.id)
+        return false
+      }
+      if (mode === 'update') {
+        throw new StateError('Session instance is no longer active.', { op: 'upsertSession', reason: 'session_instance_mismatch' })
+      }
+      this.stmt('insert into harness_sessions(id, instance_id, created_at, updated_at, run_count, identity_json, sandbox_binding_json, metadata_json) values(?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(record.id, record.instanceId, record.createdAt, record.updatedAt, record.runCount, stringify(record.identity), stringify(record.sandboxBinding), stringify(record.metadata))
+      return true
+    })
   }
 
-  public async closeSession(id: string): Promise<void> {
+  public async closeSession(id: string, expectedInstanceId: string): Promise<void> {
     await this.transaction(() => {
+      const row = this.stmt('select instance_id from harness_sessions where id = ?').get(id)
+      if (!row || row['instance_id'] !== expectedInstanceId) return
       this.stmt('delete from harness_sessions where id = ?').run(id)
       this.stmt('delete from harness_messages where session_id = ?').run(id)
       this.stmt('delete from harness_external_wait_signals where wait_id in (select wait_id from harness_external_waits where session_id = ?)').run(id)
@@ -353,7 +398,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       // Upsert allows same-worker lease renewal for retries within the TTL.
       this.stmt('insert into harness_run_leases(run_id, session_id, worker_id, lease_id, expires_at) values(?, ?, ?, ?, ?) on conflict(run_id) do update set session_id=excluded.session_id, worker_id=excluded.worker_id, lease_id=excluded.lease_id, expires_at=excluded.expires_at')
         .run(record.runId, record.sessionId, record.workerId, leaseId, expiresAt)
-      const lease = this.toLease(record.runId, leaseId, priorStatus)
+      const lease = this.toLease(record.runId, leaseId, current.attempt !== undefined || priorStatus === 'waiting' || priorStatus === 'interrupted')
       recordAttrs({ 'harness.storage.resumed': lease.resumed, 'harness.storage.attempt': lease.attempt })
       return lease
     })))
@@ -420,45 +465,51 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async registerWait(request: BoundExternalWaitRequest): Promise<ExternalWaitRegistration> {
-    validateExternalWaitRequest(request)
+    const validated = validateBoundExternalWaitRequest(request)
     return this.storageSpan('register_wait', {
-      'harness.run.id': request.runId,
-      'harness.session.id': request.sessionId,
-      'harness.wait.kind': request.kind
+      'harness.run.id': validated.runId,
+      'harness.session.id': validated.sessionId,
+      'harness.wait.kind': validated.kind
     }, async () => this.transaction(() => {
-      const existing = this.expireExternalWait(this.loadExternalWait(request.waitId))
+      const existing = this.expireExternalWait(this.loadExternalWait(validated.waitId))
       if (existing) {
-        const binding = this.stmt('select run_id, session_id from harness_external_waits where wait_id = ?').get(request.waitId)
-        if (binding?.['run_id'] !== request.runId || binding?.['session_id'] !== request.sessionId || existing.kind !== request.kind || existing.schemaVersion !== request.schemaVersion || existing.definitionVersion !== request.definitionVersion || existing.deadline !== request.deadline) {
+        const binding = this.stmt('select run_id, session_id from harness_external_waits where wait_id = ?').get(validated.waitId)
+        if (binding?.['run_id'] !== validated.runId || binding?.['session_id'] !== validated.sessionId || existing.kind !== validated.kind || existing.schemaVersion !== validated.schemaVersion || existing.definitionVersion !== validated.definitionVersion || existing.deadline !== validated.deadline) {
           throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
         }
         return { created: false, snapshot: existing }
       }
-      const run = this.loadRun(request.runId)
-      if (!run || run.sessionId !== request.sessionId || run.status !== 'running') {
+      const run = this.loadRun(validated.runId)
+      if (!run || run.sessionId !== validated.sessionId || run.status !== 'running') {
         throw new ExternalWaitError('External wait run binding is invalid.', 'durable_required')
       }
-      const snapshot: ExternalWaitSnapshot = { ...request, status: 'waiting', createdAt: this.nowIso() }
+      const snapshot = validateExternalWaitSnapshot({
+        ...projectExternalWaitRequest(validated),
+        status: 'waiting',
+        createdAt: this.nowIso()
+      })
       this.stmt('insert into harness_external_waits(wait_id, run_id, session_id, kind, schema_version, definition_version, deadline, status, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(snapshot.waitId, request.runId, request.sessionId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
-      this.stmt('update harness_runs set status = ? where id = ?').run('waiting', request.runId)
-      this.stmt('delete from harness_run_leases where run_id = ?').run(request.runId)
+        .run(snapshot.waitId, validated.runId, validated.sessionId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
+      this.stmt('update harness_runs set status = ? where id = ?').run('waiting', validated.runId)
+      this.stmt('delete from harness_run_leases where run_id = ?').run(validated.runId)
       return { created: true, snapshot }
     }))
   }
 
   public async getWait(waitId: string): Promise<ExternalWaitSnapshot | undefined> {
-    return this.transaction(() => this.expireExternalWait(this.loadExternalWait(waitId)))
+    const validatedWaitId = validateExternalWaitId(waitId)
+    return this.transaction(() => this.expireExternalWait(this.loadExternalWait(validatedWaitId)))
   }
 
   public async signalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
+    const validated = validateExternalWaitSignal(signal)
     return this.storageSpan('signal_wait', {
-      'harness.wait.outcome': signal.outcome
-    }, async () => this.resolveExternalWait(signal.waitId, signal.eventId, signal.outcome, signal.observedAt))
+      'harness.wait.outcome': validated.outcome
+    }, async () => this.resolveExternalWait(validated))
   }
 
   public async cancelWait(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult> {
-    return this.resolveExternalWait(waitId, eventId, 'cancelled', observedAt)
+    return this.resolveExternalWait(createExternalWaitCancellation(waitId, eventId, observedAt))
   }
 
   public async close(): Promise<void> {
@@ -473,7 +524,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       pragma journal_mode = WAL;
       pragma foreign_keys = ON;
       pragma busy_timeout = 5000;
-      create table if not exists harness_sessions(id text primary key, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, metadata_json text);
+      create table if not exists harness_sessions(id text primary key, instance_id text not null, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, sandbox_binding_json text, metadata_json text);
       create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null);
       create index if not exists idx_harness_messages_session_order on harness_messages(session_id, timestamp, id);
       create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, input_json text, output_json text, error_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text);
@@ -501,7 +552,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
     const sessionsTable = this.db.prepare("select name from sqlite_master where type = 'table' and name = 'harness_sessions'").get()
     if (sessionsTable) {
       const columns = new Set(this.db.prepare('pragma table_info(harness_sessions)').all().map((row) => row['name']))
-      if (!columns.has('identity_json')) legacyTables.push('harness_sessions')
+      if (!columns.has('identity_json') || !columns.has('instance_id') || !columns.has('sandbox_binding_json')) legacyTables.push('harness_sessions')
     }
     if (legacyTables.length > 0) {
       this.db.close()
@@ -553,8 +604,8 @@ export class SqliteHarnessStorage implements HarnessStorage {
   private loadExternalWait(waitId: string): ExternalWaitSnapshot | undefined {
     const row = this.stmt('select * from harness_external_waits where wait_id = ?').get(waitId)
     if (!row) return undefined
-    const status = requiredString(row, 'status', 'getRun') as ExternalWaitSnapshot['status']
-    return {
+    const status = requiredString(row, 'status', 'getRun')
+    return validateExternalWaitSnapshot({
       waitId: requiredString(row, 'wait_id', 'getRun'),
       kind: requiredString(row, 'kind', 'getRun'),
       schemaVersion: requiredString(row, 'schema_version', 'getRun'),
@@ -562,31 +613,53 @@ export class SqliteHarnessStorage implements HarnessStorage {
       deadline: requiredString(row, 'deadline', 'getRun'),
       status,
       createdAt: requiredString(row, 'created_at', 'getRun'),
-      ...optional('resolvedAt', row['resolved_at'] as string | undefined),
-      ...optional('eventId', row['event_id'] as string | undefined)
-    }
+      ...optional('resolvedAt', typeof row['resolved_at'] === 'string' ? row['resolved_at'] : undefined),
+      ...optional('eventId', typeof row['event_id'] === 'string' ? row['event_id'] : undefined)
+    })
   }
 
   private expireExternalWait(snapshot: ExternalWaitSnapshot | undefined): ExternalWaitSnapshot | undefined {
     if (!snapshot || snapshot.status !== 'waiting' || Date.parse(snapshot.deadline) > this.clock()) return snapshot
-    const expired: ExternalWaitSnapshot = { ...snapshot, status: 'expired', resolvedAt: this.nowIso() }
-    this.stmt('update harness_external_waits set status = ?, resolved_at = ? where wait_id = ?').run(expired.status, expired.resolvedAt!, expired.waitId)
-    return expired
+    const expired = validateExternalWaitSnapshot({
+      waitId: snapshot.waitId,
+      kind: snapshot.kind,
+      schemaVersion: snapshot.schemaVersion,
+      definitionVersion: snapshot.definitionVersion,
+      deadline: snapshot.deadline,
+      status: 'expired',
+      createdAt: snapshot.createdAt,
+      resolvedAt: this.nowIso()
+    })
+    const resolved = asExternalWaitResolved(expired)
+    if (!resolved) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+    this.stmt('update harness_external_waits set status = ?, resolved_at = ? where wait_id = ?').run(resolved.status, resolved.resolvedAt, resolved.waitId)
+    return resolved
   }
 
-  private async resolveExternalWait(waitId: string, eventId: string, outcome: ExternalWaitOutcome, observedAt?: string): Promise<ExternalWaitSignalResult> {
-    if (!/^[A-Za-z0-9_.:@/-]{1,200}$/.test(eventId)) throw new ExternalWaitError('External wait eventId must be a bounded identifier.', 'invalid_request')
+  private async resolveExternalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
     return this.transaction(() => {
-      const snapshot = this.expireExternalWait(this.loadExternalWait(waitId))
-      if (!snapshot) return { kind: 'not_found' }
-      const duplicate = this.stmt('select event_id from harness_external_wait_signals where wait_id = ? and event_id = ?').get(waitId, eventId)
-      if (duplicate) return { kind: 'duplicate', snapshot }
-      this.stmt('insert into harness_external_wait_signals(wait_id, event_id) values(?, ?)').run(waitId, eventId)
-      if (snapshot.status !== 'waiting') return { kind: 'already_terminal', snapshot }
-      const resolved: ExternalWaitSnapshot = { ...snapshot, status: outcome, resolvedAt: observedAt ?? this.nowIso(), eventId }
+      const snapshot = this.expireExternalWait(this.loadExternalWait(signal.waitId))
+      if (!snapshot) return validateExternalWaitSignalResult({ kind: 'not_found' })
+      const duplicate = this.stmt('select event_id from harness_external_wait_signals where wait_id = ? and event_id = ?').get(signal.waitId, signal.eventId)
+      if (duplicate) return validateExternalWaitSignalResult({ kind: 'duplicate', snapshot })
+      this.stmt('insert into harness_external_wait_signals(wait_id, event_id) values(?, ?)').run(signal.waitId, signal.eventId)
+      if (snapshot.status !== 'waiting') return validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot })
+      const resolved = validateExternalWaitSnapshot({
+        waitId: snapshot.waitId,
+        kind: snapshot.kind,
+        schemaVersion: snapshot.schemaVersion,
+        definitionVersion: snapshot.definitionVersion,
+        deadline: snapshot.deadline,
+        status: signal.outcome,
+        createdAt: snapshot.createdAt,
+        resolvedAt: signal.observedAt ?? this.nowIso(),
+        eventId: signal.eventId
+      })
+      const terminal = asExternalWaitResolved(resolved)
+      if (!terminal) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
       this.stmt('update harness_external_waits set status = ?, resolved_at = ?, event_id = ? where wait_id = ?')
-        .run(resolved.status, resolved.resolvedAt!, eventId, waitId)
-      return { kind: 'applied', snapshot: resolved }
+        .run(terminal.status, terminal.resolvedAt, signal.eventId, signal.waitId)
+      return validateExternalWaitSignalResult({ kind: 'applied', snapshot: terminal })
     })
   }
 
@@ -602,7 +675,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
     if (sessionLease && sessionLease['worker_id'] !== workerId) throw new DurableRunLeaseError(`Durable session "${sessionId}" is already owned by another worker.`)
   }
 
-  private toLease(runId: string, leaseId: string, priorStatus: RunStatus): DurableRunLease {
+  private toLease(runId: string, leaseId: string, previouslyAcquired: boolean): DurableRunLease {
     const run = this.stmt('select * from harness_runs where id = ?').get(runId)
     if (!run) throw new DurableRunLeaseError(`Durable run "${runId}" has not been started.`)
     const checkpoints = this.stmt('select * from harness_run_checkpoints where run_id = ? order by sequence asc').all(runId).map((row) => this.rowToCheckpoint(row))
@@ -613,7 +686,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       workerId: requiredString(run, 'worker_id', 'getRun'),
       leaseId,
       attempt: requiredNumber(run, 'attempt', 'getRun'),
-      resumed: checkpoints.length > 0 || priorStatus === 'waiting' || priorStatus === 'interrupted',
+      resumed: previouslyAcquired || checkpoints.length > 0,
       start: {
         runId,
         sessionId: requiredString(run, 'session_id', 'getRun'),
@@ -635,12 +708,16 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   private rowToSession(row: SqlRow): SessionRecord {
+    const sandboxBinding = parseJson<SessionRecord['sandboxBinding']>(row['sandbox_binding_json'])
+    assertSessionSandboxBindingTransition(sandboxBinding, sandboxBinding, 'getSession')
     return {
       id: requiredString(row, 'id', 'getSession'),
+      instanceId: requiredString(row, 'instance_id', 'getSession'),
       createdAt: requiredString(row, 'created_at', 'getSession'),
       updatedAt: requiredString(row, 'updated_at', 'getSession'),
       runCount: requiredNumber(row, 'run_count', 'getSession'),
       ...optional('identity', parseJson<SessionRecord['identity']>(row['identity_json'])),
+      ...optional('sandboxBinding', sandboxBinding),
       ...optional('metadata', parseJson<Record<string, JsonValue>>(row['metadata_json']))
     }
   }

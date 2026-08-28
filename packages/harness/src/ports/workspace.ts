@@ -2,10 +2,13 @@ import { HarnessConfigError } from '../errors/catalog.js'
 import type { JsonValue } from '../models/json.js'
 import type { AdapterCapabilities, AdapterCapability } from './capabilities.js'
 import type { HarnessAdapterContext } from './harness-context.js'
+import type { SandboxOwner, SandboxPartition } from '../sandbox/ownership.js'
+import type { SandboxAdministration } from '../sandbox/administration.js'
 
 export type WorkspaceLifecycleState =
   | 'active'
   | 'paused'
+  | 'terminal'
   | 'aborted'
   | 'cleanup_pending'
   | 'cleaned'
@@ -38,6 +41,8 @@ export interface WorkspaceQuotaPolicy {
   maxPausedWorkspaces?: number
   maxConcurrentResumes?: number
   maxWorkspaceAgeMs?: number
+  maxSnapshotsPerWorkspace?: number
+  maxRetainedSnapshotBytes?: number
 }
 
 export interface DurableWorkspacePolicy {
@@ -56,6 +61,10 @@ export interface DurableWorkspaceInfo {
 export interface WorkspaceStartOptions {
   runId: string
   sessionId: string
+  /** Immutable owner of the run-scoped sandbox tree. */
+  sandboxOwner: SandboxOwner
+  /** Stable digest of the resolved run partition policy and layout. */
+  sandboxPolicyDigest: string
   workflowId?: string
   agentId?: string
   workerId?: string
@@ -70,6 +79,8 @@ export interface WorkspaceHandle {
   workspaceRef: string
   runId: string
   sessionId: string
+  sandboxOwner: SandboxOwner
+  sandboxPolicyDigest: string
   state: 'active'
   startedAt: string
   attempt: number
@@ -78,6 +89,8 @@ export interface WorkspaceHandle {
 
 export interface WorkspacePauseOptions {
   handle: WorkspaceHandle
+  /** Exact run partitions captured by this aggregate checkpoint. */
+  sandboxPartitions: readonly SandboxPartition[]
   stepId: string
   sequence: number
   attempt: number
@@ -93,6 +106,9 @@ export interface WorkspaceCheckpoint {
   snapshotRef?: string
   runId: string
   sessionId: string
+  sandboxPolicyDigest: string
+  /** Sorted, duplicate-free partitions included in this aggregate checkpoint. */
+  sandboxPartitions: readonly SandboxPartition[]
   stepId: string
   sequence: number
   attempt: number
@@ -159,6 +175,9 @@ export interface WorkspaceInspection {
   state: WorkspaceLifecycleState
   checkpoints: readonly WorkspaceCheckpoint[]
   currentCheckpointRef?: string
+  sandboxOwner: SandboxOwner
+  sandboxPolicyDigest: string
+  terminal?: { status: 'succeeded' | 'failed' | 'cancelled'; finishedAt: string }
   retention?: WorkspaceRetentionPolicy
   quota?: WorkspaceQuotaPolicy
   encryption?: WorkspaceEncryptionInfo
@@ -172,6 +191,8 @@ export interface WorkspaceInspection {
 export interface DurableReplayCheckpoint {
   runId: string
   sessionId: string
+  sandboxPolicyDigest: string
+  sandboxPartitions: readonly SandboxPartition[]
   workerId?: string
   leaseId?: string
   stepId: string
@@ -189,13 +210,39 @@ export interface DurableReplayCheckpoint {
   metadata?: Record<string, JsonValue>
 }
 
+/** Pins one checkpoint while a retained run record still depends on it. */
+export interface WorkspacePinOptions {
+  workspaceRef: string
+  checkpointRef: string
+  runId: string
+  idempotencyKey: string
+  signal?: AbortSignal
+}
+
+/** Releases a checkpoint only after a replacement or terminal result is durable. */
+export interface WorkspaceReleasePinOptions extends WorkspacePinOptions {}
+
+/** Records the durable run's terminal result before releasing recovery pins. */
+export interface WorkspaceFinishOptions {
+  workspaceRef: string
+  runId: string
+  status: 'succeeded' | 'failed' | 'cancelled'
+  idempotencyKey: string
+  signal?: AbortSignal
+}
+
 export interface DurableWorkspace extends AdapterCapabilities {
   readonly info: DurableWorkspaceInfo
+  /** Trusted operator inventory and bounded cleanup for workspace-owned resources. */
+  readonly administration: SandboxAdministration
   configureHarnessContext?(context: HarnessAdapterContext): void
   startWorkspace(opts: WorkspaceStartOptions): Promise<WorkspaceHandle>
   pauseWorkspace(opts: WorkspacePauseOptions): Promise<WorkspaceCheckpoint>
   resumeWorkspace(opts: WorkspaceResumeOptions): Promise<WorkspaceHandle>
   abortWorkspace(opts: WorkspaceAbortOptions): Promise<WorkspaceAbortResult>
+  pinCheckpoint(opts: WorkspacePinOptions): Promise<void>
+  releaseCheckpoint(opts: WorkspaceReleasePinOptions): Promise<void>
+  finish(opts: WorkspaceFinishOptions): Promise<void>
   cleanupWorkspace(opts: WorkspaceCleanupOptions): Promise<WorkspaceCleanupResult>
   inspectWorkspace?(opts: WorkspaceInspectionOptions): Promise<WorkspaceInspection>
 }

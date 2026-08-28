@@ -181,8 +181,8 @@ describe('harness cancellation propagation', () => {
       .defaults({ toolTimeoutMs: 0 })
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-      .tools({
-        hang: {
+      .tools(({ tool }) => ({
+        hang: tool({
           kind: 'ts',
           description: 'Never resolves unless the harness cancellation wrapper wins.',
           input: z.object({}),
@@ -191,8 +191,8 @@ describe('harness cancellation propagation', () => {
             markToolStarted()
             return new Promise<never>(() => undefined)
           }
-        }
-      })
+        })
+      }))
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
       .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
@@ -292,8 +292,8 @@ describe('harness cancellation propagation', () => {
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-      .tools({
-        hang: {
+      .tools(({ tool }) => ({
+        hang: tool({
           kind: 'ts',
           description: 'Never resolves; cancelled through the run signal.',
           input: z.object({}),
@@ -302,8 +302,8 @@ describe('harness cancellation propagation', () => {
             markToolStarted()
             return new Promise<never>(() => undefined)
           }
-        }
-      })
+        })
+      }))
       .skills({})
       .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
       .workflows({})

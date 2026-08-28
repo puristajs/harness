@@ -1,6 +1,8 @@
 # Typed NeMo-shaped guardrails
 
-**Status:** approved implementation contract, 2026-08-23. The repository owner explicitly authorized this scope and automatic approval in the initiating task. This document is authoritative for the optional addon and its minimal core seam.
+> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for configuration, file loading, action authoring and binding. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+
+**Status:** approved implementation contract, 2026-08-23. The repository owner explicitly authorized this scope and automatic approval in the initiating task. This document retains portable configuration scope; the approved 2026-08-26 decision-boundary spec supersedes action, phase and lifecycle contracts.
 
 ## Scope and ownership
 
@@ -26,23 +28,13 @@ The addon is ESM-only and depends only on `@purista/harness`, `yaml`, and `zod`.
 | GR-05 | Retrieval protection | `filterRetrievedChunks` processes caller-owned chunks in order | retrieval fixture |
 | GR-06 | Model check | `modelCheckRail` uses an injected Harness handle | fake provider |
 | GR-07 | Safe operation | content-free GUARDRAIL spans and stable errors | telemetry/error tests |
-| GR-08 | Migration safety | unsupported executable NeMo features reject, never approximate | rejection fixtures |
+| GR-08 | Unsupported-feature rejection | unsupported executable NeMo features reject, never approximate | rejection fixtures |
 
 ## Core interception contract
 
-`AgentDefinition.interceptors` is ordered and applies only to the default loop. A custom `handler` owns its provider/tool lifecycle and receives no interceptor hooks.
+The [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md) own exact phase types, beforeOutput finalization, safe shared errors/evidence, runtime JSON checks and the shared bounded callback executor. Addon output rails bind to beforeOutput. afterModel is allow/block only; beforeModel transforms messages only while preserving protected tool interactions. Default-loop interception does not wrap custom handlers or direct ctx.models calls.
 
-| Phase | Position | Transform | Block/failure final state |
-| --- | --- | --- | --- |
-| `beforeInput` | after input schema parse; before dynamic instructions, transcript, model | typed agent input | no model call/transcript write |
-| `beforeModel` | after `prepareStep` and governance tool exposure; before provider | complete request | no provider call |
-| `afterModel` | after provider; before model event/output validation/tool dispatch/persistence | complete response | no output/event/transcript write |
-| `beforeTool` | before permissions, governance, `tool.started`, side effect | JSON-compatible tool input | no side effect |
-| `afterTool` | after validated output; before `tool.finished`/model continuation | JSON-compatible output | no continuation |
-
-Each hook returns `allow`, `block`, or `transform`. A block, malformed result, or hook exception terminates with non-retriable `AgentInterceptorError`; it is never converted to a model-visible tool error. Existing cancellation, timeout, retry, idempotency, state, logging, telemetry, and governance remain the sole Harness implementation.
-
-## Portable config and migration boundary
+## Portable configuration boundary
 
 ```yaml
 models:
@@ -67,20 +59,20 @@ The parser is strict at every accepted mapping. It accepts only root
 `type`, `engine`, `model`, and `parameters`; phase `flows`; and the
 `rails.config.sensitive_data_detection` subtree defined in
 `31-sensitive-data-guardrails.md`. `models`, `instructions`, `prompts`, and
-`custom_data` are preserved compatibility metadata only: they do not select a
+`custom_data` are preserved descriptive metadata only: they do not select a
 provider, inject an agent prompt, render a template, or execute behavior.
 
 Public Guardrails documentation includes an architecture diagram and a phase
 coverage table. They show the exact default-loop order: parsed agent input,
 ordered input rails, application-owned retrieval plus an explicit retrieval
-filter, model call, the repeated tool-input/permission-governance-validation/
+filter, model call, the repeated tool-input/validation/permission-governance/
 side-effect/tool-output loop, ordered output rails, and output validation or
 delivery. The documentation explicitly marks that each phase runs sequentially
 (not in parallel), that blocked/failed actions end the protected path
 fail-closed, and that direct model calls, custom-handler agents, unfiltered
 retrieval, and uninspected structured fields are outside automatic coverage.
 
-When a directory is loaded, the directory tree is also an explicit migration
+When a directory is loaded, the directory tree is also an explicit configuration
 boundary: the single root `config.yml`/`config.yaml` is the only consumed
 configuration source. Nested or root `.co`/`.py` files, `prompts.yml` or
 `prompts.yaml`, and NeMo `actions` or `kb` directories reject with a stable
@@ -97,21 +89,11 @@ their own assets outside the guardrails configuration directory.
 | unknown rail/category/shape | reject with field/path diagnostic |
 | LangChain, server, action server, vector store | unsupported; never infer |
 
-Colang 1/2 parity is outside this release. It needs a separately approved grammar, durable dialogue-state, compatibility, security, and migration specification.
+Colang 1/2 parity is outside this release. It needs a separately approved grammar, durable dialogue-state, security and execution specification.
 
 ## Action, failure, privacy, and telemetry contract
 
-An action returns exactly `{decision:'allow'}`, `{decision:'block',reasonCode?}`, or `{decision:'transform',target,value,reasonCode?}`. `reasonCode`, when present, is a deployment-controlled lower-case snake-case operator code (maximum 64 characters), never request-derived content. `mayTransform:false` is an enforced declaration: a transform from that action is invalid. Allowed transform targets are closed by phase: `user_message`, `bot_message`, `tool_input`, `tool_output`, and `relevant_chunks`. Mismatch, malformed outcome, non-array retrieval transform, or action exception fails closed. Flows execute sequentially in YAML order; no parallel flag exists because transforms have observable ordering.
-
-`modelCheckRail({model,instructions})` accepts only `{allow:boolean}`, resolves through `modelAliases`, and invokes an existing Harness handle. It has no provider SDK dependency.
-
-- Production default is `contentCaptureMode: 'NO_CONTENT'`.
-- Every addon evaluation emits `evaluate_guardrail {rail.id}` with `openinference.span.kind=GUARDRAIL`, `harness.guardrail.id`, `harness.guardrail.phase`, and `harness.guardrail.outcome: 'allow'|'block'|'transform'|'error'`; a valid `reasonCode` is emitted only for block/transform outcomes.
-- Blocks are successful enforcement decisions (span status remains `UNSET`); action failure, malformed outcome, and timeout are error spans with `GUARDRAIL_EVALUATION_ERROR`. The addon emits one `harness.guardrail.evaluations` counter and one `harness.guardrail.duration` histogram per evaluation, both with content-free rail/phase/outcome dimensions and `error.type` only on failure.
-- A `modelCheckRail` invocation uses the supplied configured Harness handle inside its active guardrail span. The nested standard `LLM` span, rather than the `GUARDRAIL` parent, owns `harness.model.alias`, provider/model identifiers, `gen_ai.usage.*`, `llm.token_count.*`, finish reason, and `gen_ai.client.token.usage` metrics when the provider reports usage. This keeps one authoritative token record and enables exact trace-parent cost attribution; pricing is application/backend policy and is not guessed by the addon.
-- Default-loop rails inherit the exact scoped Harness telemetry/logger. Standalone retrieval rails use an explicit `GuardrailExecutionContext` (`models`, `signal`, logger and/or telemetry) with a global-OTel telemetry fallback. Model-backed retrieval rails require the supplied `models` context.
-- Action evaluation has a fail-closed 10-second default budget; `actionTimeoutMs` and a validated action `timeoutMs` override are positive safe integers. A timed-out action receives an aborted signal and terminates the caller with non-retriable `GUARDRAIL_EVALUATION_ERROR` / `reason:'action_timeout'`.
-- Error metadata and structured logs are bounded to ids, phases, outcomes, reason codes, and error codes. Prompts, completions, documents, tool inputs/results, provider bodies, and credentials are forbidden from spans, logs, errors, events, and fixtures.
+Exact action outcome/phase generics, schema binding, reasonCode grammar, shared evidence and error types, timeout ownership and fail-closed behavior are defined once in [decision contracts](./37-decision-boundaries/03-contracts/decisions.md). Keep GUARDRAIL spans and existing sensitive-data nested spans; operational projections never contain inspected values. Retrieval uses the same evidence/error helpers via public core exports and one occurrence ID per evaluation. No addon-local timer, error projection or evidence identity implementation remains.
 
 ## File, build, and acceptance contract
 

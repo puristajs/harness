@@ -12,7 +12,7 @@
 - Testing
 
 ## Mental Model
-The sandbox is the per-session filesystem and optional command-execution boundary. Agents and TypeScript tools interact with it through `SandboxSession`; MCP stdio also runs through the sandbox executor.
+The sandbox is a logical session- or run-scoped filesystem and optional command-execution boundary. TypeScript tools receive a capability-inferred attachment; MCP stdio requires its `spawn` operation. Deployment topology is adapter-private: the same contract works for one local process, a Docker guest, or a remote provider.
 
 Keep sandbox policy explicit. Do not treat host filesystem, process execution, network policy, or secrets as implicitly safe.
 
@@ -22,9 +22,7 @@ import { bashSandbox, inMemorySandbox } from '@purista/harness'
 
 defineHarness().sandbox(inMemorySandbox())
 defineHarness().sandbox(bashSandbox({
-  network: { deny: ['169.254.169.254'] },
-  executionLimits: { wallClockMs: 120_000, memoryMb: 512 },
-  python: true
+  executionLimits: { wallClockMs: 120_000, maxFileSystemBytes: 64 * 1024 * 1024 }
 }))
 defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySandbox()
 ```
@@ -39,10 +37,13 @@ defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySand
 - capabilities: `['sandbox.fs', 'sandbox.exec']`
 - requires optional peer dependency `just-bash`
 - creates an in-memory filesystem session with command execution delegated to `just-bash`
-- throws `HarnessConfigError` if `just-bash` is missing or has no exec surface
+- shares one filesystem between file APIs, mounted skills, and commands
+- network and Python are disabled by default; opt in with reviewed `network.allow` URL prefixes or `python: true` only when needed
+- `maxFileSystemBytes` bounds retained emulator filesystem bytes, not host memory; `wallClockMs` caps command duration
+- configuration is strict: unknown fields and invalid limits fail with `HarnessConfigError`; the optional `just-bash` peer must be installed
 
 `localDirectorySandbox({ root, exec?, coordinator? })` (part of `localDurableExecution`):
-- capabilities: `['sandbox.fs', 'sandbox.persistent_fs']` files-only (default), `['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']` when `exec` is configured — persistence is independent of exec
+- default capabilities: `['sandbox.fs', 'sandbox.persistent_fs']` (files-only); a compatible coordinator adds `sandbox.workspace_binding`, and configuring `exec` adds `sandbox.exec` and `sandbox.spawn` — persistence is independent of exec
 - host-directory persistence with a realpath jail; symlink escapes (including dangling symlink write targets) and traversal-shaped `sessionId`/`runId` throw `SandboxError{reason:'invalid_path'}`
 - maps `/workspace` to the active durable workspace when bound through the coordinator
 - exec runs without a shell (tokenized argv); unquoted shell metacharacters are rejected when `allowCommands` is set; output capture caps at 10 MiB per stream; timeout falls back to the harness `toolTimeoutMs`; abort surfaces `OperationCancelledError{scope:'sandbox'}`
@@ -89,6 +90,14 @@ executor: 'available' | 'unavailable'
 
 Paths must be absolute POSIX paths. Invalid paths throw `SandboxError` with `reason: 'invalid_path'`.
 
+Register `.sandbox(adapter)` before `.tools(...)`. Its literal capability tuple
+flows into `ctx.sandbox` and survives later builder calls and `.use(module)`.
+Files-only adapters expose neither `exec` nor `spawn` in TypeScript. A widened
+`Sandbox` or auto-detected adapter exposes the base filesystem session; use
+`isExecCapableSession(session)` or `isSpawnCapableSession(session)` before
+calling optional operations. Do not cast a files-only session to add an
+executor. Registering a second sandbox fails during configuration.
+
 ## Exec Options And Results
 Exec-capable sessions expose:
 
@@ -107,7 +116,7 @@ exec(command, {
 }>
 ```
 
-Timeouts throw `OperationTimeoutError` with `scope: 'sandbox_run'`. Aborts throw `OperationCancelledError` with `scope: 'sandbox'`.
+Timeouts throw `OperationTimeoutError` with `scope: 'sandbox_run'`. Aborts throw `OperationCancelledError` with `scope: 'sandbox'`. Bash inherits Harness `toolTimeoutMs`, defaulting to 120 seconds when used directly; an explicit exec timeout cannot exceed the configured wall-clock limit.
 
 ## Skills And Memory Mounts
 The harness uses the sandbox for two important runtime paths:
@@ -145,11 +154,40 @@ const remoteSandbox = {
     this.logger = context.logger
     this.telemetry = context.telemetry
   },
-  async open({ sessionId, runId, signal }) {
-    return remoteSession
+  async registerOwner({ owner, mode, signal }) {
+    // Create or attach only an application-authorized logical owner.
+  },
+  async open({ scope, mode, signal }) {
+    // `create` allocates, `attach` must find existing state,
+    // `restore` requires the adapter's explicit workspace-recovery support.
+    return {
+      session: remoteSession,
+      disposition: mode === 'create' ? 'created' : 'attached',
+      liveProcessState: 'not_preserved'
+    }
+  },
+  async terminate({ scope, reason, signal }) {
+    // Idempotently destroy only the resources addressed by the opaque scope mapping.
   }
 }
 ```
+
+Harness creates `SandboxScope` from an exact logical owner, an optional
+tenant/principal identity, partition, and lifetime (`session` or `run`). Providers
+keep generations, leases, fencing and raw resource identifiers private. `attach` and `restore` must raise `SandboxStateLostError`
+when the prior logical backing cannot be found; neither may create an empty
+replacement. `session.close()` detaches one client, while `terminate(...)`
+disposes the shared logical sandbox.
+
+Expose no second multi-instance interface. An adapter may manage one local
+process, Docker, or a distributed control plane behind `Sandbox`. Authorize
+`registerOwner` and `SandboxAdministration` in the application; exact
+offboarding fences an actor without automatically deleting a tenant-owned
+resource another actor may use.
+
+Durable workspace checkpoint files are the only cross-restart recovery
+guarantee. A retained container, VM, volume or process is an optional
+optimization and must be reported truthfully through `liveProcessState`.
 
 Adapter capabilities include:
 - `sandbox.fs`
@@ -159,6 +197,7 @@ Adapter capabilities include:
 - `sandbox.resume`
 - `sandbox.hibernate`
 - `sandbox.spawn`
+- `sandbox.workspace_binding` (the adapter can bind a run sandbox to an active durable workspace)
 
 Use `.requires([...])` to force startup failure when a required capability is absent.
 
@@ -203,12 +242,17 @@ plugin data directory instead.
 Snapshot-capable adapters may implement:
 
 ```ts
-snapshot(session): Promise<{ snapshotId: string, metadata?: Record<string, unknown> }>
-resume({ snapshotId, sessionId, runId, signal }): Promise<SandboxSession>
-hibernate(session): Promise<{ snapshotId: string, metadata?: Record<string, unknown> }>
+snapshot(session): Promise<{ snapshotId: string, metadata?: Record<string, JsonValue> }>
+resume({ snapshotId, scope, signal }): Promise<SandboxSessionBase>
+hibernate(session): Promise<{ snapshotId: string, metadata?: Record<string, JsonValue> }>
 ```
 
 Declare matching capabilities so orchestrators and durable runtimes can make safe decisions.
+Use the full target `SandboxScope` for snapshot resume. The returned attachment
+belongs to that target: its close detaches and target termination invalidates
+it. A retry with the same target/snapshot is idempotent; conflicting target state
+fails without replacement. Snapshot resume remains separate from lifecycle
+restore and is not a substitute for committed `DurableWorkspace` checkpoints.
 
 ## Testing
-Use `sandboxContract` and `sandboxSnapshotContract` from `@purista/harness/testing` for adapter behavior. Cover filesystem semantics, executor unavailable behavior, timeouts, cancellation, mount behavior, and close idempotency.
+Use `sandboxContract` and `sandboxSnapshotContract` from `@purista/harness/testing` for adapter behavior. Cover filesystem semantics, executor unavailable behavior, timeouts, cancellation, mount behavior, one-client detach, concurrent idempotent create, terminal tombstones, exact tenant/principal scope, absent attach/restore state loss, and old-attachment invalidation. Add isolated provider tests for engine/context pinning, cleanup retry, resource limits, egress policy, and telemetry that excludes file/command content.

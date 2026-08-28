@@ -1,0 +1,9 @@
+source_revision: "ai-harness c378607 plus preserved working tree"
+created_at: 2026-08-26
+approval_ref: "codex-task-01a03d51-6262-7480-89eb-baa163905ef6#owner-approved-clean-refactor"
+author: Codex
+review_evidence: evidence/readiness-review.md
+spec_manifest:
+  content_digest: sha256:b5323335237da8fac896a1d42efeac1df47f9438f48cebdc8241565ede67724f
+  source_revision: c378607-working-tree-2026-08-26
+  generated_at: 2026-08-26T13:37:29.620Z

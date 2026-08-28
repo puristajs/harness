@@ -10,7 +10,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 it('persists a session-scoped fact through SQLite', async () => {
   const root = mkdtempSync(join(tmpdir(), 'purista-memory-example-')); roots.push(root)
   const harness = createMemoryExample(join(root, 'memory.sqlite'))
-  const session = await harness.getSession('claim:42', { tenantId: 'acme' })
+  const session = await harness.getSession('claim:42', { identity: { tenantId: 'acme' } })
   await session.memory.write('status', 'open')
   await expect(session.memory.read('status')).resolves.toBe('open')
   await harness.shutdown()

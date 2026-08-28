@@ -8,6 +8,14 @@
       "owner": "@purista/harness-openai",
       "port": "@purista/harness:ModelProvider",
       "provider": "@purista/harness-openai"
+    },
+    {
+      "conformance": "@purista/harness/testing:sandboxContract",
+      "consumer": "packages/harness-sandbox-docker/src/index.test.ts",
+      "id": "sandbox-docker",
+      "owner": "@purista/harness-sandbox-docker",
+      "port": "@purista/harness:Sandbox",
+      "provider": "@purista/harness-sandbox-docker"
     }
   ]
 }

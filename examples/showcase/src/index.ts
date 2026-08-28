@@ -99,8 +99,8 @@ export function createShowcaseHarness(provider?: ModelProvider) {
           capabilities: ['object']
         }
       })
-      .tools({
-        policy_lookup: {
+      .tools(({ tool }) => ({
+        policy_lookup: tool({
           description: 'Look up a short internal policy by topic.',
           input: policyLookupInput,
           output: z.object({ text: z.string() }),
@@ -108,8 +108,8 @@ export function createShowcaseHarness(provider?: ModelProvider) {
             const parsed = policyLookupInput.parse(input)
             return { text: `Policy for ${parsed.topic}: escalate customer-impacting incidents.` }
           }
-        }
-      })
+        })
+      }))
       .skills({
         'incident-responder': {
           directory: join(here, 'skills/incident-responder')

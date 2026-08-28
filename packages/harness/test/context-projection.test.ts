@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ModelError, defineHarness, projectToolResults, validateContextProjection } from '../src/index.js'
+import { InMemoryHarnessStorage, ModelError, defineHarness, projectToolResults, validateContextProjection } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import type { ModelMessage, ObjectRequest, ObjectResponse } from '../src/index.js'
 
@@ -51,14 +51,20 @@ class ContextLengthProvider extends FakeModelProvider {
 
 it('retries exactly once with a transient projected request after a context-length failure', async () => {
   const provider = new ContextLengthProvider()
+  const storage = new InMemoryHarnessStorage()
   provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
   const harness = defineHarness()
+    .storage(storage)
     .defaults({ contextProjection: { toolResultPruner: { maxBytes: 96, headBytes: 12, tailBytes: 12 } } })
     .models({ fast: { provider, model: 'fake', capabilities: ['object'] } })
     .agents({ answer: { model: 'fast', instructions: 'Answer.', builtinTools: false } })
     .build()
   const session = await harness.getSession('projection')
   await session.replaceHistory([{
+    role: 'assistant',
+    content: '',
+    toolCalls: [{ id: 'call-1', name: 'previous_lookup', arguments: {} }]
+  }, {
     role: 'tool',
     content: '',
     toolResults: [{ toolCallId: 'call-1', output: { text: 'é'.repeat(80) } }]
@@ -71,4 +77,6 @@ it('retries exactly once with a transient projected request after a context-leng
   expect(firstTool?.content).not.toContain('UTF-8 bytes omitted')
   expect(retryTool?.content).toContain('UTF-8 bytes omitted')
   expect((await session.history.list()).find((message) => message.role === 'tool')?.toolResults?.[0]?.output).toEqual({ text: 'é'.repeat(80) })
+  const run = (await storage.listRuns('projection'))[0]!
+  expect(await session.getRunSummary(run.id)).toMatchObject({ modelCalls: 1 })
 })

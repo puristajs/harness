@@ -1,5 +1,5 @@
 import { McpProtocolError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
-import { isSpawnCapableSession, type SandboxProcess, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
+import { isExecCapableSession, isSpawnCapableSession, type SandboxProcess, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import type { McpDiscoveredTool, McpTransportRunner, ResolvedMcpStdioTool } from './runner.js'
 import { withMcpTimeout } from './runner.js'
 
@@ -327,7 +327,7 @@ class SandboxStdioTransport {
 }
 
 async function runInstall(config: ResolvedMcpStdioTool, signal?: AbortSignal): Promise<void> {
-  if (config.sandbox.executor !== 'available') {
+  if (!isExecCapableSession(config.sandbox)) {
     throw new SandboxNoExecutorError('MCP stdio install requires a sandbox executor.', { session_id: 'unknown' })
   }
   const install = config.install

@@ -1,0 +1,33 @@
+tickets:
+  TICKET-001:
+    path: wave_01_callbacks/tickets/TICKET-001-callbacks.md
+    wave: 1
+    lifecycle: accepted
+  TICKET-002:
+    path: wave_02_config/tickets/TICKET-002-config.md
+    wave: 2
+    lifecycle: accepted
+  TICKET-003:
+    path: wave_03_requirements/tickets/TICKET-003-requirements.md
+    wave: 3
+    lifecycle: accepted
+  TICKET-004:
+    path: wave_04_actions/tickets/TICKET-004-actions.md
+    wave: 4
+    lifecycle: accepted
+  TICKET-005:
+    path: wave_05_binding/tickets/TICKET-005-binding.md
+    wave: 5
+    lifecycle: accepted
+  TICKET-006:
+    path: wave_06_docs/tickets/TICKET-006-docs.md
+    wave: 6
+    lifecycle: accepted
+  TICKET-007:
+    path: wave_07_website/tickets/TICKET-007-website.md
+    wave: 7
+    lifecycle: accepted
+  TICKET-008:
+    path: wave_08_cleanup/tickets/TICKET-008-cleanup.md
+    wave: 8
+    lifecycle: accepted

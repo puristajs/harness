@@ -3,14 +3,125 @@ import { expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { RecordingLogger, RecordingTelemetry, runTelemetryFlowHarness } from './telemetryFlowHarness.js'
-import { OperationTimeoutError } from '../src/errors/index.js'
+import { OperationTimeoutError, SandboxError } from '../src/errors/index.js'
 import { createModelRegistry } from '../src/models/registry.js'
 import { createSessionHarness } from '../src/sessions/index.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
-import { inMemorySandbox } from '../src/sandbox/index.js'
+import { inMemorySandbox, type Sandbox } from '../src/sandbox/index.js'
 import { inMemoryMemoryEngine } from '../src/memory/in-memory.js'
+import { inMemoryDurableWorkspace } from '../src/workspace/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { startFakeHttpMcpServer } from '../src/testing/fixtures/mcp/fake-http-server.js'
+
+it('records lifecycle outcomes without scope, provider, or content attributes', async () => {
+  const { session, telemetry } = await runTelemetryFlowHarness()
+  await session.workflows.wf.prompt('open the sandbox')
+  await session.close()
+  const spans = telemetry.spans.filter(span => span.name.startsWith('harness.sandbox.'))
+  expect(spans.map(span => span.name)).toEqual([
+    'harness.sandbox.register_owner',
+    'harness.sandbox.open',
+    'harness.sandbox.detach',
+    'harness.sandbox.terminate',
+    'harness.sandbox.purge'
+  ])
+  expect(spans[1]?.attrs).toMatchObject({
+    'harness.sandbox.adapter': 'in_memory_sandbox',
+    'harness.sandbox.disposition': 'created',
+    'harness.sandbox.live_process_state': 'not_preserved',
+    'harness.sandbox.outcome': 'success'
+  })
+  const metrics = telemetry.metrics.filter(metric => metric.name.startsWith('harness.sandbox.'))
+  expect(metrics).toHaveLength(10)
+  const allowed = new Set(['harness.sandbox.adapter', 'harness.sandbox.operation', 'harness.sandbox.disposition', 'harness.sandbox.live_process_state', 'harness.sandbox.outcome', 'error.type'])
+  for (const item of [...spans, ...metrics]) {
+    expect(Object.keys(item.attrs).every(key => allowed.has(key))).toBe(true)
+    expect(JSON.stringify(item.attrs)).not.toContain('telemetry-session')
+  }
+})
+
+it.each(['native', 'harness'] as const)('keeps %s adapter cleanup errors out of lifecycle telemetry and warnings', async errorKind => {
+  const telemetry = new RecordingTelemetry()
+  const logger = new RecordingLogger()
+  const privateValues = [
+    'private-provider-reference-sentinel', '/private/customer-workspace-sentinel',
+    'private-command-and-output-sentinel', 'private-credential-sentinel'
+  ]
+  const message = privateValues.join(' ')
+  const cleanupError = errorKind === 'native'
+    ? new Error(message)
+    : new SandboxError(message, { reason: 'cleanup_failed', stdout: privateValues[2], stderr: privateValues[3] })
+  const expectedErrorType = errorKind === 'native' ? 'Error' : 'SANDBOX_ERROR'
+  const base = inMemorySandbox()
+  const sandbox: Sandbox<readonly ['sandbox.fs', 'sandbox.workspace_binding']> = {
+    capabilities: ['sandbox.fs', 'sandbox.workspace_binding'],
+    administration: base.administration,
+    registerOwner: async (options) => await base.registerOwner(options),
+    async open(options) {
+      const opened = await base.open(options)
+      if (options.scope.lifetime === 'run') {
+        const close = opened.session.close.bind(opened.session)
+        opened.session.close = async () => { await close(); throw cleanupError }
+      }
+      return opened
+    },
+    async terminate(options) {
+      await base.terminate(options)
+      if (options.scope.lifetime === 'run') throw cleanupError
+    }
+  }
+  const workspace = inMemoryDurableWorkspace()
+  workspace.info.policy = { ...workspace.info.policy, retention: { cleanupMode: 'adapter_automatic' } }
+  workspace.cleanupWorkspace = async () => { throw cleanupError }
+  const harness = createSessionHarness<any>({
+    name: 'cleanup-privacy', logger, telemetryShim: telemetry,
+    storage: new InMemoryHarnessStorage(), sandbox, workspace,
+    memory: inMemoryMemoryEngine(), defaults: {},
+    models: { fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } },
+    tools: {}, skills: {}, agents: {},
+    workflows: { complete: { input: z.string(), output: z.string(), handler: async () => 'done' } }
+  })
+  try {
+    const identity = { tenantId: 'private-tenant-sentinel', principalId: 'private-principal-sentinel' }
+    const session = await harness.getSession('cleanup-session', { identity })
+    await expect(session.workflows.complete.prompt('go', { durable: { runId: 'cleanup-run' } })).resolves.toBe('done')
+    expect((await session.getRunSummary('cleanup-run'))?.status).toBe('succeeded')
+
+    const warnings = logger.entries.filter(entry => entry.level === 'warn')
+    expect(warnings.map(entry => entry.msg)).toEqual([
+      'Terminal workspace cleanup failed.',
+      'Failed to close durable run sandbox.',
+      'Failed to terminate durable run sandbox.'
+    ])
+    for (const warning of warnings) expect(warning.fields).toEqual({ error_type: expectedErrorType })
+
+    const spans = telemetry.spans.filter(span => span.name.startsWith('harness.sandbox.'))
+    const failedSpans = spans.filter(span => span.status?.code === SpanStatusCode.ERROR)
+    expect(failedSpans.map(span => span.name)).toEqual(['harness.sandbox.detach', 'harness.sandbox.terminate'])
+    for (const span of failedSpans) {
+      expect(span.attrs).toMatchObject({
+        'harness.sandbox.adapter': 'custom_sandbox',
+        'harness.sandbox.outcome': 'error',
+        'error.type': expectedErrorType
+      })
+      expect(span.exceptions).toHaveLength(1)
+      expect(span.exceptions[0]).toMatchObject({ message: expectedErrorType })
+    }
+    const metrics = telemetry.metrics.filter(metric => metric.name.startsWith('harness.sandbox.'))
+    const failedMetrics = metrics.filter(metric => metric.attrs['harness.sandbox.outcome'] === 'error')
+    expect(failedMetrics).toHaveLength(4)
+    const allowed = new Set(['harness.sandbox.adapter', 'harness.sandbox.operation', 'harness.sandbox.disposition', 'harness.sandbox.live_process_state', 'harness.sandbox.outcome', 'error.type'])
+    for (const metric of metrics) expect(Object.keys(metric.attrs).every(key => allowed.has(key))).toBe(true)
+    for (const metric of failedMetrics) expect(metric.attrs['error.type']).toBe(expectedErrorType)
+
+    const captured = JSON.stringify({ spans, metrics, warnings }, (_key, value) => value instanceof Error
+      ? { name: value.name, message: value.message, stack: value.stack }
+      : value)
+    for (const sentinel of [...privateValues, identity.tenantId, identity.principalId]) expect(captured).not.toContain(sentinel)
+  } finally {
+    await harness.shutdown()
+  }
+})
 
 it('emits a traceable session workflow agent model tool flow', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness()

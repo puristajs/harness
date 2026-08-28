@@ -1,0 +1,59 @@
+decision_authority_version: 1
+default_allowed_classes: [D0, D1]
+decisions:
+  - decision_id: DEC-SBX-BOUNDARY
+    class: D2
+    status: approved
+    authority: repository_owner
+    scope_refs: [CAP-SBX-OPEN, CAP-SBX-CLEANUP]
+    source_refs: [00-vision.md, 00-module-boundaries.yaml]
+    statement: The one Sandbox port owns topology-transparent lifecycle semantics; distributed coordination belongs to its adapter and is not exposed as a HarnessStorage field, PURISTA concern, runtime capability, or business-logic branch.
+    source: 00-vision.md#approved-decisions
+  - decision_id: DEC-SBX-IDENTITY
+    class: D2
+    status: approved
+    authority: repository_owner
+    scope_refs: [CAP-SBX-IDENTITY]
+    source_refs: [00-vision.md]
+    statement: Harness scopes exact optional identity; integrations may impose a stricter identity policy without changing Harness core.
+    source: 00-vision.md#approved-decisions
+  - decision_id: DEC-SBX-FENCING
+    class: D2
+    status: approved
+    authority: repository_owner
+    scope_refs: [CAP-SBX-FENCE]
+    source_refs: [00-vision.md]
+    statement: Adapter-private leases and fences must atomically reject stale compute mutations.
+    source: 00-vision.md#approved-decisions
+  - decision_id: DEC-SBX-RECOVERY
+    class: D2
+    status: approved
+    authority: repository_owner
+    scope_refs: [CAP-SBX-RECOVER]
+    source_refs: [00-vision.md]
+    statement: Create is restricted to newly allocated scopes; persisted scopes attach without fallback, and missing compute is replaced only after committed DurableWorkspace recovery or fails state-lost.
+    source: 00-vision.md#approved-decisions
+  - decision_id: DEC-SBX-DOCKER
+    class: D2
+    status: approved
+    authority: repository_owner
+    scope_refs: [CAP-SBX-DOCKER]
+    source_refs: [05-integration/local-docker.md, 03-contracts/contracts.yaml]
+    statement: Add one optional local Docker package using the same Sandbox contract and Docker context for OrbStack; no new core subsystem, production-provider dependency, or unverified checkpoint recovery.
+    source: owner request to add local Docker as its own planned package
+  - decision_id: DEC-SBX-PROVIDER
+    class: D3
+    status: blocked
+    authority: human_product_and_platform_owner
+    scope_refs: [CAP-SBX-BAKEOFF]
+    source_refs: [04-operations/runbook-requirements.md]
+    statement: Select a production provider only after the approved E2B and Daytona bake-off.
+    source: 04-operations/runbook-requirements.md#provider-bake-off
+  - decision_id: DEC-SBX-MECHANICAL
+    class: D1
+    status: approved
+    authority: repository_convention
+    scope_refs: [CAP-SBX-CONTRACT]
+    source_refs: [00-file-structure.md, .agent/IMPLEMENTATION.md]
+    statement: Private helper names and test placement follow existing Harness conventions.
+    source: 00-file-structure.md

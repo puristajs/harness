@@ -118,8 +118,8 @@ feedback.record({
 ## Add TypeScript Tools
 
 ```ts
-.tools({
-  policy_lookup: {
+.tools(({ tool }) => ({
+  policy_lookup: tool({
     description: 'Look up a short policy by topic.',
     input: z.object({ topic: z.string() }),
     output: z.object({ text: z.string() }),
@@ -127,8 +127,8 @@ feedback.record({
       ctx.logger.info('Looking up policy.', { tool_id: ctx.toolId })
       return { text: `Policy for ${input.topic}` }
     }
-  }
-})
+  })
+}))
 ```
 
 Rules:
@@ -170,11 +170,11 @@ or integration with an external policy engine:
     ]
   },
   approval: {
-    request: async ({ approvalId, decisions }) => ({
-      decision: 'approved',
-      approverId: 'ops',
-      reason: `${approvalId}:${decisions.map((decision) => decision.ruleId).join(',')}`
-    })
+    // Synthetic provider from the runnable guardrails example.
+    async request(request, execution) {
+      execution.signal.throwIfAborted()
+      return { decision: 'approved', reasonCode: 'review_approved' }
+    }
   },
   policies: [
     native({
@@ -200,6 +200,14 @@ Native `rule(...)` predicates receive the selected TypeScript tool's parsed
 input. `exposureRule(...)` predicates run before the model call and can hide
 tools without seeing tool input. Adapter policies are the integration point for
 OPA, Cedar, Eve-style controls, or product-specific policy services.
+
+The snippet's approving callback is a local fixture, not a production reviewer.
+Use the [tested composition](../../examples/guardrails/README.md) for one shared
+provider across static permission and policy demands. An application adapter
+receives `{ approvalId, subject, demands }` and bounded `{ signal, deadline }`;
+it returns only approved/rejected and an optional content-free reason code.
+See [decisions and approval](./decisions-and-approval.md) before adding durable
+review or logging decision data.
 
 ## Add Skills
 

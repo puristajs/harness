@@ -32,4 +32,4 @@ The built-in local host-directory sandbox deliberately does not claim immutable
 mount support, because file permissions are mutable by the process owner. Use
 an isolating sandbox adapter for stdio plugins in production.
 
-For upgrade steps, see [Migrating To AI Harness 2.0](./migrating-to-v2.md).
+See [MCP tools](./mcp-tools.md) for current transport setup and requirements.

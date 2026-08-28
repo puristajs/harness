@@ -1,0 +1,313 @@
+import { createHash } from 'node:crypto'
+import { createDecisionEvidence, governanceApprovalResultSchema, runDecisionOperation } from '../decisions/index.js'
+import type { z } from 'zod'
+import type { DecisionEvidence, DecisionExecutionContext, DecisionOccurrence } from '../decisions/index.js'
+import { DecisionEvaluationError, HarnessConfigError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, PolicyDeniedError } from '../errors/index.js'
+import { isSelectedGovernanceTool } from '../harness/defineHarness.js'
+import type { AgentPermissions, GovernanceConfig, GovernanceContext, GovernanceEffect, GovernanceExposureEffect, PermissionMode, PermissionPolicy, RunEvent } from '../harness/defineHarness.js'
+import type { JsonValue } from '../models/json.js'
+import { governancePolicyResultSchema, permissionPolicySchema } from '../decisions/schemas.js'
+
+type Invocation = {
+  readonly agentId: string
+  readonly runId: string
+  readonly sessionId: string
+  readonly workflowId?: string
+  readonly invocationId: string
+  readonly step: number
+  readonly signal: AbortSignal
+  readonly decisionTimeoutMs: number
+  readonly deadline?: number
+  readonly metadata: Readonly<Record<string, JsonValue>>
+  readonly emitEvent?: (event: RunEvent) => Promise<void>
+}
+
+type ToolInvocation = Invocation & { readonly toolId: string; readonly callId: string; readonly input: JsonValue; readonly permissions?: AgentPermissions; readonly governance?: GovernanceConfig }
+
+type Evaluated = { readonly effect: GovernanceEffect; readonly evidence: DecisionEvidence }
+
+/** Evaluates permissions, governance policies, audit and one immediate approval for a parsed tool call. */
+export async function enforceToolGovernance(invocation: ToolInvocation): Promise<void> {
+  const occurrence = occurrenceFor(invocation)
+  const demands: DecisionEvidence[] = []
+  const permission = permissionDecision(invocation.permissions, invocation.toolId, invocation.input)
+  if (permission === 'deny') {
+    throw new PermissionDeniedError(createDecisionEvidence({ occurrence, source: { kind: 'permission', id: invocation.toolId }, phase: 'permission', ordinal: 0 }))
+  }
+  if (permission === 'require_approval') {
+    demands.push(createDecisionEvidence({ occurrence, source: { kind: 'permission', id: invocation.toolId }, phase: 'permission', ordinal: 0 }))
+  }
+
+  const governance = invocation.governance
+  const policyEnabled = governance?.enabled !== false
+  const evaluated = policyEnabled && governance ? await evaluatePolicies(invocation, occurrence) : []
+  const enforced = governance?.mode !== 'shadow'
+  const winner = strongest(evaluated)
+
+  for (const decision of evaluated) {
+    const applied = Boolean(enforced && decision.effect === winner?.effect && (decision.effect === 'deny' || decision.effect === 'require_approval'))
+    await invocation.emitEvent?.({ type: 'policy.evaluated', runId: invocation.runId, agentId: invocation.agentId, invocationId: invocation.invocationId, toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, evidence: decision.evidence, effect: decision.effect, enforced: applied })
+    if (governance?.audit) {
+      try {
+        await runGovernanceCallback(invocation, (execution) => governance.audit!.record({
+          evidence: decision.evidence,
+          toolId: invocation.toolId,
+          callId: invocation.callId,
+          invocationId: invocation.invocationId,
+          agentId: invocation.agentId,
+          runId: invocation.runId,
+          sessionId: invocation.sessionId,
+          ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}),
+          step: invocation.step,
+          effect: decision.effect,
+          enforced: applied
+        }, execution))
+      } catch (error) {
+        throw decisionFailure(decision.evidence, error, 'audit_failed')
+      }
+    }
+  }
+
+  if (enforced && winner?.effect === 'deny') {
+    throw new PolicyDeniedError(winner.evidence, 'policy_deny')
+  }
+  if (enforced) demands.push(...evaluated.filter((decision) => decision.effect === 'require_approval').map((decision) => decision.evidence))
+  if (demands.length === 0) return
+  Object.freeze(demands)
+
+  const approval = governance?.approval
+  if (!approval) {
+    const first = demands[0]!
+    const error = first.source.kind === 'permission'
+      ? new PermissionDeniedError(first)
+      : new PolicyDeniedError(first, 'approval_unavailable')
+    throw error
+  }
+
+  const approvalId = approvalIdentity(invocation, demands)
+  await invocation.emitEvent?.({ type: 'approval.requested', runId: invocation.runId, agentId: invocation.agentId, invocationId: invocation.invocationId, toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, approvalId, demands })
+  let result: unknown
+  try {
+    result = await runGovernanceCallback(invocation, (execution) => approval.request({
+      approvalId,
+      subject: { toolId: invocation.toolId, input: invocation.input, callId: invocation.callId, invocationId: invocation.invocationId, agentId: invocation.agentId, runId: invocation.runId, sessionId: invocation.sessionId, ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}), step: invocation.step },
+      demands
+    }, execution))
+  } catch (error) {
+    const failure = decisionFailure(approvalEvidence(invocation, demands), error, 'callback_failed')
+    try {
+      await safeTerminalEvent(invocation, approvalId, approvalOutcome(failure), undefined, failure)
+    } catch {
+      // A terminal-event delivery failure must not replace cancellation or the
+      // callback failure that already determined this invocation's outcome.
+    }
+    throw failure
+  }
+  let parsed: z.output<typeof governanceApprovalResultSchema>
+  try {
+    parsed = parseDecisionResult(governanceApprovalResultSchema, result, approvalEvidence(invocation, demands))
+  } catch (error) {
+    const failure = error instanceof DecisionEvaluationError ? error : new DecisionEvaluationError(approvalEvidence(invocation, demands), 'invalid_result', error)
+    try {
+      await safeTerminalEvent(invocation, approvalId, 'failed', undefined, failure)
+    } catch {
+      // Preserve the validated fail-closed outcome.
+    }
+    throw failure
+  }
+  const denial = parsed.decision === 'rejected'
+    ? demands[0]!.source.kind === 'permission' && demands.length === 1
+      ? new PermissionDeniedError(approvalEvidence(invocation, demands, parsed.reasonCode))
+      : new PolicyDeniedError(approvalEvidence(invocation, demands, parsed.reasonCode), 'approval_rejected')
+    : undefined
+  try {
+    await safeTerminalEvent(invocation, approvalId, parsed.decision, parsed.reasonCode)
+  } catch (error) {
+    throw denial ?? decisionFailure(approvalEvidence(invocation, demands), error, 'callback_failed')
+  }
+  if (denial) throw denial
+}
+
+/** Applies fail-closed tool exposure rules before one model step. */
+export async function applyToolExposure(invocation: Invocation & { readonly governance?: GovernanceConfig; readonly tools: readonly { name: string }[] }): Promise<string[]> {
+  const governance = invocation.governance
+  const exposure = governance?.exposure
+  if (!governance || governance.enabled === false || !exposure) return invocation.tools.map((tool) => tool.name)
+  const visible: string[] = []
+  for (const tool of invocation.tools) {
+    const occurrence: DecisionOccurrence = { invocationId: invocation.invocationId, runId: invocation.runId, agentId: invocation.agentId, sessionId: invocation.sessionId, ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}), toolId: tool.name, step: invocation.step }
+    const source = { kind: 'exposure' as const, id: exposure.id ?? 'governance.exposure', ...(exposure.version ? { version: exposure.version } : {}) }
+    let selected: { effect: GovernanceExposureEffect; evidence: DecisionEvidence } | undefined
+    let ordinal = 0
+    for (const rule of exposure.rules ?? []) {
+      if (!isSelectedGovernanceTool(tool.name, rule.tools)) continue
+      const evidence = createDecisionEvidence({ occurrence, source: { ...source, ruleId: rule.id }, phase: 'exposure', ordinal })
+      ordinal += 1
+      let predicateResult: unknown
+      try {
+        predicateResult = await runGovernanceCallback(invocation, (execution) => rule.when ? rule.when({ toolId: tool.name as never, agentId: invocation.agentId, runId: invocation.runId, sessionId: invocation.sessionId, ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}), step: invocation.step, metadata: invocation.metadata, ...execution }) : true)
+      } catch (error) {
+        throw decisionFailure(evidence, error, 'callback_failed')
+      }
+      if (typeof predicateResult !== 'boolean') throw new DecisionEvaluationError(evidence, 'invalid_result')
+      const matched = predicateResult
+      if (!matched) continue
+      const candidate = { effect: rule.effect, evidence }
+      if (!selected || (candidate.effect === 'hide' && selected.effect !== 'hide')) selected = candidate
+      await invocation.emitEvent?.({ type: 'policy.exposure', runId: invocation.runId, agentId: invocation.agentId, invocationId: invocation.invocationId, toolId: tool.name, step: invocation.step, evidence, effect: rule.effect, enforced: governance.mode !== 'shadow' && rule.effect === 'hide' })
+    }
+    if (!selected) {
+      const effect = exposure.defaultEffect ?? 'expose'
+      selected = { effect, evidence: createDecisionEvidence({ occurrence, source: { ...source, ruleId: 'default' }, phase: 'exposure', ordinal }) }
+    }
+    if (governance.mode === 'shadow' || selected.effect !== 'hide') visible.push(tool.name)
+  }
+  return visible
+}
+
+async function evaluatePolicies(invocation: ToolInvocation, occurrence: DecisionOccurrence): Promise<Evaluated[]> {
+  const governance = invocation.governance!
+  const evaluated: Evaluated[] = []
+  let ordinal = 0
+  for (const policy of governance.policies ?? []) {
+    if ('kind' in policy && policy.kind === 'native') {
+      for (const rule of policy.rules) {
+        if (!isSelectedGovernanceTool(invocation.toolId, rule.tools)) continue
+        const evidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: policy.id, ...(policy.version ? { version: policy.version } : {}), ruleId: rule.id }, phase: 'policy', ordinal, ...(rule.reasonCode ? { reasonCode: rule.reasonCode } : {}) })
+        ordinal += 1
+        let predicateResult: unknown
+        try {
+          predicateResult = await runGovernanceCallback(invocation, (execution) => rule.when ? rule.when(contextFor(invocation, execution.signal, execution.deadline)) : true)
+        } catch (error) {
+          throw decisionFailure(evidence, error, 'callback_failed')
+        }
+        if (typeof predicateResult !== 'boolean') throw new DecisionEvaluationError(evidence, 'invalid_result')
+        const matched = predicateResult
+        if (matched) evaluated.push({ effect: rule.effect, evidence })
+      }
+      continue
+    }
+    const firstOrdinal = ordinal
+    const baseEvidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: policy.id, ...(policy.version ? { version: policy.version } : {}) }, phase: 'policy', ordinal: firstOrdinal })
+    let output: unknown
+    try {
+      output = await runGovernanceCallback(invocation, (execution) => ('evaluate' in policy ? policy.evaluate(contextFor(invocation, execution.signal, execution.deadline)) : undefined))
+    } catch (error) {
+      throw decisionFailure(baseEvidence, error, 'callback_failed')
+    }
+    const result = parseDecisionResult(governancePolicyResultSchema, output, baseEvidence)
+    if (result === undefined) {
+      ordinal += 1
+      continue
+    }
+    const values = Array.isArray(result) ? result : [result]
+    ordinal += Math.max(1, values.length)
+    for (const [index, value] of values.entries()) {
+      const evidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: policy.id, ...(policy.version ? { version: policy.version } : {}), ...(value.ruleId ? { ruleId: value.ruleId } : {}) }, phase: 'policy', ordinal: firstOrdinal + index, ...(value.reasonCode ? { reasonCode: value.reasonCode } : {}) })
+      evaluated.push({ effect: value.effect, evidence })
+    }
+  }
+  if (evaluated.length === 0 && (governance.policies?.length ?? 0) > 0 && (governance.defaultEffect ?? 'deny') === 'deny') {
+    evaluated.push({ effect: 'deny', evidence: createDecisionEvidence({ occurrence, source: { kind: 'policy', id: 'governance.default', ruleId: 'default' }, phase: 'policy', ordinal }) })
+  }
+  return evaluated
+}
+
+function contextFor(invocation: ToolInvocation, signal: AbortSignal, deadline: number): GovernanceContext {
+  return { toolId: invocation.toolId as never, input: invocation.input as never, callId: invocation.callId, invocationId: invocation.invocationId, agentId: invocation.agentId, runId: invocation.runId, sessionId: invocation.sessionId, ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}), step: invocation.step, metadata: invocation.metadata, signal, deadline } as GovernanceContext
+}
+
+function parseDecisionResult<T>(schema: z.ZodType<T>, value: unknown, evidence: DecisionEvidence): T {
+  try {
+    return schema.parse(value)
+  } catch (error) {
+    throw new DecisionEvaluationError(evidence, 'invalid_result', error)
+  }
+}
+
+function permissionDecision(permissions: AgentPermissions | undefined, toolId: string, input: JsonValue): PermissionMode {
+  if (['read', 'list', 'glob', 'grep'].includes(toolId)) return 'allow'
+  const policy = normalizePermissionPolicy(permissions?.[toolId as keyof AgentPermissions])
+  const target = permissionTarget(toolId, input)
+  if (target && matches(target, policy.deny)) return 'deny'
+  if (policy.allow?.length && (!target || !matches(target, policy.allow))) return 'deny'
+  return policy.mode
+}
+
+function normalizePermissionPolicy(value: unknown): PermissionPolicy {
+  if (value === undefined) return { mode: 'allow' }
+  const parsed = permissionPolicySchema.safeParse(value)
+  if (!parsed.success) throw new HarnessConfigError('Agent permissions are invalid.', { reason: 'invalid_agent' })
+  return typeof parsed.data === 'string' ? { mode: parsed.data } : {
+    mode: parsed.data.mode,
+    ...(parsed.data.allow !== undefined ? { allow: parsed.data.allow } : {}),
+    ...(parsed.data.deny !== undefined ? { deny: parsed.data.deny } : {})
+  }
+}
+
+function permissionTarget(toolId: string, input: JsonValue): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const value = input as Record<string, JsonValue>
+  if (toolId === 'bash') return typeof value['command'] === 'string' ? value['command'] : undefined
+  return toolId === 'write' || toolId === 'edit' ? typeof value['path'] === 'string' ? value['path'] : undefined : undefined
+}
+
+function matches(value: string, patterns: readonly string[] | undefined): boolean {
+  return patterns?.some((pattern) => permissionPattern(pattern).test(value)) ?? false
+}
+
+function permissionPattern(pattern: string): RegExp {
+  let source = '^'
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!
+    if (char === '*') {
+      const recursive = pattern[index + 1] === '*'
+      source += recursive ? '.*' : '[^/]*'
+      if (recursive) index += 1
+    } else {
+      source += char.replace(/[\\^$+?.()|[\]{}]/g, '\\$&')
+    }
+  }
+  return new RegExp(`${source}$`)
+}
+
+function occurrenceFor(invocation: ToolInvocation): DecisionOccurrence {
+  return { invocationId: invocation.invocationId, runId: invocation.runId, agentId: invocation.agentId, sessionId: invocation.sessionId, ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}), toolId: invocation.toolId, callId: invocation.callId, step: invocation.step }
+}
+
+function runGovernanceCallback<T>(invocation: Invocation, operation: (execution: DecisionExecutionContext) => Promise<T> | T): Promise<T> {
+  const deadline = Date.now() + invocation.decisionTimeoutMs
+  return runDecisionOperation({ signal: invocation.signal, deadline }, (signal) => operation({ signal, deadline: Math.min(deadline, invocation.deadline ?? Number.POSITIVE_INFINITY) }))
+}
+
+function strongest(values: readonly Evaluated[]): Evaluated | undefined {
+  let winner: Evaluated | undefined
+  for (const value of values) if (!winner || rank(value.effect) > rank(winner.effect)) winner = value
+  return winner
+}
+
+function rank(effect: GovernanceEffect): number { return effect === 'deny' ? 4 : effect === 'require_approval' ? 3 : effect === 'audit' ? 2 : 1 }
+
+function approvalIdentity(invocation: ToolInvocation, demands: readonly DecisionEvidence[]): string {
+  return `approval_${createHash('sha256').update(JSON.stringify([invocation.runId, invocation.invocationId, 'approval', invocation.step, invocation.toolId, invocation.callId, demands.map((demand) => demand.decisionId)]), 'utf8').digest('hex')}`
+}
+
+function approvalEvidence(invocation: ToolInvocation, demands: readonly DecisionEvidence[], reasonCode?: string): DecisionEvidence {
+  const first = demands[0]!
+  return createDecisionEvidence({ occurrence: occurrenceFor(invocation), source: first.source, phase: 'approval', ordinal: 0, ...(reasonCode ? { reasonCode } : {}) })
+}
+
+function decisionFailure(evidence: DecisionEvidence, error: unknown, fallback: 'callback_failed' | 'audit_failed'): DecisionEvaluationError | OperationCancelledError | OperationTimeoutError {
+  if (error instanceof OperationTimeoutError && error.meta?.['scope'] === 'decision') return new DecisionEvaluationError(evidence, fallback === 'audit_failed' ? 'audit_failed' : 'callback_timeout', error)
+  if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) return error
+  return new DecisionEvaluationError(evidence, fallback, error)
+}
+
+function approvalOutcome(error: unknown): 'cancelled' | 'timed_out' | 'failed' {
+  return error instanceof OperationCancelledError ? 'cancelled' : error instanceof OperationTimeoutError || (error instanceof DecisionEvaluationError && error.meta?.['failureKind'] === 'callback_timeout') ? 'timed_out' : 'failed'
+}
+
+async function safeTerminalEvent(invocation: ToolInvocation, approvalId: string, outcome: 'approved' | 'rejected' | 'cancelled' | 'timed_out' | 'failed', reasonCode?: string, error?: DecisionEvaluationError | OperationCancelledError | OperationTimeoutError): Promise<void> {
+  const errorCode = error instanceof OperationCancelledError ? 'OPERATION_CANCELLED' : error instanceof OperationTimeoutError ? 'OPERATION_TIMEOUT' : 'DECISION_EVALUATION_ERROR'
+  await invocation.emitEvent?.({ type: 'approval.finished', runId: invocation.runId, agentId: invocation.agentId, invocationId: invocation.invocationId, toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, approvalId, outcome, ...(reasonCode ? { reasonCode } : {}), ...(error ? { errorCode } : {}) })
+}

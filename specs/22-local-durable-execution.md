@@ -146,6 +146,17 @@ The default sandbox is files-only. Host command execution is disabled unless
 The bundle shares a coordinator between sandbox and workspace so a durable run
 cannot accidentally access a different session's directory. Binding is
 released on success, suspension, interruption, cancellation, and setup error.
+The private binding claims the active workspace for the full sandbox scope,
+including session incarnation and exact optional identity. Its content-free
+owner marker stays outside guest files and checkpoints. Missing/mismatched
+ownership fails closed, including when another metadata root targets the same
+active workspace.
+
+Sandbox lifecycle metadata is separate from SQLite and durable checkpoints.
+The host-directory adapter supports one active process per root; in-process
+clients serialize lifecycle changes. Detach invalidates handles and stops owned
+processes; termination must not wait behind a long-running command. Failed
+process cleanup remains retryable and cannot report successful detach early.
 
 ## 8. Telemetry and logging
 

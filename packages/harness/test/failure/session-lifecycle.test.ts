@@ -32,11 +32,11 @@ class FailureTerminalizationHarnessStorage extends InMemoryHarnessStorage {
     await super.finishRun(runId, patch)
   }
 
-  public override async upsertSession(record: SessionRecord): Promise<void> {
+  public override async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
     if (this.failingOperation === 'upsertSession' && record.runCount > 0) {
       throw new StateError('upsertSession failed', { op: 'upsertSession', reason: 'injected_failure' })
     }
-    await super.upsertSession(record)
+    return super.upsertSession(record, mode)
   }
 }
 

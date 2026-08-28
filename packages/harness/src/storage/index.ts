@@ -1,4 +1,4 @@
-export type { BoundExternalWaitRequest, FinishRunPatch, HarnessStorage, HarnessStorageInfo } from './types.js'
+export type { FinishRunPatch, HarnessStorage, HarnessStorageInfo } from './types.js'
 export { InMemoryHarnessStorage, inMemoryHarnessStorage } from './in-memory.js'
 export type {
   DurableActiveRunStatus,
@@ -18,9 +18,32 @@ export type {
   ExternalWaitOutcome,
   ExternalWaitRegistration,
   ExternalWaitRequest,
+  ExternalWaitResolved,
   ExternalWaitSignal,
   ExternalWaitSignalResult,
   ExternalWaitSnapshot,
   ExternalWaitStatus
 } from './external-wait.js'
-export { ExternalWaitError, ExternalWaitPendingError } from './external-wait.js'
+export {
+  ExternalWaitError,
+  ExternalWaitPendingError,
+  asExternalWaitResolved,
+  assertExternalWaitSnapshotRequest,
+  boundExternalWaitRequestSchema,
+  createExternalWaitCancellation,
+  externalWaitOutcomeSchema,
+  externalWaitRegistrationSchema,
+  externalWaitRequestSchema,
+  externalWaitResolvedSchema,
+  externalWaitSignalResultSchema,
+  externalWaitSignalSchema,
+  externalWaitSnapshotSchema,
+  validateBoundExternalWaitRequest,
+  validateExternalWaitId,
+  validateExternalWaitRegistration,
+  validateExternalWaitRequest,
+  validateExternalWaitSignal,
+  validateExternalWaitSignalResult,
+  validateExternalWaitSnapshot
+} from './external-wait.js'
+export type { BoundExternalWaitRequest } from './external-wait.js'

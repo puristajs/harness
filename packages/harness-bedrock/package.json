@@ -40,7 +40,7 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1113.0"
+    "@aws-sdk/client-bedrock-runtime": "^3.1118.0"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2",

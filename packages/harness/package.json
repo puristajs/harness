@@ -57,7 +57,7 @@
   "peerDependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@opentelemetry/api": "^1.9.1",
-    "just-bash": "^3.4.1"
+    "just-bash": "^3.4.2"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/client": {
@@ -75,7 +75,7 @@
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^4.1.11",
-    "just-bash": "^3.4.1",
+    "just-bash": "^3.4.2",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^4.1.11"
   },

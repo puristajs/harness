@@ -14,7 +14,8 @@ The harness gives PURISTA applications a typed runtime boundary for:
 - state, sandboxing, durable workspace replay, logs, traces, and run events;
 - provider-neutral eval helpers for deterministic scorer tests and prompt
   candidate comparison;
-- provider adapters for OpenAI, Anthropic, Amazon Bedrock, and Azure AI Foundry.
+- provider adapters for OpenAI and OpenAI-compatible endpoints, Google Gemini,
+  Anthropic, Amazon Bedrock, and Azure AI Foundry.
 
 This repository is not a SaaS product. It is lower-level infrastructure that
 application teams embed in services, workers, CLIs, or local tools.
@@ -64,6 +65,8 @@ bounded fan-out, isolated background task lookup, and short continuable task
 conversations.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
+The [clean builder and runtime API notes](docs/releases/clean-builder-and-runtime-api.md)
+describe the intentional Harness 3 breaking surface.
 
 ## Verification
 
@@ -111,6 +114,10 @@ npm run test:failure
 - `packages/harness-anthropic/` — Anthropic model provider adapter.
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
+- `packages/harness-google/` — Google Gemini API model provider adapter.
+- `packages/harness-policy-opa/` — Typed, fail-closed Open Policy Agent Data API governance adapter and strict test fake.
+- `packages/harness-storage-postgres/` — Distributed PostgreSQL Harness state, lease, checkpoint, and external-wait adapter.
+- `packages/harness-sandbox-kubernetes/` — Self-hosted Kubernetes sandbox with optional PVC/VolumeSnapshot durable workspaces.
 - `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
 - `packages/harness-guardrails/` — Optional inline, typed input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
 - `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter and deterministic protocol testing helper.
@@ -123,6 +130,7 @@ npm run test:failure
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
 - `examples/guardrails/` — Deterministic inline guardrails and local sensitive-data example using the Harness test adapter.
+- `examples/opa-governance/` — Consumer-shaped real-OPA governance example with deterministic handler-suppression tests.
 - `packages/harness-agent-plugins/README.md` — Agent Plugins inspection, review digest, and explicit Skills/MCP binding example.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

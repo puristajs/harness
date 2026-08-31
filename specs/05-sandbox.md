@@ -7,7 +7,7 @@ is authoritative for the new implementation plan. The existing implementation
 and spec-34 provider gate remain as documented until that plan is executed; no
 legacy/compatibility interface is planned.
 
-The Sandbox port abstracts a logical filesystem and optional command execution. v3 ships an in-memory filesystem, a `just-bash`-backed emulator (https://github.com/vercel-labs/just-bash), and the optional `@purista/harness-sandbox-docker` package. Remote or microVM adapters use the same port; deployment isolation guarantees belong to each adapter.
+The Sandbox port abstracts a logical filesystem, bounded text search, and optional command execution. v3 ships an in-memory filesystem, a `just-bash`-backed emulator (https://github.com/vercel-labs/just-bash), the optional local `@purista/harness-sandbox-docker` package, and the self-hosted production `@purista/harness-sandbox-kubernetes` package. Remote or microVM adapters use the same port; deployment isolation guarantees belong to each adapter. The Kubernetes package may also return a coordinated `DurableWorkspace` backed by PVC generations and ready VolumeSnapshots; it does not require object storage.
 
 ## Port interface
 
@@ -38,6 +38,35 @@ interface ExecCapableSandboxSession extends SandboxSessionBase {
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
 }
 
+type SandboxTextSearchSyntax = 'literal' | 'safe_regex_v1'
+type SandboxTextSearchLimitReason =
+  | 'result_limit'
+  | 'scan_byte_limit'
+  | 'file_byte_limit'
+  | 'file_count_limit'
+  | 'line_byte_limit'
+
+interface SandboxTextSearchRequest {
+  path: string
+  pattern: string
+  syntax: SandboxTextSearchSyntax
+  caseSensitive: boolean
+  maxResults: number
+  signal?: AbortSignal
+}
+
+interface SandboxTextSearchResult {
+  matches: readonly { path: string; line: number; text: string; textTruncated: boolean }[]
+  complete: boolean
+  limitReasons: readonly SandboxTextSearchLimitReason[]
+  scannedFiles: number
+  scannedBytes: number
+}
+
+interface TextSearchCapableSandboxSession extends SandboxSessionBase {
+  searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult>
+}
+
 // SandboxSessionFor<C> exposes exec and spawn only when a precise capability
 // tuple guarantees the corresponding operation. Widened arrays expose the
 // base filesystem session and require a runtime capability guard.
@@ -60,8 +89,8 @@ harness, not separately on every sandbox adapter.
 
 ## Locked behaviors
 
-- **Capabilities are policy.** Each sandbox declares the behavior the harness and user code may rely on. `inMemorySandbox()` exposes no `exec` method on its precise session type because it declares only `sandbox.fs`. `bashSandbox()` declares `sandbox.exec` and opens sessions with `exec`.
-- **Cascaded inference.** Register `.sandbox(adapter)` before `.tools(...)`; tool-handler `ctx.sandbox` inherits its precise capability tuple, including `spawn` when declared. Subsequent builder calls and `.use(module)` preserve the tuple. Auto-detection and widened capability arrays expose only guaranteed base operations; narrow with `isExecCapableSession` or `isSpawnCapableSession` before executing. A union entry such as `'sandbox.exec' | 'sandbox.spawn'` guarantees neither operation. Duplicate sandbox registration fails during configuration.
+- **Capabilities are policy.** Each sandbox declares the behavior the harness and user code may rely on. `sandbox.text_search` exposes `searchText(...)` independently of `sandbox.exec`; bounded read-only search never grants arbitrary execution.
+- **Cascaded inference.** Register `.sandbox(adapter)` before `.tools(...)`; tool-handler `ctx.sandbox` inherits its precise capability tuple, including text search, exec, and spawn when declared. Subsequent builder calls and `.use(module)` preserve the tuple. Auto-detection and widened capability arrays expose only guaranteed base operations; narrow with `isTextSearchCapableSession`, `isExecCapableSession`, or `isSpawnCapableSession`. Duplicate sandbox registration fails during configuration.
 - **Path semantics.** All paths are POSIX style, absolute (must start with `/`). Implementations validate and normalize. Relative paths throw `SandboxError{reason:'invalid_path'}`.
 - **Reserved paths inside the sandbox** (locked, conventions enforced by the harness, not the backend):
   - `/skills/<id>/...` — skill mounts; read-only by convention.
@@ -69,13 +98,16 @@ harness, not separately on every sandbox adapter.
   - `/workspace/` — free model scratch; default `cwd` for `exec`.
 - **Timeouts.** `exec` honors `opts.timeoutMs` (default `defaults.toolTimeoutMs`); on timeout throws `OperationTimeoutError{scope:'sandbox_run'}`.
 - **`executor === 'unavailable'`.** Indicates this sandbox session has no shell executor. Precise files-only session types do not expose `exec`; dynamically widened sessions that still call `exec` fail with `SandboxNoExecutorError`. The built-in tool registry checks this and disables `bash` automatically; see [07-tools](./07-tools.md) §"Built-in tools".
+- **Text-search semantics.** Requests use an absolute POSIX path without traversal segments and a single-line pattern without NUL/CR/LF. `safe_regex_v1` is a case-sensitive, ASCII-pattern, versioned non-backtracking POSIX-ERE-style subset: literals, `.`, character classes, grouping, alternation, `^`/`$`, and repetition. Backreferences, lookaround, inline flags, named groups, shorthand character classes, recursion, conditionals, Unicode property escapes, and engine-specific extensions are invalid. `literal` performs substring search; with `caseSensitive: false` it folds ASCII `A-Z` only so behavior remains stable across local, container, and remote engines.
+- **Truthful bounds.** Exhausting or skipping a pattern, result, file, aggregate-byte, file-count, or returned-line bound returns `complete: false` with stable `limitReasons`. Timeout and cancellation throw typed operation errors and never return a successful partial result.
+- **Data locality.** Container and remote adapters execute matching where their files live. They must not copy every candidate file through `readText(...)` into Harness. Pattern and path are data, never model-built shell text.
 
 ## Default sandbox
 
 The harness ships **two** default sandbox factories in core. Both are exported from `@purista/harness`.
 
-1. `inMemorySandbox()` — files-only, declares `['sandbox.fs']`, opens `executor: 'unavailable'` sessions. Pure TS, no peer deps. `read`/`write`/`list`/`stat`/`mount` work.
-2. `bashSandbox(opts?)` — wraps the `just-bash` peer dep, declares `['sandbox.fs','sandbox.exec']`. Full bash emulator + in-memory POSIX FS. `executor: 'available'`. Optional `opts`:
+1. `inMemorySandbox()` — files plus bounded safe text search, declares `['sandbox.fs','sandbox.text_search']`, opens `executor: 'unavailable'` sessions. It is the zero-configuration default for `read`/`list`/`glob`/`grep` without shell access.
+2. `bashSandbox(opts?)` — wraps the `just-bash` peer dep, declares `['sandbox.fs','sandbox.text_search','sandbox.exec']`. Full bash emulator + in-memory POSIX FS. `executor: 'available'`. Optional `opts`:
    - `network?: { allow?: readonly string[] }` — default deny all; explicit values are reviewed URL prefixes permitted by the emulator.
    - `executionLimits?: { wallClockMs?: number; maxFileSystemBytes?: number }` — positive integer execution-duration and in-memory filesystem byte limits. `maxFileSystemBytes` is not a host-memory quota.
    - `python?: false` (default) | `true` — enable just-bash python3 builtin if peer dep allows.
@@ -212,7 +244,7 @@ with durable Harness storage fail-closed after process loss. See
 
 `SandboxSession.close()` and `Session.release()` detach without terminating
 logical compute.
-`Session.close()` asks the adapter to accept termination before deleting the
+`Session.destroy()` asks the adapter to accept termination before deleting the
 session record. Harness shutdown detaches and closes clients; it does not
 terminate retained logical sandboxes. Adapter configuration owns lifecycle
 timeouts, hibernation, retention, cleanup retry, and orphan reclamation.

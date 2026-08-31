@@ -7,8 +7,6 @@ no credentials or network access are required.
 From the repository root:
 
 ```sh title="Verify and run the composition"
-npm run build --workspace @purista/harness
-npm run build --workspace @purista/harness-guardrails
 npm test --workspace @purista/guardrails-example
 npm run typecheck --workspace @purista/guardrails-example
 npm run build --workspace @purista/guardrails-example

@@ -20,9 +20,10 @@ const harness = defineHarness({ name: 'support' })
     embedding: model.memoryEmbedding,
     summary: model.memorySummary,
   }))
-  .agents(({ agent }) => ({
-    assistant: agent({ model: 'assistant', instructions: 'Help the customer.' }),
-  }))
+  .agent('assistant', {
+    model: 'assistant',
+    instructions: 'Help the customer.',
+  })
   .build()
 
 const session = await harness.getSession('conversation-42', {

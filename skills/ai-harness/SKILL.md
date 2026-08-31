@@ -6,7 +6,9 @@ description: Use when designing, implementing, configuring, testing, or extendin
 # AI Harness
 
 ## Use This For
-Use this skill for work involving `@purista/harness`, `@purista/harness-openai`, or addon packages named `@purista/harness-*`.
+Use this skill for work involving `@purista/harness`, first-party provider
+adapters such as `@purista/harness-openai` and `@purista/harness-google`, or
+addon packages named `@purista/harness-*`.
 
 ## Core Model
 `@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, Harness storage, memory, sandboxing, logging, telemetry, and streaming behind one session API.
@@ -27,19 +29,22 @@ Keep these layers separate:
 - MCP is a clean v2 integration pinned to `2026-07-28`: use `@modelcontextprotocol/client`, modern stateless Streamable HTTP, and a spawn-capable sandbox for stdio. Do not add legacy MCP, HTTP+SSE, one-shot exec, or compatibility fallbacks.
 - Module definition ids compose additively. Treat duplicate module/definition ids as configuration errors; inspect only `harness.inspect().modules` for content-free provenance.
 - Preserve builder inference by declaring models before agents and agents before workflows.
-- Register native TypeScript tools only with `.tools(({ tool }) => ({ name:
-  tool({ ... }) }))`. The builder-local helper preserves exact schemas,
-  handlers, and sandbox capabilities; raw native tool objects fail during
-  `.tools(...)` registration. MCP literal tools remain their explicit
-  integration boundary.
-- Use inline helper callbacks for agents and workflows: `.agents(({ agent }) => ({ ... }))` and `.workflows(({ workflow }) => ({ ... }))`.
+- Register an inline native TypeScript tool with `.tool(id, definition)` so its
+  schemas contextually type the handler. Use `.tools(record)` for cohesive
+  pre-typed native batches, MCP definitions, or mixed reusable records. Native
+  definitions are ordinary objects; no brand or identity helper exists.
+- Register inline definitions with repeatable `.agent(id, definition)` and
+  `.workflow(id, definition)`. Use `.agents(record)` and `.workflows(record)`
+  for cohesive pre-typed batches. Singular and plural calls accumulate in the
+  same registries; duplicate ids are configuration errors. Callback identity
+  wrappers are not part of the API.
 - Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
 - Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
 - Sandbox sharing is an explicit workflow policy: the default child-task partition is fresh task-run shared state; select `inherit`, `private`, or an application-authorized `group` only when needed. Adapters keep multi-instance allocation, generations, leases, fencing, and provider references private.
 - `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
 - Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `HarnessStorage.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
 - For at-least-once direct-agent delivery, pass the transport's stable message or delivery id as `InvokeOptions.idempotencyKey`. Replaying the same successful invocation returns its recorded output without a second provider call or transcript; never derive this key from prompt content.
-- Use `session.release()` at the end of an idle request to detach live sandbox/MCP clients while preserving `HarnessStorage`-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, persisted events, and terminates the session sandbox.
+- Use `session.release()` at the end of an idle request to detach live sandbox/MCP clients while preserving `HarnessStorage`-backed history and runs. `session.destroy()` is destructive: it deletes the session record, history, runs, persisted events, and terminates the session sandbox.
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
@@ -48,13 +53,35 @@ Keep these layers separate:
 - Use `.storage(HarnessStorage)` as the only Harness persistence boundary. Do not reintroduce `.state(...)`, `.runtime(...)`, `.checkpoints(...)`, `.externalWait(...)`, or `.workspaceStore(...)`; do not adapt PURISTA's unrelated general-purpose `StateStore` into Harness storage.
 - Use `.workspace(DurableWorkspace)` only for resumable filesystem/workspace state. Checkpointed files are the recovery guarantee; live processes, containers, and volumes are optional adapter optimizations. Missing `attach`/`restore` state must raise `SandboxStateLostError`, never become an empty replacement. `localDurableExecution(...)` returns exactly `{ storage, sandbox, workspace, close }` and is for local development or a trusted single-host worker, not distributed production.
 - Register direct sandbox owners through the application-authorized `SandboxAdministration` boundary. Perform bounded, exact cleanup/offboarding there; do not leak provider references, owner identities, cursors, snapshots, or file data into telemetry/logs.
+- Built-in `grep` requires `sandbox.text_search`, not `sandbox.exec`. The default sandboxes satisfy it with bounded non-backtracking search. A custom adapter must implement data-local `searchText(...)`, validate the request at its boundary, return explicit completeness, and pass `sandboxTextSearchContract`; never add core-side file-read, JavaScript `RegExp`, shell, or compatibility fallbacks.
 - Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
-- Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
+- Built-in tools are disabled by default. Omit `builtinTools` for agents that
+  need none; use a canonical-name allowlist for every file or process
+  capability. Never rely on a skill or custom-tool declaration to widen it.
+- Skills are mounted files, not prompt text. Register reviewed directories with
+  `.skills(...)`, allowlist skill ids per agent, and explicitly add
+  `builtinTools: ['read']` for a default-loop skill agent. Missing `read`
+  must fail during agent registration. Treat `allowed-tools` as unenforced
+  metadata. Skill instructions and resources are untrusted for authorization;
+  scripts are mounted but never auto-executed, and require a separately exposed
+  execution-capable tool plus an appropriate sandbox.
 - Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
 - Governance policy is optional and late-bound through `.governance(...)` after
   agents/workflows are declared. Keep simple use cases on per-agent
   permissions; use governance only for composable/audited policy, approval, or
   external policy-pack interoperability.
+- Use `@purista/harness-policy-opa` for OPA's stable Data API. Construct a
+  fixed-base-URL `createOpaClient(...)`, pass the `.governance(...)` helpers to
+  `opaPolicy(helpers, ...)`, explicitly minimize the correlated tool context,
+  validate the OPA `result` with Standard Schema, and map it to the closed
+  Harness decision. The package owns path encoding, one-attempt transport,
+  linked cancellation/deadline, bounded response parsing, undefined decisions,
+  content-free failures, and automatic active-trace propagation of only W3C
+  `traceparent` to the fixed trusted endpoint. The application still owns authenticated identity,
+  resource mapping, credentials, Rego/bundles, rollout, decision-log controls,
+  and a live-engine test. `adapter(...)` alone still performs no I/O. Cedar and
+  AWS Verified Permissions remain separate application-owned evaluator
+  topologies; do not hide them or arbitrary URLs behind a generic HTTP adapter.
 - A governance approval provider is a bounded immediate decision for one prepared
   tool occurrence: `request({ approvalId, subject, demands }, { signal, deadline })`
   returns approved/rejected plus optional content-free `reasonCode`. Static
@@ -89,7 +116,10 @@ Keep these layers separate:
   rails. Configure its one inline TypeScript object with opaque action tokens,
   direct registered model aliases, and nonempty explicit selectors for
   tool-input/tool-output actions. It fails closed and never loads providers,
-  servers, or vector stores.
+  servers, or vector stores. Bind the configured instance directly with the
+  agent definition's `guardrails` field. Do not wrap definitions in a decorator
+  or attach call. Custom-handler agents cannot use `guardrails`, interceptors,
+  or other default-loop controls.
 - Treat every guardrail evaluation as an operational security decision: use
   its content-free `GUARDRAIL` span, outcome metric, and structured decision
   log; blocks are expected enforcement decisions rather than span errors.
@@ -133,7 +163,16 @@ Keep these layers separate:
 ## Default Workflow
 1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
 2. Decide whether the task is one agent loop, a custom handler agent, or an orchestrating workflow.
-3. Define Zod schemas at every agent, workflow, and tool boundary.
+3. Define Zod schemas by default at every agent, workflow, tool, and Guardrail
+   value boundary; any Standard Schema validator is valid. Agent input,
+   custom-handler output, tool output, workflow input/output, and Guardrail
+   values need only `Schema`. TypeScript-tool input and default-loop agent
+   output additionally need Standard JSON Schema (`ModelSchema`) because a
+   provider creates those values. Harness projects those schemas once at build
+   time as Draft 2020-12 JSON Schema, so never add a provider-specific converter
+   or vendor wrapper. ArkType implements both directly; Valibot requires its
+   official `@valibot/to-json-schema` wrapper only at the two model-facing
+   boundaries.
 4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
 5. Attach tools, skill directories, permissions, sandbox, memory, Harness storage, optional durable workspace, requirements, logger, and telemetry explicitly.
 6. Decide which data is durable: conversation/run/checkpoint/wait records use `HarnessStorage`; scoped facts and recall use `MemoryEngine` (the dependency-free in-memory engine is the default); durable files use `DurableWorkspace`; provider context is transient. Do not adapt PURISTA's general-purpose `StateStore` into Harness storage.
@@ -150,52 +189,45 @@ import { defineHarness, JsonLogger, inMemorySandbox } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 
 const harness = defineHarness({ name: 'support-ai' })
-  .logger(new JsonLogger({ level: 'info' }))
-  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-  .sandbox(inMemorySandbox())
-  .defaults({
-    historyRetention: { maxTurns: 50, maxBytes: 256_000 }
-  })
-  .models({
-    assistant: {
-      provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-      model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-      capabilities: ['object', 'tool_use']
-    }
-  })
-  .tools(({ tool }) => ({
-    lookup_ticket: tool({
-      description: 'Look up one support ticket by id.',
-      input: z.object({ id: z.string() }),
-      output: z.object({ status: z.string(), summary: z.string() }),
-      handler: async (_ctx, input) => ({ status: 'open', summary: `Ticket ${input.id}` })
-    })
-  }))
-  .agents(({ agent }) => ({
-    triage: agent({
-      model: 'assistant',
-      input: z.object({ ticketId: z.string() }),
-      output: z.object({ priority: z.enum(['low', 'normal', 'high']), reason: z.string() }),
-      builtinTools: false,
-      tools: ['lookup_ticket'],
-      instructions: 'Use lookup_ticket, then return a validated triage object.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    triage_ticket: workflow({
-      input: z.object({ ticketId: z.string() }),
-      output: z.object({ priority: z.string(), reason: z.string() }),
-      delegation: { agents: ['triage'] },
-      handler: (ctx) => {
-        ctx.metrics.counter('support.triage.started', 1)
-        return ctx.metrics.duration('support.triage.duration', undefined, () => ctx.agents.triage(ctx.input))
-      }
-    })
-  }))
-  .build()
+	.logger(new JsonLogger({ level: 'info' }))
+	.telemetry({ contentCaptureMode: 'NO_CONTENT' })
+	.sandbox(inMemorySandbox())
+	.defaults({
+		historyRetention: { maxTurns: 50, maxBytes: 256_000 },
+	})
+	.models({
+		assistant: {
+			provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+			model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+			capabilities: ['object', 'tool_use'],
+		},
+	})
+	.tool('lookup_ticket', {
+			description: 'Look up one support ticket by id.',
+			input: z.object({ id: z.string() }),
+			output: z.object({ status: z.string(), summary: z.string() }),
+			handler: async (_ctx, input) => ({ status: 'open', summary: `Ticket ${input.id}` }),
+	})
+	.agent('triage', {
+		model: 'assistant',
+		input: z.object({ ticketId: z.string() }),
+		output: z.object({ priority: z.enum(['low', 'normal', 'high']), reason: z.string() }),
+		tools: ['lookup_ticket'],
+		instructions: 'Use lookup_ticket, then return a validated triage object.',
+	})
+	.workflow('triage_ticket', {
+		input: z.object({ ticketId: z.string() }),
+		output: z.object({ priority: z.string(), reason: z.string() }),
+		delegation: { agents: ['triage'] },
+		handler: ctx => {
+			ctx.metrics.counter('support.triage.started', 1)
+			return ctx.metrics.duration('support.triage.duration', undefined, () => ctx.agents.triage(ctx.input))
+		},
+	})
+	.build()
 
 const session = await harness.getSession('tenant-a:user-42')
-const result = await session.workflows.triage_ticket.prompt({ ticketId: 'T-123' })
+const result = await session.workflows.triage_ticket.run({ ticketId: 'T-123' })
 await session.release()
 await harness.shutdown()
 ```

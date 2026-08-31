@@ -9,7 +9,8 @@ import { abortError } from '../runtime/abort.js'
 import { SandboxAdapterCatalog } from '../sandbox/adapter-catalog.js'
 import type { SandboxAdministration, SandboxAdministrationOptions, SandboxResourceSummary } from '../sandbox/administration.js'
 import { LocalSandboxCatalog } from './local-sandbox-catalog.js'
-import type { ExecCapableSandboxSession, Sandbox, SandboxOpenOptions, SandboxOpenResult, SandboxProcess, SandboxScope, SandboxSessionBase, SandboxTerminateOptions, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
+import type { ExecCapableSandboxSession, Sandbox, SandboxOpenOptions, SandboxOpenResult, SandboxProcess, SandboxScope, SandboxSessionBase, SandboxTerminateOptions, SandboxTextSearchRequest, SandboxTextSearchResult, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
+import { searchSandboxTextLocally } from '../sandbox/text-search.js'
 import type { SandboxOwnerRegistrationOptions } from '../sandbox/ownership.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { LocalWorkspaceCoordinator } from './local-workspace.js'
@@ -31,11 +32,11 @@ export interface LocalDirectorySandboxOptions {
   administration?: SandboxAdministrationOptions
 }
 
-/** Capability tuple advertised by the files-only local sandbox (spec 22 §2). */
-export type LocalFilesOnlySandboxCapabilities = readonly ['sandbox.fs', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
+/** Capability tuple advertised by the non-executable local sandbox (spec 22 §2). */
+export type LocalFilesOnlySandboxCapabilities = readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
 
 /** Capability tuple advertised by the exec-enabled local sandbox (spec 22 §2). */
-export type LocalExecSandboxCapabilities = readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
+export type LocalExecSandboxCapabilities = readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
 
 /** Sandbox shape returned by `localDirectorySandbox(...)` (spec 22 §2). */
 export type LocalDurableSandbox = Sandbox<LocalFilesOnlySandboxCapabilities> | Sandbox<LocalExecSandboxCapabilities>
@@ -168,14 +169,7 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     return this.sandboxSpan('list', {
       'harness.sandbox.recursive': opts.recursive ?? false,
       'harness.sandbox.has_glob': Boolean(opts.glob)
-    }, async () => {
-      const root = await this.toPhysical(path)
-      const entries: DirEntry[] = []
-      await this.collect(root, path, opts.recursive ?? false, entries)
-      if (!opts.glob) return entries
-      const globPattern = globToRegExp(opts.glob)
-      return entries.filter((entry) => globPattern.test(entry.path))
-    })
+    }, async () => this.listUnchecked(path, opts))
   }
 
   public async stat(path: string): Promise<FileStat> {
@@ -209,6 +203,13 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
         await writeFile(physical, data)
       }
     })
+  }
+
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    return this.sandboxSpan('search_text', {}, async () => searchSandboxTextLocally(request, {
+      list: async (path, options) => this.listUnchecked(path, options),
+      read: async path => readFile(await this.toPhysical(path)),
+    }))
   }
 
   /** Starts a long-lived process using the same allowlist and environment policy as exec(). */
@@ -434,6 +435,16 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     return target
   }
 
+  /** Filesystem listing used only while the caller already holds the attachment fence. */
+  private async listUnchecked(path: string, opts: { recursive?: boolean; glob?: string }): Promise<DirEntry[]> {
+    const root = await this.toPhysical(path)
+    const entries: DirEntry[] = []
+    await this.collect(root, path, opts.recursive ?? false, entries)
+    if (!opts.glob) return entries
+    const globPattern = globToRegExp(opts.glob)
+    return entries.filter(entry => globPattern.test(entry.path))
+  }
+
   private async sandboxSpan<T>(operation: string, attrs: SpanAttrs, fn: () => Promise<T>): Promise<T> {
     const spanAttrs: SpanAttrs = {
       'harness.sandbox.adapter': 'local_directory_sandbox',
@@ -585,7 +596,7 @@ class FilesOnlyLocalDirectorySandbox extends BaseLocalDirectorySandbox implement
 
   public constructor(options: LocalDirectorySandboxOptions) {
     super(options, false)
-    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.persistent_fs']
+    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs']
   }
 
   public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<LocalFilesOnlySandboxCapabilities>> {
@@ -602,7 +613,7 @@ class ExecLocalDirectorySandbox extends BaseLocalDirectorySandbox implements San
 
   public constructor(options: LocalDirectorySandboxOptions, private readonly execPolicy: LocalHostExecPolicy) {
     super(options, true)
-    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs']
+    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs']
   }
 
   public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<LocalExecSandboxCapabilities>> {

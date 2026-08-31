@@ -281,18 +281,18 @@ describe('optional Bash dependency detection', () => {
     vi.resetModules()
   })
 
-  it('falls back to files-only only when the optional peer cannot be resolved', async () => {
+  it('falls back to files and bounded search only when the optional peer cannot be resolved', async () => {
     vi.resetModules()
     vi.doMock('node:module', () => ({ createRequire: () => Object.assign(() => undefined, { resolve: () => { throw new Error('peer missing') } }) }))
     const { autoDetectSandbox } = await import('../src/sandbox/index.js')
     const sandbox = registered(autoDetectSandbox())
-    expect(sandbox.capabilities).toEqual(['sandbox.fs'])
+    expect(sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.text_search'])
     const { session } = await sandbox.open({ scope: scope(), mode: 'create' })
     await session.write('/workspace/fallback', 'files')
     expect(await session.readText('/workspace/fallback')).toBe('files')
   })
 
-  it('does not hide an installed peer loading failure behind files-only fallback', async () => {
+  it('does not hide an installed peer loading failure behind the in-memory fallback', async () => {
     const failure = new Error('installed peer initialization failed')
     vi.resetModules()
     vi.doMock('node:module', () => ({ createRequire: () => Object.assign(() => { throw failure }, { resolve: () => 'installed-peer' }) }))

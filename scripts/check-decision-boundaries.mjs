@@ -103,7 +103,9 @@ export async function verifyGuardrailCleanBreak(ts, root) {
   const sourcePath = join(root, 'ai-harness/packages/harness/src/harness/defineHarness.ts')
   if (existsSync(sourcePath)) {
     const source = await readFile(sourcePath, 'utf8')
-    if (!source.includes('factory: (helpers: ToolDefinitionHelpers')) report('ai-harness/packages/harness/src/harness/defineHarness.ts', 1, 'missing-native-tool-helper', 'ToolDefinitionHelpers')
+    if (source.includes('ToolDefinitionHelpers') || source.includes('RegisteredTsToolDefinition')) {
+      report('ai-harness/packages/harness/src/harness/defineHarness.ts', 1, 'retired-native-tool-helper', 'ToolDefinitionHelpers')
+    }
   }
   return findings
 }

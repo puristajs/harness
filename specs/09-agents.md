@@ -1,37 +1,37 @@
 # Agents
 
-> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for callback and invocation schema direction. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
+>
+> **Approved registration update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) supersedes agent callback-helper registration and Guardrails attachment in this document and spec 38.
 
 Agents are configured high-level: declare input/output schemas, a model alias, instructions, optional custom tools, optional skills, and an optional permission policy. The harness runs the default agent loop — call model, dispatch tool calls, repeat until a final answer or `maxSteps` is exhausted. Custom loops via `handler` remain available as an escape hatch.
 
-There is no standalone `defineAgent` factory; only inline-in-builder objects achieve the cross-key type constraints (`model` referencing a `.models()` key, `tools[]`/`skills[]` referencing `.tools()`/`.skills()` keys).
+There is no standalone `defineAgent` factory; only inline-in-builder objects achieve the cross-key type constraints (`model` referencing a `.model()`/`.models()` key, `tools[]` referencing `.tool()`/`.tools()` keys, and `skills[]` referencing `.skill()`/`.skills()` keys).
 
 ## `AgentDefinition` (inline in builder)
 
 ```ts
-import type { z } from 'zod'
-
 interface AgentDefinition<
   S,
-  I extends z.ZodTypeAny = z.ZodTypeAny,
-  O extends z.ZodTypeAny = z.ZodTypeAny,
+  I extends Schema = Schema,
+  O extends Schema = Schema,
 > {
   input?: I                                                     // default: z.string()
   output?: O                                                    // default: z.string()
   model: keyof S['models'] & string
-  instructions: string | ((ctx: AgentContextMinimal<S, z.infer<I>>) => string)
+  instructions: string | ((ctx: AgentContextMinimal<S, Infer<I>>) => string)
 
   tools?: readonly (keyof S['tools'] & string)[]                // custom tools
-  builtinTools?: readonly BuiltinToolName[] | false             // default: all enabled (subject to executor availability)
+  builtinTools?: readonly BuiltinToolName[] | false             // default: none; explicit canonical-name allowlist
   skills?: readonly (keyof S['skills'] & string)[]
 
   permissions?: AgentPermissions
 
   maxSteps?: number                                             // default 16; positive integer, no hard upper cap
-  prepareStep?: (ctx: AgentPrepareStepContext<S, z.infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
-  stopWhen?: (ctx: AgentStopWhenContext<S, z.infer<I>>) => boolean | Promise<boolean>
-  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
-  handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // escape hatch
+  prepareStep?: (ctx: AgentPrepareStepContext<S, Infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
+  stopWhen?: (ctx: AgentStopWhenContext<S, Infer<I>>) => boolean | Promise<boolean>
+  interceptors?: readonly AgentExecutionInterceptor<S, Infer<I>>[]
+  handler?: (ctx: AgentContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>   // escape hatch
 }
 
 type BuiltinToolName = 'bash' | 'read' | 'write' | 'edit' | 'glob' | 'grep' | 'list'
@@ -47,7 +47,19 @@ interface AgentContextMinimal<S, I> {
 }
 ```
 
-The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped `MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md); `ctx.memory.session` is equivalent to `session.memory` for the current session, and `ctx.memory.agent` is bound to the current agent id when the configured adapter supports agent scope. Durable workspace replay is not exposed as an always-present agent context helper; custom handlers that need it receive application-owned runtime bindings or use workflow step semantics backed by [21-durable-workspaces](./21-durable-workspaces.md).
+This compact shape shows shared fields. The public declaration is a correlated union: a default-loop entry without `handler` requires `O extends ModelSchema`; a custom-handler entry permits `O extends Schema`. Caller input is `InferIn<I>`, while callbacks receive validated `Infer<I>`.
+
+The agent id is the first argument to `.agent(id, definition)` or a key under
+`.agents({...})`. Both methods are repeatable and contribute to the same typed
+registry. The builder validates each entry synchronously (see
+[02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped
+`MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md);
+`ctx.memory.session` is equivalent to `session.memory` for the current session,
+and `ctx.memory.agent` is bound to the current agent id when the configured
+adapter supports agent scope. Durable workspace replay is not exposed as an
+always-present agent context helper; custom handlers that need it receive
+application-owned runtime bindings or use workflow step semantics backed by
+[21-durable-workspaces](./21-durable-workspaces.md).
 
 ## `AgentContext`
 
@@ -60,7 +72,8 @@ interface AgentContext<S, I, O> {
   skills: { [K in NonNullable<S['agents'][string]['skills']>[number]]: SkillHandle }
   memory: MemoryFacade
   history: ConversationHistory          // read-only
-  log: Logger
+  logger: Logger
+  telemetry: TelemetryShim
   signal: AbortSignal
   runId: string
   sessionId: string
@@ -117,7 +130,7 @@ how many of those returned calls the harness executes concurrently. Keep these
 separate: one is provider generation behavior; the other is local runtime
 backpressure.
 
-`agent.output` (Zod) is converted to JSON Schema for the model call. See [13-public-api](./13-public-api.md) §"Schema conversion".
+For default-loop agents, `agent.output` is a `ModelSchema`. Its Standard JSON Schema input projection is compiled once during `build()` and reused for model calls. Custom-handler output needs only `Schema`. See [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/model-projection.md).
 
 ### Tool spec construction
 
@@ -125,7 +138,7 @@ For each enabled tool (custom or built-in):
 
 - `name`: tool id (custom) or canonical name (built-in).
 - `description`: from config / built-in registry.
-- `parameters`: JSON Schema derived from the tool's input Zod schema (custom TS) or built-in registry; cached from upstream `tools/list` for MCP tools.
+- `parameters`: cached JSON Schema from the tool input's Standard JSON Schema projection (custom TS) or built-in registry; cached from upstream `tools/list` for MCP tools.
 
 ## History conversion
 
@@ -166,7 +179,7 @@ handlers should still stop work promptly when `signal` aborts.
 
 ## Custom handler agents
 
-When `handler` is provided, the harness skips the default loop and invokes `handler(ctx)`. The handler is responsible for using `models`, `tools`, `skills`, etc. Output is still validated against `output.parse` after the handler returns.
+When `handler` is provided, the harness skips the default loop and invokes `handler(ctx)`. The handler is responsible for using `models`, `tools`, `skills`, etc. Its return is still awaited through the shared Standard Schema validator before completion.
 The harness passes the run signal into `ctx.signal` and races the handler
 against cancellation/timeout so a hung custom handler does not block the run
 record from reaching a terminal state.

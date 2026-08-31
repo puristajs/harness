@@ -71,9 +71,9 @@ sequenceDiagram
   participant Agent
   participant Model
 
-  App->>Harness: defineHarness().models().agents().workflows().build()
+  App->>Harness: defineHarness().models().agent().workflow().build()
   App->>Session: harness.getSession("quickstart")
-  App->>Workflow: session.workflows.explain_quickstart.prompt(input)
+  App->>Workflow: session.workflows.explain_quickstart.run(input)
   Workflow->>Agent: ctx.agents.assistant(input)
   Agent->>Model: object request
   Model-->>Agent: validated object
@@ -100,8 +100,8 @@ conversation loop directly:
 
 ```ts
 const session = await harness.getSession('quickstart')
-const response = await session.agents.assistant.prompt({
-  topic: 'enterprise agent harnesses'
+const response = await session.agents.assistant.run({
+	topic: 'enterprise agent harnesses',
 })
 ```
 

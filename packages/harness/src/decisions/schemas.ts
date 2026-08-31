@@ -107,7 +107,8 @@ const nativeGovernanceRuleSchema = z.strictObject({
 })
 const governancePolicyFields = {
   id: configurationIdentifier.refine((value) => value !== 'governance.default' && value !== 'governance.exposure', 'Reserved governance policy identifier.'),
-  version: configurationIdentifier.optional()
+  version: configurationIdentifier.optional(),
+  engine: configurationIdentifier.optional()
 }
 const governanceExposureEffectSchema = z.enum(['expose', 'hide'])
 
@@ -118,7 +119,7 @@ export const governanceConfigSchema = z.strictObject({
   defaultEffect: z.enum(['allow', 'deny']).optional(),
   policies: z.array(z.union([
     z.strictObject({ ...governancePolicyFields, kind: z.literal('native'), description: z.string().optional(), rules: z.array(nativeGovernanceRuleSchema).min(1) }),
-    z.strictObject({ ...governancePolicyFields, evaluate: callbackSchema })
+    z.strictObject({ ...governancePolicyFields, evaluate: callbackSchema, configureHarnessContext: callbackSchema.optional() })
   ])).optional(),
   exposure: z.strictObject({
     id: configurationIdentifier.optional(),

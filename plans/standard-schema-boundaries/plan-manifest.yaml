@@ -1,0 +1,43 @@
+plan_manifest_version: 1
+content_digest: sha256:497ac211ca9d25b29bf200d9de6512a73e5e8b190c065ce8a7f73140e78cb1e6
+source_spec_manifest_digest: sha256:d675819593a8c7712cf7f4ccb6f4a78db08f2cefa325c36ec527e80a166d6498
+artifacts:
+  - path: _dependencies.yaml
+    sha256: sha256:057a2c9b27a45d370dfbe905db80546885431c7432966606c8189c98deabb0af
+  - path: _registry.yaml
+    sha256: sha256:b92d684132c3f53aa95c20067ed66d75ec80428b57c6b6399b5cb7622c59a195
+  - path: _scope.yaml
+    sha256: sha256:5ed07bb868a1f0e9c8bc58e3214b03422e3a5a1f01c0e9a98e99c0d8a3072c59
+  - path: _status.yaml
+    sha256: sha256:cf01ac267607778b746cbb7ea1258f73f6e4b94dba4e12caeb87119b76a10675
+  - path: analysis.md
+    sha256: sha256:5dd3360b49e8dcb7ed71de3ff020822cd276580dc492e0ed50b242585ff813a1
+  - path: implementation-plan.md
+    sha256: sha256:6f84b9c2b049e8dd6d5077c3a722e4faf7f388b30f173f0117470c21a59bc903
+  - path: wave_01_types/plan.md
+    sha256: sha256:cdb06ad451b37f7c5f5d3add0206551f248d96c5d22255dbcee14f391610a8af
+  - path: wave_01_types/tickets/TICKET-001-types.md
+    sha256: sha256:8765410b891dd30f07e453900d924d1f77dd60fcb82d90e6bcd9e49057de0e3e
+  - path: wave_02_validation/plan.md
+    sha256: sha256:c1609cb6fc27e8905f62bbb956891b8d18c86ac068d62042052c28abb9aec2a5
+  - path: wave_02_validation/tickets/TICKET-002-validation.md
+    sha256: sha256:a936154f9c0c5c3d6165e63b105ad7b6b4fafae5315f32572b9777a0bcf08282
+  - path: wave_03_projection/plan.md
+    sha256: sha256:5a2d2137b7e15867520626b6e6819ea6bbac4bf266ee87af529f21e5074ab9b2
+  - path: wave_03_projection/tickets/TICKET-003-projection.md
+    sha256: sha256:9e4db8ada6f4d824f29114b1778438dc0ef6eb053fdbab36af802e142c5fff1a
+  - path: wave_04_providers/plan.md
+    sha256: sha256:22bdd380dbc69d98870053534975a5aa37b2148e7b8192682bd60af504095c30
+  - path: wave_04_providers/tickets/TICKET-004-providers.md
+    sha256: sha256:8f40b0ed923ad143b329bace541e0478258dfebbc51ae3b7070268e163e1370e
+  - path: wave_05_consumers/plan.md
+    sha256: sha256:9064651aa6f1805514740d4cfbcfa2a7dd5a2b9a100acf8c6b43a8c036474a1b
+  - path: wave_05_consumers/tickets/TICKET-005-consumers.md
+    sha256: sha256:5ac3b993253f3d58fef57bb1568566099acb65c236da9227af11bd41dfa6394e
+  - path: wave_06_release/plan.md
+    sha256: sha256:e684725d978dfaba1626a9bfa24fbd2ae1abfd8f2778e111ee5b201f766916b4
+  - path: wave_06_release/tickets/TICKET-006-release.md
+    sha256: sha256:ce6d962c21b19c405de041d278cfd2d5734b8f9d948f206db521611a1b925c1f
+provenance:
+  generated_at: 2026-08-29T01:59:46.244Z
+  generator: plan-manifest/v1

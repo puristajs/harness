@@ -1,0 +1,245 @@
+traceability_version: 1
+requirements:
+  - requirement_id: REQ-SS-TYPES
+    capability_ids: [CAP-SS-TYPES]
+    path_ids: [PATH-SS-TYPES-SUCCESS, PATH-SS-TYPES-FAILURE, PATH-SS-TYPES-RECOVERY]
+    acceptance_ids: [AC-SS-TYPES-SUCCESS, AC-SS-TYPES-FAILURE, AC-SS-TYPES-RECOVERY]
+  - requirement_id: REQ-SS-VALIDATION
+    capability_ids: [CAP-SS-VALIDATION]
+    path_ids: [PATH-SS-VALIDATION-SUCCESS, PATH-SS-VALIDATION-FAILURE, PATH-SS-VALIDATION-RECOVERY]
+    acceptance_ids: [AC-SS-VALIDATION-SUCCESS, AC-SS-VALIDATION-FAILURE, AC-SS-VALIDATION-RECOVERY]
+  - requirement_id: REQ-SS-PROJECTION
+    capability_ids: [CAP-SS-PROJECTION]
+    path_ids: [PATH-SS-PROJECTION-SUCCESS, PATH-SS-PROJECTION-FAILURE, PATH-SS-PROJECTION-RECOVERY]
+    acceptance_ids: [AC-SS-PROJECTION-SUCCESS, AC-SS-PROJECTION-FAILURE, AC-SS-PROJECTION-RECOVERY]
+  - requirement_id: REQ-SS-PROVIDERS
+    capability_ids: [CAP-SS-PROVIDERS]
+    path_ids: [PATH-SS-PROVIDERS-SUCCESS, PATH-SS-PROVIDERS-FAILURE, PATH-SS-PROVIDERS-RECOVERY]
+    acceptance_ids: [AC-SS-PROVIDERS-SUCCESS, AC-SS-PROVIDERS-FAILURE, AC-SS-PROVIDERS-RECOVERY]
+  - requirement_id: REQ-SS-CONSUMERS
+    capability_ids: [CAP-SS-CONSUMERS]
+    path_ids: [PATH-SS-CONSUMERS-SUCCESS, PATH-SS-CONSUMERS-FAILURE, PATH-SS-CONSUMERS-RECOVERY]
+    acceptance_ids: [AC-SS-CONSUMERS-SUCCESS, AC-SS-CONSUMERS-FAILURE, AC-SS-CONSUMERS-RECOVERY]
+  - requirement_id: REQ-SS-CLEANUP
+    capability_ids: [CAP-SS-CLEANUP]
+    path_ids: [PATH-SS-CLEANUP-SUCCESS, PATH-SS-CLEANUP-FAILURE, PATH-SS-CLEANUP-RECOVERY]
+    acceptance_ids: [AC-SS-CLEANUP-SUCCESS, AC-SS-CLEANUP-FAILURE, AC-SS-CLEANUP-RECOVERY]
+capabilities:
+  - capability_id: CAP-SS-TYPES
+    requirement_ids: [REQ-SS-TYPES]
+    path_ids: [PATH-SS-TYPES-SUCCESS, PATH-SS-TYPES-FAILURE, PATH-SS-TYPES-RECOVERY]
+  - capability_id: CAP-SS-VALIDATION
+    requirement_ids: [REQ-SS-VALIDATION]
+    path_ids: [PATH-SS-VALIDATION-SUCCESS, PATH-SS-VALIDATION-FAILURE, PATH-SS-VALIDATION-RECOVERY]
+  - capability_id: CAP-SS-PROJECTION
+    requirement_ids: [REQ-SS-PROJECTION]
+    path_ids: [PATH-SS-PROJECTION-SUCCESS, PATH-SS-PROJECTION-FAILURE, PATH-SS-PROJECTION-RECOVERY]
+  - capability_id: CAP-SS-PROVIDERS
+    requirement_ids: [REQ-SS-PROVIDERS]
+    path_ids: [PATH-SS-PROVIDERS-SUCCESS, PATH-SS-PROVIDERS-FAILURE, PATH-SS-PROVIDERS-RECOVERY]
+  - capability_id: CAP-SS-CONSUMERS
+    requirement_ids: [REQ-SS-CONSUMERS]
+    path_ids: [PATH-SS-CONSUMERS-SUCCESS, PATH-SS-CONSUMERS-FAILURE, PATH-SS-CONSUMERS-RECOVERY]
+  - capability_id: CAP-SS-CLEANUP
+    requirement_ids: [REQ-SS-CLEANUP]
+    path_ids: [PATH-SS-CLEANUP-SUCCESS, PATH-SS-CLEANUP-FAILURE, PATH-SS-CLEANUP-RECOVERY]
+paths:
+  - path_id: PATH-SS-TYPES-SUCCESS
+    capability_ids: [CAP-SS-TYPES]
+    requirement_ids: [REQ-SS-TYPES]
+    kind: success
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    acceptance_ids: [AC-SS-TYPES-SUCCESS]
+  - path_id: PATH-SS-TYPES-FAILURE
+    capability_ids: [CAP-SS-TYPES]
+    requirement_ids: [REQ-SS-TYPES]
+    kind: validation_failure
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    acceptance_ids: [AC-SS-TYPES-FAILURE]
+  - path_id: PATH-SS-TYPES-RECOVERY
+    capability_ids: [CAP-SS-TYPES]
+    requirement_ids: [REQ-SS-TYPES]
+    kind: recovery
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    acceptance_ids: [AC-SS-TYPES-RECOVERY]
+  - path_id: PATH-SS-VALIDATION-SUCCESS
+    capability_ids: [CAP-SS-VALIDATION]
+    requirement_ids: [REQ-SS-VALIDATION]
+    kind: success
+    contract_refs: [CTR-SS-VALIDATION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-VALIDATION-SUCCESS]
+  - path_id: PATH-SS-VALIDATION-FAILURE
+    capability_ids: [CAP-SS-VALIDATION]
+    requirement_ids: [REQ-SS-VALIDATION]
+    kind: validation_failure
+    contract_refs: [CTR-SS-VALIDATION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-VALIDATION-FAILURE]
+  - path_id: PATH-SS-VALIDATION-RECOVERY
+    capability_ids: [CAP-SS-VALIDATION]
+    requirement_ids: [REQ-SS-VALIDATION]
+    kind: recovery
+    contract_refs: [CTR-SS-VALIDATION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-VALIDATION-RECOVERY]
+  - path_id: PATH-SS-PROJECTION-SUCCESS
+    capability_ids: [CAP-SS-PROJECTION]
+    requirement_ids: [REQ-SS-PROJECTION]
+    kind: success
+    contract_refs: [CTR-SS-PROJECTION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-PROJECTION-SUCCESS]
+  - path_id: PATH-SS-PROJECTION-FAILURE
+    capability_ids: [CAP-SS-PROJECTION]
+    requirement_ids: [REQ-SS-PROJECTION]
+    kind: validation_failure
+    contract_refs: [CTR-SS-PROJECTION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-PROJECTION-FAILURE]
+  - path_id: PATH-SS-PROJECTION-RECOVERY
+    capability_ids: [CAP-SS-PROJECTION]
+    requirement_ids: [REQ-SS-PROJECTION]
+    kind: recovery
+    contract_refs: [CTR-SS-PROJECTION, CTR-SS-ERRORS]
+    acceptance_ids: [AC-SS-PROJECTION-RECOVERY]
+  - path_id: PATH-SS-PROVIDERS-SUCCESS
+    capability_ids: [CAP-SS-PROVIDERS]
+    requirement_ids: [REQ-SS-PROVIDERS]
+    kind: success
+    contract_refs: [CTR-SS-PROVIDERS]
+    acceptance_ids: [AC-SS-PROVIDERS-SUCCESS]
+  - path_id: PATH-SS-PROVIDERS-FAILURE
+    capability_ids: [CAP-SS-PROVIDERS]
+    requirement_ids: [REQ-SS-PROVIDERS]
+    kind: validation_failure
+    contract_refs: [CTR-SS-PROVIDERS]
+    acceptance_ids: [AC-SS-PROVIDERS-FAILURE]
+  - path_id: PATH-SS-PROVIDERS-RECOVERY
+    capability_ids: [CAP-SS-PROVIDERS]
+    requirement_ids: [REQ-SS-PROVIDERS]
+    kind: recovery
+    contract_refs: [CTR-SS-PROVIDERS]
+    acceptance_ids: [AC-SS-PROVIDERS-RECOVERY]
+  - path_id: PATH-SS-CONSUMERS-SUCCESS
+    capability_ids: [CAP-SS-CONSUMERS]
+    requirement_ids: [REQ-SS-CONSUMERS]
+    kind: success
+    contract_refs: [CTR-SS-CONSUMERS]
+    acceptance_ids: [AC-SS-CONSUMERS-SUCCESS]
+  - path_id: PATH-SS-CONSUMERS-FAILURE
+    capability_ids: [CAP-SS-CONSUMERS]
+    requirement_ids: [REQ-SS-CONSUMERS]
+    kind: validation_failure
+    contract_refs: [CTR-SS-CONSUMERS]
+    acceptance_ids: [AC-SS-CONSUMERS-FAILURE]
+  - path_id: PATH-SS-CONSUMERS-RECOVERY
+    capability_ids: [CAP-SS-CONSUMERS]
+    requirement_ids: [REQ-SS-CONSUMERS]
+    kind: recovery
+    contract_refs: [CTR-SS-CONSUMERS]
+    acceptance_ids: [AC-SS-CONSUMERS-RECOVERY]
+  - path_id: PATH-SS-CLEANUP-SUCCESS
+    capability_ids: [CAP-SS-CLEANUP]
+    requirement_ids: [REQ-SS-CLEANUP]
+    kind: success
+    contract_refs: [CTR-SS-CLEANUP]
+    acceptance_ids: [AC-SS-CLEANUP-SUCCESS]
+  - path_id: PATH-SS-CLEANUP-FAILURE
+    capability_ids: [CAP-SS-CLEANUP]
+    requirement_ids: [REQ-SS-CLEANUP]
+    kind: validation_failure
+    contract_refs: [CTR-SS-CLEANUP]
+    acceptance_ids: [AC-SS-CLEANUP-FAILURE]
+  - path_id: PATH-SS-CLEANUP-RECOVERY
+    capability_ids: [CAP-SS-CLEANUP]
+    requirement_ids: [REQ-SS-CLEANUP]
+    kind: recovery
+    contract_refs: [CTR-SS-CLEANUP]
+    acceptance_ids: [AC-SS-CLEANUP-RECOVERY]
+acceptance:
+  - acceptance_id: AC-SS-TYPES-SUCCESS
+    requirement_ids: [REQ-SS-TYPES]
+    path_ids: [PATH-SS-TYPES-SUCCESS]
+    verification_refs: [ai-harness/packages/harness/type-tests/harness-typing.ts]
+    expected_outcome: Three vendors preserve exact nested input/output and aliases.
+  - acceptance_id: AC-SS-TYPES-FAILURE
+    requirement_ids: [REQ-SS-TYPES]
+    path_ids: [PATH-SS-TYPES-FAILURE]
+    verification_refs: [ai-harness/packages/harness/type-tests/harness-typing.ts]
+    expected_outcome: Invalid schemas and values fail typechecking.
+  - acceptance_id: AC-SS-TYPES-RECOVERY
+    requirement_ids: [REQ-SS-TYPES]
+    path_ids: [PATH-SS-TYPES-RECOVERY]
+    verification_refs: [ai-harness/packages/harness/type-tests/harness-typing.ts]
+    expected_outcome: Correct schemas compile without casts.
+  - acceptance_id: AC-SS-VALIDATION-SUCCESS
+    requirement_ids: [REQ-SS-VALIDATION]
+    path_ids: [PATH-SS-VALIDATION-SUCCESS]
+    verification_refs: [ai-harness/packages/harness/src/schema/validation.test.ts]
+    expected_outcome: Every runtime boundary awaits one transform-aware validation.
+  - acceptance_id: AC-SS-VALIDATION-FAILURE
+    requirement_ids: [REQ-SS-VALIDATION]
+    path_ids: [PATH-SS-VALIDATION-FAILURE]
+    verification_refs: [ai-harness/packages/harness/src/schema/validation.test.ts]
+    expected_outcome: Issues, throws and non-JSON values fail safely before effects.
+  - acceptance_id: AC-SS-VALIDATION-RECOVERY
+    requirement_ids: [REQ-SS-VALIDATION]
+    path_ids: [PATH-SS-VALIDATION-RECOVERY]
+    verification_refs: [ai-harness/packages/harness/test/harness.test.ts]
+    expected_outcome: A valid later invocation succeeds without leaked failure state.
+  - acceptance_id: AC-SS-PROJECTION-SUCCESS
+    requirement_ids: [REQ-SS-PROJECTION]
+    path_ids: [PATH-SS-PROJECTION-SUCCESS]
+    verification_refs: [ai-harness/packages/harness/src/schema/json-schema.test.ts]
+    expected_outcome: Draft 2020-12 input projection is frozen and cached once at build.
+  - acceptance_id: AC-SS-PROJECTION-FAILURE
+    requirement_ids: [REQ-SS-PROJECTION]
+    path_ids: [PATH-SS-PROJECTION-FAILURE]
+    verification_refs: [ai-harness/packages/harness/test/build-validation.test.ts]
+    expected_outcome: Missing, throwing and invalid projection fail build with closed metadata.
+  - acceptance_id: AC-SS-PROJECTION-RECOVERY
+    requirement_ids: [REQ-SS-PROJECTION]
+    path_ids: [PATH-SS-PROJECTION-RECOVERY]
+    verification_refs: [ai-harness/packages/harness/test/build-validation.test.ts]
+    expected_outcome: Corrected schema rebuilds without a partial prior Harness.
+  - acceptance_id: AC-SS-PROVIDERS-SUCCESS
+    requirement_ids: [REQ-SS-PROVIDERS]
+    path_ids: [PATH-SS-PROVIDERS-SUCCESS]
+    verification_refs: [ai-harness/packages/harness-openai/test/adapter.test.ts]
+    expected_outcome: All first-party SDK seams receive exact JSON Schema.
+  - acceptance_id: AC-SS-PROVIDERS-FAILURE
+    requirement_ids: [REQ-SS-PROVIDERS]
+    path_ids: [PATH-SS-PROVIDERS-FAILURE]
+    verification_refs: [ai-harness/packages/harness-openai/test/adapter.test.ts]
+    expected_outcome: Provider rejection is mapped without weakened retry.
+  - acceptance_id: AC-SS-PROVIDERS-RECOVERY
+    requirement_ids: [REQ-SS-PROVIDERS]
+    path_ids: [PATH-SS-PROVIDERS-RECOVERY]
+    verification_refs: [ai-harness/packages/harness-openai/test/adapter.test.ts]
+    expected_outcome: Provider-compatible input succeeds through the unchanged port.
+  - acceptance_id: AC-SS-CONSUMERS-SUCCESS
+    requirement_ids: [REQ-SS-CONSUMERS]
+    path_ids: [PATH-SS-CONSUMERS-SUCCESS]
+    verification_refs: [ai-harness/examples/quickstart/src/index.test.ts, purista/scripts/skills-audit.mjs]
+    expected_outcome: Specs, docs, examples, skills and site teach one accurate contract.
+  - acceptance_id: AC-SS-CONSUMERS-FAILURE
+    requirement_ids: [REQ-SS-CONSUMERS]
+    path_ids: [PATH-SS-CONSUMERS-FAILURE]
+    verification_refs: [ai-harness/scripts/sync-ai-harness-skill.mjs, purista/scripts/knowledge-audit.mjs]
+    expected_outcome: Stale terms, snippets, links or mirrors fail gates.
+  - acceptance_id: AC-SS-CONSUMERS-RECOVERY
+    requirement_ids: [REQ-SS-CONSUMERS]
+    path_ids: [PATH-SS-CONSUMERS-RECOVERY]
+    verification_refs: [ai-harness/scripts/sync-ai-harness-skill.mjs, purista/scripts/skills-audit.mjs]
+    expected_outcome: Canonical correction and regeneration restore alignment.
+  - acceptance_id: AC-SS-CLEANUP-SUCCESS
+    requirement_ids: [REQ-SS-CLEANUP]
+    path_ids: [PATH-SS-CLEANUP-SUCCESS]
+    verification_refs: [ai-harness/package.json]
+    expected_outcome: Full CI and forbidden scans prove one clean public path.
+  - acceptance_id: AC-SS-CLEANUP-FAILURE
+    requirement_ids: [REQ-SS-CLEANUP]
+    path_ids: [PATH-SS-CLEANUP-FAILURE]
+    verification_refs: [ai-harness/package.json]
+    expected_outcome: Legacy, widening, fake tests or unrelated deletion blocks completion.
+  - acceptance_id: AC-SS-CLEANUP-RECOVERY
+    requirement_ids: [REQ-SS-CLEANUP]
+    path_ids: [PATH-SS-CLEANUP-RECOVERY]
+    verification_refs: [ai-harness/package.json]
+    expected_outcome: Deleting the violation and rerunning every gate is the only recovery.

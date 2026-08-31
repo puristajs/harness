@@ -1,6 +1,8 @@
 # Typed NeMo-shaped guardrails
 
 > **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for configuration, file loading, action authoring and binding. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+>
+> **Approved binding update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) replaces `Guardrails.attach(...)` with the inline default-loop `guardrails` field. No decorator or compatibility path remains.
 
 **Status:** approved implementation contract, 2026-08-23. The repository owner explicitly authorized this scope and automatic approval in the initiating task. This document retains portable configuration scope; the approved 2026-08-26 decision-boundary spec supersedes action, phase and lifecycle contracts.
 
@@ -11,7 +13,7 @@
 | Owner | Owns | Must not own |
 | --- | --- | --- |
 | `@purista/harness` | Generic ordered interception, normal model/tool lifecycle, schemas, state, cancellation, retry, governance, telemetry | NeMo YAML, safety policy values, providers, Python/Colang |
-| `@purista/harness-guardrails` | YAML parsing, diagnostics, flow/action compilation, attach helper, explicit retrieval filter, content-free guardrail spans | Credentials, provider creation, server, vector store, second transcript/session, Core import |
+| `@purista/harness-guardrails` | Typed configuration, action compilation, direct default-loop binding, explicit retrieval filter, content-free guardrail spans | Credentials, provider creation, server, vector store, second transcript/session, Core import |
 | Application | Actions, safety thresholds, injected model aliases, retrieval, auth, secrets, end-user fallback text | Unreviewed executable config or implicit fail-open |
 | `@purista/core` | Existing attached-agent/workflow pass-through | Addon dependency or duplicate lifecycle |
 
@@ -22,7 +24,7 @@ The addon is ESM-only and depends only on `@purista/harness`, `yaml`, and `zod`.
 | ID | Outcome | Entry and final state | Deterministic evidence |
 | --- | --- | --- | --- |
 | GR-01 | Load config | `loadGuardrailsConfig` returns typed config or non-retriable config error | parser fixtures |
-| GR-02 | Attach rails | `rails.attach(definition)` returns a normal default-loop definition without a second session/provider | typecheck + fake provider |
+| GR-02 | Bind rails | `guardrails: rails` binds one compiled rail set to a default-loop definition without a second session/provider | typecheck + fake provider |
 | GR-03 | Input/output protection | transforms/blocks occur before the unsafe boundary | request/history assertions |
 | GR-04 | Tool protection | input rail precedes permissions/governance/side effect; output rail precedes next model turn | side-effect counter |
 | GR-05 | Retrieval protection | `filterRetrievedChunks` processes caller-owned chunks in order | retrieval fixture |

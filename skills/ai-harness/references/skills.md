@@ -62,19 +62,17 @@ defineHarness()
     'incident-responder': {
       directory: join(here, 'skills/incident-responder'),
       trust: 'trusted',
-      source: 'application'
-    }
+      source: 'application',
+    },
   })
-  .agents(({ agent }) => ({
-    incident_writer: agent({
-      model: 'assistant',
-      input: z.object({ incident: z.string() }),
-      output: z.object({ summary: z.string() }),
-      skills: ['incident-responder'],
-      builtinTools: ['read', 'list', 'grep'],
-      instructions: 'Use the mounted incident-responder skill when drafting.'
-    })
-  }))
+  .agent('incident_writer', {
+    model: 'assistant',
+    input: z.object({ incident: z.string() }),
+    output: z.object({ summary: z.string() }),
+    skills: ['incident-responder'],
+    builtinTools: ['read', 'list', 'grep'],
+    instructions: 'Use the mounted incident-responder skill when drafting.',
+  })
 ```
 
 Use absolute directories or resolve them from `import.meta.url`. Avoid brittle process-relative paths.
@@ -100,15 +98,39 @@ Use the read tool to load /skills/<name>/SKILL.md when a skill is relevant.
 The full `SKILL.md` body is not injected. The model must use filesystem tools such as `read`, `list`, or `grep` to inspect `/skills/<name>/`.
 
 ## Tool Interaction
-If an agent uses skills, keep enough read-only built-ins enabled for discovery. `builtinTools: false` means the model cannot read mounted skill files unless the instructions and custom tool path compensate.
+Built-in tools are disabled by default and skills never widen the set. A
+default-loop agent with skills must explicitly enable `read`; agent
+registration fails before model or sandbox I/O when it is missing.
 
-Recommended skill-aware defaults:
+Start with the activation capability:
 
 ```ts
-builtinTools: ['read', 'list', 'grep']
+builtinTools: ['read']
 ```
 
-Add `bash`, `write`, or `edit` only when the task genuinely needs command execution or file mutation, and pair them with permissions.
+Add `list` or `grep` only when the skill needs broader navigation. Add
+`bash`, `write`, or `edit` only when the task genuinely needs command
+execution or file mutation, and pair them with permissions and a suitable
+sandbox.
+
+`allowed-tools` frontmatter is preserved metadata; it does not enable,
+restrict, or authorize a Harness tool.
+
+## Trust And Script Safety
+
+Treat the whole skill directory as reviewed supply-chain input. `SKILL.md`
+and references can contain harmful instructions, while `scripts/` can contain
+arbitrary executable content. Registration and mounting do not execute files.
+A script can run only through a separately exposed execution-capable built-in,
+custom tool, MCP server, or custom handler.
+
+- Pin or version the skill source and review changes before deployment.
+- Keep discovered project skills behind `trustedProjectRoots` and inspect
+  diagnostics.
+- Keep credentials and ambient network access out of the skill sandbox.
+- Authorize every business effect in its application-owned tool handler.
+- Use a real isolation adapter for model-directed untrusted execution; a local
+  filesystem or shell helper is not a hostile-code boundary.
 
 ## Skill Authoring Quality
 Use progressive disclosure:

@@ -49,52 +49,77 @@ import { defineGuardrailAction, defineGuardrails } from '@purista/harness-guardr
 import { z } from 'zod'
 
 const redactInput = defineGuardrailAction({
-  phase: 'input', valueSchema: z.string(),
-  evaluate: ({ value }) => value.includes('[secret]')
-    ? { decision: 'transform', target: 'user_message', value: value.replaceAll('[secret]', '[redacted]'), reasonCode: 'secret_redacted' }
-    : { decision: 'allow' }
+	phase: 'input',
+	valueSchema: z.string(),
+	evaluate: ({ value }) =>
+		value.includes('[secret]')
+			? {
+					decision: 'transform',
+					target: 'user_message',
+					value: value.replaceAll('[secret]', '[redacted]'),
+					reasonCode: 'secret_redacted',
+				}
+			: { decision: 'allow' },
 })
 const validatePublish = defineGuardrailAction({
-  phase: 'tool_input', tools: ['publish_note'], valueSchema: z.strictObject({ message: z.string() }), mayTransform: false,
-  evaluate: ({ value }) => value.message.includes('[blocked]')
-    ? { decision: 'block', reasonCode: 'unsafe_note' }
-    : { decision: 'allow' }
+	phase: 'tool_input',
+	tools: ['publish_note'],
+	valueSchema: z.strictObject({ message: z.string() }),
+	mayTransform: false,
+	evaluate: ({ value }) =>
+		value.message.includes('[blocked]') ? { decision: 'block', reasonCode: 'unsafe_note' } : { decision: 'allow' },
 })
 const redactOutput = defineGuardrailAction({
-  phase: 'output', valueSchema: z.string(),
-  evaluate: ({ value }) => ({ decision: 'transform', target: 'bot_message', value: value.replaceAll('[secret]', '[redacted]'), reasonCode: 'secret_redacted' })
+	phase: 'output',
+	valueSchema: z.string(),
+	evaluate: ({ value }) => ({
+		decision: 'transform',
+		target: 'bot_message',
+		value: value.replaceAll('[secret]', '[redacted]'),
+		reasonCode: 'secret_redacted',
+	}),
 })
 const rails = defineGuardrails({
-  config: { rails: {
-    input: { flows: ['redact input'] }, tool_input: { flows: ['validate publish'] }, output: { flows: ['redact output'] }
-  } },
-  actions: { 'redact input': redactInput, 'validate publish': validatePublish, 'redact output': redactOutput }
+	config: {
+		rails: {
+			input: { flows: ['redact input'] },
+			tool_input: { flows: ['validate publish'] },
+			output: { flows: ['redact output'] },
+		},
+	},
+	actions: { 'redact input': redactInput, 'validate publish': validatePublish, 'redact output': redactOutput },
 })
 
 const harness = defineHarness({ name: 'safe-notes' })
-  .sandbox(inMemorySandbox())
-  .models({ assistant: { provider, model: 'assistant', capabilities: ['object', 'tool_use'] } })
-  .tools(({ tool }) => ({
-    lookup_status: tool({
-      description: 'Read a public status.', input: z.strictObject({ ticket: z.string() }), output: z.strictObject({ status: z.string() }),
-      handler: async (_ctx, { ticket }) => ({ status: `Status for ${ticket}` })
-    }),
-    publish_note: tool({
-      description: 'Publish a reviewed note.', input: z.strictObject({ message: z.string() }), output: z.strictObject({ published: z.boolean() }),
-      handler: async (_ctx, _input) => ({ published: true })
-    }),
-    unrelated_tool: tool({
-      description: 'An action not selected by this rail.', input: z.strictObject({ id: z.string() }), output: z.strictObject({ id: z.string() }),
-      handler: async (_ctx, input) => input
-    })
-  }))
-  .agents(({ agent }) => ({
-    support: rails.attach(agent({
-      model: 'assistant', input: z.string(), output: z.string(), instructions: 'Use the available tools when needed.',
-      tools: ['lookup_status', 'publish_note', 'unrelated_tool'], builtinTools: false
-    }))
-  }))
-  .build()
+	.sandbox(inMemorySandbox())
+	.models({ assistant: { provider, model: 'assistant', capabilities: ['object', 'tool_use'] } })
+	.tool('lookup_status', {
+			description: 'Read a public status.',
+			input: z.strictObject({ ticket: z.string() }),
+			output: z.strictObject({ status: z.string() }),
+			handler: async (_ctx, { ticket }) => ({ status: `Status for ${ticket}` }),
+	})
+	.tool('publish_note', {
+			description: 'Publish a reviewed note.',
+			input: z.strictObject({ message: z.string() }),
+			output: z.strictObject({ published: z.boolean() }),
+			handler: async (_ctx, _input) => ({ published: true }),
+	})
+	.tool('unrelated_tool', {
+			description: 'An action not selected by this rail.',
+			input: z.strictObject({ id: z.string() }),
+			output: z.strictObject({ id: z.string() }),
+			handler: async (_ctx, input) => input,
+	})
+	.agent('support', {
+		model: 'assistant',
+		input: z.string(),
+		output: z.string(),
+		instructions: 'Use the available tools when needed.',
+		tools: ['lookup_status', 'publish_note', 'unrelated_tool'],
+		guardrails: rails,
+	})
+	.build()
 ```
 
 Native tools must be registered through the builder-local `tool(...)` helper.
@@ -144,10 +169,14 @@ does not resolve aliases indirectly or create a provider.
 
 ```ts
 const rails = defineGuardrails({
-  config: { rails: { input: { flows: ['safety check'] } } },
-  actions: {
-    'safety check': modelCheckRail({ phase: 'input', model: 'safety', instructions: 'Return whether the input is allowed.' })
-  }
+	config: { rails: { input: { flows: ['safety check'] } } },
+	actions: {
+		'safety check': modelCheckRail({
+			phase: 'input',
+			model: 'safety',
+			instructions: 'Return whether the input is allowed.',
+		}),
+	},
 })
 ```
 
@@ -157,7 +186,11 @@ call, or approval request occurs. For retrieval, keep storage and ranking in
 application code and filter already-retrieved JSON values explicitly:
 
 ```ts
-const safeChunks = await rails.filterRetrievedChunks(chunks, { models: ctx.models, signal: ctx.signal, logger: ctx.log })
+const safeChunks = await rails.filterRetrievedChunks(chunks, {
+	models: ctx.models,
+	signal: ctx.signal,
+	logger: ctx.logger,
+})
 ```
 
 ## Sensitive data and structured tools
@@ -168,11 +201,11 @@ root, then bind it to actions. Policies are inline camelCase values.
 ```ts
 const sensitiveDataActions = createSensitiveDataActions({ detector })
 const rails = defineGuardrails({
-  config: {
-    rails: { input: { flows: ['mask sensitive data on input'] } },
-    sensitiveData: { input: { entities: ['EMAIL_ADDRESS'], maskToken: '<MASKED>', scoreThreshold: 0.6 } }
-  },
-  actions: sensitiveDataActions
+	config: {
+		rails: { input: { flows: ['mask sensitive data on input'] } },
+		sensitiveData: { input: { entities: ['EMAIL_ADDRESS'], maskToken: '<MASKED>', scoreThreshold: 0.6 } },
+	},
+	actions: sensitiveDataActions,
 })
 ```
 

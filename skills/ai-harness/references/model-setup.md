@@ -2,6 +2,7 @@
 
 ## Contents
 - OpenAI Provider
+- Google Gemini Provider
 - Anthropic Provider
 - Amazon Bedrock Provider
 - Azure AI Foundry Provider
@@ -14,14 +15,20 @@
 
 Use this reference when configuring `.models(...)`, provider packages, direct model calls, multimodal input, embeddings, rerank, or a custom `ModelProvider`.
 
+Provider packages do not select a schema library. Zod is the default in the
+examples, while any Standard Schema validator works at Harness validation
+boundaries. Model-facing TypeScript-tool input and default-loop output also
+need Standard JSON Schema support; Harness projects those definitions once at
+build time and adapters receive only the resulting Draft 2020-12 JSON value.
+
 ## OpenAI Provider
 Install the provider addon only when needed:
 
 ```bash
-npm install @purista/harness @purista/harness-openai zod
+npm install @purista/harness @purista/harness-openai
 ```
 
-Register OpenAI or an OpenAI-compatible endpoint:
+Register a native OpenAI Responses model:
 
 ```ts
 import { openai } from '@purista/harness-openai'
@@ -43,18 +50,48 @@ import { openai } from '@purista/harness-openai'
       temperature: 0.2,
       providerOptions: { reasoning_effort: 'low' }
     },
-    providerOptions: { serviceTier: 'default' }
+    providerOptions: { service_tier: 'default' }
   }
 })
 ```
 
-Provider factory options are OpenAI SDK `ClientOptions` plus optional `api`, `client`, `harnessLogger`, `telemetry`, and `harnessTimeoutMs` for tests or adapter-level overrides. `api` defaults to `chat_completions`; use `api: 'responses'` for reasoning models that need function tools with `providerOptions.reasoning_effort`, such as `gpt-5.5`. If Chat Completions receives tools plus `reasoning_effort`, the adapter drops `reasoning_effort` and logs a warning.
+Provider factory options are OpenAI SDK `ClientOptions` plus optional `api`, `chatCompletionMaxTokensParameter`, `client`, `harnessLogger`, `telemetry`, and `harnessTimeoutMs` for tests or adapter-level overrides. `api` defaults to `chat_completions`. For a compatible provider, supply its API key, `baseURL`, and model id and retain that default; the endpoint must implement each Chat Completions operation you enable. `api: 'responses'` is only for the OpenAI Responses API, including reasoning models that need function tools with `providerOptions.reasoning_effort`, such as `gpt-5.5`. Responses maps Harness `maxTokens` to `max_output_tokens` and rejects `stopSequences` because that API has no stop field. Chat Completions keeps the compatibility default `max_tokens`; set `chatCompletionMaxTokensParameter: 'max_completion_tokens'` only when the native OpenAI Chat model requires that field. If Chat Completions receives tools plus `reasoning_effort`, the adapter drops `reasoning_effort` and logs a warning.
+
+## Google Gemini Provider
+Install and register Gemini independently:
+
+```bash
+npm install @purista/harness @purista/harness-google
+```
+
+```ts
+import { google } from '@purista/harness-google'
+
+.models({
+  assistant: {
+    provider: google({ apiKey: process.env.GEMINI_API_KEY! }),
+    model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+    capabilities: ['object', 'tool_use', 'vision_input']
+  },
+  embeddings: {
+    provider: google({ apiKey: process.env.GEMINI_API_KEY! }),
+    model: process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2',
+    capabilities: ['embeddings']
+  }
+})
+```
+
+The Google adapter uses the official `@google/genai` SDK. It supports text,
+structured output, function tools, streams, embeddings, and supported inline
+image/audio/file input; it does not provide rerank. `GoogleFactoryOptions`
+accepts official client options for Gemini API or Vertex/enterprise deployment.
+Declare only capabilities verified for the concrete Google model and endpoint.
 
 ## Anthropic Provider
 Install and register Anthropic independently:
 
 ```bash
-npm install @purista/harness @purista/harness-anthropic zod
+npm install @purista/harness @purista/harness-anthropic
 ```
 
 ```ts
@@ -73,7 +110,7 @@ import { anthropic } from '@purista/harness-anthropic'
 Install and register Amazon Bedrock Runtime independently:
 
 ```bash
-npm install @purista/harness @purista/harness-bedrock zod
+npm install @purista/harness @purista/harness-bedrock
 ```
 
 ```ts
@@ -94,7 +131,7 @@ AWS credentials come from the official AWS SDK credential chain.
 Install and register Azure AI Foundry independently:
 
 ```bash
-npm install @purista/harness @purista/harness-azure-foundry zod
+npm install @purista/harness @purista/harness-azure-foundry
 ```
 
 ```ts
@@ -141,6 +178,41 @@ Each `.models(...)` entry is a `ModelAlias`:
 ```
 
 `defaults` are merged with per-call `call` options. Use `parallelToolCalls` on the alias for agent-loop defaults and direct model call overrides when needed. `call.providerOptions` overrides or extends `defaults.providerOptions` for provider-specific escape hatches.
+
+## Generation Settings And Provider Options
+
+Set the portable request settings in `defaults` or a per-call `call` object:
+`maxTokens`, `temperature`, `topP`, `stopSequences`, and
+`parallelToolCalls`. A call override wins over the alias default. Do not assume
+every model accepts a setting just because an adapter can map it.
+
+- `maxTokens` maps to OpenAI Chat `max_tokens` (or configured
+  `max_completion_tokens`), OpenAI Responses `max_output_tokens`, Gemini
+  `maxOutputTokens`, Anthropic `max_tokens`, Bedrock
+  `inferenceConfig.maxTokens`, and Azure Foundry `max_tokens`. Anthropic gets
+  a 1024 adapter fallback when omitted; the others preserve provider defaults.
+- `temperature` and `topP` are sampling controls. Alter one, not both, unless
+  the selected model documents the combination. Leave them unset for current
+  Claude and reasoning-model families that reject sampling controls.
+- `stopSequences` is not supported by OpenAI Responses; it is supported by
+  the other first-party endpoint shapes subject to their model limits.
+- `parallelToolCalls` is a model-selection preference, not Harness execution
+  concurrency. Bedrock Converse has no mapping for it; use
+  `defaults.maxParallelToolCalls` to bound actual application tool execution.
+
+Use `providerOptions` only for a provider/API/model-specific documented field.
+It is shallow-merged from alias-level `providerOptions`, then
+`defaults.providerOptions`, then `call.providerOptions`. Do not duplicate a
+typed setting there: raw-field collision precedence differs by adapter.
+
+- OpenAI, Anthropic, Bedrock, and Azure reserve `requestOptions` for the SDK
+  transport options rather than the provider request body.
+- Gemini places `providerOptions.config` in the official SDK generation
+  config; use it for a Gemini-only field such as `topK` only when the model
+  exposes it.
+- Bedrock uses `additionalModelRequestFields` for model-specific Converse
+  fields. Azure model-specific pass-through fields also require the documented
+  `extra-parameters: pass-through` header in `requestOptions`.
 
 `retry` accepts `true`, `false`, or a policy object. The default is `true`.
 The harness retries short transient provider failures and rate limits inside
@@ -195,12 +267,11 @@ the application adapter.
 Workflow handlers expose `ctx.agents` and `ctx.models`. Custom agent handlers expose `ctx.models`, memory/history/session/run/signal, and validated input. The current implementation does not expose custom tool handles or skill handles on custom handler context.
 
 ```ts
-.workflows(({ workflow }) => ({
-  retrieve_and_answer: workflow({
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string() }),
-    delegation: { agents: ['answerer'] },
-    handler: async (ctx) => {
+.workflow('retrieve_and_answer', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string() }),
+  delegation: { agents: ['answerer'] },
+  handler: async (ctx) => {
       const embedding = await ctx.models.retrieval.embed(
         { input: ctx.input.question },
         ctx.signal,
@@ -222,9 +293,8 @@ Workflow handlers expose `ctx.agents` and `ctx.models`. Custom agent handlers ex
         question: ctx.input.question,
         evidence: ranked.results.map((hit) => docs[hit.index]!.text)
       }, { signal: ctx.signal })
-    }
-  })
-}))
+  }
+})
 ```
 
 The extra context argument is optional, but pass it in low-level model calls when you want correlation attributes on model spans.
@@ -233,17 +303,22 @@ The extra context argument is optional, but pass it in low-level model calls whe
 Model messages can include `ContentPart[]` for user and assistant content. Declare the matching input capability:
 
 ```ts
-await ctx.models.vision.object({
-  messages: [{
-    role: 'user',
-    content: [
-      { kind: 'text', text: 'Extract the invoice total.' },
-      { kind: 'image_url', url: invoiceUrl, mimeType: 'image/png' }
-    ]
-  }],
-  schema: invoiceSchemaJson,
-  schemaName: 'InvoiceExtraction'
-}, ctx.signal)
+await ctx.models.vision.object(
+	{
+		messages: [
+			{
+				role: 'user',
+				content: [
+					{ kind: 'text', text: 'Extract the invoice total.' },
+					{ kind: 'image_url', url: invoiceUrl, mimeType: 'image/png' },
+				],
+			},
+		],
+		schema: invoiceSchemaJson,
+		schemaName: 'InvoiceExtraction',
+	},
+	ctx.signal,
+)
 ```
 
 Inline data parts use base64 fields. The harness does not implicitly upload sandbox files; application code or the provider adapter must convert files into supported content parts.
@@ -252,19 +327,25 @@ Inline data parts use base64 fields. The harness does not implicitly upload sand
 Embeddings and rerank are provider operations, not hidden prompt features:
 
 ```ts
-const vectors = await ctx.models.retrieval.embed({
-  input: ['first document', 'second document'],
-  dimensions: 1536
-}, ctx.signal)
+const vectors = await ctx.models.retrieval.embed(
+	{
+		input: ['first document', 'second document'],
+		dimensions: 1536,
+	},
+	ctx.signal,
+)
 
-const ranked = await ctx.models.ranker.rerank({
-  query: 'refund policy',
-  documents: [
-    { id: 'a', text: 'Refunds are available for 30 days.' },
-    { id: 'b', text: 'Shipping times vary by region.' }
-  ],
-  topN: 1
-}, ctx.signal)
+const ranked = await ctx.models.ranker.rerank(
+	{
+		query: 'refund policy',
+		documents: [
+			{ id: 'a', text: 'Refunds are available for 30 days.' },
+			{ id: 'b', text: 'Shipping times vary by region.' },
+		],
+		topN: 1,
+	},
+	ctx.signal,
+)
 ```
 
 Rules enforced by the harness include non-empty input, unique rerank document ids, valid `topN`, and provider method presence.

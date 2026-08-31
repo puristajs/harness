@@ -52,15 +52,12 @@ if (bindings.diagnostics.some((item) => item.level === 'error')) {
 
 const harness = defineHarness()
   .skills(bindings.skills)
-  .tools(bindings.tools)
-  .agents(({ agent }) => ({
-    researcher: agent({
+  .tools(bindings.tools).agent('researcher', {
       model: 'primary',
       skills: ['research_playbook'],
       tools: ['search_docs'],
       instructions: 'Use the approved research resources when relevant.'
     })
-  }))
   .build()
 ```
 

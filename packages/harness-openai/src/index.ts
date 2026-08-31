@@ -44,6 +44,16 @@ export interface OpenAiFactoryOptions extends ClientOptions {
    * existing OpenAI-compatible chat-completions endpoints working.
    */
   api?: 'chat_completions' | 'responses'
+  /**
+   * Request field used for the Harness `maxTokens` setting on the Chat
+   * Completions API. The compatibility-preserving default is `max_tokens`.
+   *
+   * Set `max_completion_tokens` for a native OpenAI Chat Completions model
+   * that requires the newer field. Keep `max_tokens` for an
+   * OpenAI-compatible endpoint unless that endpoint documents the newer
+   * field. The Responses API always uses `max_output_tokens` instead.
+   */
+  chatCompletionMaxTokensParameter?: 'max_tokens' | 'max_completion_tokens'
   /** Optional injected client for tests or custom transport behavior. */
   client?: OpenAiClient
   /** Optional adapter-level logger override. Defaults to the harness logger when registered. */
@@ -93,7 +103,7 @@ export interface OpenAiFactoryOptions extends ClientOptions {
  *   .build()
  *
  * const session = await harness.getSession('demo')
- * const response = await session.workflows.summarize.prompt('Summarize this issue.')
+ * const response = await session.workflows.summarize.run('Summarize this issue.')
  * ```
  */
 export function openai(options: OpenAiFactoryOptions = {}): ModelProvider {
@@ -121,7 +131,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         throwIfResponsesFailure(response, req, 'text')
         return mapResponsesTextResponse(response, req)
       }
-      const response = await createChatCompletion(this.client, req, false, this.getLogger())
+      const response = await createChatCompletion(this.client, req, false, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       return mapChatTextResponse(response, req)
   }
 
@@ -131,7 +141,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         yield * streamResponsesText(this.client, req)
         return
       }
-      const stream = await createChatCompletion(this.client, req, true, this.getLogger())
+      const stream = await createChatCompletion(this.client, req, true, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
       let providerFinishReason: unknown
@@ -179,7 +189,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         raw: response
       }
       }
-      const response = await createChatCompletion(this.client, req, false, this.getLogger())
+      const response = await createChatCompletion(this.client, req, false, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       const textContent = response.choices[0]?.message?.content ?? '{}'
       const toolCalls = extractChatToolCalls(response, req, 'object')
       return {
@@ -203,7 +213,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         yield * streamResponsesObject<T>(this.client, req)
         return
       }
-      const stream = await createChatCompletion(this.client, req, true, this.getLogger())
+      const stream = await createChatCompletion(this.client, req, true, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
         if (chunk.usage) {
@@ -267,7 +277,15 @@ export type OpenAiClient = {
 }
 
 function toClientOptions(options: OpenAiFactoryOptions): ClientOptions {
-  const { api: _api, client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
+  const {
+    api: _api,
+    chatCompletionMaxTokensParameter: _chatCompletionMaxTokensParameter,
+    client: _client,
+    harnessLogger: _harnessLogger,
+    telemetry: _telemetry,
+    harnessTimeoutMs: _harnessTimeoutMs,
+    ...clientOptions
+  } = options
   return { maxRetries: 0, ...clientOptions }
 }
 
@@ -300,7 +318,13 @@ function extractChatToolCalls(response: any, req: ChatRequest, method: string): 
     }))
 }
 
-async function createChatCompletion(client: any, req: ChatRequest, stream: boolean, logger?: BaseModelProviderOptions['logger']): Promise<any> {
+async function createChatCompletion(
+  client: any,
+  req: ChatRequest,
+  stream: boolean,
+  logger?: BaseModelProviderOptions['logger'],
+  chatCompletionMaxTokensParameter: 'max_tokens' | 'max_completion_tokens' = 'max_tokens'
+): Promise<any> {
   const messages = toOpenAiMessages(req.messages)
   const providerOptions = {
     ...(req.defaults?.providerOptions ?? {}),
@@ -308,6 +332,8 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
   } as Record<string, unknown> & { requestOptions?: Record<string, unknown> }
   const { requestOptions, ...bodyOptions } = providerOptions
   const normalizedBodyOptions = omitUnsupportedChatCompletionOptions(bodyOptions, req, logger)
+
+  const maxTokens = req.call?.maxTokens ?? req.defaults?.maxTokens
 
   return client.chat.completions.create({
     model: req.model,
@@ -317,7 +343,7 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
     ...(stream ? { stream_options: { include_usage: true } } : {}),
     tools: toTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
-    max_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,
+    ...(maxTokens !== undefined ? { [chatCompletionMaxTokensParameter]: maxTokens } : {}),
     top_p: req.call?.topP ?? req.defaults?.topP,
     stop: req.call?.stopSequences ?? req.defaults?.stopSequences,
     ...(req.tools && (req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls) !== undefined ? { parallel_tool_calls: req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls } : {}),
@@ -334,6 +360,17 @@ async function createResponse(client: any, req: ChatRequest, stream: boolean, me
       method: stream ? ('schema' in req ? 'objectStream' : 'textStream') : ('schema' in req ? 'object' : 'text'),
       reason: 'unstructured_response',
       providerBody: { api: 'responses' }
+    })
+  }
+
+  const stopSequences = req.call?.stopSequences ?? req.defaults?.stopSequences
+  if (stopSequences && stopSequences.length > 0) {
+    throw new ModelError('OpenAI Responses API does not support stop sequences.', {
+      provider: 'openai',
+      model: req.model,
+      method,
+      reason: 'unsupported_request_option',
+      providerBody: { api: 'responses', option: 'stopSequences' }
     })
   }
 

@@ -15,8 +15,16 @@ describe('emitted message id uniqueness', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
 
     const model = new FakeModelProvider()
-    model.enqueueObject({ object: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-    model.enqueueObject({ object: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    model.enqueueObject({
+      object: 'first',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: 'stop',
+    })
+    model.enqueueObject({
+      object: 'second',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: 'stop',
+    })
 
     const storage = new InMemoryHarnessStorage()
     const harness = defineHarness()
@@ -25,25 +33,23 @@ describe('emitted message id uniqueness', () => {
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
       .tools({})
       .skills({})
-      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          delegation: {},
-          // Two agent calls in one run emit two assistant messages in the same ms.
-          // Before the fix this rejected with StateError "Duplicate message id."
-          handler: async (ctx) => {
-            const a = await ctx.agents.a1(ctx.input)
-            const b = await ctx.agents.a1(ctx.input)
-            return `${a},${b}`
-          }
-        }
+      .agent('a1', { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false })
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        // Two agent calls in one run emit two assistant messages in the same ms.
+        // Before the fix this rejected with StateError "Duplicate message id."
+        handler: async (ctx) => {
+          const a = await ctx.agents.a1(ctx.input)
+          const b = await ctx.agents.a1(ctx.input)
+          return `${a},${b}`
+        },
       })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('go')).resolves.toBe('first,second')
+    await expect(session.workflows.wf.run('go')).resolves.toBe('first,second')
 
     const messages = await storage.listMessages('s1')
     const ids = messages.map((message) => message.id)

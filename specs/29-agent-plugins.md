@@ -150,9 +150,15 @@ const bindings = plugin.bindings({
 })
 
 const harness = defineHarness()
+  .models(models)
   .skills(bindings.skills)
   .tools(bindings.tools)
-  .agents(({ agent }) => ({ researcher: agent({ /* tools: ['search_docs'] */ }) }))
+  .agent('researcher', {
+    model: 'assistant',
+    instructions: 'Research only the approved knowledge sources.',
+    tools: ['search_docs'],
+    skills: ['research_playbook'],
+  })
   .build()
 ```
 

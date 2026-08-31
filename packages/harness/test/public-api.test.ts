@@ -36,6 +36,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'OperationTimeoutError',
   'PermissionDeniedError',
   'PolicyDeniedError',
+  'SANDBOX_TEXT_SEARCH_LIMITS',
   'SandboxError',
   'SandboxConflictError',
   'SandboxNoExecutorError',
@@ -57,7 +58,9 @@ const EXPECTED_MAIN_EXPORTS = [
   'WorkspaceQuotaExceededError',
   'accumulateStreamToolCallDeltas',
   'agentExecutionRequirementsSchema',
+  'agentGuardrailsBinding',
   'bashSandbox',
+  'compileSafeRegex',
   'createTelemetryShim',
   'createDecisionEvidence',
   'createStreamToolCallState',
@@ -85,6 +88,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'isSpawnCapableSession',
   'isResumeBlockingRunStatus',
   'isTerminalRunStatus',
+  'isTextSearchCapableSession',
   'localDirectorySandbox',
   'localDirectoryWorkspace',
   'localDurableExecution',
@@ -112,6 +116,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'ulid',
   'validateContextProjection',
   'validateSessionHistoryRetention',
+  'validateSandboxTextSearchRequest',
   'messageStorageBytes',
   'withoutObjectTool',
   'evaluationResultToFeedbackRecords',
@@ -148,6 +153,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'sandboxContract',
   'sandboxMultiClientContract',
   'sandboxSnapshotContract',
+  'sandboxTextSearchContract',
   'harnessStorageContract'
 ]
 

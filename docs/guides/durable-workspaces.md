@@ -33,22 +33,17 @@ one host.
 import { defineHarness, localDurableExecution } from '@purista/harness'
 
 const local = localDurableExecution({
-  root: './.harness',
-  exec: false,
-  policy: { retention: { cleanupMode: 'manual_only' } }
+	root: './.harness',
+	exec: false,
+	policy: { retention: { cleanupMode: 'manual_only' } },
 })
 
 const harness = defineHarness({ name: 'report-worker' })
-  .storage(local.storage)
-  .workspace(local.workspace)
-  .sandbox(local.sandbox)
-  .requires([
-    'storage.persistent',
-    'storage.checkpoint',
-    'storage.resume',
-    'workspace.persistent'
-  ])
-  .build()
+	.storage(local.storage)
+	.workspace(local.workspace)
+	.sandbox(local.sandbox)
+	.requires(['storage.persistent', 'storage.checkpoint', 'storage.resume', 'workspace.persistent'])
+	.build()
 ```
 
 Close the Harness during graceful shutdown. It closes configured adapters;
@@ -60,8 +55,8 @@ Only workflows support recoverable execution. Invoke one with a stable logical
 run ID and put replayable work behind stable step IDs:
 
 ```ts
-const result = await session.workflows.report.prompt(input, {
-  durable: { runId: `report:${input.reportId}:v1` }
+const result = await session.workflows.report.run(input, {
+	durable: { runId: `report:${input.reportId}:v1` },
 })
 
 // Inside the workflow:
@@ -105,18 +100,63 @@ being committed and released only after retention metadata is safely updated.
 Bound retention through the configured workspace policy; unsupported retention
 controls fail at setup rather than looking accepted while doing nothing.
 
-## Production Adapter
+## Distributed PostgreSQL And Kubernetes Setup
 
-For multiple processes or hosts, implement `HarnessStorage` against one shared
-database with transactional lease and wait semantics. Do not wrap a generic KV
-store. Run the public contract suite and add backend-specific contention,
-migration, retention, deletion, and outage tests:
+For multiple processes or hosts, install the first-party distributed storage
+and self-hosted execution packages:
+
+```ts
+import { postgresHarnessStorage } from '@purista/harness-storage-postgres'
+import { kubernetesSandboxRuntime } from '@purista/harness-sandbox-kubernetes'
+
+const storage = postgresHarnessStorage({
+	connectionString: process.env.DATABASE_URL!,
+})
+const execution = kubernetesSandboxRuntime({
+	namespace: process.env.PURISTA_SANDBOX_NAMESPACE!,
+	image: process.env.PURISTA_SANDBOX_IMAGE!,
+	runtimeId: 'report-worker-v1',
+	workspace: { snapshotClassName: process.env.PURISTA_VOLUME_SNAPSHOT_CLASS },
+})
+
+const harness = defineHarness({ name: 'report-worker' })
+	.storage(storage)
+	.sandbox(execution.sandbox)
+	.workspace(execution.workspace)
+	.requires([
+		'storage.persistent',
+		'storage.multi_instance',
+		'workspace.durable',
+		'workspace.checkpoint',
+		'workspace.resume',
+	])
+	.models(models)
+	.workflows(workflows)
+	.build()
+
+await harness.shutdown()
+await execution.close()
+```
+
+PostgreSQL owns transactional sessions, leases, checkpoints, waits, and
+fencing. Kubernetes PVC generations hold active files and ready
+VolumeSnapshots are committed recovery points. A retained Pod or PVC alone is
+not a checkpoint. This path does not require S3.
+
+Give replicas of the same application the same stable `runtimeId`; give
+independently administered runtimes different IDs even in one namespace.
+Provision namespaced RBAC, Pod Security admission, default-deny egress,
+resource quota/limits, reviewed images, CSI snapshot support, encryption,
+retention, and cleanup before production use.
+
+Custom adapters still run the public contract suites plus backend-specific
+contention, migration, retention, deletion, and outage tests:
 
 ```ts
 import { harnessStorageContract, durableWorkspaceContract } from '@purista/harness/testing'
 
-harnessStorageContract(() => createPostgresHarnessStorage(testDatabase))
-durableWorkspaceContract(() => createObjectStorageWorkspace(testBucket))
+harnessStorageContract(() => createHarnessStorageUnderTest())
+durableWorkspaceContract(() => createDurableWorkspaceUnderTest())
 ```
 
 OpenTelemetry operations use `harness.storage.*` and `harness.workspace.*`.

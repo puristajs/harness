@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { inMemorySandbox } from './index.js'
 import { withSandboxTelemetry } from './telemetry.js'
-import { sandboxActorBarrierContract } from '../testing/sandboxContract.js'
+import { sandboxActorBarrierContract, sandboxTextSearchContract } from '../testing/sandboxContract.js'
 import { RecordingLogger, RecordingTelemetry } from '../../test/telemetryFlowHarness.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { OperationCancelledError, SandboxPermissionDeniedError, SandboxStateLostError } from '../errors/index.js'
 
 sandboxActorBarrierContract(() => inMemorySandbox())
+sandboxTextSearchContract(() => inMemorySandbox())
 
 describe('built-in sandbox administration telemetry', () => {
   it('emits redacted standard spans and metrics for owner registration and administration', async () => {

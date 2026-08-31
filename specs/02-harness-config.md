@@ -14,9 +14,13 @@ The builder is the SOLE supported construction path. `defineHarnessModule()` is
 a static transform helper for that builder, not a second construction path.
 There are no standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` factories — only inline-in-builder objects and static modules achieve the cross-key type constraints.
 
+All registry registration, invocation naming, session lifecycle naming, and
+handler-context consistency follow the approved clean-break contract in
+[42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
+
 ## Builder ordering and static modules (locked)
 
-Direct builder methods MUST be called in this order, each at most once. A
+Registry methods are repeatable and additive. A
 `.use(module)` call may occur at any pre-build point and applies its static
 transform to the accumulated builder; it cannot call `.build()` or another
 `.use()`. Its contributions are additive and collision-rejecting as specified
@@ -26,31 +30,36 @@ in [25-static-harness-modules](./25-static-harness-modules.md).
 defineHarness(opts?)
   .telemetry(...)?  .logger(...)?  .storage(...)?  .sandbox(...)?  .memory(...)?  .workspace(...)?  .requires(...)?  .defaults(...)?
   .use(module)?             // any pre-build point; static only
-  .models({...})            // REQUIRED, before direct tools/skills/agents/workflows
-  .tools({...})?            // before agents
-  .skills({...})?           // before agents
-  .agents({...})            // before workflows
-  .workflows({...})?
+  .model('id', {...})*      // singular and plural calls may be mixed
+  .models({...})*
+  .tool('id', {...})*
+  .tools({...})*
+  .skill('id', {...})*
+  .skills({...})*
+  .agent('id', {...})*
+  .agents({...})*
+  .workflow('id', {...})*
+  .workflows({...})*
   .governance(...)?         // optional late policy stage, after agents/workflows
   .build()
 ```
 
-- `models()` MUST be called before `tools()`, `skills()`, `agents()`, `workflows()`.
-- `tools()` and `skills()` MUST be called before `agents()` (each may be omitted; the agent's allowed lists then come from an empty registry).
-- `agents()` MUST be called before `workflows()`.
+- Models, tools, and skills referenced by an agent MUST be registered before
+  that agent so its definition is contextually constrained by exact keys.
+- Agents referenced by a workflow MUST be registered before that workflow.
 - `governance()` is optional, callable at most once, and only after
   `agents()` and after `workflows()` if workflows are configured. It is late so
   the policy callback can type-check declared tool, agent, workflow, and model
   keys.
-- Direct calls of `models`/`tools`/`skills`/`agents`/`workflows`/`governance`
-  are each callable at most once. Contributions from modules append to their
-  registry in caller order. Duplicate ids across direct and module calls fail
-  synchronously; no family replaces earlier entries.
+- Singular and plural model/tool/skill/agent/workflow calls append to the same
+  family registry in caller order. Duplicate ids across singular, plural,
+  direct, and module calls fail synchronously; no family replaces entries.
 - `.storage(...)`, `.memory(...)`, `.workspace(...)`, and `.requires(...)` are optional adapter-policy stages. They may be called before `.build()` and do not change the domain ordering.
-- Calling out of order or twice is a TYPE error: each builder method returns a sub-builder type that omits methods which are no longer valid (already-set or out-of-order).
-- `build()` is only present on builder types that have at least `models` set AND at least one of `agents`/`workflows` set.
+- Foundation adapter and governance methods remain single-owner configuration.
+- `build()` requires at least one accumulated model alias at runtime. Empty
+  agent and workflow registries are valid for static composition/inspection.
 
-The ordering also makes validation deterministic: each builder method runs its Zod parser synchronously and throws `HarnessConfigError` if the inputs fail.
+The ordering also makes configuration validation deterministic: each builder method runs its internal configuration parser synchronously and throws `HarnessConfigError` if configuration fails. User value schemas follow [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md): model projection happens at `build()` and sync/async value validation is awaited at invocation boundaries.
 
 ## `HarnessOptions` (entry point)
 
@@ -105,6 +114,8 @@ Pass a `HarnessStorage`. Default: `InMemoryHarnessStorage`.
 ### `.sandbox(sandbox?)`
 
 Pass a `Sandbox`. If omitted, or called with no argument, the harness auto-detects: tries `bashSandbox()` first; on import failure (the `just-bash` peer dep is not installed), falls back to `inMemorySandbox()`. See [05-sandbox](./05-sandbox.md).
+
+Both defaults provide `sandbox.text_search`, so enabling built-in `grep` remains zero-configuration. An agent that enables `grep` implicitly requires that capability. A custom sandbox that omits it is rejected by `.build()` rather than receiving a core-side file-read or shell fallback.
 
 ### `.memory(adapter)`
 
@@ -222,7 +233,7 @@ integers `>= 0`; `maxParallelChildAgentCalls` accepts integers `>= 1`. A
 workflow can opt in and override these values with
 `WorkflowDefinition.delegation`.
 
-### `.models(models)`
+### `.model(id, definition)` and `.models(definitions)`
 
 ```ts
 type ModelsConfig = Record<string, ModelAlias>
@@ -251,9 +262,11 @@ provider-neutral model retry. Defaults are safe for short transient outages and
 rate limits; long provider retry instructions are surfaced as typed deferred
 retry errors. See [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
+Singular and plural calls use the same model validation and append-only merge.
 Each key is the alias id referenced by agents. Validation:
 
-- ≥1 alias required (otherwise the resulting builder type lacks `.agents()`/`.workflows()`/`.build()`).
+- `.models(...)` requires at least one alias; `.build()` requires at least one
+  alias accumulated across all singular/plural/module calls.
 - Each `model` must claim ≥1 capability.
 
 Zod parser invoked synchronously inside the method; failure throws `HarnessConfigError`.
@@ -290,7 +303,7 @@ duplicate native rule ids within one policy, unknown referenced tool ids, and
 invalid effect/default values. Native single-tool rules over TypeScript tools
 infer `ctx.input` and `ctx.output` from the registered tool schemas.
 
-### `.tools(tools)`
+### `.tool(id, definition)` and `.tools(definitions)`
 
 ```ts
 type ToolsConfig = Record<string, ToolDefinition>
@@ -300,12 +313,12 @@ type ToolDefinition =
   | McpStdioToolDefinition
   | McpHttpToolDefinition
 
-interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.ZodTypeAny = z.ZodTypeAny> {
+interface TsToolDefinition<I extends ModelSchema = ModelSchema, O extends Schema = Schema> {
   kind?: 'ts'                                // default 'ts' if omitted
   description: string
   input: I
   output: O
-  handler: (ctx: ToolHandlerContext, input: z.infer<I>) => Promise<z.infer<O>>
+  handler: (ctx: ToolHandlerContext, input: Infer<I>) => Promise<InferIn<O>>
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
@@ -345,6 +358,12 @@ interface McpPluginProvenance {
 }
 ```
 
+Native definitions are authored directly. Both methods contextually infer
+native input/output schemas and the sandbox capabilities accumulated by the
+builder. The removed callback-helper and registration-brand API is not part of
+the public contract. Singular/plural native and MCP definitions share one
+validation and append-only merge path.
+
 See [07-tools](./07-tools.md) for full semantics. Validation rules (synchronous):
 
 - Tool ids match `/^[a-z][a-z0-9_]*$/`, ≤64 chars.
@@ -352,7 +371,7 @@ See [07-tools](./07-tools.md) for full semantics. Validation rules (synchronous)
 - Tool ids may not collide with built-in tool canonical names (`bash`, `read`, `write`, `edit`, `glob`, `grep`, `list`).
 - Reserved id prefixes (throw): `harness_`, `system_`.
 
-### `.skills(skills)`
+### `.skill(id, definition)` and `.skills(definitions)`
 
 ```ts
 type SkillsConfig = Record<string, SkillDefinition>
@@ -368,33 +387,44 @@ interface SkillDefinition {
 
 The harness resolves `directory` and parses `SKILL.md` (YAML frontmatter) synchronously inside `.skills()` for explicit local definitions. See [08-skills](./08-skills.md) for the frontmatter schema, strict/lenient validation, diagnostics, discovery helpers, trust rules, and collision behavior. In strict mode the harness config key MUST equal the frontmatter `name`; mismatch throws `SkillManifestError{reason:'name_mismatch'}`. In lenient mode, mismatch may load the frontmatter name and record a diagnostic when no collision occurs.
 
-### `.agents(agents)`
+Singular and plural calls use the same resolver and append-only registry. Skill
+ids use the Agent Skills lowercase-hyphen grammar and are validated against the
+resolved frontmatter name.
+
+### `.agent(id, definition)` and `.agents(definitions)`
 
 ```ts
 type AgentsConfig<S> = Record<string, AgentDefinition<S>>
 
 interface AgentDefinition<
   S,
-  I extends z.ZodTypeAny = z.ZodTypeAny,
-  O extends z.ZodTypeAny = z.ZodTypeAny,
+  I extends Schema = Schema,
+  O extends Schema = Schema,
 > {
   input?: I                                   // default: z.string()
   output?: O                                  // default: z.string()
   model: keyof S['models'] & string           // constrained to a registered alias
-  instructions: string | ((ctx: AgentContextMinimal<S, z.infer<I>>) => string)
+  instructions: string | ((ctx: AgentContextMinimal<S, Infer<I>>) => string)
   tools?: readonly (keyof S['tools'] & string)[]
-  builtinTools?: readonly BuiltinToolName[] | false   // default: all enabled
+  builtinTools?: readonly BuiltinToolName[] | false   // default: none
   skills?: readonly (keyof S['skills'] & string)[]
   permissions?: AgentPermissions
   maxSteps?: number                           // default 16; positive integer, no hard upper cap
-  prepareStep?: AgentPrepareStep<S, z.infer<I>>
-  stopWhen?: AgentStopWhen<S, z.infer<I>>
-  interceptors?: readonly AgentExecutionInterceptor<S, z.infer<I>>[]
-  handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+  prepareStep?: AgentPrepareStep<S, Infer<I>>
+  stopWhen?: AgentStopWhen<S, Infer<I>>
+  interceptors?: readonly AgentExecutionInterceptor<S, Infer<I>>[]
+  guardrails?: AgentGuardrailsBinding
+  handler?: (ctx: AgentContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>
 }
 ```
 
-`interceptors` are ordered, default-loop-only hooks. `beforeInput` executes
+This shared-field sketch is implemented as a correlated union: entries without `handler` require `output` to be `ModelSchema`; entries with `handler` accept validation-only `Schema` output. Invocation accepts `InferIn<I>`, while all callbacks receive validated `Infer<I>`.
+
+`interceptors` and `guardrails` are default-loop-only. The optional Guardrails
+binding is normalized after explicitly declared interceptors and shares their
+build-time requirement validation; see
+[40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md).
+`beforeInput` executes
 after input-schema validation and before instructions, transcript, or a model
 call. `afterModel` executes after content-free model.completed accounting and before final content processing or tool dispatch. `beforeOutput` gates final content before schema validation, content events and persistence; tool hooks wrap the prepared execution boundary. A block
 or hook exception is terminal and throws non-retriable `DecisionBlockedError` or `DecisionEvaluationError`.
@@ -409,38 +439,45 @@ Cross-key constraints are enforced by the type system; harness additionally re-c
 - Every entry of `tools` MUST reference a key from `.tools(...)`.
 - Every entry of `skills` MUST reference a key from `.skills(...)`.
 - If `builtinTools` is an array, every entry MUST be one of `'bash'|'read'|'write'|'edit'|'glob'|'grep'|'list'`; unknown name → `HarnessConfigError`.
+- An omitted or `false` `builtinTools` value enables no built-ins. A
+  default-loop agent with one or more `skills` MUST explicitly include `read`;
+  `.agents(...)` fails with `SkillManifestError{reason:'skill_read_tool_missing'}`
+  otherwise. Skill frontmatter never grants tools.
 - If `permissions.bash` is set but the configured sandbox's executor will be unavailable at harness, the bash policy is still parsed but warning-logged (permissions for an unavailable tool are no-ops).
 - `maxSteps`: positive integer with no hard upper cap; otherwise `HarnessConfigError`.
 - For agents WITHOUT a custom handler: the referenced model alias's `capabilities` MUST include `'object'`. If the agent declares any `tools` OR has any built-in tools enabled, the alias MUST additionally include `'tool_use'`. Violation → `HarnessConfigError{meta.reason:'agent_model_capability_mismatch'}`.
 
-### `.workflows(workflows)`
+### `.workflow(id, definition)` and `.workflows(definitions)`
 
 ```ts
 type WorkflowsConfig<S> = Record<string, WorkflowDefinition<S>>
 
 interface WorkflowDefinition<
   S,
-  I extends z.ZodTypeAny = z.ZodTypeAny,
-  O extends z.ZodTypeAny = z.ZodTypeAny,
+  I extends Schema = Schema,
+  O extends Schema = Schema,
 > {
   input?: I                                   // default: z.string()
   output?: O                                  // default: z.string()
-  handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>
+  handler: (ctx: WorkflowContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>
 }
 ```
 
 Validation:
 
 - Workflow ids match `/^[a-z][a-z0-9_]*$/`, ≤64 chars; reserved prefixes rejected.
-- Workflow ids may not collide with reserved Session member names: `'memory' | 'history' | 'release' | 'close' | 'id' | 'workflows' | 'clearHistory' | 'replaceHistory'`. Violation → `HarnessConfigError`.
 - `ctx.agents[k]` is typed by the registered agent keys.
 - A wrapper package that accepts a workflow definition and local agent
   definitions must apply the same order as the builder: register agents first,
   then workflows, so handler `ctx.agents` matches runtime availability.
+- Singular and plural calls accumulate in one registry and reject duplicates
+  identically. The callback-helper registration form does not exist.
 
 ### `.build()`
 
-Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Available only when `models` and at least one of `agents`/`workflows` are set, enforced by the builder type.
+Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). It
+throws `HarnessConfigError{reason:'missing_models'}` when no model alias was
+accumulated.
 
 ## Defaults
 
@@ -469,19 +506,20 @@ Returns the immutable `Harness<S>` (see [13-public-api](./13-public-api.md)). Av
 3. Every `agent.tools[]` entry matches a `.tools()` key — checked in `.agents()`.
 4. Every `agent.skills[]` entry matches a `.skills()` key — checked in `.agents()`.
 5. For every skill: `SKILL.md` parsed with YAML semantics, frontmatter validated, optional fields preserved, diagnostics recorded, and strict key/name rules enforced — checked in `.skills()`.
-6. Tool/skill/agent/workflow/model-alias keys MUST match `/^[a-z][a-z0-9_]*$/`, ≤64 chars; reserved prefixes `harness_`/`system_` rejected; cross-namespace collisions (tool vs skill, tool vs built-in name) and reserved Session member collisions (workflows) rejected.
+6. Tool/agent/workflow/model-alias keys MUST match `/^[a-z][a-z0-9_]*$/`, ≤64 chars, with reserved prefixes `harness_`/`system_` rejected. Skill keys use the Agent Skills lowercase-hyphen grammar. Tool/skill and tool/built-in collisions are rejected.
 7. `defaults.runTimeoutMs === 0` disables the run timeout. Per-call timeouts must be > 0; negative values rejected. `InvokeOptions.timeoutMs` follows the same `>0/0/<0` rules: negative throws `ValidationError`.
 8. Default-loop agents need `'object'` capability on their alias; `'tool_use'` if any custom tools or any built-in tools enabled — checked in `.agents()`.
 9. `defaults.historyWindow`: `undefined`/`0`/positive int OK; negative → `HarnessConfigError`. Same rules apply to `InvokeOptions.historyWindow` (negative throws `ValidationError{where:'invoke_options'}`).
 10. `defaults.maxParallelToolCalls` must be a positive integer. `1` forces sequential local execution of a model-returned tool batch.
 11. `agent.builtinTools` if an array MUST contain only valid built-in names; `agent.maxSteps` if set and `defaults.agentMaxIterations` if set MUST be positive integers. Explicit loop budgets have no hard upper cap.
 12. `.requires(...)` entries MUST be stable `AdapterCapability` values and MUST be provided by configured adapters by `.build()`.
-13. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
-14. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
-14. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
-15. `workspace.info` and durable workspace capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
-16. `storage.info` and `storage.capabilities` MUST satisfy [32-harness-storage](./32-harness-storage.md).
-17. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values and an ASCII-only marker. Validation reserves the marker's actual byte length and the complete rendered omission annotation in addition to `headBytes + tailBytes`, so every valid projected result is at most `maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
+13. Enabling built-in `grep` adds the implicit requirement `sandbox.text_search`; the configured or auto-detected sandbox MUST satisfy it at `.build()`.
+14. `telemetry.flavor` MUST be one of `'dual'`, `'gen_ai_only'`, or `'openinference_only'`.
+15. `telemetry.contentCaptureMode` MUST be one of `'NO_CONTENT'`, `'SPAN_ONLY'`, `'EVENT_ONLY'`, or `'SPAN_AND_EVENT'`.
+16. `memory.info` and memory adapter capabilities MUST pass the validation rules in [20-memory-adapters](./20-memory-adapters.md).
+17. `workspace.info` and durable workspace capabilities MUST pass the validation rules in [21-durable-workspaces](./21-durable-workspaces.md).
+18. `storage.info` and `storage.capabilities` MUST satisfy [32-harness-storage](./32-harness-storage.md).
+19. `contextProjection.toolResultPruner`, when supplied through defaults or a model alias, requires finite non-negative integer byte values and an ASCII-only marker. Validation reserves the marker's actual byte length and the complete rendered omission annotation in addition to `headBytes + tailBytes`, so every valid projected result is at most `maxBytes`; invalid configuration throws `HarnessConfigError{reason:'invalid_context_projection'}`. The corresponding invocation validation throws `ValidationError{where:'invoke_options'}`.
 
 ## `Harness<S>` returned object
 

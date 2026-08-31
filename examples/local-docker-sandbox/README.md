@@ -16,22 +16,20 @@ and referenced as `repository@sha256:<digest>` or `sha256:<local-image-id>`.
 Mutable tags are rejected. The example never downloads, pulls, builds, or
 installs an image or guest dependency. See the adapter's
 [image requirements](../../packages/harness-sandbox-docker/README.md#image-and-engine-preparation)
-and [operator-owned Dockerfile](../../packages/harness-sandbox-docker/test/Dockerfile).
+and [minimal Alpine recipe](../../packages/harness-sandbox-docker/image/README.md).
 In particular, `/workspace` must be writable by UID/GID `1000:1000`.
 
 From the repository root, after the workspace dependencies are installed:
 
 ```sh
-npm run build --workspace @purista/harness
-npm run build --workspace @purista/harness-sandbox-docker
 PURISTA_DOCKER_SANDBOX_IMAGE='sha256:YOUR_PREPARED_IMAGE_ID' \
   npm run smoke --workspace @purista/local-docker-sandbox-example
 ```
 
 Set `PURISTA_DOCKER_SANDBOX_CONTEXT` if you want a specific local Docker context.
 Otherwise the adapter resolves and pins the active context. The `smoke` script
-compiles the example against the public packages and then runs it on the real
-engine. `npm run typecheck --workspace @purista/local-docker-sandbox-example`
+compiles the example against its declared public dependencies and then runs it
+on the real engine. `npm run typecheck --workspace @purista/local-docker-sandbox-example`
 checks it without touching Docker.
 
 ## What it demonstrates

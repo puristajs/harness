@@ -1,10 +1,16 @@
 # `@purista/harness` — Specification v3
 
-This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. All persistence-related specs have been reconciled with the v3 `HarnessStorage` clean break in `32-harness-storage.md`. Proposed specs remain non-implementable until their matching readiness scope is approved.
+This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. All persistence-related specs have been reconciled with the v3 `HarnessStorage` clean break in `32-harness-storage.md`. Proposed specs remain non-implementable until their matching readiness scope is approved. Spec 42 is the owner-approved clean builder and runtime API contract; its registration rules supersede spec 40 while spec 40's direct Guardrails binding remains active. Spec 43 is the owner-approved distributed production stack selection and implementation contract.
 
-The folder contains numbered specifications through 36 plus this index; spec 33 is a structured, manifest-bound feature folder, spec 34 is the approved distributed sandbox contract/bake-off scope, and spec 35 is the approved clean-break generic evaluation contract. Spec 34 keeps provider selection and production adapter work behind a separate bake-off decision. The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, and the planned `@purista/harness-memory-postgres` and `@purista/harness-memory-redis` engines. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains numbered specifications through 43 plus this index; spec 33 is a structured, manifest-bound feature folder, spec 34 defines the distributed sandbox contract, spec 35 is the approved clean-break generic evaluation contract, and spec 43 records the completed production-provider selection. The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-google`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-storage-postgres`, `@purista/harness-sandbox-kubernetes`, `@purista/harness-agent-plugins`, `@purista/harness-policy-opa`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, and the planned `@purista/harness-memory-postgres` and `@purista/harness-memory-redis` engines. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
 
 ## Active sandbox follow-up
+
+[Spec 43: distributed production reference stack](./43-distributed-production-reference-stack.md)
+is owner-approved and selects a self-hosted Kubernetes production adapter plus
+the first-party PostgreSQL Harness storage adapter. It supersedes only spec
+34's production-provider selection block; spec 34's topology-transparent
+contract and conformance requirements remain active.
 
 [Spec 36: sandbox ownership and administration](./36-sandbox-ownership-and-administration/00-vision.md)
 is approved and extends the numbered set through 36. It is the canonical source
@@ -56,6 +62,10 @@ For an implementation agent starting cold, read in this order:
 34. [33-enterprise-memory](./33-enterprise-memory/00-vision.md) — core memory orchestration, typed model references, tenant/principal identity, search, summaries, SQLite/PostgreSQL/Redis/NATS engines, PURISTA integration, and release gates.
 35. [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) — approved topology-transparent Sandbox lifecycle with adapter-private distributed coordination, local development/test adapters, durable-file recovery, PURISTA boundary, telemetry, tests, and provider bake-off gate.
 36. [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) — provider-neutral execute-and-score and score-only observation contract, versioned trials, multi-scorer outcomes, separate task/judge accounting, aggregates, cancellation, feedback projection, and safe telemetry.
+37. [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) — repeatable singular/plural agent and workflow registration plus direct optional Guardrails binding.
+38. [41-opa-policy-adapter.md](./41-opa-policy-adapter.md) — first-party typed OPA Data API client and governance evaluator adapter.
+39. [42-clean-builder-and-runtime-api.md](./42-clean-builder-and-runtime-api.md) — uniform singular/plural registries, direct native tools, clean run/destroy naming, context consistency, and end-to-end migration.
+40. [43-distributed-production-reference-stack.md](./43-distributed-production-reference-stack.md) — PostgreSQL Harness storage, self-hosted Kubernetes sandbox/workspace runtime, one shared Harness per PURISTA service, and the distributed reference deployment.
 
 ## File index (one-liners)
 
@@ -66,7 +76,7 @@ For an implementation agent starting cold, read in this order:
 | [02-harness-config.md](./02-harness-config.md) | `defineHarness()` chainable builder, defaults, validation rules. |
 | [03-foundation.md](./03-foundation.md) | Logger interface, `HarnessError` base, OTel approach. |
 | [04-state-queue-stream.md](./04-state-queue-stream.md) | HarnessStorage port, in-memory default, durable lifecycle, and persisted shapes. |
-| [05-sandbox.md](./05-sandbox.md) | Sandbox port (FS + exec), `inMemorySandbox()` files-only and `bashSandbox()` (just-bash) defaults, auto-detect. |
+| [05-sandbox.md](./05-sandbox.md) | Sandbox port (FS + bounded text search + optional exec), `inMemorySandbox()` non-executable and `bashSandbox()` (just-bash) defaults, auto-detect. |
 | [06-models.md](./06-models.md) | Model alias, `ModelProvider` port, capability enforcement. |
 | [07-tools.md](./07-tools.md) | TS, MCP-stdio, MCP-http tool configs and behavior. |
 | [08-skills.md](./08-skills.md) | Agent Skills discovery, strict/lenient `SKILL.md` frontmatter parsing, trust/collision rules, mount-at-`/skills/<name>/`, progressive disclosure, activation, and privacy. |
@@ -97,6 +107,10 @@ For an implementation agent starting cold, read in this order:
 | [33-enterprise-memory](./33-enterprise-memory/00-vision.md) | Manifest-bound memory orchestration, identity, search, summary, SQLite, PostgreSQL, Redis, NATS, PURISTA, testing, operations, and migration contract. |
 | [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) | Approved topology-transparent Sandbox lifecycle, adapter conformance boundaries, and provider bake-off criteria; production adapter selection remains blocked. |
 | [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) | Clean-break generic evaluation run/observation/result contract, including score-only reuse, trials, assessment coverage, accounting, and optional OTel. |
+| [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) | Clean singular/plural agent/workflow registration and direct optional Guardrails binding. |
+| [41-opa-policy-adapter.md](./41-opa-policy-adapter.md) | Typed, fail-closed Open Policy Agent Data API client, governance adapter, fake, example, and operational boundary. |
+| [42-clean-builder-and-runtime-api.md](./42-clean-builder-and-runtime-api.md) | Owner-approved clean-break builder, tool authoring, invocation, session lifecycle, context, PURISTA integration, and migration contract. |
+| [43-distributed-production-reference-stack.md](./43-distributed-production-reference-stack.md) | Owner-approved distributed production stack with PostgreSQL storage, Kubernetes execution, and one shared Harness runtime per PURISTA service. |
 
 ## Authoritative anchors
 
@@ -116,6 +130,10 @@ For an implementation agent starting cold, read in this order:
 - Memory orchestration, typed model references, database engines, and PURISTA `ai.memory` integration → [33-enterprise-memory](./33-enterprise-memory/00-vision.md).
 - Distributed sandbox scope, adapter-private generations/leases/fencing, durable recovery, PURISTA boundary, and provider bake-off → [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
 - Generic evaluation execution and result behavior → [35-generic-evaluation-runs](./35-generic-evaluation-runs.md).
+- Agent/workflow registration and direct Guardrails binding → [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md).
+- Open Policy Agent governance adapter → [41-opa-policy-adapter](./41-opa-policy-adapter.md).
+- Clean builder/runtime API and migration → [42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
+- Distributed PostgreSQL/Kubernetes/PURISTA production stack → [43-distributed-production-reference-stack](./43-distributed-production-reference-stack.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 
 If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.

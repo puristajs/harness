@@ -24,16 +24,16 @@ interface Session<S> {
   /** Frees live sandbox/MCP resources while preserving persisted session state. */
   release(): Promise<void>
   /** Destructively removes persisted session state after releasing live resources. */
-  close(): Promise<void>
+  destroy(): Promise<void>
 }
 
 interface AgentInvoker<S, K extends keyof S['agents']> {
-  prompt(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
+  run(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
   stream(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 interface WorkflowInvoker<S, K extends keyof S['workflows']> {
-  prompt(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
+  run(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
   stream(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
@@ -84,11 +84,11 @@ interface DurableInvokeOptions {
   adapter.
 - `memory` and `history` handles for direct out-of-run access.
 - A `getRunSummary(runId)` method.
-- A `close()` method.
+- A destructive `destroy()` method and a persistence-preserving `release()` method.
 
-There is no dynamic `session.<workflowId>` property lookup and no `session.agent(...)` method. Direct one-agent execution is available through `session.agents.<agentId>.prompt(...)` and `.stream(...)`. Multi-agent execution is reachable only through workflows.
+There is no dynamic `session.<workflowId>` property lookup and no `session.agent(...)` method. Direct one-agent execution is available through `session.agents.<agentId>.run(...)` and `.stream(...)`. Multi-agent execution is reachable only through workflows.
 
-Application-facing execution is session-centric. The harness owns registries, adapters, and factories, but application code performs work through `harness.getSession(id)` followed by `session.agents.<agentId>.prompt(...)` / `.stream(...)` for direct agent work or `session.workflows.<workflowId>.prompt(...)` / `.stream(...)` for orchestration.
+Application-facing execution is session-centric. The harness owns registries, adapters, and factories, but application code performs work through `harness.getSession(id)` followed by `session.agents.<agentId>.run(...)` / `.stream(...)` for direct agent work or `session.workflows.<workflowId>.run(...)` / `.stream(...)` for orchestration.
 
 ## Lifecycle
 
@@ -96,7 +96,7 @@ Application-facing execution is session-centric. The harness owns registries, ad
   1. Looks up `storage.getSession(id)`.
   2. If absent, proposes a new opaque `instanceId` with `storage.upsertSession({id, instanceId, createdAt: now, updatedAt: now, runCount: 0}, 'create')`; only its atomic insertion winner may create the sandbox.
   3. Reads the stored winning record, validates exact optional identity, and returns a `Session` facade bound to that record instance.
-- `Session.close()` terminates that instance's sandbox before calling
+- `Session.destroy()` terminates that instance's sandbox before calling
   `storage.closeSession(id, instanceId)`. A stale close never deletes a newer
   instance. Recreating a closed caller-facing id generates a fresh opaque
   instance id even when the clock has not advanced.
@@ -106,14 +106,14 @@ Application-facing execution is session-centric. The harness owns registries, ad
 
 ## Per-call lifecycle (locked order)
 
-For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(input, opts?)`, `session.workflows[id].prompt(input, opts?)`, and `session.workflows[id].stream(input, opts?)`:
+For every `session.agents[id].run(input, opts?)`, `session.agents[id].stream(input, opts?)`, `session.workflows[id].run(input, opts?)`, and `session.workflows[id].stream(input, opts?)`:
 
 1. **Synchronous pre-checks.** Assert `opts.signal` is not aborted (if aborted, reject in a microtask with `OperationCancelledError{scope:'run'}`). Assert no other run is in-flight on this session (else throw `SessionBusyError` synchronously).
 2. **Acquire session lock.**
 3. **Extract trace context** from `opts.traceparent`/`opts.tracestate` if present. Invalid context is ignored with warning log code `INVALID_TRACE_CONTEXT`.
-4. **Open `harness.session.prompt` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
+4. **Open `harness.session.run` span** (outermost) with attributes `harness.session.id`, `harness.run.id`, and `harness.workflow.id` for workflow runs.
 5. **Validate input** via the selected agent/workflow input schema. Failure → `ValidationError{where:'agent_input'|'workflow_input'}`.
-6. **`storage.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `prompt`/`stream`.
+6. **`storage.createRun({status:'running', ...})`.** If this fails, the harness does not open further spans, does not emit any RunEvent, and propagates the `StateError` to the caller of `run`/`stream`.
 7. **Emit `run.started`** to the in-process run queue (see [12-streaming](./12-streaming.md)) and persist via `storage.appendEvents`.
 8. **Open child span**: `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
 9. **On success:** validate output via the selected output schema (failure → `ValidationError{where:'agent_output'|'workflow_output'}`); emit `run.finished{output}`; `storage.finishRun({status:'succeeded', finishedAt, output})`.
@@ -121,13 +121,13 @@ For every `session.agents[id].prompt(input, opts?)`, `session.agents[id].stream(
 11. **Close spans, release lock.** Failed/cancelled spans carry safe
     `harness.error.*` attributes. Timeout/cancel errors include
     `harness.error.scope` and, for timeouts, `harness.error.timeout_ms`.
-12. **Resolve `prompt` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
+12. **Resolve `run` with output (or reject with error).** For `stream`, the async iterator yields events as they are emitted and finishes after `run.finished` is yielded.
 
-The outermost span is always `harness.session.prompt`; the child is `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
+The outermost span is always `harness.session.run`; the child is `invoke_agent {agent.name}` for direct agent runs or `harness.workflow.run` for workflow runs.
 
 ### Durable workflow runs
 
-When `opts.durable` is supplied to a workflow `prompt`/`stream`, the locked order
+When `opts.durable` is supplied to a workflow `run`/`stream`, the locked order
 above is extended (see [21-durable-workspaces](./21-durable-workspaces.md) §16.1):
 
 - The run id is `opts.durable.runId` (not a fresh ULID), so the `RunRecord`,

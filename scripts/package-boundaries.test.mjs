@@ -69,6 +69,8 @@ test('adapter imports and re-exports use only published Core entrypoints', () =>
     }
   }
   assert.deepEqual(verifyPublicHarnessImports(ts, file, "import { runDecisionOperation } from '@purista/harness'; import { z } from 'zod'; import './config.js'"), [])
+  assert.deepEqual(verifyPublicHarnessImports(ts, file, "import { validateSandboxOpenOptions } from '@purista/harness/adapter'"), [])
+  assert.equal(verifyPublicHarnessImports(ts, '/workspace/ai-harness/examples/guardrails/src/index.ts', "import { validateSandboxOpenOptions } from '@purista/harness/adapter'").length, 1)
   assert.equal(verifyPublicHarnessImports(ts, file, "import { FakeModelProvider } from '@purista/harness/testing'").length, 1)
   assert.deepEqual(verifyPublicHarnessImports(ts, '/workspace/ai-harness/packages/harness-guardrails/test/rails.test.ts', "import { FakeModelProvider } from '@purista/harness/testing'"), [])
   assert.deepEqual(verifyPublicHarnessImports(ts, '/workspace/ai-harness/packages/harness/src/agents/index.ts', "import { runDecisionOperation } from '../decisions/index.js'"), [])

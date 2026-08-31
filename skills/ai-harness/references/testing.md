@@ -31,16 +31,16 @@ Unit and integration tests should not require live provider credentials. Inject 
 import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '@purista/harness'
 
 class FakeObjectProvider implements ModelProvider {
-  readonly id = 'fake'
-  readonly genAiSystem = 'fake'
+	readonly id = 'fake'
+	readonly genAiSystem = 'fake'
 
-  async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
-    return {
-      object: { answer: 'fake answer' } as T,
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop'
-    }
-  }
+	async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+		return {
+			object: { answer: 'fake answer' } as T,
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+			finishReason: 'stop',
+		}
+	}
 }
 ```
 
@@ -102,6 +102,7 @@ Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `durableWorkspaceContract`
 - `memoryEngineContract`
 - `sandboxContract`
+- `sandboxTextSearchContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`
 - `adapterCapabilitiesContract`
@@ -115,13 +116,13 @@ Adapters should prove cancellation, timeout, validation failure, and shutdown be
 ```ts
 const model = new FakeModelProvider()
 model.enqueueObject({
-  object: { answer: 'ok' },
-  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-  finishReason: 'stop'
+	object: { answer: 'ok' },
+	usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+	finishReason: 'stop',
 })
 model.enqueueEmbedding({
-  embeddings: [{ index: 0, vector: [0.1, 0.2] }],
-  usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 }
+	embeddings: [{ index: 0, vector: [0.1, 0.2] }],
+	usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 },
 })
 ```
 
@@ -131,11 +132,11 @@ Collect stream events and assert lifecycle behavior:
 ```ts
 const events = []
 for await (const event of session.workflows.audit.stream({ scope: 'all' })) {
-  events.push(event)
+	events.push(event)
 }
 
-expect(events.some((event) => event.type === 'run.started')).toBe(true)
-expect(events.some((event) => event.type === 'run.finished')).toBe(true)
+expect(events.some(event => event.type === 'run.started')).toBe(true)
+expect(events.some(event => event.type === 'run.finished')).toBe(true)
 ```
 
 For model streaming, queue fake provider chunks and test both privacy modes.
@@ -175,6 +176,7 @@ State, memory, and sandbox adapters should cover:
 - append atomicity where required
 - missing sessions/files/runs
 - executor unavailable behavior
+- bounded literal and `safe_regex_v1` search, adversarial patterns, cancellation, all incomplete-result reasons, data locality, and content-free telemetry when `sandbox.text_search` is advertised
 - snapshot/resume behavior when implemented
 - scope isolation, unsupported capability gates, and content-capture behavior for memory adapters
 # Replay and diagnostics

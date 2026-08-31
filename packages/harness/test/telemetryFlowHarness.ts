@@ -15,13 +15,27 @@ export { RecordingTelemetry } from '../src/testing/recordingTelemetry.js'
 export class RecordingLogger implements Logger {
   public readonly entries: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = []
 
-  public trace(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'trace', msg, fields }) }
-  public debug(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'debug', msg, fields }) }
-  public info(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'info', msg, fields }) }
-  public warn(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'warn', msg, fields }) }
-  public error(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'error', msg, fields }) }
-  public fatal(msg: string, fields?: Record<string, unknown>): void { this.entries.push({ level: 'fatal', msg, fields }) }
-  public child(): Logger { return this }
+  public trace(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'trace', msg, fields })
+  }
+  public debug(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'debug', msg, fields })
+  }
+  public info(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'info', msg, fields })
+  }
+  public warn(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'warn', msg, fields })
+  }
+  public error(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'error', msg, fields })
+  }
+  public fatal(msg: string, fields?: Record<string, unknown>): void {
+    this.entries.push({ level: 'fatal', msg, fields })
+  }
+  public child(): Logger {
+    return this
+  }
 }
 
 class FlowModelProvider implements ModelProvider {
@@ -39,18 +53,26 @@ class FlowModelProvider implements ModelProvider {
         object: {},
         toolCalls: [{ id: 'call-1', name: 'policy_lookup', arguments: { query: 'policy' } }],
         usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-        finishReason: 'tool_calls'
+        finishReason: 'tool_calls',
       }
     }
     return {
       object: { answer: 'Policy says yes.' },
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cachedInputTokens: 1, reasoningTokens: 1 },
-      finishReason: 'stop'
+      finishReason: 'stop',
     }
   }
 }
 
-export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failModel?: boolean; hangWorkflow?: boolean; telemetry?: TelemetryOptions; interceptors?: readonly AgentExecutionInterceptor[] } = {}) {
+export async function runTelemetryFlowHarness(
+  opts: {
+    failTool?: boolean
+    failModel?: boolean
+    hangWorkflow?: boolean
+    telemetry?: TelemetryOptions
+    interceptors?: readonly AgentExecutionInterceptor[]
+  } = {},
+) {
   const telemetry = new RecordingTelemetry()
   const logger = new RecordingLogger()
   const harness = createSessionHarness<any>({
@@ -67,10 +89,10 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
       toolTimeoutMs: 10_000,
       skillTimeoutMs: 10_000,
       modelTimeoutMs: 60_000,
-      maxParallelToolCalls: 8
+      maxParallelToolCalls: 8,
     },
     models: {
-      fast: { provider: new FlowModelProvider(opts.failModel), model: 'fake', capabilities: ['object', 'tool_use'] }
+      fast: { provider: new FlowModelProvider(opts.failModel), model: 'fake', capabilities: ['object', 'tool_use'] },
     },
     tools: {
       policy_lookup: {
@@ -83,8 +105,26 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
           await ctx.memory.session.write('tool_seen', { query: ctx.sessionId })
           if (opts.failTool) throw new Error('policy backend unavailable')
           return { policy: 'yes' }
-        }
-      }
+        },
+      },
+    },
+    modelSchemas: {
+      agentOutputs: {
+        responder: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+          additionalProperties: false,
+        },
+      },
+      toolInputs: {
+        policy_lookup: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+          additionalProperties: false,
+        },
+      },
     },
     skills: {},
     agents: {
@@ -95,8 +135,8 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
         instructions: 'Answer with policy context.',
         tools: ['policy_lookup'],
         builtinTools: false,
-        ...(opts.interceptors ? { interceptors: opts.interceptors } : {})
-      }
+        ...(opts.interceptors ? { interceptors: opts.interceptors } : {}),
+      },
     },
     workflows: {
       wf: {
@@ -107,10 +147,12 @@ export async function runTelemetryFlowHarness(opts: { failTool?: boolean; failMo
           if (opts.hangWorkflow) return new Promise<never>(() => undefined)
           await ctx.memory.session.write('workflow_topic', { value: ctx.input })
           await ctx.memory.run.write('workflow_step', { value: 'started' })
-          return ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () => ctx.agents.responder(ctx.input))
-        }
-      }
-    }
+          return ctx.metrics.duration('app.workflow.duration', { 'app.workflow.name': 'wf' }, () =>
+            ctx.agents.responder(ctx.input),
+          )
+        },
+      },
+    },
   })
   const session = await harness.getSession('telemetry-session')
   return { session, telemetry, logger }

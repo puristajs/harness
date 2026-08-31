@@ -9,6 +9,7 @@ import { SandboxAdapterCatalog } from '../sandbox/adapter-catalog.js'
 import type { SandboxAdministration } from '../sandbox/administration.js'
 import type { SandboxOwnerRegistrationOptions } from '../sandbox/ownership.js'
 import { ProcessLocalSandboxLifecycle } from '../sandbox/lifecycle.js'
+import { searchSandboxTextLocally, type SandboxTextSearchRequest, type SandboxTextSearchResult } from '../sandbox/text-search.js'
 
 /** Options for {@link FakeSandbox}. */
 export interface FakeSandboxOptions {
@@ -126,6 +127,11 @@ class FakeSandboxSession implements SandboxSession {
     }
   }
 
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    this.assertOpen()
+    return searchSandboxTextLocally(request, this)
+  }
+
   public async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     this.assertOpen()
     if (this.executor !== 'available') {
@@ -175,6 +181,12 @@ class FakeSandboxAttachment implements SandboxSession {
     await this.assertOpen()
     const base = normalizePath(atPath)
     for (const [relative, data] of files) await this.write(`${base}/${relative.startsWith('/') ? relative.slice(1) : relative}`, data)
+  }
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    return this.use(() => this.backing.searchText({
+      ...request,
+      signal: request.signal ? AbortSignal.any([request.signal, this.controller.signal]) : this.controller.signal,
+    }))
   }
   public async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     await this.assertExecOpen(this.closed)
@@ -227,8 +239,8 @@ export class FakeSandbox implements Sandbox {
 
   public constructor(private readonly options: FakeSandboxOptions = {}) {
     this.capabilities = (options.executor ?? 'available') === 'available'
-      ? ['sandbox.fs', 'sandbox.exec']
-      : ['sandbox.fs']
+      ? ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']
+      : ['sandbox.fs', 'sandbox.text_search']
   }
 
   public async registerOwner(options: SandboxOwnerRegistrationOptions): Promise<void> {

@@ -10,7 +10,7 @@ import {
   inMemorySandbox,
   localDirectoryWorkspace,
   type HarnessStorage,
-  type DurableWorkspace
+  type DurableWorkspace,
 } from '../src/index.js'
 import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
 import type { Logger } from '../src/logger/logger.js'
@@ -27,7 +27,7 @@ function noopLogger(): Logger {
     warn: () => undefined,
     error: () => undefined,
     fatal: () => undefined,
-    child: () => logger
+    child: () => logger,
   }
   return logger
 }
@@ -36,37 +36,45 @@ function durableSandbox(sessionId: string) {
   return {
     owner: { namespace: 'durable-session-test', id: sessionId, instanceId: '01J00000000000000000000000' },
     partition: { kind: 'shared' as const },
-    policyDigest: 'a'.repeat(64)
+    policyDigest: 'a'.repeat(64),
   }
 }
 
-function buildHarness(opts: { storage?: HarnessStorage; workspace?: DurableWorkspace; effects: Record<string, number> } ) {
+function buildHarness(opts: {
+  storage?: HarnessStorage
+  workspace?: DurableWorkspace
+  effects: Record<string, number>
+}) {
   const model = new FakeModelProvider()
   let builder = defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
     .tools({})
     .skills({})
-    .agents({ noop: { model: 'fast', instructions: 'x', builtinTools: false } })
+    .agent('noop', { model: 'fast', instructions: 'x', builtinTools: false })
   if (opts.storage) builder = builder.storage(opts.storage)
   if (opts.workspace) builder = builder.workspace(opts.workspace)
   return builder
-    .workflows({
-      twoStep: {
-        input: z.string(),
-        output: z.string(),
-        handler: async (ctx) => {
-          const a = await ctx.step('a', async () => { opts.effects['a'] = (opts.effects['a'] ?? 0) + 1; return { a: 1 } })
-          const b = await ctx.step('b', async () => { opts.effects['b'] = (opts.effects['b'] ?? 0) + 1; return { b: 2 } })
-          return JSON.stringify({ ...a, ...b })
-        }
-      }
+    .workflow('two_step', {
+      input: z.string(),
+      output: z.string(),
+      handler: async (ctx) => {
+        const a = await ctx.step('a', async () => {
+          opts.effects['a'] = (opts.effects['a'] ?? 0) + 1
+          return { a: 1 }
+        })
+        const b = await ctx.step('b', async () => {
+          opts.effects['b'] = (opts.effects['b'] ?? 0) + 1
+          return { b: 2 }
+        })
+        return JSON.stringify({ ...a, ...b })
+      },
     })
     .build()
 }
 
 describe('durable workflow auto-wiring', () => {
-  it.each(['success', 'cancelled'] as const)('preserves terminal %s when workspace cleanup fails', async outcome => {
+  it.each(['success', 'cancelled'] as const)('preserves terminal %s when workspace cleanup fails', async (outcome) => {
     const storage = inMemoryHarnessStorage()
     const workspace = inMemoryDurableWorkspace()
     workspace.info.policy = { ...workspace.info.policy, retention: { cleanupMode: 'adapter_automatic' } }
@@ -75,8 +83,28 @@ describe('durable workflow auto-wiring', () => {
     vi.spyOn(workspace, 'abortWorkspace').mockRejectedValue(new Error(marker))
     const logger = noopLogger()
     const warnings = vi.spyOn(logger, 'warn')
-    await storage.createRun({ id: 'terminal-cleanup', sessionId: 'terminal-session', kind: 'workflow', target: 'workflow', startedAt: new Date().toISOString(), status: 'running', input: 'input' })
-    const args = { storage, workspace, durable: { runId: 'terminal-cleanup' }, defaultWorkerId: 'worker', sessionId: 'terminal-session', workflowId: 'workflow', input: 'input', signal: new AbortController().signal, logger, harnessName: 'cleanup', sandbox: durableSandbox('terminal-session') }
+    await storage.createRun({
+      id: 'terminal-cleanup',
+      sessionId: 'terminal-session',
+      kind: 'workflow',
+      target: 'workflow',
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      input: 'input',
+    })
+    const args = {
+      storage,
+      workspace,
+      durable: { runId: 'terminal-cleanup' },
+      defaultWorkerId: 'worker',
+      sessionId: 'terminal-session',
+      workflowId: 'workflow',
+      input: 'input',
+      signal: new AbortController().signal,
+      logger,
+      harnessName: 'cleanup',
+      sandbox: durableSandbox('terminal-session'),
+    }
     const binding = await beginDurableWorkflow(args)
     if (outcome === 'success') await binding.finishSuccess('done')
     else await binding.finishCancelled(new Error('cancelled'))
@@ -92,18 +120,40 @@ describe('durable workflow auto-wiring', () => {
     const workspace = inMemoryDurableWorkspace()
     const start = vi.spyOn(workspace, 'startWorkspace')
     const resume = vi.spyOn(workspace, 'resumeWorkspace')
-    await storage.createRun({ id: 'no-checkpoint', sessionId: 'recovery-session', kind: 'workflow', target: 'workflow', startedAt: new Date().toISOString(), status: 'running', input: 'input' })
+    await storage.createRun({
+      id: 'no-checkpoint',
+      sessionId: 'recovery-session',
+      kind: 'workflow',
+      target: 'workflow',
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      input: 'input',
+    })
     const args = {
-      storage, workspace, durable: { runId: 'no-checkpoint' }, defaultWorkerId: 'worker',
-      sessionId: 'recovery-session', workflowId: 'workflow', input: 'input',
-      signal: new AbortController().signal, logger: noopLogger(), harnessName: 'recovery', sandbox: durableSandbox('recovery-session')
+      storage,
+      workspace,
+      durable: { runId: 'no-checkpoint' },
+      defaultWorkerId: 'worker',
+      sessionId: 'recovery-session',
+      workflowId: 'workflow',
+      input: 'input',
+      signal: new AbortController().signal,
+      logger: noopLogger(),
+      harnessName: 'recovery',
+      sandbox: durableSandbox('recovery-session'),
     }
     const first = await beginDurableWorkflow(args)
     await first.dispose()
     await expect(beginDurableWorkflow(args)).rejects.toMatchObject({ code: 'SANDBOX_STATE_LOST' })
     expect(start).toHaveBeenCalledTimes(1)
     expect(resume).not.toHaveBeenCalled()
-    const lease = await storage.acquireRun({ runId: 'no-checkpoint', sessionId: 'recovery-session', workerId: 'another-worker', stepId: 'workflow', input: 'input' })
+    const lease = await storage.acquireRun({
+      runId: 'no-checkpoint',
+      sessionId: 'recovery-session',
+      workerId: 'another-worker',
+      stepId: 'workflow',
+      input: 'input',
+    })
     await lease.release()
   })
 
@@ -112,7 +162,7 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('ephemeral')
 
-    await expect(session.workflows.twoStep.prompt('go')).resolves.toBe(JSON.stringify({ a: 1, b: 2 }))
+    await expect(session.workflows.two_step.run('go')).resolves.toBe(JSON.stringify({ a: 1, b: 2 }))
     expect(effects).toEqual({ a: 1, b: 1 })
   })
 
@@ -122,7 +172,7 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ storage, effects })
     const session = await harness.getSession('durable-success')
 
-    const result = await session.workflows.twoStep.prompt('go', { durable: { runId: 'run-success' } })
+    const result = await session.workflows.two_step.run('go', { durable: { runId: 'run-success' } })
     expect(result).toBe(JSON.stringify({ a: 1, b: 2 }))
 
     const checkpoint = await storage.loadCheckpoint('run-success')
@@ -138,11 +188,11 @@ describe('durable workflow auto-wiring', () => {
     const session = await harness.getSession('durable-resume')
 
     // First attempt crashes after step "a" commits its checkpoint.
-    await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-resume' } })).rejects.toThrow()
+    await expect(session.workflows.two_step.run('go', { durable: { runId: 'run-resume' } })).rejects.toThrow()
     expect(effects).toEqual({ a: 1 })
 
     // Resume with the same run id: "a" replays, only "b" runs.
-    const result = await session.workflows.twoStep.prompt('go', { durable: { runId: 'run-resume' } })
+    const result = await session.workflows.two_step.run('go', { durable: { runId: 'run-resume' } })
     expect(result).toBe(JSON.stringify({ a: 1, b: 2 }))
     expect(effects).toEqual({ a: 1, b: 1 })
   })
@@ -151,18 +201,22 @@ describe('durable workflow auto-wiring', () => {
     const storage = inMemoryHarnessStorage()
     const sandbox = inMemorySandbox()
     let entered: (() => void) | undefined
-    const started = new Promise<void>((resolve) => { entered = resolve })
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
     let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const makeHarness = () => defineHarness()
-      .sandbox(sandbox)
-      .storage(storage)
-      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .tools({})
-      .skills({})
-      .agents({ noop: { model: 'fast', instructions: 'x', builtinTools: false } })
-      .workflows({
-        block: {
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const makeHarness = () =>
+      defineHarness()
+        .sandbox(sandbox)
+        .storage(storage)
+        .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
+        .tools({})
+        .skills({})
+        .agent('noop', { model: 'fast', instructions: 'x', builtinTools: false })
+        .workflow('block', {
           input: z.string(),
           output: z.string(),
           handler: async (ctx) => {
@@ -170,16 +224,17 @@ describe('durable workflow auto-wiring', () => {
             entered?.()
             await gate
             return 'done'
-          }
-        }
-      })
-      .build()
+          },
+        })
+        .build()
 
     const first = await makeHarness().getSession('shared-session')
     const second = await makeHarness().getSession('shared-session')
-    const winner = first.workflows.block.prompt('input', { durable: { runId: 'shared-run' } })
+    const winner = first.workflows.block.run('input', { durable: { runId: 'shared-run' } })
     await started
-    await expect(second.workflows.block.prompt('input', { durable: { runId: 'shared-run' } })).rejects.toMatchObject({ name: 'DurableRunLeaseError' })
+    await expect(second.workflows.block.run('input', { durable: { runId: 'shared-run' } })).rejects.toMatchObject({
+      name: 'DurableRunLeaseError',
+    })
     release?.()
     await expect(winner).resolves.toBe('done')
     expect((await storage.getRun('shared-run'))?.status).toBe('succeeded')
@@ -189,7 +244,9 @@ describe('durable workflow auto-wiring', () => {
     class SynchronizedFirstCreateStorage extends InMemoryHarnessStorage {
       private creates = 0
       private releaseCreates: (() => void) | undefined
-      private readonly bothCreating = new Promise<void>((resolve) => { this.releaseCreates = resolve })
+      private readonly bothCreating = new Promise<void>((resolve) => {
+        this.releaseCreates = resolve
+      })
 
       public override async createRun(record: Parameters<HarnessStorage['createRun']>[0]): Promise<void> {
         this.creates += 1
@@ -204,46 +261,51 @@ describe('durable workflow auto-wiring', () => {
     const storage = new SynchronizedFirstCreateStorage()
     const sandbox = inMemorySandbox()
     let entered: (() => void) | undefined
-    const started = new Promise<void>((resolve) => { entered = resolve })
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
     let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const makeHarness = () => defineHarness()
-      .sandbox(sandbox)
-      .storage(storage)
-      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .tools({})
-      .skills({})
-      .agents({ noop: { model: 'fast', instructions: 'x', builtinTools: false } })
-      .workflows({
-        echo: {
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const makeHarness = () =>
+      defineHarness()
+        .sandbox(sandbox)
+        .storage(storage)
+        .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
+        .tools({})
+        .skills({})
+        .agent('noop', { model: 'fast', instructions: 'x', builtinTools: false })
+        .workflow('echo', {
           input: z.enum(['first', 'second']),
           output: z.enum(['first', 'second']),
           handler: async (ctx) => {
             entered?.()
             await gate
             return ctx.input
-          }
-        }
-      })
-      .build()
+          },
+        })
+        .build()
 
     const first = await makeHarness().getSession('simultaneous-session')
     const second = await makeHarness().getSession('simultaneous-session')
-    const firstAttempt = first.workflows.echo.prompt('first', { durable: { runId: 'simultaneous-run' } })
-    const secondAttempt = second.workflows.echo.prompt('second', { durable: { runId: 'simultaneous-run' } })
+    const firstAttempt = first.workflows.echo.run('first', { durable: { runId: 'simultaneous-run' } })
+    const secondAttempt = second.workflows.echo.run('second', { durable: { runId: 'simultaneous-run' } })
     await started
     release?.()
     const attempts = await Promise.allSettled([firstAttempt, secondAttempt])
 
     expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1)
     expect(attempts.filter((attempt) => attempt.status === 'rejected')).toEqual([
-      expect.objectContaining({ reason: expect.objectContaining({ name: 'DurableRunLeaseError' }) })
+      expect.objectContaining({ reason: expect.objectContaining({ name: 'DurableRunLeaseError' }) }),
     ])
     const run = await storage.getRun('simultaneous-run')
     expect(run?.status).toBe('succeeded')
     // The only completed handler is the creation winner. This detects a
     // check-then-create overwrite between two initially absent observations.
-    expect(run?.input).toBe((attempts.find((attempt) => attempt.status === 'fulfilled') as PromiseFulfilledResult<'first' | 'second'>).value)
+    expect(run?.input).toBe(
+      (attempts.find((attempt) => attempt.status === 'fulfilled') as PromiseFulfilledResult<'first' | 'second'>).value,
+    )
   })
 
   it('drives the durable workspace lifecycle across a crash and resume', async () => {
@@ -253,8 +315,8 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ storage, workspace, effects })
     const session = await harness.getSession('durable-workspace')
 
-    await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-ws' } })).rejects.toThrow()
-    await session.workflows.twoStep.prompt('go', { durable: { runId: 'run-ws' } })
+    await expect(session.workflows.two_step.run('go', { durable: { runId: 'run-ws' } })).rejects.toThrow()
+    await session.workflows.two_step.run('go', { durable: { runId: 'run-ws' } })
 
     const checkpoint = await storage.loadCheckpoint('run-ws')
     const workspaceRef = checkpoint?.replay?.workspaceRef
@@ -277,11 +339,11 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ storage, workspace, effects })
     const session = await harness.getSession('durable-workspace-policy')
     const workspacePolicy = {
-      retention: { cleanupMode: 'manual_only' as const, pausedTtlMs: 60_000 }
+      retention: { cleanupMode: 'manual_only' as const, pausedTtlMs: 60_000 },
     }
 
-    await session.workflows.twoStep.prompt('go', {
-      durable: { runId: 'run-ws-policy', workspacePolicy }
+    await session.workflows.two_step.run('go', {
+      durable: { runId: 'run-ws-policy', workspacePolicy },
     })
 
     expect(receivedPolicy).toEqual(workspacePolicy)
@@ -292,8 +354,9 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('no-runtime')
 
-    await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'run-x' } }))
-      .resolves.toBe(JSON.stringify({ a: 1, b: 2 }))
+    await expect(session.workflows.two_step.run('go', { durable: { runId: 'run-x' } })).resolves.toBe(
+      JSON.stringify({ a: 1, b: 2 }),
+    )
   })
 
   it('rejects an invalid durable run id', async () => {
@@ -301,7 +364,9 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('bad-run-id')
 
-    await expect(session.workflows.twoStep.prompt('go', { durable: { runId: 'bad run id!' } })).rejects.toBeInstanceOf(ValidationError)
+    await expect(session.workflows.two_step.run('go', { durable: { runId: 'bad run id!' } })).rejects.toBeInstanceOf(
+      ValidationError,
+    )
   })
 
   it('releases the lease when the workspace phase fails after startRun', async () => {
@@ -311,23 +376,30 @@ describe('durable workflow auto-wiring', () => {
       throw new WorkspaceError('Workspace backend down.', { reason: 'backend_failure' })
     }
     await storage.createRun({
-      id: 'run-lease-leak', sessionId: 'session-lease-leak', kind: 'workflow', target: 'wf',
-      startedAt: new Date().toISOString(), status: 'running', input: { ok: true }
+      id: 'run-lease-leak',
+      sessionId: 'session-lease-leak',
+      kind: 'workflow',
+      target: 'wf',
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      input: { ok: true },
     })
 
-    await expect(beginDurableWorkflow({
-      storage,
-      workspace: failingStore,
-      durable: { runId: 'run-lease-leak' },
-      defaultWorkerId: 'worker-1',
-      sessionId: 'session-lease-leak',
-      workflowId: 'wf',
-      input: { ok: true },
-      signal: new AbortController().signal,
-      logger: noopLogger(),
-      harnessName: 'test',
-      sandbox: durableSandbox('session-lease-leak')
-    })).rejects.toMatchObject({ code: 'WORKSPACE_ERROR' })
+    await expect(
+      beginDurableWorkflow({
+        storage,
+        workspace: failingStore,
+        durable: { runId: 'run-lease-leak' },
+        defaultWorkerId: 'worker-1',
+        sessionId: 'session-lease-leak',
+        workflowId: 'wf',
+        input: { ok: true },
+        signal: new AbortController().signal,
+        logger: noopLogger(),
+        harnessName: 'test',
+        sandbox: durableSandbox('session-lease-leak'),
+      }),
+    ).rejects.toMatchObject({ code: 'WORKSPACE_ERROR' })
 
     // The lease must have been released: another worker can acquire the run
     // immediately instead of waiting for the lease TTL.
@@ -336,7 +408,7 @@ describe('durable workflow auto-wiring', () => {
       workerId: 'worker-2',
       sessionId: 'session-lease-leak',
       stepId: 'wf',
-      input: { ok: true }
+      input: { ok: true },
     })
     expect(lease.runId).toBe('run-lease-leak')
     await lease.release()
@@ -348,8 +420,13 @@ describe('durable workflow auto-wiring', () => {
     const workspace = localDirectoryWorkspace({ root, coordinator })
     const storage = inMemoryHarnessStorage()
     await storage.createRun({
-      id: 'run-binding', sessionId: 'session-binding', kind: 'workflow', target: 'wf',
-      startedAt: new Date().toISOString(), status: 'running', input: { ok: true }
+      id: 'run-binding',
+      sessionId: 'session-binding',
+      kind: 'workflow',
+      target: 'wf',
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      input: { ok: true },
     })
 
     const binding = await beginDurableWorkflow({
@@ -363,9 +440,14 @@ describe('durable workflow auto-wiring', () => {
       signal: new AbortController().signal,
       logger: noopLogger(),
       harnessName: 'test',
-      sandbox: durableSandbox('session-binding')
+      sandbox: durableSandbox('session-binding'),
     })
-    const scope = { owner: durableSandbox('session-binding').owner, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'run-binding' }
+    const scope = {
+      owner: durableSandbox('session-binding').owner,
+      partition: { kind: 'shared' as const },
+      lifetime: 'run' as const,
+      runId: 'run-binding',
+    }
     expect(coordinator.get(scope)).toBeDefined()
 
     await binding.finishSuccess({ done: true })
@@ -378,6 +460,8 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('agent-durable')
 
-    await expect(session.agents.noop.prompt('hi', { durable: { runId: 'run-agent' } })).rejects.toBeInstanceOf(ValidationError)
+    await expect(session.agents.noop.run('hi', { durable: { runId: 'run-agent' } })).rejects.toBeInstanceOf(
+      ValidationError,
+    )
   })
 })

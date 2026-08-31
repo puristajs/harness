@@ -88,7 +88,7 @@ describe('DeLM shared-context harness example', () => {
 
     try {
       const session = await example.harness.getSession('delm-test')
-      const result = await session.workflows.decentralized_research.prompt(defaultDelmInput(), {
+      const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
         durable: { runId: 'delm-test-run' }
       })
 

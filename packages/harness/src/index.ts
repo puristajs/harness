@@ -40,7 +40,7 @@ export {
   McpAuthError,
   InternalError,
   sanitizeProviderMessage,
-  serializeError
+  serializeError,
 } from './errors/index.js'
 export type { ErrorCategory } from './errors/index.js'
 
@@ -53,7 +53,11 @@ export { ulid } from './ulid/index.js'
 export { HARNESS_VERSION } from './version.js'
 export { projectToolResults, validateContextProjection } from './context-projection.js'
 export type { ContextProjectionPolicy } from './context-projection.js'
-export { messageStorageBytes, retainCompleteTurns, validateSessionHistoryRetention } from './sessions/history-retention.js'
+export {
+  messageStorageBytes,
+  retainCompleteTurns,
+  validateSessionHistoryRetention,
+} from './sessions/history-retention.js'
 export type { SessionHistoryRetentionPolicy } from './sessions/history-retention.js'
 
 // Model provider port
@@ -96,7 +100,7 @@ export type {
   TextResponse,
   TextStreamChunk,
   TokenUsage,
-  ToolCallSpec
+  ToolCallSpec,
 } from './ports/model-provider.js'
 export type { ModelHandle, ModelInvokeContext } from './models/registry.js'
 
@@ -110,7 +114,7 @@ export {
   redactProviderContent,
   safePartialJson,
   toTokenUsage,
-  withoutObjectTool
+  withoutObjectTool,
 } from './models/adapter-utils.js'
 export type { AdapterCallContext, StreamToolCallState, TokenUsageDetails } from './models/adapter-utils.js'
 
@@ -121,7 +125,7 @@ export type {
   AdapterInspection,
   HarnessInspection,
   HarnessModuleContribution,
-  HarnessModuleInspection
+  HarnessModuleInspection,
 } from './ports/capabilities.js'
 export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/harness-context.js'
 
@@ -130,6 +134,7 @@ export type { FinishRunPatch, HarnessStorage, HarnessStorageInfo } from './stora
 export { InMemoryHarnessStorage, inMemoryHarnessStorage } from './storage/in-memory.js'
 export { isJsonValue } from './models/json.js'
 export type { JsonValue } from './models/json.js'
+export type { Infer, InferIn, ModelSchema, Schema } from './schema/index.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
 
 // Shared decision-boundary contracts
@@ -145,7 +150,7 @@ export {
   governanceDecisionSchema,
   providerContinuationItemSchema,
   providerContinuationSchema,
-  runDecisionOperation
+  runDecisionOperation,
 } from './decisions/index.js'
 export type {
   CreateDecisionEvidenceInput,
@@ -153,7 +158,7 @@ export type {
   DecisionExecutionContext,
   DecisionFailureKind,
   DecisionOccurrence,
-  DecisionSource
+  DecisionSource,
 } from './decisions/index.js'
 
 // Memory port
@@ -178,7 +183,7 @@ export type {
   MemorySearchQuery,
   MemorySearchResult,
   MemoryWriteOptions,
-  SessionMemory
+  SessionMemory,
 } from './ports/memory.js'
 export { inMemoryMemoryEngine } from './memory/in-memory.js'
 export type { HarnessIdentity } from './identity/index.js'
@@ -196,7 +201,7 @@ export type {
   ExternalWaitSignalResult,
   ExternalWaitStatus,
   ExternalWaitRegistration,
-  ExternalWaitResolved
+  ExternalWaitResolved,
 } from './storage/external-wait.js'
 
 // Durable workspace port
@@ -211,15 +216,18 @@ export type {
   WorkspaceCleanupOptions,
   WorkspaceCleanupResult,
   WorkspaceEncryptionInfo,
+  WorkspaceFinishOptions,
   WorkspaceHandle,
   WorkspaceInspection,
   WorkspaceInspectionOptions,
   WorkspaceLifecycleState,
   WorkspacePauseOptions,
+  WorkspacePinOptions,
   WorkspaceQuotaPolicy,
   WorkspaceResumeOptions,
+  WorkspaceReleasePinOptions,
   WorkspaceRetentionPolicy,
-  WorkspaceStartOptions
+  WorkspaceStartOptions,
 } from './ports/workspace.js'
 export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from './workspace/index.js'
 
@@ -229,7 +237,7 @@ export {
   DurableRunLeaseError,
   DurableTerminalRunError,
   isResumeBlockingRunStatus,
-  isTerminalRunStatus
+  isTerminalRunStatus,
 } from './runtime/index.js'
 export type {
   DurableActiveRunStatus,
@@ -243,11 +251,21 @@ export type {
   DurableRunStart,
   DurableRunStatus,
   DurableTerminalRunStatus,
-  RunCheckpoint
+  RunCheckpoint,
 } from './runtime/index.js'
 
 // Sandbox port + default factories
-export { bashSandbox, inMemorySandbox, isExecCapableSession, isReadOnlyMountCapableSession, isSpawnCapableSession } from './sandbox/index.js'
+export {
+  SANDBOX_TEXT_SEARCH_LIMITS,
+  bashSandbox,
+  compileSafeRegex,
+  inMemorySandbox,
+  isExecCapableSession,
+  isReadOnlyMountCapableSession,
+  isSpawnCapableSession,
+  isTextSearchCapableSession,
+  validateSandboxTextSearchRequest,
+} from './sandbox/index.js'
 export type {
   BashSandboxOptions,
   ExecCapableSandboxSession,
@@ -269,7 +287,13 @@ export type {
   SnapshotResult,
   SpawnCapableSandboxSession,
   SpawnOptions,
-  SandboxTerminateOptions
+  SandboxTerminateOptions,
+  SandboxTextSearchLimitReason,
+  SandboxTextSearchMatch,
+  SandboxTextSearchRequest,
+  SandboxTextSearchResult,
+  SandboxTextSearchSyntax,
+  TextSearchCapableSandboxSession,
 } from './sandbox/index.js'
 export type {
   SandboxBindingOptions,
@@ -279,11 +303,11 @@ export type {
   SandboxPartition,
   SandboxPolicy,
   SessionOptions,
-  SessionSandboxBinding
+  SessionSandboxBinding,
 } from './sandbox/ownership.js'
 export {
   sandboxOwnerRegistrationOptionsSchema,
-  sandboxScopeSchema
+  sandboxScopeSchema,
 } from './sandbox/ownership.js'
 export type {
   SandboxAdministration,
@@ -298,13 +322,13 @@ export type {
   SandboxSnapshotPolicy,
   SandboxSweepOptions,
   SandboxSweepResult,
-  WorkspaceAdministrationOptions
+  WorkspaceAdministrationOptions,
 } from './sandbox/administration.js'
 export {
   sandboxListOptionsSchema,
   sandboxPurgeOptionsSchema,
   sandboxSnapshotDeleteOptionsSchema,
-  sandboxSweepOptionsSchema
+  sandboxSweepOptionsSchema,
 } from './sandbox/administration.js'
 export { withSandboxTelemetry } from './sandbox/telemetry.js'
 export type { SandboxTelemetryOperation } from './sandbox/telemetry.js'
@@ -317,7 +341,7 @@ export {
   localDirectoryWorkspace,
   localDurableExecution,
   SqliteHarnessStorage,
-  sqliteHarnessStorage
+  sqliteHarnessStorage,
 } from './local/index.js'
 export type {
   LocalDirectorySandboxOptions,
@@ -328,7 +352,7 @@ export type {
   LocalExecSandboxCapabilities,
   LocalFilesOnlySandboxCapabilities,
   LocalHostExecPolicy,
-  SqliteHarnessStorageOptions
+  SqliteHarnessStorageOptions,
 } from './local/index.js'
 
 // Skills discovery
@@ -339,7 +363,7 @@ export {
   createDeterministicEvaluationScorer,
   evaluationResultToFeedbackRecords,
   runEvaluation,
-  scoreEvaluation
+  scoreEvaluation,
 } from './eval/index.js'
 export type {
   DeterministicEvaluationScorerDefinition,
@@ -383,17 +407,19 @@ export type {
   EvaluationTaskResultRecord,
   EvaluationTaskTarget,
   EvaluationTimeouts,
-  EvaluationTrial
+  EvaluationTrial,
 } from './eval/index.js'
 
 // Builder, harness, session, and handler context types
-export { defineHarness, defineHarnessModule } from './harness/defineHarness.js'
+export { agentGuardrailsBinding, defineHarness, defineHarnessModule } from './harness/defineHarness.js'
 export { agentExecutionRequirementsSchema } from './harness/agent-requirements.js'
 export type { AgentExecutionRequirements } from './harness/agent-requirements.js'
 export type {
   AgentContext,
   AgentContextMinimal,
+  AgentGuardrailsBinding,
   AgentDefinition,
+  AgentDefinitionCommon,
   AgentAfterModelInterceptorContext,
   AgentAfterToolInterceptorContext,
   AgentBeforeInputInterceptorContext,
@@ -406,7 +432,6 @@ export type {
   AgentExecutionInterceptor,
   AgentExecutionInterceptorContext,
   AgentModelRequest,
-  AgentDefinitionHelpers,
   AgentInput,
   AgentInvoker,
   AgentOutput,
@@ -486,21 +511,18 @@ export type {
   TelemetryFlavor,
   TelemetryOptions,
   ToolDefinition,
-  ToolDefinitionHelpers,
   ToolHandlerContext,
   ToolInput,
   ToolsConfig,
-  RegisteredTsToolDefinition,
   TsToolDefinition,
   WorkflowAgentInvokeOptions,
   WorkflowChildTasks,
   WorkflowContext,
   WorkflowDefinition,
-  WorkflowDefinitionHelpers,
   WorkflowDelegationPolicy,
   WorkflowFanOutOptions,
   WorkflowInput,
   WorkflowInvoker,
   WorkflowOutput,
-  WorkflowsConfig
+  WorkflowsConfig,
 } from './harness/defineHarness.js'

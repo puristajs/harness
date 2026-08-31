@@ -13,7 +13,7 @@ import { checkCancelled, collect, DEFAULT_TIMEOUT_MS, type DockerChild, type Doc
 import { DockerAdministration } from './administration.js'
 import { DockerOwnershipJournal } from './ownership.js'
 
-export const CAPABILITIES = ['sandbox.fs', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] as const
+export const CAPABILITIES = ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] as const
 type Engine = Pick<LifecycleRecord, 'context' | 'host' | 'engineId'>
 const LABEL = 'purista.sandbox.owner'
 const CONTAINER_FORMAT = `{{.Id}}\t{{index .Config.Labels "${LABEL}"}}\t{{.State.Running}}`
@@ -147,8 +147,8 @@ export class DockerSandbox implements Sandbox<typeof CAPABILITIES> {
             '-c', 'trap "exit 0" TERM INT; while :; do sleep 86400 & wait; done',
           ], options.signal)
           const preflight = await this.run(engine, ['exec', resourceName(record), 'sh', '-ceu',
-            'for tool in sh sleep base64 find stat realpath dirname mkdir rm cat test; do command -v "$tool" >/dev/null; done; test -w /workspace; find /workspace -maxdepth 0 -printf ""; stat --printf "" /workspace; realpath -m /workspace >/dev/null'], options.signal)
-          if (preflight.exitCode !== 0) throw configurationFailure('invalid_guest_image', 'Docker sandbox image must provide GNU-compatible filesystem utilities and a workspace writable by its configured non-root user.')
+            'for tool in sh sleep base64 find grep stat realpath dirname mkdir rm cat test; do command -v "$tool" >/dev/null; done; test -w /workspace; find /workspace -maxdepth 0 -printf ""; stat --printf "" /workspace; realpath -m /workspace >/dev/null; printf test | grep -E -m 1 -- "t.st" >/dev/null'], options.signal)
+          if (preflight.exitCode !== 0) throw configurationFailure('invalid_guest_image', 'Docker sandbox image must provide GNU-compatible filesystem and bounded text-search utilities plus a workspace writable by its configured non-root user.')
           record = { ...record, state: 'active' }
           await this.records.write(record)
           await this.journal.markActive(key)

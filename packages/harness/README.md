@@ -47,6 +47,11 @@ may detach from shared sandbox state but cannot terminate the parent resource.
 Tool-call governance is optional. Configure `.governance(...)` only when an
 application needs policy-driven tool exposure, typed domain policies, approval
 gates, shadow rollout, audit events, or an adapter to an external policy engine.
+For OPA, install the independent `@purista/harness-policy-opa` addon. It owns
+the bounded Data API transport and preserves builder-derived tool-input types;
+the application still owns identity, least-data mapping, Rego/bundles,
+credentials, topology, and decision-log controls. Cedar and AWS Verified
+Permissions remain distinct application-owned integrations.
 
 Content rails return allow/block/phase-specific transforms; permissions and
 policies can demand approval, and the single `governance.approval` provider
@@ -70,6 +75,13 @@ leases, fencing, and resource identifiers stay inside the adapter. An absent
 `attach` or `restore` is `SandboxStateLostError`; it is never replaced with an
 empty workspace. Durable workspace checkpoint files—not a retained process or
 volume—are the recovery guarantee.
+
+Both built-in sandboxes provide bounded, non-backtracking file search through
+`sandbox.text_search`; `inMemorySandbox()` needs no shell. Agents opt in with
+`builtinTools: ['grep']`, and each result reports whether limits made it
+incomplete. Custom Docker, Kubernetes, microVM, and remote adapters implement
+the same `searchText(...)` contract where their files live. Missing support
+fails at `build()` instead of downloading files or using a hidden fallback.
 
 For trusted single-host Docker Desktop or OrbStack development, install the
 independent adapter:
@@ -116,6 +128,14 @@ traffic recording or persistent replay data.
 ```bash
 npm install @purista/harness
 ```
+
+Install the schema library chosen by the application. Zod is the default in
+examples, but Harness accepts any Standard Schema validator at agent, tool,
+workflow, and Guardrail validation boundaries. Default-loop agent output and
+TypeScript-tool input additionally need Standard JSON Schema because a model
+creates those values. Zod and ArkType satisfy both directly; Valibot needs its
+official `@valibot/to-json-schema` wrapper only for those model-facing schemas.
+Harness does not re-export Zod or require an application dependency on it.
 
 Optional peer dependencies:
 

@@ -138,6 +138,81 @@ that strand recovery after an effect. Invoke the domain command idempotently,
 persist its receipt, and return the stored receipt on replay. A signal alone
 does not authorize or prove execution.
 
+When a review decision crosses a queue, webhook, or separately operated review
+service, authenticate the transport and use a versioned signed envelope for the
+stable binding fields: event/wait IDs, outcome, review revision, action digest,
+definition version, issuer, audience, issue/expiry time, and key ID. Verify that
+envelope before the application's revision compare-and-swap and before
+`signalWait(...)`. Keep proposal text, tool arguments, reviewer comments, and
+credentials out of it. A signature authenticates delivery; it does not replace
+reviewer authorization, action binding, compare-and-swap, or execution
+idempotency. An authenticated direct internal call can instead rely on the
+platform service identity and durable audit record when the threat model permits.
+
+## External policy engines
+
+Harness ships the optional `@purista/harness-policy-opa` package for OPA's
+stable Data API. The governance builder's `adapter(...)` helper by itself still
+performs no I/O; `opaPolicy(helpers, ...)` uses it as an inference anchor and
+adds the focused transport, validation, and mapping boundary.
+
+```ts
+import { createOpaClient, opaPolicy } from '@purista/harness-policy-opa'
+
+const client = createOpaClient({ baseUrl: process.env.OPA_URL! })
+
+.governance((helpers) => ({
+  defaultEffect: 'deny',
+  policies: [opaPolicy(helpers, {
+    id: 'transfer-policy',
+    client,
+    decisionPath: ['purista', 'bank', 'transfer', 'decision'],
+    mapInput: (ctx) => ctx.toolId === 'transfer_funds'
+      ? { amount: ctx.input.amount, destination: ctx.input.destination }
+      : undefined,
+    resultSchema: opaResultSchema,
+    mapDecision: (result) => result.matched
+      ? {
+          effect: result.effect,
+          ...(result.ruleId === undefined ? {} : { ruleId: result.ruleId }),
+          ...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+        }
+      : undefined,
+  })],
+}))
+```
+
+The package owns the fixed URL and encoded path, one-attempt request, linked
+signal/deadline, streaming byte bound, Data API envelope, undefined-document
+semantics, and content-free failures. The application owns authenticated
+identity, the least-data input mapping, strict result schema/decision mapping,
+credentials, Rego/bundles, rollout, availability, and OPA decision-log policy.
+When registered through `opaPolicy(...)`, the client also inherits the active
+Harness OpenTelemetry context and forwards only the W3C `traceparent` header to
+that fixed trusted OPA endpoint. Policy evaluation emits a content-free
+`harness.policy.evaluate` guardrail span plus outcome metrics; it never exports
+policy input, result, URL, headers, or credentials. Do not add trace headers
+from tool or model input.
+Use the [maintained example](../../examples/opa-governance/README.md) for the
+complete real-engine and fake-driven paths.
+
+Choose the engine topology before extracting reusable code:
+
+| Policy system | Integration boundary | Good reusable package boundary |
+| --- | --- | --- |
+| OPA | Named decision through the stable Data API | First-party `@purista/harness-policy-opa`; application-owned identity, input/result mapping, credentials, bundles, and operations |
+| Embedded Cedar | One selected in-process Cedar runtime | That runtime's policy/schema loading and authorizer lifecycle |
+| AWS Verified Permissions | AWS `IsAuthorized` against a policy store | AWS client invocation and response normalization |
+| Custom service | Application-defined local or remote contract | Usually application code; keep its request and result schema explicit |
+
+The application always owns authenticated principal/resource resolution,
+minimal request mapping, strict decision mapping, credentials, policy rollout,
+and selected-engine integration tests. Cedar is an authorization language and
+request model, not one generic network endpoint, so embedded Cedar and AWS
+Verified Permissions are separate adapters. Avoid a generic arbitrary-endpoint
+policy client: it saves little mapping work while widening credential and SSRF
+risk.
+
 ## Coverage limits
 
 Attached rails protect default-loop agents. Direct `ctx.models.*` calls and

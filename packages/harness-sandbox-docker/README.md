@@ -36,6 +36,13 @@ missing scope with a blank container.
 
 ## Image and engine preparation
 
+For a small starting image, use the packaged
+[minimal Alpine recipe](./image/README.md). It supplies Node.js and the GNU
+utilities below without Git, SSH, npm or application files. Build it explicitly,
+run its restricted smoke check, then pass its final immutable image ID to the
+adapter. The recipe is also usable by the Kubernetes sandbox adapter; it is
+not an automatically pulled or published PURISTA container image.
+
 Install the Docker CLI and provision a local Linux engine separately. Select its
 Unix-socket Docker context, or pass `context` explicitly. The adapter resolves
 the context once and pins both its socket endpoint and engine identity. Remote
@@ -52,6 +59,10 @@ Docker initializes the private named volume with the right ownership. Prepare
 other application paths, such as `/skills`, for the same non-root user when
 they are needed. Missing utilities or workspace permissions fail preflight;
 the adapter does not run a privileged repair command.
+
+The image must also provide GNU-compatible `grep` with extended-regex,
+fixed-string, line-number, binary-text, case-folding, and match-limit support.
+Preflight verifies this requirement before a scope is allocated.
 
 Every Sandbox path is an absolute **guest-container** path. The persistent
 volume is `/workspace`, also the default execution directory. For example,
@@ -75,6 +86,22 @@ and stderr are each bounded to 10 MiB, including streaming spawn output; an
 overflow fails explicitly, without silent truncation. Binary file reads use
 base64 transport and therefore share its encoded-output bound. CLI diagnostics
 and inspect results never become public error details.
+
+## Bounded text search
+
+The adapter advertises `sandbox.text_search`, so built-in `grep` has the same
+public input and result contract as the default sandbox. Matching executes
+inside the guest against its private volume; file contents are not copied into
+the Harness process. Patterns and paths are passed as command arguments after
+the fixed `--` delimiter, never interpolated into a shell program.
+
+The adapter validates the case-sensitive ASCII-pattern `safe_regex_v1` before
+guest work and uses GNU grep's extended-regex engine for the portable subset;
+literal insensitive matching folds ASCII letters only. Fixed contract limits bound
+patterns, files, bytes, returned lines, and match count. A successful response
+with `complete: false` and `limitReasons` is a partial result, not proof that no
+additional match exists. Search cancellation uses the normal guest-process
+cleanup path.
 
 ## Release, restart, and cleanup
 
@@ -100,7 +127,7 @@ the engine recovers. A confirmed dead host owner is recovered only after guest
 work is stopped. Uncertain ownership fails closed instead of taking over.
 
 At the Harness layer, `session.release()` preserves history and sandbox state;
-`session.close()` deletes the conversation and explicitly terminates its
+`session.destroy()` deletes the conversation and explicitly terminates its
 sandbox. `sandbox.terminate(...)` first persists terminal intent, then removes
 only its labeled container and volume. Failed or interrupted cleanup is
 retryable; attachment and recreation remain blocked. Successful termination
@@ -135,7 +162,7 @@ operation into state loss.
 ## Verification
 
 `npm test --workspace @purista/harness-sandbox-docker` runs the shared sandbox
-contract and private scripted-transport tests without Docker or credentials.
+and text-search contracts plus private scripted-transport tests without Docker or credentials.
 Those tests verify protocol behavior and failure handling, not kernel or
 engine isolation. Real-engine tests are opt-in:
 
@@ -145,9 +172,10 @@ PURISTA_DOCKER_SANDBOX_IMAGE='registry.example/guest@sha256:YOUR_DIGEST' \
 ```
 
 Set `PURISTA_DOCKER_SANDBOX_CONTEXT` when testing a context other than the active
-one. The image must already be present. `test/Dockerfile` shows the required
-directory ownership for an operator-supplied digest-pinned Debian base; build
-and provision the final image explicitly outside Harness execution. Record the
+one. The image must already be present. Prefer the packaged `image/Dockerfile`
+and its smoke check; `test/Dockerfile` remains a test fixture for an
+operator-supplied Debian base. Build and provision the final image explicitly
+outside Harness execution. Record the
 final image digest, OS, Docker CLI/engine versions, and OrbStack version where
 applicable alongside smoke results before claiming support.
 

@@ -12,7 +12,7 @@
 - Testing
 
 ## Mental Model
-The sandbox is a logical session- or run-scoped filesystem and optional command-execution boundary. TypeScript tools receive a capability-inferred attachment; MCP stdio requires its `spawn` operation. Deployment topology is adapter-private: the same contract works for one local process, a Docker guest, or a remote provider.
+The sandbox is a logical session- or run-scoped filesystem, bounded text-search boundary, and optional command-execution boundary. TypeScript tools receive a capability-inferred attachment; built-in `grep` requires `searchText`, while MCP stdio requires `spawn`. Deployment topology is adapter-private: the same contract works for one local process, a Docker guest, a Kubernetes pod, or a remote provider.
 
 Keep sandbox policy explicit. Do not treat host filesystem, process execution, network policy, or secrets as implicitly safe.
 
@@ -21,20 +21,22 @@ Keep sandbox policy explicit. Do not treat host filesystem, process execution, n
 import { bashSandbox, inMemorySandbox } from '@purista/harness'
 
 defineHarness().sandbox(inMemorySandbox())
-defineHarness().sandbox(bashSandbox({
-  executionLimits: { wallClockMs: 120_000, maxFileSystemBytes: 64 * 1024 * 1024 }
-}))
+defineHarness().sandbox(
+	bashSandbox({
+		executionLimits: { wallClockMs: 120_000, maxFileSystemBytes: 64 * 1024 * 1024 },
+	}),
+)
 defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySandbox()
 ```
 
 `inMemorySandbox()`:
-- capabilities: `['sandbox.fs']`
-- filesystem-only
+- capabilities: `['sandbox.fs', 'sandbox.text_search']`
+- filesystem plus bounded text search
 - `executor: 'unavailable'`
 - `bash` and stdio MCP cannot run
 
 `bashSandbox()`:
-- capabilities: `['sandbox.fs', 'sandbox.exec']`
+- capabilities: `['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']`
 - requires optional peer dependency `just-bash`
 - creates an in-memory filesystem session with command execution delegated to `just-bash`
 - shares one filesystem between file APIs, mounted skills, and commands
@@ -43,11 +45,37 @@ defineHarness().sandbox() // auto-detect bashSandbox(), fallback to inMemorySand
 - configuration is strict: unknown fields and invalid limits fail with `HarnessConfigError`; the optional `just-bash` peer must be installed
 
 `localDirectorySandbox({ root, exec?, coordinator? })` (part of `localDurableExecution`):
-- default capabilities: `['sandbox.fs', 'sandbox.persistent_fs']` (files-only); a compatible coordinator adds `sandbox.workspace_binding`, and configuring `exec` adds `sandbox.exec` and `sandbox.spawn` — persistence is independent of exec
+- default capabilities: `['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs']` (files/search only); a compatible coordinator adds `sandbox.workspace_binding`, and configuring `exec` adds `sandbox.exec` and `sandbox.spawn` — persistence and search are independent of exec
 - host-directory persistence with a realpath jail; symlink escapes (including dangling symlink write targets) and traversal-shaped `sessionId`/`runId` throw `SandboxError{reason:'invalid_path'}`
 - maps `/workspace` to the active durable workspace when bound through the coordinator
 - exec runs without a shell (tokenized argv); unquoted shell metacharacters are rejected when `allowCommands` is set; output capture caps at 10 MiB per stream; timeout falls back to the harness `toolTimeoutMs`; abort surfaces `OperationCancelledError{scope:'sandbox'}`
 - durable local persistence, not a hardened isolation layer — enabling `exec` is a host trust decision
+
+`kubernetesSandboxRuntime(options)` from
+`@purista/harness-sandbox-kubernetes`:
+
+```ts
+const execution = kubernetesSandboxRuntime({
+	namespace: process.env.PURISTA_SANDBOX_NAMESPACE!,
+	image: process.env.PURISTA_SANDBOX_IMAGE!,
+	runtimeId: 'support-v1',
+	workspace: { snapshotClassName: process.env.PURISTA_VOLUME_SNAPSHOT_CLASS },
+})
+```
+
+- returns `{ sandbox, workspace?, close }`; workspace capabilities are present
+  only when `workspace` is enabled
+- salts ConfigMap control records, Pods, PVC generations, and snapshots with
+  the stable runtime id so independent runtimes cannot collide in one namespace
+- executes commands as argv without a host shell and runs bounded `grep -F` or
+  validated `grep -E` where the files live
+- creates restricted non-root pod specs, while the cluster still owns RBAC,
+  Pod Security admission, egress, quota/limits, CSI, image provenance, secrets,
+  retention, and cleanup policy
+- uses a ready `VolumeSnapshot` as the committed file recovery point; retained
+  Pods or PVCs alone are not workflow checkpoints and no S3 service is required
+- should be composed once per application/service runtime, then closed after
+  Harness shutdown
 
 ## Enterprise Selection Rule
 
@@ -62,7 +90,8 @@ and secure cleanup.
 | Reviewed files plus TypeScript/HTTP tools | `inMemorySandbox()` | A session ID or schema is not authorization |
 | Trusted local transformation | `bashSandbox()` with a narrow reviewed use case | `bashSandbox()` is not a container/VM and cannot host stdio MCP |
 | Local durable trusted worker | `localDurableExecution({ exec: false })`, or explicitly reviewed host exec | The local path jail is not a tenant/process isolation boundary |
-| Untrusted/model-directed command or stdio MCP | A custom container, microVM, or remote adapter that enforces its policy | A host process, `bashSandbox()`, or local directory sandbox |
+| Self-hosted untrusted/model-directed command | `@purista/harness-sandbox-kubernetes` with namespaced RBAC, restricted image, admission, egress and quotas, or another reviewed isolating adapter | A host process, `bashSandbox()`, or local directory sandbox |
+| Remote or microVM execution | A custom adapter that enforces the same contract and platform policy | Capability names without provider-level tests |
 | Trusted Agent Plugin stdio process | Spawn-capable **and** immutable-mount-capable isolating adapter | `inMemorySandbox()` and `localDirectorySandbox()` cannot enforce `mountReadOnly(...)` |
 
 For an executor in a regulated production deployment, require platform tests
@@ -87,6 +116,17 @@ mount(files, atPath): Promise<void>
 close(): Promise<void>
 executor: 'available' | 'unavailable'
 ```
+
+Sessions whose adapter declares `sandbox.text_search` additionally expose:
+
+```ts
+searchText({ path, pattern, syntax, caseSensitive, maxResults, signal })
+  : Promise<SandboxTextSearchResult>
+```
+
+Use `isTextSearchCapableSession(session)` for dynamically widened adapters.
+Results include `complete` and `limitReasons`; false completeness means the
+caller must narrow and retry rather than infer that search was exhaustive.
 
 Paths must be absolute POSIX paths. Invalid paths throw `SandboxError` with `reason: 'invalid_path'`.
 
@@ -123,13 +163,14 @@ The harness uses the sandbox for two important runtime paths:
 - mounted skills: `/skills/<name>/...`
 - no sandbox-backed memory default: memory is process-local until an explicit `MemoryEngine` is configured
 
-If an agent needs mounted skill instructions, leave read-only built-ins available:
+If an agent needs mounted skill instructions, explicitly enable `read`:
 
 ```ts
-builtinTools: ['read', 'list', 'grep']
+builtinTools: ['read']
 ```
 
-If `builtinTools: false`, the model cannot inspect `/skills/<name>/SKILL.md` unless your own tool or prompt provides the content.
+Skills never enable built-ins. A default-loop skill agent without `read`
+fails during agent registration; add `list` or `grep` only when required.
 
 ## Built-In Tools And Risk
 Built-ins operate against the active sandbox:
@@ -139,36 +180,37 @@ Built-ins operate against the active sandbox:
 
 Security defaults:
 - use `inMemorySandbox()` for file-only agents
-- disable all built-ins for tool-only agents with `builtinTools: false`
+- omit `builtinTools` for agents that need no built-ins
 - enable only read-only built-ins for skill-reading agents
 - add permission policies for `bash`, `write`, and `edit`
 - use `bashSandbox()` only for workloads that genuinely need trusted in-process command execution; it cannot run `mcp_stdio`
+- `grep` uses `sandbox.text_search` and needs no executor; enabling it creates an implicit build-time capability requirement
 
 ## Custom Sandbox Adapters
 Implement `Sandbox<C>`:
 
 ```ts
 const remoteSandbox = {
-  capabilities: ['sandbox.fs', 'sandbox.exec'] as const,
-  configureHarnessContext(context) {
-    this.logger = context.logger
-    this.telemetry = context.telemetry
-  },
-  async registerOwner({ owner, mode, signal }) {
-    // Create or attach only an application-authorized logical owner.
-  },
-  async open({ scope, mode, signal }) {
-    // `create` allocates, `attach` must find existing state,
-    // `restore` requires the adapter's explicit workspace-recovery support.
-    return {
-      session: remoteSession,
-      disposition: mode === 'create' ? 'created' : 'attached',
-      liveProcessState: 'not_preserved'
-    }
-  },
-  async terminate({ scope, reason, signal }) {
-    // Idempotently destroy only the resources addressed by the opaque scope mapping.
-  }
+	capabilities: ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec'] as const,
+	configureHarnessContext(context) {
+		this.logger = context.logger
+		this.telemetry = context.telemetry
+	},
+	async registerOwner({ owner, mode, signal }) {
+		// Create or attach only an application-authorized logical owner.
+	},
+	async open({ scope, mode, signal }) {
+		// `create` allocates, `attach` must find existing state,
+		// `restore` requires the adapter's explicit workspace-recovery support.
+		return {
+			session: remoteSession,
+			disposition: mode === 'create' ? 'created' : 'attached',
+			liveProcessState: 'not_preserved',
+		}
+	},
+	async terminate({ scope, reason, signal }) {
+		// Idempotently destroy only the resources addressed by the opaque scope mapping.
+	},
 }
 ```
 
@@ -191,6 +233,7 @@ optimization and must be reported truthfully through `liveProcessState`.
 
 Adapter capabilities include:
 - `sandbox.fs`
+- `sandbox.text_search`
 - `sandbox.exec`
 - `sandbox.persistent_fs`
 - `sandbox.snapshot`
@@ -200,6 +243,18 @@ Adapter capabilities include:
 - `sandbox.workspace_binding` (the adapter can bind a run sandbox to an active durable workspace)
 
 Use `.requires([...])` to force startup failure when a required capability is absent.
+Built-in `grep` adds `sandbox.text_search` implicitly.
+
+For `sandbox.text_search`, each opened session implements
+`searchText(SandboxTextSearchRequest)`. Call
+`validateSandboxTextSearchRequest(...)` at the adapter boundary and enforce
+`SANDBOX_TEXT_SEARCH_LIMITS` where the data lives. `safe_regex_v1` is a
+case-sensitive ASCII-pattern portable non-backtracking subset; literal
+insensitive matching folds ASCII letters only. Pass patterns and paths as typed
+provider fields or process arguments, never shell interpolation. Stable results
+must report `complete: false` and precise `limitReasons` whenever scanning or
+returned text was bounded. Run `sandboxTextSearchContract(...)` in addition to
+the base sandbox contract.
 
 ## Long-Lived Processes (`sandbox.spawn`)
 `exec` is one-shot. A sandbox that can host a long-lived process with streaming

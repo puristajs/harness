@@ -2,7 +2,14 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { defineHarness, localDurableExecution, type JsonValue, type ModelProvider, type ObjectRequest, type ObjectResponse } from '@purista/harness'
+import {
+  defineHarness,
+  localDurableExecution,
+  type JsonValue,
+  type ModelProvider,
+  type ObjectRequest,
+  type ObjectResponse,
+} from '@purista/harness'
 
 class NoopProvider implements ModelProvider {
   readonly id = 'noop'
@@ -12,11 +19,19 @@ class NoopProvider implements ModelProvider {
   }
 }
 
-const planInput = z.object({ topic: z.string(), failAfterFirstStep: z.boolean().default(false) })
+const planInput = z.object({ topic: z.string() }).strict()
 const planOutput = z.object({ done: z.boolean(), topic: z.string() })
 
-export async function createLocalDurableHarness(root?: string) {
-  const local = localDurableExecution({ root: root ?? await mkdtemp(join(tmpdir(), 'purista-local-durable-')), exec: false })
+/** Test/demo-only process fault injection; it is not durable workflow input. */
+export interface LocalDurableHarnessOptions {
+  readonly crashAfterOutline?: boolean
+}
+
+export async function createLocalDurableHarness(root?: string, options: LocalDurableHarnessOptions = {}) {
+  const local = localDurableExecution({
+    root: root ?? (await mkdtemp(join(tmpdir(), 'purista-local-durable-'))),
+    exec: false,
+  })
   const provider = new NoopProvider()
   const harness = defineHarness()
     .storage(local.storage)
@@ -24,35 +39,36 @@ export async function createLocalDurableHarness(root?: string) {
     .workspace(local.workspace)
     .requires(['storage.persistent', 'workspace.persistent'])
     .models({ noop: { provider, model: 'noop', capabilities: ['object'], retry: false } })
-    .tools({})
-    .skills({})
-    .agents({ noop: { model: 'noop', instructions: 'No model call is needed.', builtinTools: false } })
-    .workflows(({ workflow }) => ({
-      plan: workflow({
-        input: planInput,
-        output: planOutput,
-        handler: async (ctx) => {
-          await ctx.step('outline', async () => ({ topic: ctx.input.topic, next: 'draft' }))
-          if (ctx.input.failAfterFirstStep) throw new Error('simulated crash')
-          await ctx.step('draft', async () => ({ draft: true }))
-          return { done: true, topic: ctx.input.topic }
-        }
-      })
-    }))
+    .agent('noop', { model: 'noop', instructions: 'No model call is needed.' })
+    .workflow('plan', {
+      input: planInput,
+      output: planOutput,
+      handler: async (ctx) => {
+        await ctx.step('outline', async () => ({ topic: ctx.input.topic, next: 'draft' }))
+        if (options.crashAfterOutline) throw new Error('simulated crash')
+        await ctx.step('draft', async () => ({ draft: true }))
+        return { done: true, topic: ctx.input.topic }
+      },
+    })
     .build()
   return { local, harness }
 }
 
 export async function runLocalDurableExample(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'purista-local-durable-'))
-  const first = await createLocalDurableHarness(root)
+  const first = await createLocalDurableHarness(root, { crashAfterOutline: true })
   const firstSession = await first.harness.getSession('demo')
-  await firstSession.workflows.plan.prompt({ topic: 'durable local work', failAfterFirstStep: true }, { durable: { runId: 'demo-run' } }).catch(() => undefined)
+  await firstSession.workflows.plan
+    .run({ topic: 'durable local work' }, { durable: { runId: 'demo-run' } })
+    .catch(() => undefined)
   await first.harness.shutdown()
 
   const second = await createLocalDurableHarness(root)
   const secondSession = await second.harness.getSession('demo')
-  const result = await secondSession.workflows.plan.prompt({ topic: 'durable local work', failAfterFirstStep: false }, { durable: { runId: 'demo-run' } })
+  const result = await secondSession.workflows.plan.run(
+    { topic: 'durable local work' },
+    { durable: { runId: 'demo-run' } },
+  )
   console.log(result)
   await second.harness.shutdown()
 }

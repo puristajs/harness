@@ -21,12 +21,30 @@ const provider = openai({
 })
 ```
 
-By default, generation uses Chat Completions for compatibility with
-OpenAI-compatible endpoints:
+## OpenAI-compatible endpoints
+
+By default, generation uses Chat Completions. That is the intended path for
+OpenAI-compatible providers and self-hosted endpoints; do not create a second
+adapter merely to change the endpoint. Supply that provider's base URL, API
+key, and model id:
 
 ```ts
-openai({ apiKey: process.env.OPENAI_API_KEY! })
+const provider = openai({
+  apiKey: process.env.COMPATIBLE_API_KEY!,
+  baseURL: process.env.COMPATIBLE_BASE_URL!,
+  api: 'chat_completions', // optional: this is the default
+})
 ```
+
+The target must implement the OpenAI Chat Completions request/stream format for
+the operations you enable. Declare only the capabilities that the particular
+endpoint and model support, and use an offline adapter test plus an opt-in
+credential-gated smoke test before enabling tools, JSON-schema object output,
+vision, or embeddings in production.
+
+`api: 'responses'` is for the OpenAI Responses API, not a generic
+OpenAI-compatible escape hatch. Many compatible servers expose only Chat
+Completions.
 
 Use the Responses API for OpenAI reasoning models that require function tools
 and reasoning effort on `/v1/responses`, such as `gpt-5.5`:
@@ -42,6 +60,24 @@ When Chat Completions is used with tools and `providerOptions.reasoning_effort`,
 the adapter drops `reasoning_effort` and emits a warning instead of sending a
 request that OpenAI rejects. Use `api: 'responses'` when you need reasoning
 effort and tool calls together.
+
+## Generation settings
+
+Configure portable generation values on the Harness model alias, not in the
+factory. `maxTokens` maps to `max_tokens` for Chat Completions by default and
+to `max_output_tokens` for Responses. If a native OpenAI Chat Completions model
+requires the newer field, set
+`chatCompletionMaxTokensParameter: 'max_completion_tokens'` on `openai(...)`.
+Keep the default for an OpenAI-compatible endpoint unless it documents the
+newer field.
+
+Responses does not support stop sequences. The adapter rejects a configured
+Harness `stopSequences` setting in `api: 'responses'` mode instead of silently
+discarding it. `temperature` and `topP` are forwarded only when set, but some
+reasoning models reject sampling controls; leave them unset unless the exact
+model/API reference supports them. Put a provider-specific request-body field
+in `defaults.providerOptions` (or per-call `call.providerOptions`) and SDK
+transport options in `providerOptions.requestOptions`.
 
 On the Responses API, tool-call responses carry a canonical
 `providerContinuation`. The harness agent loop retains provider-required

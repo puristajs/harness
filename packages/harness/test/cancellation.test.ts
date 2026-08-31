@@ -21,19 +21,24 @@ describe('harness cancellation propagation', () => {
         return new Promise((_resolve, reject) => {
           req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
         })
-      }
+      },
     }
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
       .tools({})
       .skills({})
-      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .agent('a1', { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false })
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        handler: async (ctx) => ctx.agents.a1(ctx.input),
+      })
       .build()
 
     const session = await harness.getSession('s1')
-    const promise = session.workflows.wf.prompt('x', { signal: controller.signal })
+    const promise = session.workflows.wf.run('x', { signal: controller.signal })
     controller.abort()
     await expect(promise).rejects.toBeInstanceOf(OperationCancelledError)
   })
@@ -46,12 +51,13 @@ describe('harness cancellation propagation', () => {
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({})
-      .workflows({ wf: { input: z.string(), output: z.string(), handler: async () => 'never' } })
+      .workflow('wf', { input: z.string(), output: z.string(), handler: async () => 'never' })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('x', { signal: controller.signal })).rejects.toBeInstanceOf(OperationCancelledError)
+    await expect(session.workflows.wf.run('x', { signal: controller.signal })).rejects.toBeInstanceOf(
+      OperationCancelledError,
+    )
   })
 
   it('enforces run timeout when workflow cooperates with the run signal', async () => {
@@ -61,22 +67,19 @@ describe('harness cancellation propagation', () => {
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({})
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          handler: async (ctx) => {
-            await new Promise((resolve) => setTimeout(resolve, 20))
-            ctx.signal.throwIfAborted()
-            return 'never'
-          }
-        }
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        handler: async (ctx) => {
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          ctx.signal.throwIfAborted()
+          return 'never'
+        },
       })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('x')).rejects.toBeInstanceOf(OperationTimeoutError)
+    await expect(session.workflows.wf.run('x')).rejects.toBeInstanceOf(OperationTimeoutError)
   })
 
   it('enforces run timeout for non-cooperative workflow handlers', async () => {
@@ -86,20 +89,20 @@ describe('harness cancellation propagation', () => {
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({})
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          handler: async () => new Promise<never>(() => undefined)
-        }
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        handler: async () => new Promise<never>(() => undefined),
       })
       .build()
 
     const session = await harness.getSession('s1')
     const result = await Promise.race([
-      session.workflows.wf.prompt('x').then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
+      session.workflows.wf.run('x').then(
+        () => 'resolved',
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS)),
     ])
     expect(result).toBeInstanceOf(OperationTimeoutError)
   })
@@ -111,21 +114,21 @@ describe('harness cancellation propagation', () => {
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({
-        a1: {
-          model: 'fake',
-          input: z.string(),
-          output: z.string(),
-          handler: async () => new Promise<never>(() => undefined)
-        }
+      .agent('a1', {
+        model: 'fake',
+        input: z.string(),
+        output: z.string(),
+        handler: async () => new Promise<never>(() => undefined),
       })
-      .workflows({})
       .build()
 
     const session = await harness.getSession('s1')
     const result = await Promise.race([
-      session.agents.a1.prompt('x').then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
+      session.agents.a1.run('x').then(
+        () => 'resolved',
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS)),
     ])
     expect(result).toBeInstanceOf(OperationTimeoutError)
   })
@@ -136,30 +139,26 @@ describe('harness cancellation propagation', () => {
       .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({
-        a1: {
-          model: 'fake',
-          input: z.string(),
-          output: z.string(),
-          handler: async () => 'ok'
-        }
+      .agent('a1', {
+        model: 'fake',
+        input: z.string(),
+        output: z.string(),
+        handler: async () => 'ok',
       })
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          delegation: {},
-          handler: async (ctx) => {
-            const controller = new AbortController()
-            controller.abort(new Error('nested stop'))
-            return ctx.agents.a1(ctx.input, { signal: controller.signal })
-          }
-        }
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        handler: async (ctx) => {
+          const controller = new AbortController()
+          controller.abort(new Error('nested stop'))
+          return ctx.agents.a1(ctx.input, { signal: controller.signal })
+        },
       })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('x')).rejects.toBeInstanceOf(OperationCancelledError)
+    await expect(session.workflows.wf.run('x')).rejects.toBeInstanceOf(OperationCancelledError)
   })
 
   it('cancels non-cooperative tools even when tool timeout is disabled', async () => {
@@ -169,7 +168,7 @@ describe('harness cancellation propagation', () => {
       object: {},
       toolCalls: [{ id: 'call_hang', name: 'hang', arguments: {} }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'tool_calls'
+      finishReason: 'tool_calls',
     })
 
     let markToolStarted!: () => void
@@ -181,8 +180,8 @@ describe('harness cancellation propagation', () => {
       .defaults({ toolTimeoutMs: 0 })
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-      .tools(({ tool }) => ({
-        hang: tool({
+      .tools({
+        hang: {
           kind: 'ts',
           description: 'Never resolves unless the harness cancellation wrapper wins.',
           input: z.object({}),
@@ -190,22 +189,37 @@ describe('harness cancellation propagation', () => {
           handler: async () => {
             markToolStarted()
             return new Promise<never>(() => undefined)
-          }
-        })
-      }))
+          },
+        },
+      })
       .skills({})
-      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
-      .workflows({ wf: { input: z.string(), output: z.string(), delegation: {}, handler: async (ctx) => ctx.agents.a1(ctx.input) } })
+      .agent('a1', {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'x',
+        tools: ['hang'],
+        builtinTools: false,
+      })
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        handler: async (ctx) => ctx.agents.a1(ctx.input),
+      })
       .build()
 
     const session = await harness.getSession('s1')
-    const prompt = session.workflows.wf.prompt('x', { signal: controller.signal })
+    const prompt = session.workflows.wf.run('x', { signal: controller.signal })
     await toolStarted
     controller.abort(new Error('stop'))
 
     const result = await Promise.race([
-      prompt.then(() => 'resolved', (error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS))
+      prompt.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), SENTINEL_TIMEOUT_MS)),
     ])
     expect(result).toBeInstanceOf(OperationCancelledError)
     expect(result).toMatchObject({ meta: { scope: 'run' } })
@@ -236,15 +250,14 @@ describe('harness cancellation propagation', () => {
           if (req.signal.aborted) return onAbort()
           req.signal.addEventListener('abort', onAbort, { once: true })
         })
-      }
+      },
     }
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
       .tools({})
       .skills({})
-      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false } })
-      .workflows({})
+      .agent('a1', { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', builtinTools: false })
       .build()
 
     const session = await harness.getSession('s-abandoned-stream')
@@ -281,7 +294,7 @@ describe('harness cancellation propagation', () => {
       object: {},
       toolCalls: [{ id: 'call_hang', name: 'hang', arguments: {} }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'tool_calls'
+      finishReason: 'tool_calls',
     })
 
     let markToolStarted!: () => void
@@ -292,8 +305,8 @@ describe('harness cancellation propagation', () => {
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-      .tools(({ tool }) => ({
-        hang: tool({
+      .tools({
+        hang: {
           kind: 'ts',
           description: 'Never resolves; cancelled through the run signal.',
           input: z.object({}),
@@ -301,12 +314,18 @@ describe('harness cancellation propagation', () => {
           handler: async () => {
             markToolStarted()
             return new Promise<never>(() => undefined)
-          }
-        })
-      }))
+          },
+        },
+      })
       .skills({})
-      .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'x', tools: ['hang'], builtinTools: false } })
-      .workflows({})
+      .agent('a1', {
+        model: 'fast',
+        input: z.string(),
+        output: z.string(),
+        instructions: 'x',
+        tools: ['hang'],
+        builtinTools: false,
+      })
       .build()
 
     const session = await harness.getSession('s-tool-finished-pairing')
@@ -323,14 +342,16 @@ describe('harness cancellation propagation', () => {
     }
 
     expect(failure).toBeInstanceOf(OperationCancelledError)
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'tool.started', toolId: 'hang', callId: 'call_hang' }),
-      expect.objectContaining({
-        type: 'tool.finished',
-        toolId: 'hang',
-        callId: 'call_hang',
-        error: expect.objectContaining({ code: 'OPERATION_CANCELLED' })
-      })
-    ]))
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'tool.started', toolId: 'hang', callId: 'call_hang' }),
+        expect.objectContaining({
+          type: 'tool.finished',
+          toolId: 'hang',
+          callId: 'call_hang',
+          error: expect.objectContaining({ code: 'OPERATION_CANCELLED' }),
+        }),
+      ]),
+    )
   })
 })

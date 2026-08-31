@@ -6,10 +6,6 @@ export function createMemoryExample(file = '.purista/memory-example.sqlite') {
     .sandbox(inMemorySandbox())
     .memory(sqliteMemoryEngine({ file }))
     .models({ noop: { provider: { id: 'example', genAiSystem: 'example' }, model: 'not-called', capabilities: [] } })
-    .tools({})
-    .skills({})
-    .agents({})
-    .workflows({})
     .build()
 }
 

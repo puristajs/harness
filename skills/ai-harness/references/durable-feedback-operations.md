@@ -41,17 +41,12 @@ import { defineHarness, localDurableExecution } from '@purista/harness'
 const local = localDurableExecution({ root: './.harness', exec: false })
 
 const harness = defineHarness({ name: 'report-worker' })
-  .storage(local.storage)
-  .workspace(local.workspace)
-  .sandbox(local.sandbox)
-  .requires([
-    'storage.persistent',
-    'storage.checkpoint',
-    'storage.resume',
-    'workspace.persistent'
-  ])
-  // models, agents, workflows
-  .build()
+	.storage(local.storage)
+	.workspace(local.workspace)
+	.sandbox(local.sandbox)
+	.requires(['storage.persistent', 'storage.checkpoint', 'storage.resume', 'workspace.persistent'])
+	// models, agents, workflows
+	.build()
 ```
 
 The bundle returns exactly `{ storage, sandbox, workspace, close }`. It uses the
@@ -63,8 +58,8 @@ development, tests, and one trusted process/host—not distributed production.
 Only workflows support recoverable invocation:
 
 ```ts
-const result = await session.workflows.report.prompt(input, {
-  durable: { runId: `report:${input.reportId}:v1` }
+const result = await session.workflows.report.run(input, {
+	durable: { runId: `report:${input.reportId}:v1` },
 })
 
 // Inside the workflow handler:
@@ -88,11 +83,11 @@ Inside a durable workflow, register only opaque bounded metadata:
 
 ```ts
 const signal = await ctx.externalWait.wait({
-  waitId: `payment:${ctx.input.paymentId}:review:v1`,
-  kind: 'human_review',
-  schemaVersion: '1',
-  definitionVersion: 'payment-v3',
-  deadline: new Date(Date.now() + 86_400_000).toISOString()
+	waitId: `payment:${ctx.input.paymentId}:review:v1`,
+	kind: 'human_review',
+	schemaVersion: '1',
+	definitionVersion: 'payment-v3',
+	deadline: new Date(Date.now() + 86_400_000).toISOString(),
 })
 ```
 
@@ -103,9 +98,9 @@ and delivers one terminal signal:
 
 ```ts
 await storage.signalWait({
-  waitId,
-  eventId: delivery.id,
-  outcome: 'approved'
+	waitId,
+	eventId: delivery.id,
+	outcome: 'approved',
 })
 ```
 
@@ -131,10 +126,7 @@ checkpoint, wait, session-lock, retention, and deletion semantics. Do not wrap
 a generic key/value state store. Verify it with:
 
 ```ts
-import {
-  durableWorkspaceContract,
-  harnessStorageContract
-} from '@purista/harness/testing'
+import { durableWorkspaceContract, harnessStorageContract } from '@purista/harness/testing'
 
 harnessStorageContract(() => createPostgresHarnessStorage(testDatabase))
 durableWorkspaceContract(() => createObjectStorageWorkspace(testBucket))

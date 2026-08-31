@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist/**/*.js", "dist/**/*.d.ts", "package.json", "README.md", "LICENSE"],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "image/Dockerfile", "image/.dockerignore", "image/smoke.sh", "image/README.md", "package.json", "README.md", "LICENSE"],
   "license": "Apache-2.0",
   "sideEffects": false,
   "repository": { "type": "git", "url": "https://github.com/puristajs/harness", "directory": "packages/harness-sandbox-docker" },
@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "test:docker": "PURISTA_DOCKER_SANDBOX_TEST=1 vitest run src/docker.test.ts",
+    "test:image": "PURISTA_DOCKER_SANDBOX_TEST=1 vitest run src/image.test.ts",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": { "zod": "^4.4.3" },

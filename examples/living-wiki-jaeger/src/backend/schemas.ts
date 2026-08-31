@@ -7,31 +7,34 @@ export const slugSchema = z.string().regex(slugPattern, 'Invalid slug.')
 export const pageRefSchema = z.object({
   slug: slugSchema,
   title: z.string(),
-  summary: z.string()
+  summary: z.string(),
 })
 
 export const markdownDocumentSchema = pageRefSchema.extend({
-  content: z.string()
+  content: z.string(),
 })
 
 export const searchWikiInputSchema = z.object({
   query: z.string().min(1),
-  limit: z.number().int().positive().max(25).default(10)
+  limit: z.number().int().positive().max(25).default(10),
 })
 
 export const searchWikiOutputSchema = z.object({
-  results: z.array(pageRefSchema.extend({
-    score: z.number(),
-    snippet: z.string()
-  }))
+  results: z.array(
+    pageRefSchema.extend({
+      score: z.number(),
+      snippet: z.string(),
+    }),
+  ),
 })
 
 export const backlinksOutputSchema = z.object({
   target: slugSchema,
-  pages: z.array(pageRefSchema)
+  pages: z.array(pageRefSchema),
 })
 
-export const panelSpecSchema = z.unknown()
+/** Arbitrary panel payloads still cross Harness boundaries as strict JSON. */
+export const panelSpecSchema = z.json()
 
 export const workflowPhaseSchema = z.enum(['plan', 'retrieve', 'reason', 'reflect', 'judge', 'human_review', 'publish'])
 
@@ -41,7 +44,7 @@ export const workflowPhaseStatusSchema = z.object({
   agentId: z.string().optional(),
   summary: z.string().optional(),
   startedAt: z.string().optional(),
-  finishedAt: z.string().optional()
+  finishedAt: z.string().optional(),
 })
 
 export const evidenceItemSchema = z.object({
@@ -50,19 +53,23 @@ export const evidenceItemSchema = z.object({
   sourceType: z.enum(['wiki_page', 'uploaded_source', 'artifact', 'mcp_result']),
   reference: z.string().min(1),
   quoteOrSummary: z.string().min(1),
-  confidence: z.enum(['low', 'medium', 'high'])
+  confidence: z.enum(['low', 'medium', 'high']),
 })
 
 export const reviewQuestionSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   kind: z.enum(['single_choice', 'multi_choice', 'free_text', 'approval']),
-  options: z.array(z.object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    recommended: z.boolean().optional()
-  })).optional(),
-  required: z.boolean().default(true)
+  options: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        label: z.string().min(1),
+        recommended: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  required: z.boolean().default(true),
 })
 
 export const reviewRequestSchema = z.object({
@@ -71,32 +78,42 @@ export const reviewRequestSchema = z.object({
   title: z.string().min(1),
   reason: z.string().min(1),
   questions: z.array(reviewQuestionSchema),
-  defaultDecision: z.enum(['approve', 'revise', 'reject'])
+  defaultDecision: z.enum(['approve', 'revise', 'reject']),
 })
 
-export const reviewDecisionSchema = z.object({
-  reviewRequestId: z.string().min(1),
-  decision: z.enum(['accept_all', 'reject_all', 'accept_selected', 'choose_alternative', 'custom_guidance']),
-  answers: z.record(z.string(), z.union([z.string(), z.array(z.string()), z.boolean()])),
-  acceptedChangeIds: z.array(z.string()).optional(),
-  selectedAlternativeIds: z.array(z.string()).optional(),
-  guidance: z.string().optional()
-}).superRefine((value, ctx) => {
-  if (value.decision === 'accept_selected' && !value.acceptedChangeIds?.length) {
-    ctx.addIssue({ code: 'custom', path: ['acceptedChangeIds'], message: 'acceptedChangeIds is required for accept_selected.' })
-  }
-  if (value.decision === 'choose_alternative' && !value.selectedAlternativeIds?.length) {
-    ctx.addIssue({ code: 'custom', path: ['selectedAlternativeIds'], message: 'selectedAlternativeIds is required for choose_alternative.' })
-  }
-  if (value.decision === 'custom_guidance' && !value.guidance?.trim()) {
-    ctx.addIssue({ code: 'custom', path: ['guidance'], message: 'guidance is required for custom_guidance.' })
-  }
-})
+export const reviewDecisionSchema = z
+  .object({
+    reviewRequestId: z.string().min(1),
+    decision: z.enum(['accept_all', 'reject_all', 'accept_selected', 'choose_alternative', 'custom_guidance']),
+    answers: z.record(z.string(), z.union([z.string(), z.array(z.string()), z.boolean()])),
+    acceptedChangeIds: z.array(z.string()).optional(),
+    selectedAlternativeIds: z.array(z.string()).optional(),
+    guidance: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.decision === 'accept_selected' && !value.acceptedChangeIds?.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['acceptedChangeIds'],
+        message: 'acceptedChangeIds is required for accept_selected.',
+      })
+    }
+    if (value.decision === 'choose_alternative' && !value.selectedAlternativeIds?.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['selectedAlternativeIds'],
+        message: 'selectedAlternativeIds is required for choose_alternative.',
+      })
+    }
+    if (value.decision === 'custom_guidance' && !value.guidance?.trim()) {
+      ctx.addIssue({ code: 'custom', path: ['guidance'], message: 'guidance is required for custom_guidance.' })
+    }
+  })
 
 export const reviewAnswerSchema = z.object({
   reviewRequestId: z.string().min(1),
   questionId: z.string().min(1),
-  value: z.union([z.string(), z.array(z.string()), z.boolean()])
+  value: z.union([z.string(), z.array(z.string()), z.boolean()]),
 })
 
 export const reviewOutcomeSchema = z.object({
@@ -105,20 +122,22 @@ export const reviewOutcomeSchema = z.object({
   status: z.enum(['applied', 'rejected', 'revision_started']),
   appliedChangeIds: z.array(z.string()),
   followUpRunId: z.string().optional(),
-  logEntryId: z.string().min(1)
+  logEntryId: z.string().min(1),
 })
 
 export const judgeRubricSchema = z.object({
   score: z.number(),
   maxScore: z.number().positive(),
   verdict: z.enum(['approved', 'needs_human_review', 'revise', 'rejected']),
-  criteria: z.array(z.object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    score: z.number(),
-    maxScore: z.number().positive(),
-    rationale: z.string().min(1)
-  }))
+  criteria: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      score: z.number(),
+      maxScore: z.number().positive(),
+      rationale: z.string().min(1),
+    }),
+  ),
 })
 
 export const artifactKindSchema = z.enum(['markdown', 'mermaid', 'svg', 'drawio_xml', 'json_panel'])
@@ -133,11 +152,11 @@ export const researchArtifactSchema = z.object({
   createdAt: z.string().min(1),
   generatedByRunId: z.string().min(1),
   content: z.string().optional(),
-  panelSpec: z.unknown().optional(),
-  data: z.unknown().optional(),
+  panelSpec: z.json().optional(),
+  data: z.json().optional(),
   renderMode: artifactRenderModeSchema.optional(),
   drawioEditorUrl: z.string().url().optional(),
-  viewerConfig: z.record(z.string(), z.unknown()).optional()
+  viewerConfig: z.record(z.string(), z.json()).optional(),
 })
 
 export const artifactManifestSchema = z.object({
@@ -152,7 +171,7 @@ export const artifactManifestSchema = z.object({
   createdAt: z.string().min(1),
   renderMode: artifactRenderModeSchema,
   drawioEditorUrl: z.string().url().optional(),
-  viewerConfig: z.record(z.string(), z.unknown()).optional()
+  viewerConfig: z.record(z.string(), z.json()).optional(),
 })
 
 export const citationChangeSchema = z.object({
@@ -160,7 +179,7 @@ export const citationChangeSchema = z.object({
   pageId: slugSchema,
   sourceRef: z.string().min(1),
   claim: z.string().min(1),
-  operation: z.enum(['add', 'update', 'remove'])
+  operation: z.enum(['add', 'update', 'remove']),
 })
 
 export const proposedPageChangeSchema = z.object({
@@ -173,7 +192,7 @@ export const proposedPageChangeSchema = z.object({
   rationale: z.string().min(1),
   citations: z.array(citationChangeSchema),
   risk: z.enum(['low', 'medium', 'high']),
-  targetRefs: z.array(z.string()).optional()
+  targetRefs: z.array(z.string()).optional(),
 })
 
 export const contradictionSchema = z.object({
@@ -181,29 +200,33 @@ export const contradictionSchema = z.object({
   claimA: z.string().min(1),
   claimB: z.string().min(1),
   refs: z.array(z.string().min(1)),
-  severity: z.enum(['low', 'medium', 'high'])
+  severity: z.enum(['low', 'medium', 'high']),
 })
 
-export const graphNodeSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  kind: z.enum(['page', 'source', 'concept', 'artifact']),
-  ref: z.string().min(1)
-}).passthrough()
+export const graphNodeSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    kind: z.enum(['page', 'source', 'concept', 'artifact']),
+    ref: z.string().min(1),
+  })
+  .passthrough()
 
-export const graphEdgeSchema = z.object({
-  id: z.string().min(1),
-  source: z.string().min(1),
-  target: z.string().min(1),
-  kind: z.enum(['wiki_link', 'citation', 'derived_relationship', 'artifact_reference']),
-  weight: z.number()
-}).passthrough()
+export const graphEdgeSchema = z
+  .object({
+    id: z.string().min(1),
+    source: z.string().min(1),
+    target: z.string().min(1),
+    kind: z.enum(['wiki_link', 'citation', 'derived_relationship', 'artifact_reference']),
+    weight: z.number(),
+  })
+  .passthrough()
 
 export const graphHighlightSchema = z.object({
   nodeIds: z.array(z.string()),
   edgeIds: z.array(z.string()),
   kind: z.enum(['cited', 'changed', 'contradiction', 'orphan', 'merge_candidate']),
-  label: z.string().min(1)
+  label: z.string().min(1),
 })
 
 export const graphResponseSchema = z.object({
@@ -211,13 +234,13 @@ export const graphResponseSchema = z.object({
   edges: z.array(graphEdgeSchema),
   highlights: z.array(graphHighlightSchema),
   latestRunId: z.string().optional(),
-  panelSpec: z.unknown()
+  panelSpec: z.json(),
 })
 
 export const agentRunRequestSchema = z.object({
-  input: z.unknown(),
+  input: z.json(),
   sessionId: z.string().optional(),
-  stream: z.boolean().optional()
+  stream: z.boolean().optional(),
 })
 
 export const artifactCreateRequestSchema = z.object({
@@ -228,11 +251,11 @@ export const artifactCreateRequestSchema = z.object({
   sourcePageIds: z.array(slugSchema).optional(),
   renderMode: artifactRenderModeSchema.optional(),
   drawioEditorUrl: z.string().url().optional(),
-  viewerConfig: z.record(z.string(), z.unknown()).optional()
+  viewerConfig: z.record(z.string(), z.json()).optional(),
 })
 
 export const ingestSourceInputSchema = z.object({
-  sourceSlug: slugSchema
+  sourceSlug: slugSchema,
 })
 
 export const ingestSourceOutputSchema = z.object({
@@ -244,21 +267,21 @@ export const ingestSourceOutputSchema = z.object({
   citedEvidence: z.array(evidenceItemSchema).optional(),
   reviewRequest: reviewRequestSchema.optional(),
   phases: z.array(workflowPhaseStatusSchema).optional(),
-  panelSpec: z.unknown().optional()
+  panelSpec: z.json().optional(),
 })
 
 export const askWikiInputSchema = z.object({
-  question: z.string().min(1).max(4_000)
+  question: z.string().min(1).max(4_000),
 })
 
 export const askWikiOutputSchema = z.object({
   answer: z.string(),
   citedPages: z.array(slugSchema),
-  confidenceNotes: z.array(z.string())
+  confidenceNotes: z.array(z.string()),
 })
 
 export const lintWikiInputSchema = z.object({
-  scope: z.union([z.literal('all'), z.array(slugSchema)]).optional()
+  scope: z.union([z.literal('all'), z.array(slugSchema)]).optional(),
 })
 
 export const lintWikiOutputSchema = z.object({
@@ -267,24 +290,24 @@ export const lintWikiOutputSchema = z.object({
   weakClaims: z.array(z.object({ page: slugSchema, claim: z.string(), reason: z.string() })),
   staleNotes: z.array(z.object({ page: slugSchema, reason: z.string() })),
   duplicateConcepts: z.array(z.object({ pages: z.array(slugSchema), reason: z.string() })),
-  panelSpec: panelSpecSchema
+  panelSpec: panelSpecSchema,
 })
 
 export const reconcileContradictionInputSchema = z.object({
   leftRef: slugSchema,
   rightRef: slugSchema,
-  conflict: z.string().min(1).max(4_000)
+  conflict: z.string().min(1).max(4_000),
 })
 
 export const reconcileContradictionOutputSchema = z.object({
   summary: z.string(),
   changedPages: z.array(slugSchema),
-  unresolvedQuestions: z.array(z.string())
+  unresolvedQuestions: z.array(z.string()),
 })
 
 export const generateResearchBriefInputSchema = z.object({
   pageSlugs: z.array(slugSchema).min(1).max(20),
-  goal: z.string().min(1).max(4_000)
+  goal: z.string().min(1).max(4_000),
 })
 
 export const generateResearchBriefOutputSchema = z.object({
@@ -292,12 +315,12 @@ export const generateResearchBriefOutputSchema = z.object({
   panelSpec: panelSpecSchema,
   citedPages: z.array(slugSchema),
   artifacts: z.array(researchArtifactSchema).default([]),
-  phases: z.array(workflowPhaseStatusSchema).optional()
+  phases: z.array(workflowPhaseStatusSchema).optional(),
 })
 
 export const decisionMemoInputSchema = z.object({
   proposal: z.string().min(1).max(4_000),
-  question: z.string().min(1).max(4_000).optional()
+  question: z.string().min(1).max(4_000).optional(),
 })
 
 export const decisionMemoOutputSchema = z.object({
@@ -311,15 +334,17 @@ export const decisionMemoOutputSchema = z.object({
   judge: judgeRubricSchema,
   artifacts: z.array(researchArtifactSchema),
   reviewRequest: reviewRequestSchema.optional(),
-  panelSpec: z.unknown(),
-  phases: z.array(workflowPhaseStatusSchema).optional()
+  panelSpec: z.json(),
+  phases: z.array(workflowPhaseStatusSchema).optional(),
 })
 
-export const architectureReviewInputSchema = z.object({
-  sourceSlug: slugSchema.optional(),
-  pageSlug: slugSchema.optional(),
-  focus: z.string().min(1).max(4_000).optional()
-}).refine((value) => value.sourceSlug || value.pageSlug, { message: 'sourceSlug or pageSlug is required.' })
+export const architectureReviewInputSchema = z
+  .object({
+    sourceSlug: slugSchema.optional(),
+    pageSlug: slugSchema.optional(),
+    focus: z.string().min(1).max(4_000).optional(),
+  })
+  .refine((value) => value.sourceSlug || value.pageSlug, { message: 'sourceSlug or pageSlug is required.' })
 
 export const architectureReviewOutputSchema = z.object({
   markdown: z.string(),
@@ -331,60 +356,62 @@ export const architectureReviewOutputSchema = z.object({
   judge: judgeRubricSchema,
   artifacts: z.array(researchArtifactSchema),
   reviewRequest: reviewRequestSchema.optional(),
-  panelSpec: z.unknown(),
-  phases: z.array(workflowPhaseStatusSchema).optional()
+  panelSpec: z.json(),
+  phases: z.array(workflowPhaseStatusSchema).optional(),
 })
 
 export const wikiQualityAuditInputSchema = z.object({
-  scope: z.union([z.literal('all'), z.array(slugSchema)]).optional()
+  scope: z.union([z.literal('all'), z.array(slugSchema)]).optional(),
 })
 
 export const wikiQualityAuditOutputSchema = z.object({
   markdown: z.string(),
-  proposedChanges: z.array(proposedPageChangeSchema.extend({
-    targetRefs: z.array(z.string())
-  })),
+  proposedChanges: z.array(
+    proposedPageChangeSchema.extend({
+      targetRefs: z.array(z.string()),
+    }),
+  ),
   citedEvidence: z.array(evidenceItemSchema),
   judge: judgeRubricSchema,
   graphHighlights: z.array(graphHighlightSchema),
   reviewRequest: reviewRequestSchema,
-  panelSpec: z.unknown(),
-  phases: z.array(workflowPhaseStatusSchema).optional()
+  panelSpec: z.json(),
+  phases: z.array(workflowPhaseStatusSchema).optional(),
 })
 
 export const workflowSchemas = {
   ingest_source: {
     input: ingestSourceInputSchema,
-    output: ingestSourceOutputSchema
+    output: ingestSourceOutputSchema,
   },
   ask_wiki: {
     input: askWikiInputSchema,
-    output: askWikiOutputSchema
+    output: askWikiOutputSchema,
   },
   lint_wiki: {
     input: lintWikiInputSchema,
-    output: lintWikiOutputSchema
+    output: lintWikiOutputSchema,
   },
   reconcile_contradiction: {
     input: reconcileContradictionInputSchema,
-    output: reconcileContradictionOutputSchema
+    output: reconcileContradictionOutputSchema,
   },
   generate_research_brief: {
     input: generateResearchBriefInputSchema,
-    output: generateResearchBriefOutputSchema
+    output: generateResearchBriefOutputSchema,
   },
   decision_memo: {
     input: decisionMemoInputSchema,
-    output: decisionMemoOutputSchema
+    output: decisionMemoOutputSchema,
   },
   architecture_review: {
     input: architectureReviewInputSchema,
-    output: architectureReviewOutputSchema
+    output: architectureReviewOutputSchema,
   },
   wiki_audit: {
     input: wikiQualityAuditInputSchema,
-    output: wikiQualityAuditOutputSchema
-  }
+    output: wikiQualityAuditOutputSchema,
+  },
 } as const
 
 export type WorkflowId = keyof typeof workflowSchemas
@@ -397,7 +424,7 @@ export const workflowIdSchema = z.enum([
   'generate_research_brief',
   'decision_memo',
   'architecture_review',
-  'wiki_audit'
+  'wiki_audit',
 ])
 
 export const wikiAgentInputSchema = z.discriminatedUnion('workflow', [
@@ -408,7 +435,7 @@ export const wikiAgentInputSchema = z.discriminatedUnion('workflow', [
   generateResearchBriefInputSchema.extend({ workflow: z.literal('generate_research_brief') }),
   decisionMemoInputSchema.extend({ workflow: z.literal('decision_memo') }),
   architectureReviewInputSchema.extend({ workflow: z.literal('architecture_review') }),
-  wikiQualityAuditInputSchema.extend({ workflow: z.literal('wiki_audit') })
+  wikiQualityAuditInputSchema.extend({ workflow: z.literal('wiki_audit') }),
 ])
 
 export const wikiAgentOutputSchema = z.union([
@@ -419,7 +446,7 @@ export const wikiAgentOutputSchema = z.union([
   generateResearchBriefOutputSchema,
   decisionMemoOutputSchema,
   architectureReviewOutputSchema,
-  wikiQualityAuditOutputSchema
+  wikiQualityAuditOutputSchema,
 ])
 
 export type IngestSourceInput = z.infer<typeof ingestSourceInputSchema>

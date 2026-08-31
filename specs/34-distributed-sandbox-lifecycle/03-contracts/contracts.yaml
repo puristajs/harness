@@ -46,7 +46,7 @@ public_contracts:
       user: optional numeric non-root UID:GID; default 1000:1000
       network: optional none or bridge; default none
       resources: optional closed object with positive finite cpus and positive safe integer memoryMb pids and tmpfsMb; omitted fields default to 1 CPU 512 MiB 128 PIDs and 64 MiB
-    result: Sandbox with sandbox.fs sandbox.exec sandbox.spawn and sandbox.persistent_fs; no wrapper bundle
+    result: Sandbox with sandbox.fs sandbox.text_search sandbox.exec sandbox.spawn and sandbox.persistent_fs; no wrapper bundle
     semantics: All configuration is composition-root only and validated before resource creation. Timeout defaults reuse Harness toolTimeoutMs; no arbitrary Docker flags, provider references, raw mounts, or topology field are accepted. Existing Sandbox scope/result types are reused without a Docker representation. Restore fails durable_workspace_recovery_unavailable before mutation until a compatible binding is approved.
 errors:
   - name: SandboxStateLostError
@@ -55,6 +55,7 @@ errors:
     reasons: [lifecycle_state_missing, provider_missing, durable_workspace_required, durable_workspace_recovery_unavailable]
     safe_meta: [reason, lifetime, adapter_id]
 capabilities:
+  sandbox.text_search: Session executes literal or safe_regex_v1 matching where its files live and returns bounded ordered matches with truthful completeness metadata; it is independent of arbitrary exec.
   sandbox.live_process_preservation: Detach or provider-supported hibernation preserves live provider processes; process objects and stream handles are never portable.
   sandbox.workspace_binding: Sandbox mounts a compatible active DurableWorkspace into a run-scoped attachment; only these adapters receive a run sandbox during durable workflow execution.
 base_adapter_invariants:

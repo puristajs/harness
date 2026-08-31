@@ -5,6 +5,12 @@ approval in task `01a03d51-6262-7480-89eb-baa163905ef6`, 2026-08-26. The
 scoped readiness report binds approval to the final manifest. This is
 definition readiness, not implementation acceptance.
 
+The approved 2026-08-30 clean registration contract in
+[`40-declarative-registration-and-guardrails-binding`](../40-declarative-registration-and-guardrails-binding.md)
+supersedes this workstream's agent/workflow helper callbacks and
+the agent definition's direct `guardrails` field. The action, phase, requirements, and failure contracts
+remain authoritative.
+
 ## Authority
 
 This workstream supersedes spec30 configuration/authoring and spec31 sensitive

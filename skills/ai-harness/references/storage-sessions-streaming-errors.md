@@ -20,33 +20,33 @@ external waits. It is unrelated to PURISTA framework's general-purpose
 
 ```ts
 interface HarnessStorage {
-  readonly info: HarnessStorageInfo
-  readonly capabilities: readonly AdapterCapability[]
-  getSession(id): Promise<SessionRecord | undefined>
-  upsertSession(record, mode: 'create' | 'update'): Promise<boolean>
-  closeSession(id, expectedInstanceId): Promise<void>
-  appendMessages(sessionId, messages): Promise<void>
-  listMessages(sessionId, opts?): Promise<Message[]>
-  clearMessages(sessionId): Promise<void>
-  /** Atomic clear-and-replace; required by defaults.historyRetention. */
-  replaceMessages?(sessionId, messages): Promise<void>
-  createRun(record): Promise<void>
-  finishRun(runId, patch): Promise<void>
-  getRun(runId): Promise<RunRecord | undefined>
-  listRuns(sessionId, opts?): Promise<RunRecord[]>
-  appendEvents(runId, events): Promise<void>
-  listEvents(runId, opts?): Promise<PersistedRunEvent[]>
+	readonly info: HarnessStorageInfo
+	readonly capabilities: readonly AdapterCapability[]
+	getSession(id): Promise<SessionRecord | undefined>
+	upsertSession(record, mode: 'create' | 'update'): Promise<boolean>
+	closeSession(id, expectedInstanceId): Promise<void>
+	appendMessages(sessionId, messages): Promise<void>
+	listMessages(sessionId, opts?): Promise<Message[]>
+	clearMessages(sessionId): Promise<void>
+	/** Atomic clear-and-replace; required by defaults.historyRetention. */
+	replaceMessages?(sessionId, messages): Promise<void>
+	createRun(record): Promise<void>
+	finishRun(runId, patch): Promise<void>
+	getRun(runId): Promise<RunRecord | undefined>
+	listRuns(sessionId, opts?): Promise<RunRecord[]>
+	appendEvents(runId, events): Promise<void>
+	listEvents(runId, opts?): Promise<PersistedRunEvent[]>
 
-  acquireRun(start): Promise<DurableRunLease>
-  loadCheckpoint(runId): Promise<RunCheckpoint | undefined>
-  commitCheckpoint(checkpoint): Promise<void>
-  withSessionLock<T>(sessionId, fn): Promise<T>
+	acquireRun(start): Promise<DurableRunLease>
+	loadCheckpoint(runId): Promise<RunCheckpoint | undefined>
+	commitCheckpoint(checkpoint): Promise<void>
+	withSessionLock<T>(sessionId, fn): Promise<T>
 
-  registerWait(request): Promise<ExternalWaitRegistration>
-  getWait(waitId): Promise<ExternalWaitSnapshot | undefined>
-  signalWait(signal): Promise<ExternalWaitSignalResult>
-  cancelWait(waitId, eventId, observedAt?): Promise<ExternalWaitSignalResult>
-  close?(): Promise<void>
+	registerWait(request): Promise<ExternalWaitRegistration>
+	getWait(waitId): Promise<ExternalWaitSnapshot | undefined>
+	signalWait(signal): Promise<ExternalWaitSignalResult>
+	cancelWait(waitId, eventId, observedAt?): Promise<ExternalWaitSignalResult>
+	close?(): Promise<void>
 }
 ```
 
@@ -55,6 +55,23 @@ development but does not survive process exit. `SqliteHarnessStorage` is the
 zero-extra-dependency Node/Bun single-host option. Distributed deployments must
 provide a backend with transactional run acquisition, checkpoint, wait, and
 session-lock semantics and advertise `storage.multi_instance`.
+
+The first-party distributed implementation is
+`@purista/harness-storage-postgres`:
+
+```ts
+import { postgresHarnessStorage } from '@purista/harness-storage-postgres'
+
+const storage = postgresHarnessStorage({
+	connectionString: process.env.DATABASE_URL!,
+})
+```
+
+It supports multiple replicas, fenced lease takeover, transactional checkpoint
+and external-wait operations, lazy advisory-lock migration, and idempotent
+shutdown. An injected `pg.Pool` remains caller-owned. Pair it with a
+`DurableWorkspace` when resumed workflows need files; storage persists only the
+workspace checkpoint references, not artifact bytes.
 
 Custom adapters must pass `harnessStorageContract` from
 `@purista/harness/testing`.
@@ -76,21 +93,21 @@ Application code enters through:
 
 ```ts
 const session = await harness.getSession('tenant:user:thread')
-await session.agents.answerer.prompt(input, opts)
+await session.agents.answerer.run(input, opts)
 await session.workflows.report.stream(input, opts)
 await session.release()
 ```
 
 The session API exposes:
 - `id`
-- `agents.<id>.prompt` / `.stream`
-- `workflows.<id>.prompt` / `.stream`
+- `agents.<id>.run` / `.stream`
+- `workflows.<id>.run` / `.stream`
 - `memory`
 - `history`
 - `clearHistory()`
 - `replaceHistory(messages)`
 - `release()`
-- `close()`
+- `destroy()`
 
 Use stable, tenant-safe session ids. Do not put secrets in session ids.
 
@@ -121,7 +138,7 @@ await session.replaceHistory([{ role: 'user', content: 'hello', sessionId: sessi
 
 `release()` closes live session resources such as sandbox-bound MCP runners
 without deleting `HarnessStorage`-backed history, runs, or events. Call it after an
-idle request. `close()` first releases resources and then destructively removes
+idle request. `destroy()` first releases resources and then destructively removes
 the session record, conversation history, runs, and persisted events.
 
 ## Durable History, Retention, And Direct-Agent Redelivery
@@ -133,14 +150,14 @@ never create partial or duplicate durable messages.
 
 ```ts
 const harness = defineHarness({ name: 'support' })
-  .storage(distributedHarnessStorage)
-  .defaults({ historyRetention: { maxTurns: 50, maxBytes: 256_000 } })
-  // models, tools, and agents
-  .build()
+	.storage(distributedHarnessStorage)
+	.defaults({ historyRetention: { maxTurns: 50, maxBytes: 256_000 } })
+	// models, tools, and agents
+	.build()
 
 const session = await harness.getSession(`tenant:${tenantId}:thread:${threadId}`)
-const output = await session.agents.answerer.prompt(input, {
-  idempotencyKey: queueMessage.id
+const output = await session.agents.answerer.run(input, {
+	idempotencyKey: queueMessage.id,
 })
 ```
 
@@ -166,27 +183,27 @@ Use separate session ids for parallel user threads or independent background job
 
 ```ts
 for await (const event of session.workflows.audit.stream(input)) {
-  switch (event.type) {
-    case 'run.started':
-    case 'agent.started':
-    case 'tool.started':
-    case 'tool.finished':
-    case 'model.message':
-    case 'model.completed':
-    case 'model.delta':
-    case 'model.object.partial':
-    case 'model.object':
-    case 'model.embedding.completed':
-    case 'model.rerank.completed':
-    case 'policy.exposure':
-    case 'policy.evaluated':
-    case 'approval.requested':
-    case 'approval.finished':
-    case 'agent.finished':
-    case 'run.finished':
-    case 'stream.overflow':
-      break
-  }
+	switch (event.type) {
+		case 'run.started':
+		case 'agent.started':
+		case 'tool.started':
+		case 'tool.finished':
+		case 'model.message':
+		case 'model.completed':
+		case 'model.delta':
+		case 'model.object.partial':
+		case 'model.object':
+		case 'model.embedding.completed':
+		case 'model.rerank.completed':
+		case 'policy.exposure':
+		case 'policy.evaluated':
+		case 'approval.requested':
+		case 'approval.finished':
+		case 'agent.finished':
+		case 'run.finished':
+		case 'stream.overflow':
+			break
+	}
 }
 ```
 

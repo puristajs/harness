@@ -96,7 +96,7 @@ Every harness-created span carries when available:
 
 | Harness span | Span name | Required semantic shape |
 | --- | --- | --- |
-| Outermost prompt/run | `harness.session.prompt` | `harness.*` |
+| Outermost invocation | `harness.session.run` | `harness.*` |
 | Workflow run | `harness.workflow.run` | GenAI `invoke_workflow`, OpenInference `CHAIN` in `dual`/`openinference_only` |
 | Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
@@ -375,15 +375,19 @@ checkpoint records; spans, metrics, and logs emit only hashes.
 | `harness.exec.exit_code` | integer |
 | `harness.exec.duration` | double seconds |
 
-### Sandbox lifecycle
+### Sandbox lifecycle and administration
 
-Spans: `harness.sandbox.open`, `harness.sandbox.detach`, and
-`harness.sandbox.terminate`.
+Spans: `harness.sandbox.register_owner`, `harness.sandbox.open`,
+`harness.sandbox.detach`, `harness.sandbox.terminate`,
+`harness.sandbox.list`, `harness.sandbox.purge`, `harness.sandbox.sweep`, and
+`harness.sandbox.delete_snapshot`. Adapter-owned administration operations use
+the same content-free attributes; no owner, selector, provider resource, path,
+or snapshot reference is emitted.
 
 | Key | Type |
 | --- | --- |
 | `harness.sandbox.adapter` | string |
-| `harness.sandbox.operation` | string: `open`, `detach`, or `terminate` |
+| `harness.sandbox.operation` | string: operation named by the span |
 | `harness.sandbox.disposition` | string: `created`, `attached`, `resumed`, or `restored`; open only |
 | `harness.sandbox.live_process_state` | string: `preserved`, `restarted`, `not_preserved`, or `unknown`; open only |
 | `harness.status` | string |
@@ -440,7 +444,7 @@ Operation is one of `acquire_run`, `load_checkpoint`, `commit_checkpoint`,
 ### `harness.local_sandbox.{operation}`
 
 Operation is one of `open`, `read`, `read_text`, `write`, `remove`, `list`,
-`stat`, `exists`, `mount`, or `exec`. All attribute keys use the
+`search_text`, `stat`, `exists`, `mount`, or `exec`. All attribute keys use the
 `harness.sandbox.*` namespace.
 
 | Key | Type |
@@ -563,6 +567,7 @@ aggregating metrics.
 | `harness.events.persist_errors` | Counter | `1` | `harness.session.id`, `harness.run.id` |
 | `harness.permission.denials` | Counter | `1` | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id` |
 | `harness.policy.evaluations` | Counter | `1` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
+| `harness.policy.duration` | Histogram | `s` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
 | `harness.policy.denials` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id` |
 | `harness.approval.requests` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id`, `harness.approval.status` |
 | `harness.eval.runs` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status`, `harness.eval.failure_policy` |

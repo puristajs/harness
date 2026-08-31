@@ -52,11 +52,28 @@ export async function beginDurableWorkflow(args: {
   signal: AbortSignal
   logger: Logger
   harnessName: string
-  sandbox: { owner: SandboxOwner; partition: SandboxPartition; policyDigest: string; partitions?: () => readonly SandboxPartition[] }
+  sandbox: {
+    owner: SandboxOwner
+    partition: SandboxPartition
+    policyDigest: string
+    partitions?: () => readonly SandboxPartition[]
+  }
   /** Rejects a checkpoint before workspace state is copied when caller work is still mutating its partitions. */
   beforeStepCheckpoint?: () => Promise<void> | void
 }): Promise<DurableWorkflowBinding> {
-  const { storage, workspace, durable, sessionId, workflowId, input, signal, logger, harnessName, sandbox, beforeStepCheckpoint } = args
+  const {
+    storage,
+    workspace,
+    durable,
+    sessionId,
+    workflowId,
+    input,
+    signal,
+    logger,
+    harnessName,
+    sandbox,
+    beforeStepCheckpoint,
+  } = args
   const workerId = durable.workerId ?? args.defaultWorkerId
 
   const lease = await storage.acquireRun({
@@ -65,7 +82,7 @@ export async function beginDurableWorkflow(args: {
     workerId,
     stepId: durable.stepId ?? workflowId,
     input,
-    ...(durable.attempt !== undefined ? { attempt: durable.attempt } : {})
+    ...(durable.attempt !== undefined ? { attempt: durable.attempt } : {}),
   })
 
   let handle: WorkspaceHandle | undefined
@@ -74,7 +91,8 @@ export async function beginDurableWorkflow(args: {
       const priorReplay = lease.checkpoint?.replay
       if (lease.resumed && (!priorReplay?.workspaceRef || !priorReplay.checkpointRef)) {
         throw new SandboxStateLostError('A committed workspace checkpoint is required to recover this run.', {
-          reason: 'durable_workspace_recovery_unavailable', lifetime: 'run'
+          reason: 'durable_workspace_recovery_unavailable',
+          lifetime: 'run',
         })
       }
       if (lease.resumed && priorReplay?.workspaceRef && priorReplay.checkpointRef) {
@@ -88,7 +106,7 @@ export async function beginDurableWorkflow(args: {
           sessionId,
           attempt: lease.attempt,
           idempotencyKey: `${lease.runId}:${lease.attempt}:resume`,
-          signal
+          signal,
         })
       } else {
         handle = await workspace.startWorkspace({
@@ -101,7 +119,7 @@ export async function beginDurableWorkflow(args: {
           sandboxOwner: sandbox.owner,
           sandboxPolicyDigest: sandbox.policyDigest,
           ...(durable.workspacePolicy ? { policy: durable.workspacePolicy } : {}),
-          signal
+          signal,
         })
       }
     } catch (workspaceError) {
@@ -115,7 +133,7 @@ export async function beginDurableWorkflow(args: {
           session_id: sessionId,
           run_id: lease.runId,
           workflow_id: workflowId,
-          error: serializeError(releaseError)
+          error: serializeError(releaseError),
         })
       }
       throw workspaceError
@@ -128,66 +146,69 @@ export async function beginDurableWorkflow(args: {
   if (priorReplayForWorkspace && priorReplayForWorkspace.workspaceRef === activeHandle?.workspaceRef) {
     priorPinnedCheckpointRef = priorReplayForWorkspace.checkpointRef
   }
-  const onStepCommit = workspace && activeHandle
-    ? async (commit: { stepId: string; sequence: number; attempt: number; output: JsonValue }) => {
-        await beforeStepCheckpoint?.()
-        const checkpoint = await workspace.pauseWorkspace({
-          handle: activeHandle,
-          sandboxPartitions: [...(sandbox.partitions?.() ?? [sandbox.partition])],
-          stepId: commit.stepId,
-          sequence: commit.sequence,
-          attempt: commit.attempt,
-          checkpointPayload: commit.output,
-          reason: 'step_completed',
-          idempotencyKey: `${lease.runId}:${commit.attempt}:pause:${commit.stepId}`,
-          signal
-        })
-        await workspace.pinCheckpoint({
-          workspaceRef: checkpoint.workspaceRef,
-          checkpointRef: checkpoint.checkpointRef,
-          runId: lease.runId,
-          idempotencyKey: `${lease.runId}:${commit.attempt}:pin:${checkpoint.checkpointRef}`,
-          signal
-        })
-        return {
-          runId: lease.runId,
-          sessionId,
-          sandboxPolicyDigest: checkpoint.sandboxPolicyDigest,
-          sandboxPartitions: checkpoint.sandboxPartitions,
-          workerId,
-          leaseId: lease.leaseId,
-          stepId: commit.stepId,
-          sequence: commit.sequence,
-          attempt: commit.attempt,
-          checkpointRef: checkpoint.checkpointRef,
-          workspaceRef: checkpoint.workspaceRef,
-          ...(checkpoint.snapshotRef ? { snapshotRef: checkpoint.snapshotRef } : {}),
-          schemaVersion: 1 as const,
-          committedAt: checkpoint.committedAt,
-          ...(checkpoint.expiresAt ? { expiresAt: checkpoint.expiresAt } : {})
-        }
-      }
-    : undefined
-
-  const onStepCommitted = workspace && activeHandle
-    ? async (checkpoint: { replay?: import('../ports/workspace.js').DurableReplayCheckpoint }): Promise<void> => {
-        const current = checkpoint.replay
-        if (!current?.workspaceRef || !current.checkpointRef) return
-        if (priorPinnedCheckpointRef && priorPinnedCheckpointRef !== current.checkpointRef) {
-          await workspace.releaseCheckpoint({
-            workspaceRef: activeHandle.workspaceRef,
-            checkpointRef: priorPinnedCheckpointRef,
-            runId: lease.runId,
-            idempotencyKey: `${lease.runId}:${lease.attempt}:release:${priorPinnedCheckpointRef}`,
-            signal
+  const onStepCommit =
+    workspace && activeHandle
+      ? async (commit: { stepId: string; sequence: number; attempt: number; output: JsonValue }) => {
+          await beforeStepCheckpoint?.()
+          const checkpoint = await workspace.pauseWorkspace({
+            handle: activeHandle,
+            sandboxPartitions: [...(sandbox.partitions?.() ?? [sandbox.partition])],
+            stepId: commit.stepId,
+            sequence: commit.sequence,
+            attempt: commit.attempt,
+            checkpointPayload: commit.output,
+            reason: 'step_completed',
+            idempotencyKey: `${lease.runId}:${commit.attempt}:pause:${commit.stepId}`,
+            signal,
           })
+          await workspace.pinCheckpoint({
+            workspaceRef: checkpoint.workspaceRef,
+            checkpointRef: checkpoint.checkpointRef,
+            runId: lease.runId,
+            idempotencyKey: `${lease.runId}:${commit.attempt}:pin:${checkpoint.checkpointRef}`,
+            signal,
+          })
+          return {
+            runId: lease.runId,
+            sessionId,
+            sandboxPolicyDigest: checkpoint.sandboxPolicyDigest,
+            sandboxPartitions: checkpoint.sandboxPartitions,
+            workerId,
+            leaseId: lease.leaseId,
+            stepId: commit.stepId,
+            sequence: commit.sequence,
+            attempt: commit.attempt,
+            checkpointRef: checkpoint.checkpointRef,
+            workspaceRef: checkpoint.workspaceRef,
+            ...(checkpoint.snapshotRef ? { snapshotRef: checkpoint.snapshotRef } : {}),
+            schemaVersion: 1 as const,
+            committedAt: checkpoint.committedAt,
+            ...(checkpoint.expiresAt ? { expiresAt: checkpoint.expiresAt } : {}),
+          }
         }
-        priorPinnedCheckpointRef = current.checkpointRef
-      }
-    : undefined
+      : undefined
+
+  const onStepCommitted =
+    workspace && activeHandle
+      ? async (checkpoint: { replay?: import('../ports/workspace.js').DurableReplayCheckpoint }): Promise<void> => {
+          const current = checkpoint.replay
+          if (!current?.workspaceRef || !current.checkpointRef) return
+          if (priorPinnedCheckpointRef && priorPinnedCheckpointRef !== current.checkpointRef) {
+            await workspace.releaseCheckpoint({
+              workspaceRef: activeHandle.workspaceRef,
+              checkpointRef: priorPinnedCheckpointRef,
+              runId: lease.runId,
+              idempotencyKey: `${lease.runId}:${lease.attempt}:release:${priorPinnedCheckpointRef}`,
+              signal,
+            })
+          }
+          priorPinnedCheckpointRef = current.checkpointRef
+        }
+      : undefined
   const ctx = createDurableWorkflowContext(storage, lease, {
+    signal,
     ...(onStepCommit ? { onStepCommit } : {}),
-    ...(onStepCommitted ? { onStepCommitted } : {})
+    ...(onStepCommitted ? { onStepCommitted } : {}),
   })
   const autoCleanup = workspace?.info.policy.retention?.cleanupMode === 'adapter_automatic'
   let settled = false
@@ -207,15 +228,28 @@ export async function beginDurableWorkflow(args: {
       await storage.finishRun(lease.runId, { status: 'succeeded', output })
       settled = true
       if (workspace && activeHandle) {
-        await workspace.finish({ workspaceRef: activeHandle.workspaceRef, runId: lease.runId, status: 'succeeded', idempotencyKey: `${lease.runId}:finish:succeeded`, signal })
-        if (priorPinnedCheckpointRef) await workspace.releaseCheckpoint({ workspaceRef: activeHandle.workspaceRef, checkpointRef: priorPinnedCheckpointRef, runId: lease.runId, idempotencyKey: `${lease.runId}:release:terminal`, signal })
+        await workspace.finish({
+          workspaceRef: activeHandle.workspaceRef,
+          runId: lease.runId,
+          status: 'succeeded',
+          idempotencyKey: `${lease.runId}:finish:succeeded`,
+          signal,
+        })
+        if (priorPinnedCheckpointRef)
+          await workspace.releaseCheckpoint({
+            workspaceRef: activeHandle.workspaceRef,
+            checkpointRef: priorPinnedCheckpointRef,
+            runId: lease.runId,
+            idempotencyKey: `${lease.runId}:release:terminal`,
+            signal,
+          })
       }
       if (workspace && activeHandle && autoCleanup) {
         try {
           await workspace.cleanupWorkspace({
             workspaceRef: activeHandle.workspaceRef,
             reason: 'terminal_success',
-            idempotencyKey: `${lease.runId}:cleanup`
+            idempotencyKey: `${lease.runId}:cleanup`,
           })
         } catch (error) {
           // The business outcome is already committed. Operators may retry
@@ -229,14 +263,27 @@ export async function beginDurableWorkflow(args: {
       settled = true
       if (workspace && activeHandle) {
         try {
-          await workspace.finish({ workspaceRef: activeHandle.workspaceRef, runId: lease.runId, status: 'cancelled', idempotencyKey: `${lease.runId}:finish:cancelled`, signal })
-          if (priorPinnedCheckpointRef) await workspace.releaseCheckpoint({ workspaceRef: activeHandle.workspaceRef, checkpointRef: priorPinnedCheckpointRef, runId: lease.runId, idempotencyKey: `${lease.runId}:release:terminal`, signal })
+          await workspace.finish({
+            workspaceRef: activeHandle.workspaceRef,
+            runId: lease.runId,
+            status: 'cancelled',
+            idempotencyKey: `${lease.runId}:finish:cancelled`,
+            signal,
+          })
+          if (priorPinnedCheckpointRef)
+            await workspace.releaseCheckpoint({
+              workspaceRef: activeHandle.workspaceRef,
+              checkpointRef: priorPinnedCheckpointRef,
+              runId: lease.runId,
+              idempotencyKey: `${lease.runId}:release:terminal`,
+              signal,
+            })
           await workspace.abortWorkspace({
             workspaceRef: activeHandle.workspaceRef,
             runId: lease.runId,
             sessionId,
             reason: 'cancelled',
-            idempotencyKey: `${lease.runId}:abort`
+            idempotencyKey: `${lease.runId}:abort`,
           })
         } catch (cleanupError) {
           logger.warn('Cancelled workspace cleanup failed.', { error_type: telemetryErrorType(cleanupError) })
@@ -254,9 +301,9 @@ export async function beginDurableWorkflow(args: {
           session_id: sessionId,
           run_id: lease.runId,
           workflow_id: workflowId,
-          error: serializeError(error)
+          error: serializeError(error),
         })
       }
-    }
+    },
   }
 }

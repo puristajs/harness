@@ -6,11 +6,22 @@ function mockSignal(): AbortSignal {
   return new AbortController().signal
 }
 
+// This is the already-compiled Standard JSON Schema cache value supplied by
+// the Harness core. Provider adapters must carry it to the SDK untouched.
+const distinctiveCompiledSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  $defs: { tag: { type: 'string', pattern: '^[a-z]+$' } },
+  properties: { filter: { anyOf: [{ $ref: '#/$defs/tag' }, { type: 'null' }] } },
+  required: ['filter'],
+  unevaluatedProperties: false,
+}
+
 function client(handler: (path: string, options: any) => Promise<any>) {
   return {
     path: (path: '/chat/completions' | '/embeddings') => ({
-      post: (options: any) => handler(path, options)
-    })
+      post: (options: any) => handler(path, options),
+    }),
   }
 }
 
@@ -26,10 +37,10 @@ describe('azureFoundry provider factory', () => {
             completion_tokens: 2,
             total_tokens: 6,
             prompt_tokens_details: { cached_tokens: 3 },
-            completion_tokens_details: { reasoning_tokens: 1 }
-          }
-        }
-      }))
+            completion_tokens_details: { reasoning_tokens: 1 },
+          },
+        },
+      })),
     })
 
     expect(provider.id).toBe('azure-foundry')
@@ -38,7 +49,7 @@ describe('azureFoundry provider factory', () => {
     const response = await provider.text!({
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.content).toBe('hello')
@@ -47,7 +58,7 @@ describe('azureFoundry provider factory', () => {
       outputTokens: 2,
       totalTokens: 6,
       cachedInputTokens: 3,
-      reasoningTokens: 1
+      reasoningTokens: 1,
     })
     expect(response.finishReason).toBe('stop')
   })
@@ -61,10 +72,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
-          }
+            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+          },
         }
-      })
+      }),
     })
 
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
@@ -72,7 +83,7 @@ describe('azureFoundry provider factory', () => {
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'object please' }],
       schema,
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.object).toEqual({ ok: true })
@@ -82,9 +93,94 @@ describe('azureFoundry provider factory', () => {
       json_schema: {
         name: 'harness_response',
         strict: false,
-        schema
-      }
+        schema,
+      },
     })
+  })
+
+  it('forwards compiled JSON Schema unchanged for object and tool requests', async () => {
+    const calls: Array<{ options: any }> = []
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls.push({ options })
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        }
+      }),
+    })
+
+    await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: distinctiveCompiledSchema,
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: distinctiveCompiledSchema }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0]?.options.body.response_format.json_schema.schema).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.options.body.tools[0]?.function.parameters).toEqual(distinctiveCompiledSchema)
+  })
+
+  it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {
+    let calls = 0
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls += 1
+        if (options.body.response_format?.json_schema?.schema === distinctiveCompiledSchema) {
+          return {
+            status: '400',
+            body: {
+              error: {
+                code: 'unsupported_schema',
+                type: 'invalid_request_error',
+                message: 'Unsupported schema keyword.',
+              },
+            },
+          }
+        }
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        }
+      }),
+    })
+
+    await expect(
+      provider.object!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: distinctiveCompiledSchema,
+        signal: mockSignal(),
+      }),
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: {
+        provider: 'azure-foundry',
+        method: 'object',
+        status: 400,
+        reason: 'http_error',
+        providerCode: 'unsupported_schema',
+      },
+    })
+    expect(calls).toBe(1)
+
+    await expect(
+      provider.object!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: { type: 'object' },
+        signal: mockSignal(),
+      }),
+    ).resolves.toMatchObject({ object: { ok: true } })
+    expect(calls).toBe(2)
   })
 
   it('preserves multiple application tool calls from object responses', async () => {
@@ -97,16 +193,20 @@ describe('azureFoundry provider factory', () => {
               message: {
                 content: '{}',
                 tool_calls: [
-                  { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
-                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
-                ]
+                  {
+                    id: 'call_1',
+                    type: 'function',
+                    function: { name: 'search_docs', arguments: '{"query":"harness"}' },
+                  },
+                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } },
+                ],
               },
-              finish_reason: 'tool_calls'
-            }
+              finish_reason: 'tool_calls',
+            },
           ],
-          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
-        }
-      }))
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        },
+      })),
     })
 
     const response = await provider.object!({
@@ -115,14 +215,14 @@ describe('azureFoundry provider factory', () => {
       schema: { type: 'object' },
       tools: [
         { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
-        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } },
       ],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.toolCalls).toEqual([
       { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
-      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } },
     ])
   })
 
@@ -135,10 +235,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-          }
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
         }
-      })
+      }),
     })
 
     await provider.text!({
@@ -147,7 +247,7 @@ describe('azureFoundry provider factory', () => {
       defaults: { parallelToolCalls: true },
       call: { parallelToolCalls: false },
       tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.options.body.parallel_tool_calls).toBe(false)
@@ -159,15 +259,15 @@ describe('azureFoundry provider factory', () => {
         status: '200',
         body: {
           data: [{ index: 0, embedding: [0.1, 0.2] }],
-          usage: { prompt_tokens: 3, total_tokens: 3 }
-        }
-      }))
+          usage: { prompt_tokens: 3, total_tokens: 3 },
+        },
+      })),
     })
 
     const response = await provider.embed!({
       model: 'text-embedding-3-small',
       input: 'hello',
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.embeddings).toEqual([{ index: 0, vector: [0.1, 0.2] }])
@@ -183,10 +283,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-          }
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
         }
-      })
+      }),
     })
 
     await provider.text!({
@@ -195,21 +295,21 @@ describe('azureFoundry provider factory', () => {
       defaults: {
         temperature: 0.1,
         providerOptions: {
-          seed: 123
-        }
+          seed: 123,
+        },
       },
       call: {
         providerOptions: {
-          requestOptions: { headers: { 'extra-parameters': 'pass-through' } }
-        }
+          requestOptions: { headers: { 'extra-parameters': 'pass-through' } },
+        },
       },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.options.body).toMatchObject({
       model: 'gpt-4.1-mini',
       temperature: 0.1,
-      seed: 123
+      seed: 123,
     })
     expect(calls[0]?.options.headers).toEqual({ 'extra-parameters': 'pass-through' })
     expect(calls[0]?.options.abortSignal).toBeInstanceOf(AbortSignal)
@@ -221,9 +321,9 @@ describe('azureFoundry provider factory', () => {
         status: '200',
         body: {
           choices: [{ message: { content: '{"ok":' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-        }
-      }))
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      })),
     })
 
     await expect(
@@ -231,8 +331,8 @@ describe('azureFoundry provider factory', () => {
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: 'object please' }],
         schema: { type: 'object' },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       meta: {
@@ -240,8 +340,8 @@ describe('azureFoundry provider factory', () => {
         method: 'object',
         reason: 'malformed_response',
         // Raw model output never leaks into error metadata (POR-07).
-        providerBody: { redacted: true, contentLength: '{"ok":'.length }
-      }
+        providerBody: { redacted: true, contentLength: '{"ok":'.length },
+      },
     })
   })
 
@@ -250,15 +350,15 @@ describe('azureFoundry provider factory', () => {
       client: client(async () => ({
         status: 200,
         // A plain array takes the non-SSE event path in streamChat.
-        body: [{ choices: [{ delta: { content: 'hello' } }] }]
-      }))
+        body: [{ choices: [{ delta: { content: 'hello' } }] }],
+      })),
     })
 
     const received: any[] = []
     for await (const chunk of provider.textStream!({
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
@@ -273,8 +373,8 @@ describe('azureFoundry provider factory', () => {
     const provider = azureFoundry({
       client: client(async () => ({
         status: 429,
-        body: { error: { message: 'rate limited', code: 'TooManyRequests' } }
-      }))
+        body: { error: { message: 'rate limited', code: 'TooManyRequests' } },
+      })),
     })
 
     await expect(
@@ -282,12 +382,12 @@ describe('azureFoundry provider factory', () => {
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       retriable: true,
-      meta: { status: 429, reason: 'rate_limited', providerCode: 'TooManyRequests' }
+      meta: { status: 429, reason: 'rate_limited', providerCode: 'TooManyRequests' },
     })
   })
 
@@ -297,7 +397,7 @@ describe('azureFoundry provider factory', () => {
       client: client(async (_path, options) => {
         body = options.body
         return { status: 200, body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} } }
-      })
+      }),
     })
     await provider.text!({ model: 'm', messages: [{ role: 'user', content: 'hi' }], signal: mockSignal() })
     expect(body.stream).toBe(false)

@@ -1,7 +1,28 @@
-import { z } from 'zod'
-import { ATTR_ERROR_TYPE, ATTR_GEN_AI_AGENT_NAME, ATTR_GEN_AI_TOOL_CALL_ID, ATTR_GEN_AI_TOOL_NAME, ATTR_GEN_AI_TOOL_TYPE } from '@opentelemetry/semantic-conventions/incubating'
-import { DecisionBlockedError, DecisionEvaluationError, HarnessError, OperationCancelledError, OperationTimeoutError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
-import type { AgentDefinition, GovernanceConfig, ResolvedSkill, RunEvent, ToolsConfig } from '../harness/defineHarness.js'
+import {
+  ATTR_ERROR_TYPE,
+  ATTR_GEN_AI_AGENT_NAME,
+  ATTR_GEN_AI_TOOL_CALL_ID,
+  ATTR_GEN_AI_TOOL_NAME,
+  ATTR_GEN_AI_TOOL_TYPE,
+} from '@opentelemetry/semantic-conventions/incubating'
+import {
+  DecisionBlockedError,
+  DecisionEvaluationError,
+  HarnessError,
+  OperationCancelledError,
+  OperationTimeoutError,
+  ToolError,
+  ToolNotFoundError,
+  ValidationError,
+  serializeError,
+} from '../errors/index.js'
+import type {
+  AgentDefinition,
+  GovernanceConfig,
+  ResolvedSkill,
+  RunEvent,
+  ToolsConfig,
+} from '../harness/defineHarness.js'
 import { isJsonValue, type JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import type { ModelMessage, ModelToolSpec, ToolCallSpec } from '../ports/model-provider.js'
@@ -14,6 +35,7 @@ import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, invokePreparedBuiltinTool, prepareBuiltinTool } from '../tools/index.js'
 import { prepareMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
 import { enforceToolGovernance } from '../governance/index.js'
+import { validateSchema } from '../schema/validation.js'
 
 type ToolKind = 'builtin' | 'ts' | 'mcp_stdio' | 'mcp_http'
 type ToolFailure = ReturnType<typeof serializeError>
@@ -48,8 +70,20 @@ type ToolExecutionArgs = {
   step: number
   enabledCustomTools: ReadonlySet<string>
   turnMessageId: (slot: string) => string
-  beforeTool: (toolId: string, callId: string, input: JsonValue, signal: AbortSignal, deadline: number) => Promise<JsonValue>
-  afterTool: (toolId: string, callId: string, output: JsonValue, signal: AbortSignal, deadline: number) => Promise<JsonValue>
+  beforeTool: (
+    toolId: string,
+    callId: string,
+    input: JsonValue,
+    signal: AbortSignal,
+    deadline: number,
+  ) => Promise<JsonValue>
+  afterTool: (
+    toolId: string,
+    callId: string,
+    output: JsonValue,
+    signal: AbortSignal,
+    deadline: number,
+  ) => Promise<JsonValue>
 }
 
 type PreparedToolInvocation = {
@@ -65,10 +99,20 @@ type PreparedToolInvocation = {
 
 type PreparedEntry =
   | { readonly kind: 'prepared'; readonly value: PreparedToolInvocation }
-  | { readonly kind: 'recoverable'; readonly call: ToolCallSpec; readonly toolKind: ToolKind; readonly error: HarnessError }
+  | {
+      readonly kind: 'recoverable'
+      readonly call: ToolCallSpec
+      readonly toolKind: ToolKind
+      readonly error: HarnessError
+    }
 
 class PreflightValidationError extends Error {
-  public constructor(readonly call: ToolCallSpec, readonly failure: ValidationError) { super(failure.message, { cause: failure }) }
+  public constructor(
+    readonly call: ToolCallSpec,
+    readonly failure: ValidationError,
+  ) {
+    super(failure.message, { cause: failure })
+  }
 }
 
 /**
@@ -79,7 +123,7 @@ class PreflightValidationError extends Error {
 export async function runPreparedToolBatch(
   args: ToolExecutionArgs,
   calls: readonly ToolCallSpec[],
-  exposed: readonly ModelToolSpec[]
+  exposed: readonly ModelToolSpec[],
 ): Promise<{ calls: readonly ToolCallSpec[]; outcomes: readonly ToolExecutionOutcome[] }> {
   const exposedNames = new Set(exposed.map((tool) => tool.name))
   const batch = new AbortController()
@@ -94,24 +138,45 @@ export async function runPreparedToolBatch(
         entries.push({ kind: 'prepared', value: await preflight(args, canonical, batch.signal) })
       } catch (error) {
         if (error instanceof PreflightValidationError) {
-          entries.push({ kind: 'recoverable', call: error.call, toolKind: resolveToolKind(error.call.name, args.customTools[error.call.name]), error: error.failure })
+          entries.push({
+            kind: 'recoverable',
+            call: error.call,
+            toolKind: resolveToolKind(error.call.name, args.customTools[error.call.name]),
+            error: error.failure,
+          })
           continue
         }
         if (error instanceof ValidationError) {
-          entries.push({ kind: 'recoverable', call: canonical, toolKind: resolveToolKind(canonical.name, args.customTools[canonical.name]), error })
+          entries.push({
+            kind: 'recoverable',
+            call: canonical,
+            toolKind: resolveToolKind(canonical.name, args.customTools[canonical.name]),
+            error,
+          })
           continue
         }
         batch.abort(error)
         throw error
       }
     }
-    const prepared = entries.filter((entry): entry is Extract<PreparedEntry, { kind: 'prepared' }> => entry.kind === 'prepared')
-    const outcomes = await executePrepared(args, batch, prepared.map((entry) => entry.value))
+    const prepared = entries.filter(
+      (entry): entry is Extract<PreparedEntry, { kind: 'prepared' }> => entry.kind === 'prepared',
+    )
+    const outcomes = await executePrepared(
+      args,
+      batch,
+      prepared.map((entry) => entry.value),
+    )
     const executed = new Map(outcomes.map((entry) => [entry.callId, entry.outcome]))
-    const ordered = entries.map((entry) => entry.kind === 'recoverable'
-      ? recoverableOutcome(args, entry.call, entry.error)
-      : executed.get(entry.value.call.id)!)
-    return { calls: entries.map((entry) => entry.kind === 'recoverable' ? entry.call : entry.value.call), outcomes: ordered }
+    const ordered = entries.map((entry) =>
+      entry.kind === 'recoverable'
+        ? recoverableOutcome(args, entry.call, entry.error)
+        : executed.get(entry.value.call.id)!,
+    )
+    return {
+      calls: entries.map((entry) => (entry.kind === 'recoverable' ? entry.call : entry.value.call)),
+      outcomes: ordered,
+    }
   } finally {
     for (const entry of entries) if (entry.kind === 'prepared') entry.value.cleanup()
     args.signal.removeEventListener('abort', relay)
@@ -121,7 +186,10 @@ export async function runPreparedToolBatch(
 function canonicalToolCall(call: ToolCallSpec, exposed: ReadonlySet<string>): ToolCallSpec {
   const name = BUILTIN_ALIAS_TO_CANONICAL[call.name] ?? call.name
   if (!exposed.has(name)) {
-    throw new ToolNotFoundError('Model requested a tool that was not exposed for this step.', { tool_id: name, where: 'model_response' })
+    throw new ToolNotFoundError('Model requested a tool that was not exposed for this step.', {
+      tool_id: name,
+      where: 'model_response',
+    })
   }
   if (!isJsonValue(call.arguments)) {
     throw new ValidationError('Tool input validation failed.', { where: 'tool_input', issues: [] })
@@ -129,7 +197,11 @@ function canonicalToolCall(call: ToolCallSpec, exposed: ReadonlySet<string>): To
   return Object.freeze({ ...call, name, arguments: freezeJson(call.arguments) })
 }
 
-async function preflight(args: ToolExecutionArgs, raw: ToolCallSpec, batchSignal: AbortSignal): Promise<PreparedToolInvocation> {
+async function preflight(
+  args: ToolExecutionArgs,
+  raw: ToolCallSpec,
+  batchSignal: AbortSignal,
+): Promise<PreparedToolInvocation> {
   const controller = new AbortController()
   const startedAt = Date.now()
   const deadline = args.toolTimeoutMs > 0 ? startedAt + args.toolTimeoutMs : Number.POSITIVE_INFINITY
@@ -137,9 +209,16 @@ async function preflight(args: ToolExecutionArgs, raw: ToolCallSpec, batchSignal
   const onBatchAbort = () => controller.abort(batchSignal.reason)
   args.signal.addEventListener('abort', onRunAbort, { once: true })
   batchSignal.addEventListener('abort', onBatchAbort, { once: true })
-  const timeout = args.toolTimeoutMs > 0
-    ? setTimeout(() => controller.abort(new OperationTimeoutError('Tool execution timed out.', { scope: 'tool', timeout_ms: args.toolTimeoutMs })), args.toolTimeoutMs)
-    : undefined
+  const timeout =
+    args.toolTimeoutMs > 0
+      ? setTimeout(
+          () =>
+            controller.abort(
+              new OperationTimeoutError('Tool execution timed out.', { scope: 'tool', timeout_ms: args.toolTimeoutMs }),
+            ),
+          args.toolTimeoutMs,
+        )
+      : undefined
   const cleanup = () => {
     if (timeout !== undefined) clearTimeout(timeout)
     args.signal.removeEventListener('abort', onRunAbort)
@@ -150,44 +229,109 @@ async function preflight(args: ToolExecutionArgs, raw: ToolCallSpec, batchSignal
     if (args.signal.aborted) onRunAbort()
     if (batchSignal.aborted) onBatchAbort()
     throwIfAborted(controller.signal)
-    const wireArguments = freezeJson(await args.beforeTool(raw.name, raw.id, raw.arguments as JsonValue, controller.signal, Math.min(deadline, args.runDeadline ?? Number.POSITIVE_INFINITY)))
+    const wireArguments = freezeJson(
+      await args.beforeTool(
+        raw.name,
+        raw.id,
+        raw.arguments as JsonValue,
+        controller.signal,
+        Math.min(deadline, args.runDeadline ?? Number.POSITIVE_INFINITY),
+      ),
+    )
     call = Object.freeze({ ...raw, arguments: wireArguments })
     const tool = args.customTools[call.name]
-    const binding = await withAbortSignal(controller.signal, 'tool', 'Tool execution was cancelled.', () => prepareToolBinding(args, call, tool, controller.signal))
-    if (!isJsonValue(binding.input)) throw new ValidationError('Tool input validation failed.', { where: 'tool_input', issues: [] })
-    return { call, parsedInput: freezeJson(binding.input), invoke: binding.invoke, tool, kind: resolveToolKind(call.name, tool), controller, deadline, cleanup }
+    const binding = await withAbortSignal(controller.signal, 'tool', 'Tool execution was cancelled.', () =>
+      prepareToolBinding(args, call, tool, controller.signal),
+    )
+    if (!isJsonValue(binding.input))
+      throw new ValidationError('Tool input validation failed.', { where: 'tool_input', issues: [] })
+    return {
+      call,
+      parsedInput: freezeJson(binding.input),
+      invoke: binding.invoke,
+      tool,
+      kind: resolveToolKind(call.name, tool),
+      controller,
+      deadline,
+      cleanup,
+    }
   } catch (error) {
     cleanup()
-    if (error instanceof z.ZodError) throw new PreflightValidationError(call, new ValidationError('Tool input validation failed.', { where: 'tool_input', issues: JSON.parse(JSON.stringify(error.issues)) as JsonValue }, error))
     if (error instanceof ValidationError) throw new PreflightValidationError(call, error)
     throw error
   }
 }
 
-async function prepareToolBinding(args: ToolExecutionArgs, call: ToolCallSpec, tool: ToolsConfig[string] | undefined, signal: AbortSignal): Promise<{ input: unknown; invoke: () => Promise<JsonValue> }> {
+async function prepareToolBinding(
+  args: ToolExecutionArgs,
+  call: ToolCallSpec,
+  tool: ToolsConfig[string] | undefined,
+  signal: AbortSignal,
+): Promise<{ input: unknown; invoke: () => Promise<JsonValue> }> {
   if (call.name in BUILTIN_ALIAS_TO_CANONICAL) {
     const prepared = prepareBuiltinTool(call.name, call.arguments)
     return { input: prepared.input, invoke: () => invokePreparedBuiltinTool(prepared, args.session, signal) }
   }
-  if (!args.enabledCustomTools.has(call.name)) throw new ToolNotFoundError('Tool is not allowed for this agent.', { tool_id: call.name, where: 'agent_allowlist' })
+  if (!args.enabledCustomTools.has(call.name))
+    throw new ToolNotFoundError('Tool is not allowed for this agent.', { tool_id: call.name, where: 'agent_allowlist' })
   if (!tool) throw new ToolNotFoundError('Tool was not found.', { tool_id: call.name, where: 'registry' })
   if (isMcpToolDefinition(tool)) {
-    if (!args.mcpRegistry) throw new ToolNotFoundError('MCP registry is not available.', { tool_id: call.name, where: 'registry' })
-    return prepareMcpTool(call.name, tool, call.arguments, { registry: args.mcpRegistry, signal, toolTimeoutMs: args.toolTimeoutMs, sandbox: args.session, sandboxKey: args.sandboxKey ?? args.sessionId })
+    if (!args.mcpRegistry)
+      throw new ToolNotFoundError('MCP registry is not available.', { tool_id: call.name, where: 'registry' })
+    return prepareMcpTool(call.name, tool, call.arguments, {
+      registry: args.mcpRegistry,
+      signal,
+      toolTimeoutMs: args.toolTimeoutMs,
+      sandbox: args.session,
+      sandboxKey: args.sandboxKey ?? args.sessionId,
+    })
   }
-  if (tool.kind && tool.kind !== 'ts') throw new ValidationError('Unsupported tool kind.', { where: 'tool_input', issues: [] })
-  const input = tool.input.parse(call.arguments) as JsonValue
-  return { input, invoke: async () => {
-    const value = await tool.handler({
-      signal, sandbox: args.session, logger: args.logger, telemetry: args.telemetry,
-      metrics: createMetrics(args.telemetry, { 'harness.name': args.harnessName, 'harness.session.id': args.sessionId, 'harness.run.id': args.runId, ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}), 'harness.agent.id': args.agentId, 'harness.tool.id': call.name }),
-      memory: args.memory, runId: args.runId, sessionId: args.sessionId, agentId: args.agentId, toolId: call.name
-    }, input)
-    return tool.output.parse(value) as JsonValue
-  } }
+  if (tool.kind && tool.kind !== 'ts')
+    throw new ValidationError('Unsupported tool kind.', { where: 'tool_input', issues: [] })
+  const input = await validateSchema(tool.input, call.arguments, {
+    where: 'tool_input',
+    message: 'Tool input validation failed.',
+    assertNotAborted: () => throwIfAborted(signal),
+  })
+  return {
+    input,
+    invoke: async () => {
+      const value = await tool.handler(
+        {
+          signal,
+          sandbox: args.session,
+          logger: args.logger,
+          telemetry: args.telemetry,
+          metrics: createMetrics(args.telemetry, {
+            'harness.name': args.harnessName,
+            'harness.session.id': args.sessionId,
+            'harness.run.id': args.runId,
+            ...(args.workflowId ? { 'harness.workflow.id': args.workflowId } : {}),
+            'harness.agent.id': args.agentId,
+            'harness.tool.id': call.name,
+          }),
+          memory: args.memory,
+          runId: args.runId,
+          sessionId: args.sessionId,
+          agentId: args.agentId,
+          toolId: call.name,
+        },
+        input,
+      )
+      return validateSchema(tool.output, value, {
+        where: 'tool_output',
+        message: 'Tool output validation failed.',
+        assertNotAborted: () => throwIfAborted(signal),
+      })
+    },
+  }
 }
 
-async function executePrepared(args: ToolExecutionArgs, batch: AbortController, prepared: readonly PreparedToolInvocation[]): Promise<Array<{ callId: string; outcome: ToolExecutionOutcome }>> {
+async function executePrepared(
+  args: ToolExecutionArgs,
+  batch: AbortController,
+  prepared: readonly PreparedToolInvocation[],
+): Promise<Array<{ callId: string; outcome: ToolExecutionOutcome }>> {
   const results = new Array<{ callId: string; outcome: ToolExecutionOutcome }>(prepared.length)
   let next = 0
   let terminal: unknown
@@ -205,7 +349,9 @@ async function executePrepared(args: ToolExecutionArgs, batch: AbortController, 
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(args.maxParallelToolCalls, prepared.length)) }, () => worker()))
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(args.maxParallelToolCalls, prepared.length)) }, () => worker()),
+  )
   if (terminal !== undefined) throw terminal
   return results
 }
@@ -218,28 +364,76 @@ async function executeOne(args: ToolExecutionArgs, prepared: PreparedToolInvocat
     await enforceToolGovernance({
       ...(args.governance ? { governance: args.governance } : {}),
       ...(args.agent.permissions ? { permissions: args.agent.permissions } : {}),
-      toolId: call.name, input: parsedInput, callId: call.id, agentId: args.agentId, runId: args.runId, sessionId: args.sessionId,
-      ...(args.workflowId ? { workflowId: args.workflowId } : {}), invocationId: args.delegationCallId ?? args.runId, step: args.step,
-      signal: controller.signal, decisionTimeoutMs: args.decisionTimeoutMs, deadline: Math.min(prepared.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY), metadata: args.metadata ?? {}, ...(args.emitEvent ? { emitEvent: args.emitEvent } : {})
+      toolId: call.name,
+      input: parsedInput,
+      callId: call.id,
+      agentId: args.agentId,
+      runId: args.runId,
+      sessionId: args.sessionId,
+      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+      invocationId: args.delegationCallId ?? args.runId,
+      step: args.step,
+      signal: controller.signal,
+      decisionTimeoutMs: args.decisionTimeoutMs,
+      telemetry: args.telemetry,
+      deadline: Math.min(prepared.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY),
+      metadata: args.metadata ?? {},
+      ...(args.emitEvent ? { emitEvent: args.emitEvent } : {}),
     })
     throwIfAborted(controller.signal)
-    await args.emitEvent?.({ type: 'tool.started', runId: args.runId, agentId: args.agentId, toolId: call.name, callId: call.id, input: call.arguments as JsonValue })
+    await args.emitEvent?.({
+      type: 'tool.started',
+      runId: args.runId,
+      agentId: args.agentId,
+      toolId: call.name,
+      callId: call.id,
+      input: call.arguments as JsonValue,
+    })
     started = true
     const output = await runHandler(args, prepared)
     throwIfAborted(controller.signal)
-    const presentation = freezeJson(await args.afterTool(call.name, call.id, output, controller.signal, Math.min(prepared.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY)))
-    await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: call.name, callId: call.id, output: presentation })
+    const presentation = freezeJson(
+      await args.afterTool(
+        call.name,
+        call.id,
+        output,
+        controller.signal,
+        Math.min(prepared.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY),
+      ),
+    )
+    await args.emitEvent?.({
+      type: 'tool.finished',
+      runId: args.runId,
+      agentId: args.agentId,
+      toolId: call.name,
+      callId: call.id,
+      output: presentation,
+    })
     return toolOutcome(args, call, { output: presentation })
   } catch (error) {
     if (terminalToolError(error)) {
       if (started) {
         const failure = normalizeToolFailure(call.name, error, kind)
-        await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: call.name, callId: call.id, error: serializeError(failure) })
+        await args.emitEvent?.({
+          type: 'tool.finished',
+          runId: args.runId,
+          agentId: args.agentId,
+          toolId: call.name,
+          callId: call.id,
+          error: serializeError(failure),
+        })
       }
       throw error
     }
     const failure = normalizeToolFailure(call.name, error, kind)
-    await args.emitEvent?.({ type: 'tool.finished', runId: args.runId, agentId: args.agentId, toolId: call.name, callId: call.id, error: serializeError(failure) })
+    await args.emitEvent?.({
+      type: 'tool.finished',
+      runId: args.runId,
+      agentId: args.agentId,
+      toolId: call.name,
+      callId: call.id,
+      error: serializeError(failure),
+    })
     return toolOutcome(args, call, { error: serializeError(failure) })
   }
 }
@@ -250,14 +444,26 @@ async function runHandler(args: ToolExecutionArgs, prepared: PreparedToolInvocat
     if (prepared.call.name === 'read') markSkillActivation(prepared.parsedInput, args.skills, args.activatedSkills)
     return output
   }
-  return withToolSpan(args, prepared, () => withAbortSignal(prepared.controller.signal, 'tool', 'Tool execution was cancelled.', operation))
+  return withToolSpan(args, prepared, () =>
+    withAbortSignal(prepared.controller.signal, 'tool', 'Tool execution was cancelled.', operation),
+  )
 }
 
-async function withToolSpan(args: ToolExecutionArgs, prepared: PreparedToolInvocation, operation: () => Promise<JsonValue>): Promise<JsonValue> {
+async function withToolSpan(
+  args: ToolExecutionArgs,
+  prepared: PreparedToolInvocation,
+  operation: () => Promise<JsonValue>,
+): Promise<JsonValue> {
   const tool = prepared.tool
-  const mcp = tool && isMcpToolDefinition(tool)
-    ? { server: prepared.call.name, upstreamTool: tool.tool, transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http', provenance: tool.provenance }
-    : undefined
+  const mcp =
+    tool && isMcpToolDefinition(tool)
+      ? {
+          server: prepared.call.name,
+          upstreamTool: tool.tool,
+          transport: tool.kind === 'mcp_stdio' ? 'stdio' : 'http',
+          provenance: tool.provenance,
+        }
+      : undefined
   const attrs = {
     'harness.name': args.harnessName,
     'harness.session.id': args.sessionId,
@@ -273,17 +479,21 @@ async function withToolSpan(args: ToolExecutionArgs, prepared: PreparedToolInvoc
     [ATTR_GEN_AI_TOOL_NAME]: prepared.call.name,
     [ATTR_GEN_AI_TOOL_CALL_ID]: prepared.call.id,
     [ATTR_GEN_AI_TOOL_TYPE]: prepared.kind === 'mcp_stdio' || prepared.kind === 'mcp_http' ? 'extension' : 'function',
-    ...(mcp ? {
-      'harness.mcp.server': mcp.server,
-      'harness.mcp.tool': mcp.upstreamTool,
-      'harness.mcp.transport': mcp.transport,
-      ...(mcp.provenance ? {
-        'harness.plugin.name': mcp.provenance.name,
-        ...(mcp.provenance.version ? { 'harness.plugin.version': mcp.provenance.version } : {}),
-        'harness.plugin.digest': mcp.provenance.digest,
-        'harness.plugin.component': mcp.provenance.component
-      } : {})
-    } : {})
+    ...(mcp
+      ? {
+          'harness.mcp.server': mcp.server,
+          'harness.mcp.tool': mcp.upstreamTool,
+          'harness.mcp.transport': mcp.transport,
+          ...(mcp.provenance
+            ? {
+                'harness.plugin.name': mcp.provenance.name,
+                ...(mcp.provenance.version ? { 'harness.plugin.version': mcp.provenance.version } : {}),
+                'harness.plugin.digest': mcp.provenance.digest,
+                'harness.plugin.component': mcp.provenance.component,
+              }
+            : {}),
+        }
+      : {}),
   }
   const started = Date.now()
   let succeeded = false
@@ -294,7 +504,13 @@ async function withToolSpan(args: ToolExecutionArgs, prepared: PreparedToolInvoc
       return result
     } catch (error) {
       const normalized = normalizeToolFailure(prepared.call.name, error, prepared.kind)
-      const errorAttrs = { ...attrs, [ATTR_ERROR_TYPE]: telemetryErrorType(normalized), 'harness.error.code': normalized.code, 'harness.error.category': normalized.category, 'harness.error.retriable': normalized.retriable }
+      const errorAttrs = {
+        ...attrs,
+        [ATTR_ERROR_TYPE]: telemetryErrorType(normalized),
+        'harness.error.code': normalized.code,
+        'harness.error.category': normalized.category,
+        'harness.error.retriable': normalized.retriable,
+      }
       args.telemetry.recordHistogram('harness.tool.duration', (Date.now() - started) / 1000, errorAttrs)
       args.telemetry.recordHistogram('gen_ai.execute_tool.duration', (Date.now() - started) / 1000, errorAttrs)
       throw normalized
@@ -309,16 +525,42 @@ async function withToolSpan(args: ToolExecutionArgs, prepared: PreparedToolInvoc
 }
 
 function terminalToolError(error: unknown): boolean {
-  return error instanceof DecisionBlockedError || error instanceof DecisionEvaluationError || error instanceof OperationCancelledError || error instanceof OperationTimeoutError
+  return (
+    error instanceof DecisionBlockedError ||
+    error instanceof DecisionEvaluationError ||
+    error instanceof OperationCancelledError ||
+    error instanceof OperationTimeoutError
+  )
 }
 
 function recoverableOutcome(args: ToolExecutionArgs, call: ToolCallSpec, error: HarnessError): ToolExecutionOutcome {
   return toolOutcome(args, call, { error: serializeError(error) })
 }
 
-function toolOutcome(args: ToolExecutionArgs, call: ToolCallSpec, result: { output?: JsonValue; error?: ToolFailure }): ToolExecutionOutcome {
-  const emitted: Message = { id: args.turnMessageId(`20_tool_${call.id}`), sessionId: args.sessionId, runId: args.runId, role: 'tool', content: '', toolResults: [{ toolCallId: call.id, ...(result.output !== undefined ? { output: result.output } : {}), ...(result.error ? { error: result.error } : {}) }], timestamp: new Date().toISOString() }
-  return { emitted, modelMessage: { role: 'tool', toolCallId: call.id, content: JSON.stringify(result.output ?? result.error ?? {}) } }
+function toolOutcome(
+  args: ToolExecutionArgs,
+  call: ToolCallSpec,
+  result: { output?: JsonValue; error?: ToolFailure },
+): ToolExecutionOutcome {
+  const emitted: Message = {
+    id: args.turnMessageId(`20_tool_${call.id}`),
+    sessionId: args.sessionId,
+    runId: args.runId,
+    role: 'tool',
+    content: '',
+    toolResults: [
+      {
+        toolCallId: call.id,
+        ...(result.output !== undefined ? { output: result.output } : {}),
+        ...(result.error ? { error: result.error } : {}),
+      },
+    ],
+    timestamp: new Date().toISOString(),
+  }
+  return {
+    emitted,
+    modelMessage: { role: 'tool', toolCallId: call.id, content: JSON.stringify(result.output ?? result.error ?? {}) },
+  }
 }
 
 function resolveToolKind(toolId: string, tool: ToolsConfig[string] | undefined): ToolKind {
@@ -327,7 +569,6 @@ function resolveToolKind(toolId: string, tool: ToolsConfig[string] | undefined):
 }
 
 function normalizeToolFailure(toolId: string, error: unknown, toolKind: ToolKind): HarnessError {
-  if (error instanceof z.ZodError) return new ValidationError('Tool input validation failed.', { where: 'tool_input', issues: JSON.parse(JSON.stringify(error.issues)) as JsonValue }, error)
   if (error instanceof HarnessError) return error
   return new ToolError('Tool execution failed.', { tool_id: toolId, tool_kind: toolKind }, error)
 }
@@ -340,7 +581,11 @@ function markSkillActivation(input: JsonValue, skills: Record<string, ResolvedSk
   if (!input || typeof input !== 'object' || Array.isArray(input)) return
   const path = input['path']
   if (typeof path !== 'string') return
-  for (const skill of Object.values(skills)) if (path === `${skill.mountPath}/SKILL.md`) { activated.add(skill.name); return }
+  for (const skill of Object.values(skills))
+    if (path === `${skill.mountPath}/SKILL.md`) {
+      activated.add(skill.name)
+      return
+    }
 }
 
 /** Private shared freeze for validated values and the envelopes exposed to hooks. */

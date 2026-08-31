@@ -39,8 +39,8 @@ taxonomy and are never emitted by normal harness execution.
 - code: `VALIDATION_ERROR`
 - category: `validation`
 - retriable: `false`
-- when: Zod or JSON Schema parse failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
-- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`, `issues: unknown`.
+- when: Standard Schema or JSON Schema validation failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
+- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`. For public Standard Schema boundaries, `issues` is exactly `{count:number,truncated:boolean}`; vendor messages, paths, values and causes are private and omitted. Validator throws and non-JSON successful transforms map to the `InternalError` reasons locked in [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/runtime-validation.md).
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
@@ -75,7 +75,7 @@ taxonomy and are never emitted by normal harness execution.
 - code: `SANDBOX_NO_EXECUTOR`
 - category: `sandbox`
 - retriable: `false`
-- when: `SandboxSession.exec` is invoked on a session whose `executor === 'unavailable'` (e.g. the in-memory files-only fallback when `just-bash` is not installed).
+- when: `SandboxSession.exec` is invoked on a session whose `executor === 'unavailable'` (e.g. the in-memory files-and-search fallback when `just-bash` is not installed).
 - meta: `session_id: string`.
 
 ### `SandboxStateLostError`

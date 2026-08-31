@@ -1,5 +1,5 @@
 import { StringDecoder } from 'node:string_decoder'
-import { HarnessError, type DirEntry, type ExecOptions, type ExecResult, type FileStat, type HarnessIdentity, type SandboxProcess, type SpawnCapableSandboxSession, type SpawnOptions } from '@purista/harness'
+import { HarnessError, SANDBOX_TEXT_SEARCH_LIMITS, validateSandboxTextSearchRequest, type DirEntry, type ExecOptions, type ExecResult, type FileStat, type HarnessIdentity, type SandboxProcess, type SandboxTextSearchLimitReason, type SandboxTextSearchMatch, type SandboxTextSearchRequest, type SandboxTextSearchResult, type SpawnCapableSandboxSession, type SpawnOptions, type TextSearchCapableSandboxSession } from '@purista/harness'
 import type { DockerSandbox } from './lifecycle.js'
 import { failure } from './options.js'
 import { stateLost, type LifecycleRecord, type Ownership } from './records.js'
@@ -8,7 +8,7 @@ import { checkCancelled, collect, OUTPUT_LIMIT_BYTES, type DockerChild, type Doc
 const ROOT = '/workspace'
 const CHECK_PATH = 'target=$(realpath -m -- "$1"); shift; '
 
-export class DockerSandboxSession implements SpawnCapableSandboxSession {
+export class DockerSandboxSession implements SpawnCapableSandboxSession, TextSearchCapableSandboxSession {
   public readonly executor = 'available' as const
   private closing = false
   private closed = false
@@ -74,6 +74,56 @@ export class DockerSandboxSession implements SpawnCapableSandboxSession {
       if (path.startsWith('/') || path.includes('\\') || path.split('/').some(part => part === '..' || part === '.')) throw failure('invalid_path')
       await this.write(`${atPath.replace(/\/$/, '')}/${path}`, data)
     }
+  }
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    validateSandboxTextSearchRequest(request)
+    checkCancelled(request.signal)
+    const entries = (await this.list(request.path, { recursive: true }))
+      .filter((entry): entry is DirEntry & { kind: 'file' } => entry.kind === 'file')
+      .sort((left, right) => left.path.localeCompare(right.path))
+    const matches: SandboxTextSearchMatch[] = []
+    const reasons = new Set<SandboxTextSearchLimitReason>()
+    let scannedFiles = 0
+    let scannedBytes = 0
+    if (entries.length > SANDBOX_TEXT_SEARCH_LIMITS.maxFiles) reasons.add('file_count_limit')
+
+    for (const entry of entries.slice(0, SANDBOX_TEXT_SEARCH_LIMITS.maxFiles)) {
+      checkCancelled(request.signal)
+      if (entry.size === undefined || entry.size > SANDBOX_TEXT_SEARCH_LIMITS.maxFileBytes) {
+        reasons.add('file_byte_limit')
+        continue
+      }
+      if (scannedBytes + entry.size > SANDBOX_TEXT_SEARCH_LIMITS.maxScannedBytes) {
+        reasons.add('scan_byte_limit')
+        break
+      }
+      scannedFiles += 1
+      scannedBytes += entry.size
+      const remaining = request.maxResults - matches.length
+      const flags = ['-n', '-a', request.syntax === 'literal' ? '-F' : '-E', '-m', String(remaining)]
+      if (!request.caseSensitive) flags.push('-i')
+      const output = await this.execute(
+        ['grep', ...flags, '--', request.pattern, guestPath(entry.path)],
+        { ...(request.signal ? { signal: request.signal } : {}), env: { LC_ALL: 'C' } },
+      )
+      if (output.exitCode !== 0 && output.exitCode !== 1) throw failure('text_search_failed', 'Docker sandbox text search failed.')
+      for (const line of output.stdout.split('\n')) {
+        if (!line) continue
+        const separator = line.indexOf(':')
+        if (separator <= 0) throw failure('provider_response_invalid')
+        const lineNumber = Number(line.slice(0, separator))
+        if (!Number.isSafeInteger(lineNumber) || lineNumber <= 0) throw failure('provider_response_invalid')
+        const excerpt = truncateUtf8(line.slice(separator + 1), SANDBOX_TEXT_SEARCH_LIMITS.maxReturnedLineBytes)
+        if (excerpt.truncated) reasons.add('line_byte_limit')
+        matches.push({ path: entry.path, line: lineNumber, text: excerpt.text, textTruncated: excerpt.truncated })
+      }
+      if (matches.length >= request.maxResults) {
+        reasons.add('result_limit')
+        break
+      }
+    }
+    const limitReasons = [...reasons].sort()
+    return { matches, complete: limitReasons.length === 0, limitReasons, scannedFiles, scannedBytes }
   }
   public async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     validateCommand(command)
@@ -195,3 +245,10 @@ function guardedCommand(command: readonly string[], cwd = '/workspace'): string[
 }
 function validateCommand(command: string): void { if (typeof command !== 'string' || !command.trim() || command.includes('\0')) throw failure('invalid_command') }
 function glob(pattern: string): RegExp { return new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.')}$`) }
+function truncateUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
+  const encoded = Buffer.from(value)
+  if (encoded.byteLength <= maxBytes) return { text: value, truncated: false }
+  let end = maxBytes
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1
+  return { text: encoded.subarray(0, end).toString('utf8'), truncated: true }
+}

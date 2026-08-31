@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { OperationCancelledError, OperationTimeoutError, SandboxNoExecutorError, SandboxPermissionDeniedError, SandboxStateLostError } from '../errors/index.js'
-import { isExecCapableSession, type Sandbox, type SandboxScope, type SandboxSessionBase } from '../sandbox/index.js'
+import { isExecCapableSession, isTextSearchCapableSession, type Sandbox, type SandboxScope, type SandboxSessionBase } from '../sandbox/index.js'
 
 const CONTRACT_INSTANCE = '01J00000000000000000000000'
 
@@ -182,6 +182,58 @@ export function sandboxContract(make: () => Sandbox | Promise<Sandbox>, opts: { 
       const session = requireExecutor(await openContractSession(await make()))
       await expect(session.exec('sleep 1', { timeoutMs: 10 })).rejects.toBeInstanceOf(OperationTimeoutError)
       await expect(session.exec('echo hi', { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(OperationCancelledError)
+    })
+  })
+}
+
+/** Shared behavioural checks for adapters advertising `sandbox.text_search`. */
+export function sandboxTextSearchContract(make: () => Sandbox | Promise<Sandbox>): void {
+  describe('sandboxTextSearchContract', () => {
+    it('searches literal and safe regex patterns without requiring exec', async () => {
+      const sandbox = await make()
+      expect(sandbox.capabilities).toContain('sandbox.text_search')
+      const session = (await open(sandbox, contractScope('text-search'))).session
+      if (!isTextSearchCapableSession(session)) throw new Error('Adapter advertises sandbox.text_search without searchText().')
+      await session.write('/workspace/a.txt', 'Alpha one\nbeta two\n')
+      await session.write('/workspace/b.txt', 'alpha three\n')
+      await expect(session.searchText({ path: '/workspace', pattern: 'alpha', syntax: 'literal', caseSensitive: false, maxResults: 10 })).resolves.toMatchObject({
+        complete: true,
+        limitReasons: [],
+        scannedFiles: 2,
+        matches: [
+          { path: '/workspace/a.txt', line: 1, text: 'Alpha one', textTruncated: false },
+          { path: '/workspace/b.txt', line: 1, text: 'alpha three', textTruncated: false },
+        ],
+      })
+      await expect(session.searchText({ path: '/workspace', pattern: '^(Alpha|beta)', syntax: 'safe_regex_v1', caseSensitive: true, maxResults: 10 })).resolves.toMatchObject({
+        complete: true,
+        matches: [
+          { path: '/workspace/a.txt', line: 1 },
+          { path: '/workspace/a.txt', line: 2 },
+        ],
+      })
+    })
+
+    it('reports bounded results as incomplete and rejects unsupported regex constructs', async () => {
+      const sandbox = await make()
+      const session = (await open(sandbox, contractScope('text-search-limits'))).session
+      if (!isTextSearchCapableSession(session)) throw new Error('Adapter advertises sandbox.text_search without searchText().')
+      await session.write('/workspace/a.txt', 'match\nmatch\n')
+      await expect(session.searchText({ path: '/workspace', pattern: 'match', syntax: 'literal', caseSensitive: true, maxResults: 1 })).resolves.toMatchObject({
+        complete: false,
+        limitReasons: ['result_limit'],
+        matches: [{ line: 1 }],
+      })
+      await expect(session.searchText({ path: '/workspace', pattern: '(a)\\1', syntax: 'safe_regex_v1', caseSensitive: true, maxResults: 10 })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    })
+
+    it('handles adversarial ambiguity and cancellation within the shared contract', async () => {
+      const sandbox = await make()
+      const session = (await open(sandbox, contractScope('text-search-adversarial'))).session
+      if (!isTextSearchCapableSession(session)) throw new Error('Adapter advertises sandbox.text_search without searchText().')
+      await session.write('/workspace/a.txt', `${'a'.repeat(100_000)}!\n`)
+      await expect(session.searchText({ path: '/workspace', pattern: '(a|aa)+$', syntax: 'safe_regex_v1', caseSensitive: true, maxResults: 10 })).resolves.toMatchObject({ matches: [] })
+      await expect(session.searchText({ path: '/workspace', pattern: 'a', syntax: 'literal', caseSensitive: true, maxResults: 10, signal: AbortSignal.abort() })).rejects.toBeInstanceOf(OperationCancelledError)
     })
   })
 }

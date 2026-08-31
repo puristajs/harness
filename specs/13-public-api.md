@@ -1,11 +1,12 @@
 # Public API
 
-> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for the changed public authoring exports. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other authoring exports.
 
 **Purpose.** Single source of truth for every symbol exported from the v3 package set. The published package set includes the core package plus independent provider addons:
 
 - `@purista/harness` — harness, types, errors, in-memory adapters, local durable adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
 - `@purista/harness-openai` — OpenAI provider.
+- `@purista/harness-google` — Google Gemini API provider.
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
 - `@purista/harness-guardrails` — optional NeMo-shaped typed input/output/tool/retrieval rails and provider-neutral sensitive-data detector port.
@@ -14,7 +15,9 @@
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
 - `@purista/harness-workspace-*` — optional external durable workspaces. Core ships local durable adapters and test helpers.
-- `@purista/harness-policy-*` — optional governance policy adapters. Core exports the policy port and native policy types, but OPA/AGT/Eve/Cedar engines live outside core.
+- `@purista/harness-policy-opa` — optional typed Open Policy Agent Data API governance adapter and `./testing` fake. Core exports the provider-neutral policy port; Cedar, AGT/Eve, and other engines remain application-owned.
+- `@purista/harness-storage-postgres` — distributed PostgreSQL implementation of the complete HarnessStorage port.
+- `@purista/harness-sandbox-kubernetes` — self-hosted Kubernetes Sandbox and optional PVC/VolumeSnapshot DurableWorkspace runtime.
 - `@purista/harness-agent-plugins` — opt-in local Agent Plugins 1.0.0 client;
   it inspects reviewed portable packages and returns ordinary skill/tool
   bindings without evaluating plugin code.
@@ -52,6 +55,8 @@ export function defineHarnessModule<Required extends BuilderState = {}>(): <cons
   id: Id,
   definition: Omit<HarnessModule<Required, Result, Id>, 'id'>
 ) => HarnessModule<Required, Result, Id>
+// Opaque direct-binding key implemented by optional Guardrails packages
+export const agentGuardrailsBinding: unique symbol
 
 // Default adapters (in-memory)
 export class JsonLogger implements Logger {
@@ -65,13 +70,13 @@ export class InMemoryHarnessStorage implements HarnessStorage { constructor() }
 export function inMemoryHarnessStorage(): InMemoryHarnessStorage
 
 // Sandbox factories (default adapters)
-export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs']>
+export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search']>
 export interface BashSandboxOptions {
   readonly network?: { readonly allow?: readonly string[] }
   readonly executionLimits?: { readonly wallClockMs?: number; readonly maxFileSystemBytes?: number }
   readonly python?: boolean
 }
-export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']>
 export type SandboxTelemetryOperation = 'register_owner' | 'open' | 'detach' | 'terminate' | 'list' | 'purge' | 'sweep' | 'delete_snapshot'
 export function withSandboxTelemetry<T>(
   telemetry: TelemetryShim | undefined,
@@ -213,7 +218,7 @@ export interface AgentBeforeToolInterceptorContext<S, I>
 export interface AgentAfterToolInterceptorContext<S, I>
 export interface AgentExecutionInterceptor<S, I>
 export type AgentExecutionInterception<T>
-export interface AgentDefinitionHelpers<S>
+export interface AgentGuardrailsBinding
 export interface AgentPrepareStepContext<S, I>
 export interface AgentPrepareStepResult<S>
 export interface AgentStopWhenContext<S, I>
@@ -221,7 +226,6 @@ export type AgentPrepareStep<S, I>
 export type AgentStopWhen<S, I>
 export type WorkflowsConfig<S>
 export interface WorkflowDefinition<S, I, O>
-export interface WorkflowDefinitionHelpers<S>
 export interface WorkflowDelegationPolicy<S>
 export type WorkflowAgentInvokeOptions<S, K>
 export interface WorkflowFanOutOptions
@@ -372,6 +376,9 @@ export interface WorkspaceCleanupOptions
 export interface WorkspaceCleanupResult
 export interface WorkspaceInspectionOptions
 export interface WorkspaceInspection
+export interface WorkspacePinOptions
+export interface WorkspaceReleasePinOptions
+export interface WorkspaceFinishOptions
 export interface WorkspaceQuotaPolicy
 export interface WorkspaceRetentionPolicy
 export interface WorkspaceEncryptionInfo
@@ -385,6 +392,23 @@ export type LocalExecSandboxCapabilities
 export interface SqliteHarnessStorageOptions
 export interface LocalDirectoryWorkspaceOptions
 export interface LocalDirectorySandboxOptions
+
+// Adapter-author subpath: @purista/harness/adapter
+export function sameHarnessIdentity
+export function assertSessionSandboxBindingTransition
+export function sandboxScopeKey
+export function validateSandboxOpenOptions
+export function validateSandboxScope
+export function validateSandboxTerminateOptions
+export function asExternalWaitResolved
+export function createExternalWaitCancellation
+export function projectExternalWaitRequest
+export function validateBoundExternalWaitRequest
+export function validateExternalWaitId
+export function validateExternalWaitRegistration
+export function validateExternalWaitSignal
+export function validateExternalWaitSignalResult
+export function validateExternalWaitSnapshot
 
 // Storage-owned durable execution
 export interface DurableRunLease
@@ -429,6 +453,8 @@ export interface ReadOnlyMountCapableSandboxSession
 export function isReadOnlyMountCapableSession
 export interface ExecCapableSandboxSession
 export function isExecCapableSession
+export interface TextSearchCapableSandboxSession
+export function isTextSearchCapableSession
 export type SandboxSession
 export type SandboxSessionFor
 export interface SnapshotResult
@@ -449,6 +475,14 @@ export interface ExecOptions
 export interface ExecResult
 export interface DirEntry
 export interface FileStat
+export type SandboxTextSearchSyntax
+export type SandboxTextSearchLimitReason
+export interface SandboxTextSearchRequest
+export interface SandboxTextSearchMatch
+export interface SandboxTextSearchResult
+export const SANDBOX_TEXT_SEARCH_LIMITS
+export function validateSandboxTextSearchRequest
+export function compileSafeRegex
 
 // Persistence shapes
 export interface SessionRecord
@@ -532,7 +566,11 @@ export function evaluationResultToFeedbackRecords(
 ### `HarnessBuilder<S>` (locked)
 
 ```ts
-import type { z } from 'zod'
+export type Schema<Input extends JsonValue = JsonValue, Output extends JsonValue = Input> = StandardSchemaV1<Input, Output>
+export type ModelSchema<Input extends JsonValue = JsonValue, Output extends JsonValue = Input> =
+  StandardSchemaV1<Input, Output> & StandardJSONSchemaV1<Input, Output>
+export type Infer<S extends Schema> = StandardSchemaV1.InferOutput<S>
+export type InferIn<S extends Schema> = StandardSchemaV1.InferInput<S>
 
 interface HarnessBuilder<S extends BuilderState> {
   /** Apply a local static transform; unavailable to module callbacks. */
@@ -551,15 +589,40 @@ interface HarnessBuilder<S extends BuilderState> {
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
-  // Domain — direct calls follow staged ordering. Module contributions append
-  // in caller order and reject duplicate keys; see 25-static-harness-modules.
+  // Registries are repeatable, append-only, and collision-rejecting.
+  model<const Id extends string, const D extends ModelAlias>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { models: Record<Id, D> }>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
-  tools<const T extends ToolsConfig<ToolHandlerContext<SandboxCapabilitiesFor<S>>>>(tools: T): HarnessBuilder<S & { tools: T }>
+  tool<const Id extends string, const I extends ModelSchema, const O extends Schema>(
+    id: Id,
+    definition: TsToolDefinition<I, O, ToolHandlerContext<SandboxCapabilitiesFor<S>>>
+  ): HarnessBuilder<S & { tools: Record<Id, TsToolDefinition<I, O, ToolHandlerContext<SandboxCapabilitiesFor<S>>>> }>
+  tool<const Id extends string, const D extends McpStdioToolDefinition | McpHttpToolDefinition>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { tools: Record<Id, D> }>
+  tools<const T extends Record<string, ToolDefinition<ToolHandlerContext<SandboxCapabilitiesFor<S>>>>>(
+    tools: T & ToolsConfigFromSchemaMaps<T, ToolHandlerContext<SandboxCapabilitiesFor<S>>>
+  ): HarnessBuilder<S & { tools: T }>
+  skill<const Id extends string, const D extends SkillDefinition>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { skills: Record<Id, D> }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
-  agents<const A extends AgentsConfig<S & { models: any; tools: any; skills: any }>>(
+  agent<const Id extends string, const D extends AgentDefinition<S>>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { agents: Record<Id, D> }>
+  agents<const A extends AgentsConfig<S>>(
     agents: A
   ): HarnessBuilder<S & { agents: A }>
-  workflows<const W extends WorkflowsConfig<S & { agents: any }>>(
+  workflow<const Id extends string, const D extends WorkflowDefinition<S>>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { workflows: Record<Id, D> }>
+  workflows<const W extends WorkflowsConfig<S>>(
     workflows: W
   ): HarnessBuilder<S & { workflows: W }>
   governance(
@@ -570,15 +633,20 @@ interface HarnessBuilder<S extends BuilderState> {
 }
 ```
 
-`HarnessModuleBuilder<S>` is `HarnessBuilder<S>` without `build` and `use`.
+All five singular/plural registry families are repeatable and accumulate exact
+registry keys. Singular and plural calls share one validation/merge path;
+duplicate IDs fail rather than replace. Identity callbacks, native-tool helper
+callbacks, registration brands, and their public helper types do not exist.
+`HarnessModuleBuilder<S>` exposes the same ten registration methods and is
+otherwise `HarnessBuilder<S>` without `build` and `use`.
 `HarnessModule<Required, Result, Id>.register` receives the declared minimum
 state and returns its inferred result. `.use()` is callable only when the
 accumulated state extends `Required`, and returns `HarnessBuilder<S & Result>`
 so existing definitions and sandbox capability inference are retained.
-The shipped declaration must preserve literal model/tool/skill/agent keys
-without public `any`/`unknown` escape hatches. Direct
-builder types omit already-set or out-of-order methods so incorrect direct
-chains fail at the type level. At runtime, `.build()` fails with
+The shipped declaration must preserve literal model/tool/skill/agent keys,
+schema directions, and sandbox capabilities without public `any`/`unknown`
+escape hatches. A consumer definition can reference only registry keys already
+accumulated in its builder state. At runtime, `.build()` fails with
 `HarnessConfigError{reason:'missing_models'}` when no accumulated module/direct
 contribution supplied models. Behavioral ordering rules and validation are
 described in [02-harness-config](./02-harness-config.md).
@@ -607,27 +675,27 @@ interface Session<S extends BuilderState> {
   /** Frees live sandbox/MCP resources but preserves persisted session state. */
   release(): Promise<void>
   /** Destructively removes persisted session state after releasing resources. */
-  close(): Promise<void>
+  destroy(): Promise<void>
 }
 
 interface AgentInvoker<S, K extends keyof S['agents']> {
-  prompt(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
+  run(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
   stream(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 interface WorkflowInvoker<S, K extends keyof S['workflows']> {
-  prompt(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
+  run(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
   stream(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 type AgentInput<S, K extends keyof S['agents']> =
-  S['agents'][K] extends { input: infer I } ? (I extends z.ZodTypeAny ? z.infer<I> : string) : string
+  S['agents'][K] extends { input: infer I extends Schema } ? InferIn<I> : string
 type AgentOutput<S, K extends keyof S['agents']> =
-  S['agents'][K] extends { output: infer O } ? (O extends z.ZodTypeAny ? z.infer<O> : string) : string
+  S['agents'][K] extends { output: infer O extends Schema } ? Infer<O> : string
 type WorkflowInput<S, K extends keyof S['workflows']> =
-  S['workflows'][K] extends { input: infer I } ? (I extends z.ZodTypeAny ? z.infer<I> : string) : string
+  S['workflows'][K] extends { input: infer I extends Schema } ? InferIn<I> : string
 type WorkflowOutput<S, K extends keyof S['workflows']> =
-  S['workflows'][K] extends { output: infer O } ? (O extends z.ZodTypeAny ? z.infer<O> : string) : string
+  S['workflows'][K] extends { output: infer O extends Schema } ? Infer<O> : string
 ```
 
 ### `InferTypes<S>` namespace (locked)
@@ -766,6 +834,7 @@ Full memory scope, capability, validation, telemetry, metrics, and reference ada
 ```ts
 type AdapterCapability =
   | 'sandbox.fs'
+  | 'sandbox.text_search'
   | 'sandbox.exec'
   | 'sandbox.persistent_fs'
   | 'sandbox.workspace_binding'
@@ -996,7 +1065,8 @@ Locked canonical → alias map (the harness normalizes alias dispatch to canonic
 
 ```ts
 // Fakes
-export class FakeModelProvider implements ModelProvider     // configurable scripted responses
+export interface FakeModelProviderOptions { strict?: boolean }
+export class FakeModelProvider implements ModelProvider     // configurable scripted responses; strict mode rejects unscripted calls and assertExhausted() detects unused fixtures
 export class FakeHarnessStorage extends InMemoryHarnessStorage       // records invoked operations (`ops`, `opCount`, `resetOps`)
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory (`records`)
@@ -1022,6 +1092,7 @@ export function sandboxContract(
   make: () => Sandbox | Promise<Sandbox>,
   opts: { executor: 'available' | 'unavailable' }
 ): void
+export function sandboxTextSearchContract(make: () => Sandbox | Promise<Sandbox>): void
 export function modelProviderContract(
   make: () => ModelProvider,
   opts: { capabilities: ModelCapability[] }
@@ -1202,13 +1273,189 @@ export type OpenAiFactoryOptions
 export type OpenAiClient
 ```
 
+### `@purista/harness-google` package
+
+```ts
+import type { ModelProvider, BaseModelProviderOptions } from '@purista/harness'
+import type { GoogleGenAIOptions } from '@google/genai'
+
+export interface GoogleFactoryOptions extends GoogleGenAIOptions {
+  client?: GoogleClient
+  /** Optional adapter-level override. Defaults to the harness logger when registered. */
+  harnessLogger?: BaseModelProviderOptions['logger']
+  /** Optional adapter-level override. Defaults to the harness telemetry shim when registered. */
+  telemetry?: BaseModelProviderOptions['telemetry']
+  /** Optional adapter-level override. Defaults to `defaults.modelTimeoutMs` when registered. */
+  harnessTimeoutMs?: number
+}
+
+export interface GoogleClient {
+  models: {
+    generateContent(params: unknown): Promise<unknown>
+    generateContentStream(params: unknown): Promise<AsyncIterable<unknown>>
+    embedContent(params: unknown): Promise<unknown>
+  }
+}
+
+export function google(opts?: GoogleFactoryOptions): ModelProvider
+```
+
+`google(...)` is a thin official `@google/genai` SDK adapter. It implements
+text, text streaming, JSON-schema object output, object streaming, application
+function tools/results, and embeddings. It maps inline image/audio/file parts
+to the SDK, does not upload sandbox files, and does not implement reranking.
+Factory options accept Gemini API and Vertex/enterprise SDK settings. Harness
+owns retry, timeout, telemetry and client-side conversation history; the
+adapter applies `httpOptions.retryOptions.attempts: 1` unless the caller
+provides explicit SDK retry options. The provider id is `'google'` and the
+OpenTelemetry system identifier is `'google.gemini'`.
+
 Additional provider packages follow the `@purista/harness-{addon}` naming convention and expose one provider factory plus factory options/client types. The `ModelProvider` port remains stable for v3.x provider packages.
 
 Current provider addons:
 
+- `@purista/harness-google`: `google(options)`, `GoogleFactoryOptions`, `GoogleClient`
 - `@purista/harness-anthropic`: `anthropic(options)`, `AnthropicFactoryOptions`, `AnthropicClient`
 - `@purista/harness-bedrock`: `bedrock(options)`, `BedrockFactoryOptions`, `BedrockClient`
 - `@purista/harness-azure-foundry`: `azureFoundry(options)`, `AzureFoundryFactoryOptions`, `AzureFoundryClient`
+
+## `@purista/harness-storage-postgres` package
+
+The package exports exactly:
+
+```ts
+export interface PostgresHarnessStorageOptions {
+  readonly connectionString?: string
+  readonly pool?: import('pg').Pool
+  readonly leaseTtlMs?: number
+  readonly now?: () => number
+}
+
+export function postgresHarnessStorage(
+  options: PostgresHarnessStorageOptions,
+): HarnessStorage & { close(): Promise<void> }
+```
+
+Exactly one connection string or pool is required. A created pool is owned and
+closed idempotently; an injected pool is never closed. Package migrations,
+capabilities, transaction/fencing behavior, and telemetry are locked by spec
+43.
+
+## `@purista/harness-sandbox-kubernetes` package
+
+The primary application surface is:
+
+```ts
+export interface KubernetesWorkspaceRuntimeOptions {
+  readonly snapshotClassName?: string
+  readonly snapshotReadyTimeoutMs?: number
+}
+
+export interface KubernetesSandboxRuntimeOptions {
+  readonly namespace: string
+  readonly image: string
+  readonly runtimeId?: string
+  readonly containerName?: string
+  readonly serviceAccountName?: string
+  readonly runtimeClassName?: string
+  readonly imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'
+  readonly volumeSize?: string
+  readonly storageClassName?: string
+  readonly podReadyTimeoutMs?: number
+  readonly defaultCommandTimeoutMs?: number
+  readonly cpuLimit?: string
+  readonly memoryLimit?: string
+  readonly ephemeralStorageLimit?: string
+  readonly maxFileBytes?: number
+  readonly maxOutputBytes?: number
+  readonly workspace?: false | true | KubernetesWorkspaceRuntimeOptions
+  readonly kubeConfig?: import('@kubernetes/client-node').KubeConfig
+  readonly driver?: KubernetesSandboxDriver
+}
+
+export interface KubernetesSandboxRuntime {
+  readonly sandbox: Sandbox
+  readonly workspace?: DurableWorkspace
+  close(): Promise<void>
+}
+
+export interface KubernetesSandboxRuntimeWithWorkspace extends KubernetesSandboxRuntime {
+  readonly workspace: DurableWorkspace
+}
+
+export function kubernetesSandboxRuntime(
+  options: KubernetesSandboxRuntimeOptions & { readonly workspace: true | KubernetesWorkspaceRuntimeOptions },
+): KubernetesSandboxRuntimeWithWorkspace
+export function kubernetesSandboxRuntime(options: KubernetesSandboxRuntimeOptions): KubernetesSandboxRuntime
+```
+
+The package also exports the focused `KubernetesSandboxAdapter`,
+`KubernetesDurableWorkspace`, capability constants, public option/record types,
+`KubernetesSandboxDriver`, official driver factory, and resource-name helper so
+platform wrappers can inject a tested infrastructure boundary without deep
+imports. Application code normally uses only `kubernetesSandboxRuntime(...)`.
+Provider resources and control metadata remain adapter-private.
+
+## `@purista/harness-policy-opa` package
+
+### `package.json` exports map (locked)
+
+```json
+{
+  "name": "@purista/harness-policy-opa",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./testing": { "types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js" }
+  }
+}
+```
+
+### Main exports — values
+
+```ts
+export const OPA_DATA_API_PREFIX: 'v1/data'
+export const OPA_DEFAULT_MAX_RESPONSE_BYTES: 262_144
+export const OPA_DEFAULT_TIMEOUT_MS: 10_000
+export class OpaClientError extends Error {}
+export class OpaPolicyError extends Error {}
+export function createOpaClient(options: OpaClientOptions): OpaClient
+export function opaPolicy<
+  S extends BuilderState,
+  const ResultSchema extends Schema<any, any>,
+>(
+  registrar: OpaPolicyRegistrar<S>,
+  options: OpaPolicyOptions<S, ResultSchema>,
+): GovernancePolicyEvaluator<S>
+```
+
+### Main exports — types
+
+```ts
+export type OpaDecisionPath
+export type OpaClientErrorKind
+export type OpaPolicyErrorKind
+export type OpaQueryResult
+export type OpaJsonCompatible<T>
+export type OpaJsonResultSchema<ResultSchema extends Schema<any, any>>
+export interface OpaDecisionExecution
+export interface OpaClientOptions
+export interface OpaClient
+export interface OpaPolicyRegistrar<S extends BuilderState>
+export interface OpaPolicyOptions<S extends BuilderState, ResultSchema extends Schema<any, any>>
+```
+
+### Testing exports
+
+```ts
+export interface FakeOpaDataApiRequest
+export interface FakeOpaDataApiResponseOptions
+export interface FakeOpaDataApiDecisionOptions
+export class FakeOpaDataApi
+```
+
+The exact generic callbacks, transport behavior, validation, errors, and fake
+methods are locked in [41-opa-policy-adapter](./41-opa-policy-adapter.md).
 
 ## `@purista/harness-agent-plugins` package
 
@@ -1270,23 +1517,9 @@ Every export listed above must be re-exported from the appropriate entry point:
 
 ## Schema conversion
 
-The harness converts Zod schemas to JSON Schema (draft 2020-12) via an internal converter. Locked rules:
+The harness does not own a vendor-specific conversion matrix. Tool input and default-loop agent output implement `ModelSchema`; during `build()`, Harness calls the Standard JSON Schema input converter exactly once with target `draft-2020-12`, validates/freezes the returned `JsonValue`, and caches it. All other public value-schema boundaries require only `Schema`. Provider ports receive plain JSON Schema and adapters pass it through unchanged. Exact failure metadata, type directions, and cache rules are locked in [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/model-projection.md).
 
-- `z.string()` → `{type:'string'}` (with `minLength`/`maxLength`/`pattern` if set).
-- `z.number()` / `z.int()` → `{type:'number'|'integer'}` with bounds.
-- `z.boolean()` → `{type:'boolean'}`.
-- `z.literal(v)` → `{const: v}`.
-- `z.enum(values)` → `{enum: values}`.
-- `z.object({...})` → `{type:'object', properties, required}` with `additionalProperties: false`.
-- `z.array(t)` → `{type:'array', items}`.
-- `z.union([a,b])` → `{anyOf:[A,B]}`.
-- `z.discriminatedUnion(k, [...])` → `{oneOf:[...]}` with the discriminator preserved on each branch.
-- `z.optional(t)` makes the field optional in the parent object.
-- `z.nullable(t)` → `{anyOf:[T,{type:'null'}]}`.
-- `.describe(s)` populates `description`.
-- Any unsupported Zod type → `SkillManifestError`/`ValidationError` at schema-translation time, with a clear `meta.unsupported` field.
-
-The reverse conversion (JSON Schema → Zod) is not implemented; MCP tool input schemas are validated using a JSON-Schema validator embedded in the harness MCP runners, not converted to Zod.
+MCP tools retain their existing embedded JSON Schema validation path; JSON Schema is not converted into a user validator.
 
 ## Cross-references
 

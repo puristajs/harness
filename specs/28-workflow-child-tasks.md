@@ -72,7 +72,7 @@ worker adapter and its inbox/lease protocol.
   normal agent lifecycle events. The start event identifies its `mode`.
 - Parent cancellation is relayed to every live task. A successful parent
   workflow does not cancel a task merely because its handler returned.
-- `Session.close()` and `Harness.shutdown()` cancel and await their live child
+- `Session.destroy()` and `Harness.shutdown()` cancel and await their live child
   tasks before releasing resources.
 - Cancellation, failure, and completion are terminal; a handle retains its
   final content-free status snapshot after resource cleanup.

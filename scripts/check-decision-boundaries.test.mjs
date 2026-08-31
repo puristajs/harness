@@ -69,9 +69,9 @@ test('guardrail cleanup rejects only retired file configuration surfaces', async
   await put('ai-harness/packages/harness-guardrails/src/config.ts', 'export const legacy = true', workspace)
   await put('ai-harness/packages/harness-guardrails/src/index.ts', 'export { loadGuardrailsConfig } from "./config.js"', workspace)
   await put('ai-harness/docs/guides/guardrails.md', 'Configure a YAML policy file.', workspace)
-  await put('ai-harness/packages/harness/src/harness/defineHarness.ts', 'export class Builder {}', workspace)
+  await put('ai-harness/packages/harness/src/harness/defineHarness.ts', 'type ToolDefinitionHelpers = unknown; export class Builder {}', workspace)
   const findings = await verifyGuardrailCleanBreak(ts, workspace)
-  for (const rule of ['retired-guardrail-dependency', 'retired-guardrail-lockfile-dependency', 'retired-guardrail-artifact', 'retired-guardrail-api', 'retired-guardrail-narrative', 'missing-native-tool-helper']) {
+  for (const rule of ['retired-guardrail-dependency', 'retired-guardrail-lockfile-dependency', 'retired-guardrail-artifact', 'retired-guardrail-api', 'retired-guardrail-narrative', 'retired-native-tool-helper']) {
     assert.ok(findings.some(item => item.rule === rule), rule)
   }
   await put('ai-harness/packages/harness-guardrails/package.json', JSON.stringify({ dependencies: { zod: '^4.0.0' } }), workspace)
@@ -79,7 +79,7 @@ test('guardrail cleanup rejects only retired file configuration surfaces', async
   await rm(join(workspace, 'ai-harness/packages/harness-guardrails/src/config.ts'))
   await put('ai-harness/packages/harness-guardrails/src/index.ts', 'export const defineGuardrails = true', workspace)
   await put('ai-harness/docs/guides/guardrails.md', 'Use inline typed configuration.', workspace)
-  await put('ai-harness/packages/harness/src/harness/defineHarness.ts', 'type ToolDefinitionHelpers = unknown; class Builder { tools(factory: (helpers: ToolDefinitionHelpers) => unknown) { return factory } }', workspace)
+  await put('ai-harness/packages/harness/src/harness/defineHarness.ts', 'class Builder { tools(definitions: Record<string, unknown>) { return definitions } }', workspace)
   assert.deepEqual(await verifyGuardrailCleanBreak(ts, workspace), [])
 })
 

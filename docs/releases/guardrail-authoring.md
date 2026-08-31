@@ -11,9 +11,9 @@ an agent or retrieval boundary before `build()`.
 - Model-backed actions name a registered Harness model alias directly. Tool
   actions select their exact tool IDs and sensitive-data actions supply an
   explicit schema-bound codec.
-- Native TypeScript tools are registered with the builder-local helper:
-  `.tools(({ tool }) => ({ lookup: tool({ ... }) }))`. Raw native definitions
-  are rejected; existing MCP literal definitions remain supported.
+- Native TypeScript tools are ordinary definitions registered with
+  `.tool('lookup', { ... })`; bulk `.tools({ ... })` also accepts reusable
+  native definitions and MCP definitions without branding.
 - `build()` aggregates attached requirements and fails before invocation when a
   selected model, capability, or tool is unavailable. Guardrail decisions use
   `allow`, `block`, or a phase-specific `transform`; `reasonCode` remains safe

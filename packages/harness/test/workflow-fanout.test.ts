@@ -11,25 +11,26 @@ describe('workflow fan-out', () => {
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .agents(({ agent }) => ({
-        worker: agent({
-          model: 'fake', input: z.number(), output: z.number(), builtinTools: false, instructions: 'Return input.',
-          handler: async (ctx) => {
-            active += 1
-            peak = Math.max(peak, active)
-            await new Promise((resolve) => setTimeout(resolve, (4 - ctx.input) * 4))
-            active -= 1
-            return ctx.input * 2
-          }
-        })
-      }))
-      .workflows(({ workflow }) => ({
-        fan: workflow({
-          input: z.array(z.number()), output: z.array(z.number()),
-          delegation: { agents: ['worker'], maxParallelChildAgentCalls: 2 },
-          handler: (ctx) => ctx.fanOut(ctx.input, (item) => ctx.agents.worker(item), { concurrency: 10 })
-        })
-      }))
+      .agent('worker', {
+        model: 'fake',
+        input: z.number(),
+        output: z.number(),
+        builtinTools: false,
+        instructions: 'Return input.',
+        handler: async (ctx) => {
+          active += 1
+          peak = Math.max(peak, active)
+          await new Promise((resolve) => setTimeout(resolve, (4 - ctx.input) * 4))
+          active -= 1
+          return ctx.input * 2
+        },
+      })
+      .workflow('fan', {
+        input: z.array(z.number()),
+        output: z.array(z.number()),
+        delegation: { agents: ['worker'], maxParallelChildAgentCalls: 2 },
+        handler: (ctx) => ctx.fanOut(ctx.input, (item) => ctx.agents.worker(item), { concurrency: 10 }),
+      })
       .build()
 
     const session = await harness.getSession('fanout')
@@ -47,19 +48,24 @@ describe('workflow fan-out', () => {
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .agents(({ agent }) => ({
-        worker: agent({ model: 'fake', input: z.string(), output: z.string(), builtinTools: false, instructions: 'Return input.', handler: async (ctx) => ctx.input })
-      }))
-      .workflows(({ workflow }) => ({
-        invalid: workflow({
-          input: z.string(), output: z.array(z.string()), delegation: { agents: ['worker'] },
-          handler: (ctx) => ctx.fanOut([ctx.input], (item) => ctx.agents.worker(item), { concurrency: 0 })
-        })
-      }))
+      .agent('worker', {
+        model: 'fake',
+        input: z.string(),
+        output: z.string(),
+        builtinTools: false,
+        instructions: 'Return input.',
+        handler: async (ctx) => ctx.input,
+      })
+      .workflow('invalid', {
+        input: z.string(),
+        output: z.array(z.string()),
+        delegation: { agents: ['worker'] },
+        handler: (ctx) => ctx.fanOut([ctx.input], (item) => ctx.agents.worker(item), { concurrency: 0 }),
+      })
       .build()
 
     const session = await harness.getSession('fanout-invalid')
-    await expect(session.workflows.invalid.prompt('x')).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(session.workflows.invalid.run('x')).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
     await harness.shutdown()
   })
 })

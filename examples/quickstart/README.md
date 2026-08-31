@@ -7,7 +7,7 @@ The workflow is intentionally small but shows the production shape:
 
 - agents are registered before workflows so `ctx.agents.assistant` is typed;
 - workflow code owns orchestration, metrics, and memory writes;
-- the session API invokes `session.workflows.explain_quickstart.prompt(...)`;
+- the session API invokes `session.workflows.explain_quickstart.run(...)`;
 - tests inject a fake model provider, so no API key is required for CI.
 
 ## Run

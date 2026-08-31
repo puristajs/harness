@@ -1,18 +1,26 @@
 import { expect, it } from 'vitest'
-import { DurableStepError, inMemoryHarnessStorage } from '../src/index.js'
+import { DurableStepError, OperationCancelledError, inMemoryHarnessStorage } from '../src/index.js'
 import { createDurableWorkflowContext } from '../src/runtime/steps.js'
 
-async function createContext() {
+async function createContext(options: Parameters<typeof createDurableWorkflowContext>[2] = {}) {
   const runtime = inMemoryHarnessStorage()
-  await runtime.createRun({ id: 'run-step', sessionId: 'session-step', kind: 'workflow', target: 'initial', startedAt: new Date().toISOString(), status: 'running', input: { prompt: 'hello' } })
+  await runtime.createRun({
+    id: 'run-step',
+    sessionId: 'session-step',
+    kind: 'workflow',
+    target: 'initial',
+    startedAt: new Date().toISOString(),
+    status: 'running',
+    input: { prompt: 'hello' },
+  })
   const lease = await runtime.acquireRun({
     runId: 'run-step',
     sessionId: 'session-step',
     workerId: 'worker-step',
     stepId: 'initial',
-    input: { prompt: 'hello' }
+    input: { prompt: 'hello' },
   })
-  return { runtime, lease, ctx: createDurableWorkflowContext(runtime, lease) }
+  return { runtime, lease, ctx: createDurableWorkflowContext(runtime, lease, options) }
 }
 
 it('checkpoints explicit durable steps', async () => {
@@ -44,15 +52,35 @@ it('rejects non-serializable durable step output deterministically', async () =>
 
 it('replays committed steps on resume without re-running side effects', async () => {
   const runtime = inMemoryHarnessStorage()
-  const start = { runId: 'run-replay', sessionId: 'session-replay', workerId: 'worker-replay', stepId: 'initial', input: { n: 1 } }
-  await runtime.createRun({ id: start.runId, sessionId: start.sessionId, kind: 'workflow', target: start.stepId, startedAt: new Date().toISOString(), status: 'running', input: start.input })
+  const start = {
+    runId: 'run-replay',
+    sessionId: 'session-replay',
+    workerId: 'worker-replay',
+    stepId: 'initial',
+    input: { n: 1 },
+  }
+  await runtime.createRun({
+    id: start.runId,
+    sessionId: start.sessionId,
+    kind: 'workflow',
+    target: start.stepId,
+    startedAt: new Date().toISOString(),
+    status: 'running',
+    input: start.input,
+  })
 
   // First attempt: run two steps, then "crash" (release the lease) after committing.
   const lease1 = await runtime.acquireRun(start)
   const ctx1 = createDurableWorkflowContext(runtime, lease1)
   let sideEffects = 0
-  await ctx1.step('a', async () => { sideEffects += 1; return { a: true } })
-  await ctx1.step('b', async () => { sideEffects += 1; return { b: 2 } })
+  await ctx1.step('a', async () => {
+    sideEffects += 1
+    return { a: true }
+  })
+  await ctx1.step('b', async () => {
+    sideEffects += 1
+    return { b: 2 }
+  })
   expect(sideEffects).toBe(2)
   await lease1.release()
 
@@ -60,31 +88,64 @@ it('replays committed steps on resume without re-running side effects', async ()
   const lease2 = await runtime.acquireRun(start)
   expect(lease2.resumed).toBe(true)
   const ctx2 = createDurableWorkflowContext(runtime, lease2)
-  const a = await ctx2.step('a', async () => { sideEffects += 1; return { a: false } })
-  const b = await ctx2.step('b', async () => { sideEffects += 1; return { b: 99 } })
-  const c = await ctx2.step('c', async () => { sideEffects += 1; return { c: 3 } })
+  const a = await ctx2.step('a', async () => {
+    sideEffects += 1
+    return { a: false }
+  })
+  const b = await ctx2.step('b', async () => {
+    sideEffects += 1
+    return { b: 99 }
+  })
+  const c = await ctx2.step('c', async () => {
+    sideEffects += 1
+    return { c: 3 }
+  })
 
-  expect(a).toEqual({ a: true })   // replayed original output
-  expect(b).toEqual({ b: 2 })      // replayed original output
-  expect(c).toEqual({ c: 3 })      // newly executed
-  expect(sideEffects).toBe(3)      // only step c ran on resume
+  expect(a).toEqual({ a: true }) // replayed original output
+  expect(b).toEqual({ b: 2 }) // replayed original output
+  expect(c).toEqual({ c: 3 }) // newly executed
+  expect(sideEffects).toBe(3) // only step c ran on resume
 })
 
 it('retries transient durable step failures before committing a checkpoint', async () => {
   const { runtime, ctx } = await createContext()
   let attempts = 0
 
-  const output = await ctx.step('retryable', async () => {
-    attempts += 1
-    if (attempts < 3) {
-      throw new Error('temporary')
-    }
-    return { ok: true }
-  }, { retry: { maxAttempts: 3, minDelayMs: 0 } })
+  const output = await ctx.step(
+    'retryable',
+    async () => {
+      attempts += 1
+      if (attempts < 3) {
+        throw new Error('temporary')
+      }
+      return { ok: true }
+    },
+    { retry: { maxAttempts: 3, minDelayMs: 0 } },
+  )
 
   const checkpoint = await runtime.loadCheckpoint('run-step')
   expect(output).toEqual({ ok: true })
   expect(attempts).toBe(3)
   expect(checkpoint?.stepId).toBe('retryable')
   expect(checkpoint?.output).toEqual({ ok: true })
+})
+
+it('stops a retry backoff when the workflow is cancelled', async () => {
+  const controller = new AbortController()
+  const { ctx } = await createContext({ signal: controller.signal })
+  let attempts = 0
+
+  const result = ctx.step(
+    'cancel-retry',
+    async () => {
+      attempts += 1
+      throw new Error('temporary')
+    },
+    { retry: { maxAttempts: 3, minDelayMs: 10_000 } },
+  )
+
+  controller.abort('test cancellation')
+
+  await expect(result).rejects.toBeInstanceOf(OperationCancelledError)
+  expect(attempts).toBe(1)
 })

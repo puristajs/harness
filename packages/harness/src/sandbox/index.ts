@@ -12,8 +12,21 @@ import type { SandboxAdministration } from './administration.js'
 import type { SandboxOwnerRegistrationOptions, SandboxScope } from './ownership.js'
 import { SandboxAdapterCatalog } from './adapter-catalog.js'
 import { ProcessLocalSandboxLifecycle } from './lifecycle.js'
+import { searchSandboxTextLocally, type SandboxTextSearchRequest, type SandboxTextSearchResult } from './text-search.js'
 
 export type { SandboxScope } from './ownership.js'
+export {
+  SANDBOX_TEXT_SEARCH_LIMITS,
+  compileSafeRegex,
+  validateSandboxTextSearchRequest,
+} from './text-search.js'
+export type {
+  SandboxTextSearchLimitReason,
+  SandboxTextSearchMatch,
+  SandboxTextSearchRequest,
+  SandboxTextSearchResult,
+  SandboxTextSearchSyntax,
+} from './text-search.js'
 
 const require = createRequire(import.meta.url)
 
@@ -50,6 +63,16 @@ export function isReadOnlyMountCapableSession(session: SandboxSessionBase): sess
 export interface ExecCapableSandboxSession extends SandboxSessionBase {
   readonly executor: 'available'
   exec(command: string, opts?: ExecOptions): Promise<ExecResult>
+}
+
+/** Sandbox session that can perform bounded data-local text search. */
+export interface TextSearchCapableSandboxSession extends SandboxSessionBase {
+  searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult>
+}
+
+/** Narrows a dynamically configured session to bounded text search. */
+export function isTextSearchCapableSession(session: SandboxSessionBase): session is TextSearchCapableSandboxSession {
+  return typeof (session as Partial<TextSearchCapableSandboxSession>).searchText === 'function'
 }
 
 /** Narrows a dynamically configured session to its available command executor. */
@@ -108,7 +131,8 @@ type DeclaresSandboxCapability<C extends readonly AdapterCapability[], K extends
  * Session operations inferred from an adapter's capability tuple.
  *
  * Every session exposes {@link SandboxSessionBase} file and attachment operations.
- * A definite `sandbox.exec` entry adds {@link ExecCapableSandboxSession.exec}; a
+ * A definite `sandbox.text_search` entry adds {@link TextSearchCapableSandboxSession.searchText};
+ * a definite `sandbox.exec` entry adds {@link ExecCapableSandboxSession.exec}; a
  * definite `sandbox.spawn` entry adds {@link SpawnCapableSandboxSession.spawn}.
  * Widened capability arrays require {@link isExecCapableSession} or
  * {@link isSpawnCapableSession} before using those optional operations.
@@ -124,6 +148,7 @@ export type SandboxSessionFor<C extends readonly AdapterCapability[]> =
   number extends C['length']
     ? SandboxSessionBase
     : SandboxSessionBase
+      & (DeclaresSandboxCapability<C, 'sandbox.text_search'> extends true ? TextSearchCapableSandboxSession : unknown)
       & (DeclaresSandboxCapability<C, 'sandbox.exec'> extends true ? ExecCapableSandboxSession : unknown)
       & (DeclaresSandboxCapability<C, 'sandbox.spawn'> extends true ? SpawnCapableSandboxSession : unknown)
       & (Extract<C[number], 'sandbox.exec' | 'sandbox.spawn'> extends never ? { readonly executor: 'unavailable' } : unknown)
@@ -396,6 +421,10 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
     }
   }
 
+  async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    return searchSandboxTextLocally(request, this)
+  }
+
   async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     if (this.executor === 'unavailable' || !this.bashExec) throw new SandboxNoExecutorError('Sandbox executor unavailable.', { session_id: 'unknown' })
     return this.bashExec(command, { ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, this.controller.signal]) : this.controller.signal })
@@ -430,6 +459,12 @@ class AttachedMemorySandboxSession<E extends SandboxSessionBase['executor']> imp
     const base = normalizePath(atPath)
     for (const [relative, data] of files) await this.write(`${base}/${relative.startsWith('/') ? relative.slice(1) : relative}`, data)
   }
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    return this.use(() => this.backing.searchText({
+      ...request,
+      signal: request.signal ? AbortSignal.any([request.signal, this.controller.signal]) : this.controller.signal,
+    }))
+  }
   public async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     await this.assertExecOpen(this.closed)
     const result = await this.backing.exec(command, { ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, this.controller.signal]) : this.controller.signal })
@@ -462,13 +497,13 @@ class AttachedMemorySandboxSession<E extends SandboxSessionBase['executor']> imp
   }
 }
 
-export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs']> {
+export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search']> {
   const lifecycle = new ProcessLocalSandboxLifecycle<MemorySandboxSession<'unavailable'>>()
   const catalog = SandboxAdapterCatalog.inMemory(async (resource) => {
     if (resource.kind === 'sandbox' && resource.scope) await lifecycle.terminate({ scope: resource.scope, reason: 'manual' })
   })
   return {
-    capabilities: ['sandbox.fs'],
+    capabilities: ['sandbox.fs', 'sandbox.text_search'],
     telemetryAdapterId: 'in_memory_sandbox',
     administration: catalog.administration,
     registerOwner: async (options) => await catalog.registerOwner(options),
@@ -509,7 +544,7 @@ const bashSandboxOptionsSchema = z.object({
 }).strict()
 
 /** Creates a process-local Bash emulator whose file and command APIs share one filesystem. */
-export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']> {
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']> {
   const parsed = bashSandboxOptionsSchema.safeParse(opts ?? {})
   if (!parsed.success) throw new HarnessConfigError('Bash sandbox configuration is invalid.', { reason: 'invalid_bash_sandbox_options', path: 'sandbox' })
   const configuration = parsed.data
@@ -527,7 +562,7 @@ export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandb
   })
   let defaultTimeoutMs = 120_000
   return {
-    capabilities: ['sandbox.fs', 'sandbox.exec'],
+    capabilities: ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec'],
     telemetryAdapterId: 'bash_sandbox',
     administration: catalog.administration,
     registerOwner: async (options) => await catalog.registerOwner(options),

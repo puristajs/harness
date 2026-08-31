@@ -16,12 +16,12 @@ keeps a partial tool exchange merely to fit a limit.
 import { defineHarness, InMemoryHarnessStorage } from '@purista/harness'
 
 const harness = defineHarness({ name: 'support' })
-  .storage(new InMemoryHarnessStorage())
-  .defaults({
-    historyRetention: { maxTurns: 50, maxBytes: 256_000 },
-  })
-  // models, tools, and agents
-  .build()
+	.storage(new InMemoryHarnessStorage())
+	.defaults({
+		historyRetention: { maxTurns: 50, maxBytes: 256_000 },
+	})
+	// models, tools, and agents
+	.build()
 ```
 
 `historyRetention` requires a Harness storage that implements atomic
@@ -43,8 +43,8 @@ from prompt text.
 
 ```ts
 const session = await harness.getSession(`customer:${customerId}`)
-const output = await session.agents.support.prompt(input, {
-  idempotencyKey: message.id,
+const output = await session.agents.support.run(input, {
+	idempotencyKey: message.id,
 })
 ```
 

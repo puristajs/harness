@@ -48,7 +48,7 @@ CAP-DB-TOOLS: actor default-loop agent caller; entrypoint `runDefaultAgent tool 
 
 ## REQ-DB-RAILS
 
-CAP-DB-RAILS: actor guardrails consumer; entrypoint `Guardrails.attach and filterRetrievedChunks`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-RAILS, CTR-DB-EVIDENCE.
+CAP-DB-RAILS: actor guardrails consumer; entrypoint direct agent `guardrails` binding and `filterRetrievedChunks`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-RAILS, CTR-DB-EVIDENCE.
 
 - PATH-DB-RAILS-SUCCESS: Input tool and final-output rails compose with governance.
 - PATH-DB-RAILS-FAILURE: Invalid phase target transform declaration or JSON fails closed.

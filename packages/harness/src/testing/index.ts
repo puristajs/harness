@@ -1,7 +1,7 @@
 import { defineHarness } from '../harness/defineHarness.js'
 
 // Fakes
-export { FakeModelProvider } from './fakeModelProvider.js'
+export { FakeModelProvider, type FakeModelProviderOptions } from './fakeModelProvider.js'
 export { FakeHarnessStorage, type FakeHarnessStorageOp } from './fakeHarnessStorage.js'
 export { FakeSandbox, type FakeSandboxOptions } from './fakeSandbox.js'
 export { FakeLogger, type FakeLogRecord } from './fakeLogger.js'
@@ -13,7 +13,7 @@ export { fakeSnapshotSandbox, sandboxSnapshotContract } from './sandboxSnapshot.
 
 // Contract suites
 export { harnessStorageContract } from './harnessStorageContract.js'
-export { sandboxContract, sandboxMultiClientContract } from './sandboxContract.js'
+export { sandboxContract, sandboxMultiClientContract, sandboxTextSearchContract } from './sandboxContract.js'
 export { modelProviderContract } from './modelProviderContract.js'
 export { loggerContract } from './loggerContract.js'
 export { durableWorkspaceContract } from './durableWorkspaceContract.js'
@@ -21,10 +21,24 @@ export { durableWorkspaceContract } from './durableWorkspaceContract.js'
 // Helpers
 export { recordEvents } from './recordEvents.js'
 export { createInMemoryFeedbackRecorder } from './feedback.js'
-export { ReplayFixtureError, assertReplayConsumed, createReplayInteractionRecorder, replayModelProvider } from './replay.js'
-export type { ReplayInteractionRecorder, ReplayModelProviderOptions, SanitizedReplayFixture, SanitizedReplayInteraction } from './replay.js'
+export {
+  ReplayFixtureError,
+  assertReplayConsumed,
+  createReplayInteractionRecorder,
+  replayModelProvider,
+} from './replay.js'
+export type {
+  ReplayInteractionRecorder,
+  ReplayModelProviderOptions,
+  SanitizedReplayFixture,
+  SanitizedReplayInteraction,
+} from './replay.js'
 export { DiagnosticInvariantError, assertDiagnosticInvariants } from './diagnostics.js'
-export type { DiagnosticInvariantSnapshot, HarnessDiagnosticFinding, HarnessDiagnosticInvariant } from './diagnostics.js'
+export type {
+  DiagnosticInvariantSnapshot,
+  HarnessDiagnosticFinding,
+  HarnessDiagnosticInvariant,
+} from './diagnostics.js'
 
 // AI eval test helpers (re-exported from the main entry for test ergonomics)
 export { createDeterministicEvaluationScorer } from '../eval/index.js'

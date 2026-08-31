@@ -496,7 +496,7 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
         if (!pending.runId) failFirst(error)
       } finally {
         pending.resolveDone()
-        await session.close().catch(() => undefined)
+        await session.destroy().catch(() => undefined)
       }
     })()
 

@@ -45,7 +45,7 @@ function isHarnessPackage(name) {
 export function verifyPublicHarnessImports(ts, path, content) {
   const normalized = path.replaceAll('\\', '/')
   const adapter = /(?:^|\/)packages\/harness-[^/]+\//.test(normalized)
-  const decisionExample = /(?:^|\/)examples\/(?:guardrails|bank-governance|durable-human-review)\//.test(normalized)
+  const decisionExample = /(?:^|\/)examples\/(?:guardrails|bank-governance|durable-human-review|opa-governance)\//.test(normalized)
   if (!adapter && !decisionExample) return []
   const testing = /(?:^|\/)(?:test|type-tests|testing|examples)\/|\.test\.[cm]?[jt]sx?$/.test(normalized)
   const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true)
@@ -57,7 +57,9 @@ export function verifyPublicHarnessImports(ts, path, content) {
     if (specifier && ts.isStringLiteral(specifier)) {
       const name = specifier.text
       const relativeCore = name.startsWith('.') && /(?:^|\/)packages\/harness(?:\/|$)/.test(resolve(dirname(path), name).replaceAll('\\', '/'))
-      const privateSubpath = name.startsWith('@purista/harness/') && !(name === '@purista/harness/testing' && testing)
+      const publicTestingEntry = name === '@purista/harness/testing' && testing
+      const publicAdapterAuthorEntry = name === '@purista/harness/adapter' && adapter
+      const privateSubpath = name.startsWith('@purista/harness/') && !publicTestingEntry && !publicAdapterAuthorEntry
       if (relativeCore || privateSubpath) findings.push({ path, line: source.getLineAndCharacterOfPosition(specifier.getStart(source)).line + 1, rule: 'private-import', symbol: name })
     }
     ts.forEachChild(node, visit)

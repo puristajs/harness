@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "../..",
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@purista/harness": ["../../packages/harness/src/index.ts"],
+      "@purista/harness/testing": ["../../packages/harness/src/testing/index.ts"],
+      "@purista/harness-openai": ["../../packages/openai/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

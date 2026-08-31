@@ -3,6 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "../..",
+    "declaration": false,
+    "declarationMap": false,
     "types": ["node"],
     "paths": {
       "@purista/harness": ["../../packages/harness/src/index.ts"],

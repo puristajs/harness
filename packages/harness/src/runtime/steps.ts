@@ -2,6 +2,7 @@ import type { JsonValue } from '../models/json.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import type { HarnessStorage } from '../storage/types.js'
 import type { DurableRunLease, RunCheckpoint } from '../storage/execution.js'
+import { abortError } from './abort.js'
 
 const STEP_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
 
@@ -15,6 +16,8 @@ export interface DurableStepCommit {
 
 /** Optional hooks for binding recoverable steps to a durable workspace. */
 export interface DurableWorkflowContextOptions {
+  /** Active workflow signal used to stop retry attempts and backoff promptly. */
+  readonly signal?: AbortSignal
   /**
    * Invoked before each NEW step checkpoint is committed (never on replay). The
    * returned record is stored on the storage checkpoint's `replay` field so a
@@ -76,7 +79,7 @@ export class DurableStepError extends Error {
 export function createDurableWorkflowContext(
   storage: Pick<HarnessStorage, 'commitCheckpoint'>,
   lease: DurableRunLease,
-  options: DurableWorkflowContextOptions = {}
+  options: DurableWorkflowContextOptions = {},
 ): DurableWorkflowContext {
   const completed = new Set<string>()
   // Committed step outputs from prior attempts, keyed by stepId. On resume,
@@ -89,7 +92,11 @@ export function createDurableWorkflowContext(
 
   return {
     lease,
-    async step<T extends JsonValue>(stepId: string, fn: () => Promise<T>, stepOptions: DurableStepOptions = {}): Promise<T> {
+    async step<T extends JsonValue>(
+      stepId: string,
+      fn: () => Promise<T>,
+      stepOptions: DurableStepOptions = {},
+    ): Promise<T> {
       validateStepId(stepId)
       if (completed.has(stepId)) {
         throw new DurableStepError(`Duplicate durable step id "${stepId}".`)
@@ -102,7 +109,7 @@ export function createDurableWorkflowContext(
         return replay.get(stepId) as T
       }
 
-      const output = await runStepWithRetry(fn, stepOptions.retry)
+      const output = await runStepWithRetry(fn, stepOptions.retry, options.signal)
       assertJsonSerializable(output, stepId)
       sequence += 1
       // Workspace state is written before the storage checkpoint, and the
@@ -120,36 +127,45 @@ export function createDurableWorkflowContext(
         attempt: lease.attempt,
         sequence,
         output,
-        ...(replayCheckpoint ? { replay: replayCheckpoint } : {})
+        ...(replayCheckpoint ? { replay: replayCheckpoint } : {}),
       }
       await storage.commitCheckpoint(checkpoint)
       await options.onStepCommitted?.(checkpoint)
       return output
-    }
+    },
   }
 }
 
-export async function runStepWithRetry<T>(fn: () => Promise<T>, retry: DurableStepRetrySetting | undefined): Promise<T> {
+export async function runStepWithRetry<T>(
+  fn: () => Promise<T>,
+  retry: DurableStepRetrySetting | undefined,
+  signal?: AbortSignal,
+): Promise<T> {
   const policy = normalizeRetryPolicy(retry)
   let attempt = 0
   let lastError: unknown
 
   while (attempt < policy.maxAttempts) {
+    throwIfStepAborted(signal)
     attempt += 1
     try {
       return await fn()
     } catch (error) {
       lastError = error
+      throwIfStepAborted(signal)
       if (attempt >= policy.maxAttempts) break
-      if (policy.shouldRetry && !await policy.shouldRetry(error, attempt)) break
-      await sleep(retryDelayMs(policy, attempt))
+      if (policy.shouldRetry && !(await policy.shouldRetry(error, attempt))) break
+      throwIfStepAborted(signal)
+      await sleep(retryDelayMs(policy, attempt), signal)
     }
   }
 
   throw lastError
 }
 
-function normalizeRetryPolicy(retry: DurableStepRetrySetting | undefined): Required<Omit<DurableStepRetryPolicy, 'shouldRetry'>> & Pick<DurableStepRetryPolicy, 'shouldRetry'> {
+function normalizeRetryPolicy(
+  retry: DurableStepRetrySetting | undefined,
+): Required<Omit<DurableStepRetryPolicy, 'shouldRetry'>> & Pick<DurableStepRetryPolicy, 'shouldRetry'> {
   if (!retry) {
     return { maxAttempts: 1, minDelayMs: 0, maxDelayMs: 0, backoff: 'fixed' }
   }
@@ -161,7 +177,7 @@ function normalizeRetryPolicy(retry: DurableStepRetrySetting | undefined): Requi
     minDelayMs: Math.max(0, retry.minDelayMs ?? 100),
     maxDelayMs: Math.max(0, retry.maxDelayMs ?? 1_000),
     backoff: retry.backoff ?? 'exponential',
-    ...(retry.shouldRetry ? { shouldRetry: retry.shouldRetry } : {})
+    ...(retry.shouldRetry ? { shouldRetry: retry.shouldRetry } : {}),
   }
 }
 
@@ -169,17 +185,39 @@ function clampPositiveInteger(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1
 }
 
-function retryDelayMs(policy: Required<Omit<DurableStepRetryPolicy, 'shouldRetry'>> & Pick<DurableStepRetryPolicy, 'shouldRetry'>, attempt: number): number {
+function retryDelayMs(
+  policy: Required<Omit<DurableStepRetryPolicy, 'shouldRetry'>> & Pick<DurableStepRetryPolicy, 'shouldRetry'>,
+  attempt: number,
+): number {
   if (policy.maxDelayMs === 0) return 0
-  const base = policy.backoff === 'fixed'
-    ? policy.minDelayMs
-    : policy.minDelayMs * 2 ** Math.max(0, attempt - 1)
+  const base = policy.backoff === 'fixed' ? policy.minDelayMs : policy.minDelayMs * 2 ** Math.max(0, attempt - 1)
   return Math.min(policy.maxDelayMs, base)
 }
 
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve()
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    throwIfStepAborted(signal)
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const onAbort = () => {
+      if (timeout) clearTimeout(timeout)
+      reject(abortError(signal!, 'workflow', 'Workflow step retry was cancelled.'))
+    }
+    timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+}
+
+function throwIfStepAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw abortError(signal, 'workflow', 'Workflow step retry was cancelled.')
+  }
 }
 
 function validateStepId(stepId: string): void {

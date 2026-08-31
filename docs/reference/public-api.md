@@ -11,9 +11,13 @@ adapter packages.
 | `@purista/harness` | Core runtime: builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
 | `@purista/harness-guardrails` | Optional typed content rails; concrete privacy detectors remain separate addons. |
 | `@purista/harness-openai` | OpenAI model provider adapter. |
+| `@purista/harness-google` | Google Gemini API model provider adapter. |
 | `@purista/harness-anthropic` | Anthropic model provider adapter. |
 | `@purista/harness-bedrock` | Amazon Bedrock model provider adapter. |
 | `@purista/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
+| `@purista/harness-policy-opa` | Typed Open Policy Agent Data API governance client and evaluator adapter; strict fake at `./testing`. |
+| `@purista/harness-storage-postgres` | Distributed PostgreSQL HarnessStorage with migrations, leases, fencing, checkpoints, and external waits. |
+| `@purista/harness-sandbox-kubernetes` | Restricted Kubernetes sandbox and optional PVC/VolumeSnapshot durable workspace runtime. |
 | `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection and explicit, application-owned Skill/MCP bindings. |
 | `@purista/harness-memory-sqlite` | Local durable SQLite/FTS5 memory; optional explicit sqlite-vec exact vectors. |
 | `@purista/harness-memory-postgres` | PostgreSQL 16+ and pgvector memory engine. |
@@ -28,21 +32,43 @@ const harness = defineHarness({ name: 'my-service' })
   .workspace(...)
   .memory(...)
   .requires(...)
-  .models(...)
-  .tools(...)
-  .skills(...)
-  .agents(...)
-  .workflows(...)
+  .model('assistant', modelDefinition)
+  .tool('search_docs', searchDocsDefinition)
+  .skill('support_methods', skillDefinition)
+  .agent('answerer', answererDefinition)
+  .workflow('research_report', researchWorkflowDefinition)
   .build()
 
 const session = await harness.getSession('tenant:user:thread')
-const answer = await session.agents.answerer.prompt(input)
-const report = await session.workflows.research_report.prompt(input)
+const answer = await session.agents.answerer.run(input)
+const report = await session.workflows.research_report.run(input)
+await session.release()
 await harness.shutdown()
 ```
 
 `storage(...)`, `workspace(...)`, `memory(...)`, and `requires(...)` are optional. Omit them for
 the simple in-process defaults.
+
+Every definition registry has matching singular and plural methods. All calls
+are additive:
+
+| Method | Parameters | Use it for |
+|---|---|---|
+| `model(id, definition)` | A stable model alias and one provider/model definition. | The normal path for one model alias. |
+| `models(definitions)` | A record keyed by model alias. | A cohesive reusable model catalog. |
+| `tool(id, definition)` | A stable tool id and one native or MCP definition. | The normal inline native-tool path; schemas contextually type the handler. |
+| `tools(definitions)` | A record keyed by tool id. | A cohesive pre-typed native record, MCP record, or mixed reusable catalog. |
+| `skill(id, definition)` | A stable Agent Skill id and one directory binding. | The normal path for one skill. |
+| `skills(definitions)` | A record keyed by skill id. | A cohesive reusable skill catalog. |
+| `agent(id, definition)` | A stable agent id and one inline agent definition. | The normal inline path. Repeat it to preserve cascading schema and context inference. |
+| `agents(definitions)` | A record keyed by agent id. | A cohesive batch whose definitions are already typed. |
+| `workflow(id, definition)` | A stable workflow id and one inline workflow definition. | The normal inline path after its callable agents are registered. |
+| `workflows(definitions)` | A record keyed by workflow id. | A cohesive batch whose definitions are already typed. |
+
+Singular and plural calls update the same registries and can be mixed. A
+duplicate id throws `HarnessConfigError`; registration never overwrites the
+earlier definition. Models must be registered before agents reference their
+aliases, and agents must be registered before workflows use `ctx.agents`.
 
 ## Main Types
 
@@ -50,9 +76,9 @@ the simple in-process defaults.
 |---|---|
 | `Harness<S>` | Built runtime with `getSession`, `shutdown`, and `$infer`. |
 | `HarnessInspection` | Data-only adapter and capability snapshot returned by `harness.inspect()`. |
-| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, `release`, and destructive `close`. |
-| `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
-| `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
+| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, `release`, and destructive `destroy`. |
+| `AgentInvoker` | `run(input)` and `stream(input)` for direct agent runs. |
+| `WorkflowInvoker` | `run(input)` and `stream(input)` for workflow runs. |
 | `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
 | `WorkflowChildTasks` / `ChildTaskHandle` | Typed workflow-owned isolated background tasks with lifecycle status and cancellation. |
 | `ContinuableChildTaskHandle` | In-process isolated task conversation with serialized `send(...)` turns and explicit `close()`. |
@@ -74,13 +100,37 @@ the simple in-process defaults.
 | `SandboxPolicy` / `SandboxBindingOptions` | Application-selected sharing policy and Harness binding options; neither contains provider references. |
 | `SandboxAdministration` | Explicit application-owned exact list/purge/sweep/snapshot cleanup and offboarding surface. |
 | `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
+| `TextSearchCapableSandboxSession` | Session that implements bounded data-local `searchText(...)`; required by built-in `grep`. |
+| `SandboxTextSearchRequest` / `SandboxTextSearchResult` | Provider-neutral literal or `safe_regex_v1` search contract with stable matches and explicit completeness. |
+| `SANDBOX_TEXT_SEARCH_LIMITS` / `validateSandboxTextSearchRequest` | Fixed cross-adapter limits and adapter-side trust-boundary validation. |
 | `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
 | `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
 | `DiscoverSkillsOptions` / `DiscoveredSkills` | Client-style skill discovery input and diagnostics. |
-| `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `storage.checkpoint`. |
+| `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.text_search`, `sandbox.snapshot`, or `storage.checkpoint`. |
 | `DurableWorkspace` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
 | `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
 | `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
+| `Schema<Input, Output>` | Public Standard Schema validation contract for Harness boundaries. |
+| `ModelSchema<Input, Output>` | A `Schema` that also exposes Standard JSON Schema for model-generated values. |
+| `Infer<S>` / `InferIn<S>` | Validated output and raw accepted input inferred from a schema without erasing nested types. |
+
+## OPA policy addon
+
+| Export | Purpose |
+| --- | --- |
+| `createOpaClient(options)` | Creates a fixed-base-URL, no-redirect, no-retry Data API client with cancellation, deadlines, bounded response parsing, and active-trace propagation only to that trusted endpoint. |
+| `opaPolicy(helpers, options)` | Preserves the Harness builder's correlated tool/input types, configures the client with shared Harness context, validates the OPA result through Standard Schema, and maps it to `GovernanceDecision`. |
+| `OpaClientOptions` / `OpaClient` | Reusable transport configuration and direct query contract. |
+| `OpaDecisionPath` / `OpaQueryResult` | Non-empty encoded document path and defined/undefined OPA result union. |
+| `OpaJsonResultSchema<S>` | Compile-time guard that rejects schemas with known non-JSON outputs while allowing absent optional JSON properties. |
+| `OpaJsonCompatible<T>` | Recursive compile-time predicate used by the OPA schema guard. Runtime JSON checks remain authoritative. |
+| `OpaClientError` / `OpaPolicyError` | Content-free transport and mapping failures. |
+| `FakeOpaDataApi` | Strict deterministic protocol fake from `@purista/harness-policy-opa/testing`. |
+
+See the [package contract](../../packages/harness-policy-opa/README.md) and
+[consumer example](../../examples/opa-governance/README.md). Cedar is not an
+OPA client mode; embedded Cedar and AWS Verified Permissions remain separate
+application-owned evaluator topologies.
 
 Sandbox identifiers and provider handles are opaque adapter internals. Register
 an application-authorized owner before direct adapter lifecycle calls. Use
@@ -97,7 +147,7 @@ const harness = defineHarness()
   .workspace(durableWorkspace)
   .requires(['sandbox.fs', 'memory.persistent', 'storage.checkpoint', 'storage.workspace_checkpoint', 'workspace.durable'])
   .models(...)
-  .agents(...)
+  .agent('assistant', assistantDefinition)
   .build()
 
 const inspection = harness.inspect()
@@ -122,7 +172,10 @@ flowchart LR
   Http --> Remote["Remote MCP server"]
 ```
 
-TypeScript tools validate with Zod before and after handler execution. Builtin
+TypeScript tools validate with any Standard Schema before and after handler
+execution. A tool input must additionally be a `ModelSchema`: during
+`.build()`, Harness projects its Standard JSON Schema input form to frozen
+Draft 2020-12 JSON Schema and supplies that exact value to providers. Builtin
 schemas and MCP adapters/schemas also prepare input once before permission,
 policy, and approval. Tool-input transforms change wire arguments first;
 handler-output validation precedes tool-output presentation rails. Read the
@@ -150,14 +203,12 @@ const harness = defineHarness({ name: 'assistant' })
     }
   })
   .models(...)
-  .agents(({ agent }) => ({
-    triage: agent({
-      model: 'fast',
-      skills: ['incident-responder'],
-      builtinTools: ['read'],
-      instructions: 'Read relevant skills before answering.'
-    })
-  }))
+  .agent('triage', {
+    model: 'fast',
+    skills: ['incident-responder'],
+    builtinTools: ['read'],
+    instructions: 'Read relevant skills before answering.'
+  })
   .build()
 ```
 
@@ -246,14 +297,12 @@ Workflows call registered agents through typed `ctx.agents.<id>(input, opts)`.
 Child-agent calls are disabled by default. Opt in per workflow:
 
 ```ts
-.workflows(({ workflow }) => ({
-  publish: workflow({
-    input,
-    output,
-    delegation: { agents: ['writer'] },
-    handler: async (ctx) => ctx.agents.writer(ctx.input)
-  })
-}))
+.workflow('publish', {
+  input,
+  output,
+  delegation: { agents: ['writer'] },
+  handler: async (ctx) => ctx.agents.writer(ctx.input)
+})
 ```
 
 If every workflow in a harness should be allowed to delegate, opt in globally:
@@ -274,23 +323,21 @@ lower fan-out budgets, and choose which model aliases may override a child
 agent's default model:
 
 ```ts
-.workflows(({ workflow }) => ({
-  publish: workflow({
-    input: z.object({ draft: z.string() }),
-    output: z.object({ text: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['writer', 'reviewer'],
-      maxChildAgentCalls: 4,
-      maxParallelChildAgentCalls: 2,
-      agentModelAliases: { reviewer: ['deep'] }
-    },
-    handler: async (ctx) => {
-      const text = await ctx.agents.writer({ draft: ctx.input.draft })
-      const review = await ctx.agents.reviewer(text, { model: 'deep' })
-      return { text: text.text, approved: review.approved }
-    }
-  })
-}))
+.workflow('publish', {
+  input: z.object({ draft: z.string() }),
+  output: z.object({ text: z.string(), approved: z.boolean() }),
+  delegation: {
+    agents: ['writer', 'reviewer'],
+    maxChildAgentCalls: 4,
+    maxParallelChildAgentCalls: 2,
+    agentModelAliases: { reviewer: ['deep'] }
+  },
+  handler: async (ctx) => {
+    const text = await ctx.agents.writer({ draft: ctx.input.draft })
+    const review = await ctx.agents.reviewer(text, { model: 'deep' })
+    return { text: text.text, approved: review.approved }
+  }
+})
 ```
 
 Denied calls throw `DelegationPolicyError` with code
@@ -313,7 +360,7 @@ Workflow handlers can retry transient step failures before checkpoint commit:
 
 ```ts
 await ctx.step('fetch-context', fetchContext, {
-  retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
+	retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 },
 })
 ```
 
@@ -338,12 +385,12 @@ and dashboards.
 ## Invoke Options
 
 ```ts
-await session.agents.answerer.prompt(input, {
-  timeoutMs: 30_000,
-  historyWindow: 20,
-  traceparent: req.headers.get('traceparent') ?? undefined,
-  tracestate: req.headers.get('tracestate') ?? undefined,
-  metadata: { tenantId: 'tenant-a' }
+await session.agents.answerer.run(input, {
+	timeoutMs: 30_000,
+	historyWindow: 20,
+	traceparent: req.headers.get('traceparent') ?? undefined,
+	tracestate: req.headers.get('tracestate') ?? undefined,
+	metadata: { tenantId: 'tenant-a' },
 })
 ```
 
@@ -362,9 +409,9 @@ scoped `ctx.metrics` helper:
 
 ```ts
 interface Metrics {
-  counter(name: string, value?: number, attrs?: SpanAttrs): void
-  histogram(name: string, value: number, attrs?: SpanAttrs): void
-  duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
+	counter(name: string, value?: number, attrs?: SpanAttrs): void
+	histogram(name: string, value: number, attrs?: SpanAttrs): void
+	duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
 }
 ```
 
@@ -404,12 +451,12 @@ alias capabilities:
 
 ```ts
 interface ModelProvider {
-  text?(req: TextRequest): Promise<TextResponse>
-  textStream?(req: TextRequest): AsyncIterable<TextStreamChunk>
-  object?<T>(req: ObjectRequest<T>): Promise<ObjectResponse<T>>
-  objectStream?<T>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
-  embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
-  rerank?(req: RerankRequest): Promise<RerankResponse>
+	text?(req: TextRequest): Promise<TextResponse>
+	textStream?(req: TextRequest): AsyncIterable<TextStreamChunk>
+	object?<T>(req: ObjectRequest<T>): Promise<ObjectResponse<T>>
+	objectStream?<T>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
+	embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
+	rerank?(req: RerankRequest): Promise<RerankResponse>
 }
 ```
 
@@ -459,11 +506,10 @@ Common codes:
 ## Telemetry Options
 
 ```ts
-defineHarness()
-  .telemetry({
-    flavor: 'dual',
-    contentCaptureMode: 'NO_CONTENT'
-  })
+defineHarness().telemetry({
+	flavor: 'dual',
+	contentCaptureMode: 'NO_CONTENT',
+})
 ```
 
 `flavor` controls emitted attribute namespaces:
@@ -524,9 +570,9 @@ adapter packages run the matching contract suites in their own test suites.
 import { openai } from '@purista/harness-openai'
 
 const provider = openai({
-  apiKey: process.env.OPENAI_API_KEY!,
-  baseURL: process.env.OPENAI_BASE_URL,
-  api: 'responses'
+	apiKey: process.env.OPENAI_API_KEY!,
+	baseURL: process.env.OPENAI_BASE_URL,
+	api: 'responses',
 })
 ```
 
@@ -552,7 +598,18 @@ for OpenAI-compatible endpoints, while `responses` routes text/object calls
 through `client.responses.create()`. Use `responses` for reasoning models that
 need function tools with `providerOptions.reasoning_effort`. On
 `chat_completions`, `reasoning_effort` is dropped with a warning when tools are
-present.
+present. For a compatible endpoint, pass that service's `baseURL`, API key, and
+model id, keep `api: 'chat_completions'`, and enable only the operations it
+implements. `responses` is an OpenAI Responses API option, not a generic
+compatibility mode.
+
+Alias `maxTokens` maps to `max_tokens` for Chat Completions by default. Set
+`chatCompletionMaxTokensParameter: 'max_completion_tokens'` on the factory
+only when a native OpenAI Chat model requires that newer field; retain the
+default for a compatible endpoint unless it documents otherwise. Responses
+maps `maxTokens` to `max_output_tokens` and rejects `stopSequences` because
+the Responses API has no stop-sequence parameter. Sampling values (`temperature`
+and `topP`) are forwarded only when set, but remain model/API-specific.
 
 ## Provider Addons
 
@@ -563,19 +620,24 @@ matrices in harness code.
 
 ```ts
 import { anthropic } from '@purista/harness-anthropic'
+import { google } from '@purista/harness-google'
 import { bedrock } from '@purista/harness-bedrock'
 import { azureFoundry } from '@purista/harness-azure-foundry'
 
 const claude = anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const gemini = google({ apiKey: process.env.GEMINI_API_KEY! })
 const aws = bedrock({ region: process.env.AWS_REGION ?? 'us-east-1' })
 const azure = azureFoundry({
-  endpoint: process.env.AZURE_AI_ENDPOINT!,
-  apiKey: process.env.AZURE_AI_API_KEY!
+	endpoint: process.env.AZURE_AI_ENDPOINT!,
+	apiKey: process.env.AZURE_AI_API_KEY!,
 })
 ```
 
 Declare only the capabilities supported by the selected provider model or
 endpoint. The adapter package does not infer model-specific capability truth.
+Google supports text, structured output, function tools, streams, embeddings,
+and supported inline multimodal input through the official `@google/genai`
+SDK; it does not expose rerank.
 
 ## Type Inference
 

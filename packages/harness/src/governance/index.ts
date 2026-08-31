@@ -4,9 +4,10 @@ import type { z } from 'zod'
 import type { DecisionEvidence, DecisionExecutionContext, DecisionOccurrence } from '../decisions/index.js'
 import { DecisionEvaluationError, HarnessConfigError, OperationCancelledError, OperationTimeoutError, PermissionDeniedError, PolicyDeniedError } from '../errors/index.js'
 import { isSelectedGovernanceTool } from '../harness/defineHarness.js'
-import type { AgentPermissions, GovernanceConfig, GovernanceContext, GovernanceEffect, GovernanceExposureEffect, PermissionMode, PermissionPolicy, RunEvent } from '../harness/defineHarness.js'
+import type { AgentPermissions, GovernanceConfig, GovernanceContext, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator, PermissionMode, PermissionPolicy, RunEvent } from '../harness/defineHarness.js'
 import type { JsonValue } from '../models/json.js'
 import { governancePolicyResultSchema, permissionPolicySchema } from '../decisions/schemas.js'
+import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 
 type Invocation = {
   readonly agentId: string
@@ -17,6 +18,7 @@ type Invocation = {
   readonly step: number
   readonly signal: AbortSignal
   readonly decisionTimeoutMs: number
+  readonly telemetry?: TelemetryShim
   readonly deadline?: number
   readonly metadata: Readonly<Record<string, JsonValue>>
   readonly emitEvent?: (event: RunEvent) => Promise<void>
@@ -24,7 +26,7 @@ type Invocation = {
 
 type ToolInvocation = Invocation & { readonly toolId: string; readonly callId: string; readonly input: JsonValue; readonly permissions?: AgentPermissions; readonly governance?: GovernanceConfig }
 
-type Evaluated = { readonly effect: GovernanceEffect; readonly evidence: DecisionEvidence }
+type Evaluated = { readonly effect: GovernanceEffect; readonly evidence: DecisionEvidence; readonly engine: string }
 
 /** Evaluates permissions, governance policies, audit and one immediate approval for a parsed tool call. */
 export async function enforceToolGovernance(invocation: ToolInvocation): Promise<void> {
@@ -32,6 +34,11 @@ export async function enforceToolGovernance(invocation: ToolInvocation): Promise
   const demands: DecisionEvidence[] = []
   const permission = permissionDecision(invocation.permissions, invocation.toolId, invocation.input)
   if (permission === 'deny') {
+    invocation.telemetry?.recordCounter('harness.permission.denials', 1, {
+      'gen_ai.tool.name': invocation.toolId,
+      'harness.agent.id': invocation.agentId,
+      'harness.session.id': invocation.sessionId,
+    })
     throw new PermissionDeniedError(createDecisionEvidence({ occurrence, source: { kind: 'permission', id: invocation.toolId }, phase: 'permission', ordinal: 0 }))
   }
   if (permission === 'require_approval') {
@@ -69,6 +76,7 @@ export async function enforceToolGovernance(invocation: ToolInvocation): Promise
   }
 
   if (enforced && winner?.effect === 'deny') {
+    invocation.telemetry?.recordCounter('harness.policy.denials', 1, policyMetricAttrs(invocation, winner))
     throw new PolicyDeniedError(winner.evidence, 'policy_deny')
   }
   if (enforced) demands.push(...evaluated.filter((decision) => decision.effect === 'require_approval').map((decision) => decision.evidence))
@@ -85,6 +93,9 @@ export async function enforceToolGovernance(invocation: ToolInvocation): Promise
   }
 
   const approvalId = approvalIdentity(invocation, demands)
+  for (const demand of demands) {
+    invocation.telemetry?.recordCounter('harness.approval.requests', 1, approvalMetricAttrs(invocation, demand, evaluated))
+  }
   await invocation.emitEvent?.({ type: 'approval.requested', runId: invocation.runId, agentId: invocation.agentId, invocationId: invocation.invocationId, toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, approvalId, demands })
   let result: unknown
   try {
@@ -177,25 +188,48 @@ async function evaluatePolicies(invocation: ToolInvocation, occurrence: Decision
         ordinal += 1
         let predicateResult: unknown
         try {
-          predicateResult = await runGovernanceCallback(invocation, (execution) => rule.when ? rule.when(contextFor(invocation, execution.signal, execution.deadline)) : true)
+          predicateResult = await withPolicyTelemetry(invocation, {
+            id: policy.id,
+            engine: 'native',
+            ...(policy.version ? { version: policy.version } : {}),
+          }, async () => runGovernanceCallback(invocation, (execution) => (
+            rule.when ? rule.when(contextFor(invocation, execution.signal, execution.deadline)) : true
+          )), {
+            ruleId: rule.id,
+            effect: rule.effect,
+          })
         } catch (error) {
           throw decisionFailure(evidence, error, 'callback_failed')
         }
         if (typeof predicateResult !== 'boolean') throw new DecisionEvaluationError(evidence, 'invalid_result')
         const matched = predicateResult
-        if (matched) evaluated.push({ effect: rule.effect, evidence })
+        if (matched) evaluated.push({ effect: rule.effect, evidence, engine: 'native' })
       }
       continue
     }
+    const externalPolicy = policy as GovernancePolicyEvaluator
     const firstOrdinal = ordinal
-    const baseEvidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: policy.id, ...(policy.version ? { version: policy.version } : {}) }, phase: 'policy', ordinal: firstOrdinal })
-    let output: unknown
+    const baseEvidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: externalPolicy.id, ...(externalPolicy.version ? { version: externalPolicy.version } : {}) }, phase: 'policy', ordinal: firstOrdinal })
+    let result: z.output<typeof governancePolicyResultSchema>
     try {
-      output = await runGovernanceCallback(invocation, (execution) => ('evaluate' in policy ? policy.evaluate(contextFor(invocation, execution.signal, execution.deadline)) : undefined))
+      result = await withPolicyTelemetry(invocation, externalPolicy, async (span, attrs) => {
+        const output = await runGovernanceCallback(invocation, (execution) => externalPolicy.evaluate(contextFor(invocation, execution.signal, execution.deadline)))
+        const parsed = parseDecisionResult(governancePolicyResultSchema, output, baseEvidence)
+        const decisions = parsed === undefined ? [] : Array.isArray(parsed) ? parsed : [parsed]
+        const effects = [...new Set(decisions.map((decision) => decision.effect))]
+        const ruleIds = [...new Set(decisions.flatMap((decision) => decision.ruleId ? [decision.ruleId] : []))]
+        const resultAttrs: Record<string, string | number | boolean | string[]> = {
+          ...(effects.length === 1 ? { 'harness.policy.effect': effects[0] } : {}),
+          ...(ruleIds.length === 1 ? { 'harness.policy.rule_id': ruleIds[0] } : {}),
+        }
+        Object.assign(attrs, resultAttrs)
+        span?.setAttributes(resultAttrs)
+        return parsed
+      })
     } catch (error) {
+      if (error instanceof DecisionEvaluationError) throw error
       throw decisionFailure(baseEvidence, error, 'callback_failed')
     }
-    const result = parseDecisionResult(governancePolicyResultSchema, output, baseEvidence)
     if (result === undefined) {
       ordinal += 1
       continue
@@ -203,14 +237,80 @@ async function evaluatePolicies(invocation: ToolInvocation, occurrence: Decision
     const values = Array.isArray(result) ? result : [result]
     ordinal += Math.max(1, values.length)
     for (const [index, value] of values.entries()) {
-      const evidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: policy.id, ...(policy.version ? { version: policy.version } : {}), ...(value.ruleId ? { ruleId: value.ruleId } : {}) }, phase: 'policy', ordinal: firstOrdinal + index, ...(value.reasonCode ? { reasonCode: value.reasonCode } : {}) })
-      evaluated.push({ effect: value.effect, evidence })
+      const evidence = createDecisionEvidence({ occurrence, source: { kind: 'policy', id: externalPolicy.id, ...(externalPolicy.version ? { version: externalPolicy.version } : {}), ...(value.ruleId ? { ruleId: value.ruleId } : {}) }, phase: 'policy', ordinal: firstOrdinal + index, ...(value.reasonCode ? { reasonCode: value.reasonCode } : {}) })
+      evaluated.push({ effect: value.effect, evidence, engine: externalPolicy.engine ?? 'custom' })
     }
   }
   if (evaluated.length === 0 && (governance.policies?.length ?? 0) > 0 && (governance.defaultEffect ?? 'deny') === 'deny') {
-    evaluated.push({ effect: 'deny', evidence: createDecisionEvidence({ occurrence, source: { kind: 'policy', id: 'governance.default', ruleId: 'default' }, phase: 'policy', ordinal }) })
+    evaluated.push({
+      effect: 'deny',
+      engine: 'harness',
+      evidence: createDecisionEvidence({ occurrence, source: { kind: 'policy', id: 'governance.default', ruleId: 'default' }, phase: 'policy', ordinal }),
+    })
   }
   return evaluated
+}
+
+function policyMetricAttrs(invocation: ToolInvocation, decision: Evaluated): Record<string, string | number | boolean> {
+  return {
+    'harness.policy.engine': decision.engine,
+    ...(decision.evidence.source.ruleId ? { 'harness.policy.rule_id': decision.evidence.source.ruleId } : {}),
+    'harness.agent.id': invocation.agentId,
+    'harness.tool.id': invocation.toolId,
+  }
+}
+
+function approvalMetricAttrs(
+  invocation: ToolInvocation,
+  demand: DecisionEvidence,
+  evaluated: readonly Evaluated[],
+): Record<string, string | number | boolean> {
+  const decision = evaluated.find((candidate) => candidate.evidence.decisionId === demand.decisionId)
+  return {
+    'harness.policy.engine': decision?.engine ?? (demand.source.kind === 'permission' ? 'permission' : 'harness'),
+    ...(demand.source.ruleId ? { 'harness.policy.rule_id': demand.source.ruleId } : {}),
+    'harness.agent.id': invocation.agentId,
+    'harness.tool.id': invocation.toolId,
+    'harness.approval.status': 'requested',
+  }
+}
+
+async function withPolicyTelemetry<T>(
+  invocation: ToolInvocation,
+  policy: { readonly id: string; readonly version?: string; readonly engine?: string },
+  action: (span: { setAttributes(attrs: Record<string, string | number | boolean | string[]>): unknown } | undefined, attrs: SpanAttrs) => Promise<T>,
+  result?: { readonly ruleId?: string; readonly effect?: GovernanceEffect },
+): Promise<T> {
+  const attrs: SpanAttrs = {
+    'openinference.span.kind': 'GUARDRAIL',
+    'harness.policy.engine': policy.engine ?? 'custom',
+    'harness.policy.name': policy.id,
+    'harness.policy.version': policy.version,
+    ...(result?.ruleId ? { 'harness.policy.rule_id': result.ruleId } : {}),
+    ...(result?.effect ? { 'harness.policy.effect': result.effect } : {}),
+    'harness.policy.phase': 'pre',
+    'harness.policy.mode': invocation.governance?.mode ?? 'enforce',
+    'harness.policy.enforced': invocation.governance?.mode !== 'shadow',
+    'harness.tool.id': invocation.toolId,
+    'harness.agent.id': invocation.agentId,
+    'harness.session.id': invocation.sessionId,
+    'harness.run.id': invocation.runId,
+    ...(invocation.workflowId ? { 'harness.workflow.id': invocation.workflowId } : {}),
+  }
+  const started = Date.now()
+  let failure: unknown
+  try {
+    return invocation.telemetry
+      ? await invocation.telemetry.span('harness.policy.evaluate', attrs, async (span) => action(span, attrs))
+      : await action(undefined, attrs)
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    const metricAttrs = { ...attrs, ...(failure === undefined ? {} : { 'error.type': telemetryErrorType(failure) }) }
+    invocation.telemetry?.recordCounter('harness.policy.evaluations', 1, metricAttrs)
+    invocation.telemetry?.recordHistogram('harness.policy.duration', (Date.now() - started) / 1000, metricAttrs)
+  }
 }
 
 function contextFor(invocation: ToolInvocation, signal: AbortSignal, deadline: number): GovernanceContext {

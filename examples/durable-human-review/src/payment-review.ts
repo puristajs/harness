@@ -7,7 +7,7 @@ import {
   inMemorySandbox,
   type HarnessStorage,
   type JsonValue,
-  type Sandbox
+  type Sandbox,
 } from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
 import {
@@ -20,11 +20,13 @@ import {
   ReviewBindingError,
   type ExecutionReceipt,
   type PaymentAction,
-  type ReviewTaskStore
+  type ReviewTaskStore,
 } from './review-task-store.js'
 
 const paymentInputSchema = paymentActionSchema
-const paymentResultSchema = z.object({ status: z.enum(['waiting', 'approved', 'rejected', 'expired', 'cancelled']) }).strict()
+const paymentResultSchema = z
+  .object({ status: z.enum(['waiting', 'approved', 'rejected', 'expired', 'cancelled']) })
+  .strict()
 const executionStepOutputSchema = z.object({ receiptId: z.string().min(1).max(200) }).strict()
 type PaymentInput = z.output<typeof paymentInputSchema>
 type PaymentResult = z.output<typeof paymentResultSchema>
@@ -67,37 +69,37 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
     .sandbox(input.sandbox ?? inMemorySandbox())
     .storage(storage)
     .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-    .tools({})
-    .skills({})
-    .agents({ noop: { model: 'fake', instructions: 'No model call is needed for this reference workflow.', builtinTools: false } })
-    .workflows(({ workflow }) => ({
-      reviewPayment: workflow({
-        input: paymentInputSchema,
-        output: paymentResultSchema,
-        handler: async (ctx): Promise<PaymentResult> => {
-          const action = paymentInputSchema.parse(ctx.input)
-          const identity = reviewIdentity(action)
-          const checkpointTask = reviewTaskSchema.parse(await ctx.step('create-review-task-v1', async () => {
+    .agent('noop', { model: 'fake', instructions: 'No model call is needed for this reference workflow.' })
+    .workflow('review_payment', {
+      input: paymentInputSchema,
+      output: paymentResultSchema,
+      handler: async (ctx): Promise<PaymentResult> => {
+        const action = paymentInputSchema.parse(ctx.input)
+        const identity = reviewIdentity(action)
+        const checkpointTask = reviewTaskSchema.parse(
+          await ctx.step('create-review-task-v1', async () => {
             const task = await input.tasks.getOrCreate({ action, waitId: identity.waitId })
             return checkpointTaskJson(task)
-          }))
+          }),
+        )
 
-          // This binding runs outside every replay-skipped step. A checkpoint or
-          // prior receipt never lets changed invocation input bypass admission.
-          const task = await input.tasks.get(identity.businessKey)
-          if (!task) throw new ReviewBindingError('missing_task')
-          assertBoundTask(task, checkpointTask, action, identity)
+        // This binding runs outside every replay-skipped step. A checkpoint or
+        // prior receipt never lets changed invocation input bypass admission.
+        const task = await input.tasks.get(identity.businessKey)
+        if (!task) throw new ReviewBindingError('missing_task')
+        assertBoundTask(task, checkpointTask, action, identity)
 
-          const outcome = await ctx.externalWait.wait({
-            waitId: task.waitId,
-            kind: 'human_review',
-            schemaVersion: 'payment-review-v1',
-            definitionVersion: task.descriptor.definitionVersion,
-            deadline: task.descriptor.expiresAt
-          })
-          if (outcome.status !== 'approved') return { status: outcome.status }
+        const outcome = await ctx.externalWait.wait({
+          waitId: task.waitId,
+          kind: 'human_review',
+          schemaVersion: 'payment-review-v1',
+          definitionVersion: task.descriptor.definitionVersion,
+          deadline: task.descriptor.expiresAt,
+        })
+        if (outcome.status !== 'approved') return { status: outcome.status }
 
-          executionStepOutputSchema.parse(await ctx.step('execute-payment-v1', async () => {
+        executionStepOutputSchema.parse(
+          await ctx.step('execute-payment-v1', async () => {
             const currentTask = await input.tasks.get(identity.businessKey)
             if (!currentTask) throw new ReviewBindingError('missing_task')
             assertBoundTask(currentTask, checkpointTask, action, identity)
@@ -111,15 +113,18 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
               return { receiptId: claimed.receipt.receiptId }
             }
 
-            const receipt = parseExecutorReceipt(await input.payments.execute({ action: claimed.action, idempotencyKey: claimed.executionId }), claimed.executionId)
+            const receipt = parseExecutorReceipt(
+              await input.payments.execute({ action: claimed.action, idempotencyKey: claimed.executionId }),
+              claimed.executionId,
+            )
             const recorded = await input.tasks.recordExecutionReceipt(receipt)
             if (!recorded.receipt) throw new ReviewBindingError('receipt_conflict')
             return { receiptId: recorded.receipt.receiptId }
-          }))
-          return { status: 'approved' }
-        }
-      })
-    }))
+          }),
+        )
+        return { status: 'approved' }
+      },
+    })
     .build()
 
   return {
@@ -128,16 +133,25 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
     async run(payment: PaymentInput): Promise<PaymentResult> {
       const action = paymentInputSchema.parse(payment)
       const identity = reviewIdentity(action)
+      // A stable durable run id is intentionally bound to its original Harness
+      // input. Check the application-owned task binding before entering that
+      // boundary so changed payment details fail closed as stale_action rather
+      // than as a generic durable-input conflict. The handler repeats the
+      // check after checkpoint replay to close the race with task changes.
+      const existingTask = await input.tasks.get(identity.businessKey)
+      if (existingTask) assertTaskMatchesInvocation(existingTask, action, identity)
       const session = await harness.getSession(identity.sessionId)
       try {
-        return paymentResultSchema.parse(await session.workflows.reviewPayment.prompt(action, { durable: { runId: identity.runId } }))
+        return paymentResultSchema.parse(
+          await session.workflows.review_payment.run(action, { durable: { runId: identity.runId } }),
+        )
       } catch (error) {
         if (error instanceof ExternalWaitPendingError) return { status: 'waiting' }
         throw error
       } finally {
         await session.release()
       }
-    }
+    },
   }
 }
 
@@ -152,7 +166,12 @@ export class InMemoryPaymentExecutor implements PaymentExecutor {
 
   public async execute(input: { action: Readonly<PaymentAction>; idempotencyKey: string }): Promise<ExecutionReceipt> {
     const action = paymentActionSchema.parse(input.action)
-    const idempotencyKey = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:@/-]+$/).parse(input.idempotencyKey)
+    const idempotencyKey = z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[A-Za-z0-9_.:@/-]+$/)
+      .parse(input.idempotencyKey)
     const digest = actionDigest(action)
     const existing = this.receipts.get(idempotencyKey)
     if (existing) {
@@ -161,7 +180,7 @@ export class InMemoryPaymentExecutor implements PaymentExecutor {
     }
     const receipt = executionReceiptSchema.parse({
       executionId: idempotencyKey,
-      receiptId: `payment-receipt:${sha256(idempotencyKey).slice(0, 48)}`
+      receiptId: `payment-receipt:${sha256(idempotencyKey).slice(0, 48)}`,
     })
     this.receipts.set(idempotencyKey, { actionDigest: digest, receipt })
     this.effects += 1
@@ -169,7 +188,11 @@ export class InMemoryPaymentExecutor implements PaymentExecutor {
   }
 }
 
-async function claimNewExecution(input: PaymentReviewExampleOptions, task: z.output<typeof reviewTaskSchema>, executionId: string) {
+async function claimNewExecution(
+  input: PaymentReviewExampleOptions,
+  task: z.output<typeof reviewTaskSchema>,
+  executionId: string,
+) {
   const authorized = await readAuthorized(input, task.action)
   const targetRevision = await readRevision(input, task.action.paymentId)
   return input.tasks.claimApprovedExecution({
@@ -177,7 +200,7 @@ async function claimNewExecution(input: PaymentReviewExampleOptions, task: z.out
     executionId,
     executionDigest: task.descriptor.executionDigest,
     authorized,
-    targetRevision
+    targetRevision,
   })
 }
 
@@ -203,18 +226,41 @@ async function readRevision(input: PaymentReviewAdmission, paymentId: string): P
   }
 }
 
-function assertBoundTask(task: z.output<typeof reviewTaskSchema>, checkpointTask: z.output<typeof reviewTaskSchema>, action: PaymentAction, identity: ReturnType<typeof reviewIdentity>): void {
+function assertBoundTask(
+  task: z.output<typeof reviewTaskSchema>,
+  checkpointTask: z.output<typeof reviewTaskSchema>,
+  action: PaymentAction,
+  identity: ReturnType<typeof reviewIdentity>,
+): void {
+  assertTaskMatchesInvocation(task, action, identity)
   if (
-    task.businessKey !== identity.businessKey
-    || task.waitId !== identity.waitId
-    || task.descriptor.executionDigest !== actionDigest(action)
-    || task.descriptor.targetRevision !== action.targetRevision
-    || task.descriptor.definitionVersion !== 'payment-v1'
-    || checkpointTask.businessKey !== task.businessKey
-    || checkpointTask.waitId !== task.waitId
-    || checkpointTask.descriptor.executionDigest !== task.descriptor.executionDigest
-    || checkpointTask.descriptor.expiresAt !== task.descriptor.expiresAt
-  ) throw new ReviewBindingError('stale_action')
+    checkpointTask.businessKey !== task.businessKey ||
+    checkpointTask.waitId !== task.waitId ||
+    checkpointTask.descriptor.executionDigest !== task.descriptor.executionDigest ||
+    checkpointTask.descriptor.expiresAt !== task.descriptor.expiresAt
+  )
+    throw new ReviewBindingError('stale_action')
+}
+
+/**
+ * Binds an invocation candidate to the immutable application task. This is
+ * deliberately usable before durable admission and again after replayed
+ * checkpoints: Harness owns run-id/input idempotency; the application owns
+ * whether a payment action is still the action that was reviewed.
+ */
+function assertTaskMatchesInvocation(
+  task: z.output<typeof reviewTaskSchema>,
+  action: PaymentAction,
+  identity: ReturnType<typeof reviewIdentity>,
+): void {
+  if (
+    task.businessKey !== identity.businessKey ||
+    task.waitId !== identity.waitId ||
+    task.descriptor.executionDigest !== actionDigest(action) ||
+    task.descriptor.targetRevision !== action.targetRevision ||
+    task.descriptor.definitionVersion !== 'payment-v1'
+  )
+    throw new ReviewBindingError('stale_action')
 }
 
 function assertBoundExecution(value: unknown, task: z.output<typeof reviewTaskSchema>, executionId: string) {
@@ -222,13 +268,14 @@ function assertBoundExecution(value: unknown, task: z.output<typeof reviewTaskSc
   if (!execution.success) throw new ReviewBindingError('execution_conflict')
   const record = execution.data
   if (
-    record.executionId !== executionId
-    || record.businessKey !== task.businessKey
-    || record.approvedRevision !== task.approvedRevision
-    || record.descriptor.executionDigest !== task.descriptor.executionDigest
-    || record.descriptor.expiresAt !== task.descriptor.expiresAt
-    || actionDigest(record.action) !== actionDigest(task.action)
-  ) throw new ReviewBindingError('execution_conflict')
+    record.executionId !== executionId ||
+    record.businessKey !== task.businessKey ||
+    record.approvedRevision !== task.approvedRevision ||
+    record.descriptor.executionDigest !== task.descriptor.executionDigest ||
+    record.descriptor.expiresAt !== task.descriptor.expiresAt ||
+    actionDigest(record.action) !== actionDigest(task.action)
+  )
+    throw new ReviewBindingError('execution_conflict')
   return record
 }
 
@@ -248,7 +295,7 @@ function checkpointTaskJson(task: z.output<typeof reviewTaskSchema>): JsonValue 
     status: task.status,
     ...(task.decisionEventId === undefined ? {} : { decisionEventId: task.decisionEventId }),
     ...(task.decidedBy === undefined ? {} : { decidedBy: task.decidedBy }),
-    ...(task.approvedRevision === undefined ? {} : { approvedRevision: task.approvedRevision })
+    ...(task.approvedRevision === undefined ? {} : { approvedRevision: task.approvedRevision }),
   }
 }
 

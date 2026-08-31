@@ -62,7 +62,8 @@ interface ModelDefaults {
 }
 ```
 
-Aliases are registered via `defineHarness().models({...})`. Each key is the
+Aliases are registered via repeatable `defineHarness().model(id, definition)`
+or `.models({...})` calls. Each key is the
 alias id referenced by agents (`AgentDefinition.model`) and workflow handlers.
 
 ## Provider feature descriptor
@@ -92,6 +93,31 @@ type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
 ```
 
 Provider descriptors may be included in `harness.inspect()` output.
+
+## First-party Google/Gemini adapter
+
+`@purista/harness-google` is the first-party Google Gemini API adapter. It
+uses the official `@google/genai` SDK and exposes a `google(...)` factory. It
+implements `text`, `text_stream`, `object`, `object_stream`, and `embed`.
+It does not claim `rerank` because the Gemini API does not provide a matching
+provider operation.
+
+The adapter maps Harness messages, application function tools and their
+results, JSON-schema structured output, inline image/audio/file data, token
+usage, finish reasons, and streaming chunks to the Gemini API. The adapter
+must preserve application-supplied JSON Schema exactly; it may add only its
+own response MIME-type configuration. It must keep conversation state
+client-side so Harness storage remains the conversation authority.
+Provider continuation is emitted only when the Google SDK/API returns an
+opaque continuation that the adapter can safely validate and reconstruct; no
+raw thought/reasoning content is persisted or replayed as a substitute.
+
+`GoogleFactoryOptions` accepts official SDK client options plus an optional
+injected `GoogleClient` and standard `harnessLogger`, `telemetry`, and
+`harnessTimeoutMs` adapter overrides. The adapter disables SDK-managed retries
+by default where supported so Harness retry policy remains observable and
+bounded. `GEMINI_API_KEY` is the conventional application environment key;
+the adapter itself never reads environment variables.
 
 ## `ModelProvider` port
 
@@ -301,9 +327,11 @@ provider-specific finish/status data and retry metadata for operational handling
 without leaking content. Full mapping rules are in
 [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
 
-The harness validates final objects against the requested schema when a schema
-validator is available in core. Provider packages may use stricter native schema
-support, but harness-level validation remains the final provider-neutral guard.
+Direct `ModelHandle.object` requests accept explicit `JsonValue` JSON Schema and
+perform the existing JSON/response checks. Agent default-loop callers separately
+validate final candidates with the original `ModelSchema`; provider packages may
+use stricter native schema support, but adapter behavior never replaces that
+provider-neutral Standard Schema validation.
 When `tools` are supplied, provider adapters must preserve application tool
 calls in `ObjectResponse.toolCalls` before a final object is available. Adapters
 that emulate structured output with an internal response tool may include that
@@ -447,7 +475,8 @@ fields on the provider's request when the provider has a native equivalent.
 `parallelToolCalls` controls whether the model provider may emit multiple tool
 calls in one model turn; the harness still executes any returned batch according
 to the agent loop rules. OpenAI-compatible adapters map it to
-`parallel_tool_calls`; Anthropic maps `false` to
+`parallel_tool_calls`; Google maps `false` to Gemini function-calling mode
+when the official API exposes a single-call mode; Anthropic maps `false` to
 `tool_choice.disable_parallel_tool_use`; adapters without a native equivalent
 leave provider-specific control to `providerOptions`. `EmbeddingRequest` and
 `RerankRequest` receive the same `call.providerOptions` pass-through path, but
@@ -470,7 +499,7 @@ not support them.
 
 ## Cross-references
 
-- [02-harness-config](./02-harness-config.md) — `.models(...)` builder method.
+- [02-harness-config](./02-harness-config.md) — `.model(...)` and `.models(...)` builder methods.
 - [09-agents](./09-agents.md) — how the default loop accesses models.
 - [12-streaming](./12-streaming.md) — `RunEvent` variants for model operations.
 - [14-otel-conventions](./14-otel-conventions.md) — GenAI spans and metrics.

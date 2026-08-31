@@ -20,11 +20,8 @@ async function createTempDataRoot(): Promise<string> {
 
 async function createRegisteredLivingWikiTools() {
   const store = createLivingWikiStore({ dataRoot: await createTempDataRoot() })
-  let tools!: ReturnType<typeof createLivingWikiTools>
-  defineHarness().tools(({ tool }) => {
-    tools = createLivingWikiTools({ tool }, store)
-    return tools
-  })
+  const tools = createLivingWikiTools(store)
+  defineHarness().tools(tools)
   return tools
 }
 

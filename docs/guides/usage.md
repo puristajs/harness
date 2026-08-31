@@ -33,48 +33,41 @@ import { openai } from '@purista/harness-openai'
 
 const answerInput = z.object({ question: z.string() })
 const answerOutput = z.object({
-  answer: z.string(),
-  citations: z.array(z.string())
+	answer: z.string(),
+	citations: z.array(z.string()),
 })
 
 const harness = defineHarness({ name: 'docs-example' })
-  .logger(new JsonLogger({ level: 'info' }))
-  .models({
-    fast: {
-      provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-      model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-      capabilities: ['object', 'tool_use']
-    }
-  })
-  .tools(({ tool }) => ({
-    search_docs: tool({
-      description: 'Search internal documentation.',
-      input: z.object({ query: z.string() }),
-      output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
-      handler: async (_ctx, input) => ({
-        hits: [{ id: 'intro', text: `Result for ${input.query}` }]
-      })
-    })
-  }))
-  .agents(({ agent }) => ({
-    answerer: agent({
-      model: 'fast',
-      input: answerInput,
-      output: answerOutput,
-      tools: ['search_docs'],
-      builtinTools: false,
-      instructions: 'Search docs before answering. Return a cited object.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    answer_with_review: workflow({
-      input: answerInput,
-      output: answerOutput,
-      delegation: { agents: ['answerer'] },
-      handler: async (ctx) => ctx.agents.answerer(ctx.input)
-    })
-  }))
-  .build()
+	.logger(new JsonLogger({ level: 'info' }))
+	.models({
+		fast: {
+			provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+			model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+			capabilities: ['object', 'tool_use'],
+		},
+	})
+	.tool('search_docs', {
+			description: 'Search internal documentation.',
+			input: z.object({ query: z.string() }),
+			output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
+			handler: async (_ctx, input) => ({
+				hits: [{ id: 'intro', text: `Result for ${input.query}` }],
+			}),
+	})
+	.agent('answerer', {
+		model: 'fast',
+		input: answerInput,
+		output: answerOutput,
+		tools: ['search_docs'],
+		instructions: 'Search docs before answering. Return a cited object.',
+	})
+	.workflow('answer_with_review', {
+		input: answerInput,
+		output: answerOutput,
+		delegation: { agents: ['answerer'] },
+		handler: async ctx => ctx.agents.answerer(ctx.input),
+	})
+	.build()
 ```
 
 ## Open A Session
@@ -87,14 +80,14 @@ A session provides:
 
 | API | Purpose |
 |---|---|
-| `session.agents.<id>.prompt(input)` | Direct agent call. |
+| `session.agents.<id>.run(input)` | Direct agent call. |
 | `session.agents.<id>.stream(input)` | Direct agent call with run events. |
-| `session.workflows.<id>.prompt(input)` | Workflow call. |
+| `session.workflows.<id>.run(input)` | Workflow call. |
 | `session.workflows.<id>.stream(input)` | Workflow call with run events. |
 | `session.history.list()` | Conversation messages for this session. |
 | `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
 | `session.release()` | Close live sandbox/MCP resources while retaining persisted history and runs. |
-| `session.close()` | Destructively close the session and remove its persisted session data. |
+| `session.destroy()` | Destructively delete the session and its persisted session data. |
 
 Sessions enforce one active run at a time. Use different session IDs for
 parallel user threads.
@@ -117,9 +110,9 @@ has a stricter SLA:
 
 ```ts
 const controller = new AbortController()
-const result = await session.agents.answerer.prompt(input, {
-  signal: controller.signal,
-  timeoutMs: 30_000
+const result = await session.agents.answerer.run(input, {
+	signal: controller.signal,
+	timeoutMs: 30_000,
 })
 ```
 
@@ -130,8 +123,8 @@ handler code is not cooperative, but handler code should still check
 `ctx.signal` to stop side effects promptly.
 
 ```ts
-const result = await session.agents.answerer.prompt({
-  question: 'How do tools work?'
+const result = await session.agents.answerer.run({
+	question: 'How do tools work?',
 })
 
 console.log(result.answer)
@@ -141,10 +134,10 @@ console.log(result.answer)
 
 ```ts
 for await (const event of session.agents.answerer.stream({
-  question: 'How do tools work?'
+	question: 'How do tools work?',
 })) {
-  if (event.type === 'tool.started') console.log('tool:', event.toolId)
-  if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'tool.started') console.log('tool:', event.toolId)
+	if (event.type === 'run.finished') console.log(event.output)
 }
 ```
 
@@ -161,18 +154,14 @@ protocol; application HTTP or SSE routes can map them to whatever client event
 shape they own.
 
 ```ts
-for await (const chunk of ctx.models.publicAnswer.textStream(
-  { messages },
-  ctx.signal,
-  { emitRunEvents: true }
-)) {
-  // Still consume provider chunks in workflow code.
+for await (const chunk of ctx.models.publicAnswer.textStream({ messages }, ctx.signal, { emitRunEvents: true })) {
+	// Still consume provider chunks in workflow code.
 }
 
 for await (const event of session.workflows.research.stream(input)) {
-  if (event.type === 'model.delta') process.stdout.write(event.delta)
-  if (event.type === 'model.object.partial') renderDraft(event.partial)
-  if (event.type === 'run.finished') renderFinal(event.output)
+	if (event.type === 'model.delta') process.stdout.write(event.delta)
+	if (event.type === 'model.object.partial') renderDraft(event.partial)
+	if (event.type === 'run.finished') renderFinal(event.output)
 }
 ```
 
@@ -206,7 +195,7 @@ tool list, override instructions or messages for one model call, and pass
 per-call model options. Use `stopWhen` to end after a known model response:
 
 ```ts
-stopWhen: ({ step, toolCalls }) => step >= 2 || toolCalls.some((call) => call.name === 'finalize')
+stopWhen: ({ step, toolCalls }) => step >= 2 || toolCalls.some(call => call.name === 'finalize')
 ```
 
 Keep business orchestration in workflows. Loop controls are for bounded local
@@ -256,8 +245,8 @@ invoke several agents in sequence or parallel, run deterministic checks, ask
 for application-owned human review, and decide whether to write state or artifacts.
 
 ```ts
-const result = await session.workflows.answer_with_review.prompt({
-  question: 'How do tools work?'
+const result = await session.workflows.answer_with_review.run({
+	question: 'How do tools work?',
 })
 ```
 
@@ -289,5 +278,5 @@ await harness.shutdown()
 ```
 
 Call `harness.shutdown()` during service shutdown so adapters and MCP runners
-can close cleanly. Use `session.close()` only when the conversation and its
+can close cleanly. Use `session.destroy()` only when the conversation and its
 persisted session record should be deleted.

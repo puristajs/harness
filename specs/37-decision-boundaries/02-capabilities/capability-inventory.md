@@ -18,7 +18,7 @@ Requirement: REQ-DB-TOOLS. Owner: Harness maintainer. Actor: default-loop agent 
 
 ## CAP-DB-RAILS
 
-Requirement: REQ-DB-RAILS. Owner: Harness maintainer. Actor: guardrails consumer. SDK entrypoint: `Guardrails.attach and filterRetrievedChunks`. Outcome: Input tool and final-output rails compose with governance. Contract refs: CTR-DB-RAILS, CTR-DB-EVIDENCE. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `ai-harness/packages/harness-guardrails/test/guardrails.test.ts`.
+Requirement: REQ-DB-RAILS. Owner: Harness maintainer. Actor: guardrails consumer. SDK entrypoint: direct agent `guardrails` binding and `filterRetrievedChunks`. Outcome: Input tool and final-output rails compose with governance. Contract refs: CTR-DB-RAILS, CTR-DB-EVIDENCE. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `ai-harness/packages/harness-guardrails/test/guardrails.test.ts`.
 
 ## CAP-DB-WAITS
 

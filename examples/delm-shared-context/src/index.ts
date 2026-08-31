@@ -13,7 +13,7 @@ export async function runDelmSharedContextExample(): Promise<void> {
   const example = createDelmSharedContextHarness()
   try {
     const session = await example.harness.getSession('delm-demo')
-    const result = await session.workflows.decentralized_research.prompt(defaultDelmInput(), {
+    const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
       durable: { runId: 'delm-demo-run' }
     })
     console.log(formatCheckoutIncidentRun(result))

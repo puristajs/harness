@@ -25,8 +25,8 @@ const storage = sqliteHarnessStorage({ file: '.purista/harness.sqlite' })
 const harness = defineHarness({ name: 'support' })
   .storage(storage)
   .models(models)
-  .agents(({ agent }) => ({ /* ... */ }))
-  .workflows(({ workflow }) => ({ /* ... */ }))
+  .agents(agents)
+  .workflows(workflows)
   .build()
 ```
 
@@ -284,6 +284,14 @@ workspace guarantees are absent.
 PURISTA review/domain records remain ordinary application state and commands.
 They are never stored in `HarnessStorage` except for the bounded opaque wait
 reference.
+
+One PURISTA service instance constructs one shared Harness runtime for all of
+its attached agents, workflows, and workflow-local agents. `ai.storage`,
+`ai.workspace`, `ai.sandbox`, model providers, skills, governance, and telemetry
+are registered once and the service shuts that Harness down once. Public model
+aliases and defaults remain attached-definition concepts; the integration uses
+private service-runtime registry ids to prevent collisions without changing
+callback or Framework-event vocabulary.
 
 ## 10. Observability
 

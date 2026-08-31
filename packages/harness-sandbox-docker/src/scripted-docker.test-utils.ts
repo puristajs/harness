@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream'
+import { compileSafeRegex } from '@purista/harness'
 import type { DockerChild, DockerTransport } from './transport.js'
 
 type Resource = { owner: string; running: boolean; files: Map<string, Buffer> }
@@ -89,6 +90,25 @@ export class ScriptedDocker implements DockerTransport {
     if (script?.includes('rm -')) { files.delete(path); return {} }
     if (script?.includes('find ')) return { stdout: [...files].filter(([name]) => name.startsWith(`${path}/`)).map(([name, data]) => `f\0${name}\0${data.length}\0`).join('') }
     if (script?.includes('stat --printf')) { const bytes = files.get(path); return bytes ? { stdout: ['file', String(bytes.length), '1777200000'].join('\0') } : { code: 1 } }
+    const grepIndex = args.lastIndexOf('grep')
+    if (grepIndex >= 0) {
+      const separator = args.indexOf('--', grepIndex)
+      const pattern = args[separator + 1]!
+      const filePath = args[separator + 2]!
+      const bytes = files.get(filePath)
+      if (!bytes) return { code: 1 }
+      const caseSensitive = !args.includes('-i')
+      const literal = args.includes('-F')
+      const limitIndex = args.indexOf('-m', grepIndex)
+      const limit = Number(args[limitIndex + 1])
+      const regex = literal ? undefined : compileSafeRegex(pattern)
+      const needle = caseSensitive ? pattern : pattern.toLowerCase()
+      const matched = bytes.toString('utf8').split('\n').flatMap((line, index) => {
+        const found = regex ? regex.test(line) : (caseSensitive ? line : line.toLowerCase()).includes(needle)
+        return found ? [`${index + 1}:${line}`] : []
+      }).slice(0, limit)
+      return matched.length > 0 ? { stdout: `${matched.join('\n')}\n` } : { code: 1 }
+    }
     const command = args.at(-1)!
     if (command === 'echo hi') return { stdout: 'hi\n' }
     if (command === 'sleep 1') return { hang: true }

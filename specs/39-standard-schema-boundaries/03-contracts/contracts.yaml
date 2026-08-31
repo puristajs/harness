@@ -1,0 +1,33 @@
+contract_version: 1
+public_api_inventory:
+  - contract_id: CTR-SS-SCHEMA
+    source_ref: 03-contracts/schema-types.md#CTR-SS-SCHEMA
+    owner: harness_schema
+  - contract_id: CTR-SS-BUILDERS
+    source_ref: 03-contracts/schema-types.md#CTR-SS-BUILDERS
+    owner: harness_runtime
+  - contract_id: CTR-SS-VALIDATION
+    source_ref: 03-contracts/runtime-validation.md#CTR-SS-VALIDATION
+    owner: harness_schema
+  - contract_id: CTR-SS-ERRORS
+    source_ref: 03-contracts/runtime-validation.md#CTR-SS-ERRORS
+    owner: harness_schema
+  - contract_id: CTR-SS-PROJECTION
+    source_ref: 03-contracts/model-projection.md#CTR-SS-PROJECTION
+    owner: harness_schema
+  - contract_id: CTR-SS-PROVIDERS
+    source_ref: 03-contracts/model-projection.md#CTR-SS-PROVIDERS
+    owner: provider_adapters
+  - contract_id: CTR-SS-CONSUMERS
+    source_ref: 04-delivery/consumers.md#CTR-SS-CONSUMERS
+    owner: consumers
+  - contract_id: CTR-SS-CLEANUP
+    source_ref: 04-delivery/consumers.md#CTR-SS-CLEANUP
+    owner: consumers
+execution_semantics:
+  validation: one awaited Standard Schema invocation followed by JsonValue assertion
+  model_projection: once at build using Standard JSON Schema input projection for draft-2020-12
+  compatibility: none; breaking replacement
+  persistence: existing shapes; only validated JsonValue crosses the boundary
+  providers: opaque JSON Schema pass-through
+schema_source_policy: User schema objects are canonical; TypeScript infers through Standard Schema associated types and runtime consumes the same objects.

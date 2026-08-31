@@ -86,6 +86,8 @@ flowchart TD
 - Reference
   - [Public API](./reference/public-api.md): package exports, builder shape, session API, run events, errors, and type inference.
   - [Decision Boundary Release Notes](./releases/decision-boundaries.md): current breaking contracts with no compatibility recipes.
+  - [Standard Schema Boundaries](./releases/standard-schema-boundaries.md): vendor-neutral validation, model-facing JSON Schema projection, and the clean breaking contract.
+  - [Clean Builder and Runtime API](./releases/clean-builder-and-runtime-api.md): consistent definition registration, `run`, and explicit session lifecycle names.
   - [Spec Conformance](./reference/spec-conformance.md): current implementation status against the approved specs.
 
 ## Repository Map
@@ -94,6 +96,7 @@ flowchart TD
 |---|---|
 | `packages/harness` | Core runtime, builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
 | `packages/harness-openai` | OpenAI model provider adapter. |
+| `packages/harness-google` | Google Gemini API model provider adapter. |
 | `packages/harness-anthropic` | Anthropic model provider adapter. |
 | `packages/harness-bedrock` | Amazon Bedrock model provider adapter. |
 | `packages/harness-azure-foundry` | Azure AI Foundry model provider adapter. |

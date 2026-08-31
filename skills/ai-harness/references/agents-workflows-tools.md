@@ -20,17 +20,14 @@ with per-run delegation budgets and optional allowlists.
 
 ## Agent Pattern
 ```ts
-.agents(({ agent }) => ({
-  answerer: agent({
-    model: 'reasoning',
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), citations: z.array(z.string()) }),
-    builtinTools: false,
-    tools: ['search_docs'],
-    skills: ['support-writing'],
-    instructions: (ctx) => `Answer with citations for: ${ctx.input.question}`
-  })
-}))
+.agent('answerer', {
+  model: 'reasoning',
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), citations: z.array(z.string()) }),
+  tools: ['search_docs'],
+  skills: ['support-writing'],
+  instructions: (ctx) => `Answer with citations for: ${ctx.input.question}`
+})
 ```
 
 Default agent loop requirements:
@@ -54,26 +51,24 @@ side effects stop promptly.
 
 ## Workflow Pattern
 ```ts
-.workflows(({ workflow }) => ({
-  answer_with_review: workflow({
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['answerer', 'reviewer'],
-      maxChildAgentCalls: 2,
-      maxParallelChildAgentCalls: 1,
-      agentModelAliases: { reviewer: ['deep_review'] }
-    },
-    handler: async (ctx) => {
-      const draft = await ctx.agents.answerer({ question: ctx.input.question })
-      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
-      return { answer: draft.answer, approved: review.approved }
-    }
-  })
-}))
+.workflow('answer_with_review', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), approved: z.boolean() }),
+  delegation: {
+    agents: ['answerer', 'reviewer'],
+    maxChildAgentCalls: 2,
+    maxParallelChildAgentCalls: 1,
+    agentModelAliases: { reviewer: ['deep_review'] }
+  },
+  handler: async (ctx) => {
+    const draft = await ctx.agents.answerer({ question: ctx.input.question })
+    const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+    return { answer: draft.answer, approved: review.approved }
+  }
+})
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, `ctx.step`, `ctx.fanOut`, and `ctx.childTasks`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.logger`, `ctx.telemetry`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, `ctx.step`, `ctx.fanOut`, and `ctx.childTasks`. `ctx.logger` is the harness logger; never log prompts, outputs, or other content payloads.
 
 Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
@@ -125,8 +120,7 @@ Workflow docs and examples should cover:
 Use TypeScript tools for application APIs and deterministic logic:
 
 ```ts
-.tools(({ tool }) => ({
-  search_docs: tool({
+.tool('search_docs', {
     description: 'Search internal docs for relevant passages.',
     input: z.object({ query: z.string() }),
     output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
@@ -136,11 +130,18 @@ Use TypeScript tools for application APIs and deterministic logic:
       return { hits: [] }
     }
   })
-}))
 ```
 
 Rules:
-- validate input and output with Zod schemas
+- validate input and output with Standard Schema validators; Zod is the
+  default example library
+- use `ModelSchema` for TypeScript tool input, because the model must receive
+  its Standard JSON Schema input projection; tool output needs only `Schema`
+- default-loop agent output follows the same `ModelSchema` rule; agent input,
+  workflows, custom-handler output, and guardrail values are validation-only
+  `Schema` boundaries
+- Harness compiles each model-facing schema once during `.build()` to frozen
+  Draft 2020-12 JSON Schema. Do not wrap it or convert it in a provider/tool
 - return JSON-compatible data
 - respect `ctx.signal`
 - use `ctx.sandbox` for sandboxed filesystem/exec behavior
@@ -152,8 +153,8 @@ Exact `TsToolDefinition` fields:
 {
   kind?: 'ts',
   description: string,
-  input: z.ZodTypeAny,
-  output: z.ZodTypeAny,
+  input: ModelSchema,
+  output: Schema,
   handler: (ctx, input) => Promise<output>,
   configureHarnessContext?: (context) => void
 }
@@ -164,7 +165,8 @@ Exact `TsToolDefinition` fields:
 Tool ids are model-facing and should be stable lowercase identifiers. The implementation validates tool ids against the harness builder rules, so use names such as `search_docs`, `read_ticket`, or `render_panel_spec`.
 
 ## Built-In Tools And Permissions
-Built-in tools are enabled by default unless `builtinTools: false` or a subset is configured.
+Built-in tools are disabled by default. Omit `builtinTools` when an agent
+needs none, or provide the exact canonical-name allowlist it needs.
 
 Canonical built-ins:
 - `bash`
@@ -230,7 +232,7 @@ also rejects provider tool calls whose tool name was not exposed for that step.
 Use execution policies when a concrete tool call needs typed business rules:
 
 ```ts
-.governance(({ native, rule, adapter }) => ({
+.governance(({ native, rule }) => ({
   mode: 'enforce',
   defaultEffect: 'allow',
   approval: {
@@ -260,11 +262,6 @@ Use execution policies when a concrete tool call needs typed business rules:
           reasonCode: 'insufficient_funds'
         })
       ]
-    }),
-    adapter({
-      id: 'external-policy-engine',
-      version: 'bundle-42',
-      evaluate: async (ctx) => undefined
     })
   ]
 }))
@@ -284,11 +281,18 @@ policies are configured and no decision matches, `defaultEffect` defaults to
 `deny`. A governance config with only exposure rules does not apply execution
 default-deny later.
 
-Use `mode: 'shadow'` to compare native, OPA, Cedar, Eve-style, or bespoke
-policy engines before enforcing. External adapters translate harness context
-into the engine input document and return `GovernanceDecision` values; the
-harness does not own policy language syntax, bundle distribution, or rule-store
-deployment.
+Use `mode: 'shadow'` to compare native rules with an external evaluator before
+enforcing. For OPA, install `@purista/harness-policy-opa`, create a fixed Data
+API client, and use `opaPolicy(helpers, ...)` so builder-derived tool/input types
+cascade through least-data input mapping and Standard-Schema-validated result
+mapping. Use `FakeOpaDataApi` for deterministic control-flow tests and the
+deployed OPA/bundle for selected integration tests. The callback-local
+`adapter(...)` helper alone remains an identity/type-preserving registration
+helper: it makes no network call and loads no bundle. Cedar, AWS Verified
+Permissions, and bespoke engines still require focused application-owned
+`GovernancePolicyEvaluator` implementations. The application owns identity,
+credentials, policy distribution, availability, and engine operations in every
+topology.
 
 Approval receives `{ approvalId, subject, demands }` and `{ signal, deadline }`.
 The correlated `subject` contains one occurrence and its frozen parsed input;
@@ -380,20 +384,24 @@ HTTP auth forms are `none`, `bearer`, `oauth2`, `api_key`, and `basic`.
 ## Skills Mounted Into Agents
 A harness skill directory contains a `SKILL.md` file. Register the directory and allowlist it on agents:
 
-```ts
+```ts title="Register an agent skill"
 .skills({
-  'incident-responder': { directory: join(import.meta.dirname, 'skills/incident-responder') }
+  'incident-responder': { directory: join(import.meta.dirname, 'skills/incident-responder') },
 })
-.agents(({ agent }) => ({
-  writer: agent({
+  .agent('writer', {
     model: 'reasoning',
     output: z.object({ summary: z.string() }),
     skills: ['incident-responder'],
-    instructions: 'Use the mounted incident-responder guidance.'
+    builtinTools: ['read'],
+    instructions: 'Use the mounted incident-responder guidance.',
   })
-}))
 ```
 
 The harness injects only the skill index into instructions. The model reads `/skills/<name>/SKILL.md` and supporting files through built-in filesystem tools when needed.
 
-If a skill is attached and you disable all built-ins, the model cannot inspect the mounted files. Prefer `builtinTools: ['read', 'list', 'grep']` for skill-driven agents that do not need mutation or shell execution.
+Declaring a skill never enables built-ins. A default-loop skill agent must
+explicitly include `read` and fails during agent registration otherwise.
+`list` and `grep` are optional navigation aids. Skill files, including
+scripts, are mounted as inert content; they can execute only through a
+separately exposed execution-capable tool or custom handler. Frontmatter
+`allowed-tools` is metadata, not an enforced permission.

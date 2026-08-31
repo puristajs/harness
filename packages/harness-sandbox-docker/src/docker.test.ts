@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { OperationTimeoutError, type Sandbox, type SandboxScope } from '@purista/harness'
-import { sandboxContract } from '@purista/harness/testing'
+import { sandboxContract, sandboxTextSearchContract } from '@purista/harness/testing'
 import { dockerSandbox } from './index.js'
 
 type DockerAdapter = ReturnType<typeof dockerSandbox>
@@ -52,6 +52,7 @@ describe.runIf(enabled)('opt-in real Docker engine', () => {
   })
 
   sandboxContract(fixture, { executor: 'available' })
+  sandboxTextSearchContract(fixture)
 
   it('keeps binary workspace files and terminates timed-out guest work across reattachment', async () => {
     const adapter = await fixture()

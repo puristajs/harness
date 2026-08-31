@@ -436,3 +436,94 @@ guardrail_authoring_2026_08_26:
   compatibility: No legacy aliases, compatibility or migrations.
   implementation_status: not_started
   voyage: excluded
+
+declarative_registration_and_guardrails_binding_2026_08_30:
+  status: approved
+  source: Repository owner explicitly requested and auto-approved the clean singular/plural registration and direct Guardrails binding refactor in task 01a03858-b20b-7e42-8182-bd747bc2aa21.
+  authority: specs/40-declarative-registration-and-guardrails-binding.md
+  scope:
+    specs:
+      - specs/02-harness-config.md
+      - specs/09-agents.md
+      - specs/10-workflows.md
+      - specs/13-public-api.md
+      - specs/25-static-harness-modules.md
+      - specs/29-agent-plugins.md
+      - specs/30-guardrails.md
+      - specs/32-harness-storage.md
+      - specs/33-enterprise-memory/00-vision.md
+      - specs/38-guardrail-authoring
+      - specs/40-declarative-registration-and-guardrails-binding.md
+      - specs/README.md
+  precedence: Spec 40 supersedes agent/workflow identity-helper callbacks and Guardrails.attach while preserving spec 37 decision order and spec 38 action/requirements behavior.
+  compatibility: No aliases, deprecated overloads, wrappers, migration layer, or dual behavior.
+  confirmed_decisions:
+    - Singular and plural agent/workflow methods are repeatable and share one accumulated registry implementation.
+    - Agent/workflow callback helpers and their public helper types are removed.
+    - Default-loop agents accept one direct guardrails binding implemented by the optional addon through a Core-owned opaque-symbol port.
+    - Custom handlers cannot declare Guardrails or default-loop interceptors.
+    - PURISTA Core imports no optional addon and forwards the public Harness definition unchanged.
+  gates:
+    human_approval:
+      status: passed
+    semantic_alignment_gate:
+      status: passed
+    strong_boundary_type_gate:
+      status: passed
+    clean_rebuild_boundary_gate:
+      status: passed
+    security_privacy_gate:
+      status: passed
+    implementation_wave_readiness:
+      status: passed
+  implementation_status: in_progress
+  voyage: excluded
+
+clean_builder_and_runtime_api_2026_08_30:
+  status: approved
+  source: Repository owner explicitly requested specs-first implementation, auto-approved the clean-breaking contract, and rejected legacy or compatibility paths in the active Codex task.
+  authority: specs/42-clean-builder-and-runtime-api.md
+  scope:
+    specs:
+      - specs/00-overview.md
+      - specs/02-harness-config.md
+      - specs/05-sandbox.md
+      - specs/06-models.md
+      - specs/07-tools.md
+      - specs/08-skills.md
+      - specs/09-agents.md
+      - specs/10-workflows.md
+      - specs/11-sessions.md
+      - specs/13-public-api.md
+      - specs/14-otel-conventions.md
+      - specs/16-testing.md
+      - specs/25-static-harness-modules.md
+      - specs/28-workflow-child-tasks.md
+      - specs/34-distributed-sandbox-lifecycle/03-flows/e2e-coverage.md
+      - specs/38-guardrail-authoring/03-contracts/callbacks.md
+      - specs/40-declarative-registration-and-guardrails-binding.md
+      - specs/42-clean-builder-and-runtime-api.md
+      - specs/README.md
+  precedence: Spec 42 supersedes registry authoring, invoker naming, Harness-session deletion naming, executable context logger/telemetry, and native-tool helper/brand declarations. Spec 40 remains authoritative only for direct Guardrails binding.
+  compatibility: No legacy aliases, deprecated overloads, helper callbacks, registration brands, old invoker/session names, or dual behavior.
+  confirmed_decisions:
+    - All five registry families expose repeatable singular/plural methods backed by one append-only implementation per family.
+    - Native TypeScript tools are direct definitions: singular registration contextually types inline handlers, while plural registration preserves cohesive pre-typed native/MCP records.
+    - Agent and workflow invokers expose run and stream only; the outer span is harness.session.run.
+    - Harness sessions expose release and destructive destroy; unrelated resource close methods retain their semantics.
+    - Executable agent, workflow, and tool contexts use logger and expose Harness telemetry consistently.
+    - PURISTA Core, CLI templates, examples, docs, website, generated API evidence, and skills migrate in the same refactor.
+  gates:
+    human_approval:
+      status: passed
+    semantic_alignment_gate:
+      status: passed
+    strong_boundary_type_gate:
+      status: passed
+    clean_rebuild_boundary_gate:
+      status: passed
+    migration_gate:
+      status: passed
+    implementation_wave_readiness:
+      status: passed
+  implementation_status: implemented

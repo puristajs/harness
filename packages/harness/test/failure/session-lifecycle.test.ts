@@ -1,6 +1,15 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { defineHarness, inMemorySandbox, InMemoryHarnessStorage, JsonLogger, StateError, type FinishRunPatch, type PersistedRunEvent, type SessionRecord } from '../../src/index.js'
+import {
+  defineHarness,
+  inMemorySandbox,
+  InMemoryHarnessStorage,
+  JsonLogger,
+  StateError,
+  type FinishRunPatch,
+  type PersistedRunEvent,
+  type SessionRecord,
+} from '../../src/index.js'
 import type { RunRecord } from '../../src/models/state.js'
 
 class CreateRunFailingHarnessStorage extends InMemoryHarnessStorage {
@@ -51,26 +60,28 @@ it('does not emit or finish a run when createRun fails', async () => {
           id: 'fake',
           genAiSystem: 'fake',
           async object() {
-            return { object: 'should not run', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, finishReason: 'stop' }
-          }
+            return {
+              object: 'should not run',
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+              finishReason: 'stop',
+            }
+          },
         },
         model: 'fake',
-        capabilities: ['object']
-      }
+        capabilities: ['object'],
+      },
     })
-    .agents({ assistant: { model: 'fake', instructions: 'Return text.', builtinTools: false } })
-    .workflows({
-      wf: {
-        input: z.string(),
-        output: z.string(),
-        delegation: {},
-        handler: async (ctx) => ctx.agents.assistant(ctx.input)
-      }
+    .agent('assistant', { model: 'fake', instructions: 'Return text.', builtinTools: false })
+    .workflow('wf', {
+      input: z.string(),
+      output: z.string(),
+      delegation: {},
+      handler: async (ctx) => ctx.agents.assistant(ctx.input),
     })
     .build()
 
   const session = await harness.getSession('s1')
-  await expect(session.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(StateError)
+  await expect(session.workflows.wf.run('hello')).rejects.toBeInstanceOf(StateError)
   expect(storage.appendedEvents).toEqual([])
   expect(storage.finishRunCalls).toEqual([])
 })
@@ -92,26 +103,24 @@ it.each(['finishRun', 'upsertSession'] as const)(
             genAiSystem: 'fake',
             async object() {
               throw primaryError
-            }
+            },
           },
           model: 'fake',
-          capabilities: ['object']
-        }
+          capabilities: ['object'],
+        },
       })
-      .agents({ assistant: { model: 'fake', instructions: 'Return text.', builtinTools: false } })
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          delegation: {},
-          handler: async (ctx) => ctx.agents.assistant(ctx.input)
-        }
+      .agent('assistant', { model: 'fake', instructions: 'Return text.', builtinTools: false })
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        handler: async (ctx) => ctx.agents.assistant(ctx.input),
       })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('hello')).rejects.toBe(primaryError)
+    await expect(session.workflows.wf.run('hello')).rejects.toBe(primaryError)
     expect(logs.join('')).toContain('Failed to terminalize failed run; preserving primary run error.')
     expect(logs.join('')).toContain(failingOperation === 'finishRun' ? 'finish_run' : 'upsert_session')
-  }
+  },
 )

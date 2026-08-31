@@ -1,23 +1,28 @@
 # Workflows
 
-> **Approved authoring update (2026-08-26):** [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) supersedes this document for callback and invocation schema direction. Other runtime semantics remain in force. Target approved; implementation is planned separately.
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
+>
+> **Approved registration update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) supersedes workflow callback-helper registration in this document and spec 38.
 
-**Purpose.** Defines the inline `WorkflowDefinition` shape used in `defineHarness().workflows({...})`, the `WorkflowContext`, parallel agent invocation rules, and cancellation semantics. There is no standalone `defineWorkflow` factory; only inline-in-builder objects achieve cross-key type constraints (the workflow handler's `ctx.agents` typed by the registered agent keys).
+**Purpose.** Defines the inline `WorkflowDefinition` shape used in
+`defineHarness().workflow(id, definition)` and `.workflows({...})`, the
+`WorkflowContext`, parallel agent invocation rules, and cancellation semantics.
+Both registration methods are repeatable and share one accumulated registry.
+There is no standalone `defineWorkflow` factory; builder-owned registration
+preserves the workflow handler's exact `ctx.agents` keys.
 
 ## `WorkflowDefinition` (inline in builder)
 
 ```ts
-import type { z } from 'zod'
-
 interface WorkflowDefinition<
   S,
-  I extends z.ZodTypeAny = z.ZodTypeAny,
-  O extends z.ZodTypeAny = z.ZodTypeAny,
+  I extends Schema = Schema,
+  O extends Schema = Schema,
 > {
   input?: I                              // default: z.string()
   output?: O                             // default: z.string()
   delegation?: WorkflowDelegationPolicy<S>
-  handler: (ctx: WorkflowContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // REQUIRED
+  handler: (ctx: WorkflowContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>   // REQUIRED
 }
 
 interface WorkflowDelegationPolicy<S> {
@@ -39,7 +44,8 @@ A workflow MUST provide `handler`. There is no default workflow loop.
 interface WorkflowContext<S, I, O> {
   input: I
   agents: { [K in keyof S['agents']]: (input: AgentInput<S, K>, opts?: InvokeOptions & { model?: keyof S['models'] & string }) => Promise<AgentOutput<S, K>> }
-  log: Logger
+  logger: Logger
+  telemetry: TelemetryShim
   signal: AbortSignal
   runId: string
   sessionId: string
@@ -55,7 +61,7 @@ interface WorkflowContext<S, I, O> {
 }
 ```
 
-`AgentInput<S, K>` and `AgentOutput<S, K>` are derived from the agent's `input`/`output` Zod schemas (or default to `string` when omitted), mirroring the `WorkflowInput`/`WorkflowOutput` derivation in [13-public-api](./13-public-api.md).
+`AgentInput<S, K>` uses `InferIn` from the agent input schema and `AgentOutput<S, K>` uses `Infer` from its output schema (both default to `string` when omitted), mirroring workflow derivation in [13-public-api](./13-public-api.md).
 
 - All registered agents are typed on `agents`. `WorkflowDefinition.delegation`
   can restrict which agents a workflow may call at runtime.
@@ -129,7 +135,7 @@ numeric budgets. Runtime violations throw
 Task-specific idempotency, recovery, and session-owner lookup rules are
 defined in [28-workflow-child-tasks](./28-workflow-child-tasks.md).
 
-The workflow's own input is validated by `workflow.input.parse(value)` at run start; output is validated by `workflow.output.parse(value)` after the handler returns. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
+The workflow's own input and handler return are awaited through the shared Standard Schema validator before user code and before completion respectively. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
 
 ## Durable steps
 
@@ -190,7 +196,7 @@ Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSet
 
 - The workflow's `signal` is wired to:
   - The run's `runTimeoutMs` — when elapsed, abort the controller and throw `OperationTimeoutError`. `runTimeoutMs === 0` disables the run timeout; negative values are rejected at config parse time. `InvokeOptions.timeoutMs` overrides the default for a single call (same `>0/0/<0` semantics; negative throws `ValidationError`).
-  - External cancellation passed to `session.workflows[id].prompt(input, {signal})`.
+  - External cancellation passed to `session.workflows[id].run(input, {signal})`.
 - Aborts propagate down to every active agent, model, tool, skill, and memory adapter call. Each layer translates abort into `OperationCancelledError`.
 - The harness races the workflow handler against the workflow signal. A
   non-cooperative handler cannot block timeout/cancel finalization, but any

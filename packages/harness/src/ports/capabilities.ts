@@ -7,6 +7,8 @@
 export type AdapterCapability =
   /** Sandbox supports filesystem access. */
   | 'sandbox.fs'
+  /** Sandbox performs bounded provider-neutral text search where its files live. */
+  | 'sandbox.text_search'
   /** Sandbox supports command execution. */
   | 'sandbox.exec'
   /** Sandbox filesystem survives adapter-level close/reopen for the same session. */

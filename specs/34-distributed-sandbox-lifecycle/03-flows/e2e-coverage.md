@@ -55,7 +55,7 @@ requires them.
 
 ## FLOW-SBX-07 — termination and cleanup
 
-`Session.close()` detaches and calls `Sandbox.terminate(...)` to durably accept
+`Session.destroy()` detaches and calls `Sandbox.terminate(...)` to durably accept
 termination before deleting the `SessionRecord`; a transient failure leaves the record for
 retry. Terminal run disposal requests termination for its run scope without
 changing the already-decided business result. The adapter owns provider

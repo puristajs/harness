@@ -111,17 +111,16 @@ and reusable. A module has no access to a source-level direct-builder stage
 that is forbidden by the normal builder; its callbacks use the same runtime
 validation as direct contributions.
 
-The existing agent/workflow inline helper callbacks remain the required way to
-retain cross-key schema inference. A module that defines an agent SHOULD use
-`.agents(({ agent }) => ({ ... }))` when its definition depends on accumulated
-model/tool/skill keys.
+Modules use the same direct singular/plural model, tool, skill, agent, and
+workflow registration as the main builder. The module builder's accumulated
+state preserves registry, schema, and sandbox-capability constraints without
+identity or native-tool helper callbacks.
 
 ## Additive registration and deterministic resolution
 
-Module composition changes models, tools, skills, agents, and workflows from
-replacement behavior to additive registration. A direct builder method is still
-callable at most once by normal source-level staging; modules may invoke a
-family repeatedly. Every family is resolved by caller order and is append-only.
+Module composition keeps all five registry families additive. Every family is
+repeatable through singular or plural calls on both direct and module builders,
+resolved by caller order, and append-only.
 
 For each registration:
 

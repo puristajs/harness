@@ -10,8 +10,6 @@ function harness() {
     .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
     .tools({})
     .skills({})
-    .agents({})
-    .workflows({})
     .build()
 }
 
@@ -35,22 +33,23 @@ describe('core memory engine', () => {
       .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({ echo: { model: 'noop', input: z.string(), output: z.string(), handler: async (ctx) => ctx.input } })
-      .workflows({})
+      .agent('echo', { model: 'noop', input: z.string(), output: z.string(), handler: async (ctx) => ctx.input })
       .build()
 
     const session = await value.getSession('lazy')
     await session.history.list()
     expect(open).not.toHaveBeenCalled()
 
-    await session.agents.echo.prompt('allocate')
+    await session.agents.echo.run('allocate')
     expect(open).toHaveBeenCalledTimes(1)
   })
 
   it('binds optional identity exactly before opening a session resource', async () => {
     const value = harness()
     await value.getSession('bound', { identity: { tenantId: 'acme', principalId: 'ada' } })
-    await expect(value.getSession('bound', { identity: { tenantId: 'acme' } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(value.getSession('bound', { identity: { tenantId: 'acme' } })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    })
   })
 
   it('rejects a different explicit owner for an existing session incarnation', async () => {
@@ -59,16 +58,24 @@ describe('core memory engine', () => {
     await value.getSession('owned', {
       identity,
       sandboxOwner: {
-        namespace: 'acme', id: 'conversation-1', instanceId: '01J00000000000000000000002', identity
-      }
+        namespace: 'acme',
+        id: 'conversation-1',
+        instanceId: '01J00000000000000000000002',
+        identity,
+      },
     })
 
-    await expect(value.getSession('owned', {
-      identity,
-      sandboxOwner: {
-        namespace: 'acme', id: 'conversation-2', instanceId: '01J00000000000000000000003', identity
-      }
-    })).rejects.toMatchObject({ code: 'SANDBOX_CONFLICT', meta: { reason: 'binding_changed' } })
+    await expect(
+      value.getSession('owned', {
+        identity,
+        sandboxOwner: {
+          namespace: 'acme',
+          id: 'conversation-2',
+          instanceId: '01J00000000000000000000003',
+          identity,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SANDBOX_CONFLICT', meta: { reason: 'binding_changed' } })
   })
 
   it('authorizes a borrowed owner before returning a session facade', async () => {
@@ -83,24 +90,28 @@ describe('core memory engine', () => {
       .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
       .tools({})
       .skills({})
-      .agents({})
-      .workflows({})
       .build()
     const identity = { tenantId: 'acme', principalId: 'ada' }
     const sandboxOwner = {
-      namespace: 'acme', id: 'shared-owner', instanceId: '01J00000000000000000000002', identity
+      namespace: 'acme',
+      id: 'shared-owner',
+      instanceId: '01J00000000000000000000002',
+      identity,
     } as const
 
     await expect(value.getSession('borrowed-session', { identity, sandboxOwner })).rejects.toMatchObject({
-      code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' }
+      code: 'SANDBOX_PERMISSION_DENIED',
+      meta: { reason: 'owner_not_authorized' },
     })
     expect(authorizeOwner).toHaveBeenCalledTimes(1)
-    expect(authorizeOwner).toHaveBeenCalledWith(expect.objectContaining({
-      owner: sandboxOwner,
-      identity,
-      harnessName: expect.any(String),
-      sessionId: 'borrowed-session'
-    }))
+    expect(authorizeOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: sandboxOwner,
+        identity,
+        harnessName: expect.any(String),
+        sessionId: 'borrowed-session',
+      }),
+    )
     expect(open).not.toHaveBeenCalled()
   })
 
@@ -114,11 +125,11 @@ describe('core memory engine', () => {
     try {
       const outcomes = await Promise.allSettled([
         value.getSession('concurrent-bound', { identity: { tenantId: 'first' } }),
-        value.getSession('concurrent-bound', { identity: { tenantId: 'second' } })
+        value.getSession('concurrent-bound', { identity: { tenantId: 'second' } }),
       ])
-      expect(outcomes.filter(result => result.status === 'fulfilled')).toHaveLength(1)
-      expect(outcomes.find(result => result.status === 'rejected')).toMatchObject({
-        reason: { code: 'VALIDATION_ERROR', meta: { issues: { reason: 'session_identity_mismatch' } } }
+      expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect(outcomes.find((result) => result.status === 'rejected')).toMatchObject({
+        reason: { code: 'VALIDATION_ERROR', meta: { issues: { reason: 'session_identity_mismatch' } } },
       })
       expect(open).not.toHaveBeenCalled()
     } finally {
@@ -130,19 +141,20 @@ describe('core memory engine', () => {
     const storage = inMemoryHarnessStorage()
     const sandbox = inMemorySandbox()
     const open = vi.spyOn(sandbox, 'open')
-    const make = () => defineHarness()
-      .storage(storage)
-      .sandbox(sandbox)
-      .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
-      .build()
+    const make = () =>
+      defineHarness()
+        .storage(storage)
+        .sandbox(sandbox)
+        .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
+        .build()
     const first = make()
     const second = make()
     try {
       const outcomes = await Promise.allSettled([
         first.getSession('shared-bound', { identity: { tenantId: 'same' } }),
-        second.getSession('shared-bound', { identity: { tenantId: 'same' } })
+        second.getSession('shared-bound', { identity: { tenantId: 'same' } }),
       ])
-      expect(outcomes.filter(result => result.status === 'fulfilled')).not.toHaveLength(0)
+      expect(outcomes.filter((result) => result.status === 'fulfilled')).not.toHaveLength(0)
       expect(open).not.toHaveBeenCalled()
     } finally {
       await first.shutdown()
@@ -161,12 +173,15 @@ describe('core memory engine', () => {
       await upsert({ ...record, instanceId: 'replacement-instance' }, 'create')
       return inserted
     })
-    const value = defineHarness().storage(storage).sandbox(sandbox)
+    const value = defineHarness()
+      .storage(storage)
+      .sandbox(sandbox)
       .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
       .build()
     try {
       await expect(value.getSession('replaced')).rejects.toMatchObject({
-        code: 'STATE_ERROR', meta: { reason: 'session_instance_mismatch' }
+        code: 'STATE_ERROR',
+        meta: { reason: 'session_instance_mismatch' },
       })
       expect(open).not.toHaveBeenCalled()
       await expect(storage.getSession('replaced')).resolves.toMatchObject({ instanceId: 'replacement-instance' })
@@ -175,19 +190,21 @@ describe('core memory engine', () => {
     }
   })
 
-  it('creates a distinct session instance after close without advancing the clock', async () => {
+  it('creates a distinct session instance after destroy without advancing the clock', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime('2026-08-26T12:00:00.000Z')
     const storage = inMemoryHarnessStorage()
     const sandbox = inMemorySandbox()
     const open = vi.spyOn(sandbox, 'open')
-    const value = defineHarness().storage(storage).sandbox(sandbox)
+    const value = defineHarness()
+      .storage(storage)
+      .sandbox(sandbox)
       .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
       .build()
     try {
       const first = await value.getSession('reused')
       const old = await storage.getSession('reused')
-      await first.close()
+      await first.destroy()
       await value.getSession('reused')
       const fresh = await storage.getSession('reused')
       expect(fresh?.createdAt).toBe(old?.createdAt)
@@ -199,26 +216,33 @@ describe('core memory engine', () => {
     }
   })
 
-  it('does not let a stale Harness client close a newly recreated session', async () => {
+  it('does not let a stale Harness client destroy a newly recreated session', async () => {
     const storage = inMemoryHarnessStorage()
     const sandbox = inMemorySandbox()
-    const make = () => defineHarness().storage(storage).sandbox(sandbox)
-      .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
-      .build()
+    const make = () =>
+      defineHarness()
+        .storage(storage)
+        .sandbox(sandbox)
+        .models({ noop: { provider: { id: 'noop', genAiSystem: 'test' }, model: 'noop', capabilities: [] } })
+        .build()
     const first = make()
     const second = make()
     try {
       const old = await first.getSession('reused')
       const stale = await second.getSession('reused')
-      await old.close()
+      await old.destroy()
       const fresh = await first.getSession('reused')
       const record = await storage.getSession('reused')
       await fresh.replaceHistory([{ role: 'user', content: 'new conversation' }])
       await expect(stale.replaceHistory([{ role: 'user', content: 'stale overwrite' }])).rejects.toMatchObject({
-        code: 'STATE_ERROR', meta: { reason: 'session_instance_changed' }
+        code: 'STATE_ERROR',
+        meta: { reason: 'session_instance_changed' },
       })
-      await expect(stale.history.list()).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { reason: 'session_instance_changed' } })
-      await stale.close()
+      await expect(stale.history.list()).rejects.toMatchObject({
+        code: 'STATE_ERROR',
+        meta: { reason: 'session_instance_changed' },
+      })
+      await stale.destroy()
       await expect(storage.getSession('reused')).resolves.toEqual(record)
       await expect(storage.listMessages('reused')).resolves.toMatchObject([{ content: 'new conversation' }])
     } finally {
@@ -229,20 +253,37 @@ describe('core memory engine', () => {
 
   it('writes a provenance-bearing summary after a completed configured turn', async () => {
     const provider = {
-      id: 'summary-provider', genAiSystem: 'test',
-      async object() { return { object: { summary: 'Claim is open.' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' as const } }
+      id: 'summary-provider',
+      genAiSystem: 'test',
+      async object() {
+        return {
+          object: { summary: 'Claim is open.' },
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          finishReason: 'stop' as const,
+        }
+      },
     }
     const value = defineHarness()
       .sandbox(inMemorySandbox())
-      .models({ summaryModel: { provider, model: 'summary-v1', capabilities: ['object', 'tool_use'] } })
-      .memory((model) => ({ engine: inMemoryMemoryEngine(), summary: { model: model.summaryModel, everyTurns: 1, sourceTurns: 2 } }))
+      .models({ summary_model: { provider, model: 'summary-v1', capabilities: ['object', 'tool_use'] } })
+      .memory((model) => ({
+        engine: inMemoryMemoryEngine(),
+        summary: { model: model.summary_model, everyTurns: 1, sourceTurns: 2 },
+      }))
       .tools({})
       .skills({})
-      .agents({ chat: { model: 'summaryModel', input: z.string(), output: z.object({ summary: z.string() }), instructions: 'Answer.' } })
-      .workflows({})
+      .agent('chat', {
+        model: 'summary_model',
+        input: z.string(),
+        output: z.object({ summary: z.string() }),
+        instructions: 'Answer.',
+      })
       .build()
     const session = await value.getSession('summary-session')
-    await session.agents.chat.prompt('Summarize this claim.')
-    await expect(session.memory.read('_harness/conversation-summary')).resolves.toMatchObject({ summary: 'Claim is open.', revision: 'harness.conversation-summary.v1' })
+    await session.agents.chat.run('Summarize this claim.')
+    await expect(session.memory.read('_harness/conversation-summary')).resolves.toMatchObject({
+      summary: 'Claim is open.',
+      revision: 'harness.conversation-summary.v1',
+    })
   })
 })

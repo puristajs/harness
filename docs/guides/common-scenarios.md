@@ -51,13 +51,15 @@ Recommended output schema:
 
 ```ts
 z.object({
-  answer: z.string(),
-  citations: z.array(z.object({
-    id: z.string(),
-    quoteOrSummary: z.string(),
-    confidence: z.enum(['low', 'medium', 'high'])
-  })),
-  confidenceNotes: z.array(z.string())
+	answer: z.string(),
+	citations: z.array(
+		z.object({
+			id: z.string(),
+			quoteOrSummary: z.string(),
+			confidence: z.enum(['low', 'medium', 'high']),
+		}),
+	),
+	confidenceNotes: z.array(z.string()),
 })
 ```
 
@@ -73,19 +75,19 @@ evidence to a normal object-output agent.
 
 ```ts
 const queryEmbedding = await ctx.models.retrieval.embed({
-  input: ctx.input.question
+	input: ctx.input.question,
 })
 
 const candidates = await vectorIndex.search(queryEmbedding.embeddings[0].vector)
 
 const ranked = await ctx.models.ranker.rerank({
-  query: ctx.input.question,
-  documents: candidates.map((doc) => ({
-    id: doc.id,
-    text: doc.text,
-    metadata: { source: doc.source }
-  })),
-  topN: 5
+	query: ctx.input.question,
+	documents: candidates.map(doc => ({
+		id: doc.id,
+		text: doc.text,
+		metadata: { source: doc.source },
+	})),
+	topN: 5,
 })
 ```
 

@@ -26,46 +26,40 @@ registered agent keys. There is no standalone `defineWorkflow(...)` helper.
 
 ```ts
 const harness = defineHarness({ name: 'incident-review' })
-  .models({
-    reasoning: {
-      provider,
-      model: 'gpt-5-mini',
-      capabilities: ['object']
-    }
-  })
-  .agents(({ agent }) => ({
-    facts: agent({
-      model: 'reasoning',
-      input: z.object({ report: z.string() }),
-      output: z.object({ facts: z.array(z.string()) }),
-      builtinTools: false,
-      instructions: 'Extract only concrete facts from the report.'
-    }),
-    risk: agent({
-      model: 'reasoning',
-      input: z.object({ facts: z.array(z.string()) }),
-      output: z.object({ level: z.enum(['low', 'medium', 'high']), reasons: z.array(z.string()) }),
-      builtinTools: false,
-      instructions: 'Assess operational risk from the supplied facts.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    review_incident: workflow({
-      input: z.object({ report: z.string() }),
-      output: z.object({
-        facts: z.array(z.string()),
-        level: z.enum(['low', 'medium', 'high']),
-        reasons: z.array(z.string())
-      }),
-      delegation: { agents: ['facts', 'risk'] },
-      handler: async (ctx) => {
-        const facts = await ctx.agents.facts({ report: ctx.input.report })
-        const risk = await ctx.agents.risk({ facts: facts.facts })
-        return { facts: facts.facts, level: risk.level, reasons: risk.reasons }
-      }
-    })
-  }))
-  .build()
+	.models({
+		reasoning: {
+			provider,
+			model: 'gpt-5-mini',
+			capabilities: ['object'],
+		},
+	})
+	.agent('facts', {
+		model: 'reasoning',
+		input: z.object({ report: z.string() }),
+		output: z.object({ facts: z.array(z.string()) }),
+		instructions: 'Extract only concrete facts from the report.',
+	})
+	.agent('risk', {
+		model: 'reasoning',
+		input: z.object({ facts: z.array(z.string()) }),
+		output: z.object({ level: z.enum(['low', 'medium', 'high']), reasons: z.array(z.string()) }),
+		instructions: 'Assess operational risk from the supplied facts.',
+	})
+	.workflow('review_incident', {
+		input: z.object({ report: z.string() }),
+		output: z.object({
+			facts: z.array(z.string()),
+			level: z.enum(['low', 'medium', 'high']),
+			reasons: z.array(z.string()),
+		}),
+		delegation: { agents: ['facts', 'risk'] },
+		handler: async ctx => {
+			const facts = await ctx.agents.facts({ report: ctx.input.report })
+			const risk = await ctx.agents.risk({ facts: facts.facts })
+			return { facts: facts.facts, level: risk.level, reasons: risk.reasons }
+		},
+	})
+	.build()
 ```
 
 ## Fan-Out And Fan-In
@@ -97,15 +91,19 @@ starts a longer document review. The handle has typed output, but its descriptor
 and session lookup status deliberately contain no prompts or model output.
 
 ```ts
-handler: async (ctx) => {
-  const task = await ctx.childTasks.start('reviewer', {
-    documentId: ctx.input.documentId
-  }, {
-    timeoutMs: 60_000,
-    model: 'deep_review'
-  })
+handler: async ctx => {
+	const task = await ctx.childTasks.start(
+		'reviewer',
+		{
+			documentId: ctx.input.documentId,
+		},
+		{
+			timeoutMs: 60_000,
+			model: 'deep_review',
+		},
+	)
 
-  return { reviewTaskId: task.id }
+	return { reviewTaskId: task.id }
 }
 
 // Application code, later:
@@ -139,25 +137,23 @@ Prefer workflow-local opt-in because it documents the orchestration contract
 next to the handler:
 
 ```ts
-.workflows(({ workflow }) => ({
-  answer_with_review: workflow({
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['answerer', 'reviewer'],
-      maxChildAgentCalls: 4,
-      maxParallelChildAgentCalls: 2,
-      agentModelAliases: {
-        reviewer: ['deep_review']
-      }
-    },
-    handler: async (ctx) => {
-      const draft = await ctx.agents.answerer({ question: ctx.input.question })
-      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
-      return { answer: draft.answer, approved: review.approved }
+.workflow('answer_with_review', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), approved: z.boolean() }),
+  delegation: {
+    agents: ['answerer', 'reviewer'],
+    maxChildAgentCalls: 4,
+    maxParallelChildAgentCalls: 2,
+    agentModelAliases: {
+      reviewer: ['deep_review']
     }
-  })
-}))
+  },
+  handler: async (ctx) => {
+    const draft = await ctx.agents.answerer({ question: ctx.input.question })
+    const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+    return { answer: draft.answer, approved: review.approved }
+  }
+})
 ```
 
 Policy reference mistakes fail during builder setup. Runtime budget violations
@@ -196,16 +192,13 @@ Workflow handlers can call `ctx.models.<alias>` directly for deterministic
 orchestration steps that should not become reusable agents.
 
 ```ts
-const embedding = await ctx.models.retrieval.embed(
-  { input: ctx.input.question },
-  ctx.signal
-)
+const embedding = await ctx.models.retrieval.embed({ input: ctx.input.question }, ctx.signal)
 ```
 
 Storage, retrieval policy, authorization, and writes remain application code.
 The harness owns provider calls, cancellation, validation, and telemetry.
 
-Use `ctx.log` for handler-level logging; it is the harness logger, so workflow
+Use `ctx.logger` for handler-level logging; it is the harness logger, so workflow
 log lines carry the configured logger fields and follow the redaction rules.
 Never log prompts, model outputs, or other content payloads.
 
@@ -225,18 +218,16 @@ return report
 Retry transient step failures before a checkpoint is committed:
 
 ```ts
-const enriched = await ctx.step(
-  'enrich',
-  () => ctx.agents.enricher(ctx.input),
-  { retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 } }
-)
+const enriched = await ctx.step('enrich', () => ctx.agents.enricher(ctx.input), {
+	retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 },
+})
 ```
 
 Invoke durably with a stable run id:
 
 ```ts
-await session.workflows.research_report.prompt(input, {
-  durable: { runId: 'report-2026-06-12' }
+await session.workflows.research_report.run(input, {
+	durable: { runId: 'report-2026-06-12' },
 })
 ```
 
@@ -311,9 +302,9 @@ call opts in with `emitRunEvents: true`.
 
 ```ts
 for await (const event of session.workflows.review_incident.stream(input)) {
-  if (event.type === 'agent.started') console.log('agent', event.agentId)
-  if (event.type === 'model.delta') process.stdout.write(event.delta)
-  if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'agent.started') console.log('agent', event.agentId)
+	if (event.type === 'model.delta') process.stdout.write(event.delta)
+	if (event.type === 'run.finished') console.log(event.output)
 }
 ```
 
@@ -330,13 +321,16 @@ Handlers should still check `ctx.signal` before starting long-running side
 effects and should stop starting new child work after cancellation.
 
 Errors from child agents bubble unchanged unless the workflow catches them.
-Workflow input and output are validated with the workflow Zod schemas.
+Workflow input and output are validated with their Standard Schema validators.
+Zod remains the default in these examples, but a workflow boundary does not
+need JSON Schema projection: only TypeScript tool input and default-loop agent
+output are model-facing `ModelSchema` boundaries.
 
 ## Testing
 
 Test workflows with fake providers and deterministic adapters first:
 
-- assert `session.workflows.<id>.prompt(...)` returns the validated output;
+- assert `session.workflows.<id>.run(...)` returns the validated output;
 - assert `.stream(...)` emits lifecycle and final events you map in the UI;
 - test child-agent failures and partial-result paths;
 - test durable resume by repeating the same durable `runId`;

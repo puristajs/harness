@@ -1,0 +1,25 @@
+tickets:
+  TICKET-001:
+    path: wave_01_types/tickets/TICKET-001-types.md
+    wave: 1
+    lifecycle: accepted
+  TICKET-002:
+    path: wave_02_validation/tickets/TICKET-002-validation.md
+    wave: 2
+    lifecycle: skipped
+  TICKET-003:
+    path: wave_03_projection/tickets/TICKET-003-projection.md
+    wave: 3
+    lifecycle: skipped
+  TICKET-004:
+    path: wave_04_providers/tickets/TICKET-004-providers.md
+    wave: 4
+    lifecycle: accepted
+  TICKET-005:
+    path: wave_05_consumers/tickets/TICKET-005-consumers.md
+    wave: 5
+    lifecycle: accepted
+  TICKET-006:
+    path: wave_06_release/tickets/TICKET-006-release.md
+    wave: 6
+    lifecycle: accepted

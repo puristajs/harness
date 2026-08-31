@@ -27,53 +27,48 @@ candidate.
 ## Run and score a small dataset
 
 ```ts
-import {
-  createDeterministicEvaluationScorer,
-  runEvaluation,
-} from '@purista/harness'
+import { createDeterministicEvaluationScorer, runEvaluation } from '@purista/harness'
 
-declare function answerSupportQuestion(
-  question: string,
-  prompt: string,
-  signal: AbortSignal,
-): Promise<string>
+declare function answerSupportQuestion(question: string, prompt: string, signal: AbortSignal): Promise<string>
 
 const exactMatch = createDeterministicEvaluationScorer({
-  id: 'exact-match',
-  version: 'v1',
-  dimension: { id: 'correct', kind: 'boolean' },
-  evaluate: (observation) => ({
-    outcome: 'scored',
-    dimensionId: 'correct',
-    kind: 'boolean',
-    value: observation.output.answer === observation.assessment?.expected,
-  }),
+	id: 'exact-match',
+	version: 'v1',
+	dimension: { id: 'correct', kind: 'boolean' },
+	evaluate: observation => ({
+		outcome: 'scored',
+		dimensionId: 'correct',
+		kind: 'boolean',
+		value: observation.output.answer === observation.assessment?.expected,
+	}),
 })
 
 const result = await runEvaluation({
-  runId: 'support-baseline-2026-08-28',
-  dataset: {
-    id: 'support-answers',
-    version: 'v1',
-    cases: [{
-      id: 'refund-policy',
-      input: { question: 'Can I get a refund?' },
-      assessment: { expected: 'yes' },
-      segments: { locale: 'en' },
-    }],
-  },
-  candidates: [{ id: 'baseline', version: 'v1', config: { prompt: 'Answer briefly.' } }],
-  task: {
-    id: 'support-answer',
-    version: 'v1',
-    async run({ input, candidate }, signal) {
-      const answer = await answerSupportQuestion(input.question, candidate.prompt, signal)
-      return { output: { answer } }
-    },
-  },
-  scorers: [exactMatch],
-  aggregateBy: ['locale'],
-  maxConcurrency: 2,
+	runId: 'support-baseline-2026-08-28',
+	dataset: {
+		id: 'support-answers',
+		version: 'v1',
+		cases: [
+			{
+				id: 'refund-policy',
+				input: { question: 'Can I get a refund?' },
+				assessment: { expected: 'yes' },
+				segments: { locale: 'en' },
+			},
+		],
+	},
+	candidates: [{ id: 'baseline', version: 'v1', config: { prompt: 'Answer briefly.' } }],
+	task: {
+		id: 'support-answer',
+		version: 'v1',
+		async run({ input, candidate }, signal) {
+			const answer = await answerSupportQuestion(input.question, candidate.prompt, signal)
+			return { output: { answer } }
+		},
+	},
+	scorers: [exactMatch],
+	aggregateBy: ['locale'],
+	maxConcurrency: 2,
 })
 
 console.log(result.cases)
@@ -115,9 +110,9 @@ application and pass it to `scoreEvaluation`.
 import { scoreEvaluation } from '@purista/harness'
 
 const rescored = await scoreEvaluation({
-  runId: 'support-rubric-v2-2026-08-28',
-  observations: [savedObservation],
-  scorers: [newRubric],
+	runId: 'support-rubric-v2-2026-08-28',
+	observations: [savedObservation],
+	scorers: [newRubric],
 })
 ```
 

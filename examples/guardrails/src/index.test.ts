@@ -34,7 +34,7 @@ it('shares one approval provider across parsed tool and permission demands', asy
   const example = createGuardrailsExample()
   const session = await example.harness.getSession('composed-success')
   try {
-    await expect(session.agents.support.prompt('Where is [secret] [email]?')).resolves.toBe('The [redacted] answer.')
+    await expect(session.agents.support.run('Where is [secret] [email]?')).resolves.toBe('The [redacted] answer.')
     expect(example.approvalRequests.map((request) => request.subject.toolId).sort()).toEqual(['publish_note', 'write'])
     expect(example.approvalRequests.find((request) => request.subject.toolId === 'publish_note')?.subject.input).toEqual({ message: '[redacted]', visibility: 'internal' })
     expect(example.approvalRequests.find((request) => request.subject.toolId === 'write')?.demands.map((demand) => demand.source.kind)).toEqual(['permission', 'policy'])
@@ -68,7 +68,7 @@ it.each(['rejected', 'failed', 'timeout'] as const)('does not publish when appro
   })
   const session = await example.harness.getSession(`composed-${mode}`)
   try {
-    const error = await session.agents.support.prompt('Review the note.').catch((value: unknown) => value)
+    const error = await session.agents.support.run('Review the note.').catch((value: unknown) => value)
     if (mode === 'rejected') {
       expect(error).toBe('The [redacted] answer.')
       expect(JSON.stringify(example.provider.requests[1])).toContain('POLICY_DENIED')
@@ -96,7 +96,7 @@ it('cancels an outstanding approval without publishing the note', async () => {
   })
   const session = await example.harness.getSession('composed-cancel')
   try {
-    await expect(session.agents.support.prompt('Review the note.', { signal: controller.signal })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(session.agents.support.run('Review the note.', { signal: controller.signal })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
     expect(example.handledNotes).toEqual([])
     expect(example.lifecycle).not.toContain('handler:publish_note')
   } finally {
@@ -109,7 +109,7 @@ it('blocks content without requesting approval or calling the provider', async (
   const example = createGuardrailsExample()
   const session = await example.harness.getSession('composed-content-block')
   try {
-    await expect(session.agents.support.prompt('[blocked]')).rejects.toMatchObject({
+    await expect(session.agents.support.run('[blocked]')).rejects.toMatchObject({
       code: 'DECISION_BLOCKED', meta: { evidence: { source: { kind: 'guardrail' }, reasonCode: 'unsafe_content' } }
     })
     expect(example.provider.requests).toEqual([])

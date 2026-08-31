@@ -1,0 +1,20 @@
+registry_version: 1
+contracts:
+  - contract_id: CTR-SS-SCHEMA
+    source_ref: 03-contracts/schema-types.md#CTR-SS-SCHEMA
+  - contract_id: CTR-SS-BUILDERS
+    source_ref: 03-contracts/schema-types.md#CTR-SS-BUILDERS
+  - contract_id: CTR-SS-VALIDATION
+    source_ref: 03-contracts/runtime-validation.md#CTR-SS-VALIDATION
+  - contract_id: CTR-SS-ERRORS
+    source_ref: 03-contracts/runtime-validation.md#CTR-SS-ERRORS
+  - contract_id: CTR-SS-PROJECTION
+    source_ref: 03-contracts/model-projection.md#CTR-SS-PROJECTION
+  - contract_id: CTR-SS-PROVIDERS
+    source_ref: 03-contracts/model-projection.md#CTR-SS-PROVIDERS
+  - contract_id: CTR-SS-CONSUMERS
+    source_ref: 04-delivery/consumers.md#CTR-SS-CONSUMERS
+  - contract_id: CTR-SS-CLEANUP
+    source_ref: 04-delivery/consumers.md#CTR-SS-CLEANUP
+requirements: [REQ-SS-TYPES, REQ-SS-VALIDATION, REQ-SS-PROJECTION, REQ-SS-PROVIDERS, REQ-SS-CONSUMERS, REQ-SS-CLEANUP]
+capabilities: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]

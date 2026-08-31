@@ -1,34 +1,65 @@
 import { HarnessConfigError } from '../errors/catalog.js'
 
-/** Internal construction marker; never exported from the package public API. */
-export const registeredToolDefinition = Symbol('purista.harness.registered-tool-definition')
-
-export function brandToolDefinition<T extends object>(definition: T): T {
-  return Object.defineProperty({ ...definition }, registeredToolDefinition, {
-    value: true,
-    enumerable: true,
-    writable: false,
-    configurable: false
-  })
-}
-
+/** Validates structurally declared native and MCP tool definitions. */
 export function validateToolDefinitions(tools: Record<string, unknown>): void {
-  for (const [id, definition] of Object.entries(tools)) {
-    if (isTsToolDefinitionCandidate(definition) && definition[registeredToolDefinition] !== true) {
-      throw new HarnessConfigError('Native tools must be created with the builder-local tool helper.', {
-        reason: 'invalid_tool',
-        path: `tools.${id}`,
-        id
-      })
-    }
-  }
+	for (const [id, value] of Object.entries(tools)) {
+		if (!isRecord(value)) invalidTool(id, 'Tool definitions must be objects.')
+		const definition = value as Record<string, unknown>
+		const kind = definition['kind'] ?? 'ts'
+		if (kind === 'ts') {
+			requireText(definition, 'description', id)
+			requireObject(definition, 'input', id)
+			requireObject(definition, 'output', id)
+			requireFunction(definition, 'handler', id)
+			optionalFunction(definition, 'configureHarnessContext', id)
+			continue
+		}
+		if (kind === 'mcp_stdio') {
+			requireText(definition, 'description', id)
+			requireText(definition, 'command', id)
+			requireText(definition, 'tool', id)
+			optionalFunction(definition, 'inputAdapter', id)
+			optionalFunction(definition, 'outputAdapter', id)
+			optionalFunction(definition, 'configureHarnessContext', id)
+			continue
+		}
+		if (kind === 'mcp_http') {
+			requireText(definition, 'description', id)
+			requireText(definition, 'url', id)
+			requireText(definition, 'tool', id)
+			optionalFunction(definition, 'inputAdapter', id)
+			optionalFunction(definition, 'outputAdapter', id)
+			optionalFunction(definition, 'configureHarnessContext', id)
+			continue
+		}
+		invalidTool(id, 'Tool kind must be ts, mcp_stdio, or mcp_http.')
+	}
 }
 
-function isTsToolDefinitionCandidate(value: unknown): value is Record<PropertyKey, unknown> {
-  if (value === null || typeof value !== 'object') return false
-  const definition = value as Record<PropertyKey, unknown>
-  return typeof definition['handler'] === 'function'
-    && 'input' in definition
-    && 'output' in definition
-    && (definition['kind'] === undefined || definition['kind'] === 'ts')
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requireText(definition: Record<string, unknown>, field: string, id: string): void {
+	if (typeof definition[field] !== 'string' || definition[field].trim().length === 0) {
+		invalidTool(id, `Tool ${field} must be a non-empty string.`)
+	}
+}
+
+function requireObject(definition: Record<string, unknown>, field: string, id: string): void {
+	if (!isRecord(definition[field])) invalidTool(id, `Tool ${field} must be a schema object.`)
+}
+
+function requireFunction(definition: Record<string, unknown>, field: string, id: string): void {
+	if (typeof definition[field] !== 'function') invalidTool(id, `Tool ${field} must be a function.`)
+}
+
+function optionalFunction(definition: Record<string, unknown>, field: string, id: string): void {
+	if (definition[field] !== undefined && typeof definition[field] !== 'function') {
+		invalidTool(id, `Tool ${field} must be a function when configured.`)
+	}
+}
+
+function invalidTool(id: string, message: string): never {
+	throw new HarnessConfigError(message, { reason: 'invalid_tool', path: `tools.${id}`, id })
 }

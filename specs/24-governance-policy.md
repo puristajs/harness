@@ -8,7 +8,10 @@
 
 - Keep default DX unchanged: no `.governance(...)` call means no policy setup and no runtime cost beyond a single undefined check.
 - Reuse the builder type system: native policy predicates receive the selected TypeScript tool's parsed Zod input.
-- Support external ecosystems: policy engines such as OPA, Cedar, Eve-style controls, or product-specific rule stores adapt through `GovernancePolicyEvaluator`.
+- Support external ecosystems: OPA adapts through the optional first-party
+  `@purista/harness-policy-opa` Data API package; Cedar, Eve-style controls,
+  and product-specific rule stores adapt through application-owned
+  `GovernancePolicyEvaluator` implementations.
 - Preserve existing security layers: built-in permissions remain the coarse built-in-tool gate; governance is a business/domain policy gate.
 - Emit observable policy, exposure, and approval events without persisting raw tool input.
 - Keep policy evidence replayable by emitting stable decision ids, optional policy versions, and approval ids.
@@ -118,7 +121,7 @@ When multiple policies match one call, precedence is locked:
 
 The [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md) are the single source for runtime ordering, correlated policy types, strict outcomes, combined permission/policy approval, cancellation, audit, safe events and identities. They replace the former callback/event contracts without compatibility aliases. `examples/bank-governance` is the immediate approval example; durable review is application-owned as specified by [review execution](./37-decision-boundaries/03-contracts/review-execution.md).
 
-Keep duplicate policy/rule IDs, missing native rules, unknown tool references and non-function evaluator validation at build. Native predicates receive parsed effective inputs; exposure predicates have no tool input. External engines translate their own documents to the closed GovernanceDecision; Harness owns no external policy syntax, storage or bundle distribution.
+Keep duplicate policy/rule IDs, missing native rules, unknown tool references and non-function evaluator validation at build. Native predicates receive parsed effective inputs; exposure predicates have no tool input. External engines translate their own documents to the closed GovernanceDecision; Harness owns no external policy syntax, storage or bundle distribution. [Spec 41](./41-opa-policy-adapter.md) defines the optional typed OPA transport and preserves this boundary: applications still own identity, minimized request/result mapping, Rego/bundles, credentials, topology, and decision-log controls. Cedar and other policy engines continue to use application-owned evaluators.
 
 ## Example
 

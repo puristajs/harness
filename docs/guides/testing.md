@@ -33,21 +33,20 @@ core gate is statements `80`, branches `75`, functions `80`, and lines `80`.
 
 ```ts
 const provider = {
-  id: 'fake',
-  genAiSystem: 'fake',
-  async object() {
-    return {
-      object: { answer: 'fake answer', citations: [] },
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop'
-    }
-  }
+	id: 'fake',
+	genAiSystem: 'fake',
+	async object() {
+		return {
+			object: { answer: 'fake answer', citations: [] },
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+			finishReason: 'stop',
+		}
+	},
 }
 
 const harness = createAppHarness(provider)
 const session = await harness.getSession('test')
-await expect(session.agents.answerer.prompt({ question: 'hi' }))
-  .resolves.toMatchObject({ answer: 'fake answer' })
+await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({ answer: 'fake answer' })
 ```
 
 ## Test Streaming Events
@@ -55,7 +54,7 @@ await expect(session.agents.answerer.prompt({ question: 'hi' }))
 ```ts
 const events = []
 for await (const event of session.workflows.audit.stream({ scope: 'all' })) {
-  events.push(event.type)
+	events.push(event.type)
 }
 
 expect(events).toContain('run.started')
@@ -76,6 +75,24 @@ stability per stream invocation, distinct ids across parallel streams,
 
 Call TypeScript tool handlers with a small context object and a temporary store.
 Assert both successful output and validation failure behavior.
+
+## Test Sandbox Adapters
+
+All adapters run the base filesystem/lifecycle suite. Adapters that advertise
+bounded search run the additional search suite:
+
+```ts
+import { sandboxContract, sandboxTextSearchContract } from '@purista/harness/testing'
+
+sandboxContract(() => createSandbox(), { executor: 'unavailable' })
+sandboxTextSearchContract(() => createSandbox())
+```
+
+The search contract covers literal and `safe_regex_v1` matching, deterministic
+ordering, cancellation, unsupported syntax, adversarial patterns, and every
+size/count limit. Keep provider-level tests for facts a generic contract cannot
+observe, such as executing inside the correct pod, blocked cross-tenant paths,
+CPU/memory limits, and content-free telemetry.
 
 ## Test Skills
 
@@ -120,15 +137,15 @@ it creates the same `EvaluationScorer` contract used by `runEvaluation` and
 import { createDeterministicEvaluationScorer } from '@purista/harness/testing'
 
 const hasPolicy = createDeterministicEvaluationScorer({
-  id: 'contains-policy',
-  version: 'v1',
-  dimension: { id: 'mentions-policy', kind: 'boolean' },
-  evaluate: (observation) => ({
-    outcome: 'scored',
-    dimensionId: 'mentions-policy',
-    kind: 'boolean',
-    value: observation.output.answer.includes('policy'),
-  }),
+	id: 'contains-policy',
+	version: 'v1',
+	dimension: { id: 'mentions-policy', kind: 'boolean' },
+	evaluate: observation => ({
+		outcome: 'scored',
+		dimensionId: 'mentions-policy',
+		kind: 'boolean',
+		value: observation.output.answer.includes('policy'),
+	}),
 })
 ```
 

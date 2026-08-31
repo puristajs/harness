@@ -9,7 +9,7 @@ Harness
   ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable storage, durable workspace, context checkpoints
   ├─ Models       (alias → provider + capabilities + default settings)
   ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
-  ├─ Custom tools (TS+zod, MCP stdio, MCP http)
+  ├─ Custom tools (TS+Standard Schema; Zod default, MCP stdio, MCP http)
   ├─ Skills       (directory + SKILL.md frontmatter; mounted at /skills/<name>/ in sandbox)
   ├─ Agents       (input/output schema, allowed tools+skills, permissions, default loop)
   └─ Workflows    (handler with agents context)
@@ -38,51 +38,49 @@ import { defineHarness } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 
 export const harness = defineHarness()
-  .models({
-    fast: { provider: openai({ apiKey: process.env.OPENAI_API_KEY! }), model: 'gpt-4o-mini', capabilities: ['text','object','tool_use'] },
+  .model('fast', {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: 'gpt-4o-mini',
+    capabilities: ['text', 'object', 'tool_use'],
   })
-  .tools({
-    lookup_user: {
-      description: 'Look up a user by id',
-      input:  z.object({ id: z.string() }),
-      output: z.object({ name: z.string() }),
-      handler: async (_ctx, input) => ({ name: 'Alice' }),
-    },
+  .tool('lookup_user', {
+    description: 'Look up a user by id',
+    input: z.object({ id: z.string() }),
+    output: z.object({ name: z.string() }),
+    handler: async (_ctx, input) => ({ name: 'Alice' }),
   })
-  .agents({
-    triage: {
-      input:  z.object({ message: z.string() }),
-      output: z.object({ label: z.enum(['bug','feature','question']) }),
-      model: 'fast',
-      tools: ['lookup_user'],
-      instructions: 'Classify the request.',
-    },
+  .agent('triage', {
+    input: z.object({ message: z.string() }),
+    output: z.object({ label: z.enum(['bug', 'feature', 'question']) }),
+    model: 'fast',
+    tools: ['lookup_user'],
+    instructions: 'Classify the request.',
   })
-  .workflows({
-    handle_ticket: {
-      input:  z.object({ ticket: z.string() }),
-      output: z.object({ resolution: z.string() }),
-      delegation: { agents: ['triage'] },
-      handler: async (ctx) => {
-        const r = await ctx.agents.triage({ message: ctx.input.ticket })
-        return { resolution: r.label }
-      },
+  .workflow('handle_ticket', {
+    input: z.object({ ticket: z.string() }),
+    output: z.object({ resolution: z.string() }),
+    delegation: { agents: ['triage'] },
+    handler: async ctx => {
+      const result = await ctx.agents.triage({ message: ctx.input.ticket })
+      return { resolution: result.label }
     },
   })
   .build()
 
 const session = await harness.getSession('user:42')
-const out = await session.workflows.handle_ticket.prompt({ ticket: 'cannot login' })
+const out = await session.workflows.handle_ticket.run({ ticket: 'cannot login' })
 ```
 
 The `HarnessBuilder` is the SOLE supported construction path. Standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` definers are NOT exported; only inline-in-builder definitions achieve the cross-key type constraints.
+
+Public agent, TypeScript-tool, workflow, and guardrail value schemas follow [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md). Zod remains the standard documentation choice, but any Standard Schema V1 validator is accepted. Tool input and default-loop agent output additionally implement Standard JSON Schema V1 because providers consume JSON Schema rather than validator objects.
 
 **One session equals one conversation thread.** Apps that need multiple chat threads per user create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Conversation history is stored on the session; the harness does not model thread/conversation as a separate entity in v3. See [11-sessions](./11-sessions.md) §"Conversation history and threads".
 
 ## In scope
 
 - Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
-- Foundation: telemetry, logging, Harness storage, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v3), and memory adapter.
+- Foundation: telemetry, logging, Harness storage, sandbox (in-memory files/bounded-search adapter or `just-bash`-backed bash emulator in v3), and memory adapter.
 - Model registry (aliases to providers, capability-gated).
 - Provider-neutral model outcomes and bounded active retry for transient model
   failures/rate limits, with long provider retry instructions surfaced as
@@ -166,7 +164,7 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Workflow        | A user-authored handler that orchestrates agents. |
 | Tool            | A callable function exposed to a model: built-in (`bash`, `read`, `write`, `edit`, `glob`, `grep`, `list`), TS, MCP stdio, or MCP http. |
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
-| Sandbox         | An isolated FS + (optional) shell-exec environment. v3 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
+| Sandbox         | An isolated FS + bounded text search + optional shell-exec environment. v3 ships a non-executable in-memory adapter and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
 | Model outcome   | Provider-neutral finish metadata that preserves the normalized finish reason plus provider-specific finish/status details. |
 | Active retry    | A short, bounded retry performed inside the current model invocation. |

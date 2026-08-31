@@ -15,8 +15,12 @@
 Install the core package and only the provider/addon packages the application actually needs:
 
 ```bash
-npm install @purista/harness @purista/harness-openai zod
+npm install @purista/harness @purista/harness-openai
 ```
+
+Install Zod when using the default examples, or install another Standard Schema
+validator chosen by the application. The Harness package does not require an
+application to depend on Zod.
 
 Optional peer dependencies:
 - `@modelcontextprotocol/client` for MCP stdio/http tools
@@ -41,14 +45,19 @@ defineHarness({ name: 'app-name' })
   .models(...)
   .tools(...)
   .skills(...)
-  .agents(({ agent }) => ({ ... }))
-  .workflows(({ workflow }) => ({ ... }))
+  .agent('assistant', { ... })
+  .workflow('review', { ... })
   .governance(...)
   .build()
 ```
 
 Models must exist before agents reference them. Agents must exist before workflows call them. Tools and skills must exist before agents allowlist them.
-Register the sandbox before tools so `ctx.sandbox` exposes precisely its
+Every registry has a singular/plural pair: `.model/.models`, `.tool/.tools`,
+`.skill/.skills`, `.agent/.agents`, and `.workflow/.workflows`. Repeat singular
+calls for inline definitions so schema and context inference cascade through
+the chain. Use plural methods when a cohesive batch is already typed. All ten
+methods accumulate and reject duplicate ids; none overwrites an earlier entry.
+Register the sandbox before `.tool(...)` or `.tools(...)` so `ctx.sandbox` exposes precisely its
 declared file, exec, and spawn operations. Auto-detection does not guarantee an
 executor; narrow dynamic sessions with the public capability guards.
 Governance is optional and should be added only when the app needs policy-driven exposure, execution decisions, approvals, audits, or an external policy engine.
@@ -61,17 +70,17 @@ Application code runs through sessions:
 
 ```ts
 const session = await harness.getSession('tenant-a:user-42')
-const output = await session.agents.assistant.prompt(input)
+const output = await session.agents.assistant.run(input)
 
 for await (const event of session.workflows.review.stream(input)) {
-  if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'run.finished') console.log(event.output)
 }
 ```
 
 Sessions provide `agents`, `workflows`, `memory`, `history`, `clearHistory`,
-`replaceHistory`, `release`, and `close`. Call `release()` when an idle
+`replaceHistory`, `release`, and `destroy`. Call `release()` when an idle
 request is done: it releases live sandbox/MCP resources while retaining
-`HarnessStorage`-backed history and runs. `close()` is the destructive operation
+`HarnessStorage`-backed history and runs. `destroy()` is the destructive operation
 that deletes the session and its persisted Harness data.
 
 Use stable, tenant-safe session ids. One session has one active run at a time; use separate session ids for parallel user threads.
@@ -163,7 +172,7 @@ defineHarness({ name: 'research-service' })
   .sandbox(applicationSandbox)
   .memory(persistentMemory)
   .workspace(distributedWorkspace)
-  .requires(['sandbox.fs', 'sandbox.exec', 'memory.persistent', 'storage.multi_instance', 'workspace.persistent'])
+  .requires(['sandbox.fs', 'sandbox.text_search', 'memory.persistent', 'storage.multi_instance', 'workspace.persistent'])
   .models(...)
   .agents(...)
   .build()
@@ -173,6 +182,12 @@ defineHarness({ name: 'research-service' })
 fast when a required sandbox, memory, storage, or workspace capability is
 missing. `HarnessStorage` is the Harness persistence port; it is not PURISTA's
 general-purpose `StateStore`.
+
+Built-in `grep` adds `sandbox.text_search` implicitly. Both default sandboxes
+provide it, so local use needs no extra configuration. A custom adapter must
+implement the bounded `searchText(...)` contract where its files live or the
+Harness fails at `.build()`; command execution is neither required nor used as
+a fallback.
 
 `applicationSandbox` is chosen at the composition root for the deployment's
 trust and recovery requirements. The process-local Bash emulator and local
@@ -186,9 +201,9 @@ Harness stream methods return typed `RunEvent` values:
 
 ```ts
 for await (const event of session.agents.triage.stream(input)) {
-  if (event.type === 'tool.started') console.log(event.toolId)
-  if (event.type === 'model.delta') process.stdout.write(event.delta)
-  if (event.type === 'model.object.partial') renderDraft(event.partial)
+	if (event.type === 'tool.started') console.log(event.toolId)
+	if (event.type === 'model.delta') process.stdout.write(event.delta)
+	if (event.type === 'model.object.partial') renderDraft(event.partial)
 }
 ```
 
@@ -214,7 +229,7 @@ if (shutdown.errors.length) logger.error('Harness shutdown errors.', { errors: s
 ```
 
 Provider clients, MCP runners, Harness storage, and sandboxes may own resources that need shutdown.
-Use `session.close()` only when the caller deliberately deletes the conversation
+Use `session.destroy()` only when the caller deliberately deletes the conversation
 and its persisted runs/events.
 # Static module composition
 

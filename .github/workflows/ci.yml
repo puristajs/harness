@@ -32,6 +32,9 @@ jobs:
       - name: Architecture
         run: npm run verify:architecture
 
+      - name: Standard Schema boundary
+        run: npm run verify:standard-schema
+
       - name: Lint
         run: npm run lint
 
@@ -102,6 +105,9 @@ jobs:
 
       - name: Architecture
         run: npm run verify:architecture
+
+      - name: Standard Schema boundary
+        run: npm run verify:standard-schema
 
       - name: Start NATS JetStream
         run: docker run --detach --rm --name purista-memory-nats --publish 4222:4222 --publish 8222:8222 nats:2.12.15-alpine -js -m 8222

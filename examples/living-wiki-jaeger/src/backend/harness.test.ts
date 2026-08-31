@@ -61,24 +61,24 @@ describe('living wiki harness workflows', () => {
     try {
       const session = await harness.getSession('test-session')
 
-      await expect((session.workflows['ingest_source'] as any).prompt({ sourceSlug: 'jaeger' })).resolves.toMatchObject({
+      await expect((session.workflows['ingest_source'] as any).run({ sourceSlug: 'jaeger' })).resolves.toMatchObject({
         updatedPages: expect.arrayContaining(['jaeger']),
         extractedConcepts: expect.arrayContaining(['jaeger'])
       })
-      await expect((session.workflows['ask_wiki'] as any).prompt({ question: 'What stores traces?' })).resolves.toMatchObject({
+      await expect((session.workflows['ask_wiki'] as any).run({ question: 'What stores traces?' })).resolves.toMatchObject({
         citedPages: expect.arrayContaining(['jaeger'])
       })
-      await expect((session.workflows['lint_wiki'] as any).prompt({ scope: 'all' })).resolves.toMatchObject({
+      await expect((session.workflows['lint_wiki'] as any).run({ scope: 'all' })).resolves.toMatchObject({
         panelSpec: expect.any(Object)
       })
-      await expect((session.workflows['reconcile_contradiction'] as any).prompt({
+      await expect((session.workflows['reconcile_contradiction'] as any).run({
         leftRef: 'jaeger',
         rightRef: 'index',
         conflict: 'Trace backend wording differs.'
       })).resolves.toMatchObject({
         changedPages: expect.any(Array)
       })
-      await expect((session.workflows['generate_research_brief'] as any).prompt({
+      await expect((session.workflows['generate_research_brief'] as any).run({
         pageSlugs: ['jaeger'],
         goal: 'Explain tracing.'
       })).resolves.toMatchObject({
@@ -92,7 +92,7 @@ describe('living wiki harness workflows', () => {
         ])
       })
 
-      const memo = await (session.workflows['decision_memo'] as any).prompt({
+      const memo = await (session.workflows['decision_memo'] as any).run({
         proposal: 'adopt Jaeger tracing',
         question: 'Should we adopt Jaeger tracing?'
       })
@@ -106,7 +106,7 @@ describe('living wiki harness workflows', () => {
         ])
       })
 
-      const review = await (session.workflows['architecture_review'] as any).prompt({
+      const review = await (session.workflows['architecture_review'] as any).run({
         sourceSlug: 'jaeger',
         focus: 'trace observability'
       })

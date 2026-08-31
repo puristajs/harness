@@ -133,7 +133,7 @@ are idempotent and never delete outside the validated workspace roots.
 
 ## 7. Sandbox and execution policy
 
-The default sandbox is files-only. Host command execution is disabled unless
+The default sandbox provides files and bounded text search only. Host command execution is disabled unless
 `exec` is explicitly configured. Enabling it must:
 
 - restrict `cwd` to the active workspace;
@@ -183,7 +183,7 @@ both, plus:
 - wait/signal/retry recovery and signal deduplication;
 - schema inspection and explicit v2-schema rejection;
 - all traversal/symlink/cleanup guards;
-- files-only default and explicit execution policy;
+- files-and-bounded-search default and explicit execution policy;
 - idempotent close and cleanup;
 - content-free OTel snapshots.
 

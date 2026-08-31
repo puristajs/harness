@@ -28,13 +28,21 @@ type AgentExecutionRequirements = {
 }
 ```
 
-Lists are nonempty when present; IDs are nonempty; duplicate tool IDs and duplicate aliases/capabilities are rejected in caller declarations. Capability values reuse the existing core capability vocabulary. Interceptors gain optional `requirements`; no addon import or guardrail-specific field enters core. Internally compile/deduplicate combined requirements deterministically in interceptor order; models merge by alias and capability union. Conflicting requirements cannot weaken each other.
+Lists are nonempty when present; IDs are nonempty; duplicate tool IDs and duplicate aliases/capabilities are rejected in caller declarations. Capability values reuse the existing core capability vocabulary. Interceptors gain optional `requirements`. Core imports no addon; it exposes only the provider-neutral `AgentGuardrailsBinding` integration port and the default-loop `guardrails` field required by [spec 40](../../40-declarative-registration-and-guardrails-binding.md). Internally compile/deduplicate combined requirements deterministically in interceptor order; models merge by alias and capability union. Conflicting requirements cannot weaken each other.
 
 Extend the existing builder reference validation at `.build()` to validate requirements from each attached interceptor against the completed configured registry. Reuse one internal resolver for the agent's declared custom tools and enabled builtins, including `builtinTools: false` and omitted-default behavior; replace the duplicated default builtin list in the loop with canonical `BUILTIN_TOOL_NAMES`. Requirement tool IDs must be registered and agent-enabled. MCP uses configured alias IDs, not dynamically discovered server names. Model aliases must exist and declare each required capability. Reuse the model capability membership predicate; retain runtime provider validation. Models registered after `.agents()` are supported. Builder/module helper/direct registration paths all reach the same validation.
 
 Build examines declarations only. It opens no session, invokes no model/detector/action, starts no MCP process, and performs no sandbox operation. Runtime `prepareStep`, permissions/governance and adapter capability filtering may narrow tool availability further; build does not prove a tool will be offered or executable on a particular turn. Requirements never enable a tool, add a model, invoke approval, or override restrictions.
 
-`Guardrails.attach` still preserves the exact agent definition's schema and callback inference, appends its interceptor after existing ones, and rejects custom-handler agents. It is a decorator, not the complete registry verification point. Its interceptor requirements are derived from only configured input/output/tool_input/tool_output actions. Retrieval dependencies are excluded. The existing interceptor() remains private; do not create a new public method. Manually authored core interceptors with requirements use the same build validator. Applications must finish `.build()` before accepting requests.
+The `Guardrails` facade implements Core's opaque-symbol
+`AgentGuardrailsBinding`. An agent declares `guardrails: rails`; registration
+resolves the binding once, appends its interceptor after existing interceptors,
+and rejects custom-handler agents. Its interceptor requirements are derived
+from only configured input/output/tool_input/tool_output actions. Retrieval
+dependencies are excluded. The interceptor constructor remains private and no
+public decorator or interceptor factory is added. Manually authored core
+interceptors with requirements use the same build validator. Applications must
+finish `.build()` before accepting requests.
 
 The existing public `filterRetrievedChunks(chunks, context?)` retains its signature and checks the declared object-model dependencies for its retrieval actions against execution-context handles before any retrieval callback; missing/noncallable handles fail configuration validation. It cannot prove adapter capability or reachability beyond the supplied callable interface. There are no tool requirements for retrieval. Do not require unrelated attached-phase dependencies for retrieval and vice versa. No applyRetrieval alias is introduced.
 

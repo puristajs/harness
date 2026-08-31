@@ -23,10 +23,12 @@
 		"test:contracts": "npm run test:contracts --workspace @purista/harness",
 		"test:failure": "npm run test:failure --workspace @purista/harness",
 		"test:integration": "npm run test:integration --workspace @purista/harness && npm run test --workspace @purista/quickstart",
-		"test:types": "npm run test:types --workspace @purista/harness && npm run test:types --workspace @purista/harness-guardrails",
+		"test:types": "npm run test:types --workspace @purista/harness && npm run test:types --workspace @purista/harness-guardrails && npm run test:types --workspace @purista/harness-policy-opa",
 		"skills:sync": "node scripts/sync-ai-harness-skill.mjs",
 		"verify:architecture": "node --test scripts/package-boundaries.test.mjs scripts/check-decision-boundaries.test.mjs scripts/verify-decision-consumers.test.mjs && node scripts/verify-capability-catalog.mjs && node scripts/check-decision-boundaries.mjs",
+		"verify:standard-schema": "node scripts/check-standard-schema-boundaries.mjs",
 		"verify:sandbox-packages": "node scripts/check-sandbox-packages.mjs",
+		"verify:production-adapters": "node scripts/check-production-adapter-packages.mjs",
 		"build": "npm run build --workspaces --if-present",
 		"ci": "npm run verify:architecture && npm run lint && npm run build && npm test && npm run test:coverage && npm run test:types && npm run test:contracts && npm run test:integration && npm run test:failure"
 	},

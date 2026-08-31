@@ -28,7 +28,7 @@ Deliverables:
 
 Exit: state contract green.
 
-## Phase 3 — Sandbox port + `inMemorySandbox()` (files-only)
+## Phase 3 — Sandbox port + `inMemorySandbox()` (files and bounded search; no exec)
 
 Deliverables:
 - `packages/harness/src/ports/sandbox.ts` with `Sandbox` and `SandboxSession`.

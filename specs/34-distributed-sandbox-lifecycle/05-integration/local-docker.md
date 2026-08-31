@@ -58,7 +58,7 @@ by that evidence, not by the fact that an environment accepts Docker commands.
   `root`. Never mount this directory, the Docker socket, registry credentials,
   or the developer's home/repository into the container. The adapter owns only
   its recorded resources; it never runs global Docker prune operations.
-- Filesystem methods, `exec`, and streaming `spawn` execute inside the
+- Filesystem methods, bounded `searchText`, `exec`, and streaming `spawn` execute inside the
   container. No command runs on the host except the fixed Docker CLI transport.
   Paths are guest-absolute; `/workspace` is the retained volume and default
   command directory. The image prepares any other writable paths (for example
@@ -96,7 +96,7 @@ by that evidence, not by the fact that an environment accepts Docker commands.
 A retained volume survives container stop and Harness restart, but is not a
 committed `DurableWorkspace` checkpoint or a cross-host backup. The first
 Docker slice supplies a Sandbox only, not another workspace/storage adapter.
-It advertises `sandbox.fs`, `sandbox.exec`, `sandbox.spawn`, and
+It advertises `sandbox.fs`, `sandbox.text_search`, `sandbox.exec`, `sandbox.spawn`, and
 `sandbox.persistent_fs`; it does not advertise snapshots, hibernation, live
 process preservation, or durable-workspace recovery.
 
@@ -115,6 +115,13 @@ state. Applications needing compute-loss recovery must select a compatible
 sandbox/workspace pair. No topology branch is added to their business logic.
 
 ## Security, telemetry, and limits
+
+The prepared image also supplies an ERE-capable `grep`. The adapter validates
+`safe_regex_v1` through the public Harness validator, invokes the fixed guest
+binary with an argument array, and never interpolates model input into shell
+source. It transfers file metadata and bounded match results—not every file's
+contents—across the Docker transport. Missing search utilities fail preflight
+rather than falling back to host or Harness-process matching.
 
 Run as the configured non-root UID/GID with dropped Linux capabilities,
 `no-new-privileges`, bounded temporary storage, and

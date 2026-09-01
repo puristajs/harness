@@ -94,15 +94,21 @@ class PostgresMemoryEngine implements MemoryEngine<readonly ['memory.kv', 'memor
     if (query.createdBefore) conditions.push(`created_at < ${add(query.createdBefore)}`)
     if (query.updatedAfter) conditions.push(`updated_at >= ${add(query.updatedAfter)}`)
     if (query.updatedBefore) conditions.push(`updated_at < ${add(query.updatedBefore)}`)
-    const text = add(query.text)
-    const vector = query.vector ? add(vectorLiteral(query.vector)) : undefined
-    const score = mode === 'text'
-      ? `ts_rank_cd(to_tsvector('simple', coalesce(index_text, '')), websearch_to_tsquery('simple', ${text}))`
-      : mode === 'vector'
-        ? `(1 - (vector <=> ${vector}::vector))`
-        : `(coalesce(ts_rank_cd(to_tsvector('simple', coalesce(index_text, '')), websearch_to_tsquery('simple', ${text})), 0) + (1 - (vector <=> ${vector}::vector)))`
-    if (mode === 'text') conditions.push(`to_tsvector('simple', coalesce(index_text, '')) @@ websearch_to_tsquery('simple', ${text})`)
-    if (mode !== 'text') conditions.push('vector is not null')
+    let score: string
+    if (mode === 'text') {
+      const text = add(query.text)
+      score = `ts_rank_cd(to_tsvector('simple', coalesce(index_text, '')), websearch_to_tsquery('simple', ${text}))`
+      conditions.push(`to_tsvector('simple', coalesce(index_text, '')) @@ websearch_to_tsquery('simple', ${text})`)
+    } else {
+      const vector = add(vectorLiteral(query.vector!))
+      conditions.push('vector is not null')
+      if (mode === 'vector') {
+        score = `(1 - (vector <=> ${vector}::vector))`
+      } else {
+        const text = add(query.text)
+        score = `(coalesce(ts_rank_cd(to_tsvector('simple', coalesce(index_text, '')), websearch_to_tsquery('simple', ${text})), 0) + (1 - (vector <=> ${vector}::vector)))`
+      }
+    }
     const limit = add(query.limit ?? 20)
     const result = await this.query(`select *, ${score} as memory_score from purista_harness_memory_records where ${conditions.join(' and ')} order by memory_score desc, key asc limit ${limit}`, params)
     return result.map((value) => ({ record: row(value), score: Number(value['memory_score']) }))

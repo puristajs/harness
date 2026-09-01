@@ -373,7 +373,25 @@ function textTerms(text: string): string {
 }
 
 function decodeSearch(raw: unknown, withScores: boolean): { readonly total: number; readonly records: readonly MemorySearchResult[] } {
-  if (!Array.isArray(raw) || raw.length === 0) throw config('Redis returned an invalid search response.', 'memory.engine', 'redis_protocol_unexpected')
+  if (Array.isArray(raw)) return decodeSearchResp2(raw, withScores)
+  const totalRaw = field(raw, 'total_results') ?? field(raw, 'total')
+  const resultsRaw = field(raw, 'results') ?? field(raw, 'documents')
+  const results = mapLikeValues(resultsRaw)
+  if (totalRaw === undefined || results === undefined) throw config('Redis returned an invalid search response.', 'memory.engine', 'redis_protocol_unexpected')
+  const total = Number(totalRaw)
+  if (!Number.isSafeInteger(total) || total < 0) throw config('Redis returned an invalid search result count.', 'memory.engine', 'redis_protocol_unexpected')
+  const records: MemorySearchResult[] = []
+  for (const result of results) {
+    const recordRaw = searchResultField(result, 'record')
+    if (recordRaw === undefined) throw config('Redis Search result lacks the canonical record field.', 'memory.engine', 'redis_protocol_unexpected')
+    const score = withScores ? number(field(result, 'score')) : number(searchResultField(result, 'memory_score'))
+    records.push(Object.freeze({ record: parseRecord(recordRaw), ...(score === undefined ? {} : { score }) }))
+  }
+  return Object.freeze({ total, records: Object.freeze(records) })
+}
+
+function decodeSearchResp2(raw: readonly unknown[], withScores: boolean): { readonly total: number; readonly records: readonly MemorySearchResult[] } {
+  if (raw.length === 0) throw config('Redis returned an invalid search response.', 'memory.engine', 'redis_protocol_unexpected')
   const total = Number(raw[0])
   if (!Number.isSafeInteger(total) || total < 0) throw config('Redis returned an invalid search result count.', 'memory.engine', 'redis_protocol_unexpected')
   const records: MemorySearchResult[] = []
@@ -390,12 +408,33 @@ function decodeSearch(raw: unknown, withScores: boolean): { readonly total: numb
   return Object.freeze({ total, records: Object.freeze(records) })
 }
 
+function searchResultField(result: unknown, name: string): unknown {
+  const direct = field(result, name)
+  if (direct !== undefined) return direct
+  for (const container of ['extra_attributes', 'extraAttributes', 'values', 'value']) {
+    const nested = field(field(result, container), name)
+    if (nested !== undefined) return nested
+  }
+  return undefined
+}
+
 function field(fields: unknown, name: string): unknown {
+  if (fields instanceof Map) {
+    for (const [key, value] of fields) if (asString(key) === name) return value
+    return undefined
+  }
   if (Array.isArray(fields)) {
     for (let index = 0; index < fields.length; index += 2) if (asString(fields[index]) === name) return fields[index + 1]
     return undefined
   }
   if (fields && typeof fields === 'object') return (fields as Record<string, unknown>)[name]
+  return undefined
+}
+
+function mapLikeValues(value: unknown): readonly unknown[] | undefined {
+  if (Array.isArray(value)) return value
+  if (value instanceof Map) return [...value.values()]
+  if (value && typeof value === 'object' && !ArrayBuffer.isView(value)) return Object.values(value)
   return undefined
 }
 

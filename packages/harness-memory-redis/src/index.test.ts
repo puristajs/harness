@@ -66,6 +66,15 @@ describe('redisMemoryEngine', () => {
     expect(vectorCommand?.some((value) => Buffer.isBuffer(value))).toBe(true)
   })
 
+  it('decodes default RESP3 Search replies from the official Redis client', async () => {
+    const client = new Resp3FakeRedisClient()
+    const engine = redisMemoryEngine({ client, vector: { dimensions: 3 } })
+    await engine.put(scope, record({ vector: [0.1, 0.2, 0.3], indexDescriptor: descriptor(3), indexText: 'redis search' }), context())
+
+    await expect(engine.searchText?.(scope, { text: 'redis', limit: 1 }, context())).resolves.toMatchObject([{ record: { key: 'entry' } }])
+    await expect(engine.searchVector?.(scope, { text: 'redis', vector: [0.1, 0.2, 0.3], limit: 1 }, context())).resolves.toMatchObject([{ record: { key: 'entry' } }])
+  })
+
   it('fails closed for invalid connection ownership and never closes an injected client', async () => {
     expect(() => redisMemoryEngine({})).toThrow(HarnessConfigError)
     expect(() => redisMemoryEngine({ url: 'redis://localhost:6379', client: new FakeRedisClient() })).toThrow(HarnessConfigError)
@@ -185,6 +194,23 @@ class FakeRedisClient implements RedisMemoryClient {
       response.push(withScores ? ['record', hash.get('record')!] : ['record', hash.get('record')!, 'memory_score', '0.25'])
     }
     return response
+  }
+}
+
+class Resp3FakeRedisClient extends FakeRedisClient {
+  public override async sendCommand(arguments_: readonly (string | Buffer)[]): Promise<unknown> {
+    const raw = await super.sendCommand(arguments_)
+    if (asString(arguments_[0]).toUpperCase() !== 'FT.SEARCH' || !Array.isArray(raw)) return raw
+    const withScores = arguments_.some((value) => asString(value) === 'WITHSCORES')
+    const results: Record<string, unknown>[] = []
+    let index = 1
+    while (index < raw.length) {
+      const id = raw[index++]
+      const score = withScores ? raw[index++] : undefined
+      const fields = raw[index++] as readonly unknown[]
+      results.push({ id, ...(score === undefined ? {} : { score }), extra_attributes: Object.fromEntries(Array.from({ length: fields.length / 2 }, (_, item) => [asString(fields[item * 2] as string | Buffer), fields[item * 2 + 1]])) })
+    }
+    return { total_results: raw[0], results }
   }
 }
 

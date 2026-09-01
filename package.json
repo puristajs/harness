@@ -31,7 +31,7 @@
 		"verify:sandbox-packages": "node scripts/check-sandbox-packages.mjs",
 		"verify:production-adapters": "node scripts/check-production-adapter-packages.mjs",
 		"build": "npm run build --workspaces --if-present",
-		"ci": "npm run verify:architecture && npm run verify:standard-schema && npm run verify:release-metadata && npm run lint && npm run build && npm run verify:sandbox-packages && npm run verify:production-adapters && npm test && npm run test:coverage && npm run test:types && npm run test:contracts && npm run test:integration && npm run test:failure"
+		"ci": "npm run verify:architecture && npm run verify:standard-schema && npm run verify:release-metadata && npm run build && npm run lint && npm run verify:sandbox-packages && npm run verify:production-adapters && npm test && npm run test:coverage && npm run test:types && npm run test:contracts && npm run test:integration && npm run test:failure"
 	},
 	"allowScripts": {
 		"@google/genai@2.20.0": false,

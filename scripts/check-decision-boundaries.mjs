@@ -6,7 +6,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { verifyPublicHarnessImports } from './package-boundaries.mjs'
 import { filesUnder, scanRemovedSymbols } from './verify-decision-consumers.mjs'
 
-const defaultRoot = fileURLToPath(new URL('../../', import.meta.url))
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+const workspaceRoot = fileURLToPath(new URL('../../', import.meta.url))
+const defaultRoot = existsSync(join(workspaceRoot, 'ai-harness')) ? workspaceRoot : repositoryRoot
+const harnessPrefix = 'ai-harness/'
 const core = 'ai-harness/packages/harness/src/'
 const addon = 'ai-harness/packages/harness-guardrails/src/'
 const roots = [
@@ -57,6 +60,17 @@ const retiredGuardrailArtifacts = new Set([
 ])
 const guardrailNarrativeExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx', '.js', '.mjs', '.cjs', '.mts', '.cts'])
 
+function boundaryLayout(root) {
+  const workspace = existsSync(join(root, 'ai-harness'))
+  const local = path => path.startsWith(harnessPrefix)
+  return {
+    roots: workspace ? roots : roots.filter(local).map(path => path.slice(harnessPrefix.length)),
+    negativeFixtureFiles: workspace ? negativeFixtureFiles : negativeFixtureFiles.map(path => path.slice(harnessPrefix.length)),
+    absolute: path => workspace || !local(path) ? join(root, path) : join(root, path.slice(harnessPrefix.length)),
+    virtual: path => (workspace ? relative(root, path) : harnessPrefix + relative(root, path)).replaceAll('\\', '/'),
+  }
+}
+
 /**
  * Enforce the released guardrail authoring cut without treating unrelated YAML
  * features as guardrail configuration. This is deliberately a small extension
@@ -64,10 +78,11 @@ const guardrailNarrativeExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.t
  * test/type suites.
  */
 export async function verifyGuardrailCleanBreak(ts, root) {
+  const layout = boundaryLayout(root)
   const findings = []
   const report = (path, line, rule, symbol) => findings.push({ path, line, rule, symbol })
-  const packagePath = join(root, 'ai-harness/packages/harness-guardrails/package.json')
-  const lockPath = join(root, 'ai-harness/package-lock.json')
+  const packagePath = layout.absolute('ai-harness/packages/harness-guardrails/package.json')
+  const lockPath = layout.absolute('ai-harness/package-lock.json')
   if (existsSync(packagePath)) {
     const pkg = JSON.parse(await readFile(packagePath, 'utf8'))
     for (const group of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
@@ -80,10 +95,10 @@ export async function verifyGuardrailCleanBreak(ts, root) {
     for (const name of Object.keys(dependencies)) if (name === 'yaml' || name === 'js-yaml') report('ai-harness/package-lock.json', 1, 'retired-guardrail-lockfile-dependency', name)
   }
   for (const configuredRoot of guardrailRoots) {
-    const absolute = join(root, configuredRoot)
+    const absolute = layout.absolute(configuredRoot)
     if (!existsSync(absolute)) continue
     for (const path of await filesUnder(absolute)) {
-      const localPath = relative(root, path).replaceAll('\\', '/')
+      const localPath = layout.virtual(path).replaceAll('\\', '/')
       const basename = localPath.slice(localPath.lastIndexOf('/') + 1)
       if (retiredGuardrailArtifacts.has(basename)) report(localPath, 1, 'retired-guardrail-artifact', basename)
       const extension = extname(path)
@@ -102,7 +117,7 @@ export async function verifyGuardrailCleanBreak(ts, root) {
       visit(source)
     }
   }
-  const sourcePath = join(root, 'ai-harness/packages/harness/src/harness/defineHarness.ts')
+  const sourcePath = layout.absolute('ai-harness/packages/harness/src/harness/defineHarness.ts')
   if (existsSync(sourcePath)) {
     const source = await readFile(sourcePath, 'utf8')
     if (source.includes('ToolDefinitionHelpers') || source.includes('RegisteredTsToolDefinition')) {
@@ -189,25 +204,26 @@ async function exportedNames(ts, path, visited = new Set()) {
 
 /** Check module presence and public re-export continuity without compiling or cloning the API inventory. */
 export async function verifyDecisionModules(ts, root) {
+  const layout = boundaryLayout(root)
   const findings = []
   const modules = [
     ...['schemas', 'types', 'identity', 'evidence', 'execution', 'index', 'decisions.test'].map(name => core + `decisions/${name}.ts`),
     core + 'governance/index.ts', core + 'agents/tool-execution.ts', core + 'index.ts',
   ]
-  for (const path of modules) if (!existsSync(join(root, path))) findings.push({ path, line: 1, rule: 'missing-module', symbol: path })
+  for (const path of modules) if (!existsSync(layout.absolute(path))) findings.push({ path, line: 1, rule: 'missing-module', symbol: path })
   const entry = core + 'index.ts'
-  const publicNames = await exportedNames(ts, join(root, entry))
-  const decisionNames = await exportedNames(ts, join(root, core + 'decisions/index.ts'))
+  const publicNames = await exportedNames(ts, layout.absolute(entry))
+  const decisionNames = await exportedNames(ts, layout.absolute(core + 'decisions/index.ts'))
   for (const name of new Set(['createDecisionEvidence', 'runDecisionOperation', 'isJsonValue', 'DecisionBlockedError', 'DecisionEvaluationError', ...decisionNames])) {
     if (!publicNames.has(name)) findings.push({ path: entry, line: 1, rule: 'missing-export', symbol: name })
   }
   for (const module of privateModules) {
-    for (const name of await exportedNames(ts, join(root, core, module))) {
+    for (const name of await exportedNames(ts, layout.absolute(core + module))) {
       if (publicNames.has(name)) findings.push({ path: entry, line: 1, rule: 'private-export', symbol: name })
     }
   }
-  if (existsSync(join(root, entry))) {
-    const source = ts.createSourceFile(entry, await readFile(join(root, entry), 'utf8'), ts.ScriptTarget.Latest, true)
+  if (existsSync(layout.absolute(entry))) {
+    const source = ts.createSourceFile(entry, await readFile(layout.absolute(entry), 'utf8'), ts.ScriptTarget.Latest, true)
     for (const statement of source.statements) {
       if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) continue
       if (!privateModules.some(module => statement.moduleSpecifier.text === './' + module.replace(/\.ts$/, '.js'))) continue
@@ -221,14 +237,15 @@ export async function verifyDecisionModules(ts, root) {
 
 /** Run only static gates. Full consumer/build/runtime checks remain separate mandatory acceptance gates. */
 export async function checkDecisionBoundaries(root = defaultRoot) {
+  const layout = boundaryLayout(root)
   const ts = createRequire(new URL('../package.json', import.meta.url))('typescript')
-  const removed = await scanRemovedSymbols(ts, root, { roots, documentation: true, negativeFixtureFiles })
-  const findings = removed.map(item => ({ ...item, path: relative(root, item.path), rule: 'removed-api' }))
-  const files = new Set((await Promise.all(roots.map(path => filesUnder(join(root, path))))).flat())
+  const removed = await scanRemovedSymbols(ts, root, { roots: layout.roots, documentation: true, negativeFixtureFiles: layout.negativeFixtureFiles })
+  const findings = removed.map(item => ({ ...item, path: layout.virtual(item.path), rule: 'removed-api' }))
+  const files = new Set((await Promise.all(layout.roots.map(path => filesUnder(join(root, path))))).flat())
   for (const path of files) {
     if (!['.ts', '.tsx', '.js', '.mjs', '.cjs', '.mts', '.cts'].includes(extname(path))) continue
     const content = await readFile(path, 'utf8')
-    const localPath = relative(root, path)
+    const localPath = layout.virtual(path)
     findings.push(...checkDecisionSource(ts, localPath, content))
     findings.push(...verifyPublicHarnessImports(ts, path, content).map(item => ({ ...item, path: localPath })))
   }

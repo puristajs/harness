@@ -53,7 +53,7 @@ jobs:
       - name: Install
         run: npm ci
       - name: Typecheck and unit tests
-        run: npm run build --workspace @purista/harness-guardrails && npm run typecheck --workspace @purista/harness-guardrails-native-privacy && npm run test --workspace @purista/harness-guardrails-native-privacy && npm run typecheck --workspace @purista/harness-guardrails-local-ner && npm run test --workspace @purista/harness-guardrails-local-ner
+        run: npm run build --workspace @purista/harness && npm run build --workspace @purista/harness-guardrails && npm run typecheck --workspace @purista/harness-guardrails-native-privacy && npm run test --workspace @purista/harness-guardrails-native-privacy && npm run typecheck --workspace @purista/harness-guardrails-local-ner && npm run test --workspace @purista/harness-guardrails-local-ner
       - name: Build native artifact
         run: npm run build --workspace @purista/harness-guardrails-native-privacy
       - name: Node smoke test
@@ -89,8 +89,8 @@ jobs:
           scope: '@purista'
       - name: Install
         run: npm ci
-      - name: Build TypeScript loader
-        run: npm run build:ts --workspace @purista/harness-guardrails-native-privacy
+      - name: Build TypeScript prerequisites and loader
+        run: npm run build --workspace @purista/harness && npm run build --workspace @purista/harness-guardrails && npm run build:ts --workspace @purista/harness-guardrails-native-privacy
       - name: Download prebuilds
         uses: actions/download-artifact@v8
         with:

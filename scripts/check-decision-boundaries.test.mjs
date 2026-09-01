@@ -90,12 +90,13 @@ async function put(relative, content = '', workspace = root) {
   await writeFile(file, content)
 }
 
-async function decisionModules(workspace) {
-  for (const name of ['schemas', 'types', 'identity', 'evidence', 'execution', 'index', 'decisions.test']) await put(core + `decisions/${name}.ts`, '', workspace)
-  await put(core + 'governance/index.ts', '', workspace)
-  await put(core + 'agents/tool-execution.ts', '', workspace)
-  await put(core + 'decisions/index.ts', "export { createDecisionEvidence } from './evidence.js'; export { runDecisionOperation } from './execution.js'; export type { DecisionEvidence } from './types.js'", workspace)
-  await put(core + 'index.ts', "export { createDecisionEvidence, runDecisionOperation } from './decisions/index.js'; export type { DecisionEvidence } from './decisions/index.js'; export { isJsonValue } from './models/json.js'; export { DecisionBlockedError, DecisionEvaluationError } from './errors/index.js'", workspace)
+async function decisionModules(workspace, prefix = 'ai-harness/') {
+  const source = prefix + 'packages/harness/src/'
+  for (const name of ['schemas', 'types', 'identity', 'evidence', 'execution', 'index', 'decisions.test']) await put(source + `decisions/${name}.ts`, '', workspace)
+  await put(source + 'governance/index.ts', '', workspace)
+  await put(source + 'agents/tool-execution.ts', '', workspace)
+  await put(source + 'decisions/index.ts', "export { createDecisionEvidence } from './evidence.js'; export { runDecisionOperation } from './execution.js'; export type { DecisionEvidence } from './types.js'", workspace)
+  await put(source + 'index.ts', "export { createDecisionEvidence, runDecisionOperation } from './decisions/index.js'; export type { DecisionEvidence } from './decisions/index.js'; export { isJsonValue } from './models/json.js'; export { DecisionBlockedError, DecisionEvaluationError } from './errors/index.js'", workspace)
 }
 
 test('required module and public re-export checks detect missing owners, missing exports and leaked private helpers', async () => {
@@ -135,4 +136,16 @@ test('cleanup excludes absent or malformed Voyage but requires and scans in-scop
     await assert.rejects(checkDecisionBoundaries(workspace), error => error.message.includes(`Missing required consumer source directory: ${join(workspace, required)}`))
     await mkdir(join(workspace, required), { recursive: true })
   }
+})
+
+test('standalone repository checkout scans Harness roots without sibling repositories', async () => {
+  const repository = join(root, 'standalone')
+  await decisionModules(repository, '')
+  for (const directory of ['packages/harness-guardrails/src', 'examples', 'docs', 'skills']) {
+    await mkdir(join(repository, directory), { recursive: true })
+  }
+  await put('README.md', '', repository)
+  assert.deepEqual(await checkDecisionBoundaries(repository), [])
+  await put('packages/harness-guardrails/src/legacy.ts', 'const onPermission = true', repository)
+  assert.ok((await checkDecisionBoundaries(repository)).some(item => item.path === 'ai-harness/packages/harness-guardrails/src/legacy.ts' && item.rule === 'removed-api'))
 })

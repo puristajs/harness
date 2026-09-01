@@ -13,6 +13,22 @@ addon packages named `@purista/harness-*`.
 ## Core Model
 `@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, Harness storage, memory, sandboxing, logging, telemetry, and streaming behind one session API.
 
+## Response contract redesign gate
+
+The shipped API returns validated final output from `run(...)` and the broad
+internal `RunEvent` union from `stream(...)`. Treat that as implementation
+evidence during the PURISTA v4 integration review, not as permission to publish
+raw diagnostic events as a stable distributed or HTTP contract.
+
+The proposed target keeps one explicit final output schema per agent/workflow.
+Consumers choose `run` or a portable `stream`; definitions declare whether
+`none`, `text-delta`, or `object-snapshot` output updates exist. Provider model
+streaming remains a producer/runtime capability and is not forced by the
+consumer. The portable terminal event carries the same validated output as
+`run`. Tool payloads, model messages, governance evidence, and other detailed
+events stay on a separately named diagnostic observation surface. Do not
+document or implement this proposal as shipped until its API is approved.
+
 Keep these layers separate:
 - configuration: `defineHarness()` registers adapters, defaults, models, tools, skills, agents, and workflows
 - execution: `harness.getSession(id)` returns typed `session.agents.*` and `session.workflows.*`

@@ -15,10 +15,20 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "package.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "license": "Apache-2.0",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-sandbox-kubernetes"
+  },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
   "publishConfig": {
     "access": "public"
   },
@@ -32,7 +42,7 @@
     "test:live": "vitest run test-live"
   },
   "dependencies": {
-    "@kubernetes/client-node": "^1.4.0",
+    "@kubernetes/client-node": "^2.0.0",
     "@purista/harness": "^3.0.0",
     "@types/ws": "^8.18.1"
   },

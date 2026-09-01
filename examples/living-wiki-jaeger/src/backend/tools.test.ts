@@ -28,6 +28,7 @@ async function createRegisteredLivingWikiTools() {
 function toolContext(): ToolHandlerContext {
   return {
     signal: new AbortController().signal,
+    metadata: {},
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

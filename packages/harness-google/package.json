@@ -15,7 +15,8 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "package.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "license": "Apache-2.0",
   "sideEffects": false,
@@ -39,7 +40,7 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@google/genai": "^1.22.0"
+    "@google/genai": "^2.20.0"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2",

@@ -20,6 +20,15 @@
   ],
   "license": "Apache-2.0",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-memory-redis"
+  },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
   "publishConfig": {
     "access": "public"
   },

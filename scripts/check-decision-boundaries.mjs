@@ -55,6 +55,7 @@ const retiredGuardrailArtifacts = new Set([
   'config.ts', 'config.yaml', 'config.yml', 'guardrails.yaml', 'guardrails.yml',
   'guardrails.schema.json', 'guardrails-reference.md',
 ])
+const guardrailNarrativeExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx', '.js', '.mjs', '.cjs', '.mts', '.cts'])
 
 /**
  * Enforce the released guardrail authoring cut without treating unrelated YAML
@@ -86,6 +87,7 @@ export async function verifyGuardrailCleanBreak(ts, root) {
       const basename = localPath.slice(localPath.lastIndexOf('/') + 1)
       if (retiredGuardrailArtifacts.has(basename)) report(localPath, 1, 'retired-guardrail-artifact', basename)
       const extension = extname(path)
+      if (!guardrailNarrativeExtensions.has(extension)) continue
       const content = await readFile(path, 'utf8')
       const retiredNarrative = /(?:configuration files?|policy files?|guardrails\.ya?ml|\byaml\b)/i.exec(content)
       if (retiredNarrative) report(localPath, content.slice(0, retiredNarrative.index).split('\n').length, 'retired-guardrail-narrative', retiredNarrative[0])

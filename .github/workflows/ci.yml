@@ -2,9 +2,6 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-      - 'codex/**'
   pull_request:
 
 permissions:
@@ -13,58 +10,26 @@ permissions:
 jobs:
   lint-build-test:
     name: Lint, build, test
-    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: npm ci --cache .sandbox-verification/npm-cache
 
-      - name: Architecture
-        run: npm run verify:architecture
-
-      - name: Standard Schema boundary
-        run: npm run verify:standard-schema
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Build
-        run: npm run build
-
-      - name: Test
-        run: npm test
-
-      - name: Coverage
-        run: npm run test:coverage
-
-      - name: Type tests
-        run: npm run test:types
-
-      - name: Guardrail composition preflight
-        run: npm test --workspace @purista/guardrails-example
-
-      - name: Contracts
-        run: npm run test:contracts
-
-      - name: Integration
-        run: npm run test:integration
-
-      - name: Failure tests
-        run: npm run test:failure
+      - name: Release gates
+        run: npm run ci
 
   memory-live:
     name: Live memory engines
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -92,22 +57,25 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: npm ci --cache .sandbox-verification/npm-cache
 
       - name: Architecture
         run: npm run verify:architecture
 
       - name: Standard Schema boundary
         run: npm run verify:standard-schema
+
+      - name: Release metadata
+        run: npm run verify:release-metadata
 
       - name: Start NATS JetStream
         run: docker run --detach --rm --name purista-memory-nats --publish 4222:4222 --publish 8222:8222 nats:2.12.15-alpine -js -m 8222
@@ -132,6 +100,7 @@ jobs:
 
   verify-and-publish:
     name: Verify and publish
+    needs: [lint-build-test, memory-live]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'puristajs/harness'
     runs-on: ubuntu-latest
     permissions:
@@ -144,10 +113,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -155,34 +124,10 @@ jobs:
           scope: '@purista'
 
       - name: Install
-        run: npm ci
+        run: npm ci --cache .sandbox-verification/npm-cache
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Build
-        run: npm run build
-
-      - name: Test
-        run: npm test
-
-      - name: Coverage
-        run: npm run test:coverage
-
-      - name: Type tests
-        run: npm run test:types
-
-      - name: Guardrail composition preflight
-        run: npm test --workspace @purista/guardrails-example
-
-      - name: Contracts
-        run: npm run test:contracts
-
-      - name: Integration
-        run: npm run test:integration
-
-      - name: Failure tests
-        run: npm run test:failure
+      - name: Release gates
+        run: npm run ci
 
       - name: Verify package contents
         run: |

@@ -160,7 +160,11 @@ Exact `TsToolDefinition` fields:
 }
 ```
 
-`ToolHandlerContext` includes `signal`, `sandbox`, `logger`, `telemetry`, `runId`, `sessionId`, `agentId`, and `toolId`.
+`ToolHandlerContext` includes `signal`, immutable invocation `metadata`,
+`sandbox`, `logger`, `telemetry`, `metrics`, `memory`, `runId`, `sessionId`,
+`agentId`, and `toolId`. Metadata is inherited from the agent or workflow
+invocation. Keep it small and content-free; never put credentials, prompts, or
+tool values in it.
 
 Tool ids are model-facing and should be stable lowercase identifiers. The implementation validates tool ids against the harness builder rules, so use names such as `search_docs`, `read_ticket`, or `render_panel_spec`.
 

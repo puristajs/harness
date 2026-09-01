@@ -299,6 +299,7 @@ async function prepareToolBinding(
       const value = await tool.handler(
         {
           signal,
+          metadata: args.metadata ?? {},
           sandbox: args.session,
           logger: args.logger,
           telemetry: args.telemetry,

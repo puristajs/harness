@@ -29,6 +29,10 @@
     "url": "https://github.com/puristajs/harness",
     "directory": "packages/harness-guardrails-local-ner"
   },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
   "publishConfig": {
     "access": "public"
   },

@@ -78,6 +78,7 @@ test('guardrail cleanup rejects only retired file configuration surfaces', async
   await put('ai-harness/package-lock.json', JSON.stringify({ packages: { 'packages/harness-guardrails': { dependencies: { zod: '^4.0.0' } } } }), workspace)
   await rm(join(workspace, 'ai-harness/packages/harness-guardrails/src/config.ts'))
   await put('ai-harness/packages/harness-guardrails/src/index.ts', 'export const defineGuardrails = true', workspace)
+  await put('ai-harness/packages/harness-guardrails/LICENSE', 'Configuration files are covered by this license.', workspace)
   await put('ai-harness/docs/guides/guardrails.md', 'Use inline typed configuration.', workspace)
   await put('ai-harness/packages/harness/src/harness/defineHarness.ts', 'class Builder { tools(definitions: Record<string, unknown>) { return definitions } }', workspace)
   assert.deepEqual(await verifyGuardrailCleanBreak(ts, workspace), [])

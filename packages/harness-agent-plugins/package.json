@@ -16,7 +16,8 @@
     "dist/**/*.d.ts",
     "schemas/**/*.json",
     "package.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "license": "Apache-2.0",
   "sideEffects": false,

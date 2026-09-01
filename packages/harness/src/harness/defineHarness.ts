@@ -332,6 +332,8 @@ export interface ConversationHistory {
 type ToolHandlerContextBase = {
 	/** Cancellation signal for the current tool invocation. */
 	signal: AbortSignal
+	/** Immutable metadata supplied for the current agent or workflow invocation. */
+	metadata: Readonly<Record<string, JsonValue>>
 	/** Sandbox attachment for the current run. */
 	sandbox: import('../sandbox/index.js').SandboxSessionBase
 	/** Logger scoped to the invocation. */

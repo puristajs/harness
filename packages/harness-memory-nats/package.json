@@ -9,6 +9,9 @@
   "files": ["dist/**/*.js", "dist/**/*.d.ts", "package.json", "README.md", "LICENSE"],
   "license": "Apache-2.0",
   "sideEffects": false,
+  "repository": { "type": "git", "url": "https://github.com/puristajs/harness", "directory": "packages/harness-memory-nats" },
+  "bugs": { "url": "https://github.com/puristajs/harness/issues" },
+  "homepage": "https://github.com/puristajs/harness#readme",
   "publishConfig": { "access": "public" },
   "scripts": {
     "clean": "rm -rf dist",

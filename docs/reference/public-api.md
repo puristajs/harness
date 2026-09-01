@@ -399,8 +399,9 @@ parent context for the root run span and all child spans. Invalid values are
 ignored with a warning log and do not fail the run.
 
 `metadata` is JSON-serializable scalar application context exposed to workflow
-handlers and custom agent handlers. Do not put secrets, prompts, or user content
-in metadata.
+handlers, custom agent handlers, and TypeScript tool handlers. Tool handlers
+receive the immutable metadata of the invocation that requested the tool. Do
+not put secrets, prompts, or user content in metadata.
 
 ## Metrics
 

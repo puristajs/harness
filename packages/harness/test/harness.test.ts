@@ -494,6 +494,7 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
   let memoryConfigured = false
   let toolConfigured = false
   let toolSawContext = false
+  let toolMetadata: Readonly<Record<string, unknown>> | undefined
   const baseMemory = inMemoryMemoryEngine()
   const memory = {
     info: baseMemory.info,
@@ -532,6 +533,7 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
         },
         handler: async (ctx) => {
           toolSawContext = Boolean(ctx.logger && ctx.telemetry && ctx.memory.session && ctx.runId && ctx.sessionId)
+          toolMetadata = ctx.metadata
           return { ok: true }
         },
       },
@@ -554,12 +556,13 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
     .build()
 
   const s = await harness.getSession('s1')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello', { metadata: { requestScope: 'tenant-a' } })).resolves.toBe('done')
   expect(state.configured).toBe(true)
   expect(sandboxConfigured).toBe(true)
   expect(memoryConfigured).toBe(true)
   expect(toolConfigured).toBe(true)
   expect(toolSawContext).toBe(true)
+  expect(toolMetadata).toEqual({ requestScope: 'tenant-a' })
 })
 
 it('rejects malformed Harness storage synchronously', () => {

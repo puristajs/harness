@@ -29,6 +29,10 @@
     "url": "git+https://github.com/puristajs/harness.git",
     "directory": "packages/harness-guardrails"
   },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
   "publishConfig": {
     "access": "public"
   },

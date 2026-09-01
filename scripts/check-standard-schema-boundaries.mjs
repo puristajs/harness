@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const defaultRoot = fileURLToPath(new URL('../../', import.meta.url))
-const publicBoundaryOwners = [
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+const workspaceRoot = fileURLToPath(new URL('../../', import.meta.url))
+const defaultRoot = existsSync(join(workspaceRoot, 'ai-harness')) ? workspaceRoot : repositoryRoot
+export const publicBoundaryOwners = [
   { path: 'ai-harness/packages/harness/src/harness/defineHarness.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness/src/agents/index.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness/src/agents/tool-execution.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
@@ -15,6 +17,11 @@ const publicBoundaryOwners = [
   { path: 'ai-harness/packages/harness-guardrails/src/sensitive-data.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness/src/schema/schema.test.ts', rules: ['skipped-conformance'] }
 ]
+
+function resolveBoundaryOwner(root, ownerPath) {
+  if (existsSync(join(root, 'ai-harness'))) return join(root, ownerPath)
+  return join(root, ownerPath.replace(/^ai-harness\//, ''))
+}
 
 /** Returns the exact public-schema coupling patterns that the clean break forbids. */
 export function findForbiddenStandardSchemaPatterns(content) {
@@ -45,14 +52,14 @@ export function findForbiddenStandardSchemaPatterns(content) {
 export async function checkStandardSchemaBoundaries(root = defaultRoot) {
   const findings = []
   for (const owner of publicBoundaryOwners) {
-    const file = join(root, owner.path)
+    const file = resolveBoundaryOwner(root, owner.path)
     if (!existsSync(file)) {
       findings.push({ path: owner.path, line: 1, rule: 'missing-public-boundary-owner', match: owner.path })
       continue
     }
     const content = await readFile(file, 'utf8')
     for (const finding of findForbiddenStandardSchemaPatterns(content)) {
-      if (owner.rules.includes(finding.rule)) findings.push({ path: relative(root, file).replaceAll('\\', '/'), ...finding })
+      if (owner.rules.includes(finding.rule)) findings.push({ path: owner.path, ...finding })
     }
   }
   return findings.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line || left.rule.localeCompare(right.rule))

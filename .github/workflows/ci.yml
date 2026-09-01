@@ -25,6 +25,9 @@ jobs:
       - name: Install
         run: npm ci --cache .sandbox-verification/npm-cache
 
+      - name: Prepare offline verification cache
+        run: npm run prepare:offline-verification-cache
+
       - name: Release gates
         run: npm run ci
 
@@ -128,6 +131,9 @@ jobs:
 
       - name: Install
         run: npm ci --cache .sandbox-verification/npm-cache
+
+      - name: Prepare offline verification cache
+        run: npm run prepare:offline-verification-cache
 
       - name: Release gates
         run: npm run ci

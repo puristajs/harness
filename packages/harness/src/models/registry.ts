@@ -42,6 +42,12 @@ import type {
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import type { JsonValue } from './json.js'
 import { pumpStreamThroughSpan } from './stream-pump.js'
+import type {
+  ModelAdmission,
+  ModelAdmissionLease,
+  ModelAdmissionOperation,
+} from '../ports/model-admission.js'
+import { modelAdmissionKey } from '../ports/model-admission.js'
 
 export interface ModelInvokeContext {
   /** Harness instance name used for telemetry and run-event attribution. */
@@ -170,14 +176,18 @@ export type ModelHandle<A extends { capabilities: readonly ModelCapability[] } =
  */
 export function createModelRegistry<const M extends Record<string, ModelAlias>>(
   aliases: M,
-  options: { telemetry?: TelemetryShim; harnessName?: string } = {}
+  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission } = {}
 ): { readonly [K in keyof M]: ModelHandle<M[K]> } {
   return Object.fromEntries(
     Object.entries(aliases).map(([aliasKey, alias]) => [aliasKey, createHandle(aliasKey, alias, options)])
   ) as unknown as { readonly [K in keyof M]: ModelHandle<M[K]> }
 }
 
-function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?: TelemetryShim; harnessName?: string }): ModelHandle {
+function createHandle(
+  aliasKey: string,
+  alias: ModelAlias,
+  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission },
+): ModelHandle {
   return {
     text(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'text', req)
@@ -191,7 +201,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq))
+      return withModelAdmission(options.admission, alias, 'text', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq)),
+      )
     },
     textStream(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'text_stream', req)
@@ -205,7 +217,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq))
+      return withModelAdmissionStream(options.admission, alias, 'text_stream', signal, () =>
+        withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq)),
+      )
     },
     object<T extends JsonValue = JsonValue>(req: Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults'>, signal: AbortSignal, ctx?: ModelInvokeContext) {
       ensureCapabilities(aliasKey, alias, 'object', req)
@@ -221,7 +235,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq))
+      return withModelAdmission(options.admission, alias, 'object', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq)),
+      )
     },
     objectStream<T extends JsonValue = JsonValue>(req: Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults'>, signal: AbortSignal, ctx?: ModelInvokeContext) {
       ensureCapabilities(aliasKey, alias, 'object_stream', req)
@@ -237,7 +253,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq))
+      return withModelAdmissionStream(options.admission, alias, 'object_stream', signal, () =>
+        withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq)),
+      )
     },
     embed(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'embeddings', req)
@@ -250,8 +268,10 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
-        (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response)
+      return withModelAdmission(options.admission, alias, 'embeddings', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
+          (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response),
+        ),
       )
     },
     rerank(req, signal, ctx) {
@@ -266,11 +286,57 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
-        (response) => validateRerankResponse(aliasKey, alias, fullReq, response)
+      return withModelAdmission(options.admission, alias, 'rerank', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
+          (response) => validateRerankResponse(aliasKey, alias, fullReq, response),
+        ),
       )
     }
   }
+}
+
+async function withModelAdmission<T>(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+  run: () => Promise<T>,
+): Promise<T> {
+  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  try {
+    return await run()
+  } finally {
+    await lease?.release()
+  }
+}
+
+async function* withModelAdmissionStream<T>(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+  run: () => AsyncIterable<T>,
+): AsyncIterable<T> {
+  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  try {
+    yield* run()
+  } finally {
+    await lease?.release()
+  }
+}
+
+function acquireModelAdmission(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+): Promise<ModelAdmissionLease> | undefined {
+  if (!admission) return undefined
+  return admission.acquire({
+    ...modelAdmissionKey(alias.provider, alias.model, alias.credentialScope),
+    operation,
+    signal,
+  })
 }
 
 /**

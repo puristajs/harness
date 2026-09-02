@@ -59,6 +59,27 @@ export class ValidationError extends HarnessError {
   }
 }
 
+/** Provider capacity was not admitted and the caller may retry after a delay. */
+export class ModelAdmissionRejectedError extends HarnessError {
+  public readonly retryAfterMs: number
+
+  public constructor(
+    retryAfterMs: number,
+    meta: { providerId: string; model: string; credentialScope: string; operation: string },
+    cause?: unknown,
+  ) {
+    super({
+      code: 'MODEL_ADMISSION_REJECTED',
+      category: 'model',
+      retriable: true,
+      message: 'Model provider capacity is not currently available.',
+      meta: { ...meta, retryAfterMs },
+      cause,
+    })
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
 /** Tool execution denied by a configured coarse permission. */
 export class PermissionDeniedError extends HarnessError {
   public constructor(evidence: DecisionEvidence, cause?: unknown) {

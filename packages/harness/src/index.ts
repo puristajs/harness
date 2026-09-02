@@ -8,6 +8,7 @@ export {
   isHarnessError,
   HarnessConfigError,
   ValidationError,
+  ModelAdmissionRejectedError,
   PermissionDeniedError,
   PolicyDeniedError,
   DecisionBlockedError,
@@ -103,6 +104,14 @@ export type {
   ToolCallSpec,
 } from './ports/model-provider.js'
 export type { ModelHandle, ModelInvokeContext } from './models/registry.js'
+export { modelAdmissionKey } from './ports/model-admission.js'
+export type {
+  ModelAdmission,
+  ModelAdmissionKey,
+  ModelAdmissionLease,
+  ModelAdmissionOperation,
+  ModelAdmissionRequest,
+} from './ports/model-admission.js'
 
 // Shared model adapter helpers (consumed by first-party provider packages)
 export {

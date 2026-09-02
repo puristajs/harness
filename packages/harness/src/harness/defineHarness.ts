@@ -1747,6 +1747,8 @@ export type HarnessHostToolBindings<S extends BuilderState, Host = unknown> = {
 /** Infrastructure supplied to a portable Harness definition at startup. */
 export type HarnessInstanceConfig<S extends BuilderState, Host = unknown> = {
 	readonly models: HarnessRuntimeModels<S>
+	/** Optional provider-level concurrency and rate admission shared across models and agents. */
+	readonly admission?: import('../ports/model-admission.js').ModelAdmission
 	readonly logger?: Logger
 	readonly telemetry?: TelemetryOptions
 	readonly storage?: HarnessStorage
@@ -2388,6 +2390,7 @@ type BuilderStateInternal = {
 	defaults?: HarnessDefaults
 	models?: ModelsConfig
 	modelRequirements?: ModelTypesConfig
+	admission?: import('../ports/model-admission.js').ModelAdmission
 	tools?: AuthoredToolsConfig<never>
 	skills?: SkillsConfig
 	agents?: Record<string, AnyAgentDefinition>
@@ -3069,6 +3072,7 @@ class Builder<S extends BuilderState> {
 				const runtimeConfig: BuilderStateInternal = { ...definitionConfig, models, tools }
 				if (config.logger) runtimeConfig.logger = config.logger
 				if (config.telemetry) runtimeConfig.telemetry = config.telemetry
+				if (config.admission) runtimeConfig.admission = config.admission
 				if (config.storage) runtimeConfig.storage = config.storage
 				if (config.sandbox) runtimeConfig.sandbox = config.sandbox
 				if (config.sandboxBinding) runtimeConfig.sandboxBinding = config.sandboxBinding
@@ -3148,6 +3152,7 @@ class Builder<S extends BuilderState> {
 				...(this.configured.defaults?.delegation ? { delegation: this.configured.defaults.delegation } : {}),
 			},
 			models,
+			...(this.configured.admission ? { admission: this.configured.admission } : {}),
 			tools: (this.configured.tools ?? {}) as NonNullable<S['tools']>,
 			modelSchemas,
 			skills: (this.configured.skills ?? {}) as NonNullable<S['skills']>,

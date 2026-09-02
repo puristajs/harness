@@ -124,10 +124,15 @@ export function accumulateStreamToolCallDeltas(state: StreamToolCallState, delta
 export function finalizeStreamToolCalls(state: StreamToolCallState, ctx: AdapterCallContext, malformedMessage: string): ToolCallSpec[]
 export function sanitizeProviderMessage(message: string): string
 
+// Provider concurrency and rate admission
+export function modelAdmissionKey(provider: Pick<ModelProvider, 'id' | 'genAiSystem'>, model: string, credentialScope?: string): ModelAdmissionKey
+export interface ModelAdmission { acquire(request: ModelAdmissionRequest): Promise<ModelAdmissionLease> }
+
 // Errors (every class from 15-error-catalog)
 export class HarnessError extends Error { /* see 03-foundation */ }
 export class HarnessConfigError extends HarnessError {}
 export class ValidationError extends HarnessError {}
+export class ModelAdmissionRejectedError extends HarnessError {}
 export class PermissionDeniedError extends HarnessError {}
 export class PolicyDeniedError extends HarnessError {}
 export class DecisionEvaluationError extends HarnessError {}

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ModelCapabilityError } from '../errors/index.js'
 import type { ModelProvider, TextRequest, TextResponse } from '../ports/model-provider.js'
+import type { ModelAdmissionRequest } from '../ports/model-admission.js'
 import { createModelRegistry } from './registry.js'
 
 class FakeProvider implements ModelProvider {
@@ -85,5 +86,75 @@ describe('createModelRegistry', () => {
     )
 
     expect(provider.requests[0]?.defaults?.parallelToolCalls).toBe(false)
+  })
+
+  it('acquires provider admission by provider, model and credential scope', async () => {
+    const acquired: ModelAdmissionRequest[] = []
+    let releases = 0
+    const provider = new FakeProvider()
+    const registry = createModelRegistry(
+      {
+        a: {
+          provider,
+          model: 'model-x',
+          credentialScope: 'tenant-pool-a',
+          capabilities: ['text'],
+        },
+      },
+      {
+        admission: {
+          acquire: async request => {
+            acquired.push(request)
+            return { release: () => releases++ }
+          },
+        },
+      },
+    )
+
+    await registry.a.text({ messages: [{ role: 'user', content: 'hi' }] }, new AbortController().signal)
+
+    expect(acquired).toMatchObject([
+      {
+        providerId: 'fake',
+        genAiSystem: 'fake',
+        model: 'model-x',
+        credentialScope: 'tenant-pool-a',
+        operation: 'text',
+      },
+    ])
+    expect(releases).toBe(1)
+  })
+
+  it('holds streaming admission until the consumer finishes the stream', async () => {
+    let held = false
+    const provider: ModelProvider = {
+      id: 'stream-provider',
+      genAiSystem: 'test',
+      textStream: async function* () {
+        expect(held).toBe(true)
+        yield { kind: 'delta', text: 'hello' }
+        yield { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+      },
+    }
+    const registry = createModelRegistry(
+      { a: { provider, model: 'stream-model', capabilities: ['text_stream'] } },
+      {
+        admission: {
+          acquire: async () => {
+            held = true
+            return { release: () => { held = false } }
+          },
+        },
+      },
+    )
+
+    const chunks = []
+    for await (const chunk of registry.a.textStream(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      new AbortController().signal,
+    )) chunks.push(chunk)
+
+    expect(chunks).toHaveLength(2)
+    expect(held).toBe(false)
   })
 })

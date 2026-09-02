@@ -378,6 +378,8 @@ export interface ModelAlias {
   provider: ModelProvider
   model: string
   capabilities: readonly ModelCapability[]
+  /** Stable, non-secret credential pool identity used for provider admission. */
+  credentialScope?: string
   defaults?: ModelDefaults
   /** Alias-level retry behavior. Default: `true`. */
   retry?: ModelRetrySetting

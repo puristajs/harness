@@ -96,6 +96,7 @@ import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports
 import { finishReasonSchema, tokenUsageSchema, type FinishReason, type TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
+import type { ModelAdmission } from '../ports/model-admission.js'
 import { createMetrics, createTelemetryShim, telemetryErrorType, type TelemetryShim } from '../telemetry/index.js'
 import {
   ATTR_ERROR_TYPE,
@@ -175,6 +176,7 @@ type HarnessDefinition<S extends BuilderState> = {
   workspace?: DurableWorkspace
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
+  admission?: ModelAdmission
   tools: NonNullable<S['tools']>
   modelSchemas: {
     readonly agentOutputs: Readonly<Record<string, JsonValue>>
@@ -681,7 +683,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     definition.workspace,
     definition.governance,
   )
-  const modelRegistry = createModelRegistry(definition.models, { telemetry, harnessName: definition.name })
+  const modelRegistry = createModelRegistry(definition.models, {
+    telemetry,
+    harnessName: definition.name,
+    ...(definition.admission ? { admission: definition.admission } : {}),
+  })
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
 

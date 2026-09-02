@@ -29,6 +29,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'LocalDirectoryWorkspace',
   'McpAuthError',
   'McpProtocolError',
+  'ModelAdmissionRejectedError',
   'ModelCapabilityError',
   'ModelError',
   'OperationCancelledError',
@@ -117,6 +118,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'validateSessionHistoryRetention',
   'validateSandboxTextSearchRequest',
   'messageStorageBytes',
+  'modelAdmissionKey',
   'withoutObjectTool',
   'evaluationResultToFeedbackRecords',
   'withSandboxTelemetry'

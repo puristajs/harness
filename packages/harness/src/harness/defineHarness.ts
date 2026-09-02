@@ -1668,6 +1668,38 @@ export type HarnessEntryContract<D> = Readonly<{
 	updates: OutputUpdateMode
 }>
 
+/** Portable, schema-bearing reference to one agent or workflow target. */
+export type HarnessTargetContract<
+	Kind extends 'agent' | 'workflow',
+	InputSchema extends AnySchema = AnySchema,
+	OutputSchema extends AnySchema = AnySchema,
+> = Readonly<{
+	kind: Kind
+	input: InputSchema
+	output: OutputSchema
+	updates: OutputUpdateMode
+	/** Compile-time input and output types inferred from the target schemas. */
+	$infer: Readonly<{ input: InferIn<InputSchema>; output: Infer<OutputSchema> }>
+}>
+
+/** Typed target contracts that can be shared with orchestration frameworks. */
+export type HarnessTargetContracts<S extends BuilderState> = Readonly<{
+	agents: Readonly<{
+		[K in keyof NonNullable<S['agents']>]: HarnessTargetContract<
+			'agent',
+			DefinitionInputSchema<NonNullable<S['agents']>[K]>,
+			DefinitionOutputSchema<NonNullable<S['agents']>[K]>
+		>
+	}>
+	workflows: Readonly<{
+		[K in keyof NonNullable<S['workflows']>]: HarnessTargetContract<
+			'workflow',
+			DefinitionInputSchema<NonNullable<S['workflows']>[K]>,
+			DefinitionOutputSchema<NonNullable<S['workflows']>[K]>
+		>
+	}>
+}>
+
 /** Immutable, provider-free contribution catalog used by runtime adapters. */
 export interface HarnessContributionCatalog<S extends BuilderState> {
 	readonly name: string
@@ -1735,6 +1767,8 @@ export type HarnessInstanceConfig<S extends BuilderState, Host = unknown> = {
 export interface HarnessDefinition<S extends BuilderState> {
 	readonly name: string
 	readonly catalog: HarnessContributionCatalog<S>
+	/** Stable target references for address-first framework declarations. */
+	readonly contracts: HarnessTargetContracts<S>
 	getInstance<Host = unknown>(config: HarnessInstanceConfig<S, Host>): Promise<Harness<S>>
 	/** Phantom inference handle. The runtime value is always the literal `{}`. */
 	readonly $infer: InferTypes<S>
@@ -3012,11 +3046,13 @@ class Builder<S extends BuilderState> {
 
 		const name = this.options.name ?? 'agent-harness'
 		const catalog = this.createDefinitionCatalog(name, requirements)
+		const contracts = this.createTargetContracts(catalog)
 		const definitionConfig = this.configured
 		const options = this.options
 		return Object.freeze({
 			name,
 			catalog,
+			contracts,
 			$infer: Object.freeze({}) as InferTypes<S>,
 			getInstance: async <Host = unknown>(config: HarnessInstanceConfig<S, Host>) => {
 				const models = resolveRuntimeModels(requirements, config.models as Record<string, ModelRuntimeBinding>)
@@ -3156,6 +3192,22 @@ class Builder<S extends BuilderState> {
 				),
 			) as HarnessContributionCatalog<S>['workflows'],
 		}) as HarnessContributionCatalog<S>
+	}
+
+	private createTargetContracts(catalog: HarnessContributionCatalog<S>): HarnessTargetContracts<S> {
+		const targets = (kind: 'agent' | 'workflow', entries: Readonly<Record<string, HarnessEntryContract<unknown>>>) =>
+			Object.freeze(
+				Object.fromEntries(
+					Object.entries(entries).map(([id, entry]) => [
+						id,
+						Object.freeze({ kind, ...entry, $infer: Object.freeze({}) }),
+					]),
+				),
+			)
+		return Object.freeze({
+			agents: targets('agent', catalog.agents),
+			workflows: targets('workflow', catalog.workflows),
+		}) as HarnessTargetContracts<S>
 	}
 
 	private resolveMemory(models: ModelsConfig): {

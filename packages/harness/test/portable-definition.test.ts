@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import { HarnessConfigError, defineHarness, type ModelProvider } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
@@ -20,8 +20,17 @@ describe('portable Harness definitions', () => {
     expect(supportDefinition.name).toBe('portable-support')
     expect(supportDefinition.catalog.models.primary).toEqual({ capabilities: ['object'] })
     expect(supportDefinition.catalog.agents.answer.updates).toBe('none')
+		expect(supportDefinition.contracts.agents.answer).toMatchObject({
+			kind: 'agent',
+			input: supportDefinition.catalog.agents.answer.input,
+			output: supportDefinition.catalog.agents.answer.output,
+			updates: 'none',
+		})
+		expectTypeOf(supportDefinition.contracts.agents.answer.$infer.input).toEqualTypeOf<{ question: string }>()
+		expectTypeOf(supportDefinition.contracts.agents.answer.$infer.output).toEqualTypeOf<{ answer: string }>()
     expect(Object.isFrozen(supportDefinition)).toBe(true)
     expect(Object.isFrozen(supportDefinition.catalog)).toBe(true)
+		expect(Object.isFrozen(supportDefinition.contracts)).toBe(true)
   })
 
   it('instantiates the same definition with independent runtime model bindings', async () => {

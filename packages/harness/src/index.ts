@@ -485,6 +485,8 @@ export type {
   HarnessDefinition,
   HarnessDefaults,
   HarnessEntryContract,
+  HarnessTargetContract,
+  HarnessTargetContracts,
   HarnessInstanceConfig,
   HarnessHostToolBindings,
   HarnessInterrupt,

@@ -55,10 +55,12 @@ npm run test:failure
 Focused Living Wiki gates:
 
 ```bash
-npm run typecheck --workspace @purista/living-wiki-jaeger-example
-npm run test --workspace @purista/living-wiki-jaeger-example
-npm run test:ui --workspace @purista/living-wiki-jaeger-example
-npm run build --workspace @purista/living-wiki-jaeger-example
+cd examples/living-wiki-jaeger
+npm install
+npm run typecheck
+npm run test
+npm run test:ui
+npm run build
 ```
 
 ## Remaining Operational Notes

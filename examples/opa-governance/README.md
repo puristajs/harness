@@ -60,8 +60,7 @@ opa check policy/transfer.rego
 
 ## Run the application
 
-The package declares every runtime dependency and does not require building
-other workspace packages first:
+The package installs every runtime dependency from npm:
 
 ```sh
 cp .env.example .env

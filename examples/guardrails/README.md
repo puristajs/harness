@@ -4,13 +4,14 @@ This local example composes content rails and governance on one default-loop
 agent. It uses `FakeModelProvider`, an in-memory sandbox, and synthetic data;
 no credentials or network access are required.
 
-From the repository root:
+From this example directory:
 
 ```sh title="Verify and run the composition"
-npm test --workspace @purista/guardrails-example
-npm run typecheck --workspace @purista/guardrails-example
-npm run build --workspace @purista/guardrails-example
-npm start --workspace @purista/guardrails-example
+npm install
+npm test
+npm run typecheck
+npm run build
+npm start
 ```
 
 Expected output: `The [redacted] answer.`

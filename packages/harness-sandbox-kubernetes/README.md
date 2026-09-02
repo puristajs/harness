@@ -75,7 +75,7 @@ PURISTA_KUBERNETES_LIVE=1 \
 PURISTA_KUBERNETES_NAMESPACE=purista-sandboxes \
 PURISTA_KUBERNETES_SANDBOX_IMAGE=example@sha256:... \
 PURISTA_KUBERNETES_SNAPSHOT_CLASS=standard-snapshots \
-npm run test:live -w @purista/harness-sandbox-kubernetes
+npm run test:live
 ```
 
 The live test creates a Pod and PVC, commits and restores a VolumeSnapshot,

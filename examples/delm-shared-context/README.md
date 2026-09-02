@@ -52,13 +52,14 @@ contains the local incident records each worker receives:
 
 ## Run It
 
-From the repository root:
+From this example directory:
 
 ```bash
+npm install
 cp .env.example .env
 # set OPENAI_API_KEY in .env; OPENAI_MODEL defaults to gpt-5-mini
-npm run build --workspace @purista/delm-shared-context-example
-npm run start --workspace @purista/delm-shared-context-example
+npm run build
+npm run start
 ```
 
 Expected output is similar to:
@@ -130,9 +131,9 @@ src/
 ## Verification
 
 ```bash
-npm test --workspace @purista/delm-shared-context-example
-npm run typecheck --workspace @purista/delm-shared-context-example
-npm run build --workspace @purista/delm-shared-context-example
+npm test
+npm run typecheck
+npm run build
 ```
 
 ## Design Notes

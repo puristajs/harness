@@ -1,6 +1,6 @@
 # Living Wiki Jaeger Example
 
-`@purista/living-wiki-jaeger-example` is a local research workspace that shows
+`@purista/living-wiki-jaeger-example` is an example application that shows
 how to build a real application on top of the harness.
 
 It demonstrates:
@@ -43,14 +43,14 @@ Suggested prompts:
 
 ## Setup
 
-From the repository root:
+From this example directory:
 
 ```bash
 npm install
 cp .env.example .env
 ```
 
-The example reads only the repository-root `.env`.
+The example reads the `.env` file in this directory.
 
 For live OpenAI runs:
 
@@ -64,7 +64,7 @@ Automated tests use fake providers and do not call OpenAI by default.
 ## Development
 
 ```bash
-npm run dev --workspace @purista/living-wiki-jaeger-example
+npm run dev
 ```
 
 This starts both sides with hot reload:
@@ -75,11 +75,11 @@ This starts both sides with hot reload:
 Separate commands:
 
 ```bash
-npm run dev:api --workspace @purista/living-wiki-jaeger-example
-npm run dev:web --workspace @purista/living-wiki-jaeger-example
-npm run build --workspace @purista/living-wiki-jaeger-example
-npm run test --workspace @purista/living-wiki-jaeger-example
-npm run test:ui --workspace @purista/living-wiki-jaeger-example
+npm run dev:api
+npm run dev:web
+npm run build
+npm run test
+npm run test:ui
 ```
 
 ## Application Flow
@@ -189,7 +189,7 @@ LIVING_WIKI_DRAWIO_MCP_TOOL=drawio.create
 Start Jaeger locally:
 
 ```bash
-npm run jaeger --workspace @purista/living-wiki-jaeger-example
+npm run jaeger
 ```
 
 The script runs Jaeger 2.17 with OTLP ports `4317` and `4318` and UI port
@@ -224,17 +224,17 @@ Slugs must match `^[a-z0-9][a-z0-9-]{0,79}$`.
 ## Verification
 
 ```bash
-npm run typecheck --workspace @purista/living-wiki-jaeger-example
-npm run test --workspace @purista/living-wiki-jaeger-example
-npm run test:ui --workspace @purista/living-wiki-jaeger-example
-npm run build --workspace @purista/living-wiki-jaeger-example
+npm run typecheck
+npm run test
+npm run test:ui
+npm run build
 ```
 
 Manual live-provider smoke test:
 
 1. Start Jaeger.
 2. Set `OPENAI_API_KEY`.
-3. Start the app with `npm run dev --workspace @purista/living-wiki-jaeger-example`.
+3. Start the app with `npm run dev`.
 4. Ask the wiki a question.
 5. Run `architecture_review` and `wiki_audit`.
 6. Answer review questions and submit a decision.

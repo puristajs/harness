@@ -5,10 +5,11 @@ This example maps an application-owned key/value client to the Harness
 memory contract suite.
 
 ```bash
-npm run typecheck --workspace @purista/custom-memory-engine-example
-npm run test --workspace @purista/custom-memory-engine-example
-npm run build --workspace @purista/custom-memory-engine-example
-npm run start --workspace @purista/custom-memory-engine-example
+npm install
+npm run typecheck
+npm run test
+npm run build
+npm run start
 ```
 
 Expected output:

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { JsonLogger, serializeError, type ExecutionEvent } from '../../../../packages/harness/src/index.js'
+import { JsonLogger, serializeError, type ExecutionEvent } from '@purista/harness'
 import { agentIds, createLivingWikiHarness, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
 import { slugSchema } from './data.js'
 import {

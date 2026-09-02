@@ -17,13 +17,13 @@ run.
 
 ## Prerequisites
 
-- Node.js `>=20` and `<25`
+- Node.js `>=24.15.0`
 - npm
 - an OpenAI API key for live runs
 
 ## Install
 
-From the repository root:
+From the quickstart example directory:
 
 ```bash
 npm install
@@ -37,14 +37,14 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5-mini
 ```
 
-Examples read the repository-root `.env`; do not create example-local `.env`
-files.
+The quickstart reads the `.env` file in its directory.
 
 ## Run
 
 ```bash
-npm run build --workspace @purista/quickstart
-npm run start --workspace @purista/quickstart
+npm test
+npm run build
+npm start
 ```
 
 Expected output is a short answer about enterprise agent harnesses.

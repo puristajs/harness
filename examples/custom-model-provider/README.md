@@ -5,10 +5,11 @@ This example maps a small application-owned JSON generation client to
 one typed agent without a network dependency.
 
 ```bash
-npm run typecheck --workspace @purista/custom-model-provider-example
-npm run test --workspace @purista/custom-model-provider-example
-npm run build --workspace @purista/custom-model-provider-example
-npm run start --workspace @purista/custom-model-provider-example
+npm install
+npm run typecheck
+npm run test
+npm run build
+npm run start
 ```
 
 Expected output:

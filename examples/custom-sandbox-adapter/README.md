@@ -4,10 +4,11 @@ This example implements the public `Sandbox` lifecycle as a filesystem-only
 adapter, uses it from a typed tool, and runs the shared sandbox contract.
 
 ```bash
-npm run typecheck --workspace @purista/custom-sandbox-adapter-example
-npm run test --workspace @purista/custom-sandbox-adapter-example
-npm run build --workspace @purista/custom-sandbox-adapter-example
-npm run start --workspace @purista/custom-sandbox-adapter-example
+npm install
+npm run typecheck
+npm run test
+npm run build
+npm run start
 ```
 
 Expected output:

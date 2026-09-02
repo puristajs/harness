@@ -2,13 +2,23 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "rootDir": "../..",
-    "outDir": "../../dist",
-    "types": ["node", "vite/client"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": [
+      "node",
+      "vite/client"
+    ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": false
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "skills/**/*.md"],
-  "exclude": ["dist", "node_modules"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "skills/**/*.md"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }

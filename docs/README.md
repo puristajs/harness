@@ -108,7 +108,7 @@ flowchart TD
 | `examples/workflow-child-tasks` | Bounded fan-out, isolated task ownership and lookup, and in-process continuables. |
 | `examples/agent-plugins` | Review, digest-pin, and explicitly bind an installed Agent Plugins package. |
 | `examples/bank-governance` | Optional typed governance policies, exposure-aware events, approvals, shadow-ready rollout, and blocked tool calls. |
-| `examples/living-wiki-jaeger` | Full local research workspace with SSE, Jaeger, artifacts, application-owned review tasks, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
+| `examples/living-wiki-jaeger` | Full example application with SSE, Jaeger, artifacts, application-owned review tasks, Mermaid, draw.io XML, JSON panels, and Three.js graph. |
 | `examples/durable-human-review` | Minimal executable review-task pattern: CAS decision, action-digest binding, SQLite restart, idempotent signal, and final side-effect boundary. |
 | `specs/` | Approved technical specifications. Use specs for implementation detail, not first-time onboarding. |
 

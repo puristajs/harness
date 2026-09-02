@@ -34,11 +34,12 @@ reviewer authorization, decision audit, notification/outbox delivery, execution
 reconciliation, and receipts in those application services. Do not promote this
 domain state into Harness.
 
-Run the focused checks from the repository root:
+Run the focused checks from this example directory:
 
 ```sh
-npm test --workspace @purista/durable-human-review-example
-npm run typecheck --workspace @purista/durable-human-review-example
+npm install
+npm test
+npm run typecheck
 ```
 
 For a local restart demo, provide a durable `HarnessStorage` and an application

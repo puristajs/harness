@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src --exclude 'dist/**'",
-    "start": "node dist/examples/custom-memory-engine/src/index.js",
+    "start": "node dist/index.js",
     "lint": "npm run typecheck"
   },
   "dependencies": {

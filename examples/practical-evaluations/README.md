@@ -5,12 +5,13 @@ are deliberately application-shaped: the Harness runs an evaluation matrix and
 returns a bounded, content-free result, while each example owns its dataset,
 task, scorer logic, and domain report.
 
-Run them from `ai-harness`:
+Run them from this example directory:
 
 ```sh
-npm run test --workspace @purista/practical-evaluations-example
-npm run build --workspace @purista/practical-evaluations-example
-npm run start --workspace @purista/practical-evaluations-example
+npm install
+npm run test
+npm run build
+npm run start
 ```
 
 ## Recipes

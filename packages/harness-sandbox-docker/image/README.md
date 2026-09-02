@@ -131,13 +131,13 @@ and [Docker runtime controls](https://docs.docker.com/reference/cli/docker/conta
 
 ## Maintainer verification
 
-From the Harness repository, after building the image:
+From the `packages/harness-sandbox-docker` directory, after building the image:
 
 ```sh
 PURISTA_DOCKER_SANDBOX_IMAGE="$SANDBOX_IMAGE" \
-  npm run test:image --workspace @purista/harness-sandbox-docker
+  npm run test:image
 PURISTA_DOCKER_SANDBOX_IMAGE="$SANDBOX_IMAGE" \
-  npm run test:docker --workspace @purista/harness-sandbox-docker
+  npm run test:docker
 ```
 
 These opt-in checks create only uniquely named disposable resources and clean

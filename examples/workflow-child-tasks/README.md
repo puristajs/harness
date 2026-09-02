@@ -9,8 +9,9 @@ A runnable, credential-free example of three orchestration patterns:
   `{ mode: 'continuable' }`, `send(...)`, and `close()`.
 
 ```bash
-npm run test --workspace @purista/workflow-child-tasks-example
-npm run start --workspace @purista/workflow-child-tasks-example
+npm install
+npm run test
+npm run start
 ```
 
 The two agents use deterministic handlers solely so this example has no model

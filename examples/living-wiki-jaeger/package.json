@@ -4,8 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "npm run predev:api",
-    "predev:api": "npm run build --workspace @purista/harness && npm run build --workspace @purista/harness-openai",
     "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:api:run\" \"npm:dev:web\"",
     "dev:api": "npm run dev:api:run",
     "dev:api:run": "tsx watch src/server.ts",

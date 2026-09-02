@@ -19,17 +19,18 @@ installs an image or guest dependency. See the adapter's
 and [minimal Alpine recipe](../../packages/harness-sandbox-docker/image/README.md).
 In particular, `/workspace` must be writable by UID/GID `1000:1000`.
 
-From the repository root, after the workspace dependencies are installed:
+From this example directory:
 
 ```sh
+npm install
 PURISTA_DOCKER_SANDBOX_IMAGE='sha256:YOUR_PREPARED_IMAGE_ID' \
-  npm run smoke --workspace @purista/local-docker-sandbox-example
+  npm run smoke
 ```
 
 Set `PURISTA_DOCKER_SANDBOX_CONTEXT` if you want a specific local Docker context.
 Otherwise the adapter resolves and pins the active context. The `smoke` script
 compiles the example against its declared public dependencies and then runs it
-on the real engine. `npm run typecheck --workspace @purista/local-docker-sandbox-example`
+on the real engine. `npm run typecheck`
 checks it without touching Docker.
 
 ## What it demonstrates

@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { defineHarness, type ToolHandlerContext } from '../../../../packages/harness/src/index.js'
+import { defineHarness, type ToolHandlerContext } from '@purista/harness'
 import { createLivingWikiStore } from './data.js'
 import { createLivingWikiTools } from './tools.js'
 

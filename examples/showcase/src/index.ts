@@ -34,7 +34,7 @@ function requireOpenAiKey(): string {
 	loadRootEnv()
 	const apiKey = process.env['OPENAI_API_KEY']
 	if (!apiKey) {
-		throw new Error('OPENAI_API_KEY is required. Create .env from .env.example in the repository root.')
+		throw new Error('OPENAI_API_KEY is required. Set it in the environment or in this example directory\'s .env file.')
 	}
 	return apiKey
 }

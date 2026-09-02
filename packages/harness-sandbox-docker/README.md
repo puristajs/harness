@@ -161,14 +161,14 @@ operation into state loss.
 
 ## Verification
 
-`npm test --workspace @purista/harness-sandbox-docker` runs the shared sandbox
+From this package directory, `npm test` runs the shared sandbox
 and text-search contracts plus private scripted-transport tests without Docker or credentials.
 Those tests verify protocol behavior and failure handling, not kernel or
 engine isolation. Real-engine tests are opt-in:
 
 ```sh
 PURISTA_DOCKER_SANDBOX_IMAGE='registry.example/guest@sha256:YOUR_DIGEST' \
-  npm run test:docker --workspace @purista/harness-sandbox-docker
+  npm run test:docker
 ```
 
 Set `PURISTA_DOCKER_SANDBOX_CONTEXT` when testing a context other than the active

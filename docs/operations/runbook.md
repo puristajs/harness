@@ -75,7 +75,9 @@ Use structured logs and OpenTelemetry together.
 Jaeger local example:
 
 ```bash
-npm run jaeger --workspace @purista/living-wiki-jaeger-example
+cd examples/living-wiki-jaeger
+npm install
+npm run jaeger
 ```
 
 Set:

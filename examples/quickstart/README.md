@@ -12,14 +12,15 @@ The workflow is intentionally small but shows the production shape:
 
 ## Run
 
-From the repository root:
+From this example directory:
 
 ```bash
+npm install
 cp .env.example .env
 # set OPENAI_API_KEY in .env
-npm test -w @purista/quickstart
-npm run build -w @purista/quickstart
-npm start -w @purista/quickstart
+npm test
+npm run build
+npm start
 ```
 
 The example stores the last topic in session memory, records two application

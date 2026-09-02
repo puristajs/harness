@@ -7,8 +7,9 @@ ownership of its workflow and customer-specific state.
 ## Run it
 
 ```bash
-npm run test --workspace @purista/modular-support-harness
-OPENAI_API_KEY=... npm run start --workspace @purista/modular-support-harness
+npm install
+npm run test
+OPENAI_API_KEY=... npm run start
 ```
 
 Set `OPENAI_MODEL` to override the default `gpt-5-mini` model. The tests inject

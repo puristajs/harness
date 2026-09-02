@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src --exclude 'dist/**'",
-    "start": "node --env-file-if-exists=.env dist/examples/opa-governance/src/index.js",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "lint": "npm run typecheck"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ToolHandlerContext } from '../../../../packages/harness/src/index.js'
+import type { ToolHandlerContext } from '@purista/harness'
 import { createFileWikiStore, type FileWikiStore, slugSchema } from './data.js'
 
 const pageRefSchema = z.object({ slug: slugSchema, title: z.string(), summary: z.string().optional() })

@@ -15,7 +15,7 @@ import {
   type ObjectResponse,
   type ModelProvider,
   type Sandbox,
-} from '../../../../packages/harness/src/index.js'
+} from '@purista/harness'
 import { createFileWikiStore, type FileWikiStore } from './data.js'
 import { loadRootEnv as loadRepositoryRootEnv, requireOpenAiKey as requireRepositoryOpenAiKey } from './env.js'
 import { createLivingWikiTools, makePanelSpec } from './tools.js'

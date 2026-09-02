@@ -11,10 +11,11 @@ Rules:
 The example uses a scripted local model provider, so it does not need provider keys.
 
 ```bash
-npm run test --workspace @purista/bank-governance-example
-npm run typecheck --workspace @purista/bank-governance-example
-npm run build --workspace @purista/bank-governance-example
-npm run start --workspace @purista/bank-governance-example
+npm install
+npm run test
+npm run typecheck
+npm run build
+npm run start
 ```
 
 The key integration point is `.governance(({ native, rule }) => ...)` in

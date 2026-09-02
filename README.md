@@ -110,6 +110,7 @@ npm run test:failure
 ## Project Structure
 
 - `packages/harness/` — Core runtime, contracts, ports, builder, sessions, tools, sandbox, telemetry, and test helpers.
+- `packages/harness-ai-sdk-ui/` — AI SDK UI Message Stream v1 adapter for standard chat streaming and resumable tool approvals.
 - `packages/harness-openai/` — OpenAI model provider adapter.
 - `packages/harness-anthropic/` — Anthropic model provider adapter.
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.

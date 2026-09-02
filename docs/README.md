@@ -95,6 +95,7 @@ flowchart TD
 | Path | Purpose |
 |---|---|
 | `packages/harness` | Core runtime, builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
+| `packages/harness-ai-sdk-ui` | AI SDK UI Message Stream v1 adapter for standard browser chat clients and approval flows. |
 | `packages/harness-openai` | OpenAI model provider adapter. |
 | `packages/harness-google` | Google Gemini API model provider adapter. |
 | `packages/harness-anthropic` | Anthropic model provider adapter. |

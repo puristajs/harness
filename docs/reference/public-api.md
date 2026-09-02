@@ -9,6 +9,7 @@ adapter packages.
 | Package | Purpose |
 |---|---|
 | `@purista/harness` | Core runtime: builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
+| `@purista/harness-ai-sdk-ui` | AI SDK UI Message Stream v1 adapter for text, tools, structured output, lifecycle status, and resumable approval. |
 | `@purista/harness-guardrails` | Optional typed content rails; concrete privacy detectors remain separate addons. |
 | `@purista/harness-openai` | OpenAI model provider adapter. |
 | `@purista/harness-google` | Google Gemini API model provider adapter. |

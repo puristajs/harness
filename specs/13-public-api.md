@@ -920,7 +920,11 @@ interface HarnessContextConfigurable {
 }
 ```
 
-`Harness` is not the application execution surface for model/tool/sandbox work. It exposes session creation and shutdown only. Application code opens a session and executes typed direct agents through `session.agents` or typed workflows through `session.workflows`.
+`Harness` exposes capability-projected `models` for deterministic application
+calls such as embeddings and reranking, plus session creation and shutdown.
+Agent and workflow execution remains session-scoped through `session.agents` and
+`session.workflows`; tools and sandbox authority are not exposed on the root
+handle.
 
 `harness.$infer` is a phantom value: at harness it is the literal `{}`. Its only purpose is compile-time inference via `typeof`:
 

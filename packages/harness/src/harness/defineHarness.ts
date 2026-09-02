@@ -1784,6 +1784,8 @@ export interface HarnessDefinition<S extends BuilderState> {
 
 /** Harness handle returned from `build()`. */
 export interface Harness<S extends BuilderState> {
+	/** Capability-projected model handles bound to this Harness instance. */
+	readonly models: ModelHandles<S>
 	/**
 	 * Opens or creates a session facade bound to `id` and its immutable owner.
 	 *

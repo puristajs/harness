@@ -28,6 +28,7 @@ import type {
   AgentInput,
   AgentOutput,
   InvokeOptions,
+  ModelHandles,
   ModelsConfig,
   ResolvedSkill,
   RunSummary,
@@ -1460,6 +1461,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   }
 
   return {
+    models: modelRegistry as ModelHandles<S>,
     inspect(): HarnessInspection {
       return definition.inspection
     },

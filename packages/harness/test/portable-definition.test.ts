@@ -63,6 +63,27 @@ describe('portable Harness definitions', () => {
     await second.shutdown()
   })
 
+  it('exposes capability-projected model handles on the runtime instance', async () => {
+    const provider = new FakeModelProvider()
+    provider.enqueue({
+      object: { answer: 'direct' },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: 'stop',
+    })
+    const harness = await supportDefinition.getInstance({
+      models: { primary: { provider, model: 'model-a' } },
+    })
+
+    const result = await harness.models.primary.object(
+      { messages: [{ role: 'user', content: 'Answer directly.' }], schema: { type: 'object' } },
+      new AbortController().signal,
+    )
+
+    expect(result.object).toEqual({ answer: 'direct' })
+    expectTypeOf(harness.models.primary.object).toBeFunction()
+    await harness.shutdown()
+  })
+
   it('fails before startup when a binding is missing or lacks a required operation', async () => {
     await expect(
       supportDefinition.getInstance({ models: {} } as unknown as Parameters<typeof supportDefinition.getInstance>[0]),

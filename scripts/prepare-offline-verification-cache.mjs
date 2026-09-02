@@ -32,6 +32,17 @@ function packageName(entryPath) {
 	return entryPath.slice(entryPath.lastIndexOf('node_modules/') + 'node_modules/'.length)
 }
 
+/** Returns the exact locked registry version used by generated offline consumers. */
+export function lockedRegistryVersion(lock, dependencyName) {
+	const entryPath = resolveDependencyEntry(lock.packages ?? {}, '', dependencyName)
+	if (!entryPath) throw new Error(`Offline verification dependency ${dependencyName} is missing from package-lock.json.`)
+	const entry = lock.packages[entryPath]
+	if (typeof entry?.version !== 'string' || typeof entry.resolved !== 'string' || !entry.resolved.startsWith('https://registry.npmjs.org/')) {
+		throw new Error(`Offline verification dependency ${entryPath} is not pinned to the npm registry.`)
+	}
+	return entry.version
+}
+
 /** Returns the exact registry package closure needed by packed release consumers. */
 export function collectOfflineVerificationSpecs(lock, rootDependencies) {
 	const packages = lock.packages ?? {}
@@ -61,6 +72,21 @@ export function collectOfflineVerificationSpecs(lock, rootDependencies) {
 	return [...specs].sort()
 }
 
+/** Returns an exact dependency map that keeps generated offline consumers on the cached graph. */
+export function collectOfflineVerificationDependencies(lock, rootDependencies) {
+	const dependencies = {}
+	for (const spec of collectOfflineVerificationSpecs(lock, rootDependencies)) {
+		const separator = spec.lastIndexOf('@')
+		const name = spec.slice(0, separator)
+		const version = spec.slice(separator + 1)
+		if (dependencies[name] && dependencies[name] !== version) {
+			throw new Error(`Offline verification dependency ${name} resolves to multiple versions.`)
+		}
+		dependencies[name] = version
+	}
+	return dependencies
+}
+
 async function rootDependencies(root) {
 	const names = new Set(['@types/node'])
 	for (const workspace of verificationWorkspaces) {
@@ -73,6 +99,12 @@ async function rootDependencies(root) {
 		}
 	}
 	return names
+}
+
+/** Returns the exact registry graph used by the offline package consumers. */
+export async function offlineVerificationDependencies(root = defaultRoot) {
+	const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'))
+	return collectOfflineVerificationDependencies(lock, await rootDependencies(root))
 }
 
 /** Primes registry manifests and tarballs before packed verifiers switch npm to offline mode. */

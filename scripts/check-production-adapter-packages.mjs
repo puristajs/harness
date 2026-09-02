@@ -8,6 +8,7 @@ import {
 	runCheckedCommand,
 	withVerificationScratch,
 } from './check-purista-sandbox.mjs'
+import { offlineVerificationDependencies } from './prepare-offline-verification-cache.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspaces = [
@@ -40,13 +41,12 @@ async function main() {
 		await mkdir(tarballs)
 		await mkdir(consumer)
 		const packed = await packPackages(tarballs, layout)
-		const harness = JSON.parse(await readFile(join(root, 'packages/harness/package.json'), 'utf8'))
 		await writeFile(join(consumer, 'package.json'), `${JSON.stringify({
 			name: 'production-adapter-package-consumer-check', private: true, type: 'module',
 			dependencies: Object.fromEntries(
 				packed.map(item => [item.name, `file:${relative(consumer, join(tarballs, item.filename))}`]),
 			),
-			devDependencies: { '@types/node': harness.devDependencies['@types/node'] },
+			devDependencies: await offlineVerificationDependencies(root),
 		}, null, 2)}\n`)
 		await writeFile(join(consumer, 'tsconfig.json'), `${JSON.stringify({
 			compilerOptions: {
@@ -74,4 +74,3 @@ main().catch(error => {
 	console.error(error instanceof Error ? error.message : 'Production adapter package verification failed.')
 	process.exitCode = 1
 })
-

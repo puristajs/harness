@@ -163,7 +163,7 @@ describe('decision foundation', () => {
     expect(parseProviderContinuation({ providerId: '', items: [] }, [])).toBeUndefined()
   })
 
-  it('validates governance identifiers and callback-only configuration slots', () => {
+  it('validates governance identifiers and callback configuration slots', () => {
     const callback = () => undefined
     expect(
       governanceConfigSchema.parse({
@@ -182,7 +182,6 @@ describe('decision foundation', () => {
           id: 'tool-exposure',
           rules: [{ id: 'expose-transfer', effect: 'expose', when: callback }],
         },
-        approval: { request: callback },
         audit: { record: callback },
       }),
     ).toMatchObject({ policies: [{ id: 'transfer-policy' }, { id: 'external-policy' }] })
@@ -242,7 +241,7 @@ describe('decision foundation', () => {
       const pending = runDecisionOperation(
         { signal: parent.signal, deadline: Date.now() + 10 },
         () =>
-          new Promise<string>((resolve) => {
+          new Promise<string>(resolve => {
             resolveOperation = resolve
           }),
       )

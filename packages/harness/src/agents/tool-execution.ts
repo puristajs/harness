@@ -5,12 +5,15 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE,
 } from '@opentelemetry/semantic-conventions/incubating'
+import { ToolApprovalPendingError, type ToolApprovalDecision, type ToolApprovalRequest } from '../approvals/index.js'
 import {
   DecisionBlockedError,
   DecisionEvaluationError,
   HarnessError,
   OperationCancelledError,
   OperationTimeoutError,
+  PermissionDeniedError,
+  PolicyDeniedError,
   ToolError,
   ToolNotFoundError,
   ValidationError,
@@ -34,7 +37,7 @@ import type { SandboxSessionBase } from '../sandbox/index.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { BUILTIN_ALIAS_TO_CANONICAL, invokePreparedBuiltinTool, prepareBuiltinTool } from '../tools/index.js'
 import { prepareMcpTool, isMcpToolDefinition, type McpRunnerRegistry } from '../tools/mcp/runner.js'
-import { enforceToolGovernance } from '../governance/index.js'
+import { enforceToolGovernance, type ToolGovernanceResult } from '../governance/index.js'
 import { validateSchema } from '../schema/validation.js'
 
 type ToolKind = 'builtin' | 'ts' | 'mcp_stdio' | 'mcp_http'
@@ -85,6 +88,7 @@ type ToolExecutionArgs = {
     signal: AbortSignal,
     deadline: number,
   ) => Promise<JsonValue>
+  approvalDecisions?: readonly ToolApprovalDecision[]
 }
 
 type PreparedToolInvocation = {
@@ -96,6 +100,8 @@ type PreparedToolInvocation = {
   readonly deadline: number
   readonly invoke: () => Promise<JsonValue>
   readonly cleanup: () => void
+  governance?: ToolGovernanceResult
+  governanceFailure?: PermissionDeniedError | PolicyDeniedError
 }
 
 type PreparedEntry =
@@ -126,7 +132,7 @@ export async function runPreparedToolBatch(
   calls: readonly ToolCallSpec[],
   exposed: readonly ModelToolSpec[],
 ): Promise<{ calls: readonly ToolCallSpec[]; outcomes: readonly ToolExecutionOutcome[] }> {
-  const exposedNames = new Set(exposed.map((tool) => tool.name))
+  const exposedNames = new Set(exposed.map(tool => tool.name))
   const batch = new AbortController()
   const relay = () => batch.abort(args.signal.reason)
   args.signal.addEventListener('abort', relay, { once: true })
@@ -163,19 +169,71 @@ export async function runPreparedToolBatch(
     const prepared = entries.filter(
       (entry): entry is Extract<PreparedEntry, { kind: 'prepared' }> => entry.kind === 'prepared',
     )
+    const approvalRequests: ToolApprovalRequest[] = []
+    for (const entry of prepared) {
+      const item = entry.value
+      if (!args.approvalDecisions) {
+        await args.emitEvent?.({
+          type: 'tool.input.available',
+          runId: args.runId,
+          agentId: args.agentId,
+          toolId: item.call.name,
+          callId: item.call.id,
+          input: item.call.arguments as JsonValue,
+        })
+      }
+      try {
+        const governance = await enforceToolGovernance(
+          {
+            ...(args.governance ? { governance: args.governance } : {}),
+            ...(args.agent.permissions ? { permissions: args.agent.permissions } : {}),
+            toolId: item.call.name,
+            input: item.parsedInput,
+            callId: item.call.id,
+            agentId: args.agentId,
+            runId: args.runId,
+            sessionId: args.sessionId,
+            ...(args.workflowId ? { workflowId: args.workflowId } : {}),
+            invocationId: args.delegationCallId ?? args.runId,
+            step: args.step,
+            signal: item.controller.signal,
+            decisionTimeoutMs: args.decisionTimeoutMs,
+            telemetry: args.telemetry,
+            deadline: Math.min(item.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY),
+            metadata: args.metadata ?? {},
+            ...(args.emitEvent ? { emitEvent: args.emitEvent } : {}),
+          },
+          args.approvalDecisions,
+        )
+        item.governance = governance
+        if (governance?.decision === 'approval_required') approvalRequests.push(governance.request)
+      } catch (error) {
+        if (error instanceof PermissionDeniedError || error instanceof PolicyDeniedError) {
+          item.governanceFailure = error
+          continue
+        }
+        throw error
+      }
+    }
+    if (approvalRequests.length > 0) {
+      throw new ToolApprovalPendingError(
+        approvalRequests,
+        entries.map(entry => (entry.kind === 'recoverable' ? entry.call : entry.value.call)),
+      )
+    }
     const outcomes = await executePrepared(
       args,
       batch,
-      prepared.map((entry) => entry.value),
+      prepared.map(entry => entry.value),
     )
-    const executed = new Map(outcomes.map((entry) => [entry.callId, entry.outcome]))
-    const ordered = entries.map((entry) =>
+    const executed = new Map(outcomes.map(entry => [entry.callId, entry.outcome]))
+    const ordered = entries.map(entry =>
       entry.kind === 'recoverable'
         ? recoverableOutcome(args, entry.call, entry.error)
         : executed.get(entry.value.call.id)!,
     )
     return {
-      calls: entries.map((entry) => (entry.kind === 'recoverable' ? entry.call : entry.value.call)),
+      calls: entries.map(entry => (entry.kind === 'recoverable' ? entry.call : entry.value.call)),
       outcomes: ordered,
     }
   } finally {
@@ -230,7 +288,9 @@ async function preflight(
     if (args.signal.aborted) onRunAbort()
     if (batchSignal.aborted) onBatchAbort()
     throwIfAborted(controller.signal)
-    const wireArguments = freezeJson(
+    const wireArguments = args.approvalDecisions
+      ? (raw.arguments as JsonValue)
+      : freezeJson(
       await args.beforeTool(
         raw.name,
         raw.id,
@@ -344,7 +404,14 @@ async function executePrepared(
       if (index >= prepared.length) return
       const item = prepared[index]!
       try {
-        results[index] = { callId: item.call.id, outcome: await executeOne(args, item) }
+        results[index] = {
+          callId: item.call.id,
+          outcome: item.governanceFailure
+            ? await governanceDeniedOutcome(args, item, item.governanceFailure)
+            : item.governance?.decision === 'rejected'
+              ? await approvalRejectedOutcome(args, item, item.governance)
+              : await executeOne(args, item),
+        }
       } catch (error) {
         terminal ??= error
         batch.abort(error)
@@ -359,30 +426,48 @@ async function executePrepared(
   return results
 }
 
+async function governanceDeniedOutcome(
+  args: ToolExecutionArgs,
+  prepared: PreparedToolInvocation,
+  failure: PermissionDeniedError | PolicyDeniedError,
+): Promise<ToolExecutionOutcome> {
+  const serialized = serializeError(failure)
+  await args.emitEvent?.({
+    type: 'tool.finished',
+    runId: args.runId,
+      agentId: args.agentId,
+    toolId: prepared.call.name,
+    callId: prepared.call.id,
+    error: serialized,
+  })
+  return toolOutcome(args, prepared.call, { error: serialized })
+}
+
+async function approvalRejectedOutcome(
+  args: ToolExecutionArgs,
+  prepared: PreparedToolInvocation,
+  governance: Extract<ToolGovernanceResult, { decision: 'rejected' }>,
+): Promise<ToolExecutionOutcome> {
+  const failure = new ToolError(governance.reason?.trim() || 'Tool execution was rejected by the approver.', {
+    tool_id: prepared.call.name,
+    tool_kind: 'approval',
+  })
+  const serialized = serializeError(failure)
+  await args.emitEvent?.({
+    type: 'tool.finished',
+      runId: args.runId,
+    agentId: args.agentId,
+    toolId: prepared.call.name,
+    callId: prepared.call.id,
+    error: serialized,
+    })
+  return toolOutcome(args, prepared.call, { error: serialized })
+}
+
 async function executeOne(args: ToolExecutionArgs, prepared: PreparedToolInvocation): Promise<ToolExecutionOutcome> {
-  const { call, parsedInput, kind, controller } = prepared
+  const { call, kind, controller } = prepared
   let started = false
   try {
-    throwIfAborted(controller.signal)
-    await enforceToolGovernance({
-      ...(args.governance ? { governance: args.governance } : {}),
-      ...(args.agent.permissions ? { permissions: args.agent.permissions } : {}),
-      toolId: call.name,
-      input: parsedInput,
-      callId: call.id,
-      agentId: args.agentId,
-      runId: args.runId,
-      sessionId: args.sessionId,
-      ...(args.workflowId ? { workflowId: args.workflowId } : {}),
-      invocationId: args.delegationCallId ?? args.runId,
-      step: args.step,
-      signal: controller.signal,
-      decisionTimeoutMs: args.decisionTimeoutMs,
-      telemetry: args.telemetry,
-      deadline: Math.min(prepared.deadline, args.runDeadline ?? Number.POSITIVE_INFINITY),
-      metadata: args.metadata ?? {},
-      ...(args.emitEvent ? { emitEvent: args.emitEvent } : {}),
-    })
     throwIfAborted(controller.signal)
     await args.emitEvent?.({
       type: 'tool.started',

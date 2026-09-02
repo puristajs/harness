@@ -61,7 +61,9 @@ it('appends a direct Guardrails binding after explicitly declared interceptors',
     })
     .build()
 
-  await expect((await harness.getSession('direct-guardrails-order')).agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'ok' })
+  await expect(
+    (await harness.getSession('direct-guardrails-order')).agents.answer.run('question'),
+  ).resolves.toMatchObject({ status: 'completed', output: 'ok' })
   expect(order).toEqual(['application', 'guardrails'])
   provider.assertExhausted()
 })
@@ -314,7 +316,10 @@ it('projects native tool input schemas to the model and applies defaulted transf
     })
     .build()
 
-  await expect((await harness.getSession('tool-schema-directions')).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect((await harness.getSession('tool-schema-directions')).agents.answer.run('go')).resolves.toMatchObject({
+    status: 'completed',
+    output: 'done',
+  })
   expect(provider.requests[0]?.tools).toEqual([
     expect.objectContaining({
       name: 'normalize',
@@ -342,14 +347,17 @@ it('passes transformed defaults to a direct custom agent handler and validates i
       instructions: '',
       input: z.string().default('3').transform(parseInput),
       output: z.string().transform(parseOutput),
-      handler: async (ctx) => {
+      handler: async ctx => {
         seen.push(ctx.input)
         return '5'
       },
     })
     .build()
 
-  await expect((await harness.getSession('direct-transforms')).agents.direct.run(undefined)).resolves.toMatchObject({ status: 'completed', output: 5 })
+  await expect((await harness.getSession('direct-transforms')).agents.direct.run(undefined)).resolves.toMatchObject({
+    status: 'completed',
+    output: 5,
+  })
   expect(seen).toEqual([3])
   expect(parseInput).toHaveBeenCalledTimes(1)
   expect(parseOutput).toHaveBeenCalledTimes(1)
@@ -371,7 +379,10 @@ it('uses the model-facing input schema for transformed agent output candidates',
     })
     .build()
 
-  await expect((await harness.getSession('modeled-output-transform')).agents.modeled.run('go')).resolves.toMatchObject({ status: 'completed', output: 6 })
+  await expect((await harness.getSession('modeled-output-transform')).agents.modeled.run('go')).resolves.toMatchObject({
+    status: 'completed',
+    output: 6,
+  })
   expect(parseOutput).toHaveBeenCalledTimes(1)
   expect(provider.requests[0]).toMatchObject({ schema: { type: 'string' } })
 })
@@ -400,7 +411,10 @@ it('transforms the final candidate before output validation and delivery', async
     .build()
 
   const session = await harness.getSession('interceptor-final-output')
-  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: { answer: 'safe' } })
+  await expect(session.agents.answer.run('question')).resolves.toMatchObject({
+    status: 'completed',
+    output: { answer: 'safe' },
+  })
 })
 
 it('reparses every before-input transform and rejects malformed interceptor decisions closed', async () => {
@@ -502,11 +516,11 @@ it('protects completed tool interaction groups from prepare-step rewrites', asyn
       prepareStep: ({ step, messages }) =>
         step === 1
           ? {
-              messages: messages.map((message) =>
+              messages: messages.map(message =>
                 message.role === 'assistant'
                   ? {
                       ...message,
-                      toolCalls: message.toolCalls?.map((call) => ({ ...call, arguments: { amount: 999 } })),
+                      toolCalls: message.toolCalls?.map(call => ({ ...call, arguments: { amount: 999 } })),
                     }
                   : message,
               ),
@@ -565,7 +579,10 @@ it('uses the actual loop step for every interceptor invocation', async () => {
     })
     .build()
 
-  await expect((await harness.getSession('interceptor-step')).agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect((await harness.getSession('interceptor-step')).agents.answer.run('transfer')).resolves.toMatchObject({
+    status: 'completed',
+    output: 'done',
+  })
   expect(steps).toEqual([0, 1])
 })
 
@@ -627,7 +644,7 @@ it.each([
   { decision: 'transform', value: 'safe', target: 'unexpected' },
   { decision: 'transform' },
   Object.assign(Object.create({ value: 'inherited' }), { decision: 'transform' }),
-])('rejects malformed closed interceptor outcomes: %j', async (outcome) => {
+])('rejects malformed closed interceptor outcomes: %j', async outcome => {
   const provider = new FakeModelProvider()
   const harness = defineHarness()
     .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
@@ -647,9 +664,7 @@ it.each([
   expect(provider.requests).toHaveLength(0)
 })
 
-it.each(['getter', 'proxy'] as const)(
-  'fails closed without exposing a throwing interceptor result %s',
-  async (kind) => {
+it.each(['getter', 'proxy'] as const)('fails closed without exposing a throwing interceptor result %s', async kind => {
     const secret = 'SYNTHETIC_PRIVATE_INTERCEPTOR_RESULT'
     const fail = () => {
       throw new Error(secret)
@@ -694,8 +709,7 @@ it.each(['getter', 'proxy'] as const)(
     } finally {
       await harness.shutdown()
     }
-  },
-)
+})
 
 it('enforces the parsed interceptor decision without rereading a changing getter', async () => {
   let reads = 0
@@ -819,7 +833,7 @@ it('attributes a blocked interceptor on the failed parent agent span without rec
   await expect(session.agents.responder.run('customer-secret@example.test')).rejects.toBeInstanceOf(
     DecisionBlockedError,
   )
-  const agentSpan = telemetry.spans.find((span) => span.name === 'invoke_agent responder')
+  const agentSpan = telemetry.spans.find(span => span.name === 'invoke_agent responder')
   expect(agentSpan).toMatchObject({
     attrs: expect.objectContaining({
       'error.type': 'DECISION_BLOCKED',
@@ -851,7 +865,10 @@ it('uses one input parse without transforms and reparses only actual replacement
       ],
     })
     .build()
-  await expect((await harness.getSession('input-once')).agents.answer.run(1)).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect((await harness.getSession('input-once')).agents.answer.run(1)).resolves.toMatchObject({
+    status: 'completed',
+    output: 'done',
+  })
   expect(parses).toHaveBeenCalledTimes(1)
   expect(seen).toEqual([[2, 2, 'fake']])
   expect(provider.requests[0]?.messages).toContainEqual({ role: 'user', content: '2' })
@@ -865,7 +882,7 @@ it('gives each interceptor callback a fresh deadline', async () => {
   const remaining: number[] = []
   const beforeInput = async ({ decision }: { decision: { deadline: number } }) => {
     remaining.push(decision.deadline - Date.now())
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise(resolve => setTimeout(resolve, 20))
     return { decision: 'allow' as const }
   }
   const harness = defineHarness()
@@ -883,7 +900,7 @@ it('gives each interceptor callback a fresh deadline', async () => {
     .build()
   const session = await harness.getSession('interceptor-budgets')
   const result = session.agents.answer.run('question').then(
-    (value) => value,
+    value => value,
     (error: unknown) => error,
   )
   await vi.advanceTimersByTimeAsync(50)
@@ -909,7 +926,7 @@ it('normalizes an interceptor own timeout and ignores its late resolution', asyn
           id: 'slow',
           beforeInput: ({ decision }) => {
             child = decision.signal
-            return new Promise((resolve) => {
+            return new Promise(resolve => {
               finish = resolve
             })
           },
@@ -934,7 +951,7 @@ it('normalizes an interceptor own timeout and ignores its late resolution', asyn
 
 it.each(['direct', 'workflow', 'one_shot', 'continuable'] as const)(
   'reports the effective run deadline in %s interceptor contexts',
-  async (mode) => {
+  async mode => {
     vi.useFakeTimers()
     const provider = new FakeModelProvider()
     const remaining: number[] = []
@@ -961,7 +978,7 @@ it.each(['direct', 'workflow', 'one_shot', 'continuable'] as const)(
         input: z.string(),
         output: z.string(),
         delegation: { agents: ['answer'] },
-        handler: async (ctx) => {
+        handler: async ctx => {
           if (mode === 'workflow') return ctx.agents.answer(ctx.input, { timeoutMs: 20 })
           if (mode === 'continuable') {
             const task = await ctx.childTasks.start('answer', ctx.input, { mode: 'continuable', timeoutMs: 20 })
@@ -1022,7 +1039,7 @@ it('includes tool occurrence identity and skips interceptors without the current
         { id: 'abstain', beforeTool: () => undefined },
         {
           id: 'gate',
-          beforeTool: (ctx) => {
+          beforeTool: ctx => {
             runId = ctx.runId
             return ctx.callId === 'second' ? { decision: 'block' } : { decision: 'allow' }
           },
@@ -1113,7 +1130,7 @@ it.each([
       instructions: 'Transfer.',
       builtinTools: false,
       tools: ['transfer'],
-      prepareStep: (ctx) => {
+      prepareStep: ctx => {
         if (phase === 'prepareStep') mutate(ctx)
         return { call: { temperature: 0 } }
       },
@@ -1122,7 +1139,7 @@ it.each([
           ? [
               {
                 id: 'mutate',
-                beforeModel: (ctx) => {
+                beforeModel: ctx => {
                   mutate(ctx)
                   return { decision: 'allow' }
                 },
@@ -1132,7 +1149,7 @@ it.each([
             ? [
                 {
                   id: 'mutate',
-                  afterModel: (ctx) => {
+                  afterModel: ctx => {
                     mutate(ctx)
                     return { decision: 'allow' }
                   },
@@ -1181,7 +1198,7 @@ it('still allows omission of complete older interaction groups while retaining t
         step === 2
           ? {
               messages: messages.filter(
-                (message) =>
+                message =>
                   !(message.role === 'assistant' && message.toolCalls?.[0]?.id === 'older') &&
                   !(message.role === 'tool' && message.toolCallId === 'older'),
               ),
@@ -1189,7 +1206,9 @@ it('still allows omission of complete older interaction groups while retaining t
           : {},
     })
     .build()
-  await expect((await harness.getSession('historical-compaction')).agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect(
+    (await harness.getSession('historical-compaction')).agents.answer.run('question'),
+  ).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(provider.requests[2]?.messages).toContainEqual(
     expect.objectContaining({
       role: 'assistant',
@@ -1212,7 +1231,6 @@ it.each([
   })
   provider.enqueueObject({ object: 'done', finishReason: 'stop' })
   const policy = vi.fn(() => true)
-  const approval = vi.fn(async () => ({ decision: 'approved' as const }))
   const harness = defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fake: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
@@ -1224,18 +1242,19 @@ it.each([
           rules: [rule({ id: 'approve', tools: [tool], effect: 'require_approval', when: policy })],
         }),
       ],
-      approval: { request: approval },
     }))
     .build()
-  await expect((await harness.getSession(`invalid-builtin-${tool}`)).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect((await harness.getSession(`invalid-builtin-${tool}`)).agents.answer.run('go')).resolves.toMatchObject({
+    status: 'completed',
+    output: 'done',
+  })
   expect(policy).not.toHaveBeenCalled()
-  expect(approval).not.toHaveBeenCalled()
-  const result = provider.requests[1]?.messages.find((message) => message.role === 'tool')
+  const result = provider.requests[1]?.messages.find(message => message.role === 'tool')
   expect(JSON.parse(result?.content as string)).toMatchObject({ code: 'VALIDATION_ERROR' })
   await harness.shutdown()
 })
 
-it('shares built-in schema defaults with policy and approval before the handler', async () => {
+it('shares built-in schema defaults with policy and the approval request', async () => {
   const provider = new FakeModelProvider()
   provider.enqueueObject({
     object: {},
@@ -1249,7 +1268,7 @@ it('shares built-in schema defaults with policy and approval before the handler'
   const harness = defineHarness()
     .sandbox({
       ...base,
-      open: async (options) => {
+      open: async options => {
         const opened = await base.open(options)
         vi.spyOn(opened.session, 'readText').mockImplementation(readText)
         return opened
@@ -1274,30 +1293,23 @@ it('shares built-in schema defaults with policy and approval before the handler'
           ],
         }),
       ],
-      approval: {
-        request: async ({ subject }) => {
-          inputs.push(subject.input)
-          expect(readText).not.toHaveBeenCalled()
-          return { decision: 'approved' }
-        },
-      },
     }))
     .build()
-  await expect((await harness.getSession('builtin-defaults')).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  const outcome = await (await harness.getSession('builtin-defaults')).agents.answer.run('go')
+  expect(outcome.status).toBe('interrupted')
+  if (outcome.status !== 'interrupted' || outcome.interrupt.type !== 'tool-approval') {
+    throw new Error('Expected a tool approval interruption.')
+  }
+  const request = outcome.interrupt.requests[0]
+  if (!request) throw new Error('Expected one approval request.')
   expect(inputs[0]).toEqual({ path: '/file', encoding: 'utf-8' })
-  expect(inputs[1]).toBe(inputs[0])
+  expect(request.input).toEqual(inputs[0])
   expect(Object.isFrozen(inputs[0])).toBe(true)
-  expect(readText).toHaveBeenCalledExactlyOnceWith('/file', 'utf-8')
-  expect(provider.requests[1]?.messages).toContainEqual(
-    expect.objectContaining({
-      role: 'assistant',
-      toolCalls: [{ id: 'read-once', name: 'read', arguments: { path: '/file' } }],
-    }),
-  )
+  expect(readText).not.toHaveBeenCalled()
   await harness.shutdown()
 })
 
-it.each([true, false])('prepares MCP adapter input exactly once before approval (valid=%s)', async (valid) => {
+it.each([true, false])('prepares MCP adapter input exactly once before approval (valid=%s)', async valid => {
   const provider = new FakeModelProvider()
   provider.enqueueObject({
     object: {},
@@ -1333,11 +1345,6 @@ it.each([true, false])('prepares MCP adapter input exactly once before approval 
   const afterTool = vi.fn(({ output }: { output: unknown }) => {
     expect(output).toEqual({ wrapped: { ok: true } })
     return { decision: 'allow' as const }
-  })
-  const approval = vi.fn(async ({ subject }: { subject: { input: unknown } }) => {
-    inputs.push(subject.input)
-    expect(callTool).not.toHaveBeenCalled()
-    return { decision: 'approved' as const }
   })
   const harness = defineHarness()
     .sandbox(inMemorySandbox())
@@ -1376,27 +1383,26 @@ it.each([true, false])('prepares MCP adapter input exactly once before approval 
           ],
         }),
       ],
-      approval: { request: approval },
     }))
     .build()
-  await expect((await harness.getSession(`mcp-prepared-${valid}`)).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  const outcome = await (await harness.getSession(`mcp-prepared-${valid}`)).agents.answer.run('go')
   expect(inputAdapter).toHaveBeenCalledExactlyOnceWith({ name: 'safe' })
-  expect(approval).toHaveBeenCalledTimes(valid ? 1 : 0)
-  expect(callTool).toHaveBeenCalledTimes(valid ? 1 : 0)
-  expect(afterTool).toHaveBeenCalledTimes(valid ? 1 : 0)
-  expect(outputAdapter).toHaveBeenCalledTimes(valid ? 1 : 0)
   if (valid) {
+    expect(outcome.status).toBe('interrupted')
+    if (outcome.status !== 'interrupted' || outcome.interrupt.type !== 'tool-approval') {
+      throw new Error('Expected a tool approval interruption.')
+    }
+    const request = outcome.interrupt.requests[0]
+    if (!request) throw new Error('Expected one approval request.')
     expect(inputs[0]).toEqual({ title: 'safe' })
-    expect(inputs[1]).toBe(inputs[0])
-    expect(callTool.mock.calls[0]?.[1]).toBe(inputs[0])
+    expect(request.input).toEqual(inputs[0])
     expect(Object.isFrozen(inputs[0])).toBe(true)
+  } else {
+    expect(outcome).toMatchObject({ status: 'completed', output: 'done' })
   }
-  expect(provider.requests[1]?.messages).toContainEqual(
-    expect.objectContaining({
-      role: 'assistant',
-      toolCalls: [{ id: 'mcp-once', name: 'lookup', arguments: { name: 'safe' } }],
-    }),
-  )
+  expect(callTool).not.toHaveBeenCalled()
+  expect(afterTool).not.toHaveBeenCalled()
+  expect(outputAdapter).not.toHaveBeenCalled()
   await harness.shutdown()
 })
 
@@ -1416,8 +1422,8 @@ it.each([
   provider.enqueueObject({ object: 'done', finishReason: 'stop' })
   const rewrite = (messages: readonly import('../src/ports/model-provider.js').ModelMessage[]) =>
     change === 'orphan'
-      ? messages.filter((message) => !(message.role === 'assistant' && message.toolCalls?.[0]?.id === 'older'))
-      : [...messages, messages.find((message) => message.role === 'tool' && message.toolCallId === 'older')!]
+      ? messages.filter(message => !(message.role === 'assistant' && message.toolCalls?.[0]?.id === 'older'))
+      : [...messages, messages.find(message => message.role === 'tool' && message.toolCallId === 'older')!]
   const harness = defineHarness()
     .sandbox(inMemorySandbox())
     .models({ fake: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
@@ -1447,16 +1453,15 @@ it.each([
       ],
     })
     .build()
-  await expect(
-    (await harness.getSession(`${phase}-${change}-result`)).agents.answer.run('go'),
-  ).rejects.toMatchObject({ code: 'DECISION_EVALUATION_ERROR', meta: { failureKind: 'invalid_transform' } })
+  await expect((await harness.getSession(`${phase}-${change}-result`)).agents.answer.run('go')).rejects.toMatchObject({
+    code: 'DECISION_EVALUATION_ERROR',
+    meta: { failureKind: 'invalid_transform' },
+  })
   expect(provider.requests).toHaveLength(2)
   await harness.shutdown()
 })
 
-it.each(['cancelled', 'timed_out'] as const)(
-  'does not prepare a tool when its parent is already %s',
-  async (outcome) => {
+it.each(['cancelled', 'timed_out'] as const)('does not prepare a tool when its parent is already %s', async outcome => {
     const controller = new AbortController()
     const reason =
       outcome === 'cancelled'
@@ -1487,7 +1492,6 @@ it.each(['cancelled', 'timed_out'] as const)(
     })
     const beforeTool = vi.fn(async (_toolId, _callId, input) => input)
     const afterTool = vi.fn(async (_toolId, _callId, output) => output)
-    const approval = vi.fn(async () => ({ decision: 'approved' as const }))
     await expect(
       runPreparedToolBatch(
         {
@@ -1497,7 +1501,7 @@ it.each(['cancelled', 'timed_out'] as const)(
           sessionId: 'session',
           agent: { permissions: { write: 'require_approval' } },
           customTools: {},
-          governance: { approval: { request: approval } },
+        governance: {},
           session: opened.session,
           memory,
           skills: {},
@@ -1510,7 +1514,7 @@ it.each(['cancelled', 'timed_out'] as const)(
           telemetry,
           step: 0,
           enabledCustomTools: new Set(),
-          turnMessageId: (slot) => slot,
+        turnMessageId: slot => slot,
           beforeTool,
           afterTool,
         },
@@ -1519,11 +1523,9 @@ it.each(['cancelled', 'timed_out'] as const)(
       ),
     ).rejects.toBe(reason)
     expect(beforeTool).not.toHaveBeenCalled()
-    expect(approval).not.toHaveBeenCalled()
     expect(afterTool).not.toHaveBeenCalled()
     await opened.session.close()
-  },
-)
+})
 
 it('keeps Standard Schema tool preflight failures recoverable while rejecting unexposed calls', async () => {
   const logger = new FakeLogger()

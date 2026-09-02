@@ -7,10 +7,9 @@ export {
   parseProviderContinuation,
   decisionResultSchema,
   decisionSourceSchema,
-  governanceApprovalResultSchema,
   governanceDecisionSchema,
   providerContinuationItemSchema,
-  providerContinuationSchema
+  providerContinuationSchema,
 } from './schemas.js'
 export type {
   CreateDecisionEvidenceInput,
@@ -20,5 +19,5 @@ export type {
   DecisionOccurrence,
   ProviderContinuation,
   ProviderContinuationItem,
-  DecisionSource
+  DecisionSource,
 } from './types.js'

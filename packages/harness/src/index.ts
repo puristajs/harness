@@ -145,6 +145,12 @@ export { isJsonValue } from './models/json.js'
 export type { JsonValue } from './models/json.js'
 export type { Infer, InferIn, ModelSchema, Schema } from './schema/index.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
+export type {
+  ToolApprovalDecision,
+  ToolApprovalInterrupt,
+  ToolApprovalRequest,
+  ToolApprovalResume,
+} from './approvals/index.js'
 
 // Shared decision-boundary contracts
 export {
@@ -155,7 +161,6 @@ export {
   parseProviderContinuation,
   decisionResultSchema,
   decisionSourceSchema,
-  governanceApprovalResultSchema,
   governanceDecisionSchema,
   providerContinuationItemSchema,
   providerContinuationSchema,
@@ -468,10 +473,6 @@ export type {
   DiscoverSkillsOptions,
   DurableInvokeOptions,
   ExecutionEvent,
-  GovernanceApprovalProvider,
-  GovernanceApprovalRequest,
-  GovernanceApprovalResult,
-  GovernanceApprovalSubject,
   GovernanceAuditRecord,
   GovernanceAuditSink,
   GovernanceConfig,

@@ -61,6 +61,7 @@ import type { DecisionExecutionContext } from '../decisions/types.js'
 import { validateSchema } from '../schema/validation.js'
 import type { Schema } from '../schema/index.js'
 import { freezeJson, runPreparedToolBatch } from './tool-execution.js'
+import { ToolApprovalPendingError, type ToolApprovalCheckpoint, type ToolApprovalResume } from '../approvals/index.js'
 
 const interceptorTransformSchema = decisionResultSchema.options[0].extend({
   decision: z.literal('transform'),
@@ -121,6 +122,8 @@ export async function runDefaultAgent(args: {
   metadata?: Readonly<Record<string, JsonValue>>
   /** Opaque per-run value forwarded only to bound host tools. */
   hostContext?: unknown
+  /** Validated persisted state and authenticated decisions for one approval resume. */
+  approvalResume?: { checkpoint: ToolApprovalCheckpoint; resume: ToolApprovalResume }
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   const agentAttrs = {
     'harness.name': args.harnessName,
@@ -137,7 +140,7 @@ export async function runDefaultAgent(args: {
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_AGENT_ID]: args.agentId,
     [ATTR_GEN_AI_CONVERSATION_ID]: args.sessionId,
-    ...(args.modelAlias ?? args.agent.model ? { 'harness.agent.model': args.modelAlias ?? args.agent.model } : {}),
+    ...((args.modelAlias ?? args.agent.model) ? { 'harness.agent.model': args.modelAlias ?? args.agent.model } : {}),
     ...(args.modelAlias && args.agent.model && args.modelAlias !== args.agent.model
       ? { 'harness.agent.default_model': args.agent.model }
       : {}),
@@ -151,7 +154,7 @@ export async function runDefaultAgent(args: {
   const activatedSkills = new Set<string>()
   const started = Date.now()
   let operationError: unknown
-  return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, async (span) => {
+  return args.telemetry.span(`invoke_agent ${args.agentId}`, agentAttrs, async span => {
     try {
       return await runDefaultAgentInner({ ...args, metrics, activatedSkills })
     } catch (error) {
@@ -207,12 +210,15 @@ async function runDefaultAgentInner(args: {
   emitEvent?: (event: RunEvent) => Promise<void>
   metadata?: Readonly<Record<string, JsonValue>>
   hostContext?: unknown
+  approvalResume?: { checkpoint: ToolApprovalCheckpoint; resume: ToolApprovalResume }
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
   const inputSchema = args.agent.input ?? z.string()
   const outputSchema = args.agent.output ?? z.string()
-  let parsedInput = await validateAgentSchema(inputSchema, args.input, 'agent_input', args.signal)
-  parsedInput = await applyBeforeInputInterceptors(args, parsedInput)
+  let parsedInput = args.approvalResume
+    ? args.approvalResume.checkpoint.state.input
+    : await validateAgentSchema(inputSchema, args.input, 'agent_input', args.signal)
+  if (!args.approvalResume) parsedInput = await applyBeforeInputInterceptors(args, parsedInput)
   if (!isJsonValue(parsedInput))
     throw new ValidationError('Agent input validation failed.', {
       where: 'agent_input',
@@ -232,6 +238,12 @@ async function runDefaultAgentInner(args: {
     ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
   }
 
+  if (args.approvalResume && args.agent.handler) {
+    throw new ValidationError('Custom-handler agents cannot resume a model tool approval.', {
+      where: 'invoke_options',
+      issues: { resume: 'custom_handler_agent' },
+    })
+  }
   if (args.agent.handler) {
     await args.emitEvent?.({
       type: 'agent.started',
@@ -356,10 +368,12 @@ async function runDefaultAgentInner(args: {
   // canonical default-loop system prompt. Durable history intentionally omits
   // those rebuilt records; ignore pre-v2/imported system records here as well
   // so reopening a session can never duplicate or amplify instructions.
-  const nonSystem = args.history.filter((m) => m.role !== 'system')
+  const nonSystem = args.history.filter(m => m.role !== 'system')
   const cappedNonSystem =
     args.historyWindow === undefined ? nonSystem : args.historyWindow === 0 ? [] : nonSystem.slice(-args.historyWindow)
-  const modelMessages: ModelMessage[] = [
+  const modelMessages: ModelMessage[] = args.approvalResume
+    ? [...args.approvalResume.checkpoint.state.modelMessages]
+    : [
     ...cappedNonSystem,
     {
       id: '',
@@ -370,7 +384,7 @@ async function runDefaultAgentInner(args: {
     } as unknown as Message,
   ].flatMap<ModelMessage>((m): ModelMessage[] => {
     if (m.role === 'tool' && m.toolResults) {
-      return m.toolResults.map((r) => ({
+          return m.toolResults.map(r => ({
         role: 'tool' as const,
         toolCallId: r.toolCallId,
         content: JSON.stringify(r.output ?? r.error ?? {}),
@@ -392,7 +406,9 @@ async function runDefaultAgentInner(args: {
   // Build one logical transcript turn locally and commit it only after the
   // agent has completed. Provider retries therefore never mutate durable
   // history, and a logical run has deterministic message ids on redelivery.
-  const emitted: Message[] = [
+  const emitted: Message[] = args.approvalResume
+    ? [...args.approvalResume.checkpoint.state.emitted]
+    : [
     {
       id: turnMessageId(args.delegationCallId ?? args.runId, '01_user'),
       sessionId: args.sessionId,
@@ -403,7 +419,10 @@ async function runDefaultAgentInner(args: {
     },
   ]
   const maxSteps = args.agent.maxSteps ?? args.maxSteps
-  let steps = 0
+  let steps = args.approvalResume?.checkpoint.state.step ?? 0
+  let approvalResume = args.approvalResume
+  let pendingProviderContinuation: ObjectResponse<JsonValue>['providerContinuation']
+  let pendingModelAlias = selectedModelAlias
 
   await args.emitEvent?.({
     type: 'agent.started',
@@ -422,6 +441,66 @@ async function runDefaultAgentInner(args: {
           reason: 'iterations_exceeded',
           limit: maxSteps,
         })
+      if (approvalResume) {
+        const { state } = approvalResume.checkpoint
+        pendingModelAlias = state.modelAlias
+        pendingProviderContinuation = state.providerContinuation
+        const requestedTools = new Set(state.toolCalls.map(call => call.name))
+        const stepTools = allToolSpecs.filter(tool => requestedTools.has(tool.name))
+        if (stepTools.length !== requestedTools.size) {
+          throw new ValidationError('The pending approval references a tool that is no longer available.', {
+            where: 'invoke_options',
+            issues: { interruptId: approvalResume.resume.interruptId },
+          })
+        }
+        const batch = await runPreparedToolBatch(
+          {
+            ...args,
+            enabledCustomTools,
+            step: steps,
+            approvalDecisions: approvalResume.resume.decisions,
+            turnMessageId: slot => turnMessageId(args.delegationCallId ?? args.runId, slot),
+            beforeTool: async (_toolId, _callId, value) => value,
+            afterTool: (toolId, callId, value, signal, deadline) =>
+              applyAfterToolInterceptors(
+                args,
+                parsedInput,
+                steps,
+                state.modelAlias,
+                toolId,
+                callId,
+                value,
+                signal,
+                deadline,
+              ),
+          },
+          state.toolCalls,
+          stepTools,
+        )
+        const assistantMsg: Message = {
+          id: turnMessageId(args.delegationCallId ?? args.runId, `10_assistant_${steps}`),
+          sessionId: args.sessionId,
+          runId: args.runId,
+          role: 'assistant',
+          content: '',
+          toolCalls: [...batch.calls],
+          timestamp: new Date().toISOString(),
+        }
+        emitted.push(assistantMsg)
+        modelMessages.push({
+          role: 'assistant',
+          content: assistantMsg.content,
+          toolCalls: [...batch.calls],
+          ...(state.providerContinuation ? { providerContinuation: state.providerContinuation } : {}),
+        })
+        for (const outcome of batch.outcomes) {
+          emitted.push(outcome.emitted)
+          modelMessages.push(outcome.modelMessage)
+        }
+        approvalResume = undefined
+        steps += 1
+        continue
+      }
       const canonicalMessages = freezeJson([...modelMessages])
       let prepared: Awaited<ReturnType<NonNullable<typeof args.agent.prepareStep>>>
       try {
@@ -442,6 +521,7 @@ async function runDefaultAgentInner(args: {
         throw new DecisionEvaluationError(prepareStepEvidence(args, steps), 'callback_failed', error)
       }
       const stepModelAlias = prepared?.model ?? selectedModelAlias
+      pendingModelAlias = stepModelAlias
       const model = args.models[stepModelAlias]
       if (!model)
         throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: stepModelAlias } })
@@ -465,7 +545,7 @@ async function runDefaultAgentInner(args: {
         ...(prepared?.call ? { call: prepared.call as ModelCallOptions } : {}),
       }
       request = await applyBeforeModelInterceptors(args, parsedInput, steps, stepModelAlias, request, canonicalMessages)
-      if (request.tools.some((tool) => !stepTools.some((exposed) => structurallyEqual(exposed, tool)))) {
+      if (request.tools.some(tool => !stepTools.some(exposed => structurallyEqual(exposed, tool)))) {
         throw new DecisionEvaluationError(prepareStepEvidence(args, steps), 'invalid_transform')
       }
       const modelContext = {
@@ -494,6 +574,7 @@ async function runDefaultAgentInner(args: {
         )
       }
       response = await applyAfterModelInterceptors(args, parsedInput, steps, stepModelAlias, request, response)
+      pendingProviderContinuation = response.providerContinuation
 
       const toolCalls = (response.toolCalls ?? []) as ToolCallSpec[]
       if (
@@ -583,7 +664,7 @@ async function runDefaultAgentInner(args: {
           ...args,
           enabledCustomTools,
           step: steps,
-          turnMessageId: (slot) => turnMessageId(args.delegationCallId ?? args.runId, slot),
+          turnMessageId: slot => turnMessageId(args.delegationCallId ?? args.runId, slot),
           beforeTool: (toolId, callId, value, signal, deadline) =>
             applyBeforeToolInterceptors(
               args,
@@ -642,6 +723,17 @@ async function runDefaultAgentInner(args: {
       steps += 1
     }
   } catch (error) {
+    if (error instanceof ToolApprovalPendingError) {
+      throw error.attachState({
+        input: parsedInput as JsonValue,
+        step: steps,
+        modelAlias: pendingModelAlias,
+        modelMessages: freezeJson([...modelMessages]),
+        emitted: freezeJson([...emitted]),
+        toolCalls: error.toolCalls,
+        ...(pendingProviderContinuation ? { providerContinuation: pendingProviderContinuation } : {}),
+      })
+    }
     // Pair every agent.started with an agent.finished, even on error/cancel/budget.
     await args.emitEvent?.({
       type: 'agent.finished',
@@ -736,7 +828,7 @@ async function applyInterceptors<T>(
     ordinal += 1
     const deadline = Date.now() + args.decisionTimeoutMs
     try {
-      outcome = await runDecisionOperation({ signal: execution.signal, deadline }, (signal) =>
+      outcome = await runDecisionOperation({ signal: execution.signal, deadline }, signal =>
         invoke(interceptor, freezeJson(current), { signal, deadline: Math.min(deadline, execution.deadline) }),
       )
     } catch (error) {
@@ -892,7 +984,7 @@ async function applyBeforeToolInterceptors(
     { signal, deadline },
     true,
     step,
-    (value) => value,
+    value => value,
     { toolId, callId },
   )
 }
@@ -922,7 +1014,7 @@ async function applyAfterToolInterceptors(
     { signal, deadline },
     true,
     step,
-    (value) => value,
+    value => value,
     { toolId, callId },
   )
 }
@@ -946,7 +1038,7 @@ async function applyBeforeOutputInterceptors(
     undefined,
     true,
     step,
-    (value) => value,
+    value => value,
   )
 }
 
@@ -1004,7 +1096,7 @@ function isStrictModelMessage(value: unknown): value is ModelMessage {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (record['role'] === 'system' || record['role'] === 'user')
-    return isStrictContent(record['content']) && Object.keys(record).every((key) => key === 'role' || key === 'content')
+    return isStrictContent(record['content']) && Object.keys(record).every(key => key === 'role' || key === 'content')
   if (record['role'] === 'assistant')
     return (
       isStrictContent(record['content']) &&
@@ -1013,36 +1105,36 @@ function isStrictModelMessage(value: unknown): value is ModelMessage {
       (record['providerContinuation'] === undefined ||
         providerContinuationSchema.safeParse(record['providerContinuation']).success) &&
       Object.keys(record).every(
-        (key) => key === 'role' || key === 'content' || key === 'toolCalls' || key === 'providerContinuation',
+        key => key === 'role' || key === 'content' || key === 'toolCalls' || key === 'providerContinuation',
       )
     )
   return (
     record['role'] === 'tool' &&
     typeof record['toolCallId'] === 'string' &&
     typeof record['content'] === 'string' &&
-    Object.keys(record).every((key) => key === 'role' || key === 'toolCallId' || key === 'content')
+    Object.keys(record).every(key => key === 'role' || key === 'toolCallId' || key === 'content')
   )
 }
 
 function isStrictContent(value: unknown): boolean {
   if (typeof value === 'string') return true
   if (!Array.isArray(value)) return false
-  return value.every((part) => {
+  return value.every(part => {
     if (!part || typeof part !== 'object' || Array.isArray(part)) return false
     const record = part as Record<string, unknown>
     if (record['kind'] === 'text')
-      return typeof record['text'] === 'string' && Object.keys(record).every((key) => key === 'kind' || key === 'text')
+      return typeof record['text'] === 'string' && Object.keys(record).every(key => key === 'kind' || key === 'text')
     if (record['kind'] === 'image' || record['kind'] === 'audio')
       return (
         typeof record['mimeType'] === 'string' &&
         typeof record['dataBase64'] === 'string' &&
-        Object.keys(record).every((key) => key === 'kind' || key === 'mimeType' || key === 'dataBase64')
+        Object.keys(record).every(key => key === 'kind' || key === 'mimeType' || key === 'dataBase64')
       )
     if (record['kind'] === 'image_url')
       return (
         typeof record['url'] === 'string' &&
         (record['mimeType'] === undefined || typeof record['mimeType'] === 'string') &&
-        Object.keys(record).every((key) => key === 'kind' || key === 'url' || key === 'mimeType')
+        Object.keys(record).every(key => key === 'kind' || key === 'url' || key === 'mimeType')
       )
     if (record['kind'] === 'file')
       return (
@@ -1050,7 +1142,7 @@ function isStrictContent(value: unknown): boolean {
         typeof record['dataBase64'] === 'string' &&
         (record['filename'] === undefined || typeof record['filename'] === 'string') &&
         Object.keys(record).every(
-          (key) => key === 'kind' || key === 'mimeType' || key === 'dataBase64' || key === 'filename',
+          key => key === 'kind' || key === 'mimeType' || key === 'dataBase64' || key === 'filename',
         )
       )
     if (record['kind'] === 'file_url')
@@ -1058,7 +1150,7 @@ function isStrictContent(value: unknown): boolean {
         typeof record['url'] === 'string' &&
         (record['mimeType'] === undefined || typeof record['mimeType'] === 'string') &&
         (record['filename'] === undefined || typeof record['filename'] === 'string') &&
-        Object.keys(record).every((key) => key === 'kind' || key === 'url' || key === 'mimeType' || key === 'filename')
+        Object.keys(record).every(key => key === 'kind' || key === 'url' || key === 'mimeType' || key === 'filename')
       )
     return false
   })
@@ -1071,7 +1163,7 @@ function isStrictToolCall(value: unknown): value is ToolCallSpec {
     typeof record['id'] === 'string' &&
     typeof record['name'] === 'string' &&
     isJsonValue(record['arguments']) &&
-    Object.keys(record).every((key) => key === 'id' || key === 'name' || key === 'arguments')
+    Object.keys(record).every(key => key === 'id' || key === 'name' || key === 'arguments')
   )
 }
 
@@ -1092,7 +1184,7 @@ function assertProtectedTranscript(canonical: readonly ModelMessage[], candidate
         ids.add(call.id)
       }
   for (const [groupIndex, group] of groups.entries()) {
-    const index = candidate.findIndex((message) => structurallyEqual(message, group.assistant))
+    const index = candidate.findIndex(message => structurallyEqual(message, group.assistant))
     if (index < 0) {
       if (groupIndex === groups.length - 1)
         throw new ValidationError('The latest tool interaction group must be retained.', {
@@ -1112,7 +1204,7 @@ function assertProtectedTranscript(canonical: readonly ModelMessage[], candidate
     if (
       message.role === 'assistant' &&
       message.toolCalls &&
-      !groups.some((group) => structurallyEqual(message, group.assistant))
+      !groups.some(group => structurallyEqual(message, group.assistant))
     )
       throw new ValidationError('Protected tool interaction groups cannot be injected.', {
         where: 'model_response',
@@ -1133,7 +1225,7 @@ function toolInteractionGroups(
   for (let index = 0; index < messages.length; index += 1) {
     const assistant = messages[index]
     if (!assistant || assistant.role !== 'assistant' || !assistant.toolCalls?.length) continue
-    const callIds = new Set(assistant.toolCalls.map((call) => call.id))
+    const callIds = new Set(assistant.toolCalls.map(call => call.id))
     const results: ModelMessage[] = []
     for (let cursor = index + 1; cursor < messages.length; cursor += 1) {
       const result = messages[cursor]
@@ -1161,10 +1253,10 @@ function filterActiveTools(
 ): ModelToolSpec[] {
   if (!activeTools) return [...tools]
   const requested = new Set(activeTools)
-  const filtered = tools.filter((tool) => requested.has(tool.name))
+  const filtered = tools.filter(tool => requested.has(tool.name))
   if (filtered.length !== requested.size) {
-    const available = new Set(tools.map((tool) => tool.name))
-    const unknown = [...requested].filter((name) => !available.has(name))
+    const available = new Set(tools.map(tool => tool.name))
+    const unknown = [...requested].filter(name => !available.has(name))
     throw new ValidationError('prepareStep referenced an unknown active tool.', {
       where: 'agent_input',
       issues: { agentId, activeTools: unknown },
@@ -1194,7 +1286,7 @@ async function applyGovernanceToolExposure(
     metadata: args.metadata ?? {},
     ...(args.emitEvent ? { emitEvent: args.emitEvent } : {}),
   })
-  return tools.filter((tool) => visible.includes(tool.name))
+  return tools.filter(tool => visible.includes(tool.name))
 }
 
 async function shouldStopAgentLoop(

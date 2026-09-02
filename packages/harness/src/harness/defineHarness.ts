@@ -83,6 +83,7 @@ import {
 	type SessionOptions,
 } from '../sandbox/ownership.js'
 import type { DecisionExecutionContext } from '../decisions/types.js'
+import type { ToolApprovalInterrupt, ToolApprovalResume } from '../approvals/index.js'
 import { agentPermissionsSchema, governanceConfigSchema } from '../decisions/schemas.js'
 import { validateToolDefinitions } from './tool-definition.js'
 import type { Infer, InferIn, ModelSchema, Schema } from '../schema/index.js'
@@ -252,6 +253,8 @@ export interface InvokeOptions {
 	tracestate?: string
 	/** Scalar metadata exposed to handlers and telemetry sanitizers. */
 	metadata?: Record<string, JsonValue>
+  /** Resume a previously returned tool-approval interrupt with authenticated decisions. */
+  resume?: ToolApprovalResume
 	/**
 	 * Opt a workflow run into durable execution against the configured
 	 * `.storage(...)` (and optional `.workspace(...)`). Workflow-only;
@@ -1054,12 +1057,6 @@ export interface NativePolicyRuleForTool<S extends BuilderState, K extends Gover
 /** Native policy rule with a full correlated context union. */
 export type NativePolicyRule<S extends BuilderState> = NativePolicyRuleForTool<S, GovernanceToolId<S>>
 
-/** Correlated approval subject without callback-only execution fields. */
-export type GovernanceApprovalSubject<
-	S extends BuilderState = BuilderState,
-	K extends GovernanceToolId<S> = GovernanceToolId<S>,
-> = K extends GovernanceToolId<S> ? Omit<GovernanceContext<S, K>, 'metadata' | 'signal' | 'deadline'> : never
-
 /** Native policy definition evaluated by the harness without an external policy engine. */
 export interface NativePolicyDefinition<S extends BuilderState = BuilderState> {
 	kind: 'native'
@@ -1072,28 +1069,6 @@ export interface NativePolicyDefinition<S extends BuilderState = BuilderState> {
 export type GovernancePolicyDefinition<S extends BuilderState = BuilderState> =
 	| NativePolicyDefinition<S>
 	| GovernancePolicyEvaluator<S>
-
-/** Approval request for exactly one tool occurrence. */
-export type GovernanceApprovalRequest<S extends BuilderState = BuilderState> = S extends BuilderState
-	? {
-			approvalId: string
-			subject: GovernanceApprovalSubject<S>
-			demands: readonly import('../decisions/types.js').DecisionEvidence[]
-		}
-	: never
-
-/** Strict result from an immediate approval provider. */
-export type GovernanceApprovalResult = z.infer<typeof import('../decisions/schemas.js').governanceApprovalResultSchema>
-
-/** Optional approval adapter used only by policies that return `require_approval`. */
-export type GovernanceApprovalProvider<S extends BuilderState = BuilderState> = S extends BuilderState
-	? {
-			request: (
-				request: GovernanceApprovalRequest<S>,
-				execution: DecisionExecutionContext,
-			) => Promise<GovernanceApprovalResult>
-		}
-	: never
 
 /** Content-free audit record emitted after governance validation. */
 export interface GovernanceAuditRecord {
@@ -1125,7 +1100,6 @@ export interface GovernanceConfig<S extends BuilderState = BuilderState> {
 	defaultEffect?: 'allow' | 'deny'
 	policies?: readonly GovernancePolicyDefinition<S>[]
 	exposure?: GovernanceToolExposurePolicy<S>
-	approval?: GovernanceApprovalProvider<S>
 	audit?: GovernanceAuditSink
 }
 
@@ -1575,15 +1549,17 @@ export type WorkflowsConfig<
 }
 
 /** Durable, authenticated pause that can be resumed without treating it as a failure. */
-export type HarnessInterrupt = {
-	readonly type: 'external-wait'
-	readonly id: string
-	readonly revision: string
-	readonly kind: string
-	readonly schemaVersion: string
-	readonly definitionVersion: string
-	readonly deadline: string
-}
+export type HarnessInterrupt =
+	| {
+			readonly type: 'external-wait'
+			readonly id: string
+			readonly revision: string
+			readonly kind: string
+			readonly schemaVersion: string
+			readonly definitionVersion: string
+			readonly deadline: string
+	  }
+	| ToolApprovalInterrupt
 
 /** Public result shared by aggregate and streaming execution. */
 export type RunOutcome<Output, Interrupt = HarnessInterrupt> =
@@ -1604,6 +1580,14 @@ export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> =
 			readonly id: string
 			readonly value: JsonValue
 	  }
+  | {
+      readonly type: 'tool.input.available'
+      readonly runId: string
+      readonly agentId: string
+      readonly toolId: string
+      readonly callId: string
+      readonly input: JsonValue
+    }
 	| {
 			readonly type: 'tool.started'
 			readonly runId: string
@@ -1629,7 +1613,21 @@ export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> =
 			readonly callId: string
 			readonly approvalId: string
 	  }
-	| { readonly type: 'run.finished'; readonly runId: string; readonly at: string; readonly outcome: RunOutcome<Output, Interrupt> }
+  | {
+      readonly type: 'approval.responded'
+      readonly runId: string
+      readonly agentId: string
+      readonly toolId: string
+      readonly callId: string
+      readonly approvalId: string
+      readonly approved: boolean
+    }
+  | {
+      readonly type: 'run.finished'
+      readonly runId: string
+      readonly at: string
+      readonly outcome: RunOutcome<Output, Interrupt>
+    }
 
 /** Typed workflow invoker available under `session.workflows.<id>`. */
 export interface WorkflowInvoker<S extends BuilderState, K extends keyof NonNullable<S['workflows']>> {
@@ -2021,6 +2019,7 @@ export type RunEvent =
 			reasonCode?: string
 			errorCode?: string
 	  }
+  | { type: 'tool.input.available'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
 	| { type: 'tool.started'; runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
 	| {
 			type: 'tool.finished'
@@ -2122,7 +2121,9 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 		requirement: R,
 	): HarnessBuilder<S & { models: Record<Id, RequiredModel<R>> }>
 	/** Declares provider-neutral model requirements for a portable definition. */
-	requireModels<const R extends ModelTypesConfig>(requirements: R): HarnessBuilder<S & { models: RequiredModelTypes<R> }>
+  requireModels<const R extends ModelTypesConfig>(
+    requirements: R,
+  ): HarnessBuilder<S & { models: RequiredModelTypes<R> }>
 	/** Registers one model alias and preserves its literal id for later agents. */
 	model<const Id extends string, const D extends ModelAlias>(
 		id: Id,
@@ -2476,7 +2477,13 @@ function resolveRuntimeModels(
 	for (const alias of requiredAliases) {
 		const requirement = requirements[alias]
 		const binding = bindings[alias]
-		if (!requirement || !binding || typeof binding.model !== 'string' || binding.model.length === 0 || !binding.provider) {
+    if (
+      !requirement ||
+      !binding ||
+      typeof binding.model !== 'string' ||
+      binding.model.length === 0 ||
+      !binding.provider
+    ) {
 			throw new HarnessConfigError('A model binding requires a provider and non-empty model id.', {
 				reason: 'invalid_model_binding',
 				path: `models.${alias}`,
@@ -2852,7 +2859,9 @@ class Builder<S extends BuilderState> {
 				})
 			}
 		}
-		return this.clone({ modelRequirements: Object.freeze({ ...current, ...requirements }) }) as unknown as HarnessBuilder<any>
+    return this.clone({
+      modelRequirements: Object.freeze({ ...current, ...requirements }),
+    }) as unknown as HarnessBuilder<any>
 	}
 
 	public model<const Id extends string, const D extends ModelAlias>(
@@ -3051,10 +3060,13 @@ class Builder<S extends BuilderState> {
 
 	public define(): HarnessDefinition<S> {
 		if (this.configured.models) {
-			throw new HarnessConfigError('Portable definitions use requireModel or requireModels instead of concrete models.', {
+      throw new HarnessConfigError(
+        'Portable definitions use requireModel or requireModels instead of concrete models.',
+        {
 				reason: 'concrete_models_in_definition',
 				path: 'models',
-			})
+        },
+      )
 		}
 		const requirements = this.configured.modelRequirements ?? {}
 		this.validateToolSkillNamespace()
@@ -3173,10 +3185,7 @@ class Builder<S extends BuilderState> {
 		return harness
 	}
 
-	private createDefinitionCatalog(
-		name: string,
-		requirements: ModelTypesConfig,
-	): HarnessContributionCatalog<S> {
+  private createDefinitionCatalog(name: string, requirements: ModelTypesConfig): HarnessContributionCatalog<S> {
 		const entry = (definition: { input?: AnySchema; output?: AnySchema; updates?: OutputUpdateMode }) =>
 			Object.freeze({
 				input: definition.input ?? z.string(),
@@ -3403,12 +3412,7 @@ class Builder<S extends BuilderState> {
 	}
 
 	private validateRegistryId(family: 'models' | 'tools' | 'agents' | 'workflows', id: string): void {
-		if (
-			!/^[a-z][a-z0-9_]*$/.test(id) ||
-			id.length > 64 ||
-			id.startsWith('harness_') ||
-			id.startsWith('system_')
-		) {
+    if (!/^[a-z][a-z0-9_]*$/.test(id) || id.length > 64 || id.startsWith('harness_') || id.startsWith('system_')) {
 			throw new HarnessConfigError(
 				`Invalid ${family.slice(0, -1)} id. Ids must match /^[a-z][a-z0-9_]*$/, be at most 64 characters, and must not use the reserved harness_ or system_ prefixes.`,
 				{ reason: `invalid_${family.slice(0, -1)}_id`, path: `${family}.${id}`, id },
@@ -3796,38 +3800,16 @@ class Builder<S extends BuilderState> {
 
 	private validateGovernancePolicies(): void {
 		const governance = this.configured.governance
-		const permissionApprovalRequired = Object.values(this.configured.agents ?? {}).some(agent =>
-			Object.values(agent.permissions ?? {}).some(
-				permission =>
-					permission === 'require_approval' ||
-					(typeof permission === 'object' && permission?.mode === 'require_approval'),
-			),
-		)
-		if (!governance) {
-			if (permissionApprovalRequired) {
-				throw new HarnessConfigError('Permission approval requires a governance approval provider.', {
-					reason: 'invalid_governance',
-					path: 'governance.approval',
-				})
-			}
-			return
-		}
+    if (!governance) return
 		validateGovernanceConfiguration(governance)
 		const policies = governance.policies ?? []
 		const exposureRules = governance.exposure?.rules ?? []
-		if (policies.length === 0 && exposureRules.length === 0 && !governance.approval) {
-			throw new HarnessConfigError('Governance requires an execution policy, exposure rule, or approval provider.', {
+    if (policies.length === 0 && exposureRules.length === 0) {
+      throw new HarnessConfigError('Governance requires an execution policy or exposure rule.', {
 				reason: 'invalid_governance',
 				path: 'governance',
 			})
 		}
-		if (permissionApprovalRequired && !governance.approval) {
-			throw new HarnessConfigError('Permission approval requires a governance approval provider.', {
-				reason: 'invalid_governance',
-				path: 'governance.approval',
-			})
-		}
-
 		const configuredTools = new Set<string>([...BUILTIN_TOOL_NAMES, ...Object.keys(this.configured.tools ?? {})])
 		const policyIds = new Set<string>()
 		for (const policy of policies) {
@@ -3838,12 +3820,6 @@ class Builder<S extends BuilderState> {
 			if ('kind' in policy && policy.kind === 'native') {
 				const ruleIds = new Set<string>()
 				for (const rule of policy.rules) {
-					if (rule.effect === 'require_approval' && governance.mode !== 'shadow' && !governance.approval) {
-						throw new HarnessConfigError('Governance approval rules require an approval provider.', {
-							reason: 'invalid_governance',
-							path: 'governance.approval',
-						})
-					}
 					if (ruleIds.has(rule.id)) {
 						throw new HarnessConfigError('Governance rule ids must be unique within a policy.', {
 							reason: 'invalid_governance',
@@ -3938,8 +3914,9 @@ class Builder<S extends BuilderState> {
 		}
 
 		const capabilities = uniqueCapabilities(adapters.flatMap(adapter => adapter.capabilities))
-		const grepRequiresTextSearch = Object.values(this.configured.agents ?? {})
-			.some(agent => resolveEnabledBuiltinTools(agent.builtinTools).includes('grep'))
+    const grepRequiresTextSearch = Object.values(this.configured.agents ?? {}).some(agent =>
+      resolveEnabledBuiltinTools(agent.builtinTools).includes('grep'),
+    )
 		return {
 			name,
 			capabilities,

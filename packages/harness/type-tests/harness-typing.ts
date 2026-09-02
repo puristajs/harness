@@ -25,8 +25,6 @@ import {
 import type {
 	AgentPermissions,
 	BuilderState,
-	GovernanceApprovalProvider,
-	GovernanceApprovalSubject,
 	Harness,
 	HarnessBuilder,
 	ModelsConfig,
@@ -681,9 +679,8 @@ const _agentOutputExact: Expect<Equal<PlannerOutput, { plan: string; accepted: b
 async function invokeWorkflow() {
 	const session = await harness.getSession('type-test')
 	const agentOutput = await session.agents.planner.run({ task: 'ship typing', priority: 1 })
-	const _agentInvokeOutputExact: Expect<
-		Equal<typeof agentOutput, RunOutcome<{ plan: string; accepted: boolean }>>
-	> = true
+  const _agentInvokeOutputExact: Expect<Equal<typeof agentOutput, RunOutcome<{ plan: string; accepted: boolean }>>> =
+    true
 
 	// @ts-expect-error agent run input must match the sibling input schema
 	await session.agents.planner.run({ task: 'missing priority' })
@@ -777,7 +774,13 @@ async function sandboxCapabilityTypes() {
 		})
 	).session
 	await session.readText('/workspace/file.txt')
-	await session.searchText({ path: '/workspace', pattern: 'needle', syntax: 'literal', caseSensitive: true, maxResults: 10 })
+  await session.searchText({
+    path: '/workspace',
+    pattern: 'needle',
+    syntax: 'literal',
+    caseSensitive: true,
+    maxResults: 10,
+  })
 	// @ts-expect-error non-executable sandbox sessions do not expose exec
 	await session.exec('echo hi')
 }
@@ -841,7 +844,13 @@ defineHarness()
 			output: z.string(),
 			handler: async ctx => {
 				const executor: 'unavailable' = ctx.sandbox.executor
-				await ctx.sandbox.searchText({ path: '/workspace', pattern: 'needle', syntax: 'literal', caseSensitive: true, maxResults: 10 })
+        await ctx.sandbox.searchText({
+          path: '/workspace',
+          pattern: 'needle',
+          syntax: 'literal',
+          caseSensitive: true,
+          maxResults: 10,
+        })
 				// @ts-expect-error registered non-executable sandbox does not provide exec
 				await ctx.sandbox.exec('echo hi')
 				// @ts-expect-error registered files-only sandbox does not provide spawn
@@ -873,7 +882,8 @@ defineHarness().tools({
 		handler: async ctx => {
 			// @ts-expect-error auto-detection does not guarantee exec
 			await ctx.sandbox.exec('echo hi')
-			if (isTextSearchCapableSession(ctx.sandbox)) await ctx.sandbox.searchText({ path: '/', pattern: 'x', syntax: 'literal', caseSensitive: true, maxResults: 1 })
+      if (isTextSearchCapableSession(ctx.sandbox))
+        await ctx.sandbox.searchText({ path: '/', pattern: 'x', syntax: 'literal', caseSensitive: true, maxResults: 1 })
 			return isExecCapableSession(ctx.sandbox) ? (await ctx.sandbox.exec('echo hi')).stdout : 'files only'
 		},
 	},
@@ -1175,89 +1185,12 @@ defineHarness()
 		],
 	}))
 
-const approvalSubjectBuilder = defineHarness()
-	.models({ approval_subject_model: { provider, model: 'type-test-model', capabilities: ['object'] } })
-	.tools({
-		approval_transfer: {
-			description: 'Transfer.',
-			input: z.object({ amount: z.number() }),
-			output: z.object({ ok: z.boolean() }),
-			handler: async () => ({ ok: true }),
-		},
-		approval_archive: {
-			description: 'Archive.',
-			input: z.object({ ticket: z.string() }),
-			output: z.object({ ok: z.boolean() }),
-			handler: async () => ({ ok: true }),
-		},
-	})
-type ApprovalSubjectState = typeof approvalSubjectBuilder extends HarnessBuilder<infer S> ? S : never
-declare const approvalSubject: GovernanceApprovalSubject<ApprovalSubjectState>
-if (approvalSubject.toolId === 'approval_transfer') approvalSubject.input.amount
-if (approvalSubject.toolId === 'approval_archive') approvalSubject.input.ticket
-
-approvalSubjectBuilder.governance({
-	approval: {
-		async request(request, execution) {
-			const signal: AbortSignal = execution.signal
-			const deadline: number = execution.deadline
-			void signal
-			void deadline
-			// @ts-expect-error the input must be narrowed by its correlated tool id.
-			request.subject.input.amount
-			if (request.subject.toolId === 'approval_transfer') {
-				const amount: number = request.subject.input.amount
-				void amount
-				// @ts-expect-error transfer input does not contain archive fields.
-				request.subject.input.ticket
-			}
-			if (request.subject.toolId === 'approval_archive') {
-				const ticket: string = request.subject.input.ticket
-				void ticket
-				// @ts-expect-error archive input does not contain transfer fields.
-				request.subject.input.amount
-			}
-			// @ts-expect-error execution is a bounded callback context, not arbitrary configuration.
-			execution.missing
-			return { decision: 'approved' }
-		},
-	},
-})
-
-const standaloneApprovalProvider: GovernanceApprovalProvider = {
-	async request(request, execution) {
-		const toolId: string = request.subject.toolId
-		const signal: AbortSignal = execution.signal
-		void toolId
-		void signal
-		return { decision: 'approved' }
-	},
-}
-approvalSubjectBuilder.governance({ approval: standaloneApprovalProvider })
-approvalSubjectBuilder.governance(() => ({
-	approval: {
-		async request(request, execution) {
-			if (request.subject.toolId === 'approval_transfer') {
-				const amount: number = request.subject.input.amount
-				void amount
-				// @ts-expect-error helper callback retains the selected tool input shape.
-				request.subject.input.ticket
-			}
-			const deadline: number = execution.deadline
-			void deadline
-			return { decision: 'approved' }
-		},
-	},
-}))
-
-declare const toolSpecificApprovalProvider: GovernanceApprovalProvider<ApprovalSubjectState>
-// @ts-expect-error an adapter for a specific tool set cannot handle arbitrary builder subjects.
-const unsafeStandaloneApprovalProvider: GovernanceApprovalProvider = toolSpecificApprovalProvider
-void unsafeStandaloneApprovalProvider
-
 // Clean API contract: singular `.tool` provides exact contextual inference,
 // while plural `.tools` carries an already-authored record through unchanged.
-const cleanApiPretypedTools: Record<'pretyped_echo', TsToolDefinition<z.ZodObject<{ value: z.ZodString }>, z.ZodObject<{ value: z.ZodString }>>> = {
+const cleanApiPretypedTools: Record<
+  'pretyped_echo',
+  TsToolDefinition<z.ZodObject<{ value: z.ZodString }>, z.ZodObject<{ value: z.ZodString }>>
+> = {
 	pretyped_echo: {
 		description: 'A pretyped native tool map.',
 		input: z.object({ value: z.string() }),
@@ -1267,7 +1200,8 @@ const cleanApiPretypedTools: Record<'pretyped_echo', TsToolDefinition<z.ZodObjec
 }
 const cleanApiPluralToolBuilder = defineHarness().tools(cleanApiPretypedTools)
 type CleanApiPluralToolState = typeof cleanApiPluralToolBuilder extends HarnessBuilder<infer S> ? S : never
-const _cleanApiPluralToolsPreserved: Expect<Equal<CleanApiPluralToolState['tools'], typeof cleanApiPretypedTools>> = true
+const _cleanApiPluralToolsPreserved: Expect<Equal<CleanApiPluralToolState['tools'], typeof cleanApiPretypedTools>> =
+  true
 void _cleanApiPluralToolsPreserved
 
 defineHarness().tool('clean_api_singular_tool', {

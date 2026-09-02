@@ -93,6 +93,8 @@ import {
 
 import type { AdapterCapability } from '../ports/capabilities.js'
 import type { HarnessStorage } from '../storage/types.js'
+import type { DurableRunLease } from '../storage/execution.js'
+import { ToolApprovalPendingError, type ToolApprovalCheckpoint, type ToolApprovalResume } from '../approvals/index.js'
 import type { HarnessAdapterContext, HarnessContextConfigurable } from '../ports/harness-context.js'
 import { finishReasonSchema, tokenUsageSchema, type FinishReason, type TokenUsage } from '../ports/model-provider.js'
 import { loadSkillsSync } from '../skills/index.js'
@@ -393,10 +395,10 @@ export async function* relayRunEvents(
     resolve?.()
   }
 
-  const result = run((event) => {
+  const result = run(event => {
     if ('runId' in event) liveRunId = event.runId
     if (queue.length >= STREAM_MAX_BUFFERED_EVENTS) {
-      const dropIndex = queue.findIndex((candidate) => !STREAM_UNDROPPABLE_EVENT_TYPES.has(candidate.type))
+      const dropIndex = queue.findIndex(candidate => !STREAM_UNDROPPABLE_EVENT_TYPES.has(candidate.type))
       if (dropIndex >= 0) {
         queue.splice(dropIndex, 1)
         dropped += 1
@@ -412,7 +414,7 @@ export async function* relayRunEvents(
     notify()
     return Promise.resolve()
   }, relayController.signal)
-    .catch((error) => {
+    .catch(error => {
       failure = error
       return undefined
     })
@@ -440,7 +442,7 @@ export async function* relayRunEvents(
         }
         // No await between the empty check and installing `wake`, so a producer
         // push cannot be lost between them.
-        await new Promise<void>((resolve) => {
+        await new Promise<void>(resolve => {
           wake = resolve
         })
       }
@@ -460,7 +462,7 @@ async function runWithOutcome<Output>(
 ): Promise<RunOutcome<Output>> {
   let runId: string | undefined
   try {
-    const output = await run(async (event) => {
+    const output = await run(async event => {
       if (event.type === 'run.started') runId = event.runId
     })
     if (!runId) throw new InternalError('Harness run completed without publishing its run identity.')
@@ -468,6 +470,9 @@ async function runWithOutcome<Output>(
   } catch (error) {
     if (error instanceof ExternalWaitPendingError) {
       return { status: 'interrupted', runId: error.runId, interrupt: externalWaitInterrupt(error) }
+    }
+    if (error instanceof ToolApprovalPendingError) {
+      return { status: 'interrupted', runId: error.interrupt.requests[0]!.runId, interrupt: error.interrupt }
     }
     throw error
   }
@@ -503,6 +508,7 @@ async function* projectExecutionEvents<Output>(
             }
           }
           break
+        case 'tool.input.available':
         case 'tool.started':
         case 'tool.finished':
           yield event
@@ -517,6 +523,19 @@ async function* projectExecutionEvents<Output>(
             approvalId: event.approvalId,
           }
           break
+        case 'approval.finished':
+          if (event.outcome === 'approved' || event.outcome === 'rejected') {
+            yield {
+              type: 'approval.responded',
+              runId: event.runId,
+              agentId: event.agentId,
+              toolId: event.toolId,
+              callId: event.callId,
+              approvalId: event.approvalId,
+              approved: event.outcome === 'approved',
+            }
+          }
+          break
         case 'run.finished':
           if (event.error) break
           yield {
@@ -529,13 +548,26 @@ async function* projectExecutionEvents<Output>(
       }
     }
   } catch (error) {
-    if (!(error instanceof ExternalWaitPendingError)) throw error
+    if (error instanceof ExternalWaitPendingError) {
     yield {
       type: 'run.finished',
       runId: error.runId,
       at: new Date().toISOString(),
       outcome: { status: 'interrupted', runId: error.runId, interrupt: externalWaitInterrupt(error) },
     }
+      return
+    }
+    if (error instanceof ToolApprovalPendingError) {
+      const runId = error.interrupt.requests[0]!.runId
+      yield {
+        type: 'run.finished',
+        runId,
+        at: new Date().toISOString(),
+        outcome: { status: 'interrupted', runId, interrupt: error.interrupt },
+      }
+      return
+    }
+    throw error
   }
 }
 
@@ -574,6 +606,129 @@ function validateInvokeOptions(opts: InvokeOptions | undefined): void {
     throw new ValidationError('Invoke options are invalid.', {
       where: 'invoke_options',
       issues: { idempotencyKey: 'must match /^[A-Za-z0-9_.:-]{1,120}$/' },
+    })
+  }
+  if (opts?.resume && (opts.idempotencyKey || opts.durable)) {
+    throw new ValidationError('Approval resume cannot be combined with idempotencyKey or durable options.', {
+      where: 'invoke_options',
+      issues: { resume: 'conflicting_options' },
+    })
+  }
+}
+
+function validateApprovalResume(value: ToolApprovalResume): ToolApprovalResume {
+  const identifier = (candidate: unknown) =>
+    typeof candidate === 'string' &&
+    candidate.length > 0 &&
+    candidate.length <= 200 &&
+    !/[\u0000-\u001f]/.test(candidate)
+  if (
+    !value ||
+    value.type !== 'tool-approval' ||
+    !identifier(value.runId) ||
+    !identifier(value.interruptId) ||
+    !identifier(value.revision) ||
+    !identifier(value.eventId) ||
+    !Array.isArray(value.decisions) ||
+    value.decisions.length === 0
+  ) {
+    throw new ValidationError('Tool approval resume is invalid.', {
+      where: 'invoke_options',
+      issues: { resume: 'invalid_shape' },
+    })
+  }
+  const ids = new Set<string>()
+  for (const decision of value.decisions) {
+    if (
+      !decision ||
+      !identifier(decision.approvalId) ||
+      typeof decision.approved !== 'boolean' ||
+      (decision.reason !== undefined && (typeof decision.reason !== 'string' || decision.reason.length > 1_000)) ||
+      ids.has(decision.approvalId)
+    ) {
+      throw new ValidationError('Tool approval resume decisions are invalid.', {
+        where: 'invoke_options',
+        issues: { decisions: 'invalid_or_duplicate' },
+      })
+    }
+    ids.add(decision.approvalId)
+  }
+  return value
+}
+
+function parseToolApprovalCheckpoint(value: JsonValue | undefined, resume: ToolApprovalResume): ToolApprovalCheckpoint {
+  if (!isJsonRecord(value) || value['schemaVersion'] !== 1) {
+    throw new ValidationError('Interrupted run has no valid tool approval checkpoint.', {
+      where: 'invoke_options',
+      issues: { runId: resume.runId },
+    })
+  }
+  const interrupt = value['interrupt']
+  const state = value['state']
+  if (
+    !isJsonRecord(interrupt) ||
+    interrupt['type'] !== 'tool-approval' ||
+    interrupt['id'] !== resume.interruptId ||
+    interrupt['revision'] !== resume.revision ||
+    !Array.isArray(interrupt['requests']) ||
+    !isJsonRecord(state) ||
+    !Array.isArray(state['modelMessages']) ||
+    !Array.isArray(state['emitted']) ||
+    !Array.isArray(state['toolCalls']) ||
+    typeof state['step'] !== 'number'
+  ) {
+    throw new ValidationError('Tool approval resume does not match the persisted interrupt.', {
+      where: 'invoke_options',
+      issues: { runId: resume.runId, interruptId: resume.interruptId, revision: resume.revision },
+    })
+  }
+  const requestedIds = interrupt['requests'].flatMap(request =>
+    isJsonRecord(request) && typeof request['approvalId'] === 'string' ? [request['approvalId']] : [],
+  )
+  const decisionIds = resume.decisions.map(decision => decision.approvalId)
+  if (
+    requestedIds.length !== interrupt['requests'].length ||
+    requestedIds.length !== decisionIds.length ||
+    requestedIds.some(id => !decisionIds.includes(id))
+  ) {
+    throw new ValidationError('Every pending tool approval requires exactly one decision.', {
+      where: 'invoke_options',
+      issues: { decisions: 'approval_set_mismatch' },
+    })
+  }
+  return value as unknown as ToolApprovalCheckpoint
+}
+
+function approvalDecisionStepId(interruptId: string): string {
+  return `approval:${createHash('sha256').update(interruptId).digest('hex').slice(0, 32)}`
+}
+
+function approvalDecisionRecord(resume: ToolApprovalResume): JsonValue {
+  return {
+    type: 'tool-approval-decision',
+    interruptId: resume.interruptId,
+    revision: resume.revision,
+    eventId: resume.eventId,
+    decisions: [...resume.decisions]
+      .sort((left, right) => left.approvalId.localeCompare(right.approvalId))
+      .map(decision => ({
+        approvalId: decision.approvalId,
+        approved: decision.approved,
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      })),
+  }
+}
+
+async function assertCompletedApprovalDecision(storage: HarnessStorage, resume: ToolApprovalResume): Promise<void> {
+  const checkpoint = await storage.loadCheckpoint(resume.runId)
+  if (
+    !checkpoint ||
+    checkpoint.stepId !== approvalDecisionStepId(resume.interruptId) ||
+    JSON.stringify(checkpoint.output) !== JSON.stringify(approvalDecisionRecord(resume))
+  ) {
+    throw new ValidationError('Tool approval decision conflicts with the completed run.', {
+      where: 'invoke_options',
+      issues: { runId: resume.runId, interruptId: resume.interruptId, eventId: resume.eventId },
     })
   }
 }
@@ -644,7 +799,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return sandboxLifecycle(
       'open',
       () => definition.sandbox.open(options),
-      (result) => ({
+      result => ({
         'harness.sandbox.disposition': result.disposition,
         'harness.sandbox.live_process_state': result.liveProcessState,
       }),
@@ -1093,7 +1248,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   async function persistConversationTurn(sessionId: string, messages: readonly Message[]): Promise<void> {
     if (messages.length === 0) return
     const current = await definition.storage.listMessages(sessionId)
-    const existing = new Map(current.map((message) => [message.id, message]))
+    const existing = new Map(current.map(message => [message.id, message]))
     const additions: Message[] = []
     for (const message of messages) {
       const prior = existing.get(message.id)
@@ -1126,7 +1281,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const config = definition.memorySummary
     if (!config) return
     const history = await definition.storage.listMessages(sessionId)
-    const completeTurns = history.filter((message) => message.role === 'user').length
+    const completeTurns = history.filter(message => message.role === 'user').length
     if (completeTurns === 0 || completeTurns % config.everyTurns !== 0) return
     const source = history.slice(-config.sourceTurns * 2)
     const handle = modelRegistry[config.alias] as
@@ -1165,7 +1320,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                   content:
                     'Summarize the supplied conversation faithfully. Do not invent facts. Return a concise summary.',
                 },
-                { role: 'user', content: source.map((message) => `${message.role}: ${message.content}`).join('\n') },
+                { role: 'user', content: source.map(message => `${message.role}: ${message.content}`).join('\n') },
               ],
               schema: MEMORY_SUMMARY_JSON_SCHEMA,
               schemaName: 'harness_conversation_summary',
@@ -1176,7 +1331,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       const summary = readMemorySummary(response.object)
       const model = definition.models[config.alias]!
       const digest = createHash('sha256')
-        .update(JSON.stringify(source.map((message) => [message.id, message.content])))
+        .update(JSON.stringify(source.map(message => [message.id, message.content])))
         .digest('hex')
       const memory = createMemoryFacade(
         memoryOptions(sessionId, sandboxSession, signal, identity ? { identity } : {}),
@@ -1185,7 +1340,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         '_harness/conversation-summary',
         {
           summary,
-          sourceMessageIds: source.map((message) => message.id),
+          sourceMessageIds: source.map(message => message.id),
           sourceDigest: digest,
           generatedAt: now(),
           modelAlias: config.alias,
@@ -1212,7 +1367,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     agent: AgentDefinition<S>,
   ): Promise<JsonValue | undefined> {
     const finalMessage = (await definition.storage.listMessages(sessionId)).find(
-      (message) => message.id === `msg_${runId}_99_assistant_final`,
+      message => message.id === `msg_${runId}_99_assistant_final`,
     )
     if (!finalMessage) return undefined
     let candidate: unknown
@@ -1237,21 +1392,21 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   async function cancelChildTasks(predicate: (task: LiveChildTask) => boolean, reason: string): Promise<void> {
     const selected = [...childTasks.values()].filter(predicate)
-    await Promise.allSettled(selected.map((task) => task.cancel(reason)))
+    await Promise.allSettled(selected.map(task => task.cancel(reason)))
   }
 
   function attachmentStatesForSession(sessionId: string): SessionState[] {
-    return [...sessionStates.values()].filter((candidate) => candidate.sessionId === sessionId)
+    return [...sessionStates.values()].filter(candidate => candidate.sessionId === sessionId)
   }
 
   async function releaseAllSessionResources(sessionId: string, reason: string): Promise<void> {
     const states = attachmentStatesForSession(sessionId)
     const results = await Promise.allSettled(
-      states.map((candidate) => releaseSessionResources(sessionId, candidate, reason)),
+      states.map(candidate => releaseSessionResources(sessionId, candidate, reason)),
     )
     const failures = results
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason)
+      .map(result => result.reason)
     if (failures.length === 1) throw failures[0]
     if (failures.length > 1) throw new AggregateError(failures, 'Failed to release session resources.')
   }
@@ -1313,7 +1468,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       // A child task can intentionally outlive its starter workflow. It owns
       // isolated sandboxes/MCP processes, so cancellation must settle before
       // the parent session's shared resources are closed.
-      await cancelChildTasks((task) => task.descriptor.sessionId === sessionId, reason)
+      await cancelChildTasks(task => task.descriptor.sessionId === sessionId, reason)
 
       const failures: unknown[] = []
       try {
@@ -1529,14 +1684,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       const lazySandboxSession: SandboxSessionBase = {
         executor: 'unavailable',
-        read: async (path) => await (await requireSessionState()).sandboxSession.read(path),
+        read: async path => await (await requireSessionState()).sandboxSession.read(path),
         readText: async (path, encoding) => await (await requireSessionState()).sandboxSession.readText(path, encoding),
         write: async (path, data) => await (await requireSessionState()).sandboxSession.write(path, data),
         remove: async (path, removeOptions) =>
           await (await requireSessionState()).sandboxSession.remove(path, removeOptions),
         list: async (path, listOptions) => await (await requireSessionState()).sandboxSession.list(path, listOptions),
-        stat: async (path) => await (await requireSessionState()).sandboxSession.stat(path),
-        exists: async (path) => await (await requireSessionState()).sandboxSession.exists(path),
+        stat: async path => await (await requireSessionState()).sandboxSession.stat(path),
+        exists: async path => await (await requireSessionState()).sandboxSession.exists(path),
         mount: async (files, path) => await (await requireSessionState()).sandboxSession.mount(files, path),
         close: async () => {
           if (state) await releaseSessionResources(sessionId, state, 'memory session released')
@@ -1558,10 +1713,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts)),
             )
-            return runWithOutcome<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>((onEvent) =>
-              runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts, onEvent) as Promise<
-                WorkflowOutput<S, keyof NonNullable<S['workflows']>>
-              >,
+            return runWithOutcome<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>(
+              onEvent =>
+                runWorkflowCall(
+                  sessionId,
+                  workflowId,
+                  workflow as WorkflowDefinition<S>,
+                  input,
+                  opts,
+                  onEvent,
+                ) as Promise<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>,
             )
           },
           async *stream(
@@ -1604,7 +1765,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts)),
             )
-            return runWithOutcome<AgentOutput<S, keyof NonNullable<S['agents']>>>((onEvent) =>
+            return runWithOutcome<AgentOutput<S, keyof NonNullable<S['agents']>>>(
+              onEvent =>
               runAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts, onEvent) as Promise<
                 AgentOutput<S, keyof NonNullable<S['agents']>>
               >,
@@ -1645,12 +1807,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         agents,
         workflows,
         childTasks: {
-          get: (taskId) => getSessionChildTask(sessionId, taskId),
-          list: (opts) => listSessionChildTasks(sessionId, opts),
+          get: taskId => getSessionChildTask(sessionId, taskId),
+          list: opts => listSessionChildTasks(sessionId, opts),
         },
         memory,
         history: {
-          list: async (opts) => {
+          list: async opts => {
             await requireCurrentRecord()
             return definition.storage.listMessages(sessionId, opts)
           },
@@ -1676,7 +1838,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               reason: 'history_replace_during_run',
             })
           }
-          const parsed = messages.map((message) => {
+          const parsed = messages.map(message => {
             try {
               return normalizeMessage(message, sessionId)
             } catch (error) {
@@ -1855,9 +2017,19 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     // logical session and agent so the same transport key can safely occur in
     // independent conversations. Hashing also keeps the persisted id bounded
     // and avoids placing a caller-controlled delivery id in logs or storage.
-    const runId = opts?.idempotencyKey ? directAgentIdempotencyRunId(sessionId, agentId, opts.idempotencyKey) : ulid()
-    if (opts?.idempotencyKey) {
+    const approvalResume = opts?.resume ? validateApprovalResume(opts.resume) : undefined
+    const runId =
+      approvalResume?.runId ??
+      (opts?.idempotencyKey ? directAgentIdempotencyRunId(sessionId, agentId, opts.idempotencyKey) : ulid())
+    let approvalCheckpoint: ToolApprovalCheckpoint | undefined
+    if (opts?.idempotencyKey || approvalResume) {
       const previous = await definition.storage.getRun(runId)
+      if (approvalResume && !previous) {
+        throw new ValidationError('Tool approval resume references an unknown run.', {
+          where: 'invoke_options',
+          issues: { runId },
+        })
+      }
       if (previous) {
         const sameInvocation =
           previous.sessionId === sessionId &&
@@ -1865,12 +2037,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           previous.target === agentId &&
           JSON.stringify(previous.input) === JSON.stringify(input)
         if (!sameInvocation) {
-          throw new ValidationError('idempotencyKey is already bound to a different agent invocation.', {
+          throw new ValidationError('Agent invocation identity does not match the existing run.', {
             where: 'invoke_options',
-            issues: { idempotencyKey: opts.idempotencyKey },
+            issues: approvalResume ? { runId } : { idempotencyKey: opts?.idempotencyKey },
           })
         }
         if (previous.status === 'succeeded') {
+          if (approvalResume) {
+            await assertCompletedApprovalDecision(definition.storage, approvalResume)
+          }
           // `stream()` still has to satisfy the run-event lifecycle contract
           // on an idempotent replay. These are relay-only events: the prior
           // completed run is authoritative, so no model call or state/event
@@ -1887,6 +2062,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             op: 'createRun',
             reason: 'idempotency_terminal_run',
           })
+        }
+        if (approvalResume) {
+          if (previous.status !== 'interrupted') {
+            throw new ValidationError('Tool approval resume requires an interrupted run.', {
+              where: 'invoke_options',
+              issues: { runId, status: previous.status },
+            })
+          }
+          approvalCheckpoint = parseToolApprovalCheckpoint(previous.output, approvalResume)
         }
         // A process may have committed the transcript and crashed before it
         // could terminalize the run record. Recover that committed result
@@ -1929,6 +2113,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     }
 
     let runCreated = false
+    let approvalLease: DurableRunLease | undefined
     try {
       const memory = memoryFacade({
         sessionId,
@@ -1950,6 +2135,30 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       }
       await definition.storage.createRun(runRecord)
       runCreated = true
+      if (approvalResume) {
+        approvalLease = await definition.storage.acquireRun({
+          runId,
+          sessionId,
+          workerId: durableWorkerId,
+          stepId: approvalDecisionStepId(approvalResume.interruptId),
+          input: input as JsonValue,
+        })
+        const priorSequence = (approvalLease.checkpoints ?? []).reduce(
+          (max, checkpoint) => Math.max(max, checkpoint.sequence),
+          0,
+        )
+        await definition.storage.commitCheckpoint({
+          runId,
+          sessionId,
+          leaseId: approvalLease.leaseId,
+          workerId: approvalLease.workerId,
+          stepId: approvalDecisionStepId(approvalResume.interruptId),
+          input: input as JsonValue,
+          attempt: approvalLease.attempt,
+          sequence: priorSequence + 1,
+          output: approvalDecisionRecord(approvalResume),
+        })
+      }
 
       const result = await withIncomingTraceContext(telemetry, opts, definition.logger, async () =>
         telemetry.span(
@@ -2012,6 +2221,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 			  emitEvent: emit,
 			  metadata: opts?.metadata ?? {},
 			  ...(opts?.hostContext !== undefined ? { hostContext: opts.hostContext } : {}),
+              ...(approvalCheckpoint && approvalResume
+                ? { approvalResume: { checkpoint: approvalCheckpoint, resume: approvalResume } }
+                : {}),
 			})
             if (run.emitted.length > 0) {
               await persistConversationTurn(sessionId, run.emitted)
@@ -2032,6 +2244,20 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       )
       return result as AgentOutput<S, K>
     } catch (error) {
+      if (error instanceof ToolApprovalPendingError) {
+        if (!runCreated) throw error
+        if (!error.state) throw new InternalError('Tool approval interruption has no resumable agent state.')
+        const checkpoint: ToolApprovalCheckpoint = {
+          schemaVersion: 1,
+          interrupt: error.interrupt,
+          state: error.state,
+        }
+        await definition.storage.finishRun(runId, {
+          status: 'interrupted',
+          output: checkpoint as unknown as JsonValue,
+        })
+        throw error
+      }
       const finalError = normalizeRunError(error, runSignal.signal)
       if (!runCreated) {
         throw finalError
@@ -2073,6 +2299,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
       throw finalError
     } finally {
+      await approvalLease?.release()
       runSignal.cleanup()
       state.busy = false
     }
@@ -2783,7 +3010,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     emit: (event: RunEvent) => Promise<void>
   }): { wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> } {
     return {
-      wait: async (request) => {
+      wait: async request => {
         if (!args.durable) {
           throw new ExternalWaitError('External waits require a durable workflow invocation.', 'durable_required')
         }
@@ -3230,7 +3457,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
   async function acquireChildTaskStartLock(taskId: string): Promise<() => void> {
     const previous = childTaskStartLocks.get(taskId) ?? Promise.resolve()
     let resolveCurrent!: () => void
-    const current = new Promise<void>((resolve) => {
+    const current = new Promise<void>(resolve => {
       resolveCurrent = resolve
     })
     childTaskStartLocks.set(taskId, current)
@@ -3471,7 +3698,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         // its established user/assistant/tool shape; the run already emits
         // the current user exactly once, and rebuilt system instructions are
         // configuration rather than task history.
-        history.push(...run.emitted.filter((message) => message.role !== 'system'))
+        history.push(...run.emitted.filter(message => message.role !== 'system'))
         lastOutput = run.output as JsonValue
         return lastOutput
       } catch (error) {
@@ -3550,7 +3777,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
 
   async function readChildTaskDescriptor(taskId: string, record: RunRecord): Promise<ChildTaskDescriptor> {
     const events = await definition.storage.listEvents(taskId, { limit: 1 })
-    const started = events.find((event) => event.type === 'child_task.started')
+    const started = events.find(event => event.type === 'child_task.started')
     const payload = started?.payload
     if (
       isJsonRecord(payload) &&
@@ -3632,9 +3859,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     opts?: { limit?: number; before?: string },
   ): Promise<readonly ChildTaskStatus[]> {
     const records = await definition.storage.listRuns(sessionId, opts)
-    const childRecords = records.filter((record) => record.kind === 'child_task')
+    const childRecords = records.filter(record => record.kind === 'child_task')
     return await Promise.all(
-      childRecords.map(async (record) => {
+      childRecords.map(async record => {
         const live = childTasks.get(record.id)
         if (live && live.descriptor.sessionId === sessionId) return live.snapshot
         const descriptor = await readChildTaskDescriptor(record.id, record)
@@ -4207,7 +4434,7 @@ function withTelemetryFlavor(telemetry: TelemetryShim, options: TelemetryOptions
   if (flavor === 'dual') return telemetry
   const filtered: TelemetryShim = {
     span: (name, attrs, fn) =>
-      telemetry.span(name, filterTelemetryAttrs(attrs, flavor), (span) => fn(filterSpanAttrs(span, flavor))),
+      telemetry.span(name, filterTelemetryAttrs(attrs, flavor), span => fn(filterSpanAttrs(span, flavor))),
     recordHistogram: (name, value, attrs) =>
       telemetry.recordHistogram(name, value, filterTelemetryAttrs(attrs, flavor)),
     recordCounter: (name, value, attrs) => telemetry.recordCounter(name, value, filterTelemetryAttrs(attrs, flavor)),
@@ -4370,6 +4597,7 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         ...(event.output !== undefined ? { output: '[redacted]' } : {}),
         ...(event.error ? { error: event.error } : {}),
       } as unknown as JsonValue
+    case 'tool.input.available':
     case 'tool.started':
       return { agentId: event.agentId, toolId: event.toolId, callId: event.callId, input: '[redacted]' }
     case 'tool.finished':

@@ -74,7 +74,6 @@ const EXPECTED_MAIN_EXPORTS = [
   'discoverSkills',
   'createDeterministicEvaluationScorer',
   'finalizeStreamToolCalls',
-  'governanceApprovalResultSchema',
   'governanceDecisionSchema',
   'providerContinuationItemSchema',
   'providerContinuationSchema',
@@ -121,7 +120,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'modelAdmissionKey',
   'withoutObjectTool',
   'evaluationResultToFeedbackRecords',
-  'withSandboxTelemetry'
+  'withSandboxTelemetry',
 ]
 
 /** Locked value-export surface of `@purista/harness/testing` per specs/13-public-api.md. */
@@ -155,7 +154,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'sandboxMultiClientContract',
   'sandboxSnapshotContract',
   'sandboxTextSearchContract',
-  'harnessStorageContract'
+  'harnessStorageContract',
 ]
 
 describe('public API export surface (specs/13-public-api.md)', () => {

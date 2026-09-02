@@ -47,6 +47,13 @@ export type HarnessUIStatus =
       readonly callId: string
     }
   | { readonly phase: 'completed'; readonly runId: string }
+  | {
+      readonly phase: 'media-progress'
+      readonly runId: string
+      readonly operation: 'video'
+      readonly state: 'queued' | 'running'
+      readonly progress?: number
+    }
   | { readonly phase: 'interrupted'; readonly runId: string; readonly interrupt: HarnessInterrupt }
 
 /** Custom data parts emitted beside standard text and tool chunks. */
@@ -134,6 +141,24 @@ export function createHarnessUIMessageStream<Output extends JsonValue = JsonValu
                 id: `harness-output:${event.runId}:${event.id}`,
                 data: { runId: event.runId, value: event.value },
               })
+              break
+            }
+            case 'output.file': {
+              controller.enqueue({
+                type: 'file',
+                url: event.artifact.url,
+                mediaType: event.artifact.mediaType,
+              })
+              break
+            }
+            case 'output.progress': {
+              controller.enqueue(statusChunk(event.runId, {
+                phase: 'media-progress',
+                runId: event.runId,
+                operation: event.operation,
+                state: event.state,
+                ...(event.progress !== undefined ? { progress: event.progress } : {}),
+              }))
               break
             }
             case 'tool.input.available': {

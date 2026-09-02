@@ -3,6 +3,8 @@ import type {
   BaseModelProviderOptions,
   EmbeddingRequest,
   EmbeddingResponse,
+  ImageProviderResponse,
+  ImageRequest,
   ModelMessage,
   ModelProvider,
   ObjectRequest,
@@ -14,6 +16,11 @@ import type {
   TextStreamChunk,
   ToolCallSpec,
   TokenUsage,
+  SpeechProviderResponse,
+  SpeechRequest,
+  VideoProviderResponse,
+  VideoProviderStreamChunk,
+  VideoRequest,
   JsonValue
 } from '@purista/harness'
 import {
@@ -121,7 +128,7 @@ class OpenAiModelProvider extends BaseModelProvider {
       ...(options.telemetry ? { telemetry: options.telemetry } : {}),
       ...(options.harnessTimeoutMs !== undefined ? { timeoutMs: options.harnessTimeoutMs } : options.timeout !== undefined ? { timeoutMs: options.timeout } : {})
     })
-    this.client = options.client ?? new OpenAI(toClientOptions(options))
+    this.client = options.client ?? (new OpenAI(toClientOptions(options)) as unknown as OpenAiClient)
   }
 
   protected override async doText(req: TextRequest): Promise<TextResponse> {
@@ -259,9 +266,111 @@ class OpenAiModelProvider extends BaseModelProvider {
       raw: response
     }
   }
+
+  protected override async doImage(req: ImageRequest): Promise<ImageProviderResponse> {
+    req.signal.throwIfAborted()
+    if (!this.client.images) throw this.methodMissing('image')
+    const { requestOptions, ...bodyOptions } = mediaProviderOptions(req)
+    const response = await this.client.images.generate({
+      model: req.model,
+      prompt: req.prompt,
+      ...(req.count !== undefined ? { n: req.count } : {}),
+      ...(req.size ? { size: req.size } : {}),
+      ...(req.outputFormat ? { output_format: req.outputFormat } : {}),
+      ...(req.aspectRatio ? { aspect_ratio: req.aspectRatio } : {}),
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    const mediaType = imageMediaType(req.outputFormat)
+    const artifacts = await Promise.all((response.data ?? []).map(async (item: any, index: number) => ({
+      body: await openAiMediaBody(item, req.signal),
+      mediaType,
+      filename: `image-${index + 1}.${imageExtension(mediaType)}`,
+    })))
+    if (artifacts.length === 0) {
+      throw malformedResponseError(callContext(req, 'image'), 'OpenAI returned no generated image.', response, undefined)
+    }
+    return { artifacts, raw: response }
+  }
+
+  protected override async doSpeech(req: SpeechRequest): Promise<SpeechProviderResponse> {
+    req.signal.throwIfAborted()
+    if (!this.client.audio?.speech) throw this.methodMissing('speech')
+    const { requestOptions, ...bodyOptions } = mediaProviderOptions(req)
+    const outputFormat = req.outputFormat ?? 'mp3'
+    const response = await this.client.audio.speech.create({
+      model: req.model,
+      input: req.text,
+      voice: req.voice ?? 'alloy',
+      ...(req.instructions ? { instructions: req.instructions } : {}),
+      ...(req.speed !== undefined ? { speed: req.speed } : {}),
+      response_format: outputFormat,
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    const body = new Uint8Array(await response.arrayBuffer())
+    return {
+      artifact: {
+        body,
+        mediaType: audioMediaType(outputFormat),
+        filename: `speech.${outputFormat}`,
+        size: body.byteLength,
+      },
+    }
+  }
+
+  protected override async doVideo(req: VideoRequest): Promise<VideoProviderResponse> {
+    for await (const chunk of this.doVideoStream(req)) {
+      if (chunk.kind === 'finish') return { artifact: chunk.artifact, ...(chunk.raw ? { raw: chunk.raw } : {}) }
+    }
+    throw malformedResponseError(callContext(req, 'video'), 'OpenAI video generation ended without an artifact.', {}, undefined)
+  }
+
+  protected override async *doVideoStream(req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> {
+    req.signal.throwIfAborted()
+    if (!this.client.videos) throw this.methodMissing('videoStream')
+    const { requestOptions, pollIntervalMs, ...bodyOptions } = mediaProviderOptions(req)
+    const inputReference = req.inputReference ? await toOpenAiVideoReference(req.inputReference, req.signal) : undefined
+    let job = await this.client.videos.create({
+      model: req.model,
+      prompt: req.prompt,
+      ...(inputReference ? { input_reference: inputReference } : {}),
+      ...(req.durationSeconds !== undefined ? { seconds: String(req.durationSeconds) } : {}),
+      ...(req.size ? { size: req.size } : {}),
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    yield { kind: 'queued' }
+    let lastProgress = -1
+    while (job?.status !== 'completed') {
+      req.signal.throwIfAborted()
+      if (job?.status === 'failed' || job?.error) {
+        throw new ModelError('OpenAI video generation failed.', {
+          provider: 'openai',
+          model: req.model,
+          method: 'video',
+          reason: 'provider_unavailable',
+          ...(typeof job?.error?.code === 'string' ? { providerCode: job.error.code } : {}),
+          ...(typeof job?.error?.message === 'string' ? { providerMessage: sanitizeProviderMessage(job.error.message) } : {}),
+        })
+      }
+      const progress = typeof job?.progress === 'number' ? Math.max(0, Math.min(100, job.progress)) : undefined
+      if (progress !== undefined && progress !== lastProgress) {
+        lastProgress = progress
+        yield { kind: 'progress', progress }
+      }
+      await abortableDelay(normalizePollInterval(pollIntervalMs), req.signal)
+      job = await this.client.videos.retrieve(String(job.id), { ...requestOptions, signal: req.signal })
+    }
+    const response = await this.client.videos.downloadContent(String(job.id), undefined, { ...requestOptions, signal: req.signal })
+    const body = new Uint8Array(await response.arrayBuffer())
+    yield {
+      kind: 'finish',
+      artifact: { body, mediaType: 'video/mp4', filename: `${String(job.id)}.mp4`, size: body.byteLength },
+      raw: job,
+    }
+  }
 }
 
 type ChatRequest = TextRequest | ObjectRequest
+type OpenAiRequest = ChatRequest | ImageRequest | SpeechRequest | VideoRequest
 export type OpenAiClient = {
   chat: {
     completions: {
@@ -274,6 +383,96 @@ export type OpenAiClient = {
   embeddings: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  images?: {
+    generate(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
+  }
+  audio?: {
+    speech?: {
+      create(payload: unknown, options?: { signal?: AbortSignal }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>
+    }
+  }
+  videos?: {
+    create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
+    retrieve(id: string, options?: { signal?: AbortSignal }): Promise<any>
+    downloadContent(id: string, query?: unknown, options?: { signal?: AbortSignal }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>
+  }
+}
+
+function mediaProviderOptions(req: ImageRequest | SpeechRequest | VideoRequest): Record<string, any> & {
+  requestOptions?: Record<string, unknown>
+  pollIntervalMs?: number
+} {
+  return { ...(req.call?.providerOptions ?? {}) }
+}
+
+async function openAiMediaBody(item: any, signal: AbortSignal): Promise<Uint8Array> {
+  if (typeof item?.b64_json === 'string') return new Uint8Array(Buffer.from(item.b64_json, 'base64'))
+  if (typeof item?.url === 'string') {
+    const response = await fetch(item.url, { signal })
+    if (!response.ok) throw new Error(`OpenAI media download failed with HTTP ${response.status}.`)
+    return new Uint8Array(await response.arrayBuffer())
+  }
+  throw new Error('OpenAI media response contains neither base64 data nor a URL.')
+}
+
+function imageMediaType(format: string | undefined): string {
+  switch (format?.toLowerCase()) {
+    case 'jpeg':
+    case 'jpg': return 'image/jpeg'
+    case 'webp': return 'image/webp'
+    default: return 'image/png'
+  }
+}
+
+function imageExtension(mediaType: string): string {
+  return mediaType === 'image/jpeg' ? 'jpg' : mediaType.slice('image/'.length)
+}
+
+function audioMediaType(format: string): string {
+  switch (format.toLowerCase()) {
+    case 'mp3': return 'audio/mpeg'
+    case 'opus': return 'audio/opus'
+    case 'aac': return 'audio/aac'
+    case 'flac': return 'audio/flac'
+    case 'wav': return 'audio/wav'
+    case 'pcm': return 'audio/L16'
+    default: return `audio/${format.toLowerCase()}`
+  }
+}
+
+async function toOpenAiVideoReference(
+  input: NonNullable<VideoRequest['inputReference']>,
+  signal: AbortSignal,
+): Promise<File> {
+  if (input.kind === 'image') {
+    return new File([Buffer.from(input.dataBase64, 'base64')], 'reference-image', { type: input.mimeType })
+  }
+  const response = await fetch(input.url, { signal })
+  if (!response.ok) throw new Error(`Video reference download failed with HTTP ${response.status}.`)
+  const mediaType = input.mimeType ?? response.headers.get('content-type') ?? 'application/octet-stream'
+  return new File([await response.arrayBuffer()], 'reference-image', { type: mediaType })
+}
+
+function normalizePollInterval(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 100 ? Math.floor(value) : 1_000
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) signal.throwIfAborted()
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      cleanup()
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
 }
 
 function toClientOptions(options: OpenAiFactoryOptions): ClientOptions {
@@ -901,7 +1100,7 @@ function finalizeResponsesStreamToolCalls(state: ResponsesStreamToolCallState, r
 const MALFORMED_TOOL_ARGS_MESSAGE = 'OpenAI returned malformed tool-call argument JSON.'
 const MALFORMED_OBJECT_MESSAGE = 'OpenAI returned malformed structured object JSON.'
 
-function callContext(req: ChatRequest, method: string): AdapterCallContext {
+function callContext(req: OpenAiRequest, method: string): AdapterCallContext {
   return { provider: 'openai', model: req.model, method }
 }
 

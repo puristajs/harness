@@ -19,6 +19,20 @@ describe('AI SDK UI Message Stream v1', () => {
       { type: 'output.text.delta', runId: 'run-1', id: 'answer', delta: 'Hello' },
       { type: 'output.object.snapshot', runId: 'run-1', id: 'result', value: { category: 'safe' } },
       {
+        type: 'output.progress',
+        runId: 'run-1',
+        id: 'video:video',
+        operation: 'video',
+        state: 'running',
+        progress: 50,
+      },
+      {
+        type: 'output.file',
+        runId: 'run-1',
+        id: 'artifact-1',
+        artifact: { id: 'artifact-1', url: '/artifacts/artifact-1', mediaType: 'video/mp4' },
+      },
+      {
         type: 'tool.input.available',
         runId: 'run-1',
         agentId: 'support',
@@ -55,6 +69,11 @@ describe('AI SDK UI Message Stream v1', () => {
     expect(chunks).toContainEqual({ type: 'text-start', id: 'answer' })
     expect(chunks).toContainEqual({ type: 'text-delta', id: 'answer', delta: 'Hello' })
     expect(chunks).toContainEqual({ type: 'text-end', id: 'answer' })
+    expect(chunks).toContainEqual({ type: 'file', url: '/artifacts/artifact-1', mediaType: 'video/mp4' })
+    expect(chunks).toContainEqual(expect.objectContaining({
+      type: 'data-status',
+      data: expect.objectContaining({ phase: 'media-progress', operation: 'video', progress: 50 }),
+    }))
     expect(chunks).toContainEqual({
       type: 'tool-input-available',
       toolCallId: 'call-1',

@@ -1597,6 +1597,20 @@ export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> =
 			readonly id: string
 			readonly value: JsonValue
 	  }
+	| {
+			readonly type: 'output.file'
+			readonly runId: string
+			readonly id: string
+			readonly artifact: import('../ports/artifact-store.js').ArtifactReference
+	  }
+	| {
+			readonly type: 'output.progress'
+			readonly runId: string
+			readonly id: string
+			readonly operation: 'video'
+			readonly state: 'queued' | 'running'
+			readonly progress?: number
+	  }
   | {
       readonly type: 'tool.input.available'
       readonly runId: string
@@ -1770,6 +1784,8 @@ export type HarnessInstanceConfig<S extends BuilderState, Host = unknown> = {
 	readonly models: HarnessRuntimeModels<S>
 	/** Optional provider-level concurrency and rate admission shared across models and agents. */
 	readonly admission?: import('../ports/model-admission.js').ModelAdmission
+	/** Storage used to publish generated image, audio, and video bytes as client-safe references. */
+	readonly artifacts?: import('../ports/artifact-store.js').ArtifactStore
 	readonly logger?: Logger
 	readonly telemetry?: TelemetryOptions
 	readonly storage?: HarnessStorage
@@ -2092,6 +2108,25 @@ export type RunEvent =
 			count: number
 			topN?: number
 			usage?: TokenUsage
+	  }
+	| {
+			type: 'model.artifact'
+			runId: string
+			agentId?: string
+			workflowId?: string
+			modelAlias: string
+			operation: 'image' | 'speech' | 'video'
+			artifact: import('../ports/artifact-store.js').ArtifactReference
+	  }
+	| {
+			type: 'model.media.progress'
+			runId: string
+			agentId?: string
+			workflowId?: string
+			modelAlias: string
+			operation: 'video'
+			state: 'queued' | 'running'
+			progress?: number
 	  }
 	| { type: 'stream.overflow'; runId: string; at: string; dropped: number }
 
@@ -2417,6 +2452,7 @@ type BuilderStateInternal = {
 	models?: ModelsConfig
 	modelRequirements?: ModelTypesConfig
 	admission?: import('../ports/model-admission.js').ModelAdmission
+	artifacts?: import('../ports/artifact-store.js').ArtifactStore
 	tools?: AuthoredToolsConfig<never>
 	skills?: SkillsConfig
 	agents?: Record<string, AnyAgentDefinition>
@@ -3110,6 +3146,7 @@ class Builder<S extends BuilderState> {
 				if (config.logger) runtimeConfig.logger = config.logger
 				if (config.telemetry) runtimeConfig.telemetry = config.telemetry
 				if (config.admission) runtimeConfig.admission = config.admission
+				if (config.artifacts) runtimeConfig.artifacts = config.artifacts
 				if (config.storage) runtimeConfig.storage = config.storage
 				if (config.sandbox) runtimeConfig.sandbox = config.sandbox
 				if (config.sandboxBinding) runtimeConfig.sandboxBinding = config.sandboxBinding
@@ -3190,6 +3227,7 @@ class Builder<S extends BuilderState> {
 			},
 			models,
 			...(this.configured.admission ? { admission: this.configured.admission } : {}),
+			...(this.configured.artifacts ? { artifacts: this.configured.artifacts } : {}),
 			tools: (this.configured.tools ?? {}) as NonNullable<S['tools']>,
 			modelSchemas,
 			skills: (this.configured.skills ?? {}) as NonNullable<S['skills']>,

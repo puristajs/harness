@@ -8,6 +8,9 @@ export type ModelAdmissionOperation =
   | 'object_stream'
   | 'embeddings'
   | 'rerank'
+  | 'image_generation'
+  | 'speech_generation'
+  | 'video_generation'
 
 /** Stable provider identity used by local or distributed admission adapters. */
 export interface ModelAdmissionKey {

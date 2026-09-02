@@ -100,6 +100,7 @@ import { finishReasonSchema, tokenUsageSchema, type FinishReason, type TokenUsag
 import { loadSkillsSync } from '../skills/index.js'
 import { createModelRegistry } from '../models/registry.js'
 import type { ModelAdmission } from '../ports/model-admission.js'
+import type { ArtifactReference } from '../ports/artifact-store.js'
 import { createMetrics, createTelemetryShim, telemetryErrorType, type TelemetryShim } from '../telemetry/index.js'
 import {
   ATTR_ERROR_TYPE,
@@ -147,6 +148,7 @@ type ModelRunContext = {
   workflowId?: string
   agentId?: string
   emitRunEvents?: boolean
+  artifactIdempotencyKey?: string
   streamId?: string
   modelAlias?: string
 }
@@ -187,6 +189,7 @@ type HarnessDefinition<S extends BuilderState> = {
   defaults: HarnessDefaults
   models: NonNullable<S['models']>
   admission?: ModelAdmission
+  artifacts?: import('../ports/artifact-store.js').ArtifactStore
   tools: NonNullable<S['tools']>
   modelSchemas: {
     readonly agentOutputs: Readonly<Record<string, JsonValue>>
@@ -513,6 +516,24 @@ async function* projectExecutionEvents<Output>(
               id: event.streamId ?? `${event.runId}:object`,
               value: event.object,
             }
+          }
+          break
+        case 'model.artifact':
+          yield {
+            type: 'output.file',
+            runId: event.runId,
+            id: event.artifact.id,
+            artifact: event.artifact,
+          }
+          break
+        case 'model.media.progress':
+          yield {
+            type: 'output.progress',
+            runId: event.runId,
+            id: `${event.modelAlias}:${event.operation}`,
+            operation: event.operation,
+            state: event.state,
+            ...(event.progress !== undefined ? { progress: event.progress } : {}),
           }
           break
         case 'tool.input.available':
@@ -856,6 +877,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     telemetry,
     harnessName: definition.name,
     ...(definition.admission ? { admission: definition.admission } : {}),
+    ...(definition.artifacts ? { artifacts: definition.artifacts } : {}),
   })
   const mcpRegistry = createMcpRunnerRegistry()
   let shutdownPromise: Promise<{ errors: HarnessError[] }> | undefined
@@ -1981,6 +2003,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     for (const [alias, model] of [...Object.entries(definition.models)].reverse()) {
       await closeResource('model_provider', alias, model.provider)
     }
+    await closeResource('artifacts', 'artifacts', definition.artifacts)
     await closeResource('governance', 'governance', definition.governance)
     await closeResource('workspace', 'workspace', definition.workspace)
     await closeResource('memory', definition.memory.info.id, definition.memory)
@@ -4308,6 +4331,53 @@ function withRunEventModelHandle(
     }
   }
 
+  const image = source['image']
+  if (typeof image === 'function') {
+    wrapped['image'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = (await image.call(source, req, signal, runContext)) as { artifacts: readonly ArtifactReference[] }
+      if (runContext.emitRunEvents === true) {
+        for (const artifact of response.artifacts) {
+          await emitArtifactEvent(emitEvent, context, alias, 'image', artifact)
+        }
+      }
+      return response
+    }
+  }
+
+  const speech = source['speech']
+  if (typeof speech === 'function') {
+    wrapped['speech'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = (await speech.call(source, req, signal, runContext)) as { artifact: ArtifactReference }
+      if (runContext.emitRunEvents === true) await emitArtifactEvent(emitEvent, context, alias, 'speech', response.artifact)
+      return response
+    }
+  }
+
+  const video = source['video']
+  if (typeof video === 'function') {
+    wrapped['video'] = async (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      const response = (await video.call(source, req, signal, runContext)) as { artifact: ArtifactReference }
+      if (runContext.emitRunEvents === true) await emitArtifactEvent(emitEvent, context, alias, 'video', response.artifact)
+      return response
+    }
+  }
+
+  const videoStream = source['videoStream']
+  if (typeof videoStream === 'function') {
+    wrapped['videoStream'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
+      const runContext = mergeModelRunContext(context, ctx)
+      return emitVideoStreamRunEvents(
+        videoStream.call(source, req, signal, runContext) as AsyncIterable<unknown>,
+        runContext,
+        alias,
+        emitEvent,
+      )
+    }
+  }
+
   const textStream = source['textStream']
   if (typeof textStream === 'function') {
     wrapped['textStream'] = (req: unknown, signal: AbortSignal, ctx?: Partial<ModelRunContext>) => {
@@ -4347,7 +4417,63 @@ function mergeModelRunContext(
   return {
     ...context,
     ...(override?.emitRunEvents === true ? { emitRunEvents: true } : {}),
+    ...(override?.artifactIdempotencyKey ? { artifactIdempotencyKey: override.artifactIdempotencyKey } : {}),
   }
+}
+
+async function emitArtifactEvent(
+  emitEvent: (event: RunEvent) => Promise<void>,
+  context: ModelRunContext,
+  modelAlias: string,
+  operation: 'image' | 'speech' | 'video',
+  artifact: ArtifactReference,
+): Promise<void> {
+  await emitEvent({
+    type: 'model.artifact',
+    runId: context.runId,
+    ...(context.agentId ? { agentId: context.agentId } : {}),
+    ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+    modelAlias,
+    operation,
+    artifact,
+  })
+}
+
+async function* emitVideoStreamRunEvents(
+  stream: AsyncIterable<unknown>,
+  context: ModelRunContext,
+  modelAlias: string,
+  emitEvent: (event: RunEvent) => Promise<void>,
+): AsyncIterable<unknown> {
+  for await (const chunk of stream) {
+    if (context.emitRunEvents === true && isVideoProgressChunk(chunk)) {
+      await emitEvent({
+        type: 'model.media.progress',
+        runId: context.runId,
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        modelAlias,
+        operation: 'video',
+        state: chunk.kind === 'queued' ? 'queued' : 'running',
+        ...(chunk.kind === 'progress' ? { progress: chunk.progress } : {}),
+      })
+    } else if (context.emitRunEvents === true && isVideoFinishChunk(chunk)) {
+      await emitArtifactEvent(emitEvent, context, modelAlias, 'video', chunk.artifact)
+    }
+    yield chunk
+  }
+}
+
+function isVideoProgressChunk(chunk: unknown): chunk is { kind: 'queued' } | { kind: 'progress'; progress: number } {
+  if (!chunk || typeof chunk !== 'object') return false
+  const value = chunk as { kind?: unknown; progress?: unknown }
+  return value.kind === 'queued' || (value.kind === 'progress' && typeof value.progress === 'number')
+}
+
+function isVideoFinishChunk(chunk: unknown): chunk is { kind: 'finish'; artifact: ArtifactReference } {
+  if (!chunk || typeof chunk !== 'object') return false
+  const value = chunk as { kind?: unknown; artifact?: unknown }
+  return value.kind === 'finish' && Boolean(value.artifact && typeof value.artifact === 'object')
 }
 
 function isRerankRequest(value: unknown): value is { topN?: number } {
@@ -4822,6 +4948,28 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         ...(event.topN !== undefined ? { topN: event.topN } : {}),
         ...(event.usage ? { usage: event.usage } : {}),
       } as unknown as JsonValue
+    case 'model.artifact':
+      return {
+        ...(event.agentId ? { agentId: event.agentId } : {}),
+        ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+        modelAlias: event.modelAlias,
+        operation: event.operation,
+        artifact: {
+          id: event.artifact.id,
+          mediaType: event.artifact.mediaType,
+          ...(event.artifact.filename ? { filename: event.artifact.filename } : {}),
+          ...(event.artifact.size !== undefined ? { size: event.artifact.size } : {}),
+        },
+      } as unknown as JsonValue
+    case 'model.media.progress':
+      return {
+        ...(event.agentId ? { agentId: event.agentId } : {}),
+        ...(event.workflowId ? { workflowId: event.workflowId } : {}),
+        modelAlias: event.modelAlias,
+        operation: event.operation,
+        state: event.state,
+        ...(event.progress !== undefined ? { progress: event.progress } : {}),
+      }
     case 'stream.overflow':
       return { dropped: event.dropped }
     default: {

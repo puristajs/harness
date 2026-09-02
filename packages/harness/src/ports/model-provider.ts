@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { JsonValue } from '../models/json.js'
 import type { ContextProjectionPolicy } from '../context-projection.js'
 import type { ProviderContinuation, ProviderContinuationItem } from '../decisions/types.js'
+import type { ArtifactBody, ArtifactReference } from './artifact-store.js'
 
 /**
  * Model capabilities declared by aliases in `.models(...)`.
@@ -27,6 +28,12 @@ export type ModelCapability =
   | 'embeddings'
   /** Document reranking. */
   | 'rerank'
+  /** Image output generation. */
+  | 'image_generation'
+  /** Text-to-speech audio generation. */
+  | 'speech_generation'
+  /** Long-running video generation. */
+  | 'video_generation'
 
 /** Provider-neutral retry setting used by model aliases and per-call overrides. */
 export type ModelRetrySetting = boolean | ModelRetryPolicy
@@ -180,7 +187,7 @@ export interface ModelFeatureSet {
 export type ContentPartKind = 'text' | 'image' | 'audio' | 'file'
 
 /** Provider-neutral output operation modes. */
-export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
+export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank' | 'image' | 'speech' | 'video'
 
 /** Message schema shared across provider adapters. */
 export type ModelMessage =
@@ -359,6 +366,93 @@ export interface RerankResult {
   metadata?: Record<string, JsonValue>
 }
 
+/** Provider-internal generated file. Raw content never crosses a Harness execution boundary. */
+export interface ProviderArtifact {
+  readonly body: ArtifactBody
+  readonly mediaType: string
+  readonly filename?: string
+  readonly size?: number
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}
+
+/** Shared request fields for media generation operations. */
+export interface MediaRequestBase {
+  readonly model: string
+  readonly prompt: string
+  readonly call?: ModelCallOptions
+  readonly signal: AbortSignal
+  readonly traceparent?: string
+}
+
+/** Provider-neutral image generation request. Provider-specific controls belong in `call.providerOptions`. */
+export interface ImageRequest extends MediaRequestBase {
+  readonly count?: number
+  readonly size?: string
+  readonly aspectRatio?: string
+  readonly outputFormat?: string
+}
+
+/** Raw image generation response returned by a provider adapter. */
+export interface ImageProviderResponse {
+  readonly artifacts: readonly ProviderArtifact[]
+  readonly raw?: unknown
+}
+
+/** Published image generation response returned by a model handle. */
+export interface ImageResponse {
+  readonly artifacts: readonly ArtifactReference[]
+}
+
+/** Provider-neutral text-to-speech request. */
+export interface SpeechRequest extends Omit<MediaRequestBase, 'prompt'> {
+  readonly text: string
+  readonly voice?: string
+  readonly instructions?: string
+  readonly outputFormat?: string
+  readonly speed?: number
+}
+
+/** Raw speech response returned by a provider adapter. */
+export interface SpeechProviderResponse {
+  readonly artifact: ProviderArtifact
+  readonly raw?: unknown
+}
+
+/** Published speech response returned by a model handle. */
+export interface SpeechResponse {
+  readonly artifact: ArtifactReference
+}
+
+/** Provider-neutral video generation request. */
+export interface VideoRequest extends MediaRequestBase {
+  readonly durationSeconds?: number
+  readonly size?: string
+  readonly inputReference?: Extract<ContentPart, { kind: 'image' | 'image_url' }>
+}
+
+/** Raw terminal video response returned by a provider adapter. */
+export interface VideoProviderResponse {
+  readonly artifact: ProviderArtifact
+  readonly raw?: unknown
+}
+
+/** Published terminal video response returned by a model handle. */
+export interface VideoResponse {
+  readonly artifact: ArtifactReference
+}
+
+/** Progress emitted while a provider creates a video job. */
+export type VideoProviderStreamChunk =
+  | { readonly kind: 'queued' }
+  | { readonly kind: 'progress'; readonly progress: number }
+  | { readonly kind: 'finish'; readonly artifact: ProviderArtifact; readonly raw?: unknown }
+
+/** Client-safe progress emitted by a bound model handle. */
+export type VideoStreamChunk =
+  | { readonly kind: 'queued' }
+  | { readonly kind: 'progress'; readonly progress: number }
+  | { readonly kind: 'finish'; readonly artifact: ArtifactReference }
+
 /** Provider adapter interface implemented by packages such as `@purista/harness-openai`. */
 export interface ModelProvider {
   readonly id: string
@@ -370,6 +464,10 @@ export interface ModelProvider {
   objectStream?<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
   embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
   rerank?(req: RerankRequest): Promise<RerankResponse>
+  image?(req: ImageRequest): Promise<ImageProviderResponse>
+  speech?(req: SpeechRequest): Promise<SpeechProviderResponse>
+  video?(req: VideoRequest): Promise<VideoProviderResponse>
+  videoStream?(req: VideoRequest): AsyncIterable<VideoProviderStreamChunk>
   close?(): Promise<void>
 }
 

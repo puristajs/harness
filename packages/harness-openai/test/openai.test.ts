@@ -27,6 +27,82 @@ const distinctiveCompiledSchema = {
 }
 
 describe('openai provider factory', () => {
+  it('maps image bytes without exposing provider URLs', async () => {
+    const provider = openai({
+      client: {
+        images: {
+          generate: async (payload: any) => {
+            expect(payload).toMatchObject({ model: 'gpt-image-1', prompt: 'A red square', output_format: 'png' })
+            return { data: [{ b64_json: Buffer.from([1, 2, 3]).toString('base64') }] }
+          },
+        },
+      } as any,
+    })
+
+    const response = await provider.image!({
+      model: 'gpt-image-1',
+      prompt: 'A red square',
+      outputFormat: 'png',
+      signal: mockSignal(),
+    })
+
+    expect(response.artifacts[0]).toMatchObject({ mediaType: 'image/png', filename: 'image-1.png' })
+    expect([...response.artifacts[0]!.body as Uint8Array]).toEqual([1, 2, 3])
+  })
+
+  it('maps speech bytes and media type', async () => {
+    const provider = openai({
+      client: {
+        audio: {
+          speech: {
+            create: async (payload: any) => {
+              expect(payload).toMatchObject({ model: 'gpt-4o-mini-tts', input: 'Hello', voice: 'alloy', response_format: 'mp3' })
+              return { arrayBuffer: async () => Uint8Array.from([4, 5]).buffer }
+            },
+          },
+        },
+      } as any,
+    })
+
+    const response = await provider.speech!({
+      model: 'gpt-4o-mini-tts',
+      text: 'Hello',
+      signal: mockSignal(),
+    })
+
+    expect(response.artifact).toMatchObject({ mediaType: 'audio/mpeg', filename: 'speech.mp3', size: 2 })
+  })
+
+  it('streams a video job and downloads only the completed content', async () => {
+    const statuses = [
+      { id: 'video-1', status: 'in_progress', progress: 50 },
+      { id: 'video-1', status: 'completed', progress: 100 },
+    ]
+    const provider = openai({
+      client: {
+        videos: {
+          create: async () => ({ id: 'video-1', status: 'queued', progress: 0 }),
+          retrieve: async () => statuses.shift(),
+          downloadContent: async () => ({ arrayBuffer: async () => Uint8Array.from([6, 7]).buffer }),
+        },
+      } as any,
+    })
+
+    const chunks = []
+    for await (const chunk of provider.videoStream!({
+      model: 'sora-2',
+      prompt: 'A moving square',
+      call: { providerOptions: { pollIntervalMs: 100 } },
+      signal: mockSignal(),
+    })) chunks.push(chunk)
+
+    expect(chunks.map(chunk => chunk.kind)).toEqual(['queued', 'progress', 'progress', 'finish'])
+    expect(chunks.at(-1)).toMatchObject({
+      kind: 'finish',
+      artifact: { mediaType: 'video/mp4', filename: 'video-1.mp4', size: 2 },
+    })
+  })
+
   it('returns provider metadata and maps text response', async () => {
     const provider = openai({
       client: {

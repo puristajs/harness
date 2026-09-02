@@ -65,6 +65,12 @@ export type { SessionHistoryRetentionPolicy } from './sessions/history-retention
 export { BaseModelProvider } from './ports/base-model-provider.js'
 export type { BaseModelProviderOptions } from './ports/base-model-provider.js'
 export type {
+  ArtifactBody,
+  ArtifactPublishRequest,
+  ArtifactReference,
+  ArtifactStore,
+} from './ports/artifact-store.js'
+export type {
   BaseRequest,
   ContentPart,
   ContentPartKind,
@@ -72,6 +78,9 @@ export type {
   EmbeddingRequest,
   EmbeddingResponse,
   FinishReason,
+  ImageProviderResponse,
+  ImageRequest,
+  ImageResponse,
   ModelAlias,
   ModelCallOptions,
   ModelCapability,
@@ -97,11 +106,20 @@ export type {
   RerankRequest,
   RerankResponse,
   RerankResult,
+  ProviderArtifact,
+  SpeechProviderResponse,
+  SpeechRequest,
+  SpeechResponse,
   TextRequest,
   TextResponse,
   TextStreamChunk,
   TokenUsage,
   ToolCallSpec,
+  VideoProviderResponse,
+  VideoProviderStreamChunk,
+  VideoRequest,
+  VideoResponse,
+  VideoStreamChunk,
 } from './ports/model-provider.js'
 export type { ModelHandle, ModelInvokeContext } from './models/registry.js'
 export { modelAdmissionKey } from './ports/model-admission.js'

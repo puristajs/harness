@@ -1040,6 +1040,19 @@ portableDefinition.getInstance({
 		embeddings: { provider, model: 'embedding-model' },
 	},
 })
+
+async function portableRuntimeModelTypes() {
+	const runtime = await portableDefinition.getInstance({
+		models: {
+			primary: { provider, model: 'primary-model' },
+			embeddings: { provider, model: 'embedding-model' },
+		},
+	})
+	runtime.models.embeddings.embed({ input: 'hello' }, new AbortController().signal)
+	// @ts-expect-error the embeddings alias does not declare text generation
+	runtime.models.embeddings.text({ messages: [] }, new AbortController().signal)
+}
+void portableRuntimeModelTypes
 // @ts-expect-error every required alias needs a runtime binding
 portableDefinition.getInstance({ models: { primary: { provider, model: 'primary-model' } } })
 portableDefinition.getInstance({

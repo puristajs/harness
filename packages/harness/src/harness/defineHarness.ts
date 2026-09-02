@@ -623,8 +623,10 @@ export interface ModelRequirement {
 export type ModelTypesConfig = Record<string, ModelRequirement>
 
 type RequiredModelTypes<R extends ModelTypesConfig> = {
-	readonly [K in keyof R]: R[K] & ModelAlias
+	readonly [K in keyof R]: Omit<ModelAlias, 'capabilities'> & R[K]
 }
+
+type RequiredModel<R extends ModelRequirement> = Omit<ModelAlias, 'capabilities'> & R
 
 /** Builder-state accumulator used for type propagation across the fluent harness builder. */
 export interface BuilderState {
@@ -1710,7 +1712,11 @@ export type HarnessTargetContracts<S extends BuilderState> = Readonly<{
 export interface HarnessContributionCatalog<S extends BuilderState> {
 	readonly name: string
 	readonly models: Readonly<{
-		[K in keyof NonNullable<S['models']>]: ModelRequirement
+		[K in keyof NonNullable<S['models']>]: NonNullable<S['models']>[K] extends {
+			capabilities: infer Capabilities extends readonly ModelCapability[]
+		}
+			? Readonly<{ capabilities: Capabilities }>
+			: ModelRequirement
 	}>
 	readonly hostTools: Readonly<{
 		[K in keyof NonNullable<S['tools']> as NonNullable<S['tools']>[K] extends HostToolDefinition
@@ -2114,7 +2120,7 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 	requireModel<const Id extends string, const R extends ModelRequirement>(
 		id: Id,
 		requirement: R,
-	): HarnessBuilder<S & { models: Record<Id, R & ModelAlias> }>
+	): HarnessBuilder<S & { models: Record<Id, RequiredModel<R>> }>
 	/** Declares provider-neutral model requirements for a portable definition. */
 	requireModels<const R extends ModelTypesConfig>(requirements: R): HarnessBuilder<S & { models: RequiredModelTypes<R> }>
 	/** Registers one model alias and preserves its literal id for later agents. */
@@ -2805,7 +2811,7 @@ class Builder<S extends BuilderState> {
 	public requireModel<const Id extends string, const R extends ModelRequirement>(
 		id: Id,
 		requirement: R,
-	): HarnessBuilder<S & { models: Record<Id, R & ModelAlias> }> {
+	): HarnessBuilder<S & { models: Record<Id, RequiredModel<R>> }> {
 		return this.registerModelRequirements({ [id]: requirement }) as never
 	}
 

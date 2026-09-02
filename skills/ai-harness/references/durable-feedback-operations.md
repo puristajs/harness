@@ -109,8 +109,8 @@ idempotent and return `applied`, `duplicate`, `already_terminal`, or
 `not_found`. Do not persist review text, tool payloads, reviewer identities, or
 credentials in the wait record.
 
-`ExternalWaitOutcome` is approved/rejected/expired/cancelled; it is not an
-immediate approval-provider result. Validate authorization, current revision,
+`ExternalWaitOutcome` is approved/rejected/expired/cancelled; it is distinct
+from `ToolApprovalInterrupt` and `ToolApprovalResume`. Validate authorization, current revision,
 expiry, and approved action digest only before acquiring a new atomic execution
 claim. An existing claim resumes its original execution key and a completed
 claim returns its stored receipt; never strand admitted effects with fresh

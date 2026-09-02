@@ -35,7 +35,8 @@ request human approval, persist durable workflow data, and create artifacts.
 For content safety and tool authority, start with the
 [decision table and lifecycle](docs/guides/decisions-and-approval.md). The
 [guardrails composition](examples/guardrails/README.md) runs without credentials
-and combines input/tool/output rails with one immediate approval provider.
+and combines input/tool/output rails with durable tool approval interruption and
+resume.
 [Durable review](examples/durable-human-review/README.md) keeps wait/claim/receipt
 state at the application boundary. See the
 [breaking contract notes](docs/releases/decision-boundaries.md).

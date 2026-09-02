@@ -34,7 +34,7 @@ Requirement: REQ-DB-CONSUMERS. Owner: Harness maintainer. Actor: PURISTA service
 
 ## CAP-DB-DOCS
 
-Requirement: REQ-DB-DOCS. Owner: Harness maintainer. Actor: developer and operator. SDK entrypoint: `handbook package docs canonical skills examples`. Outcome: One example composes content rails immediate approval and durable review ownership. Contract refs: CTR-DB-DOCS. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `purista/scripts/knowledge-audit.mjs`.
+Requirement: REQ-DB-DOCS. Owner: Harness maintainer. Actor: developer and operator. SDK entrypoint: `handbook package docs canonical skills examples`. Outcome: One example composes content rails, durable tool approval interruption/resume, and workflow review ownership. Contract refs: CTR-DB-DOCS. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `purista/scripts/knowledge-audit.mjs`.
 
 ## CAP-DB-CLEANUP
 

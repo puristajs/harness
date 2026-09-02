@@ -53,11 +53,11 @@ the application still owns identity, least-data mapping, Rego/bundles,
 credentials, topology, and decision-log controls. Cedar and AWS Verified
 Permissions remain distinct application-owned integrations.
 
-Content rails return allow/block/phase-specific transforms; permissions and
-policies can demand approval, and the single `governance.approval` provider
-returns approved/rejected for a prepared occurrence. Decisions share bounded
-execution and content-free evidence. Durable external waits keep application
-review content and execution claim/receipt state outside core. Read the
+Content rails return allow/block/phase-specific transforms. Permissions and
+policies can demand approval, which returns a durable `ToolApprovalInterrupt`
+before gated handlers run. The application records and authorizes the review,
+then resumes the same run with `ToolApprovalResume`. Durable external waits
+remain the separate primitive for workflow business events. Read the
 [decision guide](../../docs/guides/decisions-and-approval.md) and
 [tested composition](../../examples/guardrails/README.md).
 

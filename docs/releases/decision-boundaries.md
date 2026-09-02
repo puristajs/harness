@@ -4,11 +4,11 @@ The current public contract has one bounded decision lifecycle and separate
 owners for content, tool authority, and durable review. There are no legacy
 hooks, compatibility aliases, or alternate result readers.
 
-- Builtin permissions use `allow`, `deny`, or `require_approval`. Every
-  immediate approval uses `governance.approval.request(request, execution)`.
-- Approval requests contain `approvalId`, correlated `subject`, and safe
-  `demands`; results contain `decision: 'approved' | 'rejected'` and optional
-  `reasonCode`. Policy results contain `effect`, optional `reasonCode`/`ruleId`.
+- Builtin permissions use `allow`, `deny`, or `require_approval`. Permission and
+  policy demands are combined in one durable `ToolApprovalInterrupt`.
+- The application persists and authorizes the review, then continues the same
+  checkpoint with a `ToolApprovalResume`. There is no approval callback or
+  compatibility provider.
 - Rail actions declare their phase. Content blocks and evaluation failures use
   shared `DecisionBlockedError`/`DecisionEvaluationError` evidence. `afterModel`
   only allows or blocks; final content transforms belong in `beforeOutput`.

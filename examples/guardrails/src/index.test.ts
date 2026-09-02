@@ -30,7 +30,7 @@ it('runs with the Harness test adapter and no network dependency', async () => {
   await expect(runGuardrailsExample()).resolves.toBe('The [redacted] answer.')
 })
 
-it('shares one approval provider across parsed tool and permission demands', async () => {
+it('combines parsed tool and permission demands in one approval interruption', async () => {
   const example = createGuardrailsExample()
   try {
     await expect(runSupportRequest(example, 'composed-success', 'Where is [secret] [email]?')).resolves.toMatchObject({ status: 'completed', output: 'The [redacted] answer.' })

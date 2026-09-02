@@ -77,7 +77,7 @@ flowchart TD
   - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
   - [Guardrails](./guides/guardrails.md): configure typed input, output, tool, retrieval, and sensitive-data protection; choose Presidio or native privacy by user outcome.
   - [Decisions and Approval](./guides/decisions-and-approval.md): one current decision table, composed rails/governance, safe evidence, and durable review ownership.
-  - [Guardrails Composition](../examples/guardrails/README.md): tested input/tool/output rails with one shared immediate approval provider.
+  - [Guardrails Composition](../examples/guardrails/README.md): tested input/tool/output rails with durable tool approval interruption and resume.
   - [Durable Human Review](./guides/human-review-gates.md): safe external waits and application claim/receipt recovery.
   - [Testing Guide](./guides/testing.md): test agents, workflows, streams, tools, MCP runners, and application-owned review tasks.
 - Operate and review

@@ -24,7 +24,7 @@ type RunEvent =
   | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
   | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
 
-  // policy.evaluated, policy.exposure, approval.requested, approval.finished
+  // policy.evaluated, policy.exposure, approval.requested, approval.responded
   // use the exact closed evidence/occurrence members in spec 37.
 
   | { type: 'tool.started';    runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }

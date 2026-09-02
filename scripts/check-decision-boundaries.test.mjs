@@ -46,7 +46,7 @@ test('canonical helper and schema owners cannot be shadowed or cloned in the add
 test('closed decision projections reject old fields without banning unrelated metadata', () => {
   for (const code of [
     "const decision: GovernanceDecision = { effect: 'allow', reason: 'prose' }",
-    "const result = { decision: 'approved', metadata: {} } satisfies GovernanceApprovalResult",
+    "const decision: GovernanceDecision = { effect: 'allow', metadata: {} }",
     "type GovernanceDecision = { effect: string; policyId: string }",
     'const decisionEvidenceSchema = z.object({ decisionId: z.string(), metadata: z.unknown() })'
   ]) assert.ok(checkDecisionSource(ts, core + 'governance/index.ts', code).length > 0, code)
@@ -119,7 +119,7 @@ test('cleanup excludes absent or malformed Voyage but requires and scans in-scop
   await decisionModules(workspace)
   for (const directory of [
     'ai-harness/examples', 'ai-harness/docs', 'ai-harness/skills',
-    'purista/packages/core/src/AgentQueueBuilder', 'purista/skills/purista', 'purista/packages/core/skills/purista',
+    'purista/packages/core/src/HarnessMount', 'purista/skills/purista', 'purista/packages/core/skills/purista',
     'purista/web/src/content/handbook/harness', 'purista/web/src/content/handbook-cards/harness',
     'purista/web/src/content/handbook-cards/blocks/agent-pattern', 'starter', 'create-purista',
   ]) await mkdir(join(workspace, directory), { recursive: true })
@@ -131,7 +131,7 @@ test('cleanup excludes absent or malformed Voyage but requires and scans in-scop
   assert.deepEqual(await checkDecisionBoundaries(workspace), [])
   await put('starter/agent.ts', 'const onPermission = true', workspace)
   assert.ok((await checkDecisionBoundaries(workspace)).some(item => item.path === 'starter/agent.ts' && item.rule === 'removed-api'))
-  for (const required of ['starter', 'create-purista', 'purista/packages/core/src/AgentQueueBuilder']) {
+  for (const required of ['starter', 'create-purista', 'purista/packages/core/src/HarnessMount']) {
     await rm(join(workspace, required), { recursive: true })
     await assert.rejects(checkDecisionBoundaries(workspace), error => error.message.includes(`Missing required consumer source directory: ${join(workspace, required)}`))
     await mkdir(join(workspace, required), { recursive: true })

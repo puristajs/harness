@@ -103,9 +103,10 @@ child-agent lifecycle events include `workflowId`, `delegationCallId`,
 `delegationDepth`, and `modelAlias`; persisted payloads keep lineage metadata
 but redact prompts and outputs.
 
-Direct model streams inside workflow handlers are private to the handler unless
-the model call opts in with `{ emitRunEvents: true }`. Workflow stream APIs emit
-typed `RunEvent` values, not provider chunks or the Vercel stream protocol.
+Direct model streams inside workflow handlers are private implementation data.
+Workflow stream APIs emit portable `ExecutionEvent` values according to the
+definition's update mode. Detailed model lifecycle uses `observe(...)`; neither
+surface is a browser protocol.
 
 Workflow docs and examples should cover:
 - choosing workflow vs direct agent;
@@ -192,8 +193,9 @@ permissions: {
 ```
 
 Read-only built-ins are intentionally available so agents can navigate mounted skills and sandbox files.
-Required builtin approval uses the same `governance.approval` provider as policy
-approval. Missing configuration denies the demand; there is no second hook.
+Required built-in and policy approval demands are combined in one
+`ToolApprovalInterrupt`. Persist and authorize the review in the application,
+then continue the same run with `ToolApprovalResume`; there is no callback hook.
 
 ## Optional Governance Policies
 Governance is an opt-in business policy layer. Do not add `.governance(...)`
@@ -239,13 +241,6 @@ Use execution policies when a concrete tool call needs typed business rules:
 .governance(({ native, rule }) => ({
   mode: 'enforce',
   defaultEffect: 'allow',
-  approval: {
-    // Synthetic test provider; replace with the application's bounded reviewer adapter.
-    async request(request, execution) {
-      execution.signal.throwIfAborted()
-      return { decision: 'approved', reasonCode: 'review_approved' }
-    }
-  },
   policies: [
     native({
       id: 'bank-transfer-policy',
@@ -298,12 +293,38 @@ Permissions, and bespoke engines still require focused application-owned
 credentials, policy distribution, availability, and engine operations in every
 topology.
 
-Approval receives `{ approvalId, subject, demands }` and `{ signal, deadline }`.
-The correlated `subject` contains one occurrence and its frozen parsed input;
-`demands` contains safe evidence, including both permission and policy demands
-when applicable. The provider runs once per occurrence, returns exactly
-approved/rejected plus optional `reasonCode`, and cannot rewrite input or
-override a denial. Reviewer identity/comments belong in application storage.
+`require_approval` stops the run before any gated tool in the batch executes.
+Both `run(...)` and the terminal `run.finished` stream event expose a
+provider-neutral interrupted outcome:
+
+```ts
+const first = await session.agents.banker.run('transfer')
+
+if (first.status === 'interrupted' && first.interrupt.type === 'tool-approval') {
+  const request = first.interrupt.requests[0]
+  if (!request) throw new Error('Expected an approval request')
+
+  const resumed = await session.agents.banker.run('transfer', {
+    resume: {
+      type: 'tool-approval',
+      runId: first.runId,
+      interruptId: first.interrupt.id,
+      revision: first.interrupt.revision,
+      eventId: 'review-decision-1',
+      decisions: [{ approvalId: request.approvalId, approved: true }],
+    },
+  })
+}
+```
+
+Persist the public `ToolApprovalInterrupt` in application-owned review storage,
+authenticate the reviewer, and submit a `ToolApprovalResume` with a unique
+`eventId`. The Harness verifies the run, interrupt, revision, and decision set,
+then resumes from its stored checkpoint without repeating the model turn. A
+rejection becomes a tool result that the model can handle. Reviewer identity,
+comments, audit policy, expiry, and authorization belong to the application.
+The internal `ToolApprovalPendingError` is private runtime control flow; do not
+catch or expose it as the public API.
 
 All calls in a tool turn pass ordered content/schema preflight before any
 approval or handler starts. Prepared calls then execute concurrently within
@@ -323,15 +344,14 @@ total budget includes preflight, queueing, policy, approval, handler, and output
 hooks. Parent cancellation/timeouts preserve their original operation error.
 Own callback expiry, throws, malformed outcomes, and invalid transforms fail
 closed with `DecisionEvaluationError`; content blocks use `DecisionBlockedError`.
-Denied permissions/policies and rejected approval remain recoverable tool errors.
+Denied permissions/policies and rejected approvals become recoverable tool
+errors after the corresponding decision is supplied.
 
 Content rails return allow/block/phase-specific transform, not approval or
 durable suspension. Each action declares its phase; output rails see only a
 final candidate. Direct model calls/custom handlers are outside automatic
 coverage. Opaque provider reasoning cannot be inspected or rewritten, and no
-decision guarantees post-admission revocation. For long human review, use a
-durable external wait plus application-owned claim/receipt recovery, not a
-callback held open indefinitely.
+decision guarantees post-admission revocation.
 
 ## MCP Tools
 Use `mcp_stdio` when the MCP server should run inside the sandbox executor:

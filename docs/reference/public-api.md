@@ -83,13 +83,13 @@ aliases, and agents must be registered before workflows use `ctx.agents`.
 | `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
 | `WorkflowChildTasks` / `ChildTaskHandle` | Typed workflow-owned isolated background tasks with lifecycle status and cancellation. |
 | `ContinuableChildTaskHandle` | In-process isolated task conversation with serialized `send(...)` turns and explicit `close()`. |
-| `GovernanceConfig` | Optional policy layer for tool exposure, tool-call deny/audit, shadow mode, and approvals. |
+| `GovernanceConfig` | Optional policy layer for tool exposure, tool-call deny/audit, shadow mode, and approval demands. |
 | `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
 | `GovernanceDecision` | Strict policy result: `effect` and optional `reasonCode`/`ruleId`; evidence is runtime-owned. |
 | `DecisionEvidence` / `createDecisionEvidence` | Shared content-free source, phase, optional reason code, and deterministic occurrence identity. |
 | `DecisionExecutionContext` | Linked `signal` and absolute `deadline` for bounded callbacks. |
-| `GovernanceApprovalRequest` / `GovernanceApprovalSubject` | One correlated prepared tool subject plus approval id and safe demands. |
-| `GovernanceApprovalProvider` / `GovernanceApprovalResult` | Shared immediate callback returning approved/rejected and optional reason code. |
+| `ToolApprovalRequest` / `ToolApprovalInterrupt` | One correlated prepared tool occurrence and the durable interruption for its gated batch. |
+| `ToolApprovalDecision` / `ToolApprovalResume` | Authenticated application decision and replay-safe resume envelope for the same run checkpoint. |
 | `AgentExecutionInterceptor` | Phase-specific default-loop hooks; `afterModel` allows/blocks, `beforeOutput` owns final transforms. |
 | `ProviderContinuation` / `ProviderContinuationItem` | Transient provider-neutral slots for opaque state and canonical tool-call reconstruction. |
 | `ExternalWaitOutcome` / `ExternalWaitResolved` | Durable terminal wait outcome and resolved metadata, separate from application review/execution state. |
@@ -260,13 +260,13 @@ Streaming invokers yield `RunEvent` values:
 | `tool.started` / `tool.finished` | Tool lifecycle and normalized errors. |
 | `model.completed` | Sole generative model-call and token accounting event; independent of content admission. |
 | `policy.exposure` / `policy.evaluated` | Safe exposure/execution decision evidence and enforcement state. |
-| `approval.requested` | Approval occurrence correlation and safe `demands`, never the subject input. |
-| `approval.finished` | Matching approval id and terminal outcome, optional safe reason/error code. |
+| `approval.requested` | Approval occurrence correlation without proposed input. The interrupted outcome carries review details. |
+| `approval.responded` | Matching approval id and the supplied approved/rejected boolean. |
 | `model.message` | Persisted model message metadata. |
 | `model.delta` | Text delta from a `textStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
 | `model.object.partial` | Structured partial from an `objectStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
 | `model.object` | Final object from the default agent `object(...)` call or an opted-in `objectStream(...)` finish chunk. |
-| `run.finished` | Final output or serialized error. |
+| `run.finished` | Completed output or a typed interrupted outcome. |
 | `stream.overflow` | Stream buffer dropped old events. |
 
 `text(...)` and `object(...)` are final request-response operations and do not

@@ -1,4 +1,4 @@
-# Guardrails and one approval path
+# Guardrails and tool approval
 
 This local example composes content rails and governance on one default-loop
 agent. It uses `FakeModelProvider`, an in-memory sandbox, and synthetic data;
@@ -27,36 +27,35 @@ that fake provider, and rail flow names resolve to the declared action map.
   model or approval call. These markers and the detector are example fixtures,
   not a production email detector.
 - Tool-input rails redact a note's wire arguments. The tool schema then adds
-  `visibility: 'internal'`; policy, approval, and handler share this parsed input.
+  `visibility: 'internal'`; policy, approval request, and handler share this parsed input.
 - A native multi-tool rule narrows `ctx.input` through `ctx.toolId` without
   casts or duplicate schemas.
 - `publish_note` needs policy approval. Builtin `write` needs both static
-  permission and policy approval, collected into one request for that call.
-  Both use the single `governance.approval` provider.
+  permission and policy approval. Harness combines the prepared calls in one
+  durable `ToolApprovalInterrupt` before either gated handler starts.
 - Tool-output rails replace the validated private status with a public
   presentation. Final-output rails redact only the final candidate.
 
 Change the existing `actions`, tool schemas/handlers, and native rules to fit
-your application. Replace the example's automatically approving provider with
-your reviewer adapter; forward the supplied `execution.signal` and
-`execution.deadline`. The factory's optional `approval` lets tests inject
-rejection, callback failure, timeout, or cancellation without a second harness.
-The recorded requests/lifecycle are synthetic test observations, not a model
-for production logging. Never log an approval subject's input.
+your application. `runSupportRequest(...)` shows the application boundary: it
+receives the interrupted outcome, selects typed decisions, and resumes the same
+run. A real application persists the interrupt and authenticates, authorizes,
+and records the reviewer before resuming. The recorded requests and lifecycle
+are synthetic test observations, not a model for production logging.
 
 ## Failure and recovery boundaries
 
 The [tests](src/index.test.ts) verify all preflight hooks run before dispatch,
-one request per approval occurrence, parsed defaults, safe callback errors,
-content blocking, rejection, timeout, and cancellation. Rejection becomes a recoverable tool
-denial and the fake model still answers; it does not prove that the requested
-effect happened. Callback failure/timeout fails the run closed.
+the stable interrupt contains parsed defaults, content blocking never requests
+approval, rejection does not execute the tool, and cancellation stays safe.
+Rejection becomes a recoverable tool denial and the fake model can still answer;
+it does not prove that the requested effect happened.
 
 Other admitted tools can already be executing when a sibling is rejected or
 cancelled. Neither a tool-output rail nor a later decision rolls back effects.
 The synthetic publication list and sandbox file are not durable business state.
 
-Use the [bank example](../bank-governance/README.md) for focused immediate
+Use the [bank example](../bank-governance/README.md) for focused tool
 approval, and the [durable review example](../durable-human-review/README.md)
 for application-owned wait/claim/receipt recovery. A rail block is neither an
 approval request nor durable suspension. The complete

@@ -37,9 +37,9 @@ applying new authorization or expiry checks during recovery. A crash after the
 domain effect but before receipt/checkpoint persistence must replay through
 the same idempotent command key. The example tests each recovery window.
 
-Immediate `governance.approval.request` is bounded and returns approved/rejected
-for one prepared tool occurrence. Content rails cannot request it or create a
-durable wait. See the [decision table](./decisions-and-approval.md) and
+`ToolApprovalInterrupt` and `ToolApprovalResume` cover approval for one prepared
+tool batch. Content rails cannot request approval or create a workflow wait.
+See the [decision table](./decisions-and-approval.md) and
 [composed agent example](../../examples/guardrails/README.md).
 
 For a complete PURISTA application pattern—including safe queue handling of

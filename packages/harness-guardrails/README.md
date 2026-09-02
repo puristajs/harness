@@ -12,7 +12,7 @@ Use the [runnable composition](../../examples/guardrails/README.md) and its
 [typed action map](../../examples/guardrails/src/index.ts). Each action declares
 its `phase`; configuration flow names must match actions of that phase. The
 example attaches input, tool-input, tool-output, and final-output rails to one
-agent alongside a shared governance approval provider.
+agent alongside durable tool approval interruption and resume.
 
 Rail actions return `allow`, `block`, or a phase-appropriate `transform`.
 They are ordered, have a 10-second fail-closed evaluation budget by default,

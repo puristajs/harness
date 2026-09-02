@@ -14,7 +14,7 @@ const core = 'ai-harness/packages/harness/src/'
 const addon = 'ai-harness/packages/harness-guardrails/src/'
 const roots = [
   'ai-harness/packages', 'ai-harness/examples', 'ai-harness/docs', 'ai-harness/skills', 'ai-harness/README.md',
-  'purista/packages/core/src/AgentQueueBuilder', 'purista/skills/purista', 'purista/packages/core/skills/purista',
+  'purista/packages/core/src/HarnessMount', 'purista/skills/purista', 'purista/packages/core/skills/purista',
   'purista/web/src/data/harness-markdown.ts', 'purista/web/src/content/handbook/harness',
   'purista/web/src/content/handbook-cards/harness', 'purista/web/src/content/handbook-cards/blocks/agent-pattern',
   'purista/web/src/content/handbook-cards/blocks/agent-pattern.mdx',

@@ -697,7 +697,7 @@ acceptance:
       - "PATH-DB-DOCS-SUCCESS"
     verification_refs:
       - "purista/scripts/knowledge-audit.mjs"
-    expected_outcome: "One example composes content rails immediate approval and durable review ownership"
+    expected_outcome: "One example composes content rails, durable tool approval interruption/resume, and workflow review ownership"
   - acceptance_id: "AC-DB-DOCS-FAILURE"
     requirement_ids:
       - "REQ-DB-DOCS"

@@ -183,7 +183,7 @@ Deliverables:
   tool invocation, then `phase:'post'` policy.
 - `PolicyDeniedError` and `DecisionEvaluationError` from
   [15-error-catalog](./15-error-catalog.md).
-- `policy.evaluated`, `approval.requested`, and `approval.finished` run events.
+- `policy.evaluated`, `approval.requested`, and `approval.responded` run events.
 - Testing helpers/fakes for native policies, approval adapters, audit sinks, and
   addon evaluator contract tests.
 

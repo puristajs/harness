@@ -262,9 +262,10 @@ export type NativePolicyRule<S>
 export interface NativePolicyRuleForTool<S, K>
 export type GovernancePolicyDefinition<S>
 export interface GovernanceDefinitionHelpers<S>
-export interface GovernanceApprovalProvider<S>
-export type GovernanceApprovalRequest<S>
-export type GovernanceApprovalResult
+export interface ToolApprovalRequest
+export interface ToolApprovalInterrupt
+export interface ToolApprovalDecision
+export interface ToolApprovalResume
 export type GovernanceAuditRecord
 export interface GovernanceAuditSink
 export type ToolInput<S, K>

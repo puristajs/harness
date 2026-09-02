@@ -26,16 +26,17 @@ rechecks it before mutating state. The model never supplies a trusted balance.
 
 Governance also supports optional `exposureRule(...)` entries for hiding tools before a model step; this example keeps the model-facing tool set stable and demonstrates execution-time deny and approval policies.
 
-The one approval provider receives the frozen parsed tool input inside
-`request.subject`, safe demand evidence, and a separate bounded signal/deadline.
-It returns approved/rejected with a stable `reasonCode`; rejected approval is a
-recoverable tool denial, not a content-rail block. The default auto-approval is
-only a local demonstration. These balance mutations are not production payment
-transactions or a durable review store.
+When the approval rule matches, the first run returns a
+`ToolApprovalInterrupt` containing the prepared tool input and safe demand
+evidence. `runTransferScenario(...)` demonstrates the application side by
+selecting a decision and resuming the same run with `ToolApprovalResume`.
+Rejected approval is a recoverable tool denial. The default approval is only a
+local demonstration; these balance mutations are not production payment
+transactions or an application review store.
 
-For input/tool/output rails and static permission approval using that same
-provider, run the [guardrails composition](../guardrails/README.md). For review
-that outlives a callback, use the [durable review example](../durable-human-review/README.md)
+For input/tool/output rails and static permission approval in the same
+interruption, run the [guardrails composition](../guardrails/README.md). For a
+broader workflow business wait, use the [durable review example](../durable-human-review/README.md)
 with application-owned action binding, claim, and receipt. Read the
 [decision guide](../../docs/guides/decisions-and-approval.md) for cancellation,
 safe evidence, and the absence of rollback or post-admission revocation.

@@ -94,7 +94,7 @@ CAP-DB-CONSUMERS: actor PURISTA service and app author; entrypoint `AgentQueueBu
 
 CAP-DB-DOCS: actor developer and operator; entrypoint `handbook package docs canonical skills examples`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-DOCS.
 
-- PATH-DB-DOCS-SUCCESS: One example composes content rails immediate approval and durable review ownership.
+- PATH-DB-DOCS-SUCCESS: One example composes content rails, durable tool approval interruption/resume, and workflow review ownership.
 - PATH-DB-DOCS-FAILURE: No recipe presents guardrail block as approval request or durable suspension.
 - PATH-DB-DOCS-RECOVERY: Canonical skill mirrors regenerate from source and exact usage examples typecheck.
 - Data/state/effects: transient values and safe decision records; only existing tool/domain handlers perform business effects; wait capabilities use existing storage transactions.

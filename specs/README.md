@@ -140,7 +140,7 @@ If two files appear to disagree, the more specific file wins (catalog/api/conven
 
 ## Approved decision-boundary refactor (2026-08-26)
 
-[Scope and approval](./37-decision-boundaries/00-vision.md), [contracts](./37-decision-boundaries/03-contracts/decisions.md), and [implementation plan](../plans/decision-boundaries/implementation-plan.md). This scope replaces guardrail/governance/approval callback and replay definitions without compatibility paths; other approved workstreams remain unchanged.
+[Scope and approval](./37-decision-boundaries/00-vision.md), [contracts](./37-decision-boundaries/03-contracts/decisions.md), and [implementation plan](../plans/decision-boundaries/implementation-plan.md). This scope uses durable tool-approval interruption and resume without compatibility paths; other approved workstreams remain unchanged.
 
 ## Guardrail authoring and callback inference
 

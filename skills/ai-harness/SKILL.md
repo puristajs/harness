@@ -13,21 +13,27 @@ addon packages named `@purista/harness-*`.
 ## Core Model
 `@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, Harness storage, memory, sandboxing, logging, telemetry, and streaming behind one session API.
 
-## Response contract redesign gate
+## Response contracts
 
-The shipped API returns validated final output from `run(...)` and the broad
-internal `RunEvent` union from `stream(...)`. Treat that as implementation
-evidence during the PURISTA v4 integration review, not as permission to publish
-raw diagnostic events as a stable distributed or HTTP contract.
-
-The proposed target keeps one explicit final output schema per agent/workflow.
+The public API keeps one explicit final output schema per agent/workflow.
 Consumers choose `run` or a portable `stream`; definitions declare whether
 `none`, `text-delta`, or `object-snapshot` output updates exist. Provider model
 streaming remains a producer/runtime capability and is not forced by the
-consumer. The portable terminal event carries the same validated output as
-`run`. Tool payloads, model messages, governance evidence, and other detailed
-events stay on a separately named diagnostic observation surface. Do not
-document or implement this proposal as shipped until its API is approved.
+consumer. The portable successful terminal outcome carries the same validated
+output as `run`; interrupt-capable definitions also expose a typed interrupt
+outcome. Tool payloads, model messages, governance evidence, and other detailed
+events stay on a separately named diagnostic observation surface.
+
+Browser compatibility must use a named, versioned server-side protocol
+projection. The first-party adapter supports Vercel AI SDK UI Message
+Stream v1 as the only initial GA profile. Keep protocol projection behind a
+narrow adapter boundary so another named protocol can be implemented later
+without changing Harness execution or PURISTA dispatch. SSE framing alone is
+not a protocol, raw `RunEvent` is not a browser contract, and
+PURISTA/Harness must not require a proprietary client library. Internal durable
+wait signals are converted into public interrupt outcomes and must never become
+HTTP 500 responses. Approval interruptions can be projected to standard UI
+tool approval states and resumed through application-owned authorization.
 
 Keep these layers separate:
 - configuration: `defineHarness()` registers adapters, defaults, models, tools, skills, agents, and workflows
@@ -64,7 +70,7 @@ Keep these layers separate:
 - Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
 - Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
 - Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
-- Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
+- Keep HTTP/SSE protocol mapping in a dedicated adapter. Public execution streams use `ExecutionEvent`; detailed diagnostics use the separate `observe(...)` surface and `RunEvent`.
 - Do not import PURISTA framework packages from harness or harness addon packages.
 - Use `.storage(HarnessStorage)` as the only Harness persistence boundary. Do not reintroduce `.state(...)`, `.runtime(...)`, `.checkpoints(...)`, `.externalWait(...)`, or `.workspaceStore(...)`; do not adapt PURISTA's unrelated general-purpose `StateStore` into Harness storage.
 - Use `.workspace(DurableWorkspace)` only for resumable filesystem/workspace state. Checkpointed files are the recovery guarantee; live processes, containers, and volumes are optional adapter optimizations. Missing `attach`/`restore` state must raise `SandboxStateLostError`, never become an empty replacement. `localDurableExecution(...)` returns exactly `{ storage, sandbox, workspace, close }` and is for local development or a trusted single-host worker, not distributed production.
@@ -98,14 +104,16 @@ Keep these layers separate:
   and a live-engine test. `adapter(...)` alone still performs no I/O. Cedar and
   AWS Verified Permissions remain separate application-owned evaluator
   topologies; do not hide them or arbitrary URLs behind a generic HTTP adapter.
-- A governance approval provider is a bounded immediate decision for one prepared
-  tool occurrence: `request({ approvalId, subject, demands }, { signal, deadline })`
-  returns approved/rejected plus optional content-free `reasonCode`. Static
-  permissions and governance demands share this one provider.
-  It is not a durable human-review task: the application owns the review
-  record, reviewer identity, UI, expiry, decision persistence, and any
-  restart-safe continuation. Do not represent a long-lived review with an
-  in-process Promise.
+- `require_approval` suspends the run before any gated tool executes and returns
+  a durable `ToolApprovalInterrupt`. The application owns authentication,
+  reviewer UI, expiry, and review records, then continues the same run with a
+  `ToolApprovalResume`. Treat the interrupt as an expected run outcome, not as
+  an application error. The internal `ToolApprovalPendingError` is runtime
+  control flow and must never cross the public boundary.
+- Use `@purista/harness-ai-sdk-ui/v1` when a web client speaks AI SDK UI Message
+  Stream v1. Keep the wire projection in the transport adapter so another
+  protocol version can be added without changing agents, workflows, or stored
+  approval state.
 - Content actions declare their phase and return allow/block/phase-specific
   transform. `afterModel` allows/blocks after `model.completed` accounting;
   `beforeOutput`/output rails transform only the final candidate. Whole-batch

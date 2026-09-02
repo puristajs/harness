@@ -149,7 +149,7 @@ When docs and source disagree, verify source before teaching behavior. Known che
 - custom agent handler context in source exposes models/memory/history/signal/session/run, not typed `ctx.tools` or callable skill handles
 - the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `contentCaptureMode`, while application SDK/exporter bootstrapping is external
 - default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` provides files and bounded search without command execution
-- harness streams are `RunEvent`, not an HTTP/SSE wire protocol
+- public harness streams are `ExecutionEvent`; detailed `RunEvent` diagnostics use `observe(...)`; neither is an HTTP wire protocol
 - governance is optional; exposure-only configs are valid and do not imply execution default-deny
 - feedback has exported types and testing recorder, but no production store in core
 

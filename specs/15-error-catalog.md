@@ -46,7 +46,7 @@ taxonomy and are never emitted by normal harness execution.
 - code: `PERMISSION_DENIED`
 - category: `permission`
 - retriable: `false`
-- when: An enforced permission denied a tool occurrence or its combined immediate approval was rejected. This is a recoverable safe tool result, while malformed decision callbacks are terminal decision-evaluation failures.
+- when: An enforced coarse permission denied a tool occurrence. This is a recoverable safe tool result, while malformed policy decisions are terminal decision-evaluation failures.
 - constructor: `PermissionDeniedError(evidence, cause?)`.
 - message: fixed `Permission denied.`
 - meta: exactly `{evidence: DecisionEvidence}`, validated before serialization; causes are omitted.
@@ -55,10 +55,10 @@ taxonomy and are never emitted by normal harness execution.
 - code: `POLICY_DENIED`
 - category: `permission`
 - retriable: `false`
-- when: configured governance denied a tool call, rejected required approval, or required approval without an approval provider. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run.
+- when: configured governance denied a tool call. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run. A resumed rejected approval is represented by a recoverable `ToolError` with `tool_kind: 'approval'`.
 - constructor: `PolicyDeniedError(evidence, reason, cause?)`.
 - message: fixed `Tool call denied by governance policy.`
-- meta: exactly `{evidence: DecisionEvidence, reason: 'policy_deny'|'approval_rejected'|'approval_unavailable'}`, validated before serialization; causes are omitted.
+- meta: exactly `{evidence: DecisionEvidence, reason: 'policy_deny'}`, validated before serialization; causes are omitted.
 
 ### Decision boundary errors
 

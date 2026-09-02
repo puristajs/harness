@@ -1,6 +1,6 @@
 # Governance policy
 
-**Status:** approved; callback/lifecycle/evidence authority updated 2026-08-26 by the decision-boundary scope.
+**Status:** approved; durable approval interruption authority updated 2026-09-02.
 
 **Purpose.** Defines the optional policy-driven governance layer for model-facing tool exposure and tool-call execution. Governance is not required for ordinary harness use. When configured, exposure rules can hide tools before a model step, and execution policies evaluate typed rules after agent permissions and tool allowlists, but before side-effecting tool execution.
 
@@ -13,8 +13,8 @@
   and product-specific rule stores adapt through application-owned
   `GovernancePolicyEvaluator` implementations.
 - Preserve existing security layers: built-in permissions remain the coarse built-in-tool gate; governance is a business/domain policy gate.
-- Emit observable policy, exposure, and approval events without persisting raw tool input.
-- Keep policy evidence replayable by emitting stable decision ids, optional policy versions, and approval ids.
+- Emit observable policy, exposure, and approval events without placing raw tool input in audit events.
+- Persist approval checkpoints privately and expose a typed interrupt/resume contract.
 
 ## Builder surface
 
@@ -39,7 +39,6 @@ defineHarness()
         })
       ]
     },
-    approval: { request: async (req) => ({ decision: 'approved' }) },
     policies: [
       native({
         id: 'bank-transfer-policy',
@@ -72,7 +71,6 @@ interface GovernanceConfig<S> {
   defaultEffect?: 'allow' | 'deny'
   policies?: readonly GovernancePolicyDefinition<S>[]
   exposure?: GovernanceToolExposurePolicy<S>
-  approval?: GovernanceApprovalProvider<S>
   audit?: GovernanceAuditSink
 }
 ```
@@ -83,7 +81,7 @@ Defaults:
 - `mode`: `'enforce'`.
 - `defaultEffect`: `'deny'` when execution policies are configured and no policy returns a decision.
 
-Shadow/disabled semantics, approval-only configuration, permission approval, strict callback contracts and defaults are defined in [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md). The execution policy default deny applies only when execution policies exist.
+Shadow/disabled semantics, permission approval, strict resume contracts and defaults are defined in [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md). The execution policy default deny applies only when execution policies exist.
 
 ## Tool exposure
 
@@ -110,7 +108,7 @@ Supported effects:
 |---|---|
 | `allow` | Records the policy decision and permits execution unless a stronger matching decision exists. |
 | `audit` | Records/audits the policy decision and permits execution unless a stronger matching decision exists. |
-| `require_approval` | Calls the configured approval provider before execution. Rejection blocks the tool. |
+| `require_approval` | Checkpoints the prepared batch and returns `ToolApprovalInterrupt` before execution. The application resumes the same run with `ToolApprovalResume`. |
 | `deny` | Blocks execution. |
 
 When multiple policies match one call, precedence is locked:
@@ -119,7 +117,7 @@ When multiple policies match one call, precedence is locked:
 
 ## Execution, approval, evidence and validation
 
-The [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md) are the single source for runtime ordering, correlated policy types, strict outcomes, combined permission/policy approval, cancellation, audit, safe events and identities. They replace the former callback/event contracts without compatibility aliases. `examples/bank-governance` is the immediate approval example; durable review is application-owned as specified by [review execution](./37-decision-boundaries/03-contracts/review-execution.md).
+The [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md) are the single source for runtime ordering, correlated policy types, strict outcomes, combined permission/policy approval, cancellation, audit, safe events and identities. `examples/bank-governance` is the tool-approval interrupt/resume example; broader workflow review is application-owned as specified by [review execution](./37-decision-boundaries/03-contracts/review-execution.md).
 
 Keep duplicate policy/rule IDs, missing native rules, unknown tool references and non-function evaluator validation at build. Native predicates receive parsed effective inputs; exposure predicates have no tool input. External engines translate their own documents to the closed GovernanceDecision; Harness owns no external policy syntax, storage or bundle distribution. [Spec 41](./41-opa-policy-adapter.md) defines the optional typed OPA transport and preserves this boundary: applications still own identity, minimized request/result mapping, Rego/bundles, credentials, topology, and decision-log controls. Cedar and other policy engines continue to use application-owned evaluators.
 
@@ -127,7 +125,7 @@ Keep duplicate policy/rule IDs, missing native rules, unknown tool references an
 
 The canonical minimal example is `examples/bank-governance`, which demonstrates:
 
-- approval for transfers above a threshold;
+- durable approval interruption and resume for transfers above a threshold;
 - strict denial above a hard limit;
 - strict denial when balance is lower than transfer amount;
 - typed native rules over `transfer_funds` tool input.

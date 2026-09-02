@@ -4,7 +4,7 @@
 
 The repository owner requested and approved this specification update on 2026-08-26 in task `01a03d51-6262-7480-89eb-baa163905ef6`: create a complete implementation plan, enforce PURISTA patterns and reuse, remove duplication, allow breaking changes, and provide no legacy APIs, backward compatibility, or migrations. This authorization applies to the exact content bound by this workstream's manifest and independent readiness review; implementation agents receive no authority to make additional semantic decisions.
 
-The outcome is one maintainable decision boundary across core interception, optional guardrails, permissions, governance, immediate approval, and durable wait integration. Keep the different meanings and reducers; share schemas, evidence, identities, callback lifecycle, and prepared tool invocation. Business review, authorization, and execution receipts remain application-owned.
+The outcome is one maintainable decision boundary across core interception, optional guardrails, permissions, governance, durable tool approval, and workflow wait integration. Keep the different meanings and reducers; share schemas, evidence, identities, and prepared tool invocation. Reviewer authentication, authorization, business review state, and execution receipts remain application-owned.
 
 This scope is an in-place clean boundary refactor, not a new runtime, package family, server, review UI, provider policy engine, or service. The Harness remains standalone; it must not import PURISTA Core. PURISTA consumes its public APIs and continues to own service guards, queues, and application resources. Existing starter/create-purista defaults remain free of mandatory governance configuration.
 

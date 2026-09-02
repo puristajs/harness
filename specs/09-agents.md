@@ -97,7 +97,7 @@ decisions through the lifecycle in [24-governance-policy](./24-governance-policy
 
 ## Permissions
 
-AgentPermissions retains bash/write/edit modes and allow/deny glob patterns. Modes are allow, require_approval and deny. Read/list/glob/grep remain outside this coarse denial configuration. One governance approval provider resolves permission and policy demands together. Exact validation, precedence, pattern behavior and failure outcomes: [decision contracts](./37-decision-boundaries/03-contracts/decisions.md).
+AgentPermissions retains bash/write/edit modes and allow/deny glob patterns. Modes are allow, require_approval and deny. Read/list/glob/grep remain outside this coarse denial configuration. Permission and policy approval demands are combined in one `ToolApprovalInterrupt`; the application resumes the same run with `ToolApprovalResume`. Exact validation, precedence, pattern behavior and failure outcomes: [decision contracts](./37-decision-boundaries/03-contracts/decisions.md).
 
 ## Default loop
 

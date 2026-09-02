@@ -197,27 +197,16 @@ disabled unless reviewed URL prefixes are explicitly configured in
 `network.allow`.
 
 ## Streaming
-Harness stream methods return typed `RunEvent` values:
 
-```ts
-for await (const event of session.agents.triage.stream(input)) {
-	if (event.type === 'tool.started') console.log(event.toolId)
-	if (event.type === 'model.delta') process.stdout.write(event.delta)
-	if (event.type === 'model.object.partial') renderDraft(event.partial)
-}
-```
+`session.agents.<id>.stream(...)` and `session.workflows.<id>.stream(...)`
+return provider-neutral `ExecutionEvent` values. Definitions declare whether
+public updates are `none`, `text-delta`, or `object-snapshot`; every stream ends
+with `run.finished`, whose outcome matches `run(...)`.
 
-`prompt(...)`, `ctx.models.alias.text(...)`, and `ctx.models.alias.object(...)`
-return final results only. Consumed `textStream(...)` and `objectStream(...)`
-chunks stay private by default. To publish a specific public-facing stream
-through `session.*.stream(...)`, pass `{ emitRunEvents: true }` to that model
-stream call. Harness-emitted model stream events include a generated `streamId`,
-`modelAlias`, and available `workflowId` / `agentId`; UI labels and client event
-names belong in the application adapter. The default
-structured agent loop uses `object(...)`, so it emits final `model.object`
-events, not text deltas.
-
-Do not treat harness streams as a client HTTP protocol. Map `RunEvent` into application-owned SSE, WebSocket, or queue events at the integration edge.
+Use `observe(...)` for detailed operational `RunEvent` diagnostics such as
+model/tool/policy lifecycle. Do not expose that diagnostic surface as a public
+contract. Map `ExecutionEvent` through a named protocol adapter at the HTTP
+edge; `@purista/harness-ai-sdk-ui/v1` provides AI SDK UI Message Stream v1.
 
 ## Shutdown
 Release each request/session and shut down the shared harness resources:

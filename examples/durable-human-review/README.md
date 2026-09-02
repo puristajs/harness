@@ -6,9 +6,10 @@ Harness stores only the safe wait request, terminal signal, run lease, and durab
 step checkpoints. It does not know reviewer identities, comments, authorization,
 payment policy, action payloads, claims, or receipts.
 
-This is separate from bounded `governance.approval` and content rails. Start
+This is separate from a `ToolApprovalInterrupt` for one prepared tool batch and
+from content rails. Start
 with the [decision table](../../docs/guides/decisions-and-approval.md), use the
-[guardrails composition](../guardrails/README.md) for one immediate approval
+[guardrails composition](../guardrails/README.md) for one tool-approval
 path, and keep durable review state in this application's claim/receipt store.
 
 `ReviewTaskStore` is an intentionally small, application-owned reference store. It

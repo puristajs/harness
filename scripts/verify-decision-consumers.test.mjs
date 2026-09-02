@@ -176,7 +176,7 @@ for (const voyage of ['absent', 'malformed']) test(`successful orchestration ign
   await put(join(repo, 'purista/packages/core/tsconfig.json'), config);
   await put(join(repo, 'ai-harness/packages/harness/tsconfig.json'), config);
   await put(join(repo, 'purista/packages/core/src/index.ts'), 'export const current = true;');
-  await put(join(repo, 'purista/packages/core/src/AgentQueueBuilder/consumer.ts'), "import { current } from '@purista/core'; void current;");
+  await put(join(repo, 'purista/packages/core/src/HarnessMount/consumer.ts'), "import { current } from '@purista/core'; void current;");
   const excluded = "const onPermission = true; const permissions = { write: 'ask' }; const invalid: string = 42;";
   if (voyage === 'malformed') {
     await put(join(repo, 'voyage/apps/server/tsconfig.json'), '{invalid');
@@ -190,8 +190,8 @@ export class DecisionBlockedError {} export class DecisionEvaluationError {}
 export function defineHarness(): void;
 export type AgentPermissions = { write?: 'allow' | 'require_approval' | 'deny' };
 export type GovernanceAuditRecord = { evidence: unknown };
-export type DecisionExecutionContext = { signal: AbortSignal; deadline: number };
-export type GovernanceApprovalProvider = { request(request: unknown, execution: DecisionExecutionContext): Promise<{ decision: 'approved' | 'rejected'; reasonCode?: string }> };
+export type ToolApprovalInterrupt = { type: 'tool-approval'; id: string; revision: string; requests: unknown[] };
+export type ToolApprovalResume = { type: 'tool-approval'; runId: string; interruptId: string; revision: string; eventId: string; decisions: { approvalId: string; approved: boolean }[] };
 export type ExternalWaitOutcome = 'approved' | 'rejected' | 'expired' | 'cancelled';
 export type ProviderContinuation = { providerId: string; items: { kind: 'assistant_content' }[] };`,
     'harness-guardrails': "export function defineGuardrails(): void; export type GuardrailOutcome = { decision: 'allow' | 'block' }; export type GuardrailsConfig = { rails: {} };",
@@ -218,7 +218,7 @@ export type ProviderContinuation = { providerId: string; items: { kind: 'assista
   assert.ok(result.checks.every(check => check.status === 'passed'));
   await assert.rejects(access(join(repo, 'ai-harness/.artifacts/decision-consumers')), { code: 'ENOENT' });
   assert.equal(await readFile(sentinel, 'utf8'), 'preserve');
-  assert.equal(await readFile(join(repo, 'purista/packages/core/src/AgentQueueBuilder/consumer.ts'), 'utf8'), "import { current } from '@purista/core'; void current;");
+  assert.equal(await readFile(join(repo, 'purista/packages/core/src/HarnessMount/consumer.ts'), 'utf8'), "import { current } from '@purista/core'; void current;");
   if (voyage === 'malformed') assert.equal(await readFile(join(repo, 'voyage/apps/server/src/consumer.ts'), 'utf8'), excluded);
   else await assert.rejects(access(join(repo, 'voyage')), { code: 'ENOENT' });
 });

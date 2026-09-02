@@ -251,17 +251,12 @@ Capabilities are enforced at type level and runtime:
 
 Use `object` / `object_stream`; do not introduce `json` / `json_stream` capability names.
 
-`text(...)` and `object(...)` are final request-response calls. They should not
-be used when an application needs partial model output. Use `textStream(...)`
-for text deltas and `objectStream(...)` for structured partials. Consumed stream
-chunks stay private inside workflow or custom agent-handler code by default.
-When a stream is intentionally user-facing, pass `{ emitRunEvents: true }` to
-that specific model stream call; harness then mirrors `model.delta`,
-`model.object.partial`, and streamed final `model.object` events into the
-session `RunEvent` stream. Harness supplies a generated `streamId` for the
-stream invocation and includes `modelAlias`, plus `workflowId` / `agentId` when
-available. Frontend labels, semantic buckets, and client event names belong in
-the application adapter.
+`text(...)` and `object(...)` are final request-response calls. Use
+`textStream(...)` for text deltas and `objectStream(...)` for structured
+partials inside custom handlers or workflows. An agent/workflow definition
+selects its portable public update mode; `stream(...)` then exposes
+`ExecutionEvent` values. Detailed model lifecycle belongs to `observe(...)`.
+Frontend protocol and labels belong in a separate application adapter.
 
 ## Direct Model Calls In Workflows Or Custom Agents
 Workflow handlers expose `ctx.agents` and `ctx.models`. Custom agent handlers expose `ctx.models`, memory/history/session/run/signal, and validated input. The current implementation does not expose custom tool handles or skill handles on custom handler context.

@@ -76,7 +76,7 @@ No new named aliases are added for agent/workflow/tool handlers: use
 `TsToolDefinition<typeof input, typeof output>['handler']`,
 `NonNullable<AgentDefinition<S,I,O>['handler']>`, and
 `WorkflowDefinition<S,I,O>['handler']` when extraction is necessary. Existing
-`AgentPrepareStep`, `AgentStopWhen`, governance evaluator, approval callback,
+`AgentPrepareStep`, `AgentStopWhen`, governance evaluator, audit callback,
 and Guardrail evaluator ownership remain unchanged.
 
 ## Acceptance

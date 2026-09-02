@@ -178,52 +178,20 @@ One session has one active run at a time. Concurrent runs in the same session th
 
 Use separate session ids for parallel user threads or independent background jobs.
 
-## Streaming Run Events
-`prompt(...)` returns final validated output. `stream(...)` yields typed `RunEvent` values:
+## Execution streams and diagnostics
 
-```ts
-for await (const event of session.workflows.audit.stream(input)) {
-	switch (event.type) {
-		case 'run.started':
-		case 'agent.started':
-		case 'tool.started':
-		case 'tool.finished':
-		case 'model.message':
-		case 'model.completed':
-		case 'model.delta':
-		case 'model.object.partial':
-		case 'model.object':
-		case 'model.embedding.completed':
-		case 'model.rerank.completed':
-		case 'policy.exposure':
-		case 'policy.evaluated':
-		case 'approval.requested':
-		case 'approval.finished':
-		case 'agent.finished':
-		case 'run.finished':
-		case 'stream.overflow':
-			break
-	}
-}
-```
+`run(...)` returns a validated `RunOutcome`. `stream(...)` yields portable
+`ExecutionEvent` values selected by the definition's update mode and finishes
+with a `run.finished` event carrying the same outcome. Interrupted approvals
+and external waits are normal outcomes.
 
-Ordering is lifecycle order for a single run. Streams are live observation.
-Breaking out of a `stream(...)` iterator detaches that consumer only; it does
-not cancel the underlying run. Pass `opts.signal` when the application intends
-to cancel the run, and use `HarnessStorage.listEvents(runId)` for persisted audit
-history after live observation ends.
+Use `observe(...)` for detailed model, tool, policy, approval, delegation, and
+workflow lifecycle `RunEvent` values. Persisted events support authorized audit
+inspection, while recovery uses durable checkpoints rather than stream cursors.
 
-`text(...)` and `object(...)` are final request-response model calls and do not
-emit partial run events. Consumed `textStream(...)` and `objectStream(...)`
-chunks stay private by default. They emit `model.delta`,
-`model.object.partial`, and streamed final `model.object` events only when that
-specific model stream call passes `{ emitRunEvents: true }`. Harness-emitted
-model stream events include a generated `streamId`, `modelAlias`, and available
-`workflowId` / `agentId`. UI labels, semantic buckets, and client event names
-belong in the application adapter. Persisted events support audit/history
-inspection, but recovery should use durable checkpoints, not stream cursors.
-
-Do not expose `RunEvent` directly as a provider protocol unless your application owns that contract. HTTP/SSE adapters should map harness events into client-facing event shapes.
+Neither event surface is a browser wire protocol. Use a named adapter such as
+`@purista/harness-ai-sdk-ui/v1`. Cancel a run with the invocation signal or the
+integration's cancellation bridge; test disconnect behavior explicitly.
 
 Governance events are audit-oriented and privacy-safe. `policy.exposure`
 records pre-model tool exposure decisions. `policy.evaluated` records

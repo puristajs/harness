@@ -207,14 +207,16 @@ async function assertFreshBuild(root) {
 
 const declarationConsumer = `import {
   createDecisionEvidence, DecisionBlockedError, DecisionEvaluationError, defineHarness,
-  type AgentPermissions, type GovernanceApprovalProvider, type GovernanceAuditRecord,
-  type DecisionExecutionContext, type ExternalWaitOutcome, type ProviderContinuation,
+  type AgentPermissions, type GovernanceAuditRecord, type ToolApprovalInterrupt,
+  type ToolApprovalResume, type ExternalWaitOutcome, type ProviderContinuation,
 } from '@purista/harness';
 import { FakeModelProvider } from '@purista/harness/testing';
 import { defineGuardrails, type GuardrailOutcome, type GuardrailsConfig } from '@purista/harness-guardrails';
 import { openai } from '@purista/harness-openai';
 // @ts-expect-error Removed permission callback has no compatibility export.
 import type { OnPermission } from '@purista/harness';
+// @ts-expect-error Approval callbacks were replaced by durable interrupt/resume.
+import type { GovernanceApprovalProvider } from '@purista/harness';
 // @ts-expect-error ProviderItems was replaced by the canonical continuation contract.
 import type { ProviderItems } from '@purista/harness';
 // @ts-expect-error Evaluation errors share the core decision error contract.
@@ -223,15 +225,16 @@ import { GuardrailEvaluationError } from '@purista/harness-guardrails';
 import { loadGuardrailsConfig } from '@purista/harness-guardrails';
 // @ts-expect-error Guardrail configuration is inline only; there is no parser.
 import { parseGuardrailsConfig } from '@purista/harness-guardrails';
-const approval: GovernanceApprovalProvider = { request: async (_request, execution) => {
-  const context: DecisionExecutionContext = execution;
-  return { decision: 'approved', reasonCode: 'operator_approved' };
-} };
+declare const interrupt: ToolApprovalInterrupt;
+const resume: ToolApprovalResume = {
+  type: 'tool-approval', runId: 'run-1', interruptId: 'interrupt-1', revision: 'revision-1',
+  eventId: 'decision-1', decisions: [{ approvalId: 'approval-1', approved: true }]
+};
 const continuation: ProviderContinuation = { providerId: 'openai', items: [{ kind: 'assistant_content' }] };
 const outcome: ExternalWaitOutcome = 'approved';
 const decision: GuardrailOutcome = { decision: 'allow' };
 const config: GuardrailsConfig = { rails: {} };
-// @ts-expect-error Static permissions use the shared approval provider, not ask callbacks.
+// @ts-expect-error Static permissions use require_approval, not ask callbacks.
 const permissions: AgentPermissions = { write: 'ask' };
 declare const audit: GovernanceAuditRecord;
 // @ts-expect-error Source identifiers live in safe evidence, not repeated event fields.
@@ -239,7 +242,7 @@ audit.policyId;
 // @ts-expect-error Audit evidence does not carry inspected input.
 audit.input;
 void [createDecisionEvidence, DecisionBlockedError, DecisionEvaluationError, defineHarness,
-  FakeModelProvider, defineGuardrails, openai, approval, continuation, outcome, decision, config];
+  FakeModelProvider, defineGuardrails, openai, interrupt, resume, continuation, outcome, decision, config];
 `;
 
 /** Run all offline source, runtime, declaration and removed-API gates; retain artifacts only on failure. */
@@ -266,7 +269,7 @@ export async function verifyConsumers(workspaceRoot = defaultRoot) {
     const ts = createRequire(import.meta.url)(tsPath);
     const aliases = mappings(root, 'src');
     const configs = [
-      ['core', join(root, 'purista'), join(root, 'purista/packages/core/tsconfig.json'), [join(root, 'purista/packages/core/src/AgentQueueBuilder/**/*.ts')]],
+      ['core', join(root, 'purista'), join(root, 'purista/packages/core/tsconfig.json'), [join(root, 'purista/packages/core/src/HarnessMount/**/*.ts')]],
     ];
     for (const [label, repo, original, include] of configs) {
       await check(`${label} source`, async () => {
@@ -296,7 +299,7 @@ export default {
     ...Object.entries(aliases).map(([find, replacement]) => ({ find: new RegExp('^' + find + '$'), replacement })),
     ...existing,
   ] },
-  test: { ...baseline.test, include: ['packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts', 'packages/core/src/AgentQueueBuilder/runtime/scopedRuntime.test.ts'] },
+  test: { ...baseline.test, include: ['packages/core/src/HarnessMount/harnessMount.test.ts', 'packages/core/src/HarnessMount/invocation.test.ts', 'packages/core/src/HarnessMount/queue.test.ts', 'packages/core/src/HarnessMount/hostToolBuilder.test.ts'] },
 };
 `);
       await runCommand(process.execPath, [localTool(purista, 'vitest', 'vitest.mjs', 'Vitest'), 'run', '--configLoader', 'runner', '--config', configPath], {

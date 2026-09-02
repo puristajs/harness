@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createHarnessUIMessageStream,
   createHarnessUIMessageStreamResponse,
+  createHarnessUIMessageSseEvents,
+  AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS,
   HARNESS_UI_APPROVAL_PROTOCOL,
   parseHarnessToolApprovalResume,
   type HarnessUIApprovalDescriptor,
@@ -74,6 +76,26 @@ describe('AI SDK UI Message Stream v1', () => {
     const body = await response.text()
     expect(body).toContain('"type":"text-delta"')
     expect(body).toContain('data: [DONE]')
+    expect(AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS).toEqual({ 'x-vercel-ai-ui-message-stream': 'v1' })
+  })
+
+  it('projects data-only SSE events for framework-owned HTTP streams', async () => {
+    const events: ExecutionEvent[] = [
+      { type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' },
+      { type: 'output.text.delta', runId: 'run-1', id: 'answer', delta: 'Hello' },
+      {
+        type: 'run.finished',
+        runId: 'run-1',
+        at: '2026-09-02T10:00:01.000Z',
+        outcome: { status: 'completed', runId: 'run-1', output: 'Hello' },
+      },
+    ]
+    const sseEvents = []
+    for await (const event of createHarnessUIMessageSseEvents(iterate(events))) sseEvents.push(event)
+
+    expect(sseEvents.every(event => event.event === 'data')).toBe(true)
+    expect(sseEvents).toContainEqual({ event: 'data', data: { type: 'text-delta', id: 'answer', delta: 'Hello' } })
+    expect(sseEvents.at(-1)).toEqual({ event: 'data', data: '[DONE]' })
   })
 
   it('emits a standard approval request and reconstructs a deterministic resume', async () => {

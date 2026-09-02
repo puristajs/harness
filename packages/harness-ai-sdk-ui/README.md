@@ -25,6 +25,11 @@ The response uses the standard `x-vercel-ai-ui-message-stream: v1` header and
 SSE data format. Text and tools are standard AI SDK message parts. Harness
 status and structured output are typed `data-status` and `data-output` parts.
 
+When a framework owns the HTTP response, use
+`createHarnessUIMessageSseEvents(events)` and write each returned data-only SSE
+event through that framework's native stream. Apply the exported
+`AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS` to the endpoint response.
+
 ## Resume tool approval
 
 The browser uses AI SDK `addToolApprovalResponse`. On the next request, parse

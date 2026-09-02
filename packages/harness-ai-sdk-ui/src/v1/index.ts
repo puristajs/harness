@@ -22,6 +22,11 @@ export const HARNESS_UI_APPROVAL_PROTOCOL = 'purista-harness/tool-approval' as c
 /** Wire format version of the approval descriptor. */
 export const HARNESS_UI_APPROVAL_VERSION = 1 as const
 
+/** Static HTTP header required by AI SDK UI Message Stream v1 clients. */
+export const AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS = Object.freeze({
+  'x-vercel-ai-ui-message-stream': 'v1',
+})
+
 /** Durable information the browser must return to resume one approval batch. */
 export interface HarnessUIApprovalDescriptor {
   readonly protocol: typeof HARNESS_UI_APPROVAL_PROTOCOL
@@ -61,6 +66,12 @@ export interface HarnessUIMessageStreamOptions {
    */
   readonly messageId?: string
 }
+
+/** Data-only SSE event accepted by HTTP adapters such as PURISTA Hono. */
+export type HarnessUIMessageSseEvent = Readonly<{
+  event: 'data'
+  data: UIMessageChunk<unknown, HarnessUIDataTypes> | '[DONE]'
+}>
 
 /** Response options plus adapter-specific stream settings. */
 export type HarnessUIMessageStreamResponseOptions = Omit<
@@ -233,6 +244,33 @@ export function createHarnessUIMessageStreamResponse<Output extends JsonValue = 
     ...responseInit,
     stream: createHarnessUIMessageStream(events, { ...(messageId ? { messageId } : {}) }),
   })
+}
+
+/**
+ * Convert Harness events to data-only SSE events for a framework HTTP stream.
+ *
+ * Use this when the framework owns the response and SSE framing. The final
+ * event contains the AI SDK `[DONE]` sentinel. Stopping iteration cancels the
+ * underlying Harness event stream.
+ */
+export async function* createHarnessUIMessageSseEvents<Output extends JsonValue = JsonValue>(
+  events: AsyncIterable<ExecutionEvent<Output>>,
+  options: HarnessUIMessageStreamOptions = {},
+): AsyncIterable<HarnessUIMessageSseEvent> {
+  const reader = createHarnessUIMessageStream(events, options).getReader()
+  let completed = false
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      yield { event: 'data', data: next.value }
+    }
+    completed = true
+    yield { event: 'data', data: '[DONE]' }
+  } finally {
+    if (!completed) await reader.cancel('consumer stopped reading')
+    reader.releaseLock()
+  }
 }
 
 /**

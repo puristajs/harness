@@ -360,6 +360,15 @@ type ToolHandlerContextBase = {
 	agentId: string
 	/** Tool alias registered with the Harness. */
 	toolId: string
+	/** Provider tool-call identifier for this invocation. */
+	callId: string
+	/**
+	 * Stable key for the logical tool call, including approval resume and run
+	 * recovery. Side-effecting tools should pass this key to an idempotent
+	 * downstream operation. The Harness cannot make an arbitrary external side
+	 * effect exactly-once by itself.
+	 */
+	idempotencyKey: string
 }
 
 /**

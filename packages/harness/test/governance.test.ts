@@ -26,14 +26,14 @@ const transferInput = z.object({
   balance: z.number(),
 })
 
-function bankTools(onTransfer: () => void = () => {}) {
+function bankTools(onTransfer: (context: ToolHandlerContext) => void = () => {}) {
   return {
     transfer_funds: {
       description: 'Transfer funds between two accounts.',
       input: transferInput,
       output: z.object({ approved: z.boolean(), reference: z.string() }),
-      handler: async (_ctx: ToolHandlerContext, input: z.output<typeof transferInput>) => {
-        onTransfer()
+      handler: async (ctx: ToolHandlerContext, input: z.output<typeof transferInput>) => {
+        onTransfer(ctx)
         return { approved: true, reference: `${input.from}-${input.to}-${input.amount}` }
       },
     },
@@ -61,13 +61,12 @@ describe('governance policies', () => {
       finishReason: 'tool_calls',
     })
     let transfers = 0
-
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
       .tools(
         bankTools(() => {
-        transfers += 1
+          transfers += 1
         }),
       )
       .agent('banker', {
@@ -136,12 +135,14 @@ describe('governance policies', () => {
       finishReason: 'tool_calls',
     })
     let transfers = 0
+    const toolContexts: ToolHandlerContext[] = []
     const harness = defineHarness()
       .sandbox(inMemorySandbox())
       .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
       .tools(
-        bankTools(() => {
-        transfers += 1
+        bankTools(context => {
+          transfers += 1
+          toolContexts.push(context)
         }),
       )
       .agent('banker', {
@@ -195,6 +196,14 @@ describe('governance policies', () => {
     }
 
     expect(transfers).toBe(1)
+    expect(toolContexts).toHaveLength(1)
+    expect(toolContexts[0]).toMatchObject({
+      runId: first.runId,
+      agentId: 'banker',
+      toolId: 'transfer_funds',
+      callId: 'call-transfer',
+      idempotencyKey: expect.stringMatching(/^tool_[a-f0-9]{64}$/),
+    })
     expect(model.requests).toHaveLength(2)
     expect(resumedEvents).toEqual(
       expect.arrayContaining([

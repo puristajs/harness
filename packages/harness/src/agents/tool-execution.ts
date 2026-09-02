@@ -5,6 +5,7 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_TYPE,
 } from '@opentelemetry/semantic-conventions/incubating'
+import { createHash } from 'node:crypto'
 import { ToolApprovalPendingError, type ToolApprovalDecision, type ToolApprovalRequest } from '../approvals/index.js'
 import {
   DecisionBlockedError,
@@ -377,6 +378,8 @@ async function prepareToolBinding(
           sessionId: args.sessionId,
           agentId: args.agentId,
           toolId: call.name,
+          callId: call.id,
+          idempotencyKey: toolCallIdempotencyKey(args, call),
           ...(args.hostContext !== undefined ? { hostContext: args.hostContext } : {}),
         },
         input,
@@ -388,6 +391,24 @@ async function prepareToolBinding(
       })
     },
   }
+}
+
+function toolCallIdempotencyKey(args: ToolExecutionArgs, call: ToolCallSpec): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify([
+        args.harnessName,
+        args.runId,
+        args.workflowId ?? null,
+        args.delegationCallId ?? null,
+        args.agentId,
+        args.step,
+        call.name,
+        call.id,
+      ]),
+    )
+    .digest('hex')
+  return `tool_${digest}`
 }
 
 async function executePrepared(

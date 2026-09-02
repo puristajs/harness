@@ -328,12 +328,27 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
         sequence: 1,
         output: { prepared: true }
       })
+      await store.commitCheckpoint({
+        runId: run.id,
+        sessionId: run.sessionId,
+        workerId: lease.workerId,
+        leaseId: lease.leaseId,
+        stepId: 'execute',
+        input: lease.start.input,
+        attempt: lease.attempt,
+        sequence: 2,
+        output: { executed: true }
+      })
+      await expect(store.loadCheckpoint(run.id, 'prepare')).resolves.toMatchObject({
+        stepId: 'prepare',
+        output: { prepared: true },
+      })
       await lease.release()
       const resumed = await store.acquireRun({
         runId: run.id, sessionId: run.sessionId, workerId: 'worker-2', stepId: 'prepare', input: { value: 1 }
       })
       expect(resumed.resumed).toBe(true)
-      expect(resumed.checkpoint?.output).toEqual({ prepared: true })
+      expect(resumed.checkpoint?.output).toEqual({ executed: true })
     })
 
     it('atomically suspends a run on an external wait and deduplicates signals', async () => {

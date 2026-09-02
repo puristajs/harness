@@ -253,8 +253,11 @@ export interface InvokeOptions {
 	tracestate?: string
 	/** Scalar metadata exposed to handlers and telemetry sanitizers. */
 	metadata?: Record<string, JsonValue>
-  /** Resume a previously returned tool-approval interrupt with authenticated decisions. */
-  resume?: ToolApprovalResume
+	/**
+	 * Resume a previously returned tool-approval interrupt with authenticated
+	 * decisions. Workflow resumes also require `durable` with the same run id.
+	 */
+	resume?: ToolApprovalResume
 	/**
 	 * Opt a workflow run into durable execution against the configured
 	 * `.storage(...)` (and optional `.workspace(...)`). Workflow-only;
@@ -1284,6 +1287,11 @@ export type WorkflowAgentInvokeOptions<
 	S extends BuilderState,
 	K extends keyof NonNullable<S['agents']>,
 > = InvokeOptions & {
+	/**
+	 * Stable identity for this child call. Required when a tool can pause for
+	 * approval so a durable workflow can resume the exact child model turn.
+	 */
+	idempotencyKey?: string
 	/**
 	 * Optional model alias override for this child-agent call.
 	 * The alias must exist on the harness model registry and be allowed by the

@@ -404,11 +404,13 @@ export class SqliteHarnessStorage implements HarnessStorage {
     })))
   }
 
-  public async loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined> {
+  public async loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined> {
     return this.storageSpan('load_checkpoint', {
       'harness.run.id': runId
     }, async () => {
-      const row = this.stmt('select * from harness_run_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
+      const row = stepId === undefined
+        ? this.stmt('select * from harness_run_checkpoints where run_id = ? order by sequence desc limit 1').get(runId)
+        : this.stmt('select * from harness_run_checkpoints where run_id = ? and step_id = ? order by sequence desc limit 1').get(runId, stepId)
       return row ? this.rowToCheckpoint(row) : undefined
     })
   }

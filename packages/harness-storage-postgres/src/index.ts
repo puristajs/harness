@@ -407,12 +407,17 @@ class PostgresHarnessStorage implements HarnessStorage {
     })))
   }
 
-  public async loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined> {
+  public async loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined> {
     return this.storageSpan('load_checkpoint', { 'harness.run.id': runId }, async () => {
-      const rows = await this.query(
-        'select * from purista_harness_run_checkpoints where run_id = $1 order by sequence desc limit 1',
-        [runId],
-      )
+      const rows = stepId === undefined
+        ? await this.query(
+            'select * from purista_harness_run_checkpoints where run_id = $1 order by sequence desc limit 1',
+            [runId],
+          )
+        : await this.query(
+            'select * from purista_harness_run_checkpoints where run_id = $1 and step_id = $2 order by sequence desc limit 1',
+            [runId, stepId],
+          )
       return rows[0] ? rowToCheckpoint(rows[0]) : undefined
     })
   }

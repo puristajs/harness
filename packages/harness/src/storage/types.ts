@@ -82,8 +82,8 @@ export interface HarnessStorage {
 
   /** Acquires exclusive ownership of an existing durable run attempt. */
   acquireRun(record: DurableRunStart): Promise<DurableRunLease>
-  /** Loads the last committed deterministic step checkpoint. */
-  loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined>
+	/** Loads the last committed checkpoint, optionally for one exact step id. */
+	loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined>
   /** Commits one deterministic step checkpoint under the active lease. */
   commitCheckpoint(checkpoint: RunCheckpoint): Promise<void>
   /** Runs an operation under the storage's session-level serialization boundary. */

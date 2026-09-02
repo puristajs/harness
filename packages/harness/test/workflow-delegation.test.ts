@@ -31,6 +31,111 @@ function hangingProvider(onStarted?: () => void) {
 }
 
 describe('workflow delegation policy', () => {
+	it('suspends and resumes a child-agent tool approval through a durable workflow', async () => {
+		const model = new FakeModelProvider()
+		model.enqueue({
+			object: {},
+			toolCalls: [{ id: 'call-transfer', name: 'transfer_funds', arguments: { amount: 1_200 } }],
+			usage,
+			finishReason: 'tool_calls',
+		})
+		let preparations = 0
+		let transfers = 0
+		const harness = defineHarness()
+			.sandbox(inMemorySandbox())
+			.models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
+			.tools({
+				transfer_funds: {
+					description: 'Transfer funds after approval.',
+					input: z.object({ amount: z.number() }),
+					output: z.object({ reference: z.string() }),
+					handler: async (_context, input) => {
+						transfers += 1
+						return { reference: `transfer-${input.amount}` }
+					},
+				},
+			})
+			.agent('worker', {
+				model: 'fast',
+				input: z.string(),
+				output: z.string(),
+				instructions: 'Use transfer_funds, then report completion.',
+				tools: ['transfer_funds'],
+				builtinTools: false,
+			})
+			.workflow('review', {
+				input: z.string(),
+				output: z.string(),
+				delegation: { agents: ['worker'] },
+				handler: async context => {
+					await context.step('prepare', async () => {
+						preparations += 1
+						return { ready: true }
+					})
+					return context.step('transfer', () =>
+						context.agents.worker(context.input, { idempotencyKey: 'approved-transfer' }),
+					)
+				},
+			})
+			.governance(({ native, rule }) => ({
+				defaultEffect: 'allow',
+				policies: [
+					native({
+						id: 'transfer-approval',
+						rules: [
+							rule({
+								id: 'large-transfer',
+								effect: 'require_approval',
+								tools: ['transfer_funds'],
+								when: ({ input }) => input.amount > 1_000,
+							}),
+						],
+					}),
+				],
+			}))
+			.build()
+		const session = await harness.getSession('workflow-approval')
+		const durable = { runId: 'workflow-approval-run' }
+		const first = await session.workflows.review.run('transfer', { durable })
+		expect(first.status).toBe('interrupted')
+		if (first.status !== 'interrupted' || first.interrupt.type !== 'tool-approval') {
+			throw new Error('Expected a child-agent tool approval interruption.')
+		}
+		const request = first.interrupt.requests[0]
+		if (!request) throw new Error('Expected one approval request.')
+		expect(preparations).toBe(1)
+		expect(transfers).toBe(0)
+
+		model.enqueue({ object: 'done', usage, finishReason: 'stop' })
+		const resume = {
+			type: 'tool-approval' as const,
+			runId: first.runId,
+			interruptId: first.interrupt.id,
+			revision: first.interrupt.revision,
+			eventId: 'workflow-review-1',
+			decisions: [{ approvalId: request.approvalId, approved: true }],
+		}
+		await expect(session.workflows.review.run('transfer', { durable, resume })).resolves.toMatchObject({
+			status: 'completed',
+			output: 'done',
+		})
+		expect(preparations).toBe(1)
+		expect(transfers).toBe(1)
+		expect(model.requests).toHaveLength(2)
+		await expect(session.workflows.review.run('transfer', { durable, resume })).resolves.toMatchObject({
+			status: 'completed',
+			output: 'done',
+		})
+		await expect(
+			session.workflows.review.run('transfer', {
+				durable,
+				resume: { ...resume, eventId: 'conflicting-workflow-review' },
+			}),
+		).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+		expect(transfers).toBe(1)
+		expect(model.requests).toHaveLength(2)
+	})
+
   it('passes transformed workflow input through a delegated transformed custom agent', async () => {
     const model = new FakeModelProvider()
     const parseWorkflowInput = vi.fn((value: string) => Number(value))

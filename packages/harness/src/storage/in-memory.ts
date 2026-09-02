@@ -317,9 +317,12 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     }))
   }
 
-  public async loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined> {
+  public async loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined> {
     return this.storageSpan('load_checkpoint', { 'harness.run.id': runId }, async () => (
-      [...(this.checkpoints.get(runId)?.values() ?? [])].sort((a, b) => a.sequence - b.sequence).at(-1)
+      [...(this.checkpoints.get(runId)?.values() ?? [])]
+        .filter(checkpoint => stepId === undefined || checkpoint.stepId === stepId)
+        .sort((a, b) => a.sequence - b.sequence)
+        .at(-1)
     ))
   }
 

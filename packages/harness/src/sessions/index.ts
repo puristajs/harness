@@ -165,6 +165,13 @@ function workflowIdempotencyRunId(sessionId: string, workflowId: string, idempot
   return `workflow_${digest}`
 }
 
+function workflowChildInvocationId(runId: string, agentId: string, idempotencyKey: string): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([runId, agentId, idempotencyKey]))
+    .digest('hex')
+  return `delegate_${digest}`
+}
+
 type HarnessDefinition<S extends BuilderState> = {
   name: string
   logger: Logger
@@ -608,10 +615,16 @@ function validateInvokeOptions(opts: InvokeOptions | undefined): void {
       issues: { idempotencyKey: 'must match /^[A-Za-z0-9_.:-]{1,120}$/' },
     })
   }
-  if (opts?.resume && (opts.idempotencyKey || opts.durable)) {
-    throw new ValidationError('Approval resume cannot be combined with idempotencyKey or durable options.', {
+  if (opts?.resume && opts.idempotencyKey) {
+    throw new ValidationError('Approval resume cannot be combined with idempotencyKey.', {
       where: 'invoke_options',
       issues: { resume: 'conflicting_options' },
+    })
+  }
+  if (opts?.resume && opts.durable && opts.resume.runId !== opts.durable.runId) {
+    throw new ValidationError('Approval resume and durable execution must reference the same run.', {
+      where: 'invoke_options',
+      issues: { resume: 'run_id_mismatch', durable: 'run_id_mismatch' },
     })
   }
 }
@@ -720,7 +733,7 @@ function approvalDecisionRecord(resume: ToolApprovalResume): JsonValue {
 }
 
 async function assertCompletedApprovalDecision(storage: HarnessStorage, resume: ToolApprovalResume): Promise<void> {
-  const checkpoint = await storage.loadCheckpoint(resume.runId)
+  const checkpoint = await storage.loadCheckpoint(resume.runId, approvalDecisionStepId(resume.interruptId))
   if (
     !checkpoint ||
     checkpoint.stepId !== approvalDecisionStepId(resume.interruptId) ||
@@ -2376,14 +2389,29 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const boundSession = await requireSessionRecord(sessionId)
     await authorizeBorrowedOwner(boundSession)
     const durableStorage = resolveDurableStorage(opts)
+    const approvalResume = opts?.resume ? validateApprovalResume(opts.resume) : undefined
+    if (approvalResume && !opts?.durable) {
+      throw new ValidationError('A workflow tool approval can only resume as a durable workflow.', {
+        where: 'invoke_options',
+        issues: { resume: 'durable_required' },
+      })
+    }
     if (opts?.signal?.aborted) {
       throw new OperationCancelledError('Run was cancelled before start.', { scope: 'run' })
     }
 
     const runId =
+      approvalResume?.runId ??
       opts?.durable?.runId ??
       (opts?.idempotencyKey ? workflowIdempotencyRunId(sessionId, workflowId, opts.idempotencyKey) : ulid())
     const previous = await definition.storage.getRun(runId)
+    let approvalCheckpoint: ToolApprovalCheckpoint | undefined
+    if (approvalResume && !previous) {
+      throw new ValidationError('Tool approval resume references an unknown workflow run.', {
+        where: 'invoke_options',
+        issues: { runId },
+      })
+    }
     if (previous) {
       const sameInvocation =
         previous.sessionId === sessionId &&
@@ -2397,6 +2425,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         })
       }
       if (previous.status === 'succeeded') {
+        if (approvalResume) await assertCompletedApprovalDecision(definition.storage, approvalResume)
         if (onEvent) {
           const replayedAt = now()
           await onEvent({ type: 'run.started', runId, at: replayedAt })
@@ -2409,6 +2438,15 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           op: 'createRun',
           reason: 'idempotency_terminal_run',
         })
+      }
+      if (approvalResume) {
+        if (previous.status !== 'interrupted') {
+          throw new ValidationError('Tool approval resume requires an interrupted workflow run.', {
+            where: 'invoke_options',
+            issues: { runId, status: previous.status },
+          })
+        }
+        approvalCheckpoint = parseToolApprovalCheckpoint(previous.output, approvalResume)
       }
     }
 
@@ -2473,6 +2511,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     let runSandboxTerminal = false
     let runCreated = false
     let durableAttemptOwned = false
+    let approvalResumeConsumed = false
     const durableSandboxPartitions = new Map<string, SandboxPartition>()
     const retainDurablePartition = (scope: SandboxScope): void => {
       if (scope.lifetime !== 'run' || scope.runId !== runId) return
@@ -2485,6 +2524,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       checkpointBlockingChildTasks: new Set<Promise<unknown>>(),
       slotWaiters: [],
     }
+    const childInvocationKeys = new Set<string>()
     try {
       if (durableStorage && opts?.durable) {
         // A durable retry is owned by its existing run record. A competing
@@ -2537,6 +2577,20 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       } else {
         await definition.storage.createRun(runRecord)
         runCreated = true
+      }
+      if (approvalResume && approvalCheckpoint) {
+        if (!durableBinding) throw new InternalError('Workflow approval resume has no durable binding.')
+        const decision = approvalDecisionRecord(approvalResume)
+        const recorded = await durableBinding.step(
+          approvalDecisionStepId(approvalResume.interruptId),
+          async () => decision,
+        )
+        if (JSON.stringify(recorded) !== JSON.stringify(decision)) {
+          throw new ValidationError('Tool approval decision conflicts with the recorded workflow decision.', {
+            where: 'invoke_options',
+            issues: { runId, interruptId: approvalResume.interruptId, eventId: approvalResume.eventId },
+          })
+        }
       }
       const memory = memoryFacade({
         sessionId,
@@ -2665,6 +2719,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                         )
                       }
                       validateInvokeOptions(agentOpts)
+                      if (agentOpts?.resume) {
+                        throw new ValidationError('A workflow owns approval resume for its child agents.', {
+                          where: 'invoke_options',
+                          issues: { resume: 'workflow_owned' },
+                        })
+                      }
                       if (agentOpts?.durable) {
                         throw new ValidationError('Durable execution is only supported for workflow runs.', {
                           where: 'invoke_options',
@@ -2687,6 +2747,29 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                         agentId,
                         ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
                       })
+                      if (agentOpts?.idempotencyKey && childInvocationKeys.has(agentOpts.idempotencyKey)) {
+                        throw new ValidationError('Workflow child-agent idempotencyKey must be unique within one attempt.', {
+                          where: 'invoke_options',
+                          issues: { idempotencyKey: 'duplicate_child_invocation' },
+                        })
+                      }
+                      if (agentOpts?.idempotencyKey) childInvocationKeys.add(agentOpts.idempotencyKey)
+                      const delegationCallId = agentOpts?.idempotencyKey
+                        ? workflowChildInvocationId(runId, agentId, agentOpts.idempotencyKey)
+                        : `delegate_${ulid()}`
+                      const pendingInvocationIds = new Set(
+                        approvalCheckpoint?.interrupt.requests.map(request => request.invocationId) ?? [],
+                      )
+                      const resumesThisChild = pendingInvocationIds.has(delegationCallId)
+                      if (approvalCheckpoint && !approvalResumeConsumed && !resumesThisChild) {
+                        throw new ValidationError(
+                          'Workflow replay reached a child agent before the pending approval. Put earlier child calls in durable steps.',
+                          { where: 'invoke_options', issues: { resume: 'child_replay_before_pending_approval' } },
+                        )
+                      }
+                      if (pendingInvocationIds.size > 1) {
+                        throw new InternalError('A workflow approval batch spans multiple child-agent invocations.')
+                      }
                       // Compose signals before consuming budget so a composition
                       // failure can never leak an active delegation slot.
                       const combinedSignal = combineSignals(runSignal.signal, agentOpts?.signal, runSignal.deadline)
@@ -2696,7 +2779,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                           : combinedSignal
                       delegationState.totalChildAgentCalls += 1
                       delegationState.activeChildAgentCalls += 1
-                      const delegationCallId = `delegate_${ulid()}`
+                      if (resumesThisChild) approvalResumeConsumed = true
                       const childCall = (async () => {
                         await authorizeBorrowedOwner(boundSession)
                         const parentScope = runSandboxScope ?? state.scope
@@ -2746,60 +2829,82 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                             ...(boundSession.identity ? { identity: boundSession.identity } : {}),
                             metadata: agentMetadata,
                           })
-                          const run = await runDefaultAgent({
-                            harnessName: definition.name,
-                            agentId,
-                            runId,
-                            sessionId,
-                            workflowId,
-                            delegationCallId,
-                            delegationDepth: CHILD_DELEGATION_DEPTH,
-                            input: agentInput,
-                            history: await definition.storage.listMessages(sessionId),
-                            agent: agent as AgentDefinition<S>,
-                            ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
-                            models: withRunEventModelRegistry(
-                              modelRegistry,
-                              {
-                                harnessName: definition.name,
-                                sessionId,
-                                runId,
-                                workflowId,
-                                agentId,
-                                ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
+                          let run: Awaited<ReturnType<typeof runDefaultAgent>>
+                          try {
+                            run = await runDefaultAgent({
+                              harnessName: definition.name,
+                              agentId,
+                              runId,
+                              sessionId,
+                              workflowId,
+                              delegationCallId,
+                              delegationDepth: CHILD_DELEGATION_DEPTH,
+                              input: agentInput,
+                              history: await definition.storage.listMessages(sessionId),
+                              agent: agent as AgentDefinition<S>,
+                              ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
+                              models: withRunEventModelRegistry(
+                                modelRegistry,
+                                {
+                                  harnessName: definition.name,
+                                  sessionId,
+                                  runId,
+                                  workflowId,
+                                  agentId,
+                                  ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
+                                },
+                                emit,
+                              ),
+                              skills: resolvedSkills as Record<string, ResolvedSkill>,
+                              customTools: definition.tools as ToolsConfig,
+                              modelSchemas: {
+                                agentOutput: definition.modelSchemas.agentOutputs[agentId],
+                                toolInputs: definition.modelSchemas.toolInputs,
                               },
-                              emit,
-                            ),
-                            skills: resolvedSkills as Record<string, ResolvedSkill>,
-                            customTools: definition.tools as ToolsConfig,
-                            modelSchemas: {
-                              agentOutput: definition.modelSchemas.agentOutputs[agentId],
-                              toolInputs: definition.modelSchemas.toolInputs,
-                            },
-                            ...(definition.governance
-                              ? { governance: definition.governance as GovernanceConfig<any> }
-                              : {}),
-                            mcpRegistry,
-                            session: inlineSandbox,
-                            sandboxKey: inlineAttachmentKey,
-                            memory: agentMemory,
-                            mountedSkills: inlineMountedSkills,
-                            ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
-                            ...(contextProjection ? { contextProjection } : {}),
-                            maxSteps: definition.defaults.agentMaxIterations ?? 16,
-                            signal: agentSignal.signal,
-                            runDeadline: agentSignal.deadline,
-                            toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
-                            decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
-                            maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
-                            logger: definition.logger,
-						  telemetry,
-						  emitEvent: emit,
-						  metadata: agentMetadata,
-						  ...((agentOpts?.hostContext ?? opts?.hostContext) !== undefined
-							? { hostContext: agentOpts?.hostContext ?? opts?.hostContext }
-							: {}),
-						})
+                              ...(definition.governance
+                                ? { governance: definition.governance as GovernanceConfig<any> }
+                                : {}),
+                              mcpRegistry,
+                              session: inlineSandbox,
+                              sandboxKey: inlineAttachmentKey,
+                              memory: agentMemory,
+                              mountedSkills: inlineMountedSkills,
+                              ...(resolvedHistoryWindow !== undefined ? { historyWindow: resolvedHistoryWindow } : {}),
+                              ...(contextProjection ? { contextProjection } : {}),
+                              maxSteps: definition.defaults.agentMaxIterations ?? 16,
+                              signal: agentSignal.signal,
+                              runDeadline: agentSignal.deadline,
+                              toolTimeoutMs: definition.defaults.toolTimeoutMs ?? 120_000,
+                              decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
+                              maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
+                              logger: definition.logger,
+                              telemetry,
+                              emitEvent: emit,
+                              metadata: agentMetadata,
+                              ...((agentOpts?.hostContext ?? opts?.hostContext) !== undefined
+                                ? { hostContext: agentOpts?.hostContext ?? opts?.hostContext }
+                                : {}),
+                              ...(resumesThisChild && approvalCheckpoint && approvalResume
+                                ? { approvalResume: { checkpoint: approvalCheckpoint, resume: approvalResume } }
+                                : {}),
+                            })
+                          } catch (error) {
+                            if (error instanceof ToolApprovalPendingError) {
+                              if (!durableBinding) {
+                                throw new ValidationError(
+                                  'A child-agent tool approval requires a durable workflow invocation.',
+                                  { where: 'invoke_options', issues: { durable: 'required_for_child_approval' } },
+                                )
+                              }
+                              if (!agentOpts?.idempotencyKey) {
+                                throw new ValidationError(
+                                  'A child agent that can require approval needs a stable idempotencyKey.',
+                                  { where: 'invoke_options', issues: { idempotencyKey: 'required_for_child_approval' } },
+                                )
+                              }
+                            }
+                            throw error
+                          }
                           if (run.emitted.length > 0) {
                             await persistConversationTurn(sessionId, run.emitted)
                             await refreshMemorySummary(
@@ -2878,6 +2983,12 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       if (isSuspendedWorkflowResult(result)) {
         throw result.__harnessExternalWaitPending
       }
+      if (approvalCheckpoint && !approvalResumeConsumed) {
+        throw new ValidationError('Workflow replay did not reach the child agent waiting for approval.', {
+          where: 'invoke_options',
+          issues: { resume: 'pending_child_not_reached' },
+        })
+      }
 
       // A resolved handler may still have child-agent calls in flight; settle
       // them before terminalizing so no run events trail run.finished.
@@ -2901,6 +3012,19 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       )
       return result as WorkflowOutput<S, K>
     } catch (error) {
+      if (error instanceof ToolApprovalPendingError && durableBinding) {
+        if (!error.state) throw new InternalError('Child-agent approval interruption has no resumable state.')
+        const checkpoint: ToolApprovalCheckpoint = {
+          schemaVersion: 1,
+          interrupt: error.interrupt,
+          state: error.state,
+        }
+        await definition.storage.finishRun(runId, {
+          status: 'interrupted',
+          output: checkpoint as unknown as JsonValue,
+        })
+        throw error
+      }
       const finalError = normalizeRunError(error, runSignal.signal)
       // A handler rejection mid-Promise.all must not orphan in-flight child
       // agents: cancel them through the run signal and await settlement before

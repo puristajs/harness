@@ -66,6 +66,7 @@ type ToolExecutionArgs = {
   logger: Logger
   telemetry: TelemetryShim
   metadata?: Readonly<Record<string, JsonValue>>
+  hostContext?: unknown
   emitEvent?: (event: RunEvent) => Promise<void>
   step: number
   enabledCustomTools: ReadonlySet<string>
@@ -316,6 +317,7 @@ async function prepareToolBinding(
           sessionId: args.sessionId,
           agentId: args.agentId,
           toolId: call.name,
+          ...(args.hostContext !== undefined ? { hostContext: args.hostContext } : {}),
         },
         input,
       )

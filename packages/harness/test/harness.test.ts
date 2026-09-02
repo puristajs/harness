@@ -145,8 +145,8 @@ it('compiles each model-facing schema once at build and reuses it across runs', 
 
   expect(outputProjectionCalls).toBe(1)
   expect(toolProjectionCalls).toBe(1)
-  await expect((await harness.getSession('projection-first')).agents.answer.run('first')).resolves.toBe('done')
-  await expect((await harness.getSession('projection-second')).agents.answer.run('second')).resolves.toBe('done')
+  await expect((await harness.getSession('projection-first')).agents.answer.run('first')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  await expect((await harness.getSession('projection-second')).agents.answer.run('second')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(outputProjectionCalls).toBe(1)
   expect(toolProjectionCalls).toBe(1)
   expect(model.attempts).toBe(3)
@@ -209,7 +209,7 @@ it('honors an explicit agent maxSteps value above 64', async () => {
     .build()
 
   const session = await harness.getSession('max-steps-above-64')
-  await expect(session.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(session.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(model.requests).toHaveLength(66)
 })
 
@@ -233,7 +233,7 @@ it('honors a harness default agentMaxIterations value above 64', async () => {
     .build()
 
   const session = await harness.getSession('default-max-steps-above-64')
-  await expect(session.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(session.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(model.requests).toHaveLength(66)
 })
 
@@ -288,7 +288,7 @@ it('lets prepareStep switch model aliases and restrict active tools', async () =
     .build()
 
   const s = await harness.getSession('s-prepare-step')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
   expect(primary.requests).toHaveLength(0)
   expect(fallback.requests).toHaveLength(1)
@@ -337,7 +337,7 @@ it('lets stopWhen end the default loop without executing requested tools', async
     .build()
 
   const s = await harness.getSession('s-stop-when')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(toolCalls).toBe(0)
 })
 
@@ -556,7 +556,7 @@ it('passes harness context into storage, sandbox, and tool adapters', async () =
     .build()
 
   const s = await harness.getSession('s1')
-  await expect(s.workflows.wf.run('hello', { metadata: { requestScope: 'tenant-a' } })).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello', { metadata: { requestScope: 'tenant-a' } })).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(state.configured).toBe(true)
   expect(sandboxConfigured).toBe(true)
   expect(memoryConfigured).toBe(true)
@@ -627,7 +627,7 @@ it('executes tool calls from the same model response concurrently and preserves 
     .build()
 
   const s = await harness.getSession('parallel-tools')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
   expect(maxActiveTools).toBe(2)
   expect(completionOrder).toEqual(['fast', 'slow'])
@@ -695,7 +695,7 @@ it('limits parallel tool execution with maxParallelToolCalls', async () => {
     .build()
 
   const s = await harness.getSession('limited-parallel-tools')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
   expect(maxActiveTools).toBe(2)
   const secondModelRequest = model.requests[1] as ObjectRequest
@@ -756,7 +756,7 @@ it('uses persistent stdio MCP transport through the agent sandbox telemetry wrap
 
   try {
     const session = await harness.getSession('agent-persistent-mcp')
-    await expect(session.workflows.wf.run('hello')).resolves.toBe('done')
+    await expect(session.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
     const secondModelRequest = model.requests[1] as ObjectRequest
     const toolMessages = secondModelRequest.messages.filter((message) => message.role === 'tool')
@@ -818,7 +818,7 @@ it('preserves sandbox spawn capability through the agent sandbox telemetry wrapp
 
   try {
     const session = await harness.getSession('spawn-wrapper')
-    await expect(session.workflows.wf.run('hello')).resolves.toBe('done')
+    await expect(session.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
     const secondModelRequest = model.requests[1] as ObjectRequest
     const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
@@ -885,7 +885,7 @@ it('reports static permission denials with safe occurrence evidence', async () =
     .build()
 
   const s = await harness.getSession('permission-denied')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
   const secondModelRequest = model.requests[1] as ObjectRequest
   const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')
@@ -926,7 +926,7 @@ it('enforces permission deny patterns before mutating built-in tools run', async
     .build()
 
   const s = await harness.getSession('permission-deny-pattern')
-  await expect(s.workflows.wf.run('hello')).resolves.toBe('done')
+  await expect(s.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
   const secondModelRequest = model.requests[1] as ObjectRequest
   const toolMessage = secondModelRequest.messages.find((message) => message.role === 'tool')

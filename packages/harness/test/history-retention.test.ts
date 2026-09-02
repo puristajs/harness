@@ -93,8 +93,8 @@ describe('durable conversation history', () => {
     const harness = buildHarness(provider)
     const session = await harness.getSession('delivery')
 
-    await expect(session.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('done')
-    await expect(session.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('done')
+    await expect(session.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toMatchObject({ status: 'completed', output: 'done' })
+    await expect(session.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
     expect(provider.requests).toHaveLength(1)
     expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
@@ -116,8 +116,8 @@ describe('durable conversation history', () => {
     const first = await harness.getSession('first-conversation')
     const second = await harness.getSession('second-conversation')
 
-    await expect(first.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('first')
-    await expect(second.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toBe('second')
+    await expect(first.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toMatchObject({ status: 'completed', output: 'first' })
+    await expect(second.agents.answer.run('work', { idempotencyKey: 'queue-message-1' })).resolves.toMatchObject({ status: 'completed', output: 'second' })
 
     expect(provider.requests).toHaveLength(2)
     expect((await first.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
@@ -149,7 +149,7 @@ describe('durable conversation history', () => {
     await session.agents.answer.run('work', options)
     storage.resetOps()
     const events = []
-    for await (const event of session.agents.answer.stream('work', options)) events.push(event)
+    for await (const event of session.agents.answer.observe('work', options)) events.push(event)
 
     expect(events).toMatchObject([
       { type: 'run.started', runId: directAgentRunId('stream-redelivery', 'answer', 'queue-message-stream') },
@@ -222,7 +222,7 @@ describe('durable conversation history', () => {
       .build()
     const session = await harness.getSession('crash-recovery')
 
-    await expect(session.agents.answer.run('work', { idempotencyKey: key })).resolves.toBe('done')
+    await expect(session.agents.answer.run('work', { idempotencyKey: key })).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect(provider.requests).toHaveLength(0)
     await expect(storage.getRun(runId)).resolves.toMatchObject({ status: 'succeeded', output: 'done' })
   })
@@ -269,7 +269,7 @@ it('does not persist duplicate messages when the model retries before producing 
     .build()
   const session = await harness.getSession('retry')
 
-  await expect(session.agents.answer.run('question')).resolves.toBe('recovered')
+  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'recovered' })
   expect(provider.attempts).toBe(2)
   expect((await session.history.list()).map((entry) => entry.role)).toEqual(['user', 'assistant'])
 })

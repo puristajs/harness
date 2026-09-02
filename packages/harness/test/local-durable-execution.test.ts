@@ -418,9 +418,7 @@ describe('local durable execution', () => {
 
     const second = build('success')
     const secondSession = await second.harness.getSession('session-retry')
-    await expect(secondSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).resolves.toBe(
-      JSON.stringify({ a: 1, b: 2 }),
-    )
+    await expect(secondSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).resolves.toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
     expect(effects).toEqual({ a: 1, b: 1 })
     await expect(second.local.storage.loadCheckpoint('run-retry')).resolves.toMatchObject({ stepId: 'b' })
     await second.harness.shutdown()

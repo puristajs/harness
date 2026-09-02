@@ -68,7 +68,7 @@ it('composes local modules and exposes immutable, ordered provenance', async () 
   expect(Object.isFrozen(inspection.modules)).toBe(true)
   expect(Object.isFrozen(inspection.modules[0]?.contributions)).toBe(true)
   const session = await harness.getSession('static-modules')
-  await expect(session.agents.answer.run({ question: 'How are you?' })).resolves.toEqual({ answer: 'How are you?' })
+  await expect(session.agents.answer.run({ question: 'How are you?' })).resolves.toMatchObject({ status: 'completed', output: { answer: 'How are you?' } })
 })
 
 it('registers native tools through the static-module builder', () => {
@@ -166,10 +166,10 @@ it('accumulates singular and plural agent and workflow registrations', async () 
     .build()
 
   const session = await harness.getSession('mixed-registration')
-  await expect(session.agents.classify.run('urgent')).resolves.toBe('urgent')
-  await expect(session.agents.summarize.run('short')).resolves.toBe('short')
-  await expect(session.workflows.triage.run('new')).resolves.toBe('new')
-  await expect(session.workflows.resolve.run('fixed')).resolves.toBe('fixed')
+  await expect(session.agents.classify.run('urgent')).resolves.toMatchObject({ status: 'completed', output: 'urgent' })
+  await expect(session.agents.summarize.run('short')).resolves.toMatchObject({ status: 'completed', output: 'short' })
+  await expect(session.workflows.triage.run('new')).resolves.toMatchObject({ status: 'completed', output: 'new' })
+  await expect(session.workflows.resolve.run('fixed')).resolves.toMatchObject({ status: 'completed', output: 'fixed' })
 })
 
 it('rejects duplicate ids across singular and plural registrations', () => {

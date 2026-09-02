@@ -59,9 +59,9 @@ describe('build-time agent reference validation', () => {
     const provider = new FakeModelProvider()
     const model = { fast: { provider, model: 'fake', capabilities: ['object'] as const } }
 
-    expect(() => defineHarness().build()).toThrow(
-      expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_models' }) }),
-    )
+		expect(defineHarness().build().inspect().adapters).toEqual(expect.not.arrayContaining([
+			expect.objectContaining({ kind: 'model' }),
+		]))
     expect(() => defineHarness().models({})).toThrow(
       expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_models' }) }),
     )

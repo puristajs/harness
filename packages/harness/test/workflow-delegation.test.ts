@@ -68,7 +68,7 @@ describe('workflow delegation policy', () => {
 
     await expect(
       (await harness.getSession('delegated-transforms')).workflows.delegated.run(undefined),
-    ).resolves.toBe(6)
+    ).resolves.toMatchObject({ status: 'completed', output: 6 })
     expect(workflowInputs).toEqual([3])
     expect(agentInputs).toEqual([5])
     expect(parseWorkflowInput).toHaveBeenCalledTimes(1)
@@ -184,7 +184,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-override-budget')
-    await expect(session.workflows.fanout.run('work')).resolves.toEqual(['one', 'two'])
+    await expect(session.workflows.fanout.run('work')).resolves.toMatchObject({ status: 'completed', output: ['one', 'two'] })
   })
 
   it('denies child agents outside the workflow allowlist', async () => {
@@ -296,7 +296,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-model-override')
-    await expect(session.workflows.reviewed.run('work')).resolves.toBe('deep answer')
+    await expect(session.workflows.reviewed.run('work')).resolves.toMatchObject({ status: 'completed', output: 'deep answer' })
     expect(fast.requests).toHaveLength(0)
     expect(deep.requests).toHaveLength(1)
   })
@@ -372,7 +372,7 @@ describe('workflow delegation policy', () => {
 
     const session = await harness.getSession('s-lineage')
     const events = []
-    for await (const event of session.workflows.traced.stream('secret-input')) {
+    for await (const event of session.workflows.traced.observe('secret-input')) {
       events.push(event)
     }
 
@@ -443,7 +443,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-defaults-enabled')
-    await expect(session.workflows.open.run('work')).resolves.toBe('ok')
+    await expect(session.workflows.open.run('work')).resolves.toMatchObject({ status: 'completed', output: 'ok' })
     expect(model.requests).toHaveLength(1)
   })
 
@@ -582,7 +582,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-default-model-allowed')
-    await expect(session.workflows.permitted.run('work')).resolves.toBe('fast answer')
+    await expect(session.workflows.permitted.run('work')).resolves.toMatchObject({ status: 'completed', output: 'fast answer' })
     expect(fast.requests).toHaveLength(1)
   })
 
@@ -698,7 +698,7 @@ describe('workflow delegation policy', () => {
     const events: RunEvent[] = []
     let failure: unknown
     try {
-      for await (const event of session.workflows.guarded.stream('work')) {
+      for await (const event of session.workflows.guarded.observe('work')) {
         events.push(event)
       }
     } catch (error) {
@@ -718,7 +718,7 @@ describe('workflow delegation policy', () => {
     expect(abortedReason).toBeDefined()
     expect(events.at(-1)?.type).toBe('run.finished')
     // The session busy lock was released only after settlement.
-    await expect(session.workflows.plain.run('after')).resolves.toBe('after')
+    await expect(session.workflows.plain.run('after')).resolves.toMatchObject({ status: 'completed', output: 'after' })
   })
 
   it('frees parallel slots for sequential child-agent calls', async () => {
@@ -747,7 +747,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-slot-reuse')
-    await expect(session.workflows.serial.run('work')).resolves.toEqual(['one', 'two'])
+    await expect(session.workflows.serial.run('work')).resolves.toMatchObject({ status: 'completed', output: ['one', 'two'] })
   })
 
   it('rejects unknown per-call model aliases without consuming call budget', async () => {
@@ -784,7 +784,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-unknown-alias')
-    await expect(session.workflows.budgeted.run('work')).resolves.toBe('ok')
+    await expect(session.workflows.budgeted.run('work')).resolves.toMatchObject({ status: 'completed', output: 'ok' })
     expect(aliasFailure).toBeInstanceOf(ValidationError)
     expect(aliasFailure).toMatchObject({
       code: 'VALIDATION_ERROR',
@@ -825,7 +825,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-durable-denied')
-    await expect(session.workflows.wf.run('work')).resolves.toBe('done')
+    await expect(session.workflows.wf.run('work')).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect(durableFailure).toBeInstanceOf(ValidationError)
     expect(durableFailure).toMatchObject({
       meta: expect.objectContaining({ where: 'invoke_options', issues: { durable: 'agent_run' } }),
@@ -865,7 +865,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-invalid-options')
-    await expect(session.workflows.wf.run('work')).resolves.toBe('done')
+    await expect(session.workflows.wf.run('work')).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect(optionFailure).toBeInstanceOf(ValidationError)
     expect(optionFailure).toMatchObject({
       meta: expect.objectContaining({ where: 'invoke_options', issues: { historyWindow: -1 } }),
@@ -904,7 +904,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-child-timeout')
-    await expect(session.workflows.wf.run('work')).resolves.toBe('timed-out')
+    await expect(session.workflows.wf.run('work')).resolves.toMatchObject({ status: 'completed', output: 'timed-out' })
   })
 
   it('throws cancellation before policy checks once the run signal aborts', async () => {
@@ -991,7 +991,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-pre-aborted-call')
-    await expect(session.workflows.wf.run('work')).resolves.toBe('cancelled')
+    await expect(session.workflows.wf.run('work')).resolves.toMatchObject({ status: 'completed', output: 'cancelled' })
     expect(model.requests).toHaveLength(0)
   })
 
@@ -1037,7 +1037,7 @@ describe('workflow delegation policy', () => {
       .build()
 
     const session = await harness.getSession('s-ctx-log')
-    await expect(session.workflows.wf.run('hello')).resolves.toBe('hello')
+    await expect(session.workflows.wf.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'hello' })
     expect(lines).toEqual(
       expect.arrayContaining([{ level: 'info', msg: 'workflow handler log line', fields: { step: 'start' } }]),
     )

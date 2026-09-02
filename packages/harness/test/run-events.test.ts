@@ -121,7 +121,7 @@ describe('stream completion accounting', () => {
           else if (ending === 'cancel') await expect(result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
           else if (ending === 'duplicate' || ending === 'late')
             await expect(result).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-          else await expect(result).resolves.toBe('done')
+          else await expect(result).resolves.toMatchObject({ status: 'completed', output: 'done' })
           const run = (await storage.listRuns('stream-accounting'))[0]!
           const events = await storage.listEvents(run.id)
           const completed = events.filter((event) => event.type === 'model.completed')
@@ -195,7 +195,7 @@ describe('stream completion accounting', () => {
         .build()
       try {
         const session = await harness.getSession('stream-retry')
-        await expect(session.workflows.wf.run('test')).resolves.toBe('done')
+        await expect(session.workflows.wf.run('test')).resolves.toMatchObject({ status: 'completed', output: 'done' })
         expect(provider.attempts).toBe(2)
         const run = (await storage.listRuns('stream-retry'))[0]!
         expect((await storage.listEvents(run.id)).filter((event) => event.type === 'model.completed')).toHaveLength(1)
@@ -287,7 +287,7 @@ describe('model completion metadata validation', () => {
       try {
         const session = await harness.getSession('metadata')
         const result = session.workflows.wf.run('test')
-        if (valid) await expect(result).resolves.toBe('done')
+        if (valid) await expect(result).resolves.toMatchObject({ status: 'completed', output: 'done' })
         else await expect(result).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'model_response' } })
         const run = (await storage.listRuns('metadata'))[0]!
         const events = await storage.listEvents(run.id)
@@ -387,7 +387,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.agents.answerer.stream('hello')) events.push(event)
+    for await (const event of session.agents.answerer.observe('hello')) events.push(event)
 
     expect(events.some((event) => event.type === 'model.delta')).toBe(false)
     expect(events).toEqual(
@@ -439,7 +439,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.stream('hello')) events.push(event)
+    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
     const run = (await state.listRuns('s1'))[0]!
     const persisted = await state.listEvents(run.id)
 
@@ -494,7 +494,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.stream('hello')) events.push(event)
+    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
     const run = (await state.listRuns('s1'))[0]!
     const persisted = await state.listEvents(run.id)
 
@@ -549,7 +549,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.agents.streamed.stream('hello')) events.push(event)
+    for await (const event of session.agents.streamed.observe('hello')) events.push(event)
 
     const deltas = events.filter((event) => event.type === 'model.delta')
     const streamId = deltas[0]?.streamId
@@ -605,7 +605,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.agents.custom.stream('hello')) events.push(event)
+    for await (const event of session.agents.custom.observe('hello')) events.push(event)
     const run = (await state.listRuns('s1'))[0]!
     const persisted = await state.listEvents(run.id)
     const summary = await session.getRunSummary(run.id)
@@ -696,7 +696,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.stream('hello')) events.push(event)
+    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
 
     const deltas = events.filter((event) => event.type === 'model.delta')
     expect(deltas).toEqual(
@@ -747,7 +747,7 @@ describe('model stream run events', () => {
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.stream('check')) events.push(event)
+    for await (const event of session.workflows.wf.observe('check')) events.push(event)
 
     expect(events.filter((event) => event.type === 'model.object.partial')).toEqual([
       expect.objectContaining({

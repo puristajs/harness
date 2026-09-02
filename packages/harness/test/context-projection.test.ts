@@ -90,7 +90,7 @@ it('retries exactly once with a transient projected request after a context-leng
     },
   ])
 
-  await expect(session.agents.answer.run('question')).resolves.toBe('done')
+  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(provider.requests).toHaveLength(2)
   const firstTool = provider.requests[0]?.messages.find((message) => message.role === 'tool')
   const retryTool = provider.requests[1]?.messages.find((message) => message.role === 'tool')

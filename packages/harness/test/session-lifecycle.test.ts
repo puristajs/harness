@@ -17,8 +17,14 @@ import {
   type SandboxScope,
   type SandboxSession,
   type SandboxTerminateOptions,
+  type RunOutcome,
 } from '../src/index.js'
 import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
+
+function completedOutput<T>(outcome: RunOutcome<T>): T {
+  if (outcome.status !== 'completed') throw new Error('Expected the test run to complete.')
+  return outcome.output
+}
 
 function buildBusyHarness() {
   let markHandlerStarted!: () => void
@@ -315,7 +321,7 @@ describe('session lifecycle guards', () => {
     const { harness, storage, sandbox } = buildReleaseHarness()
     const session = await harness.getSession('s-release')
     await session.replaceHistory([{ role: 'user', content: 'remember this' }])
-    await expect(session.agents.echo.run('done')).resolves.toBe('done')
+    await expect(session.agents.echo.run('done')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 
     await Promise.all([session.release(), session.release()])
 
@@ -331,7 +337,7 @@ describe('session lifecycle guards', () => {
     await expect(storage.listRuns('s-release')).resolves.toHaveLength(1)
 
     const reopened = await harness.getSession('s-release')
-    await expect(reopened.agents.echo.run('again')).resolves.toBe('again')
+    await expect(reopened.agents.echo.run('again')).resolves.toMatchObject({ status: 'completed', output: 'again' })
     expect(sandbox.openCalls).toBe(2)
     await reopened.release()
   })
@@ -342,7 +348,7 @@ describe('session lifecycle guards', () => {
     await original.release()
 
     const reopened = await harness.getSession('s-stale-release')
-    await expect(reopened.agents.echo.run('still active')).resolves.toBe('still active')
+    await expect(reopened.agents.echo.run('still active')).resolves.toMatchObject({ status: 'completed', output: 'still active' })
     await expect(original.agents.echo.run('stale invocation')).rejects.toMatchObject({
       code: 'STATE_ERROR',
       meta: { reason: 'session_attachment_closed' },
@@ -355,7 +361,7 @@ describe('session lifecycle guards', () => {
 
     expect(sandbox.closeCalls).toBe(0)
     await expect(storage.getSession('s-stale-release')).resolves.toEqual(expect.objectContaining({ runCount: 1 }))
-    await expect(reopened.agents.echo.run('still here')).resolves.toBe('still here')
+    await expect(reopened.agents.echo.run('still here')).resolves.toMatchObject({ status: 'completed', output: 'still here' })
     await reopened.release()
   })
 
@@ -375,7 +381,7 @@ describe('session lifecycle guards', () => {
     const { harness, storage } = buildReleaseHarness()
     const session = await harness.getSession('s-dispose-sandbox')
     await session.replaceHistory([{ role: 'user', content: 'retain this receipt context' }])
-    await expect(session.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toBe('complete')
+    await expect(session.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
 
     await session.disposeSandbox()
 
@@ -388,9 +394,9 @@ describe('session lifecycle guards', () => {
     await expect(reopened.history.list()).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ content: 'retain this receipt context' })]),
     )
-    await expect(reopened.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toBe('complete')
+    await expect(reopened.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
     const replayedEvents = []
-    for await (const event of reopened.agents.echo.stream('complete', { idempotencyKey: 'delivery-1' })) {
+    for await (const event of reopened.agents.echo.observe('complete', { idempotencyKey: 'delivery-1' })) {
       replayedEvents.push(event)
     }
     expect(replayedEvents).toMatchObject([{ type: 'run.started' }, { type: 'run.finished', output: 'complete' }])
@@ -537,7 +543,7 @@ describe('session lifecycle guards', () => {
     const session = await harness.getSession('s-workflow-dispose-replay')
     await expect(
       session.workflows.echo_workflow.run('complete', { idempotencyKey: 'workflow-delivery-1' }),
-    ).resolves.toBe('complete')
+    ).resolves.toMatchObject({ status: 'completed', output: 'complete' })
     const opensBeforeDispose = sandbox.openCalls
 
     await session.disposeSandbox()
@@ -545,7 +551,7 @@ describe('session lifecycle guards', () => {
     const reopened = await harness.getSession('s-workflow-dispose-replay')
     await expect(
       reopened.workflows.echo_workflow.run('complete', { idempotencyKey: 'workflow-delivery-1' }),
-    ).resolves.toBe('complete')
+    ).resolves.toMatchObject({ status: 'completed', output: 'complete' })
     expect(sandbox.openCalls).toBe(opensBeforeDispose)
     await expect(
       reopened.workflows.echo_workflow.run('different', { idempotencyKey: 'workflow-delivery-1' }),
@@ -573,7 +579,7 @@ describe('session lifecycle guards', () => {
   it('cancels resident child tasks before releasing their owner session', async () => {
     const { harness, childStarted, sandbox } = buildReleaseHarness()
     const session = await harness.getSession('s-release-child')
-    const taskId = await session.workflows.start_child.run('work')
+    const taskId = completedOutput(await session.workflows.start_child.run('work'))
     await childStarted
 
     await session.release()
@@ -590,7 +596,7 @@ describe('session lifecycle guards', () => {
   it('releases an explicitly inherited child attachment without terminating its parent partition', async () => {
     const { harness, childStarted, sandbox } = buildReleaseHarness(undefined, undefined, 'inherit')
     const session = await harness.getSession('s-release-child-inherit')
-    const taskId = await session.workflows.start_child.run('work')
+    const taskId = completedOutput(await session.workflows.start_child.run('work'))
     await childStarted
 
     await session.release()

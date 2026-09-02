@@ -31,6 +31,7 @@ import type {
 	HarnessBuilder,
 	ModelsConfig,
 	PermissionPolicy,
+	RunOutcome,
 } from '../src/harness/defineHarness.js'
 import type { AdapterCapability, HarnessInspection } from '../src/ports/capabilities.js'
 import type {
@@ -313,10 +314,8 @@ const crossVendorHarness = defineHarness()
 		instructions: ({ input }) => input.ticketId,
 	})
 	.agent('valibot_handler', {
-		model: 'assistant',
 		input: arktypeTicket,
 		output: zodTransformedOutput,
-		instructions: ({ input }) => input.ticketId,
 		handler: async ({ input }) => input.ticketId,
 	})
 	.workflow('valibot_workflow', {
@@ -526,17 +525,8 @@ const harness = defineHarness()
 		},
 	})
 	.agent('planner', {
-		model: 'assistant',
 		input: z.object({ task: z.string(), priority: z.number() }),
 		output: z.object({ plan: z.string(), accepted: z.boolean() }),
-		instructions: ctx => {
-			type Input = typeof ctx.input
-			const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
-			const _inputExact: Expect<Equal<Input, { task: string; priority: number }>> = true
-			const _memoryRead = ctx.memory.session.read<{ value: string }>('topic')
-			void _memoryRead
-			return `Plan ${ctx.input.task} at priority ${ctx.input.priority}.`
-		},
 		handler: async ctx => {
 			type Input = typeof ctx.input
 			const _inputIsNotAny: IsAny<Input> extends true ? 'any' : 'ok' = 'ok'
@@ -691,13 +681,15 @@ const _agentOutputExact: Expect<Equal<PlannerOutput, { plan: string; accepted: b
 async function invokeWorkflow() {
 	const session = await harness.getSession('type-test')
 	const agentOutput = await session.agents.planner.run({ task: 'ship typing', priority: 1 })
-	const _agentInvokeOutputExact: Expect<Equal<typeof agentOutput, { plan: string; accepted: boolean }>> = true
+	const _agentInvokeOutputExact: Expect<
+		Equal<typeof agentOutput, RunOutcome<{ plan: string; accepted: boolean }>>
+	> = true
 
 	// @ts-expect-error agent run input must match the sibling input schema
 	await session.agents.planner.run({ task: 'missing priority' })
 
 	const output = await session.workflows.prepare.run({ task: 'ship typing' })
-	const _outputExact: Expect<Equal<typeof output, { plan: string; accepted: boolean }>> = true
+	const _outputExact: Expect<Equal<typeof output, RunOutcome<{ plan: string; accepted: boolean }>>> = true
 
 	// @ts-expect-error workflow run input must match the sibling input schema
 	await session.workflows.prepare.run({ topic: 'wrong key' })
@@ -985,10 +977,8 @@ defineHarness()
 const transformedInvocationHarness = defineHarness()
 	.models({ transformed: { provider, model: 'type-test-model', capabilities: ['object'] } })
 	.agent('worker', {
-		model: 'transformed',
 		input: z.string().transform(Number),
 		output: z.string().transform(Number),
-		instructions: 'Transform the input.',
 		handler: async ctx => {
 			const _contextInput: Expect<Equal<typeof ctx.input, number>> = true
 			return String(ctx.input)
@@ -1023,16 +1013,51 @@ const _transformedAgentOutput: Expect<Equal<TransformedAgentOutput, number>> = t
 const _transformedWorkflowInput: Expect<Equal<TransformedWorkflowInput, string | undefined>> = true
 const _transformedWorkflowOutput: Expect<Equal<TransformedWorkflowOutput, number>> = true
 
+const portableDefinition = defineHarness({ name: 'portable-type-test' })
+	.requireModels({
+		primary: { capabilities: ['object'] as const },
+		embeddings: { capabilities: ['embeddings'] as const },
+	})
+	.agent('portable_agent', {
+		model: 'primary',
+		input: z.object({ question: z.string() }),
+		output: z.object({ answer: z.string() }),
+		instructions: 'Answer the question.',
+	})
+	.agent('portable_handler', {
+		input: z.string(),
+		output: z.string(),
+		handler: async ctx => {
+			await ctx.models.embeddings.embed({ input: ctx.input }, ctx.signal)
+			return ctx.input
+		},
+	})
+	.define()
+
+portableDefinition.getInstance({
+	models: {
+		primary: { provider, model: 'primary-model' },
+		embeddings: { provider, model: 'embedding-model' },
+	},
+})
+// @ts-expect-error every required alias needs a runtime binding
+portableDefinition.getInstance({ models: { primary: { provider, model: 'primary-model' } } })
+portableDefinition.getInstance({
+	models: {
+		// @ts-expect-error runtime bindings cannot replace definition-time capabilities
+		primary: { provider, model: 'primary-model', capabilities: ['text'] },
+		embeddings: { provider, model: 'embedding-model' },
+	},
+})
+
 defineHarness()
 	.models({
 		textOnly: { provider, model: 'type-test-model', capabilities: ['text'] },
 		embeddingReady: { provider, model: 'type-test-model', capabilities: ['text', 'embeddings'] },
 	})
 	.agent('typed_models', {
-		model: 'textOnly',
 		input: z.string(),
 		output: z.string(),
-		instructions: 'Use typed models.',
 		handler: async ctx => {
 			await ctx.models.textOnly.text({ messages: [] }, ctx.signal)
 			// @ts-expect-error handler model handles only expose declared capabilities

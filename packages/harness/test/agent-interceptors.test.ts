@@ -61,9 +61,7 @@ it('appends a direct Guardrails binding after explicitly declared interceptors',
     })
     .build()
 
-  await expect((await harness.getSession('direct-guardrails-order')).agents.answer.run('question')).resolves.toBe(
-    'ok',
-  )
+  await expect((await harness.getSession('direct-guardrails-order')).agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'ok' })
   expect(order).toEqual(['application', 'guardrails'])
   provider.assertExhausted()
 })
@@ -103,7 +101,7 @@ it('transforms parsed input before the default loop builds the model request', a
     .build()
 
   const session = await harness.getSession('interceptor-transform')
-  await expect(session.agents.answer.run('unsafe input')).resolves.toBe('ok')
+  await expect(session.agents.answer.run('unsafe input')).resolves.toMatchObject({ status: 'completed', output: 'ok' })
   expect(provider.requests[0]?.messages).toEqual([
     { role: 'system', content: 'Answer the normalized input: safe input' },
     { role: 'user', content: 'safe input' },
@@ -261,7 +259,7 @@ it('reuses transformed wire arguments while passing the once-parsed input to the
     .build()
 
   const session = await harness.getSession('interceptor-transformed-tool')
-  await expect(session.agents.answer.run('transfer')).resolves.toBe('done')
+  await expect(session.agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(received).toEqual({ amount: 25 })
   expect(provider.requests[1]?.messages).toEqual(
     expect.arrayContaining([
@@ -316,7 +314,7 @@ it('projects native tool input schemas to the model and applies defaulted transf
     })
     .build()
 
-  await expect((await harness.getSession('tool-schema-directions')).agents.answer.run('go')).resolves.toBe('done')
+  await expect((await harness.getSession('tool-schema-directions')).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(provider.requests[0]?.tools).toEqual([
     expect.objectContaining({
       name: 'normalize',
@@ -351,7 +349,7 @@ it('passes transformed defaults to a direct custom agent handler and validates i
     })
     .build()
 
-  await expect((await harness.getSession('direct-transforms')).agents.direct.run(undefined)).resolves.toBe(5)
+  await expect((await harness.getSession('direct-transforms')).agents.direct.run(undefined)).resolves.toMatchObject({ status: 'completed', output: 5 })
   expect(seen).toEqual([3])
   expect(parseInput).toHaveBeenCalledTimes(1)
   expect(parseOutput).toHaveBeenCalledTimes(1)
@@ -373,7 +371,7 @@ it('uses the model-facing input schema for transformed agent output candidates',
     })
     .build()
 
-  await expect((await harness.getSession('modeled-output-transform')).agents.modeled.run('go')).resolves.toBe(6)
+  await expect((await harness.getSession('modeled-output-transform')).agents.modeled.run('go')).resolves.toMatchObject({ status: 'completed', output: 6 })
   expect(parseOutput).toHaveBeenCalledTimes(1)
   expect(provider.requests[0]).toMatchObject({ schema: { type: 'string' } })
 })
@@ -402,7 +400,7 @@ it('transforms the final candidate before output validation and delivery', async
     .build()
 
   const session = await harness.getSession('interceptor-final-output')
-  await expect(session.agents.answer.run('question')).resolves.toEqual({ answer: 'safe' })
+  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: { answer: 'safe' } })
 })
 
 it('reparses every before-input transform and rejects malformed interceptor decisions closed', async () => {
@@ -436,7 +434,7 @@ it('reparses every before-input transform and rejects malformed interceptor deci
     .build()
 
   const session = await harness.getSession('interceptor-transform-validation')
-  await expect(session.agents.answer.run({ count: 0 })).resolves.toBe('ok')
+  await expect(session.agents.answer.run({ count: 0 })).resolves.toMatchObject({ status: 'completed', output: 'ok' })
   expect(seen).toEqual([{ count: 2 }])
   await expect(session.agents.invalid.run('question')).rejects.toMatchObject({
     code: 'DECISION_EVALUATION_ERROR',
@@ -567,7 +565,7 @@ it('uses the actual loop step for every interceptor invocation', async () => {
     })
     .build()
 
-  await expect((await harness.getSession('interceptor-step')).agents.answer.run('transfer')).resolves.toBe('done')
+  await expect((await harness.getSession('interceptor-step')).agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(steps).toEqual([0, 1])
 })
 
@@ -608,7 +606,7 @@ it('continues recoverable schema failures with the frozen transformed wire call'
 
   await expect(
     (await harness.getSession('interceptor-recoverable-wire')).agents.answer.run('transfer'),
-  ).resolves.toBe('done')
+  ).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(calls).toBe(0)
   expect(provider.requests[1]?.messages).toEqual(
     expect.arrayContaining([
@@ -798,7 +796,7 @@ it('continues every recoverable transformed preflight validation with the frozen
 
   await expect(
     (await harness.getSession('interceptor-recoverable-preflight')).agents.answer.run('run tools'),
-  ).resolves.toBe('done')
+  ).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(handlers).toBe(0)
   expect(provider.requests[1]?.messages).toEqual(
     expect.arrayContaining([
@@ -853,7 +851,7 @@ it('uses one input parse without transforms and reparses only actual replacement
       ],
     })
     .build()
-  await expect((await harness.getSession('input-once')).agents.answer.run(1)).resolves.toBe('done')
+  await expect((await harness.getSession('input-once')).agents.answer.run(1)).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(parses).toHaveBeenCalledTimes(1)
   expect(seen).toEqual([[2, 2, 'fake']])
   expect(provider.requests[0]?.messages).toContainEqual({ role: 'user', content: '2' })
@@ -889,7 +887,7 @@ it('gives each interceptor callback a fresh deadline', async () => {
     (error: unknown) => error,
   )
   await vi.advanceTimersByTimeAsync(50)
-  expect(await result).toBe('done')
+  expect(await result).toMatchObject({ status: 'completed', output: 'done' })
   expect(remaining).toEqual([30, 30])
   await harness.shutdown()
 })
@@ -1191,9 +1189,7 @@ it('still allows omission of complete older interaction groups while retaining t
           : {},
     })
     .build()
-  await expect((await harness.getSession('historical-compaction')).agents.answer.run('question')).resolves.toBe(
-    'done',
-  )
+  await expect((await harness.getSession('historical-compaction')).agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(provider.requests[2]?.messages).toContainEqual(
     expect.objectContaining({
       role: 'assistant',
@@ -1231,7 +1227,7 @@ it.each([
       approval: { request: approval },
     }))
     .build()
-  await expect((await harness.getSession(`invalid-builtin-${tool}`)).agents.answer.run('go')).resolves.toBe('done')
+  await expect((await harness.getSession(`invalid-builtin-${tool}`)).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(policy).not.toHaveBeenCalled()
   expect(approval).not.toHaveBeenCalled()
   const result = provider.requests[1]?.messages.find((message) => message.role === 'tool')
@@ -1287,7 +1283,7 @@ it('shares built-in schema defaults with policy and approval before the handler'
       },
     }))
     .build()
-  await expect((await harness.getSession('builtin-defaults')).agents.answer.run('go')).resolves.toBe('done')
+  await expect((await harness.getSession('builtin-defaults')).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(inputs[0]).toEqual({ path: '/file', encoding: 'utf-8' })
   expect(inputs[1]).toBe(inputs[0])
   expect(Object.isFrozen(inputs[0])).toBe(true)
@@ -1383,7 +1379,7 @@ it.each([true, false])('prepares MCP adapter input exactly once before approval 
       approval: { request: approval },
     }))
     .build()
-  await expect((await harness.getSession(`mcp-prepared-${valid}`)).agents.answer.run('go')).resolves.toBe('done')
+  await expect((await harness.getSession(`mcp-prepared-${valid}`)).agents.answer.run('go')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(inputAdapter).toHaveBeenCalledExactlyOnceWith({ name: 'safe' })
   expect(approval).toHaveBeenCalledTimes(valid ? 1 : 0)
   expect(callTool).toHaveBeenCalledTimes(valid ? 1 : 0)

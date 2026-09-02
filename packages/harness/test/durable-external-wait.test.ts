@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import {
   defineHarness,
   ExternalWaitError,
-  ExternalWaitPendingError,
   InMemoryHarnessStorage,
   inMemoryHarnessStorage,
   inMemorySandbox,
@@ -239,7 +238,16 @@ describe('durable external waits', () => {
 
     await expect(
       session.workflows.transfer.run({ id: 'a' }, { durable: { runId: 'review-run' } }),
-    ).rejects.toBeInstanceOf(ExternalWaitPendingError)
+    ).resolves.toMatchObject({
+      status: 'interrupted',
+      runId: 'review-run',
+      interrupt: {
+        type: 'external-wait',
+        id: 'review-a',
+        revision: expect.any(String),
+        kind: 'human_review',
+      },
+    })
     expect(effects).toEqual({ prepared: 1, executed: 0 })
     expect((await session.getRunSummary('review-run'))?.status).toBe('waiting')
     expect((await storage.getWait('review-a'))?.status).toBe('waiting')
@@ -251,9 +259,7 @@ describe('durable external waits', () => {
       'duplicate',
     )
 
-    await expect(session.workflows.transfer.run({ id: 'a' }, { durable: { runId: 'review-run' } })).resolves.toBe(
-      'executed',
-    )
+    await expect(session.workflows.transfer.run({ id: 'a' }, { durable: { runId: 'review-run' } })).resolves.toMatchObject({ status: 'completed', output: 'executed' })
     expect(effects).toEqual({ prepared: 1, executed: 1 })
     expect((await session.getRunSummary('review-run'))?.status).toBe('succeeded')
   })

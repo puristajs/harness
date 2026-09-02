@@ -32,6 +32,9 @@ import type {
   ResolvedSkill,
   RunSummary,
   RunEvent,
+  ExecutionEvent,
+  RunOutcome,
+  OutputUpdateMode,
   Harness,
   HarnessDefaults,
   Session,
@@ -447,6 +450,102 @@ export async function* relayRunEvents(
     }
   }
   if (failure) throw failure
+}
+
+async function runWithOutcome<Output>(
+  run: (onEvent: (event: RunEvent) => Promise<void>) => Promise<Output>,
+): Promise<RunOutcome<Output>> {
+  let runId: string | undefined
+  try {
+    const output = await run(async (event) => {
+      if (event.type === 'run.started') runId = event.runId
+    })
+    if (!runId) throw new InternalError('Harness run completed without publishing its run identity.')
+    return { status: 'completed', runId, output }
+  } catch (error) {
+    if (error instanceof ExternalWaitPendingError) {
+      return { status: 'interrupted', runId: error.runId, interrupt: externalWaitInterrupt(error) }
+    }
+    throw error
+  }
+}
+
+async function* projectExecutionEvents<Output>(
+  diagnostics: AsyncIterable<RunEvent>,
+  updates: OutputUpdateMode,
+): AsyncIterable<ExecutionEvent<Output>> {
+  try {
+    for await (const event of diagnostics) {
+      switch (event.type) {
+        case 'run.started':
+          yield event
+          break
+        case 'model.delta':
+          if (updates === 'text-delta') {
+            yield { type: 'output.text.delta', runId: event.runId, id: event.streamId, delta: event.delta }
+          }
+          break
+        case 'model.object.partial':
+          if (updates === 'object-snapshot') {
+            yield { type: 'output.object.snapshot', runId: event.runId, id: event.streamId, value: event.partial }
+          }
+          break
+        case 'model.object':
+          if (updates === 'object-snapshot') {
+            yield {
+              type: 'output.object.snapshot',
+              runId: event.runId,
+              id: event.streamId ?? `${event.runId}:object`,
+              value: event.object,
+            }
+          }
+          break
+        case 'tool.started':
+        case 'tool.finished':
+          yield event
+          break
+        case 'approval.requested':
+          yield {
+            type: 'approval.requested',
+            runId: event.runId,
+            agentId: event.agentId,
+            toolId: event.toolId,
+            callId: event.callId,
+            approvalId: event.approvalId,
+          }
+          break
+        case 'run.finished':
+          if (event.error) break
+          yield {
+            type: 'run.finished',
+            runId: event.runId,
+            at: event.at,
+            outcome: { status: 'completed', runId: event.runId, output: event.output as Output },
+          }
+          break
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof ExternalWaitPendingError)) throw error
+    yield {
+      type: 'run.finished',
+      runId: error.runId,
+      at: new Date().toISOString(),
+      outcome: { status: 'interrupted', runId: error.runId, interrupt: externalWaitInterrupt(error) },
+    }
+  }
+}
+
+function externalWaitInterrupt(error: ExternalWaitPendingError) {
+  return {
+    type: 'external-wait' as const,
+    id: error.snapshot.waitId,
+    revision: error.snapshot.createdAt,
+    kind: error.snapshot.kind,
+    schemaVersion: error.snapshot.schemaVersion,
+    definitionVersion: error.snapshot.definitionVersion,
+    deadline: error.snapshot.deadline,
+  }
 }
 
 function validateInvokeOptions(opts: InvokeOptions | undefined): void {
@@ -1451,11 +1550,28 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts)),
             )
-            return runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts) as Promise<
-              WorkflowOutput<S, keyof NonNullable<S['workflows']>>
-            >
+            return runWithOutcome<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>((onEvent) =>
+              runWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts, onEvent) as Promise<
+                WorkflowOutput<S, keyof NonNullable<S['workflows']>>
+              >,
+            )
           },
           async *stream(
+            input: WorkflowInput<S, keyof NonNullable<S['workflows']>>,
+            opts?: InvokeOptions,
+          ): AsyncIterable<ExecutionEvent<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>> {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed ||
+                !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts)),
+            )
+            for await (const event of projectExecutionEvents<WorkflowOutput<S, keyof NonNullable<S['workflows']>>>(
+              streamWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts),
+              workflow.updates ?? 'none',
+            )) {
+              yield event
+            }
+          },
+          async *observe(
             input: WorkflowInput<S, keyof NonNullable<S['workflows']>>,
             opts?: InvokeOptions,
           ): AsyncIterable<RunEvent> {
@@ -1463,14 +1579,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulWorkflowReplay(sessionId, workflowId, input, opts)),
             )
-            for await (const event of streamWorkflowCall(
-              sessionId,
-              workflowId,
-              workflow as WorkflowDefinition<S>,
-              input,
-              opts,
-            )) {
-              yield event
+            try {
+              yield* streamWorkflowCall(sessionId, workflowId, workflow as WorkflowDefinition<S>, input, opts)
+            } catch (error) {
+              if (!(error instanceof ExternalWaitPendingError)) throw error
             }
           },
         }
@@ -1484,11 +1596,28 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts)),
             )
-            return runAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts) as Promise<
-              AgentOutput<S, keyof NonNullable<S['agents']>>
-            >
+            return runWithOutcome<AgentOutput<S, keyof NonNullable<S['agents']>>>((onEvent) =>
+              runAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts, onEvent) as Promise<
+                AgentOutput<S, keyof NonNullable<S['agents']>>
+              >,
+            )
           },
           async *stream(
+            input: AgentInput<S, keyof NonNullable<S['agents']>>,
+            opts?: InvokeOptions,
+          ): AsyncIterable<ExecutionEvent<AgentOutput<S, keyof NonNullable<S['agents']>>>> {
+            await requireCurrentInstance(
+              !sessionRecord.sandboxBinding.disposed ||
+                !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts)),
+            )
+            for await (const event of projectExecutionEvents<AgentOutput<S, keyof NonNullable<S['agents']>>>(
+              streamAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts),
+              agent.updates ?? 'none',
+            )) {
+              yield event
+            }
+          },
+          async *observe(
             input: AgentInput<S, keyof NonNullable<S['agents']>>,
             opts?: InvokeOptions,
           ): AsyncIterable<RunEvent> {
@@ -1496,9 +1625,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               !sessionRecord.sandboxBinding.disposed ||
                 !(await isSuccessfulAgentReplay(sessionId, agentId, input, opts)),
             )
-            for await (const event of streamAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts)) {
-              yield event
-            }
+            yield* streamAgentCall(sessionId, agentId, agent as AgentDefinition<S>, input, opts)
           },
         }
         return [agentId, invoker]
@@ -1761,6 +1888,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         if (committed !== undefined) {
           const finishedAt = now()
           await definition.storage.finishRun(runId, { status: 'succeeded', finishedAt, output: committed })
+          if (onEvent) {
+            await onEvent({ type: 'run.started', runId, at: finishedAt })
+            await onEvent({ type: 'run.finished', runId, at: finishedAt, output: committed })
+          }
           return committed as AgentOutput<S, K>
         }
       }
@@ -1869,10 +2000,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
               maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
               logger: definition.logger,
-              telemetry,
-              emitEvent: emit,
-              metadata: opts?.metadata ?? {},
-            })
+			  telemetry,
+			  emitEvent: emit,
+			  metadata: opts?.metadata ?? {},
+			  ...(opts?.hostContext !== undefined ? { hostContext: opts.hostContext } : {}),
+			})
             if (run.emitted.length > 0) {
               await persistConversationTurn(sessionId, run.emitted)
               await refreshMemorySummary(sessionId, state.sandboxSession, runSignal.signal, boundSession.identity)
@@ -2275,9 +2407,10 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                       parentSignal: runSignal.signal,
                       parentDeadline: runSignal.deadline,
                       durable: durableBinding !== undefined,
-                      onSandboxScope: retainDurablePartition,
-                      metadata: opts?.metadata ?? {},
-                    }) as Promise<ChildTaskHandle<AgentOutput<S, K>>>,
+					  onSandboxScope: retainDurablePartition,
+					  metadata: opts?.metadata ?? {},
+					  ...(opts?.hostContext !== undefined ? { hostContext: opts.hostContext } : {}),
+					}) as Promise<ChildTaskHandle<AgentOutput<S, K>>>,
                 },
                 agents: Object.fromEntries(
                   Object.entries(definition.agents).map(([agentId, agent]) => [
@@ -2317,7 +2450,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                         state: delegationState,
                         workflowId,
                         agentId,
-                        modelAlias: selectedModelAlias,
+                        ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
                       })
                       // Compose signals before consuming budget so a composition
                       // failure can never leak an active delegation slot.
@@ -2389,7 +2522,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                             input: agentInput,
                             history: await definition.storage.listMessages(sessionId),
                             agent: agent as AgentDefinition<S>,
-                            modelAlias: selectedModelAlias,
+                            ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
                             models: withRunEventModelRegistry(
                               modelRegistry,
                               {
@@ -2398,7 +2531,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                                 runId,
                                 workflowId,
                                 agentId,
-                                modelAlias: selectedModelAlias,
+                                ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
                               },
                               emit,
                             ),
@@ -2425,10 +2558,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                             decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
                             maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
                             logger: definition.logger,
-                            telemetry,
-                            emitEvent: emit,
-                            metadata: agentMetadata,
-                          })
+						  telemetry,
+						  emitEvent: emit,
+						  metadata: agentMetadata,
+						  ...((agentOpts?.hostContext ?? opts?.hostContext) !== undefined
+							? { hostContext: agentOpts?.hostContext ?? opts?.hostContext }
+							: {}),
+						})
                           if (run.emitted.length > 0) {
                             await persistConversationTurn(sessionId, run.emitted)
                             await refreshMemorySummary(
@@ -2691,7 +2827,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                 kind: snapshot.kind,
                 deadline: snapshot.deadline,
               })
-              throw new ExternalWaitPendingError(snapshot)
+              throw new ExternalWaitPendingError(snapshot, args.runId)
             }
             const resolved = asExternalWaitResolved(snapshot)
             if (!resolved)
@@ -2754,8 +2890,9 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     parentSignal: AbortSignal
     parentDeadline: number
     durable: boolean
-    onSandboxScope?: (scope: SandboxScope) => void
-    metadata: Readonly<Record<string, JsonValue>>
+		onSandboxScope?: (scope: SandboxScope) => void
+		metadata: Readonly<Record<string, JsonValue>>
+		hostContext?: unknown
   }): Promise<ChildTaskHandle<JsonValue>> {
     if (args.parentSignal.aborted) throw abortError(args.parentSignal, 'run', 'Run was cancelled.')
     if (args.options?.context !== undefined && args.options.context !== 'isolated') {
@@ -2810,7 +2947,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       state: args.delegationState,
       workflowId: args.workflowId,
       agentId: args.agentId,
-      modelAlias,
+      ...(modelAlias ? { modelAlias } : {}),
       checkParallel: false,
     })
     args.delegationState.totalChildAgentCalls += 1
@@ -2857,7 +2994,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         sessionId: args.sessionId,
         workflowId: args.workflowId,
         agentId: args.agentId,
-        modelAlias,
+        ...(modelAlias ? { modelAlias } : {}),
         contextPolicy: 'isolated',
         mode: args.options?.mode ?? 'one_shot',
         createdAt,
@@ -2881,7 +3018,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           controller,
           taskSignal,
           parentAndTask,
-          modelAlias,
+          ...(modelAlias ? { modelAlias } : {}),
         })
       }
 
@@ -2938,7 +3075,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             parentRunId: args.parentRunId,
             workflowId: args.workflowId,
             agentId: args.agentId,
-            modelAlias,
+            ...(modelAlias ? { modelAlias } : {}),
             contextPolicy: 'isolated',
             mode: 'one_shot',
           })
@@ -2976,7 +3113,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             metadata: args.metadata,
           })
           const contextProjection =
-            definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
+            (modelAlias ? definition.models[modelAlias]?.contextProjection : undefined) ??
+            definition.defaults.contextProjection
           const run = await runDefaultAgent({
             harnessName: definition.name,
             agentId: args.agentId,
@@ -2989,7 +3127,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             // Isolation is intentional: do not fork raw parent history.
             history: [],
             agent: args.agent,
-            modelAlias,
+            ...(modelAlias ? { modelAlias } : {}),
             models: withRunEventModelRegistry(
               modelRegistry,
               {
@@ -2998,7 +3136,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
                 runId: taskId,
                 workflowId: args.workflowId,
                 agentId: args.agentId,
-                modelAlias,
+                ...(modelAlias ? { modelAlias } : {}),
               },
               emit,
             ),
@@ -3022,10 +3160,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
             decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
             maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
             logger: definition.logger,
-            telemetry,
-            emitEvent: emit,
-            metadata: args.metadata,
-          })
+			telemetry,
+			emitEvent: emit,
+			metadata: args.metadata,
+			...(args.hostContext !== undefined ? { hostContext: args.hostContext } : {}),
+		  })
           await settle('succeeded', undefined, run.output as JsonValue)
           return run.output as JsonValue
         } catch (error) {
@@ -3122,15 +3261,16 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     options?: { sandbox?: SandboxPolicy }
     parentSandboxScope: SandboxScope
     workflowPolicy: EffectiveDelegationPolicy
-    delegationState: DelegationRunState
-    metadata: Readonly<Record<string, JsonValue>>
-    taskId: string
+		delegationState: DelegationRunState
+		metadata: Readonly<Record<string, JsonValue>>
+		hostContext?: unknown
+		taskId: string
     descriptor: ChildTaskDescriptor
     createdAt: string
     controller: AbortController
     taskSignal: ReturnType<typeof combineSignals> | ReturnType<typeof createRunSignal>
     parentAndTask: ReturnType<typeof combineSignals>
-    modelAlias: string
+    modelAlias?: string
   }): ChildTaskHandle<JsonValue> {
     const { taskId, descriptor, controller, taskSignal, parentAndTask, modelAlias } = args
     const history: Message[] = []
@@ -3268,7 +3408,8 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           metadata: args.metadata,
         })
         const contextProjection =
-          definition.models[modelAlias]?.contextProjection ?? definition.defaults.contextProjection
+          (modelAlias ? definition.models[modelAlias]?.contextProjection : undefined) ??
+          definition.defaults.contextProjection
         const run = await runDefaultAgent({
           harnessName: definition.name,
           agentId: args.agentId,
@@ -3280,7 +3421,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           input,
           history,
           agent: args.agent,
-          modelAlias,
+          ...(modelAlias ? { modelAlias } : {}),
           models: withRunEventModelRegistry(
             modelRegistry,
             {
@@ -3289,7 +3430,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
               runId: taskId,
               workflowId: args.workflowId,
               agentId: args.agentId,
-              modelAlias,
+              ...(modelAlias ? { modelAlias } : {}),
             },
             emit,
           ),
@@ -3313,10 +3454,11 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           decisionTimeoutMs: definition.defaults.decisionTimeoutMs ?? 10_000,
           maxParallelToolCalls: definition.defaults.maxParallelToolCalls ?? 8,
           logger: definition.logger,
-          telemetry,
-          emitEvent: emit,
-          metadata: args.metadata,
-        })
+		  telemetry,
+		  emitEvent: emit,
+		  metadata: args.metadata,
+		  ...(args.hostContext !== undefined ? { hostContext: args.hostContext } : {}),
+		})
         // Continuable task history is private in-memory loop state. Preserve
         // its established user/assistant/tool shape; the run already emits
         // the current user exactly once, and rebuilt system instructions are
@@ -3380,7 +3522,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         parentRunId: args.parentRunId,
         workflowId: args.workflowId,
         agentId: args.agentId,
-        modelAlias,
+        ...(modelAlias ? { modelAlias } : {}),
         contextPolicy: 'isolated',
         mode: 'continuable',
       })
@@ -3579,7 +3721,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     state: DelegationRunState
     workflowId: string
     agentId: string
-    modelAlias: string
+    modelAlias?: string
     checkParallel?: boolean
   }): void {
     const { policy, state, workflowId, agentId, modelAlias } = args
@@ -3622,7 +3764,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       })
     }
     const allowedModels = policy.agentModelAliases.get(agentId) ?? policy.modelAliases
-    if (allowedModels && !allowedModels.has(modelAlias)) {
+    if (modelAlias && allowedModels && !allowedModels.has(modelAlias)) {
       throw new DelegationPolicyError(
         'Workflow is not allowed to invoke this child agent with the selected model alias.',
         {
@@ -4199,7 +4341,7 @@ function sanitizeEventForPersistence(event: RunEvent): JsonValue {
         parentRunId: event.parentRunId,
         workflowId: event.workflowId,
         agentId: event.agentId,
-        modelAlias: event.modelAlias,
+        ...(event.modelAlias ? { modelAlias: event.modelAlias } : {}),
         contextPolicy: event.contextPolicy,
         mode: event.mode,
       }

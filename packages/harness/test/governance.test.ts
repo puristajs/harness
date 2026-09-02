@@ -99,7 +99,7 @@ describe('governance policies', () => {
       .build()
 
     const session = await harness.getSession('policy-deny')
-    await expect(session.agents.banker.run('transfer')).resolves.toBe('done')
+    await expect(session.agents.banker.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect(transfers).toBe(0)
 
     const secondModelRequest = model.requests[1] as ObjectRequest
@@ -173,7 +173,7 @@ describe('governance policies', () => {
 
     const session = await harness.getSession('policy-approval')
     const events = []
-    for await (const event of session.agents.banker.stream('transfer')) {
+    for await (const event of session.agents.banker.observe('transfer')) {
       events.push(event)
     }
 
@@ -254,7 +254,7 @@ describe('governance policies', () => {
       .build()
 
     const session = await harness.getSession('policy-rejected')
-    await expect(session.agents.banker.run('transfer')).resolves.toBe('done')
+    await expect(session.agents.banker.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect(transfers).toBe(0)
 
     const secondModelRequest = model.requests[1] as ObjectRequest
@@ -317,7 +317,7 @@ describe('governance policies', () => {
 
     const session = await harness.getSession('policy-shadow')
     const events = []
-    for await (const event of session.agents.banker.stream('transfer')) {
+    for await (const event of session.agents.banker.observe('transfer')) {
       events.push(event)
     }
 
@@ -366,7 +366,7 @@ describe('governance policies', () => {
 
     const session = await harness.getSession('policy-exposure')
     const events = []
-    for await (const event of session.agents.banker.stream('transfer')) {
+    for await (const event of session.agents.banker.observe('transfer')) {
       events.push(event)
     }
 
@@ -414,7 +414,7 @@ describe('governance policies', () => {
 
     const session = await harness.getSession('policy-exposure-shadow')
     const events = []
-    for await (const event of session.agents.banker.stream('transfer')) {
+    for await (const event of session.agents.banker.observe('transfer')) {
       events.push(event)
     }
 

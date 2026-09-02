@@ -162,7 +162,7 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('ephemeral')
 
-    await expect(session.workflows.two_step.run('go')).resolves.toBe(JSON.stringify({ a: 1, b: 2 }))
+    await expect(session.workflows.two_step.run('go')).resolves.toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
     expect(effects).toEqual({ a: 1, b: 1 })
   })
 
@@ -173,7 +173,7 @@ describe('durable workflow auto-wiring', () => {
     const session = await harness.getSession('durable-success')
 
     const result = await session.workflows.two_step.run('go', { durable: { runId: 'run-success' } })
-    expect(result).toBe(JSON.stringify({ a: 1, b: 2 }))
+    expect(result).toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
 
     const checkpoint = await storage.loadCheckpoint('run-success')
     expect(checkpoint?.stepId).toBe('b')
@@ -193,7 +193,7 @@ describe('durable workflow auto-wiring', () => {
 
     // Resume with the same run id: "a" replays, only "b" runs.
     const result = await session.workflows.two_step.run('go', { durable: { runId: 'run-resume' } })
-    expect(result).toBe(JSON.stringify({ a: 1, b: 2 }))
+    expect(result).toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
     expect(effects).toEqual({ a: 1, b: 1 })
   })
 
@@ -236,7 +236,7 @@ describe('durable workflow auto-wiring', () => {
       name: 'DurableRunLeaseError',
     })
     release?.()
-    await expect(winner).resolves.toBe('done')
+    await expect(winner).resolves.toMatchObject({ status: 'completed', output: 'done' })
     expect((await storage.getRun('shared-run'))?.status).toBe('succeeded')
   })
 
@@ -303,9 +303,9 @@ describe('durable workflow auto-wiring', () => {
     expect(run?.status).toBe('succeeded')
     // The only completed handler is the creation winner. This detects a
     // check-then-create overwrite between two initially absent observations.
-    expect(run?.input).toBe(
-      (attempts.find((attempt) => attempt.status === 'fulfilled') as PromiseFulfilledResult<'first' | 'second'>).value,
-    )
+    expect(attempts.find((attempt) => attempt.status === 'fulfilled')).toMatchObject({
+      value: { status: 'completed', output: run?.input },
+    })
   })
 
   it('drives the durable workspace lifecycle across a crash and resume', async () => {
@@ -354,9 +354,7 @@ describe('durable workflow auto-wiring', () => {
     const harness = buildHarness({ effects })
     const session = await harness.getSession('no-runtime')
 
-    await expect(session.workflows.two_step.run('go', { durable: { runId: 'run-x' } })).resolves.toBe(
-      JSON.stringify({ a: 1, b: 2 }),
-    )
+    await expect(session.workflows.two_step.run('go', { durable: { runId: 'run-x' } })).resolves.toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
   })
 
   it('rejects an invalid durable run id', async () => {

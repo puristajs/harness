@@ -14,6 +14,13 @@ export function validateToolDefinitions(tools: Record<string, unknown>): void {
 			optionalFunction(definition, 'configureHarnessContext', id)
 			continue
 		}
+		if (kind === 'host') {
+			requireText(definition, 'description', id)
+			requireObject(definition, 'input', id)
+			requireObject(definition, 'output', id)
+			if (definition['handler'] !== undefined) invalidTool(id, 'Host tool contracts cannot define a handler.')
+			continue
+		}
 		if (kind === 'mcp_stdio') {
 			requireText(definition, 'description', id)
 			requireText(definition, 'command', id)
@@ -32,7 +39,7 @@ export function validateToolDefinitions(tools: Record<string, unknown>): void {
 			optionalFunction(definition, 'configureHarnessContext', id)
 			continue
 		}
-		invalidTool(id, 'Tool kind must be ts, mcp_stdio, or mcp_http.')
+		invalidTool(id, 'Tool kind must be ts, host, mcp_stdio, or mcp_http.')
 	}
 }
 

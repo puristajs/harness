@@ -49,7 +49,7 @@ describe('emitted message id uniqueness', () => {
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.run('go')).resolves.toBe('first,second')
+    await expect(session.workflows.wf.run('go')).resolves.toMatchObject({ status: 'completed', output: 'first,second' })
 
     const messages = await storage.listMessages('s1')
     const ids = messages.map((message) => message.id)

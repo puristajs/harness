@@ -51,7 +51,7 @@ import type { Message } from '../models/state.js'
 import { validateModelRetrySetting } from '../models/retry-policy.js'
 import type { RunStatus } from '../models/state.js'
 import type { HarnessError } from '../errors/harness-error.js'
-import { HarnessConfigError, SkillManifestError } from '../errors/catalog.js'
+import { HarnessConfigError, SkillManifestError, ValidationError } from '../errors/catalog.js'
 import { BUILTIN_TOOL_NAMES, resolveEnabledBuiltinTools } from '../tools/index.js'
 import {
 	agentExecutionRequirementsSchema,
@@ -228,6 +228,11 @@ export interface DurableInvokeOptions {
 export interface InvokeOptions {
 	/** Abort signal used to cooperatively cancel the call. */
 	signal?: AbortSignal
+	/**
+	 * Opaque, run-scoped context supplied by a host integration. It is available
+	 * only to bound host tools and is never persisted, logged, or sent to a model.
+	 */
+	hostContext?: unknown
 	/** Optional timeout override in milliseconds. `0` disables. */
 	timeoutMs?: number
 	/** Optional history-window override for this call only. */
@@ -392,6 +397,28 @@ export interface TsToolDefinition<
 	configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
+/** Provider-neutral contract for a tool implemented by the embedding host. */
+export interface HostToolDefinition<I extends AnyModelSchema = AnyModelSchema, O extends AnySchema = AnySchema> {
+	/** Host tools have no definition-time handler. */
+	kind: 'host'
+	/** Short model-facing description. */
+	description: string
+	/** Input schema validated before the host binding is called. */
+	input: I & JsonOutputSchema<I>
+	/** Output schema validated after the host binding returns. */
+	output: O & JsonOutputSchema<O>
+}
+
+/** Context passed to a host-tool binding for the active run. */
+export type HostToolHandlerContext<Host = unknown> = ToolHandlerContext & { readonly host: Host }
+
+/** Runtime implementation of one provider-neutral host-tool contract. */
+export type HostToolBinding<
+	I extends AnyModelSchema = AnyModelSchema,
+	O extends AnySchema = AnySchema,
+	Host = unknown,
+> = (context: HostToolHandlerContext<Host>, input: Infer<I>) => Promise<InferIn<O>>
+
 /**
  * Content-free origin metadata for an MCP tool projected from an Agent Plugin.
  *
@@ -485,6 +512,17 @@ export type ToolDefinition<C extends ToolContextShape = ToolHandlerContext> =
 	| McpStdioToolDefinition
 	| McpHttpToolDefinition
 
+/** Definition-time union including contracts that require a runtime host binding. */
+export type AuthoredToolDefinition<C extends ToolContextShape = ToolHandlerContext> =
+	| ToolDefinition<C>
+	| HostToolDefinition
+
+/** Full provider-neutral tool registry shape. */
+export type AuthoredToolsConfig<C extends ToolContextShape = ToolHandlerContext> = Record<
+	string,
+	AuthoredToolDefinition<C>
+>
+
 type NativeToolSchemaFields = {
 	kind?: 'ts'
 	input: AnyModelSchema
@@ -575,10 +613,23 @@ export interface DiscoveredSkills {
 /** Alias map passed to `.models(...)`. */
 export type ModelsConfig = Record<string, ModelAlias>
 
+/** Provider-neutral model requirement stored in a portable Harness definition. */
+export interface ModelRequirement {
+	/** Capabilities required by definitions that reference this alias. */
+	readonly capabilities: readonly ModelCapability[]
+}
+
+/** Model shapes used for definition-time capability inference. */
+export type ModelTypesConfig = Record<string, ModelRequirement>
+
+type RequiredModelTypes<R extends ModelTypesConfig> = {
+	readonly [K in keyof R]: R[K] & ModelAlias
+}
+
 /** Builder-state accumulator used for type propagation across the fluent harness builder. */
 export interface BuilderState {
 	models?: ModelsConfig
-	tools?: ToolsConfig<never>
+	tools?: AuthoredToolsConfig<never>
 	/** Capability tuple of the explicitly configured sandbox, propagated to tool handlers. */
 	sandboxCapabilities?: readonly AdapterCapability[]
 	/** Literal sandbox-sharing groups declared with the configured sandbox. */
@@ -642,7 +693,11 @@ export type AgentOutput<S extends BuilderState, K extends keyof NonNullable<S['a
 
 /** Helper to infer custom TypeScript tool input from the configured Standard Schema. */
 export type ToolInput<S extends BuilderState, K extends keyof NonNullable<S['tools']> & string> =
-	NonNullable<S['tools']>[K] extends TsToolDefinition<infer I, AnySchema, infer _C> ? Infer<I> : JsonValue
+	NonNullable<S['tools']>[K] extends TsToolDefinition<infer I, AnySchema, infer _C>
+		? Infer<I>
+		: NonNullable<S['tools']>[K] extends HostToolDefinition<infer I, AnySchema>
+			? Infer<I>
+			: JsonValue
 
 /** Capability-filtered model handles keyed by configured model alias. */
 export type ModelHandles<S extends BuilderState> = {
@@ -1163,7 +1218,7 @@ export interface ChildTaskDescriptor {
 	readonly sessionId: string
 	readonly workflowId: string
 	readonly agentId: string
-	readonly modelAlias: string
+	readonly modelAlias?: string
 	readonly contextPolicy: ChildTaskContextPolicy
 	readonly mode: ChildTaskMode
 	readonly createdAt: string
@@ -1295,8 +1350,8 @@ export interface AgentDefinitionCommon<
 > {
 	input?: I & JsonOutputSchema<I>
 	output?: O & JsonOutputSchema<O>
-	model: keyof NonNullable<S['models']> & string
-	instructions: string | ((ctx: AgentContextMinimal<S, Infer<I>>) => string)
+	/** Portable output updates available to streaming consumers. Default: `none`. */
+	updates?: OutputUpdateMode
 	tools?: readonly (keyof NonNullable<S['tools']> & string)[]
 	/**
 	 * Built-in filesystem or process tools explicitly exposed to this agent.
@@ -1316,6 +1371,8 @@ type DefaultLoopAgentDefinition<
 	O extends AnyModelSchema,
 > = AgentDefinitionCommon<S, I, O> & {
 	handler?: never
+	model: keyof NonNullable<S['models']> & string
+	instructions: string | ((ctx: AgentContextMinimal<S, Infer<I>>) => string)
 	/**
 	 * Maximum model iterations for this default-loop agent. Falls back to
 	 * `defaults.agentMaxIterations`. Must be a positive integer; explicit values
@@ -1369,6 +1426,8 @@ type CustomHandlerAgentDefinition<
 	O extends AnySchema,
 > = AgentDefinitionCommon<S, I, O> & {
 	handler: (ctx: AgentContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>
+	model?: never
+	instructions?: never
 	maxSteps?: never
 	prepareStep?: never
 	stopWhen?: never
@@ -1408,11 +1467,16 @@ export interface WorkflowDefinition<
 > {
 	input?: I & JsonOutputSchema<I>
 	output?: O & JsonOutputSchema<O>
+	/** Portable output updates available to streaming consumers. Default: `none`. */
+	updates?: OutputUpdateMode
 	delegation?: WorkflowDelegationPolicy<S>
 	/** Filesystem partition policy for this workflow. Omit to inherit its caller. */
 	sandbox?: SandboxPolicy<ConfiguredSandboxGroups<S>>
 	handler: (ctx: WorkflowContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>
 }
+
+/** Public update shape a definition may emit while its final output is pending. */
+export type OutputUpdateMode = 'none' | 'text-delta' | 'object-snapshot'
 
 type AgentSchemaFields = {
 	input?: AnySchema
@@ -1508,20 +1572,81 @@ export type WorkflowsConfig<
 	[K in keyof W]: W[K] & WorkflowDefinitionFor<S, W[K]>
 }
 
+/** Durable, authenticated pause that can be resumed without treating it as a failure. */
+export type HarnessInterrupt = {
+	readonly type: 'external-wait'
+	readonly id: string
+	readonly revision: string
+	readonly kind: string
+	readonly schemaVersion: string
+	readonly definitionVersion: string
+	readonly deadline: string
+}
+
+/** Public result shared by aggregate and streaming execution. */
+export type RunOutcome<Output, Interrupt = HarnessInterrupt> =
+	| { readonly status: 'completed'; readonly runId: string; readonly output: Output }
+	| { readonly status: 'interrupted'; readonly runId: string; readonly interrupt: Interrupt }
+
+/**
+ * Provider-neutral execution events safe to carry across a service or browser
+ * boundary. Operational diagnostics are available separately through
+ * {@link AgentInvoker.observe} and {@link WorkflowInvoker.observe}.
+ */
+export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> =
+	| { readonly type: 'run.started'; readonly runId: string; readonly at: string }
+	| { readonly type: 'output.text.delta'; readonly runId: string; readonly id: string; readonly delta: string }
+	| {
+			readonly type: 'output.object.snapshot'
+			readonly runId: string
+			readonly id: string
+			readonly value: JsonValue
+	  }
+	| {
+			readonly type: 'tool.started'
+			readonly runId: string
+			readonly agentId: string
+			readonly toolId: string
+			readonly callId: string
+			readonly input: JsonValue
+	  }
+	| {
+			readonly type: 'tool.finished'
+			readonly runId: string
+			readonly agentId: string
+			readonly toolId: string
+			readonly callId: string
+			readonly output?: JsonValue
+			readonly error?: SerializedError
+	  }
+	| {
+			readonly type: 'approval.requested'
+			readonly runId: string
+			readonly agentId: string
+			readonly toolId: string
+			readonly callId: string
+			readonly approvalId: string
+	  }
+	| { readonly type: 'run.finished'; readonly runId: string; readonly at: string; readonly outcome: RunOutcome<Output, Interrupt> }
+
 /** Typed workflow invoker available under `session.workflows.<id>`. */
 export interface WorkflowInvoker<S extends BuilderState, K extends keyof NonNullable<S['workflows']>> {
-	/** Runs the workflow to completion and resolves its validated output. */
-	run(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
-	/** Streams run events while the workflow executes. */
-	stream(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
+	/** Runs until completion or a durable, resumable interrupt. */
+	run(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<RunOutcome<WorkflowOutput<S, K>>>
+	/** Streams the portable execution contract, including one terminal outcome. */
+	stream(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<ExecutionEvent<WorkflowOutput<S, K>>>
+	/** Streams Harness diagnostics for operators and local debugging. */
+	observe(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 /** Typed agent invoker available under `session.agents.<id>`. */
 export interface AgentInvoker<S extends BuilderState, K extends keyof NonNullable<S['agents']>> {
-	/** Runs the agent to completion and resolves its validated output. */
-	run(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
-	/** Streams run events while the agent executes. */
-	stream(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
+	/** Runs until completion or a durable, resumable interrupt. */
+	run(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<RunOutcome<AgentOutput<S, K>>>
+	/** Streams the portable execution contract, including one terminal outcome. */
+	stream(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<ExecutionEvent<AgentOutput<S, K>>>
+	/** Streams Harness diagnostics for operators and local debugging. */
+	observe(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 /** Compile-time-only namespace exposed as `harness.$infer`. */
@@ -1531,6 +1656,88 @@ export type InferTypes<S extends BuilderState> = {
 	skills: keyof NonNullable<S['skills']>
 	agents: { [K in keyof NonNullable<S['agents']>]: { input: AgentInput<S, K>; output: AgentOutput<S, K> } }
 	workflows: { [K in keyof NonNullable<S['workflows']>]: { input: WorkflowInput<S, K>; output: WorkflowOutput<S, K> } }
+}
+
+type DefinitionInputSchema<D> = D extends { input: infer I extends AnySchema } ? I : DefaultSchema
+type DefinitionOutputSchema<D> = D extends { output: infer O extends AnySchema } ? O : DefaultSchema
+
+/** Schema-bearing contract exposed for one portable agent or workflow. */
+export type HarnessEntryContract<D> = Readonly<{
+	input: DefinitionInputSchema<D>
+	output: DefinitionOutputSchema<D>
+	updates: OutputUpdateMode
+}>
+
+/** Immutable, provider-free contribution catalog used by runtime adapters. */
+export interface HarnessContributionCatalog<S extends BuilderState> {
+	readonly name: string
+	readonly models: Readonly<{
+		[K in keyof NonNullable<S['models']>]: ModelRequirement
+	}>
+	readonly hostTools: Readonly<{
+		[K in keyof NonNullable<S['tools']> as NonNullable<S['tools']>[K] extends HostToolDefinition
+			? K
+			: never]: NonNullable<S['tools']>[K] extends HostToolDefinition<infer I, infer O>
+			? Readonly<{ input: I; output: O; description: string }>
+			: never
+	}>
+	readonly agents: Readonly<{
+		[K in keyof NonNullable<S['agents']>]: HarnessEntryContract<NonNullable<S['agents']>[K]>
+	}>
+	readonly workflows: Readonly<{
+		[K in keyof NonNullable<S['workflows']>]: HarnessEntryContract<NonNullable<S['workflows']>[K]>
+	}>
+}
+
+/** Concrete model binding supplied when a portable definition is instantiated. */
+export type ModelRuntimeBinding = Omit<ModelAlias, 'capabilities'>
+
+/** Runtime model bindings inferred from a portable Harness definition. */
+export type HarnessRuntimeModels<S extends BuilderState> = {
+	readonly [K in keyof NonNullable<S['models']>]: ModelRuntimeBinding
+}
+
+/** Host-tool implementations required by a portable definition. */
+export type HarnessHostToolBindings<S extends BuilderState, Host = unknown> = {
+	readonly [K in keyof NonNullable<S['tools']> as NonNullable<S['tools']>[K] extends HostToolDefinition
+		? K
+		: never]: NonNullable<S['tools']>[K] extends HostToolDefinition<infer I, infer O>
+		? HostToolBinding<I, O, Host>
+		: never
+}
+
+/** Infrastructure supplied to a portable Harness definition at startup. */
+export type HarnessInstanceConfig<S extends BuilderState, Host = unknown> = {
+	readonly models: HarnessRuntimeModels<S>
+	readonly logger?: Logger
+	readonly telemetry?: TelemetryOptions
+	readonly storage?: HarnessStorage
+	readonly sandbox?: Sandbox
+	readonly sandboxBinding?: SandboxBindingOptions<string>
+	readonly memory?:
+		| MemoryEngine
+		| MemoryConfiguration<readonly import('../ports/memory.js').MemoryCapability[], NonNullable<S['models']>>
+		| ((
+				models: MemoryModelReferences<NonNullable<S['models']>>,
+			) => MemoryConfiguration<readonly import('../ports/memory.js').MemoryCapability[], NonNullable<S['models']>>)
+	readonly workspace?: DurableWorkspace
+} & (keyof HarnessHostToolBindings<S, Host> extends never
+	? { readonly hostTools?: never }
+	: { readonly hostTools: HarnessHostToolBindings<S, Host> })
+
+/**
+ * Portable Harness definition.
+ *
+ * It contains schemas and requirements but no provider credentials or live
+ * infrastructure. The same value can run standalone or be mounted by a host
+ * framework such as PURISTA.
+ */
+export interface HarnessDefinition<S extends BuilderState> {
+	readonly name: string
+	readonly catalog: HarnessContributionCatalog<S>
+	getInstance<Host = unknown>(config: HarnessInstanceConfig<S, Host>): Promise<Harness<S>>
+	/** Phantom inference handle. The runtime value is always the literal `{}`. */
+	readonly $infer: InferTypes<S>
 }
 
 /** Harness handle returned from `build()`. */
@@ -1669,7 +1876,7 @@ export type RunEvent =
 			parentRunId: string
 			workflowId: string
 			agentId: string
-			modelAlias: string
+			modelAlias?: string
 			contextPolicy: ChildTaskContextPolicy
 			mode: ChildTaskMode
 	  }
@@ -1859,6 +2066,13 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 	workspace(workspace: DurableWorkspace): HarnessBuilder<S>
 	requires(capabilities: readonly AdapterCapability[]): HarnessBuilder<S>
 	defaults(defaults: HarnessDefaults): HarnessBuilder<S>
+	/** Declares one provider-neutral model requirement for a portable definition. */
+	requireModel<const Id extends string, const R extends ModelRequirement>(
+		id: Id,
+		requirement: R,
+	): HarnessBuilder<S & { models: Record<Id, R & ModelAlias> }>
+	/** Declares provider-neutral model requirements for a portable definition. */
+	requireModels<const R extends ModelTypesConfig>(requirements: R): HarnessBuilder<S & { models: RequiredModelTypes<R> }>
 	/** Registers one model alias and preserves its literal id for later agents. */
 	model<const Id extends string, const D extends ModelAlias>(
 		id: Id,
@@ -1878,6 +2092,11 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 		id: Id,
 		definition: D,
 	): HarnessBuilder<S & { tools: Record<Id, D> }>
+	/** Declares a provider-neutral tool contract implemented when the Harness is instantiated. */
+	hostTool<const Id extends string, const I extends AnyModelSchema, const O extends AnySchema>(
+		id: Id,
+		definition: HostToolDefinition<I, O>,
+	): HarnessBuilder<S & { tools: Record<Id, HostToolDefinition<I, O>> }>
 	/**
 	 * Registers a cohesive pre-typed native/MCP tool record.
 	 * Use {@link tool} for contextual typing of an inline native handler.
@@ -1990,6 +2209,8 @@ export interface HarnessBuilder<S extends BuilderState = {}> {
 	governance(
 		config: GovernanceConfig<S> | ((helpers: GovernanceDefinitionHelpers<S>) => GovernanceConfig<S>),
 	): HarnessBuilder<S>
+	/** Freezes a provider-neutral definition that can be instantiated standalone or by a host integration. */
+	define(): HarnessDefinition<S>
 	build(): Harness<S>
 }
 
@@ -2008,6 +2229,10 @@ export interface HarnessModuleBuilder<S extends BuilderState = {}> {
 		id: Id,
 		definition: D,
 	): HarnessModuleBuilder<S & { tools: Record<Id, D> }>
+	hostTool<const Id extends string, const I extends AnyModelSchema, const O extends AnySchema>(
+		id: Id,
+		definition: HostToolDefinition<I, O>,
+	): HarnessModuleBuilder<S & { tools: Record<Id, HostToolDefinition<I, O>> }>
 	tools<const T extends Record<string, { input: AnyModelSchema; output: AnySchema }>>(
 		tools: T & NativeToolsConfigFromSchemaMaps<ToolContextFor<S>, T>,
 	): HarnessModuleBuilder<S & { tools: NativeToolsConfigFromSchemaMaps<ToolContextFor<S>, T> }>
@@ -2122,7 +2347,8 @@ type BuilderStateInternal = {
 	requiredCapabilities?: readonly AdapterCapability[]
 	defaults?: HarnessDefaults
 	models?: ModelsConfig
-	tools?: ToolsConfig<never>
+	modelRequirements?: ModelTypesConfig
+	tools?: AuthoredToolsConfig<never>
 	skills?: SkillsConfig
 	agents?: Record<string, AnyAgentDefinition>
 	workflows?: Record<string, WorkflowDefinition<any, AnySchema, AnySchema>>
@@ -2163,6 +2389,131 @@ function validateGovernanceConfiguration(value: unknown): void {
 }
 
 const moduleBuilderTargets = new WeakMap<object, { builder: Builder<any>; invocation: symbol | undefined }>()
+
+function resolveRuntimeModels(
+	requirements: ModelTypesConfig,
+	bindings: Record<string, ModelRuntimeBinding>,
+): ModelsConfig {
+	if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) {
+		throw new HarnessConfigError('Portable Harness instances require model bindings.', {
+			reason: 'missing_models',
+			path: 'models',
+		})
+	}
+	const requiredAliases = Object.keys(requirements)
+	const suppliedAliases = Object.keys(bindings)
+	for (const alias of requiredAliases) {
+		if (!(alias in bindings)) {
+			throw new HarnessConfigError('A required model binding is missing.', {
+				reason: 'missing_model_binding',
+				path: `models.${alias}`,
+				id: alias,
+			})
+		}
+	}
+	for (const alias of suppliedAliases) {
+		if (!(alias in requirements)) {
+			throw new HarnessConfigError('An undeclared model binding was supplied.', {
+				reason: 'unexpected_model_binding',
+				path: `models.${alias}`,
+				id: alias,
+			})
+		}
+	}
+
+	const models: ModelsConfig = {}
+	for (const alias of requiredAliases) {
+		const requirement = requirements[alias]
+		const binding = bindings[alias]
+		if (!requirement || !binding || typeof binding.model !== 'string' || binding.model.length === 0 || !binding.provider) {
+			throw new HarnessConfigError('A model binding requires a provider and non-empty model id.', {
+				reason: 'invalid_model_binding',
+				path: `models.${alias}`,
+				id: alias,
+			})
+		}
+		validateProviderMethods(alias, requirement.capabilities, binding.provider)
+		models[alias] = Object.freeze({ ...binding, capabilities: Object.freeze([...requirement.capabilities]) })
+	}
+	return Object.freeze(models)
+}
+
+function validateProviderMethods(
+	alias: string,
+	capabilities: readonly ModelCapability[],
+	provider: ModelProvider,
+): void {
+	const methods: Partial<Record<ModelCapability, keyof ModelProvider>> = {
+		text: 'text',
+		text_stream: 'textStream',
+		object: 'object',
+		object_stream: 'objectStream',
+		embeddings: 'embed',
+		rerank: 'rerank',
+	}
+	for (const capability of capabilities) {
+		const method = methods[capability]
+		if (method && typeof provider[method] !== 'function') {
+			throw new HarnessConfigError('A model provider does not implement a required capability.', {
+				reason: 'model_capability_mismatch',
+				path: `models.${alias}.provider.${method}`,
+				id: alias,
+			})
+		}
+	}
+}
+
+function resolveHostToolBindings(
+	tools: AuthoredToolsConfig<never>,
+	bindings: Record<string, HostToolBinding>,
+): ToolsConfig<never> {
+	const required = Object.entries(tools).filter(([, definition]) => definition.kind === 'host')
+	const requiredIds = new Set(required.map(([id]) => id))
+	for (const id of requiredIds) {
+		if (typeof bindings[id] !== 'function') {
+			throw new HarnessConfigError('A host-tool binding is required.', {
+				reason: 'missing_host_tool_binding',
+				path: `hostTools.${id}`,
+				id,
+			})
+		}
+	}
+	for (const id of Object.keys(bindings)) {
+		if (!requiredIds.has(id)) {
+			throw new HarnessConfigError('A host-tool binding was supplied for an undeclared contract.', {
+				reason: 'unknown_host_tool_binding',
+				path: `hostTools.${id}`,
+				id,
+			})
+		}
+	}
+
+	return Object.fromEntries(
+		Object.entries(tools).map(([id, definition]) => {
+			if (definition.kind !== 'host') return [id, definition]
+			const hostDefinition = definition as HostToolDefinition
+			const binding = bindings[id]!
+			const runtimeDefinition: TsToolDefinition<AnyModelSchema, AnySchema, never> = {
+				kind: 'ts',
+				description: hostDefinition.description,
+				input: hostDefinition.input,
+				output: hostDefinition.output,
+				handler: async (context, input) => {
+					const runtimeContext = context as ToolHandlerContext & { readonly hostContext?: unknown }
+					if (runtimeContext.hostContext === undefined) {
+						throw new ValidationError('A host-tool call requires run-scoped host context.', {
+							where: 'tool_input',
+							issues: { toolId: id, reason: 'missing_host_context' },
+						})
+					}
+					const { hostContext, ...toolContext } = runtimeContext
+					return binding({ ...toolContext, host: hostContext }, input)
+				},
+			}
+			return [id, runtimeDefinition]
+		}),
+	) as ToolsConfig<never>
+}
 
 class Builder<S extends BuilderState> {
 	private readonly options: HarnessOptions
@@ -2406,6 +2757,53 @@ class Builder<S extends BuilderState> {
 		return this.clone({ defaults }) as unknown as HarnessBuilder<S>
 	}
 
+	public requireModel<const Id extends string, const R extends ModelRequirement>(
+		id: Id,
+		requirement: R,
+	): HarnessBuilder<S & { models: Record<Id, R & ModelAlias> }> {
+		return this.registerModelRequirements({ [id]: requirement }) as never
+	}
+
+	public requireModels<const R extends ModelTypesConfig>(
+		requirements: R,
+	): HarnessBuilder<S & { models: RequiredModelTypes<R> }> {
+		return this.registerModelRequirements(requirements) as never
+	}
+
+	private registerModelRequirements(requirements: ModelTypesConfig): HarnessBuilder<any> {
+		if (this.configured.models) {
+			throw new HarnessConfigError('Portable model requirements cannot be combined with concrete model aliases.', {
+				reason: 'invalid_models',
+				path: 'models',
+			})
+		}
+		if (Object.keys(requirements).length === 0) {
+			throw new HarnessConfigError('At least one model requirement is required.', {
+				reason: 'missing_models',
+				path: 'models',
+			})
+		}
+		const current = this.configured.modelRequirements ?? {}
+		for (const [alias, requirement] of Object.entries(requirements)) {
+			this.validateRegistryId('models', alias)
+			if (alias in current) {
+				throw new HarnessConfigError(`Definition id "${alias}" is already configured in models.`, {
+					reason: 'duplicate_definition',
+					path: `models.${alias}`,
+					id: alias,
+				})
+			}
+			if (!Array.isArray(requirement.capabilities) || requirement.capabilities.length === 0) {
+				throw new HarnessConfigError('A model requirement needs at least one capability.', {
+					reason: 'invalid_models',
+					path: `models.${alias}.capabilities`,
+					id: alias,
+				})
+			}
+		}
+		return this.clone({ modelRequirements: Object.freeze({ ...current, ...requirements }) }) as unknown as HarnessBuilder<any>
+	}
+
 	public model<const Id extends string, const D extends ModelAlias>(
 		id: Id,
 		definition: D,
@@ -2418,6 +2816,12 @@ class Builder<S extends BuilderState> {
 	}
 
 	private registerModels(models: ModelsConfig): HarnessBuilder<any> {
+		if (this.configured.modelRequirements) {
+			throw new HarnessConfigError('Concrete model aliases cannot be combined with portable model requirements.', {
+				reason: 'invalid_models',
+				path: 'models',
+			})
+		}
 		if (Object.keys(models).length === 0) {
 			throw new HarnessConfigError('At least one model alias is required.', {
 				reason: 'missing_models',
@@ -2451,6 +2855,13 @@ class Builder<S extends BuilderState> {
 		return this.registerTools({ [id]: definition })
 	}
 
+	public hostTool<const Id extends string, const I extends AnyModelSchema, const O extends AnySchema>(
+		id: Id,
+		definition: HostToolDefinition<I, O>,
+	): HarnessBuilder<S & { tools: Record<Id, HostToolDefinition<I, O>> }> {
+		return this.registerTools({ [id]: definition }) as never
+	}
+
 	public tools<const T extends Record<string, { input: AnyModelSchema; output: AnySchema }>>(
 		tools: T & NativeToolsConfigFromSchemaMaps<ToolContextFor<S>, T>,
 	): HarnessBuilder<S & { tools: NativeToolsConfigFromSchemaMaps<ToolContextFor<S>, T> }>
@@ -2461,7 +2872,7 @@ class Builder<S extends BuilderState> {
 		return this.registerTools(tools) as never
 	}
 
-	private registerTools(tools: ToolsConfig<ToolContextFor<S>>): HarnessBuilder<any> {
+	private registerTools(tools: AuthoredToolsConfig<ToolContextFor<S>>): HarnessBuilder<any> {
 		validateToolDefinitions(tools)
 		for (const id of Object.keys(tools)) {
 			this.validateRegistryId('tools', id)
@@ -2587,12 +2998,54 @@ class Builder<S extends BuilderState> {
 		return this.clone({ governance: resolved }) as unknown as HarnessBuilder<S>
 	}
 
-	public build(): Harness<S> {
-		const models = this.configured.models
-		if (!models || Object.keys(models).length === 0) {
-			throw new HarnessConfigError('At least one model alias is required.', {
-				reason: 'missing_models',
+	public define(): HarnessDefinition<S> {
+		if (this.configured.models) {
+			throw new HarnessConfigError('Portable definitions use requireModel or requireModels instead of concrete models.', {
+				reason: 'concrete_models_in_definition',
 				path: 'models',
+			})
+		}
+		const requirements = this.configured.modelRequirements ?? {}
+		this.validateToolSkillNamespace()
+		this.validateAgentModelAndToolReferences(requirements)
+		this.validateAgentSkillReferences(this.configured.agents ?? {})
+
+		const name = this.options.name ?? 'agent-harness'
+		const catalog = this.createDefinitionCatalog(name, requirements)
+		const definitionConfig = this.configured
+		const options = this.options
+		return Object.freeze({
+			name,
+			catalog,
+			$infer: Object.freeze({}) as InferTypes<S>,
+			getInstance: async <Host = unknown>(config: HarnessInstanceConfig<S, Host>) => {
+				const models = resolveRuntimeModels(requirements, config.models as Record<string, ModelRuntimeBinding>)
+				const tools = resolveHostToolBindings(
+					definitionConfig.tools ?? {},
+					(config.hostTools ?? {}) as Record<string, HostToolBinding>,
+				)
+				const runtimeConfig: BuilderStateInternal = { ...definitionConfig, models, tools }
+				if (config.logger) runtimeConfig.logger = config.logger
+				if (config.telemetry) runtimeConfig.telemetry = config.telemetry
+				if (config.storage) runtimeConfig.storage = config.storage
+				if (config.sandbox) runtimeConfig.sandbox = config.sandbox
+				if (config.sandboxBinding) runtimeConfig.sandboxBinding = config.sandboxBinding
+				if (config.memory) runtimeConfig.memory = config.memory as NonNullable<BuilderStateInternal['memory']>
+				if (config.workspace) runtimeConfig.workspace = config.workspace
+				const runtime = new Builder<S>(options, runtimeConfig)
+				return runtime.build()
+			},
+		})
+	}
+
+	public build(): Harness<S> {
+		const models = this.configured.models ?? {}
+		const unboundHostTool = Object.entries(this.configured.tools ?? {}).find(([, tool]) => tool.kind === 'host')
+		if (unboundHostTool) {
+			throw new HarnessConfigError('Portable host tools must be bound through definition.getInstance(...).', {
+				reason: 'missing_host_tool_binding',
+				path: `hostTools.${unboundHostTool[0]}`,
+				id: unboundHostTool[0],
 			})
 		}
 		this.validateToolSkillNamespace()
@@ -2602,7 +3055,10 @@ class Builder<S extends BuilderState> {
 		this.validateAgentModelAndToolReferences(models)
 		this.validateAgentPermissions()
 		this.validateGovernancePolicies()
-		const modelSchemas = compileModelSchemas(this.configured.agents ?? {}, this.configured.tools ?? {})
+		const modelSchemas = compileModelSchemas(
+			this.configured.agents ?? {},
+			(this.configured.tools ?? {}) as ToolsConfig<never>,
+		)
 		const sandbox = this.configured.sandbox ?? autoDetectSandbox()
 		const resolvedMemory = this.resolveMemory(models)
 		const memory = resolvedMemory.engine
@@ -2660,6 +3116,46 @@ class Builder<S extends BuilderState> {
 		})
 
 		return harness
+	}
+
+	private createDefinitionCatalog(
+		name: string,
+		requirements: ModelTypesConfig,
+	): HarnessContributionCatalog<S> {
+		const entry = (definition: { input?: AnySchema; output?: AnySchema; updates?: OutputUpdateMode }) =>
+			Object.freeze({
+				input: definition.input ?? z.string(),
+				output: definition.output ?? z.string(),
+				updates: definition.updates ?? 'none',
+			})
+		return Object.freeze({
+			name,
+			models: Object.freeze({ ...requirements }),
+			hostTools: Object.freeze(
+				Object.fromEntries(
+					Object.entries(this.configured.tools ?? {})
+						.filter(([, definition]) => definition.kind === 'host')
+						.map(([id, definition]) => [
+							id,
+							Object.freeze({
+								input: (definition as HostToolDefinition).input,
+								output: (definition as HostToolDefinition).output,
+								description: definition.description,
+							}),
+						]),
+				),
+			) as HarnessContributionCatalog<S>['hostTools'],
+			agents: Object.freeze(
+				Object.fromEntries(
+					Object.entries(this.configured.agents ?? {}).map(([id, definition]) => [id, entry(definition)]),
+				),
+			) as HarnessContributionCatalog<S>['agents'],
+			workflows: Object.freeze(
+				Object.fromEntries(
+					Object.entries(this.configured.workflows ?? {}).map(([id, definition]) => [id, entry(definition)]),
+				),
+			) as HarnessContributionCatalog<S>['workflows'],
+		}) as HarnessContributionCatalog<S>
 	}
 
 	private resolveMemory(models: ModelsConfig): {
@@ -2747,6 +3243,8 @@ class Builder<S extends BuilderState> {
 			models: (models: ModelsConfig) =>
 				builder.toModuleBuilder(builder.registerModels(models) as Builder<any>, invocation),
 			tool: (id: string, definition: ToolDefinition<ToolContextFor<T>>) =>
+				builder.toModuleBuilder(builder.registerTools({ [id]: definition }) as Builder<any>, invocation),
+			hostTool: (id: string, definition: HostToolDefinition) =>
 				builder.toModuleBuilder(builder.registerTools({ [id]: definition }) as Builder<any>, invocation),
 			tools: (tools: ToolsConfig<ToolHandlerContext<SandboxCapabilitiesFor<T>>>) =>
 				builder.toModuleBuilder(builder.registerTools(tools) as Builder<any>, invocation),
@@ -3034,10 +3532,10 @@ class Builder<S extends BuilderState> {
 		}
 	}
 
-	private validateAgentModelAndToolReferences(models: ModelsConfig): void {
+	private validateAgentModelAndToolReferences(models: ModelTypesConfig): void {
 		const configuredTools = new Set(Object.keys(this.configured.tools ?? {}))
 		for (const [agentId, agent] of Object.entries(this.configured.agents ?? {})) {
-			if (!(agent.model in models)) {
+			if (!agent.handler && !(agent.model in models)) {
 				throw new HarnessConfigError('Agent references an unknown model alias.', {
 					reason: 'invalid_agent',
 					path: `agents.${agentId}.model`,
@@ -3060,7 +3558,7 @@ class Builder<S extends BuilderState> {
 	private validateAgentInterceptorRequirements(
 		agentId: string,
 		agent: AnyAgentDefinition,
-		models: ModelsConfig,
+		models: ModelTypesConfig,
 		configuredTools: ReadonlySet<string>,
 	): void {
 		const declarations: AgentExecutionRequirementDeclaration[] = []

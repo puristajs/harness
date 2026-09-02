@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineHarness, inMemorySandbox, type ChildTaskHandle, type ContinuableChildTaskHandle } from '../src/index.js'
+import {
+  defineHarness,
+  inMemorySandbox,
+  type ChildTaskHandle,
+  type ContinuableChildTaskHandle,
+  type RunOutcome,
+} from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+
+function completedOutput<T>(outcome: RunOutcome<T>): T {
+  if (outcome.status !== 'completed') throw new Error('Expected the test run to complete.')
+  return outcome.output
+}
 
 describe('workflow child tasks', () => {
   it('starts an isolated, workflow-owned task that can settle after its starter workflow', async () => {
@@ -35,7 +46,7 @@ describe('workflow child tasks', () => {
 
     const session = await harness.getSession('task-owner')
     await session.replaceHistory([{ role: 'user', content: 'older private parent secret' }])
-    const taskId = await session.workflows.launch.run('private parent context')
+    const taskId = completedOutput(await session.workflows.launch.run('private parent context'))
     expect(handle?.id).toBe(taskId)
     await expect(handle?.result()).resolves.toBe('done')
     await expect(handle?.status()).resolves.toMatchObject({
@@ -81,9 +92,9 @@ describe('workflow child tasks', () => {
       .build()
 
     const session = await harness.getSession('task-cancel')
-    const taskId = await session.workflows.launch.run('work')
+    const taskId = completedOutput(await session.workflows.launch.run('work'))
     // The task is deliberately independent of its completed starter workflow.
-    await expect(session.workflows.healthy.run('next')).resolves.toBe('next')
+    await expect(session.workflows.healthy.run('next')).resolves.toMatchObject({ status: 'completed', output: 'next' })
     expect(taskId).toMatch(/^task_/)
     await handle?.cancel('test shutdown')
     await expect(handle?.status()).resolves.toMatchObject({ status: 'cancelled' })
@@ -163,7 +174,7 @@ describe('workflow child tasks', () => {
       })
       .build()
     const session = await harness.getSession('task-idempotency')
-    const ids = await session.workflows.launch.run('one')
+    const ids = completedOutput(await session.workflows.launch.run('one'))
     expect(new Set(ids).size).toBe(1)
     await expect(Promise.all(handles.map((handle) => handle.result()))).resolves.toEqual(['one', 'one'])
     expect(executions).toBe(1)
@@ -195,7 +206,7 @@ describe('workflow child tasks', () => {
       .build()
 
     const session = await harness.getSession('task-continuable')
-    const taskId = await session.workflows.launch.run('first')
+    const taskId = completedOutput(await session.workflows.launch.run('first'))
     await expect(task?.send('second')).resolves.toBe('2:second')
     await expect(task?.close()).resolves.toBe('2:second')
     await expect(task?.result()).resolves.toBe('2:second')

@@ -34,7 +34,7 @@ describe('workflow fan-out', () => {
       .build()
 
     const session = await harness.getSession('fanout')
-    const events = await recordEvents(session.workflows.fan.stream([1, 2, 3]))
+    const events = await recordEvents(session.workflows.fan.observe([1, 2, 3]))
 
     expect(peak).toBe(2)
     expect(events.find((event) => event.type === 'fanout.started')).toMatchObject({ count: 3, concurrency: 2 })

@@ -19,7 +19,6 @@ const EXPECTED_MAIN_EXPORTS = [
   'DurableStepError',
   'DurableTerminalRunError',
   'ExternalWaitError',
-  'ExternalWaitPendingError',
   'HARNESS_VERSION',
   'HarnessConfigError',
   'HarnessError',

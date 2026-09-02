@@ -188,7 +188,7 @@ it('runs a direct harness agent through compact catalog and read-tool activation
     .build()
 
   const session = await harness.getSession('s1')
-  await expect(session.agents.a1.run('hello')).resolves.toBe('skill used')
+  await expect(session.agents.a1.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'skill used' })
   expect(model.requests[0]?.messages?.[0]?.content).toContain('Location: /skills/answer-skill/SKILL.md')
   expect(model.requests[0]?.messages?.[0]?.content).not.toContain('Always answer')
 })

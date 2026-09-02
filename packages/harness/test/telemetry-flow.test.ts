@@ -109,7 +109,7 @@ it.each(['native', 'harness'] as const)(
     try {
       const identity = { tenantId: 'private-tenant-sentinel', principalId: 'private-principal-sentinel' }
       const session = await harness.getSession('cleanup-session', { identity })
-      await expect(session.workflows.complete.run('go', { durable: { runId: 'cleanup-run' } })).resolves.toBe('done')
+      await expect(session.workflows.complete.run('go', { durable: { runId: 'cleanup-run' } })).resolves.toMatchObject({ status: 'completed', output: 'done' })
       expect((await session.getRunSummary('cleanup-run'))?.status).toBe('succeeded')
 
       const warnings = logger.entries.filter((entry) => entry.level === 'warn')
@@ -160,7 +160,7 @@ it.each(['native', 'harness'] as const)(
 it('emits a traceable session workflow agent model tool flow', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness()
 
-  await expect(session.workflows.wf.run('find the policy')).resolves.toEqual({ answer: 'Policy says yes.' })
+  await expect(session.workflows.wf.run('find the policy')).resolves.toMatchObject({ status: 'completed', output: { answer: 'Policy says yes.' } })
 
   const sessionSpan = telemetry.spans.find((span) => span.name === 'harness.session.run')
   const workflowSpan = telemetry.spans.find((span) => span.name === 'harness.workflow.run')
@@ -212,7 +212,7 @@ it('emits a traceable session workflow agent model tool flow', async () => {
 it('marks failing spans with standard OTel error status and safe error attributes', async () => {
   const { session, telemetry } = await runTelemetryFlowHarness({ failTool: true })
 
-  await expect(session.workflows.wf.run('find the policy')).resolves.toEqual({ answer: 'Policy says yes.' })
+  await expect(session.workflows.wf.run('find the policy')).resolves.toMatchObject({ status: 'completed', output: { answer: 'Policy says yes.' } })
 
   const failed = telemetry.spans.filter((span) => span.status?.code === SpanStatusCode.ERROR)
   expect(failed.map((span) => span.name)).toEqual(['execute_tool policy_lookup'])
@@ -320,7 +320,7 @@ it('adds content-free Agent Plugin provenance to the existing MCP tool span and 
 
   try {
     const session = await harness.getSession('plugin-provenance-session')
-    await expect(session.agents.responder.run('hello')).resolves.toEqual({ answer: 'done' })
+    await expect(session.agents.responder.run('hello')).resolves.toMatchObject({ status: 'completed', output: { answer: 'done' } })
     const toolSpan = telemetry.spans.find((span) => span.name === 'execute_tool plugin_echo')
     const toolMetric = telemetry.metrics.find((metric) => metric.name === 'harness.tool.duration')
     const expected = {

@@ -119,7 +119,7 @@ export class ExternalWaitError extends HarnessError {
 export class ExternalWaitPendingError extends HarnessError {
   public readonly snapshot: ExternalWaitWaiting
 
-  public constructor(snapshot: ExternalWaitWaiting) {
+  public constructor(snapshot: ExternalWaitWaiting, public readonly runId: string) {
     super({
       code: 'EXTERNAL_WAIT_PENDING', category: 'state', retriable: true,
       message: 'Workflow is waiting for an external signal.',

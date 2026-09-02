@@ -261,7 +261,7 @@ describe('harness cancellation propagation', () => {
       .build()
 
     const session = await harness.getSession('s-abandoned-stream')
-    for await (const event of session.agents.a1.stream('x', { signal: controller.signal })) {
+    for await (const event of session.agents.a1.observe('x', { signal: controller.signal })) {
       if (event.type === 'run.started') {
         await modelStarted
         break
@@ -334,7 +334,7 @@ describe('harness cancellation propagation', () => {
     const events: Array<{ type: string; toolId?: string; callId?: string; error?: { code?: string } }> = []
     let failure: unknown
     try {
-      for await (const event of session.agents.a1.stream('x', { signal: controller.signal })) {
+      for await (const event of session.agents.a1.observe('x', { signal: controller.signal })) {
         events.push(event as (typeof events)[number])
       }
     } catch (error) {

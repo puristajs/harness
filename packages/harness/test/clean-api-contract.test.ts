@@ -98,11 +98,11 @@ describe('clean builder and runtime API contract', () => {
       .build()
 
     const session = await harness.getSession('clean-api-contract')
-    await expect(session.agents.tool_agent.run('hello')).resolves.toBe('done')
-    await expect(session.agents.custom_agent.run('custom')).resolves.toBe('custom')
-    await expect(session.workflows.first_workflow.run('workflow')).resolves.toBe('workflow')
-    await expect(session.workflows.second_workflow.run('plural')).resolves.toBe('plural')
-    await expect(session.workflows.third_workflow.run('repeated')).resolves.toBe('repeated')
+    await expect(session.agents.tool_agent.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+    await expect(session.agents.custom_agent.run('custom')).resolves.toMatchObject({ status: 'completed', output: 'custom' })
+    await expect(session.workflows.first_workflow.run('workflow')).resolves.toMatchObject({ status: 'completed', output: 'workflow' })
+    await expect(session.workflows.second_workflow.run('plural')).resolves.toMatchObject({ status: 'completed', output: 'plural' })
+    await expect(session.workflows.third_workflow.run('repeated')).resolves.toMatchObject({ status: 'completed', output: 'repeated' })
     provider.assertExhausted()
 
     expect(logger.records.map(record => record.msg)).toEqual(

@@ -119,6 +119,8 @@ export async function runDefaultAgent(args: {
   telemetry: TelemetryShim
   emitEvent?: (event: RunEvent) => Promise<void>
   metadata?: Readonly<Record<string, JsonValue>>
+  /** Opaque per-run value forwarded only to bound host tools. */
+  hostContext?: unknown
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   const agentAttrs = {
     'harness.name': args.harnessName,
@@ -135,8 +137,8 @@ export async function runDefaultAgent(args: {
     [ATTR_GEN_AI_AGENT_NAME]: args.agentId,
     [ATTR_GEN_AI_AGENT_ID]: args.agentId,
     [ATTR_GEN_AI_CONVERSATION_ID]: args.sessionId,
-    'harness.agent.model': args.modelAlias ?? args.agent.model,
-    ...(args.modelAlias && args.modelAlias !== args.agent.model
+    ...(args.modelAlias ?? args.agent.model ? { 'harness.agent.model': args.modelAlias ?? args.agent.model } : {}),
+    ...(args.modelAlias && args.agent.model && args.modelAlias !== args.agent.model
       ? { 'harness.agent.default_model': args.agent.model }
       : {}),
     'harness.agent.has_handler': args.agent.handler !== undefined,
@@ -204,6 +206,7 @@ async function runDefaultAgentInner(args: {
   metrics: Metrics
   emitEvent?: (event: RunEvent) => Promise<void>
   metadata?: Readonly<Record<string, JsonValue>>
+  hostContext?: unknown
 }): Promise<{ output: JsonValue; emitted: Message[] }> {
   if (args.signal.aborted) throw abortError(args.signal, 'run', 'Run was cancelled.')
   const inputSchema = args.agent.input ?? z.string()
@@ -217,7 +220,7 @@ async function runDefaultAgentInner(args: {
     })
 
   const selectedModelAlias = args.modelAlias ?? args.agent.model
-  if (!args.models[selectedModelAlias])
+  if (selectedModelAlias !== undefined && !args.models[selectedModelAlias])
     throw new ValidationError('Unknown model alias', { where: 'agent_input', issues: { model: selectedModelAlias } })
   const skillIds = args.agent.skills ?? []
   await mountSkillsOnce(args.session, args.mountedSkills, args.skills, skillIds)
@@ -226,7 +229,7 @@ async function runDefaultAgentInner(args: {
     ...(args.workflowId ? { workflowId: args.workflowId } : {}),
     ...(args.delegationCallId ? { delegationCallId: args.delegationCallId } : {}),
     ...(args.delegationDepth !== undefined ? { delegationDepth: args.delegationDepth } : {}),
-    modelAlias: selectedModelAlias,
+    ...(selectedModelAlias ? { modelAlias: selectedModelAlias } : {}),
   }
 
   if (args.agent.handler) {
@@ -295,6 +298,13 @@ async function runDefaultAgentInner(args: {
       })
       throw error
     }
+  }
+
+  if (!selectedModelAlias) {
+    throw new ValidationError('Default-loop agents require a model alias.', {
+      where: 'agent_input',
+      issues: { agentId: args.agentId },
+    })
   }
 
   const baseInstructions =

@@ -39,7 +39,7 @@ describe('Session.getRunSummary', () => {
 
     const session = await harness.getSession('user:1')
     const events = []
-    for await (const event of session.agents.triage.stream({ message: 'hello' })) {
+    for await (const event of session.agents.triage.observe({ message: 'hello' })) {
       events.push(event)
     }
     const runId = events[0]?.runId

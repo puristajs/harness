@@ -26,7 +26,6 @@ export type {
 } from './external-wait.js'
 export {
   ExternalWaitError,
-  ExternalWaitPendingError,
   asExternalWaitResolved,
   assertExternalWaitSnapshotRequest,
   boundExternalWaitRequestSchema,

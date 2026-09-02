@@ -163,6 +163,22 @@ describe('AI SDK UI Message Stream v1', () => {
     })
     expect(chunks.at(-1)).toEqual({ type: 'finish', finishReason: 'tool-calls' })
 
+		let parsedApproval: UIMessage | undefined
+		for await (const message of readUIMessageStream({
+			stream: createHarnessUIMessageStream(iterate(events), { messageId: 'assistant-1' }),
+		})) {
+			parsedApproval = message
+		}
+		expect(parsedApproval?.parts).toContainEqual(
+			expect.objectContaining({
+				type: 'dynamic-tool',
+				toolName: 'refundTransaction',
+				toolCallId: 'call-refund',
+				state: 'approval-requested',
+				approval: expect.objectContaining({ id: 'approval-1' }),
+			}),
+		)
+
     const descriptor = (request as Extract<UIMessageChunk, { type: 'tool-approval-request' }>).approvalDescriptor
     const messages = [approvedMessage(descriptor as HarnessUIApprovalDescriptor)]
     const first = parseHarnessToolApprovalResume(messages)

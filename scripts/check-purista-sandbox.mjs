@@ -254,7 +254,7 @@ async function runSourceMode(layout, scratchDirectory, harness, signal) {
 	runCheckedCommand('npm', installArguments(layout), { cwd: stagedRoot, signal })
 	await assertInstalledHarness(stagedRoot, { ...harness.manifest, tarball: harness.tarball })
 	runCheckedCommand(process.execPath, [compilerPath(stagedRoot), '--noEmit', '-p', join(stagedCore, 'tsconfig.json')], { cwd: stagedRoot, signal })
-	runCheckedCommand(process.execPath, [vitestPath(stagedRoot), '--config', join(stagedRoot, 'vitest.config.unit.ts'), 'run', 'packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts'], { cwd: stagedRoot, signal })
+	runCheckedCommand(process.execPath, [vitestPath(stagedRoot), '--config', join(stagedRoot, 'vitest.config.unit.ts'), 'run', 'packages/core/src/HarnessMount/harnessMount.test.ts'], { cwd: stagedRoot, signal })
 }
 
 async function runConsumerMode(layout, scratchDirectory, harness, signal) {

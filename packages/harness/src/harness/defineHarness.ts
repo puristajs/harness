@@ -1673,13 +1673,15 @@ export type HarnessTargetContract<
 	Kind extends 'agent' | 'workflow',
 	InputSchema extends AnySchema = AnySchema,
 	OutputSchema extends AnySchema = AnySchema,
+	Input = InferIn<InputSchema>,
+	Output = Infer<OutputSchema>,
 > = Readonly<{
 	kind: Kind
 	input: InputSchema
 	output: OutputSchema
 	updates: OutputUpdateMode
 	/** Compile-time input and output types inferred from the target schemas. */
-	$infer: Readonly<{ input: InferIn<InputSchema>; output: Infer<OutputSchema> }>
+	$infer: Readonly<{ input: Input; output: Output }>
 }>
 
 /** Typed target contracts that can be shared with orchestration frameworks. */
@@ -1688,14 +1690,18 @@ export type HarnessTargetContracts<S extends BuilderState> = Readonly<{
 		[K in keyof NonNullable<S['agents']>]: HarnessTargetContract<
 			'agent',
 			DefinitionInputSchema<NonNullable<S['agents']>[K]>,
-			DefinitionOutputSchema<NonNullable<S['agents']>[K]>
+			DefinitionOutputSchema<NonNullable<S['agents']>[K]>,
+			AgentInput<S, K>,
+			AgentOutput<S, K>
 		>
 	}>
 	workflows: Readonly<{
 		[K in keyof NonNullable<S['workflows']>]: HarnessTargetContract<
 			'workflow',
 			DefinitionInputSchema<NonNullable<S['workflows']>[K]>,
-			DefinitionOutputSchema<NonNullable<S['workflows']>[K]>
+			DefinitionOutputSchema<NonNullable<S['workflows']>[K]>,
+			WorkflowInput<S, K>,
+			WorkflowOutput<S, K>
 		>
 	}>
 }>

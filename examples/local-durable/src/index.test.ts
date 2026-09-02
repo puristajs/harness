@@ -18,7 +18,7 @@ describe('local durable example', () => {
     const secondSession = await second.harness.getSession('demo')
     await expect(
       secondSession.workflows.plan.run({ topic: 'docs' }, { durable: { runId: 'demo-run' } }),
-    ).resolves.toEqual({ done: true, topic: 'docs' })
+    ).resolves.toMatchObject({ status: 'completed', output: { done: true, topic: 'docs' } })
     await expect(second.local.storage.loadCheckpoint('demo-run')).resolves.toMatchObject({
       stepId: 'draft',
       sequence: 2,

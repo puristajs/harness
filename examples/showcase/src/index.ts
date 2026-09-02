@@ -196,9 +196,11 @@ export async function runShowcase(): Promise<void> {
 	const policy = await session.workflows.answer_policy_question.run({
 		question: 'What should we do for a customer-impacting security incident?',
 	})
+	if (incident.status === 'interrupted') throw new Error(`Incident workflow interrupted: ${incident.interrupt.type}`)
+	if (policy.status === 'interrupted') throw new Error(`Policy workflow interrupted: ${policy.interrupt.type}`)
 
-	console.log('incident summary:', incident.summary)
-	console.log('policy answer:', policy.answer)
+	console.log('incident summary:', incident.output.summary)
+	console.log('policy answer:', policy.output.answer)
 	await harness.shutdown()
 }
 

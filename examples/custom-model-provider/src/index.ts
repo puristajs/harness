@@ -43,7 +43,8 @@ export async function runCustomProviderExample(): Promise<string> {
 
   try {
     const result = await session.agents.invoice_status.run({ invoiceId: 'INV-42' })
-    return result.message
+    if (result.status === 'interrupted') throw new Error(`Invoice lookup interrupted: ${result.interrupt.type}`)
+    return result.output.message
   } finally {
     await session.release()
     await harness.shutdown()

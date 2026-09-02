@@ -62,41 +62,51 @@ describe('living wiki harness workflows', () => {
       const session = await harness.getSession('test-session')
 
       await expect((session.workflows['ingest_source'] as any).run({ sourceSlug: 'jaeger' })).resolves.toMatchObject({
-        updatedPages: expect.arrayContaining(['jaeger']),
-        extractedConcepts: expect.arrayContaining(['jaeger'])
+        status: 'completed',
+        output: {
+          updatedPages: expect.arrayContaining(['jaeger']),
+          extractedConcepts: expect.arrayContaining(['jaeger'])
+        }
       })
       await expect((session.workflows['ask_wiki'] as any).run({ question: 'What stores traces?' })).resolves.toMatchObject({
-        citedPages: expect.arrayContaining(['jaeger'])
+        status: 'completed',
+        output: { citedPages: expect.arrayContaining(['jaeger']) }
       })
       await expect((session.workflows['lint_wiki'] as any).run({ scope: 'all' })).resolves.toMatchObject({
-        panelSpec: expect.any(Object)
+        status: 'completed',
+        output: { panelSpec: expect.any(Object) }
       })
       await expect((session.workflows['reconcile_contradiction'] as any).run({
         leftRef: 'jaeger',
         rightRef: 'index',
         conflict: 'Trace backend wording differs.'
       })).resolves.toMatchObject({
-        changedPages: expect.any(Array)
+        status: 'completed',
+        output: { changedPages: expect.any(Array) }
       })
       await expect((session.workflows['generate_research_brief'] as any).run({
         pageSlugs: ['jaeger'],
         goal: 'Explain tracing.'
       })).resolves.toMatchObject({
-        citedPages: ['jaeger'],
-        panelSpec: expect.any(Object),
-        artifacts: expect.arrayContaining([
-          expect.objectContaining({ kind: 'markdown', content: expect.stringContaining('Research Brief') }),
-          expect.objectContaining({ kind: 'mermaid', content: expect.stringContaining('graph LR') }),
-          expect.objectContaining({ kind: 'drawio_xml', content: expect.stringContaining('<mxGraphModel') }),
-          expect.objectContaining({ kind: 'json_panel', panelSpec: expect.any(Object) })
-        ])
+        status: 'completed',
+        output: {
+          citedPages: ['jaeger'],
+          panelSpec: expect.any(Object),
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({ kind: 'markdown', content: expect.stringContaining('Research Brief') }),
+            expect.objectContaining({ kind: 'mermaid', content: expect.stringContaining('graph LR') }),
+            expect.objectContaining({ kind: 'drawio_xml', content: expect.stringContaining('<mxGraphModel') }),
+            expect.objectContaining({ kind: 'json_panel', panelSpec: expect.any(Object) })
+          ])
+        }
       })
 
       const memo = await (session.workflows['decision_memo'] as any).run({
         proposal: 'adopt Jaeger tracing',
         question: 'Should we adopt Jaeger tracing?'
       })
-      expect(memo).toMatchObject({
+      expect(memo).toMatchObject({ status: 'completed' })
+      expect(memo.output).toMatchObject({
         markdown: expect.stringContaining('Decision Memo'),
         artifacts: expect.arrayContaining([
           expect.objectContaining({ kind: 'markdown', content: expect.stringContaining('Decision Memo') }),
@@ -110,7 +120,8 @@ describe('living wiki harness workflows', () => {
         sourceSlug: 'jaeger',
         focus: 'trace observability'
       })
-      expect(review).toMatchObject({
+      expect(review).toMatchObject({ status: 'completed' })
+      expect(review.output).toMatchObject({
         markdown: expect.stringContaining('Architecture Review'),
         artifacts: expect.arrayContaining([
           expect.objectContaining({ kind: 'markdown', content: expect.stringContaining('Architecture Review') }),

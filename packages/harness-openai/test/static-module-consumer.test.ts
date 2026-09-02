@@ -14,10 +14,8 @@ it('can contribute an OpenAI provider through the public static-module API', () 
   const harness = defineHarness()
     .use(providerModule)
     .agent('echo', {
-      model: 'primary',
       input: z.string(),
       output: z.string(),
-      instructions: 'Echo.',
       builtinTools: false,
       handler: async (ctx) => ctx.input,
     })

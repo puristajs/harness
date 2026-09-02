@@ -42,7 +42,9 @@ function toolContext(): ToolHandlerContext {
     runId: 'run_test',
     sessionId: 'session_test',
     agentId: 'wiki_curator',
-    toolId: 'test_tool'
+    toolId: 'test_tool',
+    callId: 'call_test',
+    idempotencyKey: 'run_test:call_test'
   }
 }
 

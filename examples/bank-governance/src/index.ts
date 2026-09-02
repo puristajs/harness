@@ -2,12 +2,11 @@ import {
   defineHarness,
   inMemorySandbox,
   JsonLogger,
-  type GovernanceApprovalProvider,
+  type ExecutionEvent,
   type JsonValue,
   type ModelProvider,
   type ObjectRequest,
   type ObjectResponse,
-  type RunEvent,
 } from '@purista/harness'
 import { z } from 'zod'
 
@@ -29,7 +28,7 @@ export interface BankGovernanceOptions {
   balances?: AccountBalances
   approvalThreshold?: number
   hardLimit?: number
-  approval?: GovernanceApprovalProvider
+  approval?: { readonly approved: boolean; readonly reason?: string }
 }
 
 export interface TransferScenario {
@@ -74,12 +73,6 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
   const approvalThreshold = opts.approvalThreshold ?? 1_000
   const hardLimit = opts.hardLimit ?? 10_000
   const provider = new ScriptedTransferProvider(scenario)
-  const approval = opts.approval ?? {
-    request: async () => ({
-      decision: 'approved' as const,
-      reasonCode: 'approved_by_policy',
-    }),
-  }
 
   const harness = defineHarness()
     .logger(new JsonLogger({ level: 'error' }))
@@ -111,7 +104,6 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
     })
     .governance(({ native, rule }) => ({
       defaultEffect: 'allow',
-      approval,
       policies: [
         native({
           id: 'bank-transfer-policy',
@@ -150,18 +142,38 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
 export async function runTransferScenario(
   scenario: TransferScenario,
   opts?: BankGovernanceOptions,
-): Promise<{ output: string; events: RunEvent[]; balances: AccountBalances }> {
+): Promise<{ output: string; events: ExecutionEvent<string>[]; balances: AccountBalances }> {
   const { harness, balances } = createBankGovernanceHarness(scenario, opts)
   const session = await harness.getSession(`bank-${scenario.from}-${scenario.to}-${scenario.amount}`)
-  const events: RunEvent[] = []
+  const events: ExecutionEvent<string>[] = []
   let output = ''
+  const input = `Transfer ${scenario.amount} from ${scenario.from} to ${scenario.to}.`
 
   try {
-    for await (const event of session.agents.banker.stream(
-      `Transfer ${scenario.amount} from ${scenario.from} to ${scenario.to}.`,
-    )) {
+    for await (const event of session.agents.banker.stream(input)) {
       events.push(event)
-      if (event.type === 'run.finished' && typeof event.output === 'string') output = event.output
+      if (event.type !== 'run.finished') continue
+      if (event.outcome.status === 'completed') output = event.outcome.output
+      else if (event.outcome.interrupt.type === 'tool-approval') {
+        const decision = opts?.approval ?? { approved: true, reason: 'Approved for the example.' }
+        for await (const resumed of session.agents.banker.stream(input, {
+          resume: {
+            type: 'tool-approval',
+            runId: event.outcome.runId,
+            interruptId: event.outcome.interrupt.id,
+            revision: event.outcome.interrupt.revision,
+            eventId: `bank-example:${event.outcome.interrupt.id}`,
+            decisions: event.outcome.interrupt.requests.map(request => ({
+              approvalId: request.approvalId,
+              approved: decision.approved,
+              ...(decision.reason ? { reason: decision.reason } : {}),
+            })),
+          },
+        })) {
+          events.push(resumed)
+          if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed') output = resumed.outcome.output
+        }
+      }
     }
     return { output, events, balances }
   } finally {
@@ -179,9 +191,7 @@ export async function runBankGovernanceExample(): Promise<void> {
 
   for (const scenario of scenarios) {
     const result = await runTransferScenario(scenario)
-    const decisions = result.events.filter(
-      (event) => event.type === 'policy.evaluated' || event.type === 'approval.finished',
-    )
+    const decisions = result.events.filter(event => event.type === 'approval.requested' || event.type === 'approval.responded')
     console.log(JSON.stringify({ scenario, output: result.output, balances: result.balances, decisions }, null, 2))
   }
 }

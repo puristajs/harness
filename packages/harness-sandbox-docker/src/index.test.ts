@@ -70,10 +70,8 @@ function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessS
     .tools({})
     .skills({})
     .agent('noop', {
-      model: 'fake',
       input: z.string(),
       output: z.string(),
-      instructions: 'Return the provided input.',
       handler: async (ctx) => ctx.input,
     })
     .build()

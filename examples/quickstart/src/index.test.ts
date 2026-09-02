@@ -15,8 +15,9 @@ describe('quickstart', () => {
     try {
       const session = await harness.getSession('quickstart-test')
       const output = await session.workflows.explain_quickstart.run({ topic: 'harnesses' })
-
-      expect(output.answer).toContain('typed boundaries')
+      expect(output.status).toBe('completed')
+      if (output.status !== 'completed') throw new Error('Expected completed quickstart workflow.')
+      expect(output.output.answer).toContain('typed boundaries')
       await expect(session.memory.read<{ topic: string }>('last_topic')).resolves.toEqual({ topic: 'harnesses' })
       expect(provider.requests).toHaveLength(1)
       provider.assertExhausted()

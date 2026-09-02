@@ -13,7 +13,7 @@ async function loadAppModule() {
 class FakeEventSource extends EventTarget {
   static instances: FakeEventSource[] = []
   static events: unknown[] = [
-    { type: 'run.finished', status: 'completed', output: { answer: 'Fake answer' } }
+    { type: 'run.finished', outcome: { status: 'completed', output: { answer: 'Fake answer' } } }
   ]
   onopen: ((event: Event) => void) | null = null
   onmessage: ((event: MessageEvent) => void) | null = null
@@ -51,16 +51,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
   FakeEventSource.instances = []
   FakeEventSource.events = [
-    { type: 'run.finished', status: 'completed', output: { answer: 'Fake answer' } }
+    { type: 'run.finished', outcome: { status: 'completed', output: { answer: 'Fake answer' } } }
   ]
 })
 
 describe('living wiki UI', () => {
   it('loads the fake backend, shows wiki/source navigation, and renders a completed workflow', async () => {
     FakeEventSource.events = [
-      { type: 'answer.delta', delta: 'Fake ' },
-      { type: 'answer.delta', delta: 'answer' },
-      { type: 'run.finished', status: 'completed', output: { answer: 'Fake answer' } }
+      { type: 'output.text.delta', delta: 'Fake ' },
+      { type: 'output.text.delta', delta: 'answer' },
+      { type: 'run.finished', outcome: { status: 'completed', output: { answer: 'Fake answer' } } }
     ]
     const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input)
@@ -131,7 +131,7 @@ describe('living wiki UI', () => {
     FakeEventSource.events = [
       { type: 'tool.started', callId: 'tool_1', toolId: 'search_wiki', input: { query: 'trace' } },
       { type: 'tool.finished', callId: 'tool_1', toolId: 'search_wiki', output: { hits: 2 } },
-      { type: 'run.finished', status: 'completed' }
+      { type: 'run.finished', outcome: { status: 'completed', output: {} } }
     ]
     const decisions: unknown[] = []
     const answers: unknown[] = []

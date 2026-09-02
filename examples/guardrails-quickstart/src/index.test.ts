@@ -15,7 +15,7 @@ it('allows an ordinary request and returns the scripted result', async () => {
   const session = await harness.getSession('allowed-test')
 
   try {
-    await expect(session.agents.answer.run('Where is order demo-42?')).resolves.toBe('Order demo-42 is ready.')
+    await expect(session.agents.answer.run('Where is order demo-42?')).resolves.toMatchObject({ status: 'completed', output: 'Order demo-42 is ready.' })
     expect(provider.requests).toHaveLength(1)
   } finally {
     await session.release()

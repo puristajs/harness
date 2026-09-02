@@ -12,17 +12,13 @@ export function createReviewHarness() {
       local: { provider: { id: 'example', genAiSystem: 'example' }, model: 'example', capabilities: ['object'] },
     })
     .agent('reviewer', {
-      model: 'local',
       input: z.object({ documentId: z.string() }),
       output: z.object({ documentId: z.string(), verdict: z.string() }),
-      instructions: 'Review the document.',
       handler: async ({ input }) => ({ documentId: input.documentId, verdict: 'approved' }),
     })
     .agent('clarifier', {
-      model: 'local',
       input: z.string(),
       output: z.string(),
-      instructions: 'Keep private notes.',
       handler: async ({ input, history }) => `${(await history.list()).length}:${input}`,
     })
     .workflow('start_review', {
@@ -50,10 +46,13 @@ export function createReviewHarness() {
 export async function runExample(): Promise<void> {
   const harness = createReviewHarness()
   const session = await harness.getSession('review-demo')
-  const { taskId } = await session.workflows.start_review.run({ documentId: 'DOC-42' })
+  const start = await session.workflows.start_review.run({ documentId: 'DOC-42' })
+  if (start.status === 'interrupted') throw new Error(`Review workflow interrupted: ${start.interrupt.type}`)
+  const { taskId } = start.output
   const review = await (await session.childTasks.get(taskId))?.result()
   const followUp = await session.workflows.private_follow_up.run('first note')
-  console.log({ review, followUp })
+  if (followUp.status === 'interrupted') throw new Error(`Follow-up workflow interrupted: ${followUp.interrupt.type}`)
+  console.log({ review, followUp: followUp.output })
   await harness.shutdown()
 }
 

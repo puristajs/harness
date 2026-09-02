@@ -135,7 +135,7 @@ export async function runOpaGovernanceScenario(
   let output = ''
   try {
     const session = await harness.getSession(`opa-transfer-${scenario.amount}-${scenario.destination}`)
-    for await (const event of session.agents.transfer_agent.stream(
+    for await (const event of session.agents.transfer_agent.observe(
       `Transfer ${scenario.amount} to ${scenario.destination}.`,
     )) {
       events.push(event)

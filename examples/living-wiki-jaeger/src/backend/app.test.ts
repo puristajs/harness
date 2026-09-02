@@ -56,7 +56,7 @@ describe('living wiki API', () => {
       const events = await app.request(`/api/runs/${startedBody.runId}/events`)
       expect(events.headers.get('content-type')).toContain('text/event-stream')
       const eventText = await events.text()
-      expect(eventText).toContain('answer.delta')
+      expect(eventText).toContain('"status":"completed"')
       expect(eventText).toContain('run.finished')
 
       const lookup = await app.request(`/api/runs/${startedBody.runId}`)
@@ -88,7 +88,7 @@ describe('living wiki API', () => {
       expect(cancelled.status).toBe(202)
 
       const events = await app.request(`/api/runs/${runId}/events`)
-      expect(await events.text()).toContain('cancelled')
+      expect(await events.text()).toContain('run.failed')
     } finally {
       await shutdown()
       await fixture.cleanup()
@@ -142,7 +142,7 @@ describe('living wiki API', () => {
       expect(startedBody.status).toBe('running')
 
       const events = await app.request(`/api/runs/${startedBody.runId}/events`)
-      expect(await events.text()).toContain('agent.finished')
+      expect(await events.text()).toContain('run.finished')
 
       const lookup = await app.request(`/api/runs/${startedBody.runId}`)
       await expect(lookup.json()).resolves.toMatchObject({ runId: startedBody.runId, kind: 'agent', targetId: 'wiki_answerer', status: 'succeeded' })
@@ -188,7 +188,7 @@ describe('living wiki API', () => {
       expect(await events.text()).toContain('VALIDATION_ERROR')
       const joinedLogs = logs.join('')
       expect(joinedLogs).toContain('Harness workflow run failed.')
-      expect(joinedLogs).toContain('Living wiki run finished with error.')
+      expect(joinedLogs).toContain('Living wiki run failed before completion.')
       expect(joinedLogs).toContain('agent_output')
     } finally {
       writeSpy.mockRestore()

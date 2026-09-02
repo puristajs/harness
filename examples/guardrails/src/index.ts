@@ -2,8 +2,9 @@ import {
   defineHarness,
   inMemorySandbox,
   JsonLogger,
-  type GovernanceApprovalProvider,
-  type GovernanceApprovalRequest,
+  type RunOutcome,
+  type ToolApprovalDecision,
+  type ToolApprovalRequest,
 } from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
 import {
@@ -16,7 +17,6 @@ import { z } from 'zod'
 
 /** Options for the deterministic inline guardrails composition. */
 export interface GuardrailsExampleOptions {
-  readonly approval?: GovernanceApprovalProvider
   readonly decisionTimeoutMs?: number
   /** Optional application-owned detector used to observe or replace local inspection. */
   readonly detector?: SensitiveDataDetector
@@ -48,7 +48,7 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
     ],
   })
   provider.enqueueObject({ object: 'The [secret] answer.', usage, finishReason: 'stop' })
-  const approvalRequests: GovernanceApprovalRequest[] = []
+  const approvalRequests: ToolApprovalRequest[] = []
   const handledNotes: string[] = []
   const lifecycle: string[] = []
   let detectorInspections = 0
@@ -207,17 +207,6 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
           ],
         }),
       ],
-      approval: {
-        async request(request, execution) {
-          execution.signal.throwIfAborted()
-          approvalRequests.push(request)
-          lifecycle.push(`approval:${request.subject.toolId}`)
-          // A real adapter forwards execution.signal and execution.deadline to its reviewer.
-          return options.approval
-            ? options.approval.request(request, execution)
-            : { decision: 'approved', reasonCode: 'review_approved' }
-        },
-      },
     }))
     .build()
 
@@ -233,15 +222,52 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
   }
 }
 
-/** Run the composed example without credentials, network calls, or durable business effects. */
-export async function runGuardrailsExample(): Promise<string> {
-  const { harness } = createGuardrailsExample()
-  const session = await harness.getSession('example-session')
+/** Application-side approval/resume flow used by the example UI or worker. */
+export async function runSupportRequest(
+  example: ReturnType<typeof createGuardrailsExample>,
+  sessionId: string,
+  input: string,
+  decide: (request: ToolApprovalRequest) => ToolApprovalDecision = request => ({
+    approvalId: request.approvalId,
+    approved: true,
+    reason: 'Approved for the local example.',
+  }),
+  signal?: AbortSignal,
+): Promise<RunOutcome<string>> {
+  const session = await example.harness.getSession(sessionId)
   try {
-    return await session.agents.support.run('Where is [secret] [email]?')
+    const first = await session.agents.support.run(input, signal ? { signal } : undefined)
+    if (first.status === 'completed' || first.interrupt.type !== 'tool-approval') return first
+    const decisions = first.interrupt.requests.map(request => {
+      example.approvalRequests.push(request)
+      example.lifecycle.push(`approval:${request.toolId}`)
+      return decide(request)
+    })
+    return session.agents.support.run(input, {
+      ...(signal ? { signal } : {}),
+      resume: {
+        type: 'tool-approval',
+        runId: first.runId,
+        interruptId: first.interrupt.id,
+        revision: first.interrupt.revision,
+        eventId: `guardrails-example:${first.interrupt.id}`,
+        decisions,
+      },
+    })
   } finally {
     await session.release()
-    await harness.shutdown()
+  }
+}
+
+/** Run the composed example without credentials, network calls, or durable business effects. */
+export async function runGuardrailsExample(): Promise<string> {
+  const example = createGuardrailsExample()
+  try {
+    const outcome = await runSupportRequest(example, 'example-session', 'Where is [secret] [email]?')
+    if (outcome.status === 'interrupted') throw new Error(`Guardrails example interrupted: ${outcome.interrupt.type}`)
+    return outcome.output
+  } finally {
+    await example.harness.shutdown()
   }
 }
 

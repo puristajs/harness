@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { createGuardrailsExample, preflightGuardrailsExample, runGuardrailsExample } from './index.js'
+import { createGuardrailsExample, preflightGuardrailsExample, runGuardrailsExample, runSupportRequest } from './index.js'
 import type { SensitiveDataDetector } from '@purista/harness-guardrails'
 
 it('builds and shuts down the complete composition without protected effects', async () => {
@@ -32,12 +32,11 @@ it('runs with the Harness test adapter and no network dependency', async () => {
 
 it('shares one approval provider across parsed tool and permission demands', async () => {
   const example = createGuardrailsExample()
-  const session = await example.harness.getSession('composed-success')
   try {
-    await expect(session.agents.support.run('Where is [secret] [email]?')).resolves.toBe('The [redacted] answer.')
-    expect(example.approvalRequests.map((request) => request.subject.toolId).sort()).toEqual(['publish_note', 'write'])
-    expect(example.approvalRequests.find((request) => request.subject.toolId === 'publish_note')?.subject.input).toEqual({ message: '[redacted]', visibility: 'internal' })
-    expect(example.approvalRequests.find((request) => request.subject.toolId === 'write')?.demands.map((demand) => demand.source.kind)).toEqual(['permission', 'policy'])
+    await expect(runSupportRequest(example, 'composed-success', 'Where is [secret] [email]?')).resolves.toMatchObject({ status: 'completed', output: 'The [redacted] answer.' })
+    expect(example.approvalRequests.map((request) => request.toolId).sort()).toEqual(['publish_note', 'write'])
+    expect(example.approvalRequests.find((request) => request.toolId === 'publish_note')?.input).toEqual({ message: '[redacted]', visibility: 'internal' })
+    expect(example.approvalRequests.find((request) => request.toolId === 'write')?.demands.map((demand) => demand.source.kind)).toEqual(['permission', 'policy'])
     expect(example.handledNotes).toEqual(['[redacted]'])
     expect(example.lifecycle).toContain('preflight:publish_note')
     expect(example.lifecycle).not.toContain('preflight:lookup_status')
@@ -48,59 +47,38 @@ it('shares one approval provider across parsed tool and permission demands', asy
     expect(JSON.stringify(example.provider.requests[1])).toContain('public status')
     expect(JSON.stringify(example.provider.requests[1])).not.toContain('private status')
   } finally {
-    await session.release()
     await example.harness.shutdown()
   }
 })
 
-it.each(['rejected', 'failed', 'timeout'] as const)('does not publish when approval is %s', async (mode) => {
-  const example = createGuardrailsExample({
-    decisionTimeoutMs: 20,
-    approval: {
-      async request(_request, execution) {
-        expect(execution.signal.aborted).toBe(false)
-        expect(execution.deadline).toBeGreaterThan(Date.now())
-        if (mode === 'failed') throw new Error('private reviewer message')
-        if (mode === 'timeout') return new Promise(() => {})
-        return { decision: 'rejected', reasonCode: 'review_rejected' }
-      }
-    }
-  })
-  const session = await example.harness.getSession(`composed-${mode}`)
+it('does not publish when approval is rejected', async () => {
+  const example = createGuardrailsExample()
   try {
-    const error = await session.agents.support.run('Review the note.').catch((value: unknown) => value)
-    if (mode === 'rejected') {
-      expect(error).toBe('The [redacted] answer.')
-      expect(JSON.stringify(example.provider.requests[1])).toContain('POLICY_DENIED')
-    } else {
-      expect(error).toMatchObject({ code: 'DECISION_EVALUATION_ERROR', meta: { failureKind: mode === 'timeout' ? 'callback_timeout' : 'callback_failed' } })
-    }
-    expect(JSON.stringify(error)).not.toContain('private reviewer message')
+    const outcome = await runSupportRequest(example, 'composed-rejected', 'Review the note.', request => ({
+      approvalId: request.approvalId,
+      approved: false,
+      reason: 'Rejected by reviewer.',
+    }))
+    expect(outcome).toMatchObject({ status: 'completed', output: 'The [redacted] answer.' })
+    expect(JSON.stringify(example.provider.requests[1])).toContain('Rejected by reviewer.')
     expect(example.handledNotes).toEqual([])
     expect(example.lifecycle).not.toContain('handler:publish_note')
   } finally {
-    await session.release()
     await example.harness.shutdown()
   }
 })
 
 it('cancels an outstanding approval without publishing the note', async () => {
   const controller = new AbortController()
-  const example = createGuardrailsExample({
-    approval: { async request(_request, execution) {
-      const cancelled = new Promise<void>((resolve) => execution.signal.addEventListener('abort', () => resolve(), { once: true }))
-      controller.abort()
-      await cancelled
-      return { decision: 'approved' }
-    } }
-  })
-  const session = await example.harness.getSession('composed-cancel')
+  const example = createGuardrailsExample()
   try {
-    await expect(session.agents.support.run('Review the note.', { signal: controller.signal })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(runSupportRequest(example, 'composed-cancel', 'Review the note.', request => {
+      controller.abort()
+      return { approvalId: request.approvalId, approved: true }
+    }, controller.signal)).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
     expect(example.handledNotes).toEqual([])
     expect(example.lifecycle).not.toContain('handler:publish_note')
   } finally {
-    await session.release()
     await example.harness.shutdown()
   }
 })

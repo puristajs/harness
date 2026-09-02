@@ -231,7 +231,7 @@ it('runs canonical input and output rails with the Harness test adapter', async 
     .build()
 
   const session = await harness.getSession('guardrails-transform')
-  await expect(session.agents.answer.run('unsafe question')).resolves.toBe('safe answer')
+  await expect(session.agents.answer.run('unsafe question')).resolves.toMatchObject({ status: 'completed', output: 'safe answer' })
   expect(provider.requests[0]?.messages).toEqual([
     { role: 'system', content: 'Answer safe question' },
     { role: 'user', content: 'safe question', toolCalls: undefined },
@@ -351,7 +351,7 @@ it('masks an explicitly selected structured tool-input field before the Harness 
     .build()
 
   const session = await harness.getSession('guardrails-tool-mask')
-  await expect(session.agents.answer.run('transfer')).resolves.toBe('done')
+  await expect(session.agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(receivedMemo).toBe('refund <MASKED>')
 })
 
@@ -565,7 +565,7 @@ it('projects only declared attached action models and rejects unavailable requir
     .build()
   const session = await harness.getSession('attached-model-projection')
   try {
-    await expect(session.agents.answer.run('question')).resolves.toBe('safe answer')
+    await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'safe answer' })
     expect(exposedAliases).toEqual(['safety'])
     expect(actionCalls).toBe(1)
   } finally {
@@ -920,7 +920,7 @@ it('parents model-backed rail usage under the GUARDRAIL span with standard model
     .build()
   const session = await harness.getSession('model-backed-retrieval')
   try {
-    await expect(session.workflows.review.run('approved source')).resolves.toBe(1)
+    await expect(session.workflows.review.run('approved source')).resolves.toMatchObject({ status: 'completed', output: 1 })
     expect(provider.requests).toHaveLength(1)
   } finally {
     await session.release()
@@ -1232,7 +1232,7 @@ it('blocks final output before model-object delivery or assistant persistence', 
   const session = await harness.getSession('guardrail-final-block')
   const events = []
   await expect(async () => {
-    for await (const event of session.agents.answer.stream('question')) events.push(event)
+    for await (const event of session.agents.answer.observe('question')) events.push(event)
   }).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
   expect(events.some((event) => event.type === 'model.object')).toBe(false)
   expect(events).toEqual(
@@ -1644,10 +1644,10 @@ it.each([
     .build()
   const session = await harness.getSession(`rail-evidence-${phase}-${mode}`)
   if (mode === 'delegated') {
-    for await (const event of session.workflows.review.stream('question')) events.push(event)
+    for await (const event of session.workflows.review.observe('question')) events.push(event)
   } else {
     try {
-      for await (const event of session.agents.answer.stream('question')) events.push(event)
+      for await (const event of session.agents.answer.observe('question')) events.push(event)
     } catch (error) {
       if (!(error instanceof DecisionBlockedError)) throw error
       failures.push(error)

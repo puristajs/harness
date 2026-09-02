@@ -1,12 +1,16 @@
-export type SseState = 'idle' | 'invoking workflow' | 'invoking agent' | 'SSE connected' | 'SSE reconnecting' | 'completed' | 'failed' | 'cancelled'
+export type SseState = 'idle' | 'invoking workflow' | 'invoking agent' | 'SSE connected' | 'SSE reconnecting' | 'completed' | 'interrupted' | 'failed' | 'cancelled'
 
 export type RunEvent = {
   type: string
   runId?: string
-  output?: Record<string, unknown>
-  result?: Record<string, unknown>
+  outcome?: {
+    status?: 'completed' | 'interrupted'
+    output?: Record<string, unknown>
+    interrupt?: unknown
+  }
   error?: { message?: string }
   delta?: string
+  value?: Record<string, unknown>
   toolId?: string
   callId?: string
   dropped?: number
@@ -34,7 +38,7 @@ export type StreamUpdate =
 export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
   const updates: StreamUpdate[] = []
   if (event.type === 'stream.overflow') updates.push({ kind: 'overflow', dropped: Number(event.dropped ?? 0) })
-  if ((event.type === 'model.delta' || event.type === 'answer.delta') && typeof event.delta === 'string') {
+  if (event.type === 'output.text.delta' && typeof event.delta === 'string') {
     updates.push({ kind: 'answer_delta', delta: event.delta })
   }
 
@@ -64,7 +68,7 @@ export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
     })
   }
 
-  const payload = event.output ?? event.result
+  const payload = event.outcome?.output ?? event.value
   const reviewRequest = readReviewRequest(payload) ?? readReviewRequest(event)
   if (reviewRequest) updates.push({ kind: 'review', reviewRequest })
 
@@ -74,7 +78,14 @@ export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
   if (event.type === 'run.finished') {
     updates.push({
       kind: 'finished',
-      state: event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : event.error ? 'failed' : 'completed',
+      state: event.outcome?.status === 'interrupted' ? 'interrupted' : 'completed'
+    })
+  }
+
+  if (event.type === 'run.failed') {
+    updates.push({
+      kind: 'finished',
+      state: event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : 'failed',
       ...(event.error?.message ? { failedMessage: event.error.message } : {})
     })
   }

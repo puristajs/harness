@@ -34,7 +34,7 @@ describe('modular support harness', () => {
     const harness = createModularSupportHarness(new SupportProvider())
     const session = await harness.getSession('module-test')
 
-    await expect(session.workflows.answer_support_ticket.run({ customer: 'Acme', question: 'I cannot sign in.' })).resolves.toMatchObject({ priority: 'normal' })
+    await expect(session.workflows.answer_support_ticket.run({ customer: 'Acme', question: 'I cannot sign in.' })).resolves.toMatchObject({ status: 'completed', output: { priority: 'normal' } })
     await expect(session.memory.read<{ customer: string }>('last_ticket')).resolves.toEqual({ customer: 'Acme' })
     expect(harness.inspect().modules.map((module) => module.id)).toEqual(['support.models', 'support.agents'])
 
@@ -59,7 +59,7 @@ describe('modular support harness', () => {
     const replay = replayModelProvider(fixture)
     const replayHarness = createModularSupportHarness(replay)
     const replaySession = await replayHarness.getSession('replay')
-    await expect(replaySession.workflows.answer_support_ticket.run({ customer: 'Any customer', question: 'Different prompt is safe for this fixture.' })).resolves.toMatchObject({ priority: 'normal' })
+    await expect(replaySession.workflows.answer_support_ticket.run({ customer: 'Any customer', question: 'Different prompt is safe for this fixture.' })).resolves.toMatchObject({ status: 'completed', output: { priority: 'normal' } })
     assertReplayConsumed(replay)
     assertDiagnosticInvariants({ inspection: replayHarness.inspect() }, [{
       id: 'support-module-provenance',

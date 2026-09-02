@@ -111,7 +111,8 @@ export async function runModularSupportHarness(): Promise<void> {
     customer: 'Acme Corp',
     question: 'I cannot sign in after resetting my password.',
   })
-  console.log(`${response.priority}: ${response.answer}`)
+  if (response.status === 'interrupted') throw new Error(`Support workflow interrupted: ${response.interrupt.type}`)
+  console.log(`${response.output.priority}: ${response.output.answer}`)
   await harness.shutdown()
 }
 

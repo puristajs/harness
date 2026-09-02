@@ -71,8 +71,9 @@ export async function runQuickstart(): Promise<void> {
   const harness = createQuickstartHarness()
   const session = await harness.getSession('quickstart')
   const response = await session.workflows.explain_quickstart.run({ topic: 'enterprise agent harnesses' })
+  if (response.status === 'interrupted') throw new Error(`Quickstart workflow interrupted: ${response.interrupt.type}`)
 
-  console.log(response.answer)
+  console.log(response.output.answer)
   await harness.shutdown()
 }
 

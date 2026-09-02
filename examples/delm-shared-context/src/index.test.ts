@@ -91,24 +91,27 @@ describe('DeLM shared-context harness example', () => {
       const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
         durable: { runId: 'delm-test-run' }
       })
+      expect(result.status).toBe('completed')
+      if (result.status !== 'completed') throw new Error('Expected completed research workflow.')
+      const output = result.output
 
-      expect(result.admittedEntries.map((entry) => entry.type)).toEqual(['FACT', 'OBSERVED', 'PATCH_SUMMARY'])
-      expect(result.rejectedReports).toEqual([{
+      expect(output.admittedEntries.map((entry) => entry.type)).toEqual(['FACT', 'OBSERVED', 'PATCH_SUMMARY'])
+      expect(output.rejectedReports).toEqual([{
         workerId: 'worker-1',
         taskId: 'rollback-proposal',
         reason: 'patch_summary_requires_verified_evidence'
       }])
-      expect(result.queue.every((item) => item.status === 'completed')).toBe(true)
-      expect(result.answer).toContain('payment authorization timeout')
-      expect(result.answer).toContain('1500ms')
-      expect(result.checkpointCount).toBe(1)
+      expect(output.queue.every((item) => item.status === 'completed')).toBe(true)
+      expect(output.answer).toContain('payment authorization timeout')
+      expect(output.answer).toContain('1500ms')
+      expect(output.checkpointCount).toBe(1)
       expect(provider.requests).toHaveLength(4)
       expect(JSON.stringify(provider.requests[0]?.messages)).toContain('payment_authorization_timeout')
       expect(evidenceForTask('timeout-fix').records.map((record) => record.id)).toEqual(
         expect.arrayContaining(['repro-001', 'repro-002', 'repro-003', 'repro-004'])
       )
 
-      const report = formatCheckoutIncidentRun(result)
+      const report = formatCheckoutIncidentRun(output)
       expect(report).toContain('Checkout Incident Investigation')
       expect(report).toContain('Rejected reports:')
       expect(report).toContain('rollback-proposal')

@@ -57,8 +57,9 @@ export async function runCustomSandboxExample() {
 
   try {
     const output = await session.agents.reporter.run('Create the quarterly report.')
+    if (output.status === 'interrupted') throw new Error(`Report agent interrupted: ${output.interrupt.type}`)
     await session.destroy()
-    return { output, operations: { ...sandbox.operations } }
+    return { output: output.output, operations: { ...sandbox.operations } }
   } finally {
     await harness.shutdown()
   }

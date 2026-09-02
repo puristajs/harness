@@ -16,7 +16,8 @@ export async function runDelmSharedContextExample(): Promise<void> {
     const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
       durable: { runId: 'delm-demo-run' }
     })
-    console.log(formatCheckoutIncidentRun(result))
+    if (result.status === 'interrupted') throw new Error(`Research workflow interrupted: ${result.interrupt.type}`)
+    console.log(formatCheckoutIncidentRun(result.output))
   } finally {
     await example.close()
   }

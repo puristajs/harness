@@ -39,7 +39,7 @@ describe('observability quickstart', () => {
       await expect(session.workflows.handle_ticket.run({
         ticketId: 'SUP-42',
         question: 'How can I update my billing address?',
-      })).resolves.toEqual({ answer: 'Open Billing and choose Edit address.' })
+      })).resolves.toMatchObject({ status: 'completed', output: { answer: 'Open Billing and choose Edit address.' } })
       await telemetry.forceFlush()
 
       const spanNames = spanExporter.getFinishedSpans().map(span => span.name)

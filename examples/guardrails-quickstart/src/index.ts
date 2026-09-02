@@ -8,7 +8,8 @@ export async function runGuardrailsQuickstart(): Promise<void> {
 
     try {
       const answer = await allowedSession.agents.answer.run('Where is order demo-42?')
-      process.stdout.write(`allowed: ${answer}\n`)
+      if (answer.status === 'interrupted') throw new Error(`Support agent interrupted: ${answer.interrupt.type}`)
+      process.stdout.write(`allowed: ${answer.output}\n`)
     } finally {
       await allowedSession.release()
     }

@@ -11,7 +11,8 @@ export async function runObservedSupportTicket(): Promise<string> {
       ticketId: 'SUP-42',
       question: 'How can I update my billing address?',
     })
-    return result.answer
+    if (result.status === 'interrupted') throw new Error(`Support workflow interrupted: ${result.interrupt.type}`)
+    return result.output.answer
   } finally {
     await harness.shutdown()
     await telemetry.shutdown()

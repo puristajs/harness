@@ -46,10 +46,8 @@ export function createDelmSharedContextHarness(options: DelmSharedContextHarness
       },
     })
     .agent('research_worker', {
-      model: 'worker_model',
       input: workerAgentInputSchema,
       output: workerReportSchema,
-      instructions: 'Produce one compact, evidence-aware shared-context report.',
       handler: async (ctx) => {
         const response = await ctx.models.worker_model.object(
           {

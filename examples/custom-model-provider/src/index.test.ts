@@ -20,7 +20,7 @@ describe('custom model provider example', () => {
     try {
       await expect(
         session.agents.invoice_status.run({ invoiceId: 'INV-42' }),
-      ).resolves.toEqual({ message: 'Invoice INV-42 is ready for payment.' })
+      ).resolves.toMatchObject({ status: 'completed', output: { message: 'Invoice INV-42 is ready for payment.' } })
       expect(generateJson).toHaveBeenCalledOnce()
       expect(generateJson.mock.calls[0]?.[0].model).toBe('internal-json-v1')
     } finally {

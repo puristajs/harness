@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import {
   defineHarness,
-  ExternalWaitPendingError,
   InMemoryHarnessStorage,
   inMemorySandbox,
   type HarnessStorage,
@@ -142,12 +141,12 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
       if (existingTask) assertTaskMatchesInvocation(existingTask, action, identity)
       const session = await harness.getSession(identity.sessionId)
       try {
-        return paymentResultSchema.parse(
-          await session.workflows.review_payment.run(action, { durable: { runId: identity.runId } }),
-        )
-      } catch (error) {
-        if (error instanceof ExternalWaitPendingError) return { status: 'waiting' }
-        throw error
+        const outcome = await session.workflows.review_payment.run(action, { durable: { runId: identity.runId } })
+        if (outcome.status === 'interrupted') {
+          if (outcome.interrupt.type === 'external-wait') return { status: 'waiting' }
+          throw new Error(`Unexpected ${outcome.interrupt.type} interrupt in payment review workflow.`)
+        }
+        return paymentResultSchema.parse(outcome.output)
       } finally {
         await session.release()
       }

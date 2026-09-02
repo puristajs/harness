@@ -358,9 +358,12 @@ export function App() {
         if (update.kind === 'review' && isReviewRequest(update.reviewRequest)) setReviewRequest(update.reviewRequest)
         if (update.kind === 'artifacts') setRunArtifacts(normalizeArtifacts(update.artifacts))
       }
-      if (event.type === 'run.finished') {
+      if (event.type === 'run.finished' || event.type === 'run.failed') {
         source.close()
-        setSseState(event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : event.error ? 'failed' : 'completed')
+        const terminalState = event.type === 'run.failed'
+          ? event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : 'failed'
+          : event.outcome?.status === 'interrupted' ? 'interrupted' : 'completed'
+        setSseState(terminalState)
         const lookup = await apiJson<RunInfo>(`/api/runs/${runId}`)
         setRun(lookup)
         setChatBusy(false)
@@ -368,7 +371,7 @@ export function App() {
         if (isReviewRequest(resultReviewRequest)) setReviewRequest(resultReviewRequest)
         const artifacts = normalizeArtifacts(readArtifacts(lookup.result))
         setRunArtifacts(artifacts)
-        if (event.error) {
+        if (event.type === 'run.failed') {
           setChatMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, content: event.error?.message ?? 'Workflow failed.', status: 'failed' } : item))
         } else {
           const finalAnswer = answerFromResult(lookup.result) ?? 'Workflow completed.'

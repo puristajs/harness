@@ -1,0 +1,59 @@
+spec_manifest_version: 1
+content_digest: sha256:b5323335237da8fac896a1d42efeac1df47f9438f48cebdc8241565ede67724f
+artifacts:
+  - path: 00-applicability.yaml
+    sha256: sha256:db53ccdb6e672bcc88ef1f040f4c8702e677339a4d001a0f8cd549c4eb384cc0
+  - path: 00-architecture-overview.md
+    sha256: sha256:a6567ed5f5e98f745d32a85d274d3ec3252f8881baf1a637b86ac8a8c4c5b631
+  - path: 00-conventions.md
+    sha256: sha256:ba363bda577e809ec09ff848dc76e13966eda410222c6d29f5ad6803c8db9d00
+  - path: 00-decision-authority.yaml
+    sha256: sha256:22da34f2d028b0185ee53c8094e33fd64eefc16074e31e5b91beb0fed15edda8
+  - path: 00-file-structure.md
+    sha256: sha256:0b9506cf9391f5cce58c10e339957ff2e4a443da94746e695a98975477ecf022
+  - path: 00-module-boundaries.yaml
+    sha256: sha256:34b34c338f11d349b66c827c97263950c5b4384f2441e788b2cf75b264f80266
+  - path: 00-policy-profile.yaml
+    sha256: sha256:82fe15d9e4dc91558ac41c0fc721369ca7d8b56d2225580e14293d1ef057350e
+  - path: 00-reuse-inventory.yaml
+    sha256: sha256:4871dd45ba8db3195f77641139ae278287fd1ad7659883b2d41c3de80263ee74
+  - path: 00-stack.md
+    sha256: sha256:cd84dc47152edaa80dfdbc53ee3f0e7a9d1eb6983b73f2bd1c728b4cc1a9dbeb
+  - path: 00-traceability.yaml
+    sha256: sha256:e7e75abd1dbb362247da8d856b214d8ddd8ec2240b9d2f28d1d62c131aa314c7
+  - path: 00-vision.md
+    sha256: sha256:89ecc1f102320b547256be8c542a80e631bad6e5c039c9634e0c7694f9ce6114
+  - path: 02-capabilities/capability-inventory.md
+    sha256: sha256:74fc43d721b5eee973402c8a974e85e685234083c8c325f24fd1d4bd07263947
+  - path: 03-contracts/contracts.yaml
+    sha256: sha256:7e0d2459e0951999f03047fabde1b9d038e05f6f3da36c7d26d8b9ad45036a64
+  - path: 03-contracts/decisions.md
+    sha256: sha256:7c61b88fa8177101305ffe3a6a4be311399145d812ba94893c5c96462115345f
+  - path: 03-contracts/generation-map.yaml
+    sha256: sha256:84ca6eb6ad6dc34facbad881202542237f396574d4b8b94dcede3e7d7146135d
+  - path: 03-contracts/provider-continuation.md
+    sha256: sha256:763ee79207f5e1140afe3b41682ab060cb9cba39e391a43eaf90a4739678a0e3
+  - path: 03-contracts/representation-catalog.yaml
+    sha256: sha256:1333f07dabb319e57b30c1fea88f917784bcf35bc681dc4526ac967ac00d7979
+  - path: 03-contracts/review-execution.md
+    sha256: sha256:504a2878a8c8abdd4521ab0102ddd93f078202d15f5ed5520ab3cab8117e069b
+  - path: 03-flows/e2e-coverage.md
+    sha256: sha256:aa9f366d3ae143ff87065a0c00f66a74ba82453f9dc10c9569b5010102ac78db
+  - path: 04-delivery/clean-cut.md
+    sha256: sha256:5ae73b103da9d41d389454348a5a495b3ea8af0c1e7c18513b76904382f73dd8
+  - path: 04-delivery/consumers.md
+    sha256: sha256:3f4640da9db623ce8e8f3715e845b0637ba8ca36560073d1e26a6926d0284a78
+  - path: 04-nfr/requirements.md
+    sha256: sha256:41a815bb5fde24cbecfcd2b52a272a9af9417bf5aaeea7260dbabe2f59589f1f
+  - path: 04-operations/runbook.md
+    sha256: sha256:94ec2fd9082e3412743b9c06b81c202fb02f830379878cb01762f613c7551d92
+  - path: _registry.yaml
+    sha256: sha256:b87a11a5aba5050d6e739806c77ca3e7fb593b4f5153d422173f8fb4fe846f85
+  - path: evidence/readiness-review.md
+    sha256: sha256:e1a69bc51c5736cc7a6088d2b2993276f0632ae8e3b1c6e4cc690df1b1bd6959
+  - path: glossary.md
+    sha256: sha256:c0da9eff4117afe9e2769ec96f0c7e81f215724fb7f9963826c23213af8d382b
+provenance:
+  source_revision: c378607-working-tree-2026-08-26
+  generated_at: 2026-08-26T13:37:29.620Z
+  generator: spec-manifest/v1

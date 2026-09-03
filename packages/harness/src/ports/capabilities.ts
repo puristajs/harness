@@ -7,10 +7,14 @@
 export type AdapterCapability =
   /** Sandbox supports filesystem access. */
   | 'sandbox.fs'
+  /** Sandbox performs bounded provider-neutral text search where its files live. */
+  | 'sandbox.text_search'
   /** Sandbox supports command execution. */
   | 'sandbox.exec'
   /** Sandbox filesystem survives adapter-level close/reopen for the same session. */
   | 'sandbox.persistent_fs'
+  /** Sandbox mounts the active DurableWorkspace into a run-scoped session. */
+  | 'sandbox.workspace_binding'
   /** Sandbox can create durable snapshots. */
   | 'sandbox.snapshot'
   /** Sandbox can resume a session from a durable snapshot. */
@@ -19,50 +23,44 @@ export type AdapterCapability =
   | 'sandbox.hibernate'
   /** Sandbox can host a long-lived process with streaming stdin/stdout. */
   | 'sandbox.spawn'
-  /** Runtime can commit stable checkpoints. */
-  | 'runtime.checkpoint'
-  /** Runtime can retry durable boundaries. */
-  | 'runtime.retry'
-  /** Runtime can coordinate distributed session/run ownership. */
-  | 'runtime.distributed_lock'
-  /** Runtime can resume from committed checkpoints. */
-  | 'runtime.resume_from_checkpoint'
-  /** Runtime checkpoint records can carry durable workspace references. */
-  | 'runtime.workspace_checkpoint'
-  /** Runtime exposes checkpoint retention and expiry metadata. */
-  | 'runtime.checkpoint_retention'
-  /** Runtime checkpoints, leases, and terminal state survive process exit. */
-  | 'runtime.persistent'
-  /** Workspace store implements durable lifecycle and opaque checkpoint refs. */
-  | 'workspace_store.durable'
-  /** Workspace store persists state beyond process exit. */
-  | 'workspace_store.persistent'
-  /** Workspace store can produce stable checkpoints. */
-  | 'workspace_store.checkpoint'
-  /** Workspace store can resume committed checkpoints. */
-  | 'workspace_store.resume'
-  /** Workspace store can abort active or paused workspaces. */
-  | 'workspace_store.abort'
-  /** Workspace store supports idempotent cleanup. */
-  | 'workspace_store.cleanup'
-  /** Workspace store supports read-only inspection. */
-  | 'workspace_store.inspect'
-  /** Workspace store exposes retention policy and expiry metadata. */
-  | 'workspace_store.retention'
-  /** Workspace store enforces and reports quota policy. */
-  | 'workspace_store.quota'
-  /** Workspace store encrypts checkpoint, snapshot, file, and metadata storage. */
-  | 'workspace_store.encrypted_storage'
-  /** Context checkpoint store can write checkpoints. */
-  | 'context_checkpoint.write'
-  /** Context checkpoint store can read checkpoints. */
-  | 'context_checkpoint.read'
-  /** Context checkpoint store can list checkpoints. */
-  | 'context_checkpoint.list'
-  /** Context checkpoint store can delete checkpoints. */
-  | 'context_checkpoint.delete'
-  /** Context checkpoint store survives adapter close/reopen. */
-  | 'context_checkpoint.persistent'
+  /** Sandbox may preserve provider-managed live processes across detach. */
+  | 'sandbox.live_process_preservation'
+  /** Storage can commit stable durable-step checkpoints. */
+  | 'storage.checkpoint'
+  /** Storage can retry interrupted durable runs. */
+  | 'storage.retry'
+  /** Storage can coordinate distributed session/run ownership. */
+  | 'storage.multi_instance'
+  /** Storage can resume from committed checkpoints. */
+  | 'storage.resume'
+  /** Storage checkpoints can carry durable workspace references. */
+  | 'storage.workspace_checkpoint'
+  /** Storage exposes checkpoint retention and expiry metadata. */
+  | 'storage.checkpoint_retention'
+  /** Storage state survives process exit. */
+  | 'storage.persistent'
+  /** Storage supports durable, idempotently signalled external waits. */
+  | 'storage.external_wait'
+  /** Workspace implements durable lifecycle and opaque checkpoint refs. */
+  | 'workspace.durable'
+  /** Workspace persists state beyond process exit. */
+  | 'workspace.persistent'
+  /** Workspace can produce stable checkpoints. */
+  | 'workspace.checkpoint'
+  /** Workspace can resume committed checkpoints. */
+  | 'workspace.resume'
+  /** Workspace can abort active or paused workspaces. */
+  | 'workspace.abort'
+  /** Workspace supports idempotent cleanup. */
+  | 'workspace.cleanup'
+  /** Workspace supports read-only inspection. */
+  | 'workspace.inspect'
+  /** Workspace exposes retention policy and expiry metadata. */
+  | 'workspace.retention'
+  /** Workspace enforces and reports quota policy. */
+  | 'workspace.quota'
+  /** Workspace encrypts checkpoint, snapshot, file, and metadata storage. */
+  | 'workspace.encrypted_storage'
   /** Adapter can record feedback. */
   | 'feedback.record'
   /** Memory adapter supports key/value reads and writes. */
@@ -71,22 +69,18 @@ export type AdapterCapability =
   | 'memory.list'
   /** Memory adapter supports key deletion. */
   | 'memory.delete'
-  /** Memory adapter supports text search over stored memory. */
-  | 'memory.search'
+  /** Memory engine supports text search over stored memory. */
+  | 'memory.text_search'
+  /** Memory engine supports vector similarity search. */
+  | 'memory.vector_search'
+  /** Memory engine supports native hybrid search. */
+  | 'memory.hybrid_search'
   /** Memory adapter supports entry expiration. */
   | 'memory.ttl'
-  /** Memory adapter supports run-scoped memory. */
-  | 'memory.run'
-  /** Memory adapter supports session-scoped memory. */
-  | 'memory.session'
-  /** Memory adapter supports agent-scoped memory. */
-  | 'memory.agent'
-  /** Memory adapter supports user-scoped memory. */
-  | 'memory.user'
-  /** Memory adapter supports tenant-scoped memory. */
-  | 'memory.tenant'
   /** Memory survives adapter close/reopen for the same logical scope. */
   | 'memory.persistent'
+  /** Memory is designed for coordinated multi-instance access. */
+  | 'memory.multi_instance'
 
 /** Data-only descriptor implemented by adapters that expose capability metadata. */
 export interface AdapterCapabilities {
@@ -95,7 +89,7 @@ export interface AdapterCapabilities {
 
 /** Adapter descriptor surfaced through `harness.inspect()`. */
 export interface AdapterInspection {
-  readonly kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'feedback' | 'model' | 'memory'
+  readonly kind: 'storage' | 'sandbox' | 'workspace' | 'feedback' | 'model' | 'memory'
   readonly id: string
   readonly capabilities: readonly AdapterCapability[]
   readonly metadata?: Record<string, unknown>
@@ -122,11 +116,6 @@ export interface HarnessInspection {
   readonly requiredCapabilities: readonly AdapterCapability[]
   readonly adapters: readonly AdapterInspection[]
   readonly modules: readonly HarnessModuleInspection[]
-}
-
-/** Optional durable runtime adapter surface for capability-gated setup. */
-export interface DurableRuntimeAdapter extends AdapterCapabilities {
-  readonly id?: string
 }
 
 /** Result returned when comparing required and available adapter capabilities. */

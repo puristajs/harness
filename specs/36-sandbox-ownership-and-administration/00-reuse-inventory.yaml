@@ -1,0 +1,51 @@
+reuse_inventory_version: 1
+discovery_revision: c378607de9e7-plus-preserved-sandbox-worktree-2026-08-26
+assets:
+  - asset_id: REUSE-SOWN-identity
+    kind: type
+    path: packages/harness/src/identity/index.ts
+    public_export: HarnessIdentity
+    owner: harness
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Extend exact owner mapping; do not duplicate identity.
+  - asset_id: REUSE-SOWN-sandbox
+    kind: port
+    path: packages/harness/src/sandbox/index.ts
+    public_export: Sandbox
+    owner: harness
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Refactor one contract; retain capability inference.
+  - asset_id: REUSE-SOWN-workspace
+    kind: port
+    path: packages/harness/src/ports/workspace.ts
+    public_export: DurableWorkspace
+    owner: harness
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Extend owner and pin contracts without workspace-set abstraction.
+  - asset_id: REUSE-SOWN-errors
+    kind: error_catalog
+    path: packages/harness/src/errors/catalog.ts
+    public_export: HarnessError subclasses
+    owner: harness
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Reuse catalog constructors and serialization.
+  - asset_id: REUSE-SOWN-docker
+    kind: adapter
+    path: packages/harness-sandbox-docker/src
+    public_export: dockerSandbox
+    owner: docker
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Keep public-only imports and private engine journal.
+  - asset_id: REUSE-SOWN-framework
+    kind: builder
+    path: ../purista/packages/core/src/AgentQueueBuilder
+    public_export: AgentQueueBuilder
+    owner: purista
+    stability: existing
+    consumers: [application, tests]
+    extension_policy: Map public Harness types; no second sandbox model.

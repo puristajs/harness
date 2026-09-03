@@ -17,13 +17,13 @@ run.
 
 ## Prerequisites
 
-- Node.js `>=20` and `<25`
+- Node.js `>=24.15.0`
 - npm
 - an OpenAI API key for live runs
 
 ## Install
 
-From the repository root:
+From the quickstart example directory:
 
 ```bash
 npm install
@@ -37,14 +37,14 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5-mini
 ```
 
-Examples read the repository-root `.env`; do not create example-local `.env`
-files.
+The quickstart reads the `.env` file in its directory.
 
 ## Run
 
 ```bash
-npm run build --workspace @purista/quickstart
-npm run start --workspace @purista/quickstart
+npm test
+npm run build
+npm start
 ```
 
 Expected output is a short answer about enterprise agent harnesses.
@@ -71,14 +71,14 @@ sequenceDiagram
   participant Agent
   participant Model
 
-  App->>Harness: defineHarness().models().agents().workflows().build()
+  App->>Harness: defineHarness().models().agent().workflow().build()
   App->>Session: harness.getSession("quickstart")
-  App->>Workflow: session.workflows.explain_quickstart.prompt(input)
+  App->>Workflow: session.workflows.explain_quickstart.run(input)
   Workflow->>Agent: ctx.agents.assistant(input)
   Agent->>Model: object request
   Model-->>Agent: validated object
   Agent-->>Workflow: typed output
-  Workflow-->>App: typed output
+  Workflow-->>App: completed or interrupted RunOutcome
 ```
 
 The key rule: application code calls sessions, not provider adapters directly.
@@ -100,13 +100,15 @@ conversation loop directly:
 
 ```ts
 const session = await harness.getSession('quickstart')
-const response = await session.agents.assistant.prompt({
-  topic: 'enterprise agent harnesses'
+const response = await session.agents.assistant.run({
+	topic: 'enterprise agent harnesses',
 })
+
+if (response.status === 'completed') console.log(response.output)
 ```
 
 Use workflows when you need pre-processing, post-processing, fan-out/fan-in,
-human review, retries, durable writes, or a business process run.
+application-owned human review, retries, durable writes, or a business process run.
 
 ## Next Steps
 

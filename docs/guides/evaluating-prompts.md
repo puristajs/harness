@@ -1,183 +1,143 @@
-# Evaluating Prompts
+# Evaluating AI systems
 
-Use the harness eval helpers when you need a small, local, provider-neutral way
-to compare prompt variants against the same input set. The helpers run inside
-your process. They do not create a service, persist datasets, manage prompt
-versions, run optimizers, or provide an experiment UI.
+`@purista/harness` provides a small, provider-neutral evaluation substrate. It
+runs versioned candidates against versioned cases, invokes one or more scorer
+adapters, and returns deterministic per-case results and operational aggregates.
+It runs in your process; it is not a dataset store, experiment UI, annotation
+system, dashboard, hosted judge, or vendor integration.
 
-## When To Use It
+For the evaluation method, dataset design, calibration, CI policy, recipes, and
+optional Langfuse, Phoenix, or Datadog mappings, use the canonical
+[PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/).
 
-Use `evaluatePromptCandidates(...)` for:
+## Choose the operation
 
-- comparing two or more prompt strings against a fixed set of examples;
-- running deterministic checks in unit or CI tests;
-- building an application-owned workflow that records eval results elsewhere;
-- validating scorer definitions before wiring a product-specific eval layer.
+| Operation | Use it when | What it does not do |
+| --- | --- | --- |
+| `runEvaluation(...)` | You need to execute candidates and judge their outputs. | Persist case content or observations. |
+| `scoreEvaluation(...)` | You already retained sanitized observations and want a new scorer/rubric. | Re-run the original task or invent its cost/latency. |
+| `createDeterministicEvaluationScorer(...)` | A synchronous typed predicate is sufficient. | Provide a schema language or an LLM judge. |
 
-Do not use it as a full eval platform. Dataset storage, experiment runs, prompt
-versioning, annotation queues, optimization loops, dashboards, and regression
-gate CLIs belong in your application or product layer.
+An evaluation case separates `input` from `assessment`. The task receives only
+the input and candidate configuration. A scorer receives the resulting
+observation, including the assessment material and any explicitly selected
+scorer context. This prevents a reference answer from accidentally reaching a
+candidate.
 
-## Execution Model
-
-```mermaid
-flowchart LR
-  Candidates["Prompt candidates"] --> Eval["evaluatePromptCandidates"]
-  Items["Evaluation items"] --> Eval
-  Eval --> Run["runCandidate callback"]
-  Run --> Score["scorer callback"]
-  Score --> Result["CandidateScore[]"]
-```
-
-The helper evaluates candidates in input order, then items in input order. It
-passes each candidate/item pair to your `runCandidate` callback, passes the
-returned output to your `scorer`, aggregates the scores, and returns sorted
-candidate summaries.
-
-Sorting is deterministic:
-
-1. `meanScore` descending
-2. `passRate` descending
-3. `candidateId` ascending
-
-## Minimal Example
+## Run and score a small dataset
 
 ```ts
-import {
-  evaluateDeterministicScorer,
-  evaluatePromptCandidates
-} from '@purista/harness'
+import { createDeterministicEvaluationScorer, runEvaluation } from '@purista/harness'
 
-const abort = new AbortController()
+declare function answerSupportQuestion(question: string, prompt: string, signal: AbortSignal): Promise<string>
 
-async function runYourAgentOrModel(prompt: string, input: unknown): Promise<{ answer: string }> {
-  return { answer: `${prompt} ${JSON.stringify(input)} change freeze` }
-}
+const exactMatch = createDeterministicEvaluationScorer({
+	id: 'exact-match',
+	version: 'v1',
+	dimension: { id: 'correct', kind: 'boolean' },
+	evaluate: observation => ({
+		outcome: 'scored',
+		dimensionId: 'correct',
+		kind: 'boolean',
+		value: observation.output.answer === observation.assessment?.expected,
+	}),
+})
 
-const scores = await evaluatePromptCandidates({
-  candidates: [
-    { id: 'brief', prompt: 'Answer in one short paragraph.' },
-    { id: 'detailed', prompt: 'Answer with details and citations.' }
-  ],
-  items: [
-    {
-      id: 'policy-1',
-      input: { question: 'Can I deploy on Friday?' },
-      expected: 'change freeze'
-    }
-  ],
-  signal: abort.signal,
-  runCandidate: async (candidate, item, signal) => {
-    signal.throwIfAborted()
-    return runYourAgentOrModel(candidate.prompt, item.input)
-  },
-  scorer: async (target) => evaluateDeterministicScorer({
-    type: 'contains',
-    path: '/answer',
-    value: String(target.expected),
-    caseInsensitive: true
-  }, target)
+const result = await runEvaluation({
+	runId: 'support-baseline-2026-08-28',
+	dataset: {
+		id: 'support-answers',
+		version: 'v1',
+		cases: [
+			{
+				id: 'refund-policy',
+				input: { question: 'Can I get a refund?' },
+				assessment: { expected: 'yes' },
+				segments: { locale: 'en' },
+			},
+		],
+	},
+	candidates: [{ id: 'baseline', version: 'v1', config: { prompt: 'Answer briefly.' } }],
+	task: {
+		id: 'support-answer',
+		version: 'v1',
+		async run({ input, candidate }, signal) {
+			const answer = await answerSupportQuestion(input.question, candidate.prompt, signal)
+			return { output: { answer } }
+		},
+	},
+	scorers: [exactMatch],
+	aggregateBy: ['locale'],
+	maxConcurrency: 2,
+})
+
+console.log(result.cases)
+console.log(result.dimensionAggregates)
+```
+
+The result preserves declaration order even when work completes out of order.
+Each candidate/case/trial row contains one result for every declared scorer.
+Use `failurePolicy`, cancellation, timeouts, bounded concurrency, and retries
+when your application needs them. A retry recovers a failed operation; it is not
+an independent quality trial. Use explicit trial IDs when intentionally
+repeating a nondeterministic task, and reset mutable fixtures between trials.
+
+## Write scorer adapters
+
+A scorer is an object with an ID, version, declared dimensions, and async
+`score` callback. It can be deterministic, call a structured-output model as a
+judge, call an external metric library, or return an existing human judgment.
+The core neither constructs providers nor selects judge prompts.
+
+Every declared dimension must report exactly one outcome:
+
+- `scored` has a value and optional explicit pass/fail decision.
+- `not_applicable` means the dimension legitimately does not apply.
+- `inconclusive` means the scorer cannot reach a reliable conclusion.
+
+These are successful assessment outcomes. A malformed scorer response, thrown
+error, timeout, cancellation, or skipped scorer is reported separately and is
+never disguised as a low score. Inline evidence is capped at 4 KiB; sanitize it
+before returning it.
+
+## Re-score an observation
+
+Core intentionally does not store task output. If you want to judge the same
+execution with a different rubric, retain a sanitized observation in your
+application and pass it to `scoreEvaluation`.
+
+```ts
+import { scoreEvaluation } from '@purista/harness'
+
+const rescored = await scoreEvaluation({
+	runId: 'support-rubric-v2-2026-08-28',
+	observations: [savedObservation],
+	scorers: [newRubric],
 })
 ```
 
-`runCandidate` is application code. It can call a harness session, a model
-handle, a fake provider, or a fixture. The eval helper does not know about model
-providers or sessions by itself.
+All score-only observations in one invocation share the same dataset and task
+identity. Their candidate identities may differ. The scorer receives the saved
+output only in memory; Harness returns content-minimized rows. If the original
+task duration, model usage, or cost is unknown, it remains unknown rather than
+being inferred from re-scoring.
 
-## Candidate And Item Shape
+## Costs, telemetry, and ownership
 
-```ts
-interface PromptCandidate<I = unknown> {
-  id: string
-  prompt: string
-  metadata?: Record<string, JsonValue>
-}
+Use the existing Harness model instrumentation for provider/model identity and
+normalized token usage. Evaluation accounting keeps original task model calls
+separate from scorer/judge model calls and keeps both separate from the
+evaluation invocation wall time. Do not add a parent summary again for nested
+model calls.
 
-interface EvaluationItem<I = unknown> {
-  id: string
-  input: I
-  expected?: unknown
-  context?: unknown[]
-}
-```
+OpenTelemetry is optional. Evaluation spans and metrics are content-free in all
+capture modes: they contain no case, candidate, observation, output,
+assessment, score, evidence, usage, cost, or trace-correlation values. A
+negative, not-applicable, or inconclusive score is a completed scorer operation;
+only technical failures mark it as an error.
 
-Use stable `id` values. They are part of deterministic sorting and are what you
-will store in your own result records if you persist scores.
-
-## Scoring
-
-A scorer receives:
-
-```ts
-interface ScorerTarget {
-  input: unknown
-  output: unknown
-  expected?: unknown
-  context?: unknown[]
-}
-```
-
-It returns:
-
-```ts
-interface ScorerResult {
-  score: number
-  passed: boolean
-  evidence?: JsonValue
-}
-```
-
-The built-in deterministic scorer helper supports these definitions:
-
-| Type | What It Checks |
-|---|---|
-| `contains` | JSON Pointer selected output contains a string. |
-| `regex` | JSON Pointer selected output matches a regular expression. |
-| `attribute-equality` | Two JSON Pointer selected output values are deeply equal. |
-| `json-schema` | Output matches the supported JSON Schema subset. |
-
-Pointers are JSON Pointer paths, not JSONPath. For example, `/answer` selects
-`output.answer`, and `/items/0/title` selects the first item title.
-
-When a pointer is missing, the helper returns a failed score with
-`evidence.reason = 'missing_pointer'`; it does not throw.
-
-## JSON Schema Subset
-
-The `json-schema` scorer is intentionally small and deterministic. It supports:
-
-- `type`: `object`, `array`, `string`, `number`, `integer`, `boolean`, `null`
-- `const`
-- `enum`
-- object `properties`
-- object `required`
-- `additionalProperties: false`
-
-Unsupported JSON Schema keywords are ignored. Do not rely on `$ref`, `oneOf`,
-`anyOf`, `allOf`, `format`, numeric bounds, string patterns, array item schemas,
-or draft-specific behavior.
-
-## Cancellation
-
-`evaluatePromptCandidates(...)` requires an `AbortSignal`. It checks the signal
-before scheduling each candidate/item pair and passes the same signal into both
-callbacks. Your callbacks should call `signal.throwIfAborted()` before expensive
-work and pass the signal into any model/tool calls they make.
-
-## Privacy And Persistence
-
-The eval helpers do not persist anything. They return aggregate scores only.
-They do not emit prompt, input, expected output, context, or model output content
-to telemetry in v1 core.
-
-If you need per-item score records, datasets, prompt versions, human labels, or
-experiment history, store those in your application layer.
-
-## Common Pitfalls
-
-- Do not expect multiple scorers per candidate from `evaluatePromptCandidates`.
-  Compose multiple checks inside your `scorer` callback if you need that shape.
-- Do not pass unstable random ids if you want reproducible sorting.
-- Do not treat `json-schema` as a full JSON Schema validator.
-- Do not put product-specific experiment state into the harness core; keep it in
-  your product adapter or application workflow.
+Your application owns observation persistence, redaction, access control,
+retention, export, release thresholds, human review, and corpus metrics such as
+macro F1, retrieval recall, or BLEU. Harness aggregates dimensions and
+operational coverage, but does not turn per-case values into a universal quality
+metric.

@@ -1,234 +1,159 @@
-# Durable Runtime, Feedback, And Operations
+# Recoverable Workflows, Feedback, And Operations
 
-## Contents
-- Adapter Capabilities
-- Harness Inspection
-- Durable Runtime
-- Durable Workflow Context
-- Feedback
-- Readiness
-- Common Failures
-- Recovery
+## Boundaries
 
-## Adapter Capabilities
-Non-model adapter capabilities are separate from model capabilities:
+- `HarnessStorage` owns sessions, messages, run records/events, leases,
+  deterministic step checkpoints, and external waits.
+- `DurableWorkspace` owns resumable filesystem snapshots.
+- `Sandbox` owns execution and filesystem access.
+- `MemoryEngine` owns scoped application, tenant, principal, session, run, and agent memory records.
+- PURISTA's top-level `StateStore` remains ordinary framework application state;
+  it is not a Harness adapter.
 
-```ts
-type AdapterCapability =
-  | 'sandbox.fs'
-  | 'sandbox.exec'
-  | 'sandbox.persistent_fs'
-  | 'sandbox.snapshot'
-  | 'sandbox.resume'
-  | 'sandbox.hibernate'
-  | 'sandbox.spawn'                 // host a long-lived process (persistent MCP stdio)
-  | 'runtime.checkpoint'
-  | 'runtime.retry'
-  | 'runtime.distributed_lock'
-  | 'runtime.resume_from_checkpoint'
-  | 'runtime.workspace_checkpoint'
-  | 'runtime.persistent'
-  | 'workspace_store.durable'       // lifecycle contract
-  | 'workspace_store.persistent'    // survives process exit
-  | 'workspace_store.checkpoint'
-  | 'workspace_store.resume'
-  | 'workspace_store.abort'
-  | 'workspace_store.cleanup'
-  | 'workspace_store.inspect'
-  | 'workspace_store.retention'
-  | 'workspace_store.quota'
-  | 'workspace_store.encrypted_storage'
-  | 'context_checkpoint.write'
-  | 'context_checkpoint.read'
-  | 'context_checkpoint.list'
-  | 'context_checkpoint.delete'
-  | 'context_checkpoint.persistent'
-  | 'feedback.record'
-```
+Do not add separate runtime, checkpoint, external-wait, or workspace-store
+builder ports. Harness 3 deliberately exposes `.storage(...)` and optional
+`.workspace(...)` only.
 
-Use `.requires([...])` to make missing infrastructure fail during setup instead of later during execution.
+## Capabilities
 
-## Harness Inspection
-`harness.inspect()` returns a synchronous, data-only setup snapshot:
+Storage capabilities use the `storage.*` namespace:
+
+- `storage.checkpoint`, `storage.resume`, `storage.retry`
+- `storage.external_wait`
+- `storage.persistent`, `storage.multi_instance`
+- `storage.workspace_checkpoint`, `storage.checkpoint_retention`
+
+Workspace capabilities use `workspace.*`, including `workspace.durable`,
+`workspace.persistent`, `workspace.checkpoint`, `workspace.resume`,
+`workspace.abort`, `workspace.cleanup`, `workspace.inspect`,
+`workspace.retention`, `workspace.quota`, and
+`workspace.encrypted_storage`.
+
+Use `.requires(...)` for deployment invariants. In-memory adapters are for
+tests/local work; `SqliteHarnessStorage` is persistent but single-host and does
+not advertise `storage.multi_instance`.
+
+## Local Node.js And Bun
 
 ```ts
-const inspection = harness.inspect()
-console.log(inspection.name)
-console.log(inspection.capabilities)
-console.log(inspection.requiredCapabilities)
-console.log(inspection.adapters)
+import { defineHarness, localDurableExecution } from '@purista/harness'
+
+const local = localDurableExecution({ root: './.harness', exec: false })
+
+const harness = defineHarness({ name: 'report-worker' })
+	.storage(local.storage)
+	.workspace(local.workspace)
+	.sandbox(local.sandbox)
+	.requires(['storage.persistent', 'storage.checkpoint', 'storage.resume', 'workspace.persistent'])
+	// models, agents, workflows
+	.build()
 ```
 
-It must not open sessions, call providers, hit the network, or mutate adapters.
+The bundle returns exactly `{ storage, sandbox, workspace, close }`. It uses the
+runtime's native SQLite support and adds no database dependency. It is for
+development, tests, and one trusted process/host—not distributed production.
 
-## Durable Runtime
-Durable runtime is optional. Use it when a workflow needs leases, checkpoints, retry boundaries, distributed session ownership, or resume after process failure.
+## Recoverable Workflow Steps
 
-## Local Durable Execution
-Use the built-in local bundle for low-effort durable workflows on one host:
+Only workflows support recoverable invocation:
 
 ```ts
-import { localDurableExecution } from '@purista/harness'
+const result = await session.workflows.report.run(input, {
+	durable: { runId: `report:${input.reportId}:v1` },
+})
 
-const local = localDurableExecution({ root: '.purista/harness', exec: false })
-
-const harness = defineHarness()
-  .state(local.state)
-  .runtime(local.runtime)
-  .sandbox(local.sandbox)
-  .workspaceStore(local.workspaceStore)
-  .checkpoints(local.checkpoints)
-  .requires([
-    'runtime.persistent',
-    'runtime.workspace_checkpoint',
-    'workspace_store.persistent',
-    'workspace_store.resume',
-    'context_checkpoint.persistent'
-  ])
-  .models(...)
-  .agents(...)
-  .workflows(...)
-  .build()
+// Inside the workflow handler:
+const facts = await ctx.step('collect-facts-v1', () => collectFacts(ctx.input))
+const draft = await ctx.step('draft-v1', () => ctx.agents.writer(facts))
 ```
 
-The local bundle uses built-in Node/Bun SQLite for state/runtime/context
-checkpoints and a host directory for workspace checkpoints. Host exec is off by
-default; this mode is durable local persistence, not a hardened sandbox. When
-exec is enabled, commands run without a shell (tokenized argv), unquoted shell
-metacharacters are rejected under an `allowCommands` allow-list, output capture
-is capped at 10 MiB per stream, and the timeout falls back to the harness
-`toolTimeoutMs`. Files-only mode advertises
-`['sandbox.fs', 'sandbox.persistent_fs']`; exec adds `sandbox.exec`. Leases are
-renewed on every owner checkpoint, so runs longer than `leaseTtlMs` keep their
-lease.
+A committed step returns its JSON output on resume without re-running its body.
+Version a step id when its output contract or side-effect semantics change.
+Keep external effects idempotent because a crash can occur after an external
+commit and before the Harness checkpoint commits.
+
+Run statuses are `running`, `waiting`, `interrupted`, `succeeded`, `failed`,
+and `cancelled`. Only waiting/interrupted work is intended to resume; terminal
+runs must not be acquired again. Storage must serialize a session, enforce lease
+ownership, and atomically commit checkpoints.
+
+## External Waits And Human Review
+
+Inside a durable workflow, register only opaque bounded metadata:
 
 ```ts
-import { inMemoryDurableRuntime } from '@purista/harness'
-
-const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())
-  .requires(['runtime.checkpoint', 'runtime.resume_from_checkpoint'])
-  .models(...)
-  .agents(...)
-  .workflows(...)
-  .build()
+const signal = await ctx.externalWait.wait({
+	waitId: `payment:${ctx.input.paymentId}:review:v1`,
+	kind: 'human_review',
+	schemaVersion: '1',
+	definitionVersion: 'payment-v3',
+	deadline: new Date(Date.now() + 86_400_000).toISOString(),
+})
 ```
 
-`inMemoryDurableRuntime()` is useful for local tests; production durability needs a real adapter.
-
-Durable runtime concepts:
-- `DurableRunStart`: run/session/worker/step/input metadata
-- `DurableRunLease`: exclusive ownership token
-- `RunCheckpoint`: committed resumable boundary
-- `FinishRunPatch`: terminal status/output/error
-- terminal statuses: `succeeded`, `failed`, `cancelled`
-
-Errors:
-- `DurableRunLeaseError` when a run/session is already owned or lease metadata does not match
-- `DurableTerminalRunError` when attempting to resume a `succeeded` or `cancelled` run — a `failed` run is recorded terminal with its sanitized error but stays resumable by a retry with the same `runId`
-- `DurableStepError` when a durable step fails or a checkpoint payload is not JSON-serializable
-
-## Durable Workflow Context
-The runtime exports `createDurableWorkflowContext` and step helpers for checkpointed code paths. Keep durable checkpoints at deterministic boundaries; do not treat live streams as recovery state.
-
-Recovery starts from the last committed checkpoint, not from the last observed stream event.
-
-### Auto-wiring through the session run loop
-Durable execution is opt-in **per workflow call**. Mark boundaries in the handler with `ctx.step(stepId, fn, options?)` and invoke with a stable `durable.runId`:
+A pending wait throws `ExternalWaitPendingError`; storage atomically marks the
+run waiting and releases its lease. The application persists the review task,
+authenticates and authorizes reviewers, binds the decision to an action digest,
+and delivers one terminal signal:
 
 ```ts
-const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())     // executable DurableRuntime
-  .workspaceStore(inMemoryDurableWorkspaceStore())  // optional
-  .models(...).agents(...)
-  .workflows({
-    job: {
-      delegation: { agents: ['prepare', 'finish'] },
-      handler: async (ctx) => {
-        const a = await ctx.step('a', () => ctx.agents.prepare(ctx.input), {
-          retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
-        })
-        return ctx.step('b', () => ctx.agents.finish(a))
-      },
-    },
-  })
-  .build()
-
-const session = await harness.getSession('s1')
-await session.workflows.job.prompt(input, { durable: { runId: 'job-2026-06-09' } })
+await storage.signalWait({
+	waitId,
+	eventId: delivery.id,
+	outcome: 'approved',
+})
 ```
 
-Rules:
-- Workflow-only. `opts.durable` on an agent run throws `ValidationError`; without an executable `.runtime(...)` it throws `HarnessConfigError{reason:'durable_runtime_required'}`.
-- The harness acquires a lease for `durable.runId`, injects durable `ctx.step`, finalizes `finishRun`, and (with a workspace store) starts/resumes the workspace, writes a workspace checkpoint before each runtime checkpoint, cleans up on success when retention `cleanupMode` is `adapter_automatic`, aborts on cancellation, and leaves a non-cancel failure resumable.
-- `options.retry` retries a step body before checkpoint commit. A committed step replays its stored output on resume without re-running its body or retry policy. Without `durable`, `ctx.step` is a transparent pass-through that still honors short retry options.
-- Resume across process restart needs `runtime.persistent` and
-  `workspace_store.persistent`; the in-memory adapters are local/test only.
-- Use `ctx.checkpoints.write(...)` for explicit long-horizon summaries or
-  handoff records. The harness does not auto-summarize or inject checkpoint
-  payloads into prompts.
-- For long-running workflows that may outlive a deployment, include an
-  application `workflowVersion` in input or metadata, keep step outputs
-  backward-compatible, and chain a new durable run when a major migration needs
-  a new code path.
+Then invoke the same workflow with the same durable run id. Signals are
+idempotent and return `applied`, `duplicate`, `already_terminal`, or
+`not_found`. Do not persist review text, tool payloads, reviewer identities, or
+credentials in the wait record.
 
-## Feedback
-Feedback is optional and application-owned. Core exports shared types and test helpers, not a production feedback store.
+`ExternalWaitOutcome` is approved/rejected/expired/cancelled; it is distinct
+from `ToolApprovalInterrupt` and `ToolApprovalResume`. Validate authorization, current revision,
+expiry, and approved action digest only before acquiring a new atomic execution
+claim. An existing claim resumes its original execution key and a completed
+claim returns its stored receipt; never strand admitted effects with fresh
+policy/expiry checks during recovery. The application invokes the domain command
+idempotently and stores the execution receipt. Harness owns neither reviewer
+CRUD nor the claim/receipt store. A crash between effect, receipt, and checkpoint
+must remain safe to replay under that same binding.
 
-Targets:
+## Production Adapters
+
+Implement one shared `HarnessStorage` with transactional run acquisition,
+checkpoint, wait, session-lock, retention, and deletion semantics. Do not wrap
+a generic key/value state store. Verify it with:
 
 ```ts
-type FeedbackTarget =
-  | { kind: 'run'; runId: string }
-  | { kind: 'message'; sessionId: string; messageId: string }
-  | { kind: 'tool_call'; runId: string; callId: string }
-  | { kind: 'agent_invocation'; runId: string; agentId: string }
+import { durableWorkspaceContract, harnessStorageContract } from '@purista/harness/testing'
+
+harnessStorageContract(() => createPostgresHarnessStorage(testDatabase))
+durableWorkspaceContract(() => createObjectStorageWorkspace(testBucket))
 ```
 
-Record shape:
+Add backend-specific multi-process contention, lease expiry, migration,
+encryption, outage, retention, and tenant-isolation tests.
 
-```ts
-{
-  id: string,
-  target,
-  source: 'user' | 'application' | 'deterministic_rule' | 'evaluator' | 'human_review',
-  label: string,
-  score?: number,
-  comment?: string,
-  metadata?: Record<string, JsonValue>,
-  createdAt: string
-}
-```
+## Observability And Privacy
 
-Use `createInMemoryFeedbackRecorder()` from `@purista/harness/testing` for tests and examples.
+Storage emits content-free `harness.storage.*` spans and operation/duration
+metrics. Workspace emits `harness.workspace.*`. Correlate adapter, operation,
+run/session, attempt, sequence, wait kind/outcome, duration, and normalized
+errors where defined. Never record prompt text, checkpoint values, files, wait
+ids, credentials, or reviewer data.
 
-## Readiness
-Before exposing a harness-backed service:
-- verify `harness.inspect()` includes required capabilities
-- verify session creation
-- smoke-test every public agent/workflow entrypoint
-- test tool/MCP/model failure mapping
-- test cancellation and timeout behavior
-- confirm logs/traces include `session_id` and `run_id`
-- verify `harness.shutdown()` closes providers, state stores, sandboxes, and MCP runners
+## Feedback And Readiness
 
-## Common Failures
-| Symptom | Likely Cause | Action |
-|---|---|---|
-| `SessionBusyError` | Two runs in one session. | Use distinct sessions or wait. |
-| `OperationTimeoutError` | Run/model/tool exceeded budget. | Tune defaults and inspect latency. |
-| `ValidationError` | Schema mismatch. | Inspect Zod issues in `meta`. |
-| `ModelCapabilityError` | Alias lacks capability or provider method. | Fix alias capabilities/provider adapter. |
-| `SandboxNoExecutorError` | Exec requested in files-only sandbox. | Use `bashSandbox()` or disable exec path. |
-| `McpProtocolError` | MCP connect/list/call failed. | Check command/url/schema/stderr. |
-| `McpAuthError` | HTTP MCP auth failed. | Check token/auth config. |
+Feedback remains an application-owned record and has an in-memory testing
+recorder; core does not provide a production feedback database. Readiness
+should fail when required storage/workspace capabilities are absent or a
+persistent adapter cannot initialize. Application health checks should test the
+configured backend without exposing content.
 
-## Recovery
-1. Capture `runId` and `sessionId`.
-2. Inspect logs and trace by those ids.
-3. Inspect final `run.finished` error payload.
-4. Check state/event persistence for the run.
-5. For durable runs, inspect last committed checkpoint and lease state.
-6. Fix provider/tool/sandbox/config issue.
-7. Re-run a smoke test.
-8. Shut down cleanly with `harness.shutdown()`.
+## Storage Schema Readiness
+
+SQLite storage rejects incompatible schema layouts with
+`HarnessConfigError` reason `sqlite_schema_incompatible`; it never silently
+rewrites an existing database. Configure a database using the current storage
+schema. Keep application business state in application-owned storage.

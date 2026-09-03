@@ -1,35 +1,37 @@
 # Agents
 
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
+>
+> **Approved registration update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) supersedes agent callback-helper registration and Guardrails attachment in this document and spec 38.
+
 Agents are configured high-level: declare input/output schemas, a model alias, instructions, optional custom tools, optional skills, and an optional permission policy. The harness runs the default agent loop — call model, dispatch tool calls, repeat until a final answer or `maxSteps` is exhausted. Custom loops via `handler` remain available as an escape hatch.
 
-There is no standalone `defineAgent` factory; only inline-in-builder objects achieve the cross-key type constraints (`model` referencing a `.models()` key, `tools[]`/`skills[]` referencing `.tools()`/`.skills()` keys).
+There is no standalone `defineAgent` factory; only inline-in-builder objects achieve the cross-key type constraints (`model` referencing a `.model()`/`.models()` key, `tools[]` referencing `.tool()`/`.tools()` keys, and `skills[]` referencing `.skill()`/`.skills()` keys).
 
 ## `AgentDefinition` (inline in builder)
 
 ```ts
-import type { z } from 'zod'
-
 interface AgentDefinition<
   S,
-  I extends z.ZodTypeAny = z.ZodTypeAny,
-  O extends z.ZodTypeAny = z.ZodTypeAny,
+  I extends Schema = Schema,
+  O extends Schema = Schema,
 > {
   input?: I                                                     // default: z.string()
   output?: O                                                    // default: z.string()
   model: keyof S['models'] & string
-  instructions: string | ((ctx: AgentContextMinimal<S, z.infer<I>>) => string)
+  instructions: string | ((ctx: AgentContextMinimal<S, Infer<I>>) => string)
 
   tools?: readonly (keyof S['tools'] & string)[]                // custom tools
-  builtinTools?: readonly BuiltinToolName[] | false             // default: all enabled (subject to executor availability)
+  builtinTools?: readonly BuiltinToolName[] | false             // default: none; explicit canonical-name allowlist
   skills?: readonly (keyof S['skills'] & string)[]
 
   permissions?: AgentPermissions
-  onPermission?: OnPermission
 
   maxSteps?: number                                             // default 16; positive integer, no hard upper cap
-  prepareStep?: (ctx: AgentPrepareStepContext<S, z.infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
-  stopWhen?: (ctx: AgentStopWhenContext<S, z.infer<I>>) => boolean | Promise<boolean>
-  handler?: (ctx: AgentContext<S, z.infer<I>, z.infer<O>>) => Promise<z.infer<O>>   // escape hatch
+  prepareStep?: (ctx: AgentPrepareStepContext<S, Infer<I>>) => AgentPrepareStepResult<S> | Promise<AgentPrepareStepResult<S> | void> | void
+  stopWhen?: (ctx: AgentStopWhenContext<S, Infer<I>>) => boolean | Promise<boolean>
+  interceptors?: readonly AgentExecutionInterceptor<S, Infer<I>>[]
+  handler?: (ctx: AgentContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>   // escape hatch
 }
 
 type BuiltinToolName = 'bash' | 'read' | 'write' | 'edit' | 'glob' | 'grep' | 'list'
@@ -45,7 +47,19 @@ interface AgentContextMinimal<S, I> {
 }
 ```
 
-The agent id is the key under `.agents({...})`. The builder validates each entry synchronously (see [02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped `MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md); `ctx.memory.session` is equivalent to `session.memory` for the current session, and `ctx.memory.agent` is bound to the current agent id when the configured adapter supports agent scope. Durable workspace replay is not exposed as an always-present agent context helper; custom handlers that need it receive application-owned runtime bindings or use workflow step semantics backed by [21-durable-workspaces](./21-durable-workspaces.md).
+This compact shape shows shared fields. The public declaration is a correlated union: a default-loop entry without `handler` requires `O extends ModelSchema`; a custom-handler entry permits `O extends Schema`. Caller input is `InferIn<I>`, while callbacks receive validated `Infer<I>`.
+
+The agent id is the first argument to `.agent(id, definition)` or a key under
+`.agents({...})`. Both methods are repeatable and contribute to the same typed
+registry. The builder validates each entry synchronously (see
+[02-harness-config](./02-harness-config.md)). Agent contexts receive the scoped
+`MemoryFacade` defined in [20-memory-adapters](./20-memory-adapters.md);
+`ctx.memory.session` is equivalent to `session.memory` for the current session,
+and `ctx.memory.agent` is bound to the current agent id when the configured
+adapter supports agent scope. Durable workspace replay is not exposed as an
+always-present agent context helper; custom handlers that need it receive
+application-owned runtime bindings or use workflow step semantics backed by
+[21-durable-workspaces](./21-durable-workspaces.md).
 
 ## `AgentContext`
 
@@ -58,7 +72,8 @@ interface AgentContext<S, I, O> {
   skills: { [K in NonNullable<S['agents'][string]['skills']>[number]]: SkillHandle }
   memory: MemoryFacade
   history: ConversationHistory          // read-only
-  log: Logger
+  logger: Logger
+  telemetry: TelemetryShim
   signal: AbortSignal
   runId: string
   sessionId: string
@@ -82,87 +97,11 @@ decisions through the lifecycle in [24-governance-policy](./24-governance-policy
 
 ## Permissions
 
-### Per-tool permission
-
-```ts
-type PermissionMode = 'allow' | 'ask' | 'deny'
-
-interface PermissionPolicy {
-  mode: PermissionMode
-  allow?: readonly string[]   // glob-like patterns matched against the input "command" (bash) or "path" (read/write/edit/list/glob/grep)
-  deny?: readonly string[]
-}
-
-interface AgentPermissions {
-  bash?:  PermissionMode | PermissionPolicy   // default 'allow'
-  write?: PermissionMode | PermissionPolicy   // default 'allow'
-  edit?:  PermissionMode | PermissionPolicy   // default 'allow'
-  // read/list/glob/grep default to 'allow' and cannot be set to 'ask' or 'deny' (read-only operations always allowed within the sandbox)
-}
-```
-
-Locked semantics:
-
-- `'allow'` — call proceeds unconditionally.
-- `'deny'` — throws `PermissionDeniedError` before invocation.
-- `'ask'` — invokes `onPermission` if defined; if undefined, treated as `'deny'`.
-- Pattern matching: glob-style (`*` matches any chars except `/`, `**` matches any including `/`). For `bash`, matched against the literal command string; for file tools, against the path. `deny` patterns evaluated first; then `allow` (if non-empty, must match); then `mode`.
-- Read-only built-ins (`read`, `list`, `glob`, `grep`) cannot be denied in v1 — the model needs to navigate the sandbox FS for skill discovery to work. Locked rule.
-
-### `onPermission` hook
-
-```ts
-interface PermissionContext {
-  toolName: string         // canonical name
-  input: unknown           // tool input
-  agentId: string
-  runId: string
-  sessionId: string
-}
-type PermissionDecision = 'allow' | 'deny'
-type OnPermission = (ctx: PermissionContext) => Promise<PermissionDecision>
-```
-
-`onPermission` is the ONLY async branch in the loop apart from tool execution itself. Timeouts: bounded by `defaults.toolTimeoutMs`. Hook errors → `PermissionDeniedError{reason:'hook_failed'}` and the tool call is denied.
-
-Permission denials inside the loop are *recoverable* — the model is informed via a tool result message (`{error:'PERMISSION_DENIED'}`) and can adapt. Throwing a harness error would defeat the point. The agent run does NOT terminate on a permission denial.
+AgentPermissions retains bash/write/edit modes and allow/deny glob patterns. Modes are allow, require_approval and deny. Read/list/glob/grep remain outside this coarse denial configuration. Permission and policy approval demands are combined in one `ToolApprovalInterrupt`; the application resumes the same run with `ToolApprovalResume`. Exact validation, precedence, pattern behavior and failure outcomes: [decision contracts](./37-decision-boundaries/03-contracts/decisions.md).
 
 ## Default loop
 
-The default loop requires the agent's model alias to claim `'object'` (and `'tool_use'` if the agent declares any `tools` or has any built-in tools enabled). Enforced at `defineHarness` time.
-
-When `handler` is undefined, the harness executes this algorithm:
-
-1. **Validate input** against the `input` schema → `ValidationError{where:'agent_input'}` on failure.
-2. **Open sandbox session** (if not already open for this session). Mount declared skills.
-3. **Build system message**:
-   - Resolve `instructions` (string or function call).
-   - Append the skill catalog format defined in [08-skills](./08-skills.md), including `Location: /skills/<name>/SKILL.md` and optional compatibility.
-4. **Resolve tool set**:
-   - Custom tools from `tools[]` (typed against harness config).
-   - Built-in tools per `builtinTools` rule, filtered by sandbox executor availability.
-5. **Build initial messages**: prior conversation history (capped by effective `historyWindow`) + the current user input as `Message{role:'user', content: stringify(input)}`. `stringify` is `String(input)` if a string, else `JSON.stringify(input)`.
-6. **Loop** up to `maxSteps`:
-   - a. If `prepareStep` is configured, call it with the zero-based `step`, selected model alias, current `messages`, and full model-facing tool list. Its result may override the model alias, instruction text, active tool names, model messages, and model call options for this model call only.
-   - b. Call `models[stepModel].object(messages, tools, schema=outputSchema)`.
-   - c. Emit `model.object` with the model alias used for this step.
-   - d. If `stopWhen` returns `true`, validate `response.object` against the output schema and return without executing requested tool calls.
-   - e. If response has no tool calls and includes structured `object` matching the output schema: validate; return.
-   - f. If response has no tool calls and no valid `object`: throw `ModelError{reason:'unstructured_response'}`.
-   - g. Execute the tool calls returned by that model response as one parallel batch, capped by `defaults.maxParallelToolCalls`:
-     - Resolve canonical tool name (alias → canonical).
-     - Check permissions. On `'deny'`, append a tool result message `{role:'tool', content: JSON.stringify({error:'PERMISSION_DENIED'})}` and continue (does NOT throw — the model can adapt).
-     - Validate tool input against the tool schema. On failure, append a tool result with `error: ValidationError`.
-     - If governance is configured, evaluate `phase:'pre'` policy. Enforced
-       denial or failed approval appends a tool result message
-       `{error:'POLICY_DENIED'}` and continues without invoking the tool.
-     - Execute the tool (with timeout). On error, append the tool result with the serialized error.
-     - If governance is configured, evaluate `phase:'post'` policy for audit
-       and visibility after output validation or error serialization.
-     - Emit `tool.started` and `tool.finished` for each call as it starts/finishes; events from different calls in the same batch may interleave.
-     - Append the assistant message + tool result messages to local history after the batch finishes, preserving the original model-returned tool-call order. When the model response carries `providerItems` (see [06-models](./06-models.md)), attach them unchanged to that assistant message so the provider can replay them on the next loop round; `providerItems` stay local to the loop and are not persisted.
-   - h. Increment the step counter; if it exceeds `maxSteps`, throw `AgentLoopBudgetError{reason:'iterations_exceeded'}`.
-7. **Persist**: append every assistant + tool message produced in the loop to session history via `StateStore.appendMessages`.
+The agent requires object capability and tool_use when tools are enabled. Parse input; apply ordered beforeInput with per-transform reparse; create sandbox and instructions; prepare model step; filter exposure; apply message-only beforeModel; call model; account completed response; apply observation-only afterModel. A final candidate passes beforeOutput then output schema, content event and persistence. Tool batches preflight every call before execution, preserve canonical effective wire arguments and once-parsed inputs, then apply permission/governance/approval/handler/output processing. Exact deadline, replay and cancellation rules are [CTR-DB-TOOLS and CTR-DB-RAILS](./37-decision-boundaries/03-contracts/decisions.md). No original uninspected tool arguments or intermediate assistant content are persisted.
 
 ### Loop controls
 
@@ -191,7 +130,7 @@ how many of those returned calls the harness executes concurrently. Keep these
 separate: one is provider generation behavior; the other is local runtime
 backpressure.
 
-`agent.output` (Zod) is converted to JSON Schema for the model call. See [13-public-api](./13-public-api.md) §"Schema conversion".
+For default-loop agents, `agent.output` is a `ModelSchema`. Its Standard JSON Schema input projection is compiled once during `build()` and reused for model calls. Custom-handler output needs only `Schema`. See [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/model-projection.md).
 
 ### Tool spec construction
 
@@ -199,7 +138,7 @@ For each enabled tool (custom or built-in):
 
 - `name`: tool id (custom) or canonical name (built-in).
 - `description`: from config / built-in registry.
-- `parameters`: JSON Schema derived from the tool's input Zod schema (custom TS) or built-in registry; cached from upstream `tools/list` for MCP tools.
+- `parameters`: cached JSON Schema from the tool input's Standard JSON Schema projection (custom TS) or built-in registry; cached from upstream `tools/list` for MCP tools.
 
 ## History conversion
 
@@ -240,7 +179,7 @@ handlers should still stop work promptly when `signal` aborts.
 
 ## Custom handler agents
 
-When `handler` is provided, the harness skips the default loop and invokes `handler(ctx)`. The handler is responsible for using `models`, `tools`, `skills`, etc. Output is still validated against `output.parse` after the handler returns.
+When `handler` is provided, the harness skips the default loop and invokes `handler(ctx)`. The handler is responsible for using `models`, `tools`, `skills`, etc. Its return is still awaited through the shared Standard Schema validator before completion.
 The harness passes the run signal into `ctx.signal` and races the handler
 against cancellation/timeout so a hung custom handler does not block the run
 record from reaching a terminal state.
@@ -266,7 +205,7 @@ and persisted-event redaction. There is no arbitrary custom-event emitter on
   `harness.error.scope` and `harness.error.timeout_ms` when present.
 - Histogram `harness.agent.iterations` (sample of total iterations).
 - Counter `harness.permission.denials` per denied tool call.
-- RunEvents: `agent.started`, `agent.finished`, `model.object`, opt-in stream events (`model.delta`, `model.object.partial`, streamed final `model.object`) where model stream calls publish chunks, `tool.started`/`tool.finished`.
+- RunEvents: `agent.started`, `agent.finished`, `model.completed`, `model.object`, opt-in stream events (`model.delta`, `model.object.partial`, streamed final `model.object`) where model stream calls publish chunks, `tool.started`/`tool.finished`.
 
 ## Errors
 
@@ -278,7 +217,7 @@ and persisted-event redaction. There is no arbitrary custom-event emitter on
 | `ToolNotFoundError`    | model returned tool call for unknown name                  |
 | `PermissionDeniedError`| `'deny'` mode or hook failure (per call; recoverable)      |
 | `PolicyDeniedError`    | optional governance denied a tool call or approval failed (recoverable in default loop) |
-| `PolicyEvaluationError`| optional governance evaluator failed or returned an invalid decision |
+| `DecisionEvaluationError`| optional governance evaluator failed or returned an invalid decision |
 | `ModelError`           | provider failure                                           |
 | `OperationTimeoutError`| per-call or run timeout                                    |
 | `OperationCancelledError` | aborted                                                 |

@@ -15,19 +15,32 @@ import type {
   TextRequest,
   TextResponse,
   TextStreamChunk,
-  TokenUsage
+  TokenUsage,
 } from '../ports/model-provider.js'
 import type { JsonValue } from '../models/json.js'
 import type { RunEvent } from '../harness/defineHarness.js'
 
 import { FakeLogger } from './fakeLogger.js'
 import { FakeSandbox } from './fakeSandbox.js'
-import { FakeStateStore } from './fakeStateStore.js'
+import { FakeHarnessStorage } from './fakeHarnessStorage.js'
+import { FakeModelProvider } from './fakeModelProvider.js'
 import { loggerContract } from './loggerContract.js'
 import { modelProviderContract } from './modelProviderContract.js'
 import { recordEvents } from './recordEvents.js'
-import { sandboxContract } from './sandboxContract.js'
-import { stateStoreContract } from './stateStoreContract.js'
+import { sandboxActorBarrierContract, sandboxContract, sandboxTextSearchContract } from './sandboxContract.js'
+import { harnessStorageContract } from './harnessStorageContract.js'
+
+const fakeScope = {
+  owner: { namespace: 'fake-test', id: 's1', instanceId: '01J00000000000000000000000' },
+  partition: { kind: 'shared' as const },
+  lifetime: 'run' as const,
+  runId: 'r1',
+}
+
+async function openFake(sandbox: FakeSandbox) {
+  await sandbox.registerOwner({ owner: fakeScope.owner, mode: 'create' })
+  return await sandbox.open({ scope: fakeScope, mode: 'create' })
+}
 
 function usage(): TokenUsage {
   return { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
@@ -41,7 +54,12 @@ class ContractProvider extends BaseModelProvider {
 
   protected override async doText(req: TextRequest): Promise<TextResponse> {
     req.signal.throwIfAborted()
-    return { content: 'ok', usage: usage(), finishReason: 'stop', outcome: { finishReason: 'stop', providerFinishReason: 'stop' } }
+    return {
+      content: 'ok',
+      usage: usage(),
+      finishReason: 'stop',
+      outcome: { finishReason: 'stop', providerFinishReason: 'stop' },
+    }
   }
 
   protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
@@ -50,15 +68,25 @@ class ContractProvider extends BaseModelProvider {
     yield { kind: 'finish', usage: usage(), finishReason: 'stop', outcome: { finishReason: 'stop' } }
   }
 
-  protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+  protected override async doObject<T extends JsonValue = JsonValue>(
+    req: ObjectRequest<T>,
+  ): Promise<ObjectResponse<T>> {
     req.signal.throwIfAborted()
     return { object: { ok: true } as T, usage: usage(), finishReason: 'stop', outcome: { finishReason: 'stop' } }
   }
 
-  protected override async *doObjectStream<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+  protected override async *doObjectStream<T extends JsonValue = JsonValue>(
+    req: ObjectRequest<T>,
+  ): AsyncIterable<ObjectStreamChunk<T>> {
     req.signal.throwIfAborted()
     yield { kind: 'partial', partial: {} }
-    yield { kind: 'finish', object: { ok: true } as T, usage: usage(), finishReason: 'stop', outcome: { finishReason: 'stop' } }
+    yield {
+      kind: 'finish',
+      object: { ok: true } as T,
+      usage: usage(),
+      finishReason: 'stop',
+      outcome: { finishReason: 'stop' },
+    }
   }
 
   protected override async doEmbed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -69,25 +97,58 @@ class ContractProvider extends BaseModelProvider {
 
   protected override async doRerank(req: RerankRequest): Promise<RerankResponse> {
     req.signal.throwIfAborted()
-    return { results: req.documents.map((document, index) => ({ id: document.id, index, score: req.documents.length - index })) }
+    return {
+      results: req.documents.map((document, index) => ({
+        id: document.id,
+        index,
+        score: req.documents.length - index,
+      })),
+    }
   }
 }
 
-stateStoreContract(() => new FakeStateStore())
+harnessStorageContract(() => new FakeHarnessStorage())
 
 sandboxContract(() => new FakeSandbox({ executor: 'unavailable' }), { executor: 'unavailable' })
+sandboxActorBarrierContract(() => new FakeSandbox({ executor: 'unavailable' }))
+sandboxTextSearchContract(() => new FakeSandbox({ executor: 'unavailable' }))
 
 loggerContract(() => new FakeLogger())
-loggerContract(() => new JsonLogger({ out: new Writable({ write(_chunk, _encoding, callback) { callback() } }) }))
+loggerContract(
+  () =>
+    new JsonLogger({
+      out: new Writable({
+        write(_chunk, _encoding, callback) {
+          callback()
+        },
+      }),
+    }),
+)
 
 modelProviderContract(() => new ContractProvider(), {
-  capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank']
+  capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank'],
 })
 
-describe('FakeStateStore inspection helpers', () => {
+describe('FakeHarnessStorage inspection helpers', () => {
   it('records invoked operations in order', async () => {
-    const store = new FakeStateStore()
-    await store.upsertSession({ id: 's1', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', runCount: 0 })
+    const store = new FakeHarnessStorage()
+    await store.upsertSession(
+      {
+        id: 's1',
+        instanceId: '01J00000000000000000000001',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        runCount: 0,
+        sandboxBinding: {
+          owner: { namespace: 'test', id: 's1', instanceId: '01J00000000000000000000001' },
+          relation: 'owned',
+          registration: 'pending',
+          policyDigest: 'a'.repeat(64),
+          disposed: false,
+        },
+      },
+      'create',
+    )
     await store.getSession('s1')
     expect(store.ops).toEqual(['upsertSession', 'getSession'])
     expect(store.opCount('getSession')).toBe(1)
@@ -96,26 +157,56 @@ describe('FakeStateStore inspection helpers', () => {
   })
 })
 
+describe('FakeModelProvider strict fixtures', () => {
+  it('rejects missing and mismatched scripted responses', async () => {
+    const missing = new FakeModelProvider({ strict: true })
+    await expect(missing.object({ model: 'fake', messages: [], signal: new AbortController().signal })).rejects.toThrow(
+      'unexpected object request. No response is queued.',
+    )
+
+    const mismatched = new FakeModelProvider({ strict: true })
+    mismatched.enqueueText({ content: 'wrong operation', finishReason: 'stop' })
+    await expect(
+      mismatched.object({ model: 'fake', messages: [], signal: new AbortController().signal }),
+    ).rejects.toThrow('unexpected object request. The next queued response is for text.')
+    expect(() => mismatched.assertExhausted()).toThrow('1 unconsumed scripted response.')
+  })
+
+  it('confirms that every scripted response was consumed', async () => {
+    const provider = new FakeModelProvider({ strict: true })
+    provider.enqueueObject({ object: { priority: 'high' }, finishReason: 'stop' })
+
+    await provider.object({ model: 'fake', messages: [], signal: new AbortController().signal })
+
+    expect(() => provider.assertExhausted()).not.toThrow()
+    expect(provider.requests).toHaveLength(1)
+  })
+})
+
 describe('FakeSandbox executor', () => {
   it('advertises capabilities matching the executor flag', () => {
-    expect(new FakeSandbox().capabilities).toEqual(['sandbox.fs', 'sandbox.exec'])
-    expect(new FakeSandbox({ executor: 'unavailable' }).capabilities).toEqual(['sandbox.fs'])
+    expect(new FakeSandbox().capabilities).toEqual(['sandbox.fs', 'sandbox.text_search', 'sandbox.exec'])
+    expect(new FakeSandbox({ executor: 'unavailable' }).capabilities).toEqual(['sandbox.fs', 'sandbox.text_search'])
   })
 
   it('default exec echoes deterministically and fails unknown commands', async () => {
-    const session = await new FakeSandbox().open({ sessionId: 's1', runId: 'r1' })
+    const session = (await openFake(new FakeSandbox())).session
     expect(await session.exec('echo hi')).toMatchObject({ stdout: 'hi\n', exitCode: 0 })
     expect(await session.exec('curl example.com')).toMatchObject({ exitCode: 127 })
   })
 
   it('supports scripted exec handlers and pre-aborted signals', async () => {
-    const sandbox = new FakeSandbox({ exec: () => ({ stdout: 'scripted', stderr: '', exitCode: 0, durationSeconds: 0 }) })
-    const session = await sandbox.open({ sessionId: 's1', runId: 'r1' })
+    const sandbox = new FakeSandbox({
+      exec: () => ({ stdout: 'scripted', stderr: '', exitCode: 0, durationSeconds: 0 }),
+    })
+    const session = (await openFake(sandbox)).session
     expect(await session.exec('anything')).toMatchObject({ stdout: 'scripted' })
 
     const controller = new AbortController()
     controller.abort()
-    await expect(session.exec('echo hi', { signal: controller.signal })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(session.exec('echo hi', { signal: controller.signal })).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+    })
   })
 })
 

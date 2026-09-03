@@ -9,8 +9,15 @@ describe('Session.getRunSummary', () => {
     const provider = new FakeModelProvider()
     provider.enqueueObject({
       object: { label: 'ok' },
-      usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 2, cacheCreationInputTokens: 1, reasoningTokens: 3 },
-      finishReason: 'stop'
+      usage: {
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+        cachedInputTokens: 2,
+        cacheCreationInputTokens: 1,
+        reasoningTokens: 3,
+      },
+      finishReason: 'stop',
     })
 
     const harness = defineHarness({ name: 'summary-test' })
@@ -18,23 +25,21 @@ describe('Session.getRunSummary', () => {
         fake: {
           provider,
           model: 'fake-model',
-          capabilities: ['object']
-        }
+          capabilities: ['object'],
+        },
       })
-      .agents(({ agent }) => ({
-        triage: agent({
-          model: 'fake',
-          input: z.object({ message: z.string() }),
-          output: z.object({ label: z.string() }),
-          builtinTools: false,
-          instructions: 'Return a label.'
-        })
-      }))
+      .agent('triage', {
+        model: 'fake',
+        input: z.object({ message: z.string() }),
+        output: z.object({ label: z.string() }),
+        builtinTools: false,
+        instructions: 'Return a label.',
+      })
       .build()
 
     const session = await harness.getSession('user:1')
     const events = []
-    for await (const event of session.agents.triage.stream({ message: 'hello' })) {
+    for await (const event of session.agents.triage.observe({ message: 'hello' })) {
       events.push(event)
     }
     const runId = events[0]?.runId
@@ -44,10 +49,17 @@ describe('Session.getRunSummary', () => {
       runId,
       sessionId: 'user:1',
       status: 'succeeded',
-      tokenTotals: { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 2, cacheCreationInputTokens: 1, reasoningTokens: 3 },
+      tokenTotals: {
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+        cachedInputTokens: 2,
+        cacheCreationInputTokens: 1,
+        reasoningTokens: 3,
+      },
       modelCalls: 1,
       toolCalls: 0,
-      agentCalls: 1
+      agentCalls: 1,
     })
 
     await harness.shutdown()

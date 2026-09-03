@@ -1,0 +1,68 @@
+{
+  "name": "@purista/harness-guardrails-local-ner",
+  "version": "3.0.0",
+  "description": "Optional local Transformers.js NER detector for @purista/harness-guardrails.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-guardrails-local-ner"
+  },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:node": "node test/runtime-smoke.mjs",
+    "test:bun": "bun test/runtime-smoke.mjs"
+  },
+  "peerDependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@purista/harness-guardrails": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@purista/harness-guardrails": "^3.0.0",
+    "@types/node": "^26.2.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

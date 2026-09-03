@@ -13,7 +13,7 @@ configuration and run behavior while preserving normal production cost and
 privacy characteristics.
 
 Both features live under `@purista/harness/testing` or explicit development
-options. They are disabled by default and do not write to `StateStore`,
+options. They are disabled by default and do not write to `HarnessStorage`,
 persisted events, memory, workspaces, checkpoints, telemetry payloads, or
 production logs.
 

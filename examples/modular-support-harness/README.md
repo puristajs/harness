@@ -7,8 +7,9 @@ ownership of its workflow and customer-specific state.
 ## Run it
 
 ```bash
-npm run test --workspace @purista/modular-support-harness
-OPENAI_API_KEY=... npm run start --workspace @purista/modular-support-harness
+npm install
+npm run test
+OPENAI_API_KEY=... npm run start
 ```
 
 Set `OPENAI_MODEL` to override the default `gpt-5-mini` model. The tests inject
@@ -21,7 +22,7 @@ a deterministic provider, so they never require a network call or a credential.
   builder rejects duplicate module and definition ids instead of silently
   replacing a previous contribution.
 - **Keep business orchestration local.** `answer_support_ticket` is deliberately
-  not a module. It owns the tenant/session state and composes the reusable
+  not a module. It owns the tenant-specific workflow and composes the reusable
   `answer_ticket` agent with the app's domain behavior.
 - **Prepare for large tool results.** The default retry-only context projection
   prunes oversized future tool results only if a model rejects the original

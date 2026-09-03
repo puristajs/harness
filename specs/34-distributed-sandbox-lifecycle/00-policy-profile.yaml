@@ -1,0 +1,50 @@
+policy_profile_version: 1
+status: approved
+profile_id: distributed-sandbox-boundary-v2
+authority: repository_owner
+allowed_default_refs: [POL-SBX-MECHANICAL]
+profiles:
+  - policy_ref: POL-SBX-MECHANICAL
+    name: harness-mechanical-defaults
+    source_ref: 00-conventions.md
+    allowed_classes: [D0, D1]
+    scope: Private reversible helper naming and test placement only; repository implementation guidance remains authoritative.
+decisions:
+  identity:
+    standalone_harness: exact optional HarnessIdentity; no synthetic values
+    purista_integration: application policy may require tenantId and principalId before Harness access
+    mismatch_result: validation_error_before_sandbox_access
+  recovery:
+    durable_files_source: latest committed DurableWorkspace checkpoint
+    missing_checkpoint_result: SandboxStateLostError
+    empty_fallback: forbidden
+    new_scope_mode: create
+    persisted_scope_mode: attach
+    recovered_run_mode: restore
+    live_process_preservation: optional capability
+  coordination:
+    owner: Sandbox adapter or its private control plane
+    runtime_topology_signal: forbidden
+    business_logic_topology_branch: forbidden
+    production_release_evidence: sandboxMultiClientContract
+    alternate_interface: forbidden
+    provider_fencing: required and contract-tested
+    harness_storage_extension: forbidden
+    sticky_routing_correctness_role: none
+  telemetry:
+    content_capture_mode: NO_CONTENT
+    provider_reference_capture: forbidden
+    identity_capture: forbidden
+  retention:
+    owner: adapter configuration
+    harness_defaults: none
+    harness_scheduler: none
+  docker_local:
+    source: 05-integration/local-docker.md
+    configuration_contract: CTR-SBX-DOCKER
+    network_default: none
+    image_acquisition: explicit_caller_preparation
+    execution_identity: non_root
+    default_limits: 1 CPU, 512 MiB memory, 128 PIDs, 64 MiB temporary storage
+    cleanup: explicit_termination_with_retry
+    compute_loss_recovery: unavailable_until_compatible_workspace_binding_is_approved

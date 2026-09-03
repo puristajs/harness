@@ -1,0 +1,740 @@
+traceability_version: 1
+requirements:
+  - requirement_id: "REQ-DB-FOUNDATION"
+    capability_ids:
+      - "CAP-DB-FOUNDATION"
+    path_ids:
+      - "PATH-DB-FOUNDATION-SUCCESS"
+      - "PATH-DB-FOUNDATION-FAILURE"
+      - "PATH-DB-FOUNDATION-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-FOUNDATION-SUCCESS"
+      - "AC-DB-FOUNDATION-FAILURE"
+      - "AC-DB-FOUNDATION-RECOVERY"
+  - requirement_id: "REQ-DB-GOVERNANCE"
+    capability_ids:
+      - "CAP-DB-GOVERNANCE"
+    path_ids:
+      - "PATH-DB-GOVERNANCE-SUCCESS"
+      - "PATH-DB-GOVERNANCE-FAILURE"
+      - "PATH-DB-GOVERNANCE-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-GOVERNANCE-SUCCESS"
+      - "AC-DB-GOVERNANCE-FAILURE"
+      - "AC-DB-GOVERNANCE-RECOVERY"
+  - requirement_id: "REQ-DB-PROVIDERS"
+    capability_ids:
+      - "CAP-DB-PROVIDERS"
+    path_ids:
+      - "PATH-DB-PROVIDERS-SUCCESS"
+      - "PATH-DB-PROVIDERS-FAILURE"
+      - "PATH-DB-PROVIDERS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-PROVIDERS-SUCCESS"
+      - "AC-DB-PROVIDERS-FAILURE"
+      - "AC-DB-PROVIDERS-RECOVERY"
+  - requirement_id: "REQ-DB-TOOLS"
+    capability_ids:
+      - "CAP-DB-TOOLS"
+    path_ids:
+      - "PATH-DB-TOOLS-SUCCESS"
+      - "PATH-DB-TOOLS-FAILURE"
+      - "PATH-DB-TOOLS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-TOOLS-SUCCESS"
+      - "AC-DB-TOOLS-FAILURE"
+      - "AC-DB-TOOLS-RECOVERY"
+  - requirement_id: "REQ-DB-RAILS"
+    capability_ids:
+      - "CAP-DB-RAILS"
+    path_ids:
+      - "PATH-DB-RAILS-SUCCESS"
+      - "PATH-DB-RAILS-FAILURE"
+      - "PATH-DB-RAILS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-RAILS-SUCCESS"
+      - "AC-DB-RAILS-FAILURE"
+      - "AC-DB-RAILS-RECOVERY"
+  - requirement_id: "REQ-DB-WAITS"
+    capability_ids:
+      - "CAP-DB-WAITS"
+    path_ids:
+      - "PATH-DB-WAITS-SUCCESS"
+      - "PATH-DB-WAITS-FAILURE"
+      - "PATH-DB-WAITS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-WAITS-SUCCESS"
+      - "AC-DB-WAITS-FAILURE"
+      - "AC-DB-WAITS-RECOVERY"
+  - requirement_id: "REQ-DB-REVIEW"
+    capability_ids:
+      - "CAP-DB-REVIEW"
+    path_ids:
+      - "PATH-DB-REVIEW-SUCCESS"
+      - "PATH-DB-REVIEW-FAILURE"
+      - "PATH-DB-REVIEW-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-REVIEW-SUCCESS"
+      - "AC-DB-REVIEW-FAILURE"
+      - "AC-DB-REVIEW-RECOVERY"
+  - requirement_id: "REQ-DB-CONSUMERS"
+    capability_ids:
+      - "CAP-DB-CONSUMERS"
+    path_ids:
+      - "PATH-DB-CONSUMERS-SUCCESS"
+      - "PATH-DB-CONSUMERS-FAILURE"
+      - "PATH-DB-CONSUMERS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-CONSUMERS-SUCCESS"
+      - "AC-DB-CONSUMERS-FAILURE"
+      - "AC-DB-CONSUMERS-RECOVERY"
+  - requirement_id: "REQ-DB-DOCS"
+    capability_ids:
+      - "CAP-DB-DOCS"
+    path_ids:
+      - "PATH-DB-DOCS-SUCCESS"
+      - "PATH-DB-DOCS-FAILURE"
+      - "PATH-DB-DOCS-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-DOCS-SUCCESS"
+      - "AC-DB-DOCS-FAILURE"
+      - "AC-DB-DOCS-RECOVERY"
+  - requirement_id: "REQ-DB-CLEANUP"
+    capability_ids:
+      - "CAP-DB-CLEANUP"
+    path_ids:
+      - "PATH-DB-CLEANUP-SUCCESS"
+      - "PATH-DB-CLEANUP-FAILURE"
+      - "PATH-DB-CLEANUP-RECOVERY"
+    acceptance_ids:
+      - "AC-DB-CLEANUP-SUCCESS"
+      - "AC-DB-CLEANUP-FAILURE"
+      - "AC-DB-CLEANUP-RECOVERY"
+capabilities:
+  - capability_id: "CAP-DB-FOUNDATION"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    path_ids:
+      - "PATH-DB-FOUNDATION-SUCCESS"
+      - "PATH-DB-FOUNDATION-FAILURE"
+      - "PATH-DB-FOUNDATION-RECOVERY"
+  - capability_id: "CAP-DB-GOVERNANCE"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    path_ids:
+      - "PATH-DB-GOVERNANCE-SUCCESS"
+      - "PATH-DB-GOVERNANCE-FAILURE"
+      - "PATH-DB-GOVERNANCE-RECOVERY"
+  - capability_id: "CAP-DB-PROVIDERS"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    path_ids:
+      - "PATH-DB-PROVIDERS-SUCCESS"
+      - "PATH-DB-PROVIDERS-FAILURE"
+      - "PATH-DB-PROVIDERS-RECOVERY"
+  - capability_id: "CAP-DB-TOOLS"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    path_ids:
+      - "PATH-DB-TOOLS-SUCCESS"
+      - "PATH-DB-TOOLS-FAILURE"
+      - "PATH-DB-TOOLS-RECOVERY"
+  - capability_id: "CAP-DB-RAILS"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    path_ids:
+      - "PATH-DB-RAILS-SUCCESS"
+      - "PATH-DB-RAILS-FAILURE"
+      - "PATH-DB-RAILS-RECOVERY"
+  - capability_id: "CAP-DB-WAITS"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    path_ids:
+      - "PATH-DB-WAITS-SUCCESS"
+      - "PATH-DB-WAITS-FAILURE"
+      - "PATH-DB-WAITS-RECOVERY"
+  - capability_id: "CAP-DB-REVIEW"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    path_ids:
+      - "PATH-DB-REVIEW-SUCCESS"
+      - "PATH-DB-REVIEW-FAILURE"
+      - "PATH-DB-REVIEW-RECOVERY"
+  - capability_id: "CAP-DB-CONSUMERS"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    path_ids:
+      - "PATH-DB-CONSUMERS-SUCCESS"
+      - "PATH-DB-CONSUMERS-FAILURE"
+      - "PATH-DB-CONSUMERS-RECOVERY"
+  - capability_id: "CAP-DB-DOCS"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    path_ids:
+      - "PATH-DB-DOCS-SUCCESS"
+      - "PATH-DB-DOCS-FAILURE"
+      - "PATH-DB-DOCS-RECOVERY"
+  - capability_id: "CAP-DB-CLEANUP"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    path_ids:
+      - "PATH-DB-CLEANUP-SUCCESS"
+      - "PATH-DB-CLEANUP-FAILURE"
+      - "PATH-DB-CLEANUP-RECOVERY"
+paths:
+  - path_id: "PATH-DB-FOUNDATION-SUCCESS"
+    capability_ids:
+      - "CAP-DB-FOUNDATION"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-EVIDENCE"
+      - "CTR-DB-LIFECYCLE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-FOUNDATION-SUCCESS"
+  - path_id: "PATH-DB-FOUNDATION-FAILURE"
+    capability_ids:
+      - "CAP-DB-FOUNDATION"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-EVIDENCE"
+      - "CTR-DB-LIFECYCLE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-FOUNDATION-FAILURE"
+  - path_id: "PATH-DB-FOUNDATION-RECOVERY"
+    capability_ids:
+      - "CAP-DB-FOUNDATION"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-EVIDENCE"
+      - "CTR-DB-LIFECYCLE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-FOUNDATION-RECOVERY"
+  - path_id: "PATH-DB-GOVERNANCE-SUCCESS"
+    capability_ids:
+      - "CAP-DB-GOVERNANCE"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-GOVERNANCE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-GOVERNANCE-SUCCESS"
+  - path_id: "PATH-DB-GOVERNANCE-FAILURE"
+    capability_ids:
+      - "CAP-DB-GOVERNANCE"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-GOVERNANCE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-GOVERNANCE-FAILURE"
+  - path_id: "PATH-DB-GOVERNANCE-RECOVERY"
+    capability_ids:
+      - "CAP-DB-GOVERNANCE"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-GOVERNANCE"
+      - "CTR-DB-IDENTITY"
+    acceptance_ids:
+      - "AC-DB-GOVERNANCE-RECOVERY"
+  - path_id: "PATH-DB-PROVIDERS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-PROVIDERS"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-CONTINUATION"
+    acceptance_ids:
+      - "AC-DB-PROVIDERS-SUCCESS"
+  - path_id: "PATH-DB-PROVIDERS-FAILURE"
+    capability_ids:
+      - "CAP-DB-PROVIDERS"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-CONTINUATION"
+    acceptance_ids:
+      - "AC-DB-PROVIDERS-FAILURE"
+  - path_id: "PATH-DB-PROVIDERS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-PROVIDERS"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-CONTINUATION"
+    acceptance_ids:
+      - "AC-DB-PROVIDERS-RECOVERY"
+  - path_id: "PATH-DB-TOOLS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-TOOLS"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-TOOLS"
+      - "CTR-DB-RAILS"
+    acceptance_ids:
+      - "AC-DB-TOOLS-SUCCESS"
+  - path_id: "PATH-DB-TOOLS-FAILURE"
+    capability_ids:
+      - "CAP-DB-TOOLS"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-TOOLS"
+      - "CTR-DB-RAILS"
+    acceptance_ids:
+      - "AC-DB-TOOLS-FAILURE"
+  - path_id: "PATH-DB-TOOLS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-TOOLS"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-TOOLS"
+      - "CTR-DB-RAILS"
+    acceptance_ids:
+      - "AC-DB-TOOLS-RECOVERY"
+  - path_id: "PATH-DB-RAILS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-RAILS"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-RAILS"
+      - "CTR-DB-EVIDENCE"
+    acceptance_ids:
+      - "AC-DB-RAILS-SUCCESS"
+  - path_id: "PATH-DB-RAILS-FAILURE"
+    capability_ids:
+      - "CAP-DB-RAILS"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-RAILS"
+      - "CTR-DB-EVIDENCE"
+    acceptance_ids:
+      - "AC-DB-RAILS-FAILURE"
+  - path_id: "PATH-DB-RAILS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-RAILS"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-RAILS"
+      - "CTR-DB-EVIDENCE"
+    acceptance_ids:
+      - "AC-DB-RAILS-RECOVERY"
+  - path_id: "PATH-DB-WAITS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-WAITS"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-WAITS"
+    acceptance_ids:
+      - "AC-DB-WAITS-SUCCESS"
+  - path_id: "PATH-DB-WAITS-FAILURE"
+    capability_ids:
+      - "CAP-DB-WAITS"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-WAITS"
+    acceptance_ids:
+      - "AC-DB-WAITS-FAILURE"
+  - path_id: "PATH-DB-WAITS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-WAITS"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-WAITS"
+    acceptance_ids:
+      - "AC-DB-WAITS-RECOVERY"
+  - path_id: "PATH-DB-REVIEW-SUCCESS"
+    capability_ids:
+      - "CAP-DB-REVIEW"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-REVIEW"
+    acceptance_ids:
+      - "AC-DB-REVIEW-SUCCESS"
+  - path_id: "PATH-DB-REVIEW-FAILURE"
+    capability_ids:
+      - "CAP-DB-REVIEW"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-REVIEW"
+    acceptance_ids:
+      - "AC-DB-REVIEW-FAILURE"
+  - path_id: "PATH-DB-REVIEW-RECOVERY"
+    capability_ids:
+      - "CAP-DB-REVIEW"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-REVIEW"
+    acceptance_ids:
+      - "AC-DB-REVIEW-RECOVERY"
+  - path_id: "PATH-DB-CONSUMERS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-CONSUMERS"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-CONSUMERS"
+    acceptance_ids:
+      - "AC-DB-CONSUMERS-SUCCESS"
+  - path_id: "PATH-DB-CONSUMERS-FAILURE"
+    capability_ids:
+      - "CAP-DB-CONSUMERS"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-CONSUMERS"
+    acceptance_ids:
+      - "AC-DB-CONSUMERS-FAILURE"
+  - path_id: "PATH-DB-CONSUMERS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-CONSUMERS"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-CONSUMERS"
+    acceptance_ids:
+      - "AC-DB-CONSUMERS-RECOVERY"
+  - path_id: "PATH-DB-DOCS-SUCCESS"
+    capability_ids:
+      - "CAP-DB-DOCS"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-DOCS"
+    acceptance_ids:
+      - "AC-DB-DOCS-SUCCESS"
+  - path_id: "PATH-DB-DOCS-FAILURE"
+    capability_ids:
+      - "CAP-DB-DOCS"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-DOCS"
+    acceptance_ids:
+      - "AC-DB-DOCS-FAILURE"
+  - path_id: "PATH-DB-DOCS-RECOVERY"
+    capability_ids:
+      - "CAP-DB-DOCS"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-DOCS"
+    acceptance_ids:
+      - "AC-DB-DOCS-RECOVERY"
+  - path_id: "PATH-DB-CLEANUP-SUCCESS"
+    capability_ids:
+      - "CAP-DB-CLEANUP"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    kind: "success"
+    contract_refs:
+      - "CTR-DB-CLEANUP"
+    acceptance_ids:
+      - "AC-DB-CLEANUP-SUCCESS"
+  - path_id: "PATH-DB-CLEANUP-FAILURE"
+    capability_ids:
+      - "CAP-DB-CLEANUP"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    kind: "validation_failure"
+    contract_refs:
+      - "CTR-DB-CLEANUP"
+    acceptance_ids:
+      - "AC-DB-CLEANUP-FAILURE"
+  - path_id: "PATH-DB-CLEANUP-RECOVERY"
+    capability_ids:
+      - "CAP-DB-CLEANUP"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    kind: "recovery"
+    contract_refs:
+      - "CTR-DB-CLEANUP"
+    acceptance_ids:
+      - "AC-DB-CLEANUP-RECOVERY"
+acceptance:
+  - acceptance_id: "AC-DB-FOUNDATION-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    path_ids:
+      - "PATH-DB-FOUNDATION-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness/src/decisions/decisions.test.ts"
+    expected_outcome: "Validated evidence and one bounded callback result"
+  - acceptance_id: "AC-DB-FOUNDATION-FAILURE"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    path_ids:
+      - "PATH-DB-FOUNDATION-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness/src/decisions/decisions.test.ts"
+    expected_outcome: "Malformed output or expired/pre-aborted callback invokes no protected work"
+  - acceptance_id: "AC-DB-FOUNDATION-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-FOUNDATION"
+    path_ids:
+      - "PATH-DB-FOUNDATION-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness/src/decisions/decisions.test.ts"
+    expected_outcome: "Late callback resolution is fenced and listeners/timers return to baseline"
+  - acceptance_id: "AC-DB-GOVERNANCE-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    path_ids:
+      - "PATH-DB-GOVERNANCE-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness/test/governance.test.ts"
+    expected_outcome: "One approved effective demand executes one tool"
+  - acceptance_id: "AC-DB-GOVERNANCE-FAILURE"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    path_ids:
+      - "PATH-DB-GOVERNANCE-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness/test/governance.test.ts"
+    expected_outcome: "Deny suppresses approval; malformed callback terminates with safe evidence"
+  - acceptance_id: "AC-DB-GOVERNANCE-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-GOVERNANCE"
+    path_ids:
+      - "PATH-DB-GOVERNANCE-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness/test/governance.test.ts"
+    expected_outcome: "Cancellation and audit failure close approval lifecycle without late execution"
+  - acceptance_id: "AC-DB-PROVIDERS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    path_ids:
+      - "PATH-DB-PROVIDERS-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness-openai/test/openai.test.ts"
+    expected_outcome: "Synthetic reasoning survives and transformed wire arguments are sent"
+  - acceptance_id: "AC-DB-PROVIDERS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    path_ids:
+      - "PATH-DB-PROVIDERS-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness-openai/test/openai.test.ts"
+    expected_outcome: "Unknown duplicate or missing tool slots reject before provider call"
+  - acceptance_id: "AC-DB-PROVIDERS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-PROVIDERS"
+    path_ids:
+      - "PATH-DB-PROVIDERS-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness-openai/test/openai.test.ts"
+    expected_outcome: "Foreign-provider switch reconstructs canonical content without old field fallback"
+  - acceptance_id: "AC-DB-TOOLS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    path_ids:
+      - "PATH-DB-TOOLS-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness/test/agent-interceptors.test.ts"
+    expected_outcome: "Preflight produces one effective call for history and model replay"
+  - acceptance_id: "AC-DB-TOOLS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    path_ids:
+      - "PATH-DB-TOOLS-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness/test/agent-interceptors.test.ts"
+    expected_outcome: "Terminal preflight block starts no handler in the response batch"
+  - acceptance_id: "AC-DB-TOOLS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-TOOLS"
+    path_ids:
+      - "PATH-DB-TOOLS-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness/test/agent-interceptors.test.ts"
+    expected_outcome: "Batch cancellation stops admission drains wrappers and fences late outputs"
+  - acceptance_id: "AC-DB-RAILS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    path_ids:
+      - "PATH-DB-RAILS-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness-guardrails/test/guardrails.test.ts"
+    expected_outcome: "Input tool and final-output rails compose with governance"
+  - acceptance_id: "AC-DB-RAILS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    path_ids:
+      - "PATH-DB-RAILS-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness-guardrails/test/guardrails.test.ts"
+    expected_outcome: "Invalid phase target transform declaration or JSON fails closed"
+  - acceptance_id: "AC-DB-RAILS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-RAILS"
+    path_ids:
+      - "PATH-DB-RAILS-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness-guardrails/test/guardrails.test.ts"
+    expected_outcome: "Tool turns bypass final output rails; stopWhen finalization remains protected"
+  - acceptance_id: "AC-DB-WAITS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    path_ids:
+      - "PATH-DB-WAITS-SUCCESS"
+    verification_refs:
+      - "ai-harness/packages/harness/test/durable-external-wait.test.ts"
+    expected_outcome: "Registration readback and terminal results use exact canonical shape"
+  - acceptance_id: "AC-DB-WAITS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    path_ids:
+      - "PATH-DB-WAITS-FAILURE"
+    verification_refs:
+      - "ai-harness/packages/harness/test/durable-external-wait.test.ts"
+    expected_outcome: "Missing extra invalid fields rejected before telemetry or persistence"
+  - acceptance_id: "AC-DB-WAITS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-WAITS"
+    path_ids:
+      - "PATH-DB-WAITS-RECOVERY"
+    verification_refs:
+      - "ai-harness/packages/harness/test/durable-external-wait.test.ts"
+    expected_outcome: "Duplicate and late signals retain current terminal state and replay semantics"
+  - acceptance_id: "AC-DB-REVIEW-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    path_ids:
+      - "PATH-DB-REVIEW-SUCCESS"
+    verification_refs:
+      - "ai-harness/examples/durable-human-review/src/payment-review.test.ts"
+    expected_outcome: "Approved action records one admitted execution and receipt"
+  - acceptance_id: "AC-DB-REVIEW-FAILURE"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    path_ids:
+      - "PATH-DB-REVIEW-FAILURE"
+    verification_refs:
+      - "ai-harness/examples/durable-human-review/src/payment-review.test.ts"
+    expected_outcome: "Unauthorized expired changed or conflicting action has no new effect"
+  - acceptance_id: "AC-DB-REVIEW-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-REVIEW"
+    path_ids:
+      - "PATH-DB-REVIEW-RECOVERY"
+    verification_refs:
+      - "ai-harness/examples/durable-human-review/src/payment-review.test.ts"
+    expected_outcome: "Every claim effect receipt checkpoint crash window resumes same execution identity"
+  - acceptance_id: "AC-DB-CONSUMERS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    path_ids:
+      - "PATH-DB-CONSUMERS-SUCCESS"
+    verification_refs:
+      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+    expected_outcome: "New public contracts forward through Core with no provider dependency"
+  - acceptance_id: "AC-DB-CONSUMERS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    path_ids:
+      - "PATH-DB-CONSUMERS-FAILURE"
+    verification_refs:
+      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+    expected_outcome: "Removed hook/type/event fields fail consumer compile or config validation"
+  - acceptance_id: "AC-DB-CONSUMERS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-CONSUMERS"
+    path_ids:
+      - "PATH-DB-CONSUMERS-RECOVERY"
+    verification_refs:
+      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+    expected_outcome: "Existing queue/run idempotency and scoped resource authorization remain intact"
+  - acceptance_id: "AC-DB-DOCS-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    path_ids:
+      - "PATH-DB-DOCS-SUCCESS"
+    verification_refs:
+      - "purista/scripts/knowledge-audit.mjs"
+    expected_outcome: "One example composes content rails, durable tool approval interruption/resume, and workflow review ownership"
+  - acceptance_id: "AC-DB-DOCS-FAILURE"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    path_ids:
+      - "PATH-DB-DOCS-FAILURE"
+    verification_refs:
+      - "purista/scripts/knowledge-audit.mjs"
+    expected_outcome: "No recipe presents guardrail block as approval request or durable suspension"
+  - acceptance_id: "AC-DB-DOCS-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-DOCS"
+    path_ids:
+      - "PATH-DB-DOCS-RECOVERY"
+    verification_refs:
+      - "purista/scripts/knowledge-audit.mjs"
+    expected_outcome: "Canonical skill mirrors regenerate from source and exact usage examples typecheck"
+  - acceptance_id: "AC-DB-CLEANUP-SUCCESS"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    path_ids:
+      - "PATH-DB-CLEANUP-SUCCESS"
+    verification_refs:
+      - "ai-harness/scripts/check-decision-boundaries.mjs"
+    expected_outcome: "All changed consumers and package exports pass no-drift gates"
+  - acceptance_id: "AC-DB-CLEANUP-FAILURE"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    path_ids:
+      - "PATH-DB-CLEANUP-FAILURE"
+    verification_refs:
+      - "ai-harness/scripts/check-decision-boundaries.mjs"
+    expected_outcome: "Removed names duplicate timers and unsafe projections fail static gate"
+  - acceptance_id: "AC-DB-CLEANUP-RECOVERY"
+    requirement_ids:
+      - "REQ-DB-CLEANUP"
+    path_ids:
+      - "PATH-DB-CLEANUP-RECOVERY"
+    verification_refs:
+      - "ai-harness/scripts/check-decision-boundaries.mjs"
+    expected_outcome: "No destructive reset no old reader no compatibility mode is introduced"

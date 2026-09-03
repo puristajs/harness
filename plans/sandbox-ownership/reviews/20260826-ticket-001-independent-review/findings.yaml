@@ -1,0 +1,99 @@
+findings:
+  - id: REVIEW-SOWN-001
+    severity: blocking
+    category: INTERFACE
+    root_cause: implementation_drift
+    status: fixed
+    owner_ticket: TICKET-001
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-OWNER
+      - ai-harness/specs/36-sandbox-ownership-and-administration/00-conventions.md#CONV-SOWN-TYPES
+    impacted_path: "External owner registration with an invalid canonical ULID"
+    location: "packages/harness/src/sandbox/ownership.ts:6"
+    expected: "Externally supplied instanceId values accept only the canonical 128-bit ULID range produced by the existing ULID helper."
+    actual: "The regex accepts Z1JQ7Z9Q69STZ33MGH6V5ASR7J because every Crockford base32 character is permitted in the first position."
+    evidence: "The built schema returned success for that value during independent review."
+    fix_boundary: "packages/harness/src/sandbox/ownership.ts and packages/harness/src/sandbox/ownership.test.ts"
+    required_verification:
+      - "Add a failing fixture for an over-range first ULID character and prove rejection."
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+  - id: REVIEW-SOWN-002
+    severity: blocking
+    category: INTERFACE
+    root_cause: implementation_drift
+    status: fixed
+    owner_ticket: TICKET-001
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-POLICY
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#validation-and-generation
+    impacted_path: "Session construction input"
+    location: "packages/harness/src/sandbox/ownership.ts:116"
+    expected: "The data-only SessionOptions boundary is a strict source-derived DTO schema with its exported type inferred from that schema."
+    actual: "SessionOptions is a handwritten interface and no strict session-options schema exists; it is not within the function-bearing/capability-generic exception."
+    evidence: "The ownership module exports schemas for neighboring DTOs but only an interface for SessionOptions."
+    fix_boundary: "packages/harness/src/sandbox/ownership.ts, packages/harness/src/sandbox/ownership.test.ts, and packages/harness/type-tests/sandbox-ownership.ts"
+    required_verification:
+      - "Add closed-schema fixtures for SessionOptions, including an unknown field."
+      - "npm --prefix ai-harness run test:types"
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+  - id: REVIEW-SOWN-003
+    severity: blocking
+    category: INTERFACE
+    root_cause: implementation_drift
+    status: fixed
+    owner_ticket: TICKET-001
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-SAFETY
+    impacted_path: "Trusted administrative resource inventory"
+    location: "packages/harness/src/sandbox/administration.ts:40"
+    expected: "A scope is required for sandbox resources, optional only as a snapshot source scope, and absent for workspace resources."
+    actual: "The summary schema accepts a workspace resource with a sandbox scope when its owner matches."
+    evidence: "The built schema successfully parsed a workspace summary containing a shared session scope."
+    fix_boundary: "packages/harness/src/sandbox/administration.ts and packages/harness/src/sandbox/administration.test.ts"
+    required_verification:
+      - "Add negative fixtures for workspace-with-scope and scope-owner mismatch."
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+  - id: REVIEW-SOWN-004
+    severity: blocking
+    category: SECURITY
+    root_cause: implementation_drift
+    status: fixed
+    owner_ticket: TICKET-001
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/03-contracts/api.md#CTR-SOWN-ERRORS
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-SAFETY
+    impacted_path: "Serialized sandbox quota failure"
+    location: "packages/harness/src/errors/catalog.ts:153"
+    expected: "New safe-error metadata is closed and cannot serialize owner IDs, identity, paths, cursors, payloads, or provider diagnostics."
+    actual: "SandboxQuotaExceededError forwards the caller-provided meta object unchanged; a JavaScript caller can add owner or other sensitive properties. No safe-error metadata schema enforces closure."
+    evidence: "serializeError(new SandboxQuotaExceededError({ quota: 'snapshots', limit: 1, owner: 'SENTINEL' })) emitted meta.owner."
+    fix_boundary: "packages/harness/src/errors/catalog.ts and packages/harness/src/errors/catalog.test.ts"
+    required_verification:
+      - "Use a closed validated metadata representation or construct only approved fields before HarnessError serialization."
+      - "Add a sentinel serialization assertion proving extra owner/identity values cannot cross the public error boundary."
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+  - id: REVIEW-SOWN-005
+    severity: blocking
+    category: PLAN
+    root_cause: plan_gap
+    status: fixed
+    owner_ticket: TICKET-001
+    route: planner
+    spec_refs:
+      - ai-harness/plans/sandbox-ownership/wave_01_contracts/tickets/TICKET-001-contracts.md#test-first-order
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-OWNER
+    impacted_path: "TICKET-001 contract fixture execution"
+    location: "packages/harness/vitest.config.ts:6"
+    expected: "CMD-HARNESS_UNIT discovers and executes the ticket's ownership and administration fixtures."
+    actual: "Vitest includes errors, decisions, logger, telemetry, testing, ulid, eval, models, ports, sessions, storage, tools, and test files, but not src/sandbox. The two new sandbox test files are not runnable under the configured command."
+    evidence: "Direct Vitest filters for src/sandbox/ownership.test.ts and src/sandbox/administration.test.ts return 'No test files found'."
+    fix_boundary: "Amend TICKET-001 write_scope to include packages/harness/vitest.config.ts, then add src/sandbox/**/*.test.ts to the configured discovery set."
+    required_verification:
+      - "Regenerate/check the nested plan after the write-scope amendment."
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"

@@ -1,14 +1,19 @@
 # Guides
 
-- Build with the harness
-  - [Usage](./usage.md)
-  - [Workflows](./workflows.md)
-  - [Configuration](./configuration.md)
-  - [Common Scenarios And Use Cases](./common-scenarios.md)
-  - [Evaluating Prompts](./evaluating-prompts.md)
-- Extend capabilities
-  - [Extending and Customizing](./extending-and-customizing.md)
-  - [MCP Tools](./mcp-tools.md)
-  - [Agent Plugins](./agent-plugins.md)
-- Verify behavior
-  - [Testing](./testing.md)
+Use these after the [Quickstart](../getting-started/quickstart.md). Start with
+the minimum working configuration and add operational complexity only when a
+real requirement appears.
+
+1. [Configuration](./configuration.md) — models, defaults, and adapters.
+2. [Usage](./usage.md) — sessions, direct agents, and streams.
+3. [Tools and skills](./tools-and-skills.md) — typed capabilities and mounted methods.
+4. [Workflows](./workflows.md) — orchestration, fan-out, and durable steps.
+5. [Human review gates](./human-review-gates.md) — restart-safe external decisions without a built-in reviewer system.
+5. [Guardrails](./guardrails.md) — content, tool, retrieval, and sensitive-data controls.
+6. [Ecosystem and packages](./ecosystem-packages.md) — first-party packages, optional peers, and execution boundaries.
+7. [Testing](./testing.md) and [evaluations](./evaluating-prompts.md) — test code deterministically, then run or re-score versioned cases with scorer adapters. Continue with the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/) for methods and recipes.
+8. [Observability](./observability.md) — traces, metrics, logs, and model-cost evidence.
+
+Focused advanced references: [conversation history](./conversation-history.md),
+[durable workspaces](./durable-workspaces.md), [MCP tools](./mcp-tools.md),
+[agent plugins](./agent-plugins.md), and [extending/customizing](./extending-and-customizing.md).

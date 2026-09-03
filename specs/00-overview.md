@@ -6,10 +6,10 @@
 
 ```
 Harness
-  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable runtime, durable workspace, context checkpoints
+  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable storage, durable workspace, context checkpoints
   ├─ Models       (alias → provider + capabilities + default settings)
   ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
-  ├─ Custom tools (TS+zod, MCP stdio, MCP http)
+  ├─ Custom tools (TS+Standard Schema; Zod default, MCP stdio, MCP http)
   ├─ Skills       (directory + SKILL.md frontmatter; mounted at /skills/<name>/ in sandbox)
   ├─ Agents       (input/output schema, allowed tools+skills, permissions, default loop)
   └─ Workflows    (handler with agents context)
@@ -38,51 +38,49 @@ import { defineHarness } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 
 export const harness = defineHarness()
-  .models({
-    fast: { provider: openai({ apiKey: process.env.OPENAI_API_KEY! }), model: 'gpt-4o-mini', capabilities: ['text','object','tool_use'] },
+  .model('fast', {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: 'gpt-4o-mini',
+    capabilities: ['text', 'object', 'tool_use'],
   })
-  .tools({
-    lookup_user: {
-      description: 'Look up a user by id',
-      input:  z.object({ id: z.string() }),
-      output: z.object({ name: z.string() }),
-      handler: async (_ctx, input) => ({ name: 'Alice' }),
-    },
+  .tool('lookup_user', {
+    description: 'Look up a user by id',
+    input: z.object({ id: z.string() }),
+    output: z.object({ name: z.string() }),
+    handler: async (_ctx, input) => ({ name: 'Alice' }),
   })
-  .agents({
-    triage: {
-      input:  z.object({ message: z.string() }),
-      output: z.object({ label: z.enum(['bug','feature','question']) }),
-      model: 'fast',
-      tools: ['lookup_user'],
-      instructions: 'Classify the request.',
-    },
+  .agent('triage', {
+    input: z.object({ message: z.string() }),
+    output: z.object({ label: z.enum(['bug', 'feature', 'question']) }),
+    model: 'fast',
+    tools: ['lookup_user'],
+    instructions: 'Classify the request.',
   })
-  .workflows({
-    handle_ticket: {
-      input:  z.object({ ticket: z.string() }),
-      output: z.object({ resolution: z.string() }),
-      delegation: { agents: ['triage'] },
-      handler: async (ctx) => {
-        const r = await ctx.agents.triage({ message: ctx.input.ticket })
-        return { resolution: r.label }
-      },
+  .workflow('handle_ticket', {
+    input: z.object({ ticket: z.string() }),
+    output: z.object({ resolution: z.string() }),
+    delegation: { agents: ['triage'] },
+    handler: async ctx => {
+      const result = await ctx.agents.triage({ message: ctx.input.ticket })
+      return { resolution: result.label }
     },
   })
   .build()
 
 const session = await harness.getSession('user:42')
-const out = await session.workflows.handle_ticket.prompt({ ticket: 'cannot login' })
+const out = await session.workflows.handle_ticket.run({ ticket: 'cannot login' })
 ```
 
 The `HarnessBuilder` is the SOLE supported construction path. Standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` definers are NOT exported; only inline-in-builder definitions achieve the cross-key type constraints.
 
-**One session equals one conversation thread.** Apps that need multiple chat threads per user create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Conversation history is stored on the session; the harness does not model thread/conversation as a separate entity in v1. See [11-sessions](./11-sessions.md) §"Conversation history and threads".
+Public agent, TypeScript-tool, workflow, and guardrail value schemas follow [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md). Zod remains the standard documentation choice, but any Standard Schema V1 validator is accepted. Tool input and default-loop agent output additionally implement Standard JSON Schema V1 because providers consume JSON Schema rather than validator objects.
+
+**One session equals one conversation thread.** Apps that need multiple chat threads per user create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Conversation history is stored on the session; the harness does not model thread/conversation as a separate entity in v3. See [11-sessions](./11-sessions.md) §"Conversation history and threads".
 
 ## In scope
 
 - Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
-- Foundation: telemetry, logging, state store, sandbox (in-memory files-only stub or `just-bash`-backed bash emulator in v1), and memory adapter.
+- Foundation: telemetry, logging, Harness storage, sandbox (in-memory files/bounded-search adapter or `just-bash`-backed bash emulator in v3), and memory adapter.
 - Model registry (aliases to providers, capability-gated).
 - Provider-neutral model outcomes and bounded active retry for transient model
   failures/rate limits, with long provider retry instructions surfaced as
@@ -94,13 +92,26 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
 - Optional policy-driven governance for tool exposure and tool calls, including typed native rules, external policy adapters, shadow rollout, audit events, and approval gates. See [24-governance-policy](./24-governance-policy.md).
 - Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
-- Durable runtime checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
-- Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace store, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
+- Durable storage checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
+- One topology-transparent, lifecycle-aware Sandbox port with adapter-private
+  generations, leases, fencing, provider references, retention, and cleanup.
+  Harness and PURISTA business logic do not branch on local versus distributed
+  operation. Process-local adapters implement the same contract as a
+  development/test edge case; production adapters prove multi-client behavior
+  in their conformance tests. Durable workspace files are the recovery
+  guarantee; HarnessStorage adds session-incarnation and conditional-write
+  integrity, not sandbox lifecycle storage. See
+  [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
+- Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
 - OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
 - Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
-- Harness-owned AI evaluation primitives: trace-context propagation, run
-  summaries, telemetry interop, deterministic local scorer helpers, and prompt
-  candidate evaluation helpers. See [19-ai-eval-core](./19-ai-eval-core.md).
+- Harness-owned runtime telemetry foundations plus the approved generic
+  evaluation run/result substrate: versioned identities, multiple scorers,
+  per-case evidence, deterministic aggregation, bounded execution, safe
+  telemetry, and feedback projection. See
+  [19-ai-eval-core](./19-ai-eval-core.md) and
+  [35-generic-evaluation-runs](./35-generic-evaluation-runs.md). The obsolete
+  aggregate evaluator and standalone scorer API are removed as a clean break.
 - Opt-in transient context projection and one bounded context-length recovery;
   durable history remains unchanged. See
   [26-context-projection-and-compaction](./26-context-projection-and-compaction.md).
@@ -111,6 +122,13 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
   `@purista/harness-agent-plugins`: local inspection, explicit trust/digest
   review, portable skills, and selected MCP bindings. See
   [29-agent-plugins](./29-agent-plugins.md).
+- Optional typed guardrails through `@purista/harness-guardrails`: a strict
+  NeMo-shaped YAML subset, application-owned actions, generic default-loop
+  interception, explicit retrieval filtering, and a provider-neutral
+  sensitive-data detector port. Optional Presidio sidecar and native privacy
+  packages remain composition-root-selected addons. See
+  [30-guardrails](./30-guardrails.md) and
+  [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
 
 ## Non-goals
 
@@ -127,6 +145,12 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - No pluggable stream adapter — the streaming generator is internal.
 - No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
   prompt-version store, or experiment database in this repository.
+- No evaluation dataset UI, annotation queue, experiment dashboard, hosted
+  judge, or vendor evaluation SDK in Harness core.
+- No Python/Colang runtime, implicit safety provider, vector store, or guardrail
+  server. The optional guardrails addon is in-process only; its separately
+  configured Presidio adapter may call an application-owned internal sidecar as
+  specified in [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
 
 ## Glossary
 
@@ -140,15 +164,15 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 | Workflow        | A user-authored handler that orchestrates agents. |
 | Tool            | A callable function exposed to a model: built-in (`bash`, `read`, `write`, `edit`, `glob`, `grep`, `list`), TS, MCP stdio, or MCP http. |
 | Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
-| Sandbox         | An isolated FS + (optional) shell-exec environment. v1 ships an in-memory files-only stub and a `just-bash`-backed bash emulator. |
+| Sandbox         | An isolated FS + bounded text search + optional shell-exec environment. v3 ships a non-executable in-memory adapter and a `just-bash`-backed bash emulator. |
 | Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
 | Model outcome   | Provider-neutral finish metadata that preserves the normalized finish reason plus provider-specific finish/status details. |
 | Active retry    | A short, bounded retry performed inside the current model invocation. |
-| Deferred retry  | A long retry instruction surfaced as typed metadata for a durable runtime, queue, or application scheduler to handle later. |
-| Durable workspace | Production replay workspace state that links runtime checkpoints to persisted sandbox/workspace state through opaque references. |
-| Local durable execution | First-party adapter bundle that persists durable runtime state in SQLite and maps a sandbox `/workspace` to a durable host-directory workspace. |
+| Deferred retry  | A long retry instruction surfaced as typed metadata for a durable storage, queue, or application scheduler to handle later. |
+| Durable workspace | Production replay workspace state that links storage checkpoints to persisted sandbox/workspace state through opaque references. |
+| Local durable execution | First-party adapter bundle that persists durable storage state in SQLite and maps a sandbox `/workspace` to a durable host-directory workspace. |
 | Context checkpoint | A typed, payload-bearing handoff or summary record written explicitly by application/agent code to support long-horizon work without hidden prompt rewriting. |
-| Port            | An interface a harness depends on (state, sandbox, memory, durable runtime, durable workspace, model provider). |
+| Port            | An interface a harness depends on (state, sandbox, memory, durable storage, durable workspace, model provider). |
 | Adapter         | A concrete implementation of a port. Core ships in-memory/default implementations plus the sandbox-backed memory reference adapter; non-core adapters live in independent packages. |
 | ULID            | Lexicographically sortable id format. Harness mints `${kind}_${ulid}`. |
 | `$infer`        | Phantom value on `Harness` exposing compile-time keys/types of registered models, tools, skills, agents, workflows. |
@@ -160,9 +184,10 @@ The `HarnessBuilder` is the SOLE supported construction path. Standalone `define
 - [11-sessions](./11-sessions.md) — conversation history and threads.
 - [13-public-api](./13-public-api.md) — authoritative export list and `$infer` namespace.
 - [17-implementation-plan](./17-implementation-plan.md) — build order.
-- [19-ai-eval-core](./19-ai-eval-core.md) — AI eval core ownership boundary.
+- [19-ai-eval-core](./19-ai-eval-core.md) — runtime telemetry and evaluation foundation boundary.
 - [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
 - [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
 - [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.
 - [24-governance-policy](./24-governance-policy.md) — optional tool-exposure and tool-call governance, approvals, and external policy adapters.
+- [30-guardrails](./30-guardrails.md) — optional typed NeMo-shaped guardrails addon.

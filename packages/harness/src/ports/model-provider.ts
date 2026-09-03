@@ -1,5 +1,8 @@
+import { z } from 'zod'
 import type { JsonValue } from '../models/json.js'
 import type { ContextProjectionPolicy } from '../context-projection.js'
+import type { ProviderContinuation, ProviderContinuationItem } from '../decisions/types.js'
+import type { ArtifactBody, ArtifactReference } from './artifact-store.js'
 
 /**
  * Model capabilities declared by aliases in `.models(...)`.
@@ -25,6 +28,12 @@ export type ModelCapability =
   | 'embeddings'
   /** Document reranking. */
   | 'rerank'
+  /** Image output generation. */
+  | 'image_generation'
+  /** Text-to-speech audio generation. */
+  | 'speech_generation'
+  /** Long-running video generation. */
+  | 'video_generation'
 
 /** Provider-neutral retry setting used by model aliases and per-call overrides. */
 export type ModelRetrySetting = boolean | ModelRetryPolicy
@@ -139,17 +148,7 @@ export interface ToolCallSpec {
   arguments: JsonValue
 }
 
-/**
- * Opaque provider wire items returned with a tool-call response and replayed
- * verbatim on the follow-up request of the same turn (e.g. OpenAI Responses
- * API reasoning items). Adapters only replay items tagged with their own
- * provider id; foreign or empty items are ignored and the assistant turn is
- * reconstructed provider-neutrally from `content`/`toolCalls`.
- */
-export interface ProviderItems {
-  providerId: string
-  items: JsonValue[]
-}
+export type { ProviderContinuation, ProviderContinuationItem }
 
 /** Multimodal message content part. */
 export type ContentPart =
@@ -188,13 +187,13 @@ export interface ModelFeatureSet {
 export type ContentPartKind = 'text' | 'image' | 'audio' | 'file'
 
 /** Provider-neutral output operation modes. */
-export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
+export type OutputMode = 'text' | 'object' | 'embedding' | 'rerank' | 'image' | 'speech' | 'video'
 
 /** Message schema shared across provider adapters. */
 export type ModelMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerItems?: ProviderItems }
+  | { role: 'assistant'; content: string | ContentPart[]; toolCalls?: ToolCallSpec[]; providerContinuation?: ProviderContinuation }
   | { role: 'tool'; toolCallId: string; content: string }
 
 /** Base request shape for all model-provider methods. */
@@ -207,48 +206,55 @@ export interface BaseRequest {
   traceparent?: string | undefined
 }
 
-/** Token usage accounting normalized across providers. */
-export interface TokenUsage {
+/** Internal projection of normalized token counts; undeclared provider fields are discarded. */
+export const tokenUsageSchema = z.object({
   /**
    * Total input tokens consumed across normal input, provider cache reads, and
    * provider cache writes. The optional detail fields identify the cache
    * channels without changing this total.
    */
-  inputTokens: number
+  inputTokens: z.number().finite(),
   /** Output tokens charged or consumed by the provider, including reasoning output tokens when the provider reports them in the aggregate. */
-  outputTokens: number
+  outputTokens: z.number().finite(),
   /** Provider-reported normalized total tokens, or `inputTokens + outputTokens` when omitted. */
-  totalTokens: number
+  totalTokens: z.number().finite(),
   /** Input tokens served from a provider-managed prompt/context cache. */
-  cachedInputTokens?: number
+  cachedInputTokens: z.number().finite().optional(),
   /** Input tokens written to a provider-managed prompt/context cache. */
-  cacheCreationInputTokens?: number
+  cacheCreationInputTokens: z.number().finite().optional(),
   /** Output tokens used for hidden reasoning or extended thinking. */
-  reasoningTokens?: number
-}
+  reasoningTokens: z.number().finite().optional()
+})
+
+/** Token usage accounting normalized across providers. */
+export type TokenUsage = z.infer<typeof tokenUsageSchema>
+
+/** Internal validation of the provider-neutral finish-reason vocabulary. */
+export const finishReasonSchema = z.enum([
+  /** Natural model stop sequence. */
+  'stop',
+  /** Token budget reached. */
+  'length',
+  /** Context window reached before a valid answer could be produced. */
+  'context_limit',
+  /** Model requested tool calls. */
+  'tool_calls',
+  /** Provider content filter interrupted generation. */
+  'content_filter',
+  /** Provider/model refused the requested output. */
+  'refusal',
+  /** Provider asked the caller to resume/continue later. */
+  'pause',
+  /** Provider produced malformed output or malformed tool use. */
+  'malformed',
+  /** Cooperative cancellation interrupted generation. */
+  'cancelled',
+  /** Provider or adapter error fallback. */
+  'error'
+])
 
 /** Normalized finish reasons from model providers. */
-export type FinishReason =
-  /** Natural model stop sequence. */
-  'stop'
-  /** Token budget reached. */
-  | 'length'
-  /** Context window reached before a valid answer could be produced. */
-  | 'context_limit'
-  /** Model requested tool calls. */
-  | 'tool_calls'
-  /** Provider content filter interrupted generation. */
-  | 'content_filter'
-  /** Provider/model refused the requested output. */
-  | 'refusal'
-  /** Provider asked the caller to resume/continue later. */
-  | 'pause'
-  /** Provider produced malformed output or malformed tool use. */
-  | 'malformed'
-  /** Cooperative cancellation interrupted generation. */
-  | 'cancelled'
-  /** Provider or adapter error fallback. */
-  | 'error'
+export type FinishReason = z.infer<typeof finishReasonSchema>
 
 /** Tool declaration exposed to model adapters. */
 export interface ModelToolSpec {
@@ -266,7 +272,7 @@ export interface TextRequest extends BaseRequest {
 export interface TextResponse {
   content: string
   toolCalls?: ToolCallSpec[]
-  providerItems?: ProviderItems
+  providerContinuation?: ProviderContinuation
   usage: TokenUsage
   finishReason: FinishReason
   outcome?: ModelOutcome
@@ -277,7 +283,7 @@ export interface TextResponse {
 export type TextStreamChunk =
   | { kind: 'delta'; text: string }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
+  | { kind: 'finish'; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerContinuation?: ProviderContinuation }
 
 /** Request for object/object-stream model methods. */
 export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequest {
@@ -290,7 +296,7 @@ export interface ObjectRequest<T extends JsonValue = JsonValue> extends BaseRequ
 export interface ObjectResponse<T extends JsonValue = JsonValue> {
   object: T
   toolCalls?: ToolCallSpec[]
-  providerItems?: ProviderItems
+  providerContinuation?: ProviderContinuation
   usage: TokenUsage
   finishReason: FinishReason
   outcome?: ModelOutcome
@@ -302,7 +308,7 @@ export type ObjectStreamChunk<T extends JsonValue = JsonValue> =
   | { kind: 'partial'; partial: JsonValue }
   | { kind: 'delta'; path: readonly (string | number)[]; value: JsonValue }
   | { kind: 'tool_call'; call: ToolCallSpec }
-  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerItems?: ProviderItems }
+  | { kind: 'finish'; object: T; usage: TokenUsage; finishReason: FinishReason; outcome?: ModelOutcome; providerContinuation?: ProviderContinuation }
 
 /** Request for embedding generation. */
 export interface EmbeddingRequest {
@@ -360,6 +366,93 @@ export interface RerankResult {
   metadata?: Record<string, JsonValue>
 }
 
+/** Provider-internal generated file. Raw content never crosses a Harness execution boundary. */
+export interface ProviderArtifact {
+  readonly body: ArtifactBody
+  readonly mediaType: string
+  readonly filename?: string
+  readonly size?: number
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}
+
+/** Shared request fields for media generation operations. */
+export interface MediaRequestBase {
+  readonly model: string
+  readonly prompt: string
+  readonly call?: ModelCallOptions
+  readonly signal: AbortSignal
+  readonly traceparent?: string
+}
+
+/** Provider-neutral image generation request. Provider-specific controls belong in `call.providerOptions`. */
+export interface ImageRequest extends MediaRequestBase {
+  readonly count?: number
+  readonly size?: string
+  readonly aspectRatio?: string
+  readonly outputFormat?: string
+}
+
+/** Raw image generation response returned by a provider adapter. */
+export interface ImageProviderResponse {
+  readonly artifacts: readonly ProviderArtifact[]
+  readonly raw?: unknown
+}
+
+/** Published image generation response returned by a model handle. */
+export interface ImageResponse {
+  readonly artifacts: readonly ArtifactReference[]
+}
+
+/** Provider-neutral text-to-speech request. */
+export interface SpeechRequest extends Omit<MediaRequestBase, 'prompt'> {
+  readonly text: string
+  readonly voice?: string
+  readonly instructions?: string
+  readonly outputFormat?: string
+  readonly speed?: number
+}
+
+/** Raw speech response returned by a provider adapter. */
+export interface SpeechProviderResponse {
+  readonly artifact: ProviderArtifact
+  readonly raw?: unknown
+}
+
+/** Published speech response returned by a model handle. */
+export interface SpeechResponse {
+  readonly artifact: ArtifactReference
+}
+
+/** Provider-neutral video generation request. */
+export interface VideoRequest extends MediaRequestBase {
+  readonly durationSeconds?: number
+  readonly size?: string
+  readonly inputReference?: Extract<ContentPart, { kind: 'image' | 'image_url' }>
+}
+
+/** Raw terminal video response returned by a provider adapter. */
+export interface VideoProviderResponse {
+  readonly artifact: ProviderArtifact
+  readonly raw?: unknown
+}
+
+/** Published terminal video response returned by a model handle. */
+export interface VideoResponse {
+  readonly artifact: ArtifactReference
+}
+
+/** Progress emitted while a provider creates a video job. */
+export type VideoProviderStreamChunk =
+  | { readonly kind: 'queued' }
+  | { readonly kind: 'progress'; readonly progress: number }
+  | { readonly kind: 'finish'; readonly artifact: ProviderArtifact; readonly raw?: unknown }
+
+/** Client-safe progress emitted by a bound model handle. */
+export type VideoStreamChunk =
+  | { readonly kind: 'queued' }
+  | { readonly kind: 'progress'; readonly progress: number }
+  | { readonly kind: 'finish'; readonly artifact: ArtifactReference }
+
 /** Provider adapter interface implemented by packages such as `@purista/harness-openai`. */
 export interface ModelProvider {
   readonly id: string
@@ -371,6 +464,10 @@ export interface ModelProvider {
   objectStream?<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
   embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
   rerank?(req: RerankRequest): Promise<RerankResponse>
+  image?(req: ImageRequest): Promise<ImageProviderResponse>
+  speech?(req: SpeechRequest): Promise<SpeechProviderResponse>
+  video?(req: VideoRequest): Promise<VideoProviderResponse>
+  videoStream?(req: VideoRequest): AsyncIterable<VideoProviderStreamChunk>
   close?(): Promise<void>
 }
 
@@ -379,6 +476,8 @@ export interface ModelAlias {
   provider: ModelProvider
   model: string
   capabilities: readonly ModelCapability[]
+  /** Stable, non-secret credential pool identity used for provider admission. */
+  credentialScope?: string
   defaults?: ModelDefaults
   /** Alias-level retry behavior. Default: `true`. */
   retry?: ModelRetrySetting

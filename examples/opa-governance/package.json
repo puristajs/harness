@@ -1,0 +1,25 @@
+{
+  "name": "@purista/opa-governance-example",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src --exclude 'dist/**'",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "lint": "npm run typecheck"
+  },
+  "dependencies": {
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-policy-opa": "^3.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

@@ -22,9 +22,9 @@ flowchart TB
 
   subgraph Adapters["Infrastructure adapters"]
     Model["ModelProvider"]
-    State["StateStore"]
+    State["HarnessStorage"]
     Sandbox["SandboxSession"]
-    Workspace["DurableWorkspaceStore"]
+    Workspace["DurableWorkspace"]
     Telemetry["Logger + OTel"]
   end
 
@@ -65,7 +65,7 @@ flowchart TB
 | `Tool` | Callable capability exposed to an agent: built-in, TypeScript, or MCP. | What can the agent do besides model calls? |
 | `Skill` | Mounted instruction directory with `SKILL.md` frontmatter. | What reusable method or domain guidance should the agent follow? |
 | `Sandbox` | Filesystem and optional command execution boundary. | Can this run execute commands, and with what isolation? |
-| `DurableWorkspaceStore` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
+| `DurableWorkspace` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
 
 ## Agents Versus Workflows
 
@@ -85,7 +85,7 @@ flowchart TB
     W1["Validate request"]
     W2["Invoke agent A"]
     W3["Invoke agent B or run in parallel"]
-    W4["Apply policy / review gate"]
+    W4["Apply policy / application review task"]
     W5["Write artifact or state"]
     W1 --> W2 --> W3 --> W4 --> W5
   end
@@ -174,5 +174,5 @@ default `UNSET` status.
 Persisted run events never store prompts, model outputs, tool inputs/results,
 memory, files, or user data. They may store operational metadata such as ids,
 counts, dimensions, status, serialized errors, and token usage. Telemetry
-content capture controls span content only; it does not change StateStore audit
+content capture controls span content only; it does not change HarnessStorage audit
 retention.

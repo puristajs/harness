@@ -1,11 +1,19 @@
 import type { JsonValue } from './json.js'
+import type { HarnessIdentity } from '../identity/index.js'
+import type { SessionSandboxBinding } from '../sandbox/ownership.js'
 
-/** Session-level metadata persisted by a state store. */
+/** Session-level metadata persisted by Harness storage. */
 export interface SessionRecord {
   id: string
+  /** Opaque immutable identity of this record; changes when a closed id is reused. */
+  instanceId: string
   createdAt: string
   updatedAt: string
   runCount: number
+  /** Identity is bound at creation and compared before any live resource opens. */
+  identity?: HarnessIdentity
+  /** Immutable sandbox ownership binding for this session incarnation. */
+  sandboxBinding: SessionSandboxBinding
   metadata?: Record<string, JsonValue>
 }
 
@@ -31,11 +39,13 @@ export interface Message {
 
 /** Run lifecycle status values.
  * - `running`: active run in progress
+ * - `waiting`: durable run is safely suspended for an external signal
+ * - `interrupted`: durable execution stopped and may resume
  * - `succeeded`: run completed successfully
  * - `failed`: run completed with error
  * - `cancelled`: run cancelled before completion
  */
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunStatus = 'running' | 'waiting' | 'interrupted' | 'succeeded' | 'failed' | 'cancelled'
 
 /** Serialized error payload stored on run records. */
 export interface SerializedError {
@@ -46,7 +56,7 @@ export interface SerializedError {
   meta?: Record<string, unknown>
 }
 
-/** Run record persisted by state stores. */
+/** Run record persisted by Harness storage. */
 export interface RunRecord {
   id: string
   sessionId: string
@@ -58,6 +68,14 @@ export interface RunRecord {
   input?: JsonValue
   output?: JsonValue
   error?: SerializedError
+  /** Current durable attempt. Omitted for ordinary non-durable runs. */
+  attempt?: number
+  /** Worker currently associated with a durable attempt. */
+  workerId?: string
+  /** First durable step id, retained across attempts. */
+  initialStepId?: string
+  /** Adapter-neutral durable execution metadata. */
+  metadata?: Record<string, JsonValue>
 }
 
 /** Event payload persisted for run replay or audit. */

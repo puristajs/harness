@@ -29,6 +29,7 @@ import {
   type BedrockRuntimeClientConfig
 } from '@aws-sdk/client-bedrock-runtime'
 
+/** Configuration for the Amazon Bedrock model provider factory. */
 export interface BedrockFactoryOptions extends BedrockRuntimeClientConfig {
   /** Optional injected client for tests or custom transport behavior. */
   client?: BedrockClient
@@ -208,7 +209,9 @@ class BedrockModelProvider extends BaseModelProvider {
   }
 }
 
+/** Narrow Amazon Bedrock Runtime SDK surface accepted for test or custom transport injection. */
 export type BedrockClient = {
+  /** Sends a Bedrock runtime command with optional cancellation. */
   send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<any>
 }
 

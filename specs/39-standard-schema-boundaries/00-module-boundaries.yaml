@@ -1,0 +1,26 @@
+module_boundary_version: 1
+modules:
+  - module_id: harness_schema
+    owner: harness_core
+    public_entrypoint: '@purista/harness'
+    owned_concepts: [schema types, validation, model projection, JSON assertion]
+    allowed_dependencies: []
+    forbidden_dependencies: [provider_adapters, consumers]
+  - module_id: harness_runtime
+    owner: harness_core
+    public_entrypoint: '@purista/harness'
+    owned_concepts: [builders, agents, tools, workflows, sessions]
+    allowed_dependencies: [harness_schema]
+    forbidden_dependencies: [consumers]
+  - module_id: provider_adapters
+    owner: harness_adapters
+    public_entrypoint: adapter package entrypoints
+    owned_concepts: [provider protocol translation]
+    allowed_dependencies: [harness_runtime]
+    forbidden_dependencies: [harness_schema, consumers]
+  - module_id: consumers
+    owner: purista_docs
+    public_entrypoint: existing docs, handbook and skill routes
+    owned_concepts: [public guidance and examples]
+    allowed_dependencies: [harness_runtime]
+    forbidden_dependencies: [provider_adapters]

@@ -6,19 +6,19 @@ import {
   JsonLogger,
   type BuilderState,
   type ModelAlias,
-  type ModelProvider
+  type ModelProvider,
 } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 import { z } from 'zod'
 
 export const supportTicketInput = z.object({
   customer: z.string(),
-  question: z.string()
+  question: z.string(),
 })
 
 export const supportTicketOutput = z.object({
   answer: z.string(),
-  priority: z.enum(['low', 'normal', 'high'])
+  priority: z.enum(['low', 'normal', 'high']),
 })
 
 function loadRootEnv(): void {
@@ -49,9 +49,9 @@ export function supportModels(provider: ModelProvider, model: string) {
     version: '1.0.0',
     register(builder) {
       return builder.models({
-        support: { provider, model, capabilities: ['object'], retry: true }
+        support: { provider, model, capabilities: ['object'], retry: true },
       })
-    }
+    },
   })
 }
 
@@ -61,25 +61,22 @@ type SupportModelState = BuilderState & { models: { support: ModelAlias } }
 export const supportAgents = defineHarnessModule<SupportModelState>()('support.agents', {
   version: '1.0.0',
   register(builder) {
-    return builder.agents(({ agent }) => ({
-      answer_ticket: agent({
-        model: 'support',
-        input: supportTicketInput,
-        output: supportTicketOutput,
-        builtinTools: false,
-        instructions: [
-          'You are a concise customer-support specialist.',
-          'Return JSON with a practical answer and priority low, normal, or high.',
-          'Use high only for account access, data loss, or service outage.'
-        ].join(' ')
-      })
-    }))
-  }
+    return builder.agent('answer_ticket', {
+      model: 'support',
+      input: supportTicketInput,
+      output: supportTicketOutput,
+      instructions: [
+        'You are a concise customer-support specialist.',
+        'Return JSON with a practical answer and priority low, normal, or high.',
+        'Use high only for account access, data loss, or service outage.',
+      ].join(' '),
+    })
+  },
 })
 
 /**
  * Application composition: reusable modules supply capabilities; this app owns
- * the customer-facing workflow and its durable session state.
+ * the customer-facing workflow and its durable conversation history.
  */
 export function createModularSupportHarness(provider?: ModelProvider) {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'
@@ -90,33 +87,32 @@ export function createModularSupportHarness(provider?: ModelProvider) {
     .defaults({
       // Projection is retry-only: durable history remains complete for audit and replay.
       contextProjection: {
-        toolResultPruner: { maxBytes: 8_192, headBytes: 3_000, tailBytes: 3_000 }
-      }
+        toolResultPruner: { maxBytes: 8_192, headBytes: 3_000, tailBytes: 3_000 },
+      },
     })
     .use(supportModels(modelProvider, model))
     .use(supportAgents)
-    .workflows(({ workflow }) => ({
-      answer_support_ticket: workflow({
-        input: supportTicketInput,
-        output: supportTicketOutput,
-        delegation: { agents: ['answer_ticket'] },
-        handler: async (ctx) => {
-          await ctx.memory.session.write('last_ticket', { customer: ctx.input.customer })
-          return ctx.agents.answer_ticket(ctx.input)
-        }
-      })
-    }))
+    .workflow('answer_support_ticket', {
+      input: supportTicketInput,
+      output: supportTicketOutput,
+      delegation: { agents: ['answer_ticket'] },
+      handler: async (ctx) => {
+        await ctx.memory.session.write('last_ticket', { customer: ctx.input.customer })
+        return ctx.agents.answer_ticket(ctx.input)
+      },
+    })
     .build()
 }
 
 export async function runModularSupportHarness(): Promise<void> {
   const harness = createModularSupportHarness()
   const session = await harness.getSession('modular-support-demo')
-  const response = await session.workflows.answer_support_ticket.prompt({
+  const response = await session.workflows.answer_support_ticket.run({
     customer: 'Acme Corp',
-    question: 'I cannot sign in after resetting my password.'
+    question: 'I cannot sign in after resetting my password.',
   })
-  console.log(`${response.priority}: ${response.answer}`)
+  if (response.status === 'interrupted') throw new Error(`Support workflow interrupted: ${response.interrupt.type}`)
+  console.log(`${response.output.priority}: ${response.output.answer}`)
   await harness.shutdown()
 }
 

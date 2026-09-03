@@ -7,7 +7,7 @@ must not block local app usage.
 Useful manual check:
 
 ```bash
-npm run jaeger --workspace @purista/living-wiki-jaeger-example
+npm run jaeger
 ```
 
 Seed references: [[jaeger-tracing]], [[workflow-observation]].

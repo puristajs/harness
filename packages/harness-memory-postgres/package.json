@@ -1,0 +1,28 @@
+{
+  "name": "@purista/harness-memory-postgres",
+  "version": "3.0.0",
+  "description": "PostgreSQL and pgvector memory engine for @purista/harness.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "migrations/*.sql", "package.json", "README.md", "LICENSE"],
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "repository": { "type": "git", "url": "https://github.com/puristajs/harness", "directory": "packages/harness-memory-postgres" },
+  "bugs": { "url": "https://github.com/puristajs/harness/issues" },
+  "homepage": "https://github.com/puristajs/harness#readme",
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json && cp -R migrations dist/migrations",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:live": "vitest run test-live"
+  },
+  "dependencies": { "@purista/harness": "^3.0.0", "pg": "^8.23.0" },
+  "devDependencies": { "@electric-sql/pglite": "0.5.8", "@electric-sql/pglite-pgvector": "0.0.9", "@types/node": "^26.2.0", "@types/pg": "^8.15.5", "typescript": "npm:@typescript/typescript6@^6.0.2", "vitest": "^4.1.11" },
+  "engines": { "node": ">=24.15.0" }
+}

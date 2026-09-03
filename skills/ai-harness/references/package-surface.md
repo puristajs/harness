@@ -11,11 +11,20 @@
 
 ## Packages
 Published packages:
-- `@purista/harness`: core runtime, ports, adapters, errors, logger, telemetry, state, sandbox, tools, agents, workflows, sessions, testing subpath
+- `@purista/harness`: core runtime, ports, local storage/workspace adapters, errors, logger, telemetry, sandbox, tools, agents, workflows, sessions, testing subpath
 - `@purista/harness-openai`: OpenAI provider adapter
+- `@purista/harness-google`: Google Gemini API provider adapter
 - `@purista/harness-anthropic`: Anthropic provider adapter
 - `@purista/harness-bedrock`: Amazon Bedrock provider adapter
 - `@purista/harness-azure-foundry`: Azure AI Foundry provider adapter
+- `@purista/harness-agent-plugins`: data-only Agent Plugins v1 loader and verifier
+- `@purista/harness-guardrails`: provider-neutral typed rails and privacy detector port
+- `@purista/harness-guardrails-presidio`: optional Microsoft Presidio sidecar detector
+- `@purista/harness-guardrails-native-privacy`: optional local Rust/Node-API detector
+- `@purista/harness-guardrails-local-ner`: optional local Transformers.js NER detector
+- `@purista/harness-policy-opa`: typed OPA Data API governance client/evaluator with strict `./testing` fake
+- `@purista/harness-storage-postgres`: distributed PostgreSQL HarnessStorage with migrations, leases, fencing, checkpoints, and external waits
+- `@purista/harness-sandbox-kubernetes`: restricted Kubernetes sandbox plus optional PVC/VolumeSnapshot durable workspace
 
 Package conventions:
 - packages are ESM-only
@@ -30,12 +39,13 @@ Main core entry exports:
 - telemetry from `telemetry/index.js`
 - ULID from `ulid/index.js`
 - ports from `ports/index.js`
-- durable runtime helpers from `runtime/index.js`
-- `InMemoryStateStore`
-- JSON/model state types
+- recoverable workflow helpers and execution types from `runtime/index.js`
+- `HarnessStorage`, `InMemoryHarnessStorage`, and `SqliteHarnessStorage`
+- `DurableWorkspace`, `InMemoryDurableWorkspace`, and local workspace helpers
+- JSON/model persistence types
 - model registry and capability-projected model handles
 - sandbox factories and sandbox types
-- `sandboxMemory()` memory adapter
+- `inMemoryMemoryEngine()` default memory engine
 - MCP tool support
 - governance types for optional exposure policy, execution policy, approvals, audit sinks, and policy events
 - `defineHarness` and builder/session/agent/workflow types
@@ -44,6 +54,11 @@ OpenAI entry exports:
 - `openai(options)`
 - `OpenAiFactoryOptions`
 - `OpenAiClient`
+
+Google entry exports:
+- `google(options)`
+- `GoogleFactoryOptions`
+- `GoogleClient`
 
 Anthropic entry exports:
 - `anthropic(options)`
@@ -60,14 +75,32 @@ Azure AI Foundry entry exports:
 - `AzureFoundryFactoryOptions`
 - `AzureFoundryClient`
 
+OPA policy entry exports:
+- `createOpaClient(options)`, `OpaClient`, `OpaClientOptions`, and `OpaQueryResult`
+- `opaPolicy(helpers, options)`, `OpaPolicyOptions`, `OpaPolicyRegistrar`, and `OpaJsonResultSchema`
+- content-free `OpaClientError` and `OpaPolicyError` categories
+- `FakeOpaDataApi` from `@purista/harness-policy-opa/testing`, never main
+
+PostgreSQL storage entry exports:
+- `postgresHarnessStorage(options)`
+- `PostgresHarnessStorageOptions`
+
+Kubernetes sandbox entry exports:
+- `kubernetesSandboxRuntime(options)`
+- `KubernetesSandboxRuntime`, `KubernetesSandboxRuntimeOptions`, and workspace-enabled narrowing
+- the injectable Kubernetes driver and focused adapter/workspace classes for platform wrappers and tests
+
 ## Testing Exports
 `@purista/harness/testing` exports:
 - `makeHarness`
 - `FakeModelProvider`
-- `stateStoreContract`
-- `FakeMemoryAdapter`
-- `memoryAdapterContract`
+- `FakeHarnessStorage`
+- `harnessStorageContract`
+- `durableWorkspaceContract`
+- `FakeMemoryEngine`
+- `memoryEngineContract`
 - `sandboxContract`
+- `sandboxTextSearchContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`
 - `adapterCapabilitiesContract`
@@ -86,15 +119,18 @@ Use these files as the implementation source of truth:
 | Agent loop/tools/permissions/governance | `packages/harness/src/agents/index.ts` |
 | Workflow invocation | `packages/harness/src/workflows/index.ts` |
 | Models/capability gates | `packages/harness/src/models/registry.ts`, `ports/model-provider.ts`, `ports/base-model-provider.ts` |
-| State port/default | `ports/state.ts`, `state/in-memory.ts`, `models/state.ts` |
+| Harness storage | `storage/*`, `models/state.ts` |
 | Memory port/default | `ports/memory.ts`, `ports/memory/*`, `memory/*` |
 | Sandbox | `sandbox/index.ts` |
 | Skills | `skills/index.ts` |
 | MCP | `tools/mcp/*` |
 | Telemetry | `telemetry/*` |
-| Durable runtime | `runtime/*` |
+| Recoverable workflow execution | `runtime/*` |
 | Errors | `errors/catalog.ts`, `errors/harness-error.ts` |
-| Provider adapters | `packages/harness-openai/src/index.ts`, `packages/harness-anthropic/src/index.ts`, `packages/harness-bedrock/src/index.ts`, `packages/harness-azure-foundry/src/index.ts` |
+| Provider adapters | `packages/harness-openai/src/index.ts`, `packages/harness-google/src/index.ts`, `packages/harness-anthropic/src/index.ts`, `packages/harness-bedrock/src/index.ts`, `packages/harness-azure-foundry/src/index.ts` |
+| OPA governance adapter | `packages/harness-policy-opa/src/index.ts`, `packages/harness-policy-opa/src/testing/index.ts` |
+| PostgreSQL Harness storage | `packages/harness-storage-postgres/src/index.ts`, `packages/harness-storage-postgres/migrations/*` |
+| Kubernetes sandbox/workspace | `packages/harness-sandbox-kubernetes/src/runtime.ts`, `sandbox.ts`, `workspace.ts`, `driver.ts` |
 
 ## Public Docs Map
 Use public docs for user-facing examples and source files for exact behavior:
@@ -112,8 +148,8 @@ Use public docs for user-facing examples and source files for exact behavior:
 When docs and source disagree, verify source before teaching behavior. Known check points:
 - custom agent handler context in source exposes models/memory/history/signal/session/run, not typed `ctx.tools` or callable skill handles
 - the internal OpenTelemetry shim is created during session setup; `.telemetry(...)` supplies options such as `contentCaptureMode`, while application SDK/exporter bootstrapping is external
-- default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` is safer for file-only agents
-- harness streams are `RunEvent`, not an HTTP/SSE wire protocol
+- default sandbox is auto-detected during build when `.sandbox(...)` is omitted; explicit `inMemorySandbox()` provides files and bounded search without command execution
+- public harness streams are `ExecutionEvent`; detailed `RunEvent` diagnostics use `observe(...)`; neither is an HTTP wire protocol
 - governance is optional; exposure-only configs are valid and do not imply execution default-deny
 - feedback has exported types and testing recorder, but no production store in core
 

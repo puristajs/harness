@@ -1,5 +1,5 @@
 import { ValidationError } from '../../errors/index.js'
-import type { JsonValue } from '../../models/json.js'
+import { isJsonValue, type JsonValue } from '../../models/json.js'
 
 export type McpSchemaValidationWhere = 'mcp_input' | 'mcp_output'
 
@@ -248,14 +248,6 @@ function isRecord(value: unknown): value is JsonSchema {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Object.prototype.toString.call(value) === '[object Object]'
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (Array.isArray(value)) return value.every(isJsonValue)
-  if (isPlainObject(value)) return Object.values(value).every(isJsonValue)
-  return false
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {

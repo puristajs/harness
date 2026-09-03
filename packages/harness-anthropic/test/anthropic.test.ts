@@ -6,6 +6,17 @@ function mockSignal(): AbortSignal {
   return new AbortController().signal
 }
 
+// This is the already-compiled Standard JSON Schema cache value supplied by
+// the Harness core. Provider adapters must carry it to the SDK untouched.
+const distinctiveCompiledSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  $defs: { tag: { type: 'string', pattern: '^[a-z]+$' } },
+  properties: { filter: { anyOf: [{ $ref: '#/$defs/tag' }, { type: 'null' }] } },
+  required: ['filter'],
+  unevaluatedProperties: false,
+}
+
 describe('anthropic provider factory', () => {
   it('returns provider metadata and maps text response', async () => {
     const provider = anthropic({
@@ -18,11 +29,11 @@ describe('anthropic provider factory', () => {
               input_tokens: 4,
               output_tokens: 2,
               cache_read_input_tokens: 3,
-              cache_creation_input_tokens: 1
-            }
-          })
-        }
-      }
+              cache_creation_input_tokens: 1,
+            },
+          }),
+        },
+      },
     })
 
     expect(provider.id).toBe('anthropic')
@@ -31,7 +42,7 @@ describe('anthropic provider factory', () => {
     const response = await provider.text!({
       model: 'claude-sonnet-4-5',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.content).toBe('hello')
@@ -40,7 +51,7 @@ describe('anthropic provider factory', () => {
       outputTokens: 2,
       totalTokens: 10,
       cachedInputTokens: 3,
-      cacheCreationInputTokens: 1
+      cacheCreationInputTokens: 1,
     })
     expect(response.finishReason).toBe('stop')
   })
@@ -59,12 +70,12 @@ describe('anthropic provider factory', () => {
                 input_tokens: 3,
                 output_tokens: 2,
                 cache_read_input_tokens: 4,
-                cache_creation_input_tokens: 2
-              }
+                cache_creation_input_tokens: 2,
+              },
             }
-          }
-        }
-      }
+          },
+        },
+      },
     })
 
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
@@ -72,7 +83,7 @@ describe('anthropic provider factory', () => {
       model: 'claude-sonnet-4-5',
       messages: [{ role: 'user', content: 'object please' }],
       schema,
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.object).toEqual({ ok: true })
@@ -81,12 +92,96 @@ describe('anthropic provider factory', () => {
       outputTokens: 2,
       totalTokens: 11,
       cachedInputTokens: 4,
-      cacheCreationInputTokens: 2
+      cacheCreationInputTokens: 2,
     })
     expect(calls[0]).toMatchObject({
       tool_choice: { type: 'tool', name: 'harness_response' },
-      tools: [{ name: 'harness_response', input_schema: schema }]
+      tools: [{ name: 'harness_response', input_schema: schema }],
     })
+  })
+
+  it('forwards compiled JSON Schema unchanged for object and tool requests', async () => {
+    const calls: any[] = []
+    const provider = anthropic({
+      client: {
+        messages: {
+          create: async (payload: any) => {
+            calls.push(payload)
+            return {
+              content: [{ type: 'tool_use', id: 'toolu_1', name: 'harness_response', input: { ok: true } }],
+              stop_reason: 'tool_use',
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }
+          },
+        },
+      },
+    })
+
+    await provider.object!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: distinctiveCompiledSchema,
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: distinctiveCompiledSchema }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0]?.tools[0]?.input_schema).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.tools[1]?.input_schema).toEqual(distinctiveCompiledSchema)
+  })
+
+  it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {
+    let calls = 0
+    const provider = anthropic({
+      client: {
+        messages: {
+          create: async (payload: any) => {
+            calls += 1
+            if (payload.tools?.[0]?.input_schema === distinctiveCompiledSchema) {
+              throw Object.assign(new Error('Unsupported schema keyword.'), {
+                status: 400,
+                code: 'unsupported_schema',
+                type: 'invalid_request_error',
+              })
+            }
+            return {
+              content: [{ type: 'tool_use', id: 'toolu_1', name: 'harness_response', input: { ok: true } }],
+              stop_reason: 'tool_use',
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }
+          },
+        },
+      },
+    })
+
+    await expect(
+      provider.object!({
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: distinctiveCompiledSchema,
+        signal: mockSignal(),
+      }),
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: {
+        provider: 'anthropic',
+        method: 'object',
+        status: 400,
+        reason: 'http_error',
+        providerCode: 'unsupported_schema',
+      },
+    })
+    expect(calls).toBe(1)
+
+    await expect(
+      provider.object!({
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: { type: 'object' },
+        signal: mockSignal(),
+      }),
+    ).resolves.toMatchObject({ object: { ok: true } })
+    expect(calls).toBe(2)
   })
 
   it('keeps cache-read and cache-creation input in the normalized text-stream total', async () => {
@@ -98,22 +193,22 @@ describe('anthropic provider factory', () => {
             input_tokens: 4,
             output_tokens: 0,
             cache_read_input_tokens: 3,
-            cache_creation_input_tokens: 1
-          }
-        }
+            cache_creation_input_tokens: 1,
+          },
+        },
       }
       yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'cached' } }
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } }
     }
 
     const provider = anthropic({
-      client: { messages: { create: async () => chunks() } }
+      client: { messages: { create: async () => chunks() } },
     })
     const received: any[] = []
     for await (const chunk of provider.textStream!({
       model: 'claude-sonnet-4-5',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
@@ -125,8 +220,8 @@ describe('anthropic provider factory', () => {
         outputTokens: 2,
         totalTokens: 10,
         cachedInputTokens: 3,
-        cacheCreationInputTokens: 1
-      }
+        cacheCreationInputTokens: 1,
+      },
     })
   })
 
@@ -134,7 +229,7 @@ describe('anthropic provider factory', () => {
     for (const [providerReason, finishReason] of [
       ['pause_turn', 'pause'],
       ['refusal', 'refusal'],
-      ['model_context_window_exceeded', 'context_limit']
+      ['model_context_window_exceeded', 'context_limit'],
     ] as const) {
       const provider = anthropic({
         client: {
@@ -142,16 +237,16 @@ describe('anthropic provider factory', () => {
             create: async () => ({
               content: [{ type: 'text', text: 'status' }],
               stop_reason: providerReason,
-              usage: { input_tokens: 1, output_tokens: 1 }
-            })
-          }
-        }
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+          },
+        },
       })
 
       const response = await provider.text!({
         model: 'claude-sonnet-4-5',
         messages: [{ role: 'user', content: 'hi' }],
-        signal: mockSignal()
+        signal: mockSignal(),
       })
 
       expect(response.finishReason).toBe(finishReason)
@@ -166,10 +261,14 @@ describe('anthropic provider factory', () => {
         messages: {
           create: async (payload: any) => {
             calls.push(payload)
-            return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
-          }
-        }
-      } as any
+            return {
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }
+          },
+        },
+      } as any,
     })
 
     await provider.text!({
@@ -177,7 +276,7 @@ describe('anthropic provider factory', () => {
       messages: [{ role: 'user', content: 'hi' }],
       call: { temperature: 0 },
       defaults: { topP: 0.9, stopSequences: ['END'] },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0].temperature).toBe(0)
@@ -195,11 +294,11 @@ describe('anthropic provider factory', () => {
             return {
               content: [{ type: 'tool_use', id: 'toolu_search', name: 'search_docs', input: { query: 'harness' } }],
               stop_reason: 'tool_use',
-              usage: { input_tokens: 3, output_tokens: 2 }
+              usage: { input_tokens: 3, output_tokens: 2 },
             }
-          }
-        }
-      }
+          },
+        },
+      },
     })
 
     const response = await provider.object!({
@@ -207,7 +306,7 @@ describe('anthropic provider factory', () => {
       messages: [{ role: 'user', content: 'search first' }],
       schema: { type: 'object' },
       tools: [{ name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.toolCalls).toEqual([{ id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } }])
@@ -225,11 +324,11 @@ describe('anthropic provider factory', () => {
             return {
               content: [{ type: 'text', text: 'ok' }],
               stop_reason: 'end_turn',
-              usage: { input_tokens: 1, output_tokens: 1 }
+              usage: { input_tokens: 1, output_tokens: 1 },
             }
-          }
-        }
-      }
+          },
+        },
+      },
     })
 
     await provider.text!({
@@ -238,7 +337,7 @@ describe('anthropic provider factory', () => {
       defaults: { parallelToolCalls: true },
       call: { parallelToolCalls: false },
       tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true })
@@ -254,11 +353,11 @@ describe('anthropic provider factory', () => {
             return {
               content: [{ type: 'text', text: 'ok' }],
               stop_reason: 'end_turn',
-              usage: { input_tokens: 1, output_tokens: 1 }
+              usage: { input_tokens: 1, output_tokens: 1 },
             }
-          }
-        }
-      }
+          },
+        },
+      },
     })
 
     await provider.text!({
@@ -266,10 +365,10 @@ describe('anthropic provider factory', () => {
       messages: [{ role: 'user', content: 'hi' }],
       defaults: {
         parallelToolCalls: false,
-        providerOptions: { tool_choice: { type: 'any' } }
+        providerOptions: { tool_choice: { type: 'any' } },
       },
       tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.tool_choice).toEqual({ type: 'any' })
@@ -285,29 +384,32 @@ describe('anthropic provider factory', () => {
             return {
               content: [{ type: 'text', text: 'ok' }],
               stop_reason: 'end_turn',
-              usage: { input_tokens: 1, output_tokens: 1 }
+              usage: { input_tokens: 1, output_tokens: 1 },
             }
-          }
-        }
-      }
+          },
+        },
+      },
     })
 
     await provider.text!({
       model: 'claude-sonnet-4-5',
-      messages: [{ role: 'system', content: 'Be terse.' }, { role: 'user', content: 'hi' }],
+      messages: [
+        { role: 'system', content: 'Be terse.' },
+        { role: 'user', content: 'hi' },
+      ],
       defaults: {
         temperature: 0.1,
         providerOptions: {
-          thinking: { type: 'disabled' }
-        }
+          thinking: { type: 'disabled' },
+        },
       },
       call: {
         providerOptions: {
           metadata: { user_id: 'u1' },
-          requestOptions: { headers: { 'x-test': 'yes' } }
-        }
+          requestOptions: { headers: { 'x-test': 'yes' } },
+        },
       },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.payload).toMatchObject({
@@ -315,7 +417,7 @@ describe('anthropic provider factory', () => {
       system: 'Be terse.',
       temperature: 0.1,
       thinking: { type: 'disabled' },
-      metadata: { user_id: 'u1' }
+      metadata: { user_id: 'u1' },
     })
     expect(calls[0]?.options).toMatchObject({ headers: { 'x-test': 'yes' } })
     expect(calls[0]?.options.signal).toBeInstanceOf(AbortSignal)
@@ -329,9 +431,9 @@ describe('anthropic provider factory', () => {
     const provider = anthropic({
       client: {
         messages: {
-          create: async () => chunks()
-        }
-      }
+          create: async () => chunks(),
+        },
+      },
     })
 
     await expect(async () => {
@@ -339,7 +441,7 @@ describe('anthropic provider factory', () => {
         model: 'claude-sonnet-4-5',
         messages: [{ role: 'user', content: 'object please' }],
         schema: { type: 'object' },
-        signal: mockSignal()
+        signal: mockSignal(),
       })) {
         // consume the stream to force the final parse
       }
@@ -351,8 +453,8 @@ describe('anthropic provider factory', () => {
         method: 'objectStream',
         reason: 'malformed_response',
         // Raw model output never leaks into error metadata (POR-07).
-        providerBody: { redacted: true, contentLength: '{"ok":'.length }
-      }
+        providerBody: { redacted: true, contentLength: '{"ok":'.length },
+      },
     })
   })
 
@@ -360,12 +462,20 @@ describe('anthropic provider factory', () => {
     async function* chunks() {
       yield { type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 0 } } }
       // A real application tool call streams before the object block.
-      yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_search', name: 'search_docs', input: {} } }
+      yield {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_search', name: 'search_docs', input: {} },
+      }
       yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"query":' } }
       yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"harness"}' } }
       yield { type: 'content_block_stop', index: 0 }
       // The synthetic harness_response block carries the structured object.
-      yield { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_obj', name: 'harness_response', input: {} } }
+      yield {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'toolu_obj', name: 'harness_response', input: {} },
+      }
       yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"ok":' } }
       yield { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: 'true}' } }
       yield { type: 'content_block_stop', index: 1 }
@@ -375,9 +485,9 @@ describe('anthropic provider factory', () => {
     const provider = anthropic({
       client: {
         messages: {
-          create: async () => chunks()
-        }
-      }
+          create: async () => chunks(),
+        },
+      },
     })
 
     const received: any[] = []
@@ -386,21 +496,21 @@ describe('anthropic provider factory', () => {
       messages: [{ role: 'user', content: 'object plus tool' }],
       schema: { type: 'object' },
       tools: [{ name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
 
     const toolCalls = received.filter((chunk) => chunk.kind === 'tool_call')
     expect(toolCalls).toEqual([
-      { kind: 'tool_call', call: { id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } } }
+      { kind: 'tool_call', call: { id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } } },
     ])
     const finish = received.at(-1)
     expect(finish).toMatchObject({
       kind: 'finish',
       object: { ok: true },
       finishReason: 'tool_calls',
-      outcome: { finishReason: 'tool_calls', providerFinishReason: 'tool_use' }
+      outcome: { finishReason: 'tool_calls', providerFinishReason: 'tool_use' },
     })
   })
 
@@ -412,16 +522,16 @@ describe('anthropic provider factory', () => {
     const provider = anthropic({
       client: {
         messages: {
-          create: async () => chunks()
-        }
-      }
+          create: async () => chunks(),
+        },
+      },
     })
 
     const received: any[] = []
     for await (const chunk of provider.textStream!({
       model: 'claude-sonnet-4-5',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }

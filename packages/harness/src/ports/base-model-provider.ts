@@ -7,6 +7,8 @@ import type { Logger } from '../logger/index.js'
 import type {
   EmbeddingRequest,
   EmbeddingResponse,
+  ImageProviderResponse,
+  ImageRequest,
   ModelProvider,
   ModelRetryPolicy,
   ModelRetrySetting,
@@ -15,10 +17,15 @@ import type {
   ObjectStreamChunk,
   RerankRequest,
   RerankResponse,
+  SpeechProviderResponse,
+  SpeechRequest,
   TextRequest,
   TextResponse,
   TextStreamChunk,
-  TokenUsage
+  TokenUsage,
+  VideoProviderResponse,
+  VideoProviderStreamChunk,
+  VideoRequest,
 } from './model-provider.js'
 import type { JsonValue } from '../models/json.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
@@ -32,8 +39,8 @@ export interface BaseModelProviderOptions {
   timeoutMs?: number
 }
 
-type ProviderMethod = 'text' | 'textStream' | 'object' | 'objectStream' | 'embed' | 'rerank'
-type ProviderRequest = TextRequest | ObjectRequest | EmbeddingRequest | RerankRequest
+type ProviderMethod = 'text' | 'textStream' | 'object' | 'objectStream' | 'embed' | 'rerank' | 'image' | 'speech' | 'video' | 'videoStream'
+type ProviderRequest = TextRequest | ObjectRequest | EmbeddingRequest | RerankRequest | ImageRequest | SpeechRequest | VideoRequest
 
 type ResolvedRetryPolicy = Required<Omit<ModelRetryPolicy, 'retryOn' | 'maxDeferredDelayMs'>> & {
   maxDeferredDelayMs?: number
@@ -115,6 +122,22 @@ export abstract class BaseModelProvider implements ModelProvider {
     return this.call('rerank', req, (next) => this.doRerank(next as RerankRequest))
   }
 
+  public image(req: ImageRequest): Promise<ImageProviderResponse> {
+    return this.call('image', req, (next) => this.doImage(next as ImageRequest))
+  }
+
+  public speech(req: SpeechRequest): Promise<SpeechProviderResponse> {
+    return this.call('speech', req, (next) => this.doSpeech(next as SpeechRequest))
+  }
+
+  public video(req: VideoRequest): Promise<VideoProviderResponse> {
+    return this.call('video', req, (next) => this.doVideo(next as VideoRequest))
+  }
+
+  public videoStream(req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> {
+    return this.stream('videoStream', req, (next) => this.doVideoStream(next as VideoRequest))
+  }
+
   protected doText(_req: TextRequest): Promise<TextResponse> {
     throw this.methodMissing('text')
   }
@@ -137,6 +160,22 @@ export abstract class BaseModelProvider implements ModelProvider {
 
   protected doRerank(_req: RerankRequest): Promise<RerankResponse> {
     throw this.methodMissing('rerank')
+  }
+
+  protected doImage(_req: ImageRequest): Promise<ImageProviderResponse> {
+    throw this.methodMissing('image')
+  }
+
+  protected doSpeech(_req: SpeechRequest): Promise<SpeechProviderResponse> {
+    throw this.methodMissing('speech')
+  }
+
+  protected doVideo(_req: VideoRequest): Promise<VideoProviderResponse> {
+    throw this.methodMissing('video')
+  }
+
+  protected doVideoStream(_req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> {
+    throw this.methodMissing('videoStream')
   }
 
   protected getLogger(): Logger | undefined {
@@ -355,7 +394,7 @@ export abstract class BaseModelProvider implements ModelProvider {
     }
   }
 
-  private methodMissing(method: ProviderMethod): ModelCapabilityError {
+  protected methodMissing(method: ProviderMethod): ModelCapabilityError {
     return new ModelCapabilityError('Model provider method is not implemented.', {
       alias: this.id,
       method,

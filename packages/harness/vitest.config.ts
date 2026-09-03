@@ -5,17 +5,22 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/errors/**/*.test.ts',
+      'src/sandbox/**/*.test.ts',
+      'src/local/**/*.test.ts',
+      'src/decisions/**/*.test.ts',
       'src/logger/**/*.test.ts',
       'src/telemetry/**/*.test.ts',
       'src/testing/**/*.test.ts',
       'src/ulid/**/*.test.ts',
       'src/eval/**/*.test.ts',
       'src/models/**/*.test.ts',
+      'src/schema/**/*.test.ts',
+      'src/workflows/**/*.test.ts',
       'src/ports/**/*.test.ts',
       'src/sessions/**/*.test.ts',
-      'src/state/**/*.test.ts',
+      'src/storage/**/*.test.ts',
       'src/tools/**/*.test.ts',
-      'test/**/*.test.ts'
+      'test/**/*.test.ts',
     ],
     coverage: {
       provider: 'v8',
@@ -40,14 +45,14 @@ export default defineConfig({
         'src/tools/mcp/runner.ts',
         'src/tools/mcp/stdio.ts',
         // Host-FS failure branches untested.
-        'src/local/local-workspace.ts'
+        'src/local/local-workspace.ts',
       ],
       thresholds: {
         statements: 85,
         branches: 80,
         functions: 85,
-        lines: 85
-      }
-    }
-  }
+        lines: 85,
+      },
+    },
+  },
 })

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "ticket_id": "TICKET-003",
+  "status": "accepted",
+  "spec_manifest_digest": "sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb",
+  "plan_manifest_digest": "sha256:3369ac4991cf1238d86a362dfcb3e97095b8737590ffad0e8c0e07d3cfb7121b",
+  "changed_artifacts": [
+    {
+      "path": "packages/harness-sandbox-docker/src/ownership.ts",
+      "kind": "module",
+      "spec_refs": ["00-vision.md#REQ-SOWN-ADMIN", "00-vision.md#REQ-SOWN-BOUNDS", "03-contracts/api.md#CTR-SOWN-OWNER", "03-contracts/api.md#CTR-SOWN-ADMIN"],
+      "asset_refs": ["sown.owner", "sown.administration", "sown.options", "sown.safe-error"],
+      "module_refs": ["packages/harness-sandbox-docker/src"]
+    },
+    {
+      "path": "packages/harness-sandbox-docker/src/administration.ts",
+      "kind": "module",
+      "spec_refs": ["00-vision.md#REQ-SOWN-ADMIN", "00-vision.md#REQ-SOWN-SAFETY", "04-delivery.md#DEC-SOWN-DELIVERY"],
+      "asset_refs": ["sown.administration", "sown.safe-error"],
+      "module_refs": ["packages/harness-sandbox-docker/src"]
+    },
+    {
+      "path": "packages/harness-sandbox-docker/src/ownership.test.ts",
+      "kind": "contract",
+      "spec_refs": ["04-verification.md#ACC-SOWN-BOUNDS", "04-verification.md#ACC-SOWN-SAFETY"],
+      "asset_refs": ["sown.owner", "sown.options"]
+    },
+    {
+      "path": "packages/harness-sandbox-docker/src/administration.test.ts",
+      "kind": "contract",
+      "spec_refs": ["04-verification.md#ACC-SOWN-ADMIN", "04-verification.md#ACC-SOWN-DELIVERY"],
+      "asset_refs": ["sown.administration", "sown.safe-error"]
+    }
+  ],
+  "commands": [
+    { "id": "CMD-SPEC", "command": "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs ai-harness/specs/36-sandbox-ownership-and-administration", "effect": "read_only", "expected_result": "exit 0" },
+    { "id": "CMD-DOCKER_TEST", "command": "npm --prefix ai-harness run test --workspace @purista/harness-sandbox-docker", "effect": "local_write", "expected_result": "exit 0; 49 passed and 20 opt-in skipped" },
+    { "id": "CMD-DOCKER_TYPES", "command": "npm --prefix ai-harness run typecheck --workspace @purista/harness-sandbox-docker", "effect": "local_write", "expected_result": "exit 0" }
+  ],
+  "consumer_impact": [
+    {
+      "asset_or_symbol": "DockerOwnershipJournal|DockerAdministration",
+      "consumers": ["wave_03_port_cutover/TICKET-004"],
+      "disposition": "migration_owned",
+      "evidence": ["plans/sandbox-ownership/wave_03_port_cutover/tickets/TICKET-004-port_cutover.md"]
+    }
+  ],
+  "architecture_checks": [
+    { "command": "git -C ai-harness diff --check", "status": "passed" },
+    { "command": "No Docker engine calls, public factory wiring, or provider references were added by this private foundation.", "status": "passed" }
+  ]
+}

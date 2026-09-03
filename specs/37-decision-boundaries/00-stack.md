@@ -1,0 +1,7 @@
+# Approved existing stack
+
+No dependency additions, upgrades, new framework, database, package or generator are authorized. Use the installed lockfile versions and repository npm workspaces: Node >=24.15.0, TypeScript strict mode, Zod 4 (Harness declaration ^4.4.3), Vitest 4, existing OpenTelemetry APIs, YAML parser, Node crypto SHA-256, AbortController, existing ULID and HarnessStorage adapters. Dependency ranges are evidence, not permission to resolve newer versions. A missing installed tool blocks its gate; do not use npx downloads or install.
+
+Primary references checked 2026-08-26: [Zod schemas](https://zod.dev/api), [TypeScript discriminated union narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html), [Node AbortController](https://nodejs.org/api/globals.html#class-abortcontroller). These support strict schema inference, correlated unions and cooperative cancellation; local source establishes exact project behavior. No provider behavior is invented: continuation uses the current adapter wire types and synthetic fixtures. Public API names, state transitions and timeout classification are owned by this spec, not by changing online recommendations.
+
+Supply chain: preserve lockfiles and provider dependency ownership. No registry publication, version mutation, SDK installation, credentials, live provider calls, container image or infrastructure changes. Existing release SBOM/license/security pipeline remains unchanged; a new SBOM tool is not applicable to this dependency-neutral source change.

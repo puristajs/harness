@@ -20,17 +20,14 @@ with per-run delegation budgets and optional allowlists.
 
 ## Agent Pattern
 ```ts
-.agents(({ agent }) => ({
-  answerer: agent({
-    model: 'reasoning',
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), citations: z.array(z.string()) }),
-    builtinTools: false,
-    tools: ['search_docs'],
-    skills: ['support-writing'],
-    instructions: (ctx) => `Answer with citations for: ${ctx.input.question}`
-  })
-}))
+.agent('answerer', {
+  model: 'reasoning',
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), citations: z.array(z.string()) }),
+  tools: ['search_docs'],
+  skills: ['support-writing'],
+  instructions: (ctx) => `Answer with citations for: ${ctx.input.question}`
+})
 ```
 
 Default agent loop requirements:
@@ -41,6 +38,8 @@ Default agent loop requirements:
 - `maxSteps` defaults from harness defaults; both are positive integer budgets with no hidden upper cap
 - `prepareStep` can adjust one model call by switching to another configured model alias, narrowing `activeTools`, overriding instructions/messages, or passing model call options
 - `stopWhen` runs after a model response and before tool execution; when it returns `true`, the response object must satisfy the output schema and becomes the final answer
+- `interceptors` are ordered, fail-closed default-loop hooks. `beforeInput` runs before instructions/transcript work; `afterModel` allows/blocks after model completion accounting and before content events or dispatch. `beforeOutput` transforms only a final candidate before final validation/persistence. Tool-input hooks run before binding preparation; tool-output hooks run after handler-output validation. Use `@purista/harness-guardrails` for content concerns.
+- Guardrails produce content-free `evaluate_guardrail {rail.id}` OpenInference `GUARDRAIL` spans plus `harness.guardrail.evaluations` and `harness.guardrail.duration`. Treat `outcome='block'` as an expected enforced policy decision and reserve span errors for action failures/timeouts. Retrieval remains caller-owned; pass its run-scoped models, abort signal, and logger to `filterRetrievedChunks`.
 
 Use a custom `handler` only when the default loop is the wrong execution model.
 
@@ -52,32 +51,35 @@ side effects stop promptly.
 
 ## Workflow Pattern
 ```ts
-.workflows(({ workflow }) => ({
-  answer_with_review: workflow({
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['answerer', 'reviewer'],
-      maxChildAgentCalls: 2,
-      maxParallelChildAgentCalls: 1,
-      agentModelAliases: { reviewer: ['deep_review'] }
-    },
-    handler: async (ctx) => {
-      const draft = await ctx.agents.answerer({ question: ctx.input.question })
-      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
-      return { answer: draft.answer, approved: review.approved }
-    }
-  })
-}))
+.workflow('answer_with_review', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), approved: z.boolean() }),
+  delegation: {
+    agents: ['answerer', 'reviewer'],
+    maxChildAgentCalls: 2,
+    maxParallelChildAgentCalls: 1,
+    agentModelAliases: { reviewer: ['deep_review'] }
+  },
+  handler: async (ctx) => {
+    const draft = await ctx.agents.answerer({ question: ctx.input.question })
+    const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+    return { answer: draft.answer, approved: review.approved }
+  }
+})
 ```
 
-Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.log`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, `ctx.step`, `ctx.fanOut`, and `ctx.childTasks`. `ctx.log` is the harness logger; never log prompts, outputs, or other content payloads.
+Workflow handlers receive typed `ctx.input`, `ctx.agents`, `ctx.models`, `ctx.logger`, `ctx.telemetry`, `ctx.memory`, `ctx.metrics`, `ctx.signal`, `ctx.runId`, `ctx.sessionId`, `ctx.step`, `ctx.fanOut`, and `ctx.childTasks`. `ctx.logger` is the harness logger; never log prompts, outputs, or other content payloads.
 
 Agents must be declared before workflows. The builder uses the previously
 registered agent keys to type `ctx.agents`; do not document or implement a
 standalone `defineWorkflow(...)` helper.
 
-`ctx.step(stepId, fn, options?)` marks a durable boundary. When the workflow is invoked with `{ durable: { runId } }` and an executable `.runtime(...)` is configured, a committed step replays its stored output on resume without re-running `fn`; otherwise it is a transparent pass-through. Use `options.retry` for short active retries before checkpoint commit. Durable execution is workflow-only — see `durable-feedback-operations.md`.
+`ctx.step(stepId, fn, options?)` marks a recoverable boundary. When the workflow
+is invoked with `{ durable: { runId } }`, the configured `HarnessStorage`
+commits each completed step; on resume it replays stored output without
+re-running `fn`. Without durable invocation it is a transparent pass-through.
+Use `options.retry` for short active retries before checkpoint commit.
+Recoverable execution is workflow-only—see `durable-feedback-operations.md`.
 
 Use `ctx.fanOut(items, worker, { concurrency })` for ordered, bounded parallel work. `Promise.all` or `Promise.allSettled` remain appropriate when application-defined behavior is needed; propagate `ctx.signal` through lower-level calls and stop starting new work once aborted.
 
@@ -101,9 +103,10 @@ child-agent lifecycle events include `workflowId`, `delegationCallId`,
 `delegationDepth`, and `modelAlias`; persisted payloads keep lineage metadata
 but redact prompts and outputs.
 
-Direct model streams inside workflow handlers are private to the handler unless
-the model call opts in with `{ emitRunEvents: true }`. Workflow stream APIs emit
-typed `RunEvent` values, not provider chunks or the Vercel stream protocol.
+Direct model streams inside workflow handlers are private implementation data.
+Workflow stream APIs emit portable `ExecutionEvent` values according to the
+definition's update mode. Detailed model lifecycle uses `observe(...)`; neither
+surface is a browser protocol.
 
 Workflow docs and examples should cover:
 - choosing workflow vs direct agent;
@@ -118,8 +121,7 @@ Workflow docs and examples should cover:
 Use TypeScript tools for application APIs and deterministic logic:
 
 ```ts
-.tools({
-  search_docs: {
+.tool('search_docs', {
     description: 'Search internal docs for relevant passages.',
     input: z.object({ query: z.string() }),
     output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
@@ -128,12 +130,19 @@ Use TypeScript tools for application APIs and deterministic logic:
       ctx.signal.throwIfAborted()
       return { hits: [] }
     }
-  }
-})
+  })
 ```
 
 Rules:
-- validate input and output with Zod schemas
+- validate input and output with Standard Schema validators; Zod is the
+  default example library
+- use `ModelSchema` for TypeScript tool input, because the model must receive
+  its Standard JSON Schema input projection; tool output needs only `Schema`
+- default-loop agent output follows the same `ModelSchema` rule; agent input,
+  workflows, custom-handler output, and guardrail values are validation-only
+  `Schema` boundaries
+- Harness compiles each model-facing schema once during `.build()` to frozen
+  Draft 2020-12 JSON Schema. Do not wrap it or convert it in a provider/tool
 - return JSON-compatible data
 - respect `ctx.signal`
 - use `ctx.sandbox` for sandboxed filesystem/exec behavior
@@ -145,19 +154,24 @@ Exact `TsToolDefinition` fields:
 {
   kind?: 'ts',
   description: string,
-  input: z.ZodTypeAny,
-  output: z.ZodTypeAny,
+  input: ModelSchema,
+  output: Schema,
   handler: (ctx, input) => Promise<output>,
   configureHarnessContext?: (context) => void
 }
 ```
 
-`ToolHandlerContext` includes `signal`, `sandbox`, `logger`, `telemetry`, `runId`, `sessionId`, `agentId`, and `toolId`.
+`ToolHandlerContext` includes `signal`, immutable invocation `metadata`,
+`sandbox`, `logger`, `telemetry`, `metrics`, `memory`, `runId`, `sessionId`,
+`agentId`, and `toolId`. Metadata is inherited from the agent or workflow
+invocation. Keep it small and content-free; never put credentials, prompts, or
+tool values in it.
 
 Tool ids are model-facing and should be stable lowercase identifiers. The implementation validates tool ids against the harness builder rules, so use names such as `search_docs`, `read_ticket`, or `render_panel_spec`.
 
 ## Built-In Tools And Permissions
-Built-in tools are enabled by default unless `builtinTools: false` or a subset is configured.
+Built-in tools are disabled by default. Omit `builtinTools` when an agent
+needs none, or provide the exact canonical-name allowlist it needs.
 
 Canonical built-ins:
 - `bash`
@@ -172,14 +186,16 @@ Use permissions for mutating or risky built-ins:
 
 ```ts
 permissions: {
-  bash: { mode: 'ask', allow: ['npm test', 'npm run *'], deny: ['rm *'] },
+  bash: { mode: 'require_approval', allow: ['npm test', 'npm run *'], deny: ['rm *'] },
   write: 'deny',
   edit: 'allow'
-},
-onPermission: async (ctx) => ctx.toolName === 'bash' ? 'allow' : 'deny'
+}
 ```
 
 Read-only built-ins are intentionally available so agents can navigate mounted skills and sandbox files.
+Required built-in and policy approval demands are combined in one
+`ToolApprovalInterrupt`. Persist and authorize the review in the application,
+then continue the same run with `ToolApprovalResume`; there is no callback hook.
 
 ## Optional Governance Policies
 Governance is an opt-in business policy layer. Do not add `.governance(...)`
@@ -191,8 +207,8 @@ Keep the layers distinct:
 - agent `tools` and `builtinTools` define the maximum tool set an agent may use
 - built-in `permissions` gate risky built-ins such as `bash`, `write`, and `edit`
 - governance `exposure` can hide configured tools before a model step
-- governance `policies` evaluate a specific tool call after permissions,
-  allowlists, and TypeScript input validation but before handler execution
+- governance `policies` evaluate a specific prepared tool call after permission
+  and allowlist checks and binding input validation, before approval/handler execution
 
 Use exposure rules when the model should not even see a capability for a
 tenant, plan, workflow, rollout, or step:
@@ -207,10 +223,7 @@ tenant, plan, workflow, rollout, or step:
         id: 'hide-transfers-for-readonly-tenants',
         effect: 'hide',
         tools: ['transfer_funds'],
-        when: ({ metadata }) => metadata.plan === 'readonly',
-        reason: 'Readonly tenants cannot use transfer tools.',
-        riskLevel: 'high',
-        tags: ['tenant-policy']
+        when: ({ metadata }) => metadata.plan === 'readonly'
       })
     ]
   }
@@ -225,15 +238,9 @@ also rejects provider tool calls whose tool name was not exposed for that step.
 Use execution policies when a concrete tool call needs typed business rules:
 
 ```ts
-.governance(({ native, rule, adapter }) => ({
+.governance(({ native, rule }) => ({
   mode: 'enforce',
   defaultEffect: 'allow',
-  approval: {
-    request: async (request) => ({
-      decision: request.input.amount <= 5_000 ? 'approved' : 'rejected',
-      approverId: 'ops-console'
-    })
-  },
   policies: [
     native({
       id: 'bank-transfer-policy',
@@ -244,32 +251,26 @@ Use execution policies when a concrete tool call needs typed business rules:
           effect: 'require_approval',
           tools: ['transfer_funds'],
           when: ({ input }) => input.amount > 1_000,
-          reason: 'Large transfers need human review.',
-          riskLevel: 'medium'
+          reasonCode: 'large_transfer'
         }),
         rule({
           id: 'insufficient-funds',
           effect: 'deny',
           tools: ['transfer_funds'],
           when: ({ input }) => input.amount > input.balance,
-          reason: 'Transfer amount exceeds available balance.',
-          riskLevel: 'high'
+          reasonCode: 'insufficient_funds'
         })
       ]
-    }),
-    adapter({
-      id: 'external-policy-engine',
-      version: 'bundle-42',
-      evaluate: async (ctx) => undefined
     })
   ]
 }))
 ```
 
-`rule(...)` narrows `ctx.input` to the parsed Zod input for the selected
-TypeScript tool. MCP and built-in tool policy input is JSON-compatible raw
-input. `exposureRule(...)` narrows `ctx.toolId`; exposure rules do not receive
-tool input because no call exists yet.
+`rule(...)` narrows `ctx.input` to parsed input for the selected TypeScript tool.
+For multiple tools, retain `ctx` and branch on `ctx.toolId` before reading its
+input. Builtins and MCP also receive prepared JSON input (including builtin
+defaults or the MCP adapter/schema result), not the original wire arguments.
+`exposureRule(...)` narrows `ctx.toolId`; it has no input because no call exists.
 
 Execution effects resolve by precedence:
 `deny > require_approval > audit > allow`.
@@ -279,15 +280,78 @@ policies are configured and no decision matches, `defaultEffect` defaults to
 `deny`. A governance config with only exposure rules does not apply execution
 default-deny later.
 
-Use `mode: 'shadow'` to compare native, OPA, Cedar, Eve-style, or bespoke
-policy engines before enforcing. External adapters translate harness context
-into the engine input document and return `GovernanceDecision` values; the
-harness does not own policy language syntax, bundle distribution, or rule-store
-deployment.
+Use `mode: 'shadow'` to compare native rules with an external evaluator before
+enforcing. For OPA, install `@purista/harness-policy-opa`, create a fixed Data
+API client, and use `opaPolicy(helpers, ...)` so builder-derived tool/input types
+cascade through least-data input mapping and Standard-Schema-validated result
+mapping. Use `FakeOpaDataApi` for deterministic control-flow tests and the
+deployed OPA/bundle for selected integration tests. The callback-local
+`adapter(...)` helper alone remains an identity/type-preserving registration
+helper: it makes no network call and loads no bundle. Cedar, AWS Verified
+Permissions, and bespoke engines still require focused application-owned
+`GovernancePolicyEvaluator` implementations. The application owns identity,
+credentials, policy distribution, availability, and engine operations in every
+topology.
 
-Governance stream/audit evidence includes stable `decisionId`, optional
-`policyVersion`, `approvalId` for approvals, `reason`, `riskLevel`, and `tags`.
-Do not include raw tool input or output in policy events, logs, or telemetry.
+`require_approval` stops the run before any gated tool in the batch executes.
+Both `run(...)` and the terminal `run.finished` stream event expose a
+provider-neutral interrupted outcome:
+
+```ts
+const first = await session.agents.banker.run('transfer')
+
+if (first.status === 'interrupted' && first.interrupt.type === 'tool-approval') {
+  const request = first.interrupt.requests[0]
+  if (!request) throw new Error('Expected an approval request')
+
+  const resumed = await session.agents.banker.run('transfer', {
+    resume: {
+      type: 'tool-approval',
+      runId: first.runId,
+      interruptId: first.interrupt.id,
+      revision: first.interrupt.revision,
+      eventId: 'review-decision-1',
+      decisions: [{ approvalId: request.approvalId, approved: true }],
+    },
+  })
+}
+```
+
+Persist the public `ToolApprovalInterrupt` in application-owned review storage,
+authenticate the reviewer, and submit a `ToolApprovalResume` with a unique
+`eventId`. The Harness verifies the run, interrupt, revision, and decision set,
+then resumes from its stored checkpoint without repeating the model turn. A
+rejection becomes a tool result that the model can handle. Reviewer identity,
+comments, audit policy, expiry, and authorization belong to the application.
+The internal `ToolApprovalPendingError` is private runtime control flow; do not
+catch or expose it as the public API.
+
+All calls in a tool turn pass ordered content/schema preflight before any
+approval or handler starts. Prepared calls then execute concurrently within
+the configured limit. Independent admitted effects are not rolled back when
+a sibling is denied. Tool-input transforms change canonical wire arguments;
+policy, approval, and handler share the one prepared value without reparsing.
+
+`DecisionEvidence` contains only `decisionId`, `source`, `phase`, optional
+`reasonCode`; `source` contains `kind`, `id`, optional `version`/`ruleId`.
+Use stable content-free codes matching `^[a-z][a-z0-9_]{0,63}$`. Never record
+subject input, reviewer content, prompts, matched text, or raw callback errors
+in events/audit/logs. The runtime derives occurrence identity and evidence.
+
+Callbacks are bounded by `defaults.decisionTimeoutMs` (10,000 by default) and
+remaining run/tool budgets. Forward `signal` and absolute `deadline`; a tool's
+total budget includes preflight, queueing, policy, approval, handler, and output
+hooks. Parent cancellation/timeouts preserve their original operation error.
+Own callback expiry, throws, malformed outcomes, and invalid transforms fail
+closed with `DecisionEvaluationError`; content blocks use `DecisionBlockedError`.
+Denied permissions/policies and rejected approvals become recoverable tool
+errors after the corresponding decision is supplied.
+
+Content rails return allow/block/phase-specific transform, not approval or
+durable suspension. Each action declares its phase; output rails see only a
+final candidate. Direct model calls/custom handlers are outside automatic
+coverage. Opaque provider reasoning cannot be inspected or rewritten, and no
+decision guarantees post-admission revocation.
 
 ## MCP Tools
 Use `mcp_stdio` when the MCP server should run inside the sandbox executor:
@@ -344,20 +408,24 @@ HTTP auth forms are `none`, `bearer`, `oauth2`, `api_key`, and `basic`.
 ## Skills Mounted Into Agents
 A harness skill directory contains a `SKILL.md` file. Register the directory and allowlist it on agents:
 
-```ts
+```ts title="Register an agent skill"
 .skills({
-  'incident-responder': { directory: join(import.meta.dirname, 'skills/incident-responder') }
+  'incident-responder': { directory: join(import.meta.dirname, 'skills/incident-responder') },
 })
-.agents(({ agent }) => ({
-  writer: agent({
+  .agent('writer', {
     model: 'reasoning',
     output: z.object({ summary: z.string() }),
     skills: ['incident-responder'],
-    instructions: 'Use the mounted incident-responder guidance.'
+    builtinTools: ['read'],
+    instructions: 'Use the mounted incident-responder guidance.',
   })
-}))
 ```
 
 The harness injects only the skill index into instructions. The model reads `/skills/<name>/SKILL.md` and supporting files through built-in filesystem tools when needed.
 
-If a skill is attached and you disable all built-ins, the model cannot inspect the mounted files. Prefer `builtinTools: ['read', 'list', 'grep']` for skill-driven agents that do not need mutation or shell execution.
+Declaring a skill never enables built-ins. A default-loop skill agent must
+explicitly include `read` and fails during agent registration otherwise.
+`list` and `grep` are optional navigation aids. Skill files, including
+scripts, are mounted as inert content; they can execute only through a
+separately exposed execution-capable tool or custom handler. Frontmatter
+`allowed-tools` is metadata, not an enforced permission.

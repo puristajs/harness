@@ -1,0 +1,27 @@
+{
+  "name": "@purista/harness-guardrails-native-privacy-win32-x64-msvc",
+  "version": "3.0.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "harness_guardrails_native_privacy.win32-x64-msvc.node",
+  "files": [
+    "harness_guardrails_native_privacy.win32-x64-msvc.node"
+  ],
+  "description": "Local Rust Node-API sensitive-data recognizers for @purista/harness-guardrails.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-guardrails-native-privacy"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "win32"
+  ]
+}

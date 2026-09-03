@@ -1,0 +1,389 @@
+traceability_version: 1
+requirements:
+  - requirement_id: REQ-MEM-DX
+    statement: The builder provides zero-config memory, direct engine configuration, and capability-safe model references with no duplicate provider or profile configuration.
+    capability_ids:
+      - CAP-MEM-DX
+    path_ids:
+      - PATH-MEM-DX
+    acceptance_ids:
+      - ACC-MEM-DX
+  - requirement_id: REQ-MEM-IDENTITY
+    statement: Tenant and principal are independent optional dimensions bound to sessions and every memory lifetime scope.
+    capability_ids:
+      - CAP-MEM-IDENTITY
+    path_ids:
+      - PATH-MEM-IDENTITY
+    acceptance_ids:
+      - ACC-MEM-IDENTITY
+  - requirement_id: REQ-MEM-ENGINE
+    statement: Core owns orchestration and all database implementations satisfy one public MemoryEngine contract.
+    capability_ids:
+      - CAP-MEM-ENGINE
+    path_ids:
+      - PATH-MEM-ENGINE
+    acceptance_ids:
+      - ACC-MEM-ENGINE
+  - requirement_id: REQ-MEM-SEARCH
+    statement: Text semantic and hybrid search support filters pagination deterministic defaults and no silent downgrade.
+    capability_ids:
+      - CAP-MEM-SEARCH
+    path_ids:
+      - PATH-MEM-SEARCH
+    acceptance_ids:
+      - ACC-MEM-SEARCH
+  - requirement_id: REQ-MEM-SUMMARY
+    statement: Opt-in summary refresh uses a typed object model and preserves complete conversation history with provenance.
+    capability_ids:
+      - CAP-MEM-SUMMARY
+    path_ids:
+      - PATH-MEM-SUMMARY
+    acceptance_ids:
+      - ACC-MEM-SUMMARY
+  - requirement_id: REQ-MEM-OTEL
+    statement: Memory operations follow Harness telemetry while nested model spans own provider model token and cost data.
+    capability_ids:
+      - CAP-MEM-OTEL
+    path_ids:
+      - PATH-MEM-OTEL
+    acceptance_ids:
+      - ACC-MEM-OTEL
+  - requirement_id: REQ-MEM-SQLITE
+    statement: The SQLite package provides local persistent FTS memory with no required third-party runtime dependency and explicit optional sqlite-vec exact search.
+    capability_ids:
+      - CAP-MEM-SQLITE
+    path_ids:
+      - PATH-MEM-SQLITE
+    acceptance_ids:
+      - ACC-MEM-SQLITE
+  - requirement_id: REQ-MEM-POSTGRES
+    statement: The PostgreSQL package provides persistent multi-instance text vector and atomic memory behavior through pg and pgvector.
+    capability_ids:
+      - CAP-MEM-POSTGRES
+    path_ids:
+      - PATH-MEM-POSTGRES
+    acceptance_ids:
+      - ACC-MEM-POSTGRES
+  - requirement_id: REQ-MEM-REDIS
+    statement: The Redis package provides persistent multi-instance text vector TTL and atomic memory behavior through the official Redis client.
+    capability_ids:
+      - CAP-MEM-REDIS
+    path_ids:
+      - PATH-MEM-REDIS
+    acceptance_ids:
+      - ACC-MEM-REDIS
+  - requirement_id: REQ-MEM-NATS
+    statement: The NATS package provides truthful distributed KV memory over official JetStream KV packages with bounded enumeration and no relevance-search claim.
+    capability_ids:
+      - CAP-MEM-NATS
+    path_ids:
+      - PATH-MEM-NATS
+    acceptance_ids:
+      - ACC-MEM-NATS
+  - requirement_id: REQ-MEM-PURISTA
+    statement: PURISTA attached agents and workflows reuse declared models and message identity through one optional ai memory configuration.
+    capability_ids:
+      - CAP-MEM-PURISTA
+    path_ids:
+      - PATH-MEM-PURISTA
+    acceptance_ids:
+      - ACC-MEM-PURISTA
+  - requirement_id: REQ-MEM-MIGRATION
+    statement: Implementation docs website examples skills and exports complete a clean break with no legacy or duplicate public API.
+    capability_ids:
+      - CAP-MEM-MIGRATION
+    path_ids:
+      - PATH-MEM-MIGRATION
+    acceptance_ids:
+      - ACC-MEM-MIGRATION
+capabilities:
+  - capability_id: CAP-MEM-DX
+    requirement_ids:
+      - REQ-MEM-DX
+    path_ids:
+      - PATH-MEM-DX
+  - capability_id: CAP-MEM-IDENTITY
+    requirement_ids:
+      - REQ-MEM-IDENTITY
+    path_ids:
+      - PATH-MEM-IDENTITY
+  - capability_id: CAP-MEM-ENGINE
+    requirement_ids:
+      - REQ-MEM-ENGINE
+    path_ids:
+      - PATH-MEM-ENGINE
+  - capability_id: CAP-MEM-SEARCH
+    requirement_ids:
+      - REQ-MEM-SEARCH
+    path_ids:
+      - PATH-MEM-SEARCH
+  - capability_id: CAP-MEM-SUMMARY
+    requirement_ids:
+      - REQ-MEM-SUMMARY
+    path_ids:
+      - PATH-MEM-SUMMARY
+  - capability_id: CAP-MEM-OTEL
+    requirement_ids:
+      - REQ-MEM-OTEL
+    path_ids:
+      - PATH-MEM-OTEL
+  - capability_id: CAP-MEM-SQLITE
+    requirement_ids:
+      - REQ-MEM-SQLITE
+    path_ids:
+      - PATH-MEM-SQLITE
+  - capability_id: CAP-MEM-POSTGRES
+    requirement_ids:
+      - REQ-MEM-POSTGRES
+    path_ids:
+      - PATH-MEM-POSTGRES
+  - capability_id: CAP-MEM-REDIS
+    requirement_ids:
+      - REQ-MEM-REDIS
+    path_ids:
+      - PATH-MEM-REDIS
+  - capability_id: CAP-MEM-NATS
+    requirement_ids:
+      - REQ-MEM-NATS
+    path_ids:
+      - PATH-MEM-NATS
+  - capability_id: CAP-MEM-PURISTA
+    requirement_ids:
+      - REQ-MEM-PURISTA
+    path_ids:
+      - PATH-MEM-PURISTA
+  - capability_id: CAP-MEM-MIGRATION
+    requirement_ids:
+      - REQ-MEM-MIGRATION
+    path_ids:
+      - PATH-MEM-MIGRATION
+paths:
+  - path_id: PATH-MEM-DX
+    kind: success
+    requirement_ids:
+      - REQ-MEM-DX
+    capability_ids:
+      - CAP-MEM-DX
+    acceptance_ids:
+      - ACC-MEM-DX
+    contract_refs:
+      - CTR-MEM-MODEL-REF
+      - CTR-MEM-CONFIG
+  - path_id: PATH-MEM-IDENTITY
+    kind: authorization_denial
+    requirement_ids:
+      - REQ-MEM-IDENTITY
+    capability_ids:
+      - CAP-MEM-IDENTITY
+    acceptance_ids:
+      - ACC-MEM-IDENTITY
+    contract_refs:
+      - CTR-MEM-IDENTITY
+      - CTR-MEM-SESSION
+  - path_id: PATH-MEM-ENGINE
+    kind: success
+    requirement_ids:
+      - REQ-MEM-ENGINE
+    capability_ids:
+      - CAP-MEM-ENGINE
+    acceptance_ids:
+      - ACC-MEM-ENGINE
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+  - path_id: PATH-MEM-SEARCH
+    kind: downstream_failure
+    requirement_ids:
+      - REQ-MEM-SEARCH
+    capability_ids:
+      - CAP-MEM-SEARCH
+    acceptance_ids:
+      - ACC-MEM-SEARCH
+    contract_refs:
+      - CTR-MEM-SEARCH
+      - CTR-MEM-MODEL-REF
+  - path_id: PATH-MEM-SUMMARY
+    kind: recovery
+    requirement_ids:
+      - REQ-MEM-SUMMARY
+    capability_ids:
+      - CAP-MEM-SUMMARY
+    acceptance_ids:
+      - ACC-MEM-SUMMARY
+    contract_refs:
+      - CTR-MEM-SUMMARY
+  - path_id: PATH-MEM-OTEL
+    kind: success
+    requirement_ids:
+      - REQ-MEM-OTEL
+    capability_ids:
+      - CAP-MEM-OTEL
+    acceptance_ids:
+      - ACC-MEM-OTEL
+    contract_refs:
+      - CTR-MEM-TELEMETRY
+  - path_id: PATH-MEM-SQLITE
+    kind: downstream_failure
+    requirement_ids:
+      - REQ-MEM-SQLITE
+    capability_ids:
+      - CAP-MEM-SQLITE
+    acceptance_ids:
+      - ACC-MEM-SQLITE
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+      - CTR-MEM-SQLITE
+  - path_id: PATH-MEM-POSTGRES
+    kind: downstream_failure
+    requirement_ids:
+      - REQ-MEM-POSTGRES
+    capability_ids:
+      - CAP-MEM-POSTGRES
+    acceptance_ids:
+      - ACC-MEM-POSTGRES
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+  - path_id: PATH-MEM-REDIS
+    kind: downstream_failure
+    requirement_ids:
+      - REQ-MEM-REDIS
+    capability_ids:
+      - CAP-MEM-REDIS
+    acceptance_ids:
+      - ACC-MEM-REDIS
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+  - path_id: PATH-MEM-NATS
+    kind: downstream_failure
+    requirement_ids:
+      - REQ-MEM-NATS
+    capability_ids:
+      - CAP-MEM-NATS
+    acceptance_ids:
+      - ACC-MEM-NATS
+    contract_refs:
+      - CTR-MEM-ENGINE
+      - CTR-MEM-RECORD
+      - CTR-MEM-NATS
+  - path_id: PATH-MEM-PURISTA
+    kind: success
+    requirement_ids:
+      - REQ-MEM-PURISTA
+    capability_ids:
+      - CAP-MEM-PURISTA
+    acceptance_ids:
+      - ACC-MEM-PURISTA
+    contract_refs:
+      - CTR-MEM-PURISTA
+      - CTR-MEM-IDENTITY
+  - path_id: PATH-MEM-MIGRATION
+    kind: migration
+    requirement_ids:
+      - REQ-MEM-MIGRATION
+    capability_ids:
+      - CAP-MEM-MIGRATION
+    acceptance_ids:
+      - ACC-MEM-MIGRATION
+    contract_refs:
+      - CTR-MEM-CONFIG
+acceptance:
+  - acceptance_id: ACC-MEM-DX
+    requirement_ids:
+      - REQ-MEM-DX
+    path_ids:
+      - PATH-MEM-DX
+    verification_refs:
+      - VERIFY-HARNESS-TYPES
+      - VERIFY-SQLITE
+      - VERIFY-POSTGRES
+      - VERIFY-REDIS
+      - VERIFY-NATS
+  - acceptance_id: ACC-MEM-IDENTITY
+    requirement_ids:
+      - REQ-MEM-IDENTITY
+    path_ids:
+      - PATH-MEM-IDENTITY
+    verification_refs:
+      - VERIFY-HARNESS-TESTS
+      - VERIFY-PURISTA
+  - acceptance_id: ACC-MEM-ENGINE
+    requirement_ids:
+      - REQ-MEM-ENGINE
+    path_ids:
+      - PATH-MEM-ENGINE
+    verification_refs:
+      - VERIFY-HARNESS-TESTS
+  - acceptance_id: ACC-MEM-SEARCH
+    requirement_ids:
+      - REQ-MEM-SEARCH
+    path_ids:
+      - PATH-MEM-SEARCH
+    verification_refs:
+      - VERIFY-HARNESS-TESTS
+      - VERIFY-SQLITE
+      - VERIFY-POSTGRES
+      - VERIFY-REDIS
+  - acceptance_id: ACC-MEM-SUMMARY
+    requirement_ids:
+      - REQ-MEM-SUMMARY
+    path_ids:
+      - PATH-MEM-SUMMARY
+    verification_refs:
+      - VERIFY-HARNESS-TESTS
+  - acceptance_id: ACC-MEM-OTEL
+    requirement_ids:
+      - REQ-MEM-OTEL
+    path_ids:
+      - PATH-MEM-OTEL
+    verification_refs:
+      - VERIFY-HARNESS-TESTS
+  - acceptance_id: ACC-MEM-SQLITE
+    requirement_ids:
+      - REQ-MEM-SQLITE
+    path_ids:
+      - PATH-MEM-SQLITE
+    verification_refs:
+      - VERIFY-SQLITE
+      - VERIFY-BUN
+  - acceptance_id: ACC-MEM-POSTGRES
+    requirement_ids:
+      - REQ-MEM-POSTGRES
+    path_ids:
+      - PATH-MEM-POSTGRES
+    verification_refs:
+      - VERIFY-POSTGRES
+      - VERIFY-BUN
+  - acceptance_id: ACC-MEM-REDIS
+    requirement_ids:
+      - REQ-MEM-REDIS
+    path_ids:
+      - PATH-MEM-REDIS
+    verification_refs:
+      - VERIFY-REDIS
+      - VERIFY-BUN
+  - acceptance_id: ACC-MEM-NATS
+    requirement_ids:
+      - REQ-MEM-NATS
+    path_ids:
+      - PATH-MEM-NATS
+    verification_refs:
+      - VERIFY-NATS
+      - VERIFY-BUN
+  - acceptance_id: ACC-MEM-PURISTA
+    requirement_ids:
+      - REQ-MEM-PURISTA
+    path_ids:
+      - PATH-MEM-PURISTA
+    verification_refs:
+      - VERIFY-PURISTA
+  - acceptance_id: ACC-MEM-MIGRATION
+    requirement_ids:
+      - REQ-MEM-MIGRATION
+    path_ids:
+      - PATH-MEM-MIGRATION
+    verification_refs:
+      - VERIFY-DOCS
+      - VERIFY-AUDITS

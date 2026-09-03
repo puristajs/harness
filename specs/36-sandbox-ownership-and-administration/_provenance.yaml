@@ -1,0 +1,8 @@
+provenance_version: 1
+source_revision: c378607de9e7-plus-preserved-dirty-worktree
+review_date: 2026-08-26
+source_request: repository-owner-specs-and-plan-only-with-standing-auto-approval
+spec_manifest:
+  content_digest: sha256:d428914333a9eab9a1f84659f3c4724028c5c4ca96c20be3c13c9edc4c4365cc
+  source_revision: c378607de9e7-plus-preserved-worktree-2026-08-27
+  generated_at: 2026-08-27T08:40:52.734Z

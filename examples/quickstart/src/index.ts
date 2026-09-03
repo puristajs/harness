@@ -43,39 +43,37 @@ export function createQuickstartHarness(provider?: ModelProvider) {
         provider: modelProvider,
         model,
         capabilities: ['object'],
-        retry: true
-      }
+        retry: true,
+      },
     })
-    .agents(({ agent }) => ({
-      assistant: agent({
-        model: 'assistant',
-        input: quickstartInput,
-        output: quickstartOutput,
-        builtinTools: false,
-        instructions: 'Return JSON matching { "answer": string }. Keep the answer concise.'
-      })
-    }))
-    .workflows(({ workflow }) => ({
-      explain_quickstart: workflow({
-        input: quickstartInput,
-        output: quickstartOutput,
-        delegation: { agents: ['assistant'] },
-        handler: async (ctx) => {
-          ctx.metrics.counter('quickstart.workflow.started', 1, { workflow: 'explain_quickstart' })
-          await ctx.memory.session.write('last_topic', { topic: ctx.input.topic })
-          return ctx.metrics.duration('quickstart.workflow.duration', { workflow: 'explain_quickstart' }, () => ctx.agents.assistant(ctx.input))
-        }
-      })
-    }))
+    .agent('assistant', {
+      model: 'assistant',
+      input: quickstartInput,
+      output: quickstartOutput,
+      instructions: 'Return JSON matching { "answer": string }. Keep the answer concise.',
+    })
+    .workflow('explain_quickstart', {
+      input: quickstartInput,
+      output: quickstartOutput,
+      delegation: { agents: ['assistant'] },
+      handler: async (ctx) => {
+        ctx.metrics.counter('quickstart.workflow.started', 1, { workflow: 'explain_quickstart' })
+        await ctx.memory.session.write('last_topic', { topic: ctx.input.topic })
+        return ctx.metrics.duration('quickstart.workflow.duration', { workflow: 'explain_quickstart' }, () =>
+          ctx.agents.assistant(ctx.input),
+        )
+      },
+    })
     .build()
 }
 
 export async function runQuickstart(): Promise<void> {
   const harness = createQuickstartHarness()
   const session = await harness.getSession('quickstart')
-  const response = await session.workflows.explain_quickstart.prompt({ topic: 'enterprise agent harnesses' })
+  const response = await session.workflows.explain_quickstart.run({ topic: 'enterprise agent harnesses' })
+  if (response.status === 'interrupted') throw new Error(`Quickstart workflow interrupted: ${response.interrupt.type}`)
 
-  console.log(response.answer)
+  console.log(response.output.answer)
   await harness.shutdown()
 }
 

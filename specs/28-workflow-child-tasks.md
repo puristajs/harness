@@ -44,7 +44,7 @@ settles the task successfully with its final output; `result()` resolves only
 after that close. A continuable task does not append either its inputs or its
 outputs to the parent session history. `session.childTasks.get(id)` and
 `session.childTasks.list()` provide session-owner lookup with content-free
-status; terminal tasks remain readable through the configured StateStore.
+status; terminal tasks remain readable through the configured HarnessStorage.
 
 `ChildTaskDescriptor` persists only lifecycle identity: task/parent/session/
 workflow/agent/model ids, context-policy name, and creation time. Inputs and
@@ -72,7 +72,7 @@ worker adapter and its inbox/lease protocol.
   normal agent lifecycle events. The start event identifies its `mode`.
 - Parent cancellation is relayed to every live task. A successful parent
   workflow does not cancel a task merely because its handler returned.
-- `Session.close()` and `Harness.shutdown()` cancel and await their live child
+- `Session.destroy()` and `Harness.shutdown()` cancel and await their live child
   tasks before releasing resources.
 - Cancellation, failure, and completion are terminal; a handle retains its
   final content-free status snapshot after resource cleanup.

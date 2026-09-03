@@ -1,0 +1,22 @@
+{
+  "name": "@purista/local-docker-sandbox-example",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "start": "node dist/index.js",
+    "smoke": "npm run build && npm start"
+  },
+  "dependencies": {
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-sandbox-docker": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "engines": { "node": ">=24.15.0" }
+}

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "ticket_id": "TICKET-002",
+  "status": "accepted",
+  "spec_manifest_digest": "sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb",
+  "plan_manifest_digest": "sha256:3369ac4991cf1238d86a362dfcb3e97095b8737590ffad0e8c0e07d3cfb7121b",
+  "changed_artifacts": [
+    {
+      "path": "packages/harness/src/sandbox/catalog.ts",
+      "kind": "module",
+      "spec_refs": ["00-vision.md#REQ-SOWN-OWNER", "00-vision.md#REQ-SOWN-ADMIN", "03-contracts/api.md#CTR-SOWN-OWNER", "03-contracts/api.md#CTR-SOWN-ADMIN"],
+      "asset_refs": ["sown.owner", "sown.administration", "sown.options", "sown.safe-error"],
+      "module_refs": ["packages/harness/src/sandbox"]
+    },
+    {
+      "path": "packages/harness/src/local/local-sandbox-catalog.ts",
+      "kind": "module",
+      "spec_refs": ["00-vision.md#REQ-SOWN-SAFETY", "04-delivery.md#DEC-SOWN-DELIVERY"],
+      "asset_refs": ["sown.owner", "sown.administration"],
+      "module_refs": ["packages/harness/src/local"]
+    },
+    {
+      "path": "packages/harness/src/sandbox/catalog.test.ts",
+      "kind": "contract",
+      "spec_refs": ["04-verification.md#ACC-SOWN-OWNER", "04-verification.md#ACC-SOWN-ADMIN", "04-verification.md#ACC-SOWN-BOUNDS", "04-verification.md#ACC-SOWN-SAFETY"],
+      "asset_refs": ["sown.owner", "sown.administration"]
+    },
+    {
+      "path": "packages/harness/src/local/local-sandbox-catalog.test.ts",
+      "kind": "contract",
+      "spec_refs": ["04-verification.md#ACC-SOWN-SAFETY", "04-delivery.md#DEC-SOWN-DELIVERY"],
+      "asset_refs": ["sown.owner"]
+    },
+    {
+      "path": "packages/harness/vitest.config.ts",
+      "kind": "configuration",
+      "spec_refs": ["04-verification.md#ACC-SOWN-OWNER", "04-verification.md#ACC-SOWN-SAFETY"],
+      "module_refs": ["packages/harness/vitest.config.ts"]
+    }
+  ],
+  "commands": [
+    { "id": "CMD-SPEC", "command": "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs ai-harness/specs/36-sandbox-ownership-and-administration", "effect": "read_only", "expected_result": "exit 0" },
+    { "id": "CMD-PLAN", "command": "node /Users/sebastianwessel/.agents/skills/spec-implementation-planner/references/check_plan.mjs . ai-harness/plans/sandbox-ownership ai-harness/specs/36-sandbox-ownership-and-administration", "effect": "read_only", "expected_result": "exit 0" },
+    { "id": "CMD-HARNESS_UNIT", "command": "npm --prefix ai-harness run test:unit --workspace @purista/harness", "effect": "local_write", "expected_result": "exit 0; 25 files and 291 tests passed" },
+    { "id": "CMD-HARNESS_TYPES", "command": "npm --prefix ai-harness run typecheck --workspace @purista/harness", "effect": "local_write", "expected_result": "exit 0" }
+  ],
+  "consumer_impact": [
+    {
+      "asset_or_symbol": "PrivateSandboxCatalog|LocalSandboxCatalog",
+      "consumers": ["wave_03_port_cutover/TICKET-004"],
+      "disposition": "migration_owned",
+      "evidence": ["plans/sandbox-ownership/wave_03_port_cutover/tickets/TICKET-004-port_cutover.md"]
+    }
+  ],
+  "architecture_checks": [
+    { "command": "git -C ai-harness diff --check", "status": "passed" },
+    { "command": "Private adapter catalog uses strict existing DTO schemas; it does not create a generic public registry.", "status": "passed" }
+  ]
+}

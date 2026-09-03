@@ -81,7 +81,8 @@ function errorAttributes(error: unknown): SpanAttrs {
       'harness.error.model_provider_type': stringAttr(meta?.['providerType']),
       'harness.error.model_provider_param': stringAttr(meta?.['providerParam']),
       'harness.error.model_provider_request_id': stringAttr(meta?.['providerRequestId']),
-      'harness.error.model_provider_body': providerBody
+      'harness.error.model_provider_body': providerBody,
+      ...decisionTelemetryAttrs(meta)
     }
   }
   const name = telemetryErrorType(error)
@@ -90,6 +91,22 @@ function errorAttributes(error: unknown): SpanAttrs {
     'harness.error.code': name,
     'harness.error.category': 'internal',
     'harness.error.retriable': false
+  }
+}
+
+function decisionTelemetryAttrs(meta: Record<string, unknown> | undefined): SpanAttrs {
+  const evidence = meta?.['evidence']
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return {}
+  const record = evidence as Record<string, unknown>
+  const source = record['source']
+  const interceptorId = source && typeof source === 'object' && !Array.isArray(source)
+    ? (source as Record<string, unknown>)['id']
+    : undefined
+  // Decision evidence contains only configuration and correlation identifiers.
+  // Preserve attribution without adding inputs, prompts, or matched content.
+  return {
+    'harness.interceptor.id': stringAttr(interceptorId),
+    'harness.interceptor.phase': stringAttr(record['phase'])
   }
 }
 

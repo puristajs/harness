@@ -1,0 +1,103 @@
+findings:
+  - id: REVIEW-013-001
+    severity: blocking
+    category: OPERATIONS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-013
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Operational-Path-Coverage
+    impacted_path: "staged source/consumer/docs child command fails or scratch cleanup fails"
+    location: "ai-harness/scripts/check-purista-sandbox.mjs:70-79"
+    expected: "Keep failure evidence in the approved plan-evidence location, remove only the invocation-created scratch child when cleanup succeeds, and report incomplete cleanup without replacing the command failure."
+    actual: "The unconditional finally removes every invocation scratch directory and lets an rm failure replace the original command error. No failure evidence is preserved or reported."
+    evidence: "The only cleanup test at check-purista-sandbox.test.mjs:34-53 exercises a successful operation; no failure or cleanup-error path is tested."
+    fix_boundary: "ai-harness/scripts/check-purista-sandbox.mjs and ai-harness/scripts/check-purista-sandbox.test.mjs only"
+    required_verification:
+      - "node --test ai-harness/scripts/check-purista-sandbox.test.mjs"
+      - "Prove a failing child preserves content-free failure evidence while deleting only its own run-* directory."
+      - "Prove cleanup failure is reported alongside, rather than replacing, the child failure."
+    agent_instruction: "Add bounded, content-safe failure evidence under the approved plan evidence directory and test both command failure and cleanup failure; do not retain scratch trees or broaden deletion authority."
+  - id: REVIEW-013-002
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-013
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Test-First-Order
+    impacted_path: "caller cancels an in-progress source, consumer, or docs verification"
+    location: "ai-harness/scripts/check-purista-sandbox.mjs:115-128, 187-233, 261-271"
+    expected: "The runner's supplied AbortSignal reaches every build, pack, install, compilation, test, and docs child process, stops further steps, and follows the failure-evidence/cleanup rules."
+    actual: "runPuristaSandboxVerification accepts a signal but only checks it before creating the layout; buildAndPackHarness, both direct execFileSync pack calls, and every run*Mode call omit it."
+    evidence: "check-purista-sandbox.test.mjs:85-97 only aborts runCheckedCommand directly, which is not the top-level runner path."
+    fix_boundary: "ai-harness/scripts/check-purista-sandbox.mjs and ai-harness/scripts/check-purista-sandbox.test.mjs only"
+    required_verification:
+      - "node --test ai-harness/scripts/check-purista-sandbox.test.mjs"
+      - "Add an integration-level cancellation test that begins the runner, cancels during a guarded child step, and proves no subsequent child starts."
+    agent_instruction: "Thread the signal through every child invocation, including pack commands, and add a runner-level cancellation test; retain offline and exact-scratch constraints."
+  - id: REVIEW-013-003
+    severity: blocking
+    category: SUPPLY_CHAIN
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-013
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Spec-Drift-Controls
+    impacted_path: "pack local Harness/Core/Docker packages for an offline verification run"
+    location: "ai-harness/scripts/check-purista-sandbox.mjs:115-118; ai-harness/scripts/check-purista-sandbox.mjs:201-203; ai-harness/scripts/check-sandbox-packages.mjs:16-19"
+    expected: "Every npm invocation participating in verification has explicit workspace-local cache/output authority and no default network fallback."
+    actual: "All three npm pack calls bypass cacheArguments, have no --offline or --cache argument, and use execFileSync directly."
+    evidence: "Only npm install receives --offline --ignore-scripts --no-audit --no-fund --cache. The packed-package commands do not."
+    fix_boundary: "ai-harness/scripts/check-purista-sandbox.mjs, ai-harness/scripts/check-sandbox-packages.mjs, and ai-harness/scripts/check-purista-sandbox.test.mjs only"
+    required_verification:
+      - "node --test ai-harness/scripts/check-purista-sandbox.test.mjs"
+      - "Add a command-argument test covering every npm pack/install child invocation."
+      - "node ai-harness/scripts/check-purista-sandbox.mjs --mode source with an explicitly prepopulated local cache"
+    agent_instruction: "Route pack execution through the same guarded command policy or an equivalently testable helper; use only the invocation cache/output paths and preserve separate known build commands."
+  - id: REVIEW-013-004
+    severity: blocking
+    category: INTERFACE
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-013
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Acceptance
+    impacted_path: "fixture import is changed from the public Harness entrypoint to an alias or private subpath"
+    location: "ai-harness/scripts/check-purista-sandbox.mjs:82-90, 151-175, 195-233"
+    expected: "Fixture staging validates the imports it copies and rejects every non-public Harness specifier before compilation/runtime verification."
+    actual: "assertPublicHarnessSpecifier is exported and unit-tested but is never called while source or consumer fixtures are staged."
+    evidence: "The only call sites are the test literals in check-purista-sandbox.test.mjs:55-59; rg finds no production call site."
+    fix_boundary: "ai-harness/scripts/check-purista-sandbox.mjs and ai-harness/scripts/check-purista-sandbox.test.mjs only"
+    required_verification:
+      - "node --test ai-harness/scripts/check-purista-sandbox.test.mjs"
+      - "Test that an aliased/private fixture is rejected by staging before any package install or compile."
+    agent_instruction: "Make the existing validation helper part of the staging path (or replace it with an equally narrow parsed-import check); do not add aliases, shims, or source fallback."
+  - id: REVIEW-013-005
+    severity: blocking
+    category: TRACEABILITY
+    root_cause: tooling_gap
+    status: open
+    owner_ticket: TICKET-013
+    route: planner
+    spec_refs:
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Handoff
+      - ai-harness/specs/36-sandbox-ownership-and-administration/00-vision.md#REQ-SOWN-DELIVERY
+    impacted_path: "independent review and Wave 3/11 consumers of TICKET-013 evidence"
+    location: "ai-harness/plans/implementation-evidence/TICKET-013.json:6-56"
+    expected: "Evidence pins the current plan manifest and satisfies the configured evidence schema before review."
+    actual: "The evidence has a stale plan digest and uses unsupported changed_artifacts kinds (verification/fixture), unsupported consumer disposition (verification_owned), and unsupported architecture status (blocked_as_designed)."
+    evidence: "The implementation-evidence checker reports each TICKET-013 schema failure. Its separate missing-root-manifest reports are a known nested-plan tooling limitation, but do not affect these direct JSON violations."
+    fix_boundary: "Controller-owned implementation evidence and nested-plan review wiring only; do not change product code to satisfy the checker."
+    required_verification:
+      - "Regenerate or correct TICKET-013 evidence with the current nested plan digest and allowed values."
+      - "Re-run the evidence checker using nested-plan-compatible wiring, or record and remediate the checker-layout gap separately."
+    agent_instruction: "The controller must correct the evidence after implementation fixes; preserve the ticket's independent-review lifecycle and do not mark it accepted until the evidence and actual staged proof pass."

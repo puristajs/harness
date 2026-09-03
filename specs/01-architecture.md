@@ -22,7 +22,7 @@
    └────────┘  └─────────┘  └──────────┘  └──────┘
                        │
    ┌────────────────────────────────────────────┐
-   │  Foundation ports (state, sandbox, memory, │
+   │ Foundation ports (storage, sandbox, memory,│
    │  model provider) + logger + telemetry      │
    └────────────────────────────────────────────┘
                        │
@@ -38,8 +38,16 @@ Streaming is an internal concern of the harness; there is no separate `Stream` p
 - Higher layers may import lower layers; the reverse is forbidden.
 - All layers may import error types and the logger interface.
 - Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
-- Provider and adapter packages MUST NOT depend on harness internals; they depend only on `@purista/harness` for port interfaces/types and their official provider SDKs.
+- Provider and adapter packages MUST NOT depend on harness internals; they use public `@purista/harness` ports and their official provider SDKs, except for the explicitly approved public contract-owner edges below.
 - Provider and adapter packages MUST NOT depend on each other (no provider-to-provider or adapter-to-adapter imports).
+- [Spec 31](./31-sensitive-data-guardrails.md) owns the provider-neutral detector
+  port in `@purista/harness-guardrails`. Exactly the `harness-guardrails-local-ner`,
+  `harness-guardrails-native-privacy`, and `harness-guardrails-presidio` packages
+  may depend on that public contract owner. This does not authorize reverse
+  edges, detector-to-detector imports, or other addon-to-addon dependencies.
+  Docker and other sandbox adapters continue to consume only public Harness
+  exports. Dependency checks cover runtime, peer, development, and optional
+  dependencies equally.
 - The harness package is the only package that may depend on `@modelcontextprotocol/client` v2 (optional peer, scoped to the MCP tool runners).
 - `@purista/harness-agent-plugins` is an opt-in first-party addon. It depends
   only on public core APIs and local parsing/validation dependencies; it does
@@ -62,10 +70,14 @@ packages/
       testing/index.ts     # exposed as @purista/harness/testing subpath export
     package.json           # exports map: "." and "./testing"
   harness-openai/          # @purista/harness-openai
+  harness-google/          # @purista/harness-google (Gemini API)
   harness-anthropic/       # @purista/harness-anthropic
   harness-bedrock/         # @purista/harness-bedrock
   harness-azure-foundry/   # @purista/harness-azure-foundry
   harness-agent-plugins/   # @purista/harness-agent-plugins; local Agent Plugins client
+  harness-policy-opa/      # @purista/harness-policy-opa; typed OPA Data API governance adapter
+  harness-storage-postgres/ # @purista/harness-storage-postgres; distributed HarnessStorage
+  harness-sandbox-kubernetes/ # @purista/harness-sandbox-kubernetes; self-hosted execution/workspace runtime
   harness-memory-*/        # future external memory adapters; not part of core
     src/
       index.ts
@@ -78,15 +90,15 @@ examples/
 Published packages are the core `@purista/harness` package plus independent
 provider and capability addons under the `@purista/harness-*` convention. Private example
 workspaces are allowed under `examples/` when backed by specs. No `services/`
-or `apps/` package is part of v1. Workspace tool is locked to npm workspaces.
+or `apps/` package is part of v3. Workspace tool is locked to npm workspaces.
 
 The `harness` package contains:
 - core harness (`defineHarness` chainable builder, `Harness`, `Session`)
 - types and errors
 - structured JSON logger (built-in, no external deps)
 - OpenTelemetry deep integration (peer dep `@opentelemetry/api`)
-- in-memory `StateStore` (default, only state implementation in v1)
-- two default `Sandbox` factories: `inMemorySandbox()` (files-only) and `bashSandbox()` (wraps `just-bash` peer dep)
+- in-memory `HarnessStorage` default plus native SQLite local storage
+- two default `Sandbox` factories: `inMemorySandbox()` (files plus bounded text search) and `bashSandbox()` (the same filesystem/search contract plus `just-bash` execution)
 - memory adapter port plus `sandboxMemory()` reference adapter
 - built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox
 - custom TS tools
@@ -99,12 +111,16 @@ The `harness` package contains:
 
 | Package             | Harness deps             | Peer deps                                                                  |
 |---------------------|--------------------------|----------------------------------------------------------------------------|
-| `@purista/harness`        | (none beyond peer)       | `typescript@>=5.4`, `zod@^4`, `@opentelemetry/api@^1`, `@opentelemetry/semantic-conventions@^1`, `@modelcontextprotocol/client@^2` (optional, only required when MCP tools are used; `peerDependenciesMeta.optional = true`), `just-bash@^0` (optional, only required when `bashSandbox()` is used; `peerDependenciesMeta.optional = true`), `vitest@^2` (peer of `@purista/harness/testing`) |
+| `@purista/harness`        | `re2js@^1`, `@standard-schema/spec@^1.1`, `zod@^4`, `yaml@^2`, `@opentelemetry/semantic-conventions@^1` | `typescript@>=5.4`, `@opentelemetry/api@^1`, `@modelcontextprotocol/client@^2` (optional, only required when MCP tools are used), `just-bash@^3` (optional, only required when `bashSandbox()` is used), `vitest@^4` (peer of `@purista/harness/testing`) |
 | `@purista/harness-openai` | `@purista/harness`       | `typescript@>=5.4`, `openai@^4`                                            |
+| `@purista/harness-google` | `@purista/harness`       | `typescript@>=5.4`, `@google/genai`                                       |
 | `@purista/harness-anthropic` | `@purista/harness`    | `typescript@>=5.4`, `@anthropic-ai/sdk`                                    |
 | `@purista/harness-bedrock` | `@purista/harness`      | `typescript@>=5.4`, `@aws-sdk/client-bedrock-runtime`                      |
 | `@purista/harness-azure-foundry` | `@purista/harness` | `typescript@>=5.4`, `@azure-rest/ai-inference`, `@azure/core-auth`, `@azure/core-sse` |
 | `@purista/harness-agent-plugins` | `@purista/harness` | `typescript@>=5.4` plus local parsing/schema-validation dependencies only; no provider SDK or MCP SDK dependency |
+| `@purista/harness-policy-opa` | `@purista/harness` | `typescript@>=5.4`; platform `fetch`, no OPA SDK or addon dependency |
+| `@purista/harness-storage-postgres` | `@purista/harness`, `pg` | `typescript@>=5.4`; PostgreSQL 16+ at runtime |
+| `@purista/harness-sandbox-kubernetes` | `@purista/harness`, `@kubernetes/client-node` | `typescript@>=5.4`; Kubernetes API, PVC CSI, and optional VolumeSnapshot API at runtime |
 | `@purista/harness-memory-*` | `@purista/harness` | `typescript@>=5.4` plus the adapter's official backend SDK only |
 
 Dev deps for every package: `typescript@>=5.4`, `vitest@^2`, `@types/node`. Provider packages may add only their official provider SDK dependencies.
@@ -121,10 +137,11 @@ src/
   telemetry/            # OTel shims, attribute keys, span/metric helpers
   ulid/                 # internal ULID utility
   ports/                # state, sandbox, memory, model-provider
-  state/in-memory/      # default StateStore impl
+  state/in-memory/      # default HarnessStorage impl
   memory/sandbox/       # sandboxMemory() reference MemoryAdapter
-  sandbox/in-memory/    # inMemorySandbox() — files-only
-  sandbox/bash/         # bashSandbox() — wraps just-bash peer dep
+  sandbox/              # port, bounded text-search contract, and built-in adapters
+  sandbox/in-memory/    # inMemorySandbox() — files plus bounded text search
+  sandbox/bash/         # bashSandbox() — files/search plus just-bash execution
   models/               # alias registry, capability gate
   tools/builtin/        # bash, read, write, edit, glob, grep, list + alias dispatch
   tools/                # ts tool runner, tool registry, MCP stdio + http runners

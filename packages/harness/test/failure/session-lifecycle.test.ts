@@ -1,9 +1,18 @@
 import { z } from 'zod'
 import { expect, it } from 'vitest'
-import { defineHarness, inMemorySandbox, InMemoryStateStore, JsonLogger, StateError, type FinishRunPatch, type PersistedRunEvent, type SessionRecord } from '../../src/index.js'
+import {
+  defineHarness,
+  inMemorySandbox,
+  InMemoryHarnessStorage,
+  JsonLogger,
+  StateError,
+  type FinishRunPatch,
+  type PersistedRunEvent,
+  type SessionRecord,
+} from '../../src/index.js'
 import type { RunRecord } from '../../src/models/state.js'
 
-class CreateRunFailingStateStore extends InMemoryStateStore {
+class CreateRunFailingHarnessStorage extends InMemoryHarnessStorage {
   public readonly appendedEvents: PersistedRunEvent[] = []
   public readonly finishRunCalls: Array<{ runId: string; patch: FinishRunPatch }> = []
 
@@ -20,7 +29,7 @@ class CreateRunFailingStateStore extends InMemoryStateStore {
   }
 }
 
-class FailureTerminalizationStateStore extends InMemoryStateStore {
+class FailureTerminalizationHarnessStorage extends InMemoryHarnessStorage {
   public constructor(private readonly failingOperation: 'finishRun' | 'upsertSession') {
     super()
   }
@@ -32,18 +41,18 @@ class FailureTerminalizationStateStore extends InMemoryStateStore {
     await super.finishRun(runId, patch)
   }
 
-  public override async upsertSession(record: SessionRecord): Promise<void> {
+  public override async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
     if (this.failingOperation === 'upsertSession' && record.runCount > 0) {
       throw new StateError('upsertSession failed', { op: 'upsertSession', reason: 'injected_failure' })
     }
-    await super.upsertSession(record)
+    return super.upsertSession(record, mode)
   }
 }
 
 it('does not emit or finish a run when createRun fails', async () => {
-  const state = new CreateRunFailingStateStore()
+  const storage = new CreateRunFailingHarnessStorage()
   const harness = defineHarness()
-    .state(state)
+    .storage(storage)
     .sandbox(inMemorySandbox())
     .models({
       fake: {
@@ -51,39 +60,41 @@ it('does not emit or finish a run when createRun fails', async () => {
           id: 'fake',
           genAiSystem: 'fake',
           async object() {
-            return { object: 'should not run', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, finishReason: 'stop' }
-          }
+            return {
+              object: 'should not run',
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+              finishReason: 'stop',
+            }
+          },
         },
         model: 'fake',
-        capabilities: ['object']
-      }
+        capabilities: ['object'],
+      },
     })
-    .agents({ assistant: { model: 'fake', instructions: 'Return text.', builtinTools: false } })
-    .workflows({
-      wf: {
-        input: z.string(),
-        output: z.string(),
-        delegation: {},
-        handler: async (ctx) => ctx.agents.assistant(ctx.input)
-      }
+    .agent('assistant', { model: 'fake', instructions: 'Return text.', builtinTools: false })
+    .workflow('wf', {
+      input: z.string(),
+      output: z.string(),
+      delegation: {},
+      handler: async (ctx) => ctx.agents.assistant(ctx.input),
     })
     .build()
 
   const session = await harness.getSession('s1')
-  await expect(session.workflows.wf.prompt('hello')).rejects.toBeInstanceOf(StateError)
-  expect(state.appendedEvents).toEqual([])
-  expect(state.finishRunCalls).toEqual([])
+  await expect(session.workflows.wf.run('hello')).rejects.toBeInstanceOf(StateError)
+  expect(storage.appendedEvents).toEqual([])
+  expect(storage.finishRunCalls).toEqual([])
 })
 
 it.each(['finishRun', 'upsertSession'] as const)(
   'preserves the original workflow/model failure when %s fails during failure terminalization',
   async (failingOperation) => {
-    const state = new FailureTerminalizationStateStore(failingOperation)
+    const storage = new FailureTerminalizationHarnessStorage(failingOperation)
     const primaryError = new Error('model failed first')
     const logs: string[] = []
     const harness = defineHarness()
       .logger(new JsonLogger({ level: 'error', out: { write: (chunk) => logs.push(chunk) } }))
-      .state(state)
+      .storage(storage)
       .sandbox(inMemorySandbox())
       .models({
         fake: {
@@ -92,26 +103,24 @@ it.each(['finishRun', 'upsertSession'] as const)(
             genAiSystem: 'fake',
             async object() {
               throw primaryError
-            }
+            },
           },
           model: 'fake',
-          capabilities: ['object']
-        }
+          capabilities: ['object'],
+        },
       })
-      .agents({ assistant: { model: 'fake', instructions: 'Return text.', builtinTools: false } })
-      .workflows({
-        wf: {
-          input: z.string(),
-          output: z.string(),
-          delegation: {},
-          handler: async (ctx) => ctx.agents.assistant(ctx.input)
-        }
+      .agent('assistant', { model: 'fake', instructions: 'Return text.', builtinTools: false })
+      .workflow('wf', {
+        input: z.string(),
+        output: z.string(),
+        delegation: {},
+        handler: async (ctx) => ctx.agents.assistant(ctx.input),
       })
       .build()
 
     const session = await harness.getSession('s1')
-    await expect(session.workflows.wf.prompt('hello')).rejects.toBe(primaryError)
+    await expect(session.workflows.wf.run('hello')).rejects.toBe(primaryError)
     expect(logs.join('')).toContain('Failed to terminalize failed run; preserving primary run error.')
     expect(logs.join('')).toContain(failingOperation === 'finishRun' ? 'finish_run' : 'upsert_session')
-  }
+  },
 )

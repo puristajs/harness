@@ -46,9 +46,9 @@ Default: env `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, else
 | Mode | Span attributes | Span events |
 | --- | --- | --- |
 | `NO_CONTENT` | Content, tool arguments, tool results, documents, and files omitted. | No content-bearing span events are emitted by core. |
-| `SPAN_ONLY` | Reserved in v1; core still omits content attributes. | No content-bearing span events are emitted by core. |
-| `EVENT_ONLY` | Content attributes omitted. | Reserved in v1; core still emits no content-bearing span events. |
-| `SPAN_AND_EVENT` | Reserved in v1; core still omits content attributes. | Reserved in v1; core still emits no content-bearing span events. |
+| `SPAN_ONLY` | Reserved in v3; core still omits content attributes. | No content-bearing span events are emitted by core. |
+| `EVENT_ONLY` | Content attributes omitted. | Reserved in v3; core still emits no content-bearing span events. |
+| `SPAN_AND_EVENT` | Reserved in v3; core still omits content attributes. | Reserved in v3; core still emits no content-bearing span events. |
 
 Structured objects, prompts, documents, tool parameters, tool results, file
 content, memory keys, memory values, memory search queries, memory search
@@ -57,7 +57,7 @@ counts, finish reasons, dimensions, scores, memory hit booleans, result counts,
 and hashed keys is not content.
 
 The enum is intentionally present before broad content telemetry is implemented
-so applications and adapters can pass a stable policy value. In v1, selecting a
+so applications and adapters can pass a stable policy value. In v3, selecting a
 non-`NO_CONTENT` mode causes content capture only for the memory facade rules in
 [20-memory-adapters](./20-memory-adapters.md). Core still omits prompt, output,
 tool argument, tool result, expected-output, context, and file content.
@@ -96,21 +96,33 @@ Every harness-created span carries when available:
 
 | Harness span | Span name | Required semantic shape |
 | --- | --- | --- |
-| Outermost prompt/run | `harness.session.prompt` | `harness.*` |
+| Outermost invocation | `harness.session.run` | `harness.*` |
 | Workflow run | `harness.workflow.run` | GenAI `invoke_workflow`, OpenInference `CHAIN` in `dual`/`openinference_only` |
 | Agent run | `invoke_agent {agent.name}` | GenAI `invoke_agent`, OpenInference `AGENT` |
 | Model call | `{operation} {request.model}` | GenAI model operation, OpenInference `LLM`/`EMBEDDING`/`RERANKER` |
 | Tool call | `execute_tool {tool.name}` | GenAI `execute_tool`, OpenInference `TOOL` |
 | Policy evaluation | `harness.policy.evaluate` | OpenInference `GUARDRAIL` in `dual`/`openinference_only` |
+| Optional guardrail action | `evaluate_guardrail {rail.id}` | OpenInference `GUARDRAIL`; addon-owned and content-free |
 | Memory operation | `harness.memory.{operation}` | `harness.*` |
 | Workspace operation | `harness.workspace.{operation}` | `harness.*` |
 | Sandbox exec | `harness.sandbox.exec` | `harness.*` |
-| State op | `harness.state.op` | `harness.*` |
-| Prompt candidate evaluation | `harness.eval.candidate` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
-| Durable runtime operation | `harness.runtime.{operation}` | `harness.*` |
-| Context checkpoint operation | `harness.context_checkpoint.{operation}` | `harness.*` |
+| Sandbox lifecycle | `harness.sandbox.{open|detach|terminate}` | Harness attributes only |
+| Harness storage lifecycle | `harness.storage.{operation}` | `harness.*` |
+| Generic evaluation run | `harness.eval.run` | Harness attributes only |
+| Generic evaluation case | `harness.eval.case` | Harness attributes only |
+| Generic evaluation scorer | `harness.eval.scorer` | OpenInference `EVALUATOR` in `dual`/`openinference_only` |
 | Local sandbox operation | `harness.local_sandbox.{operation}` | `harness.*` |
 | Agent Plugin inspection/loading | `harness.plugin.{operation}` | `harness.*` |
+
+## Optional guardrail addon attributes and metrics
+
+The `@purista/harness-guardrails` addon emits `evaluate_guardrail {rail.id}` as a child of the active Harness run span (or of the active global OTel context for standalone retrieval). It carries `openinference.span.kind='GUARDRAIL'`, `harness.guardrail.id`, `harness.guardrail.phase`, and `harness.guardrail.outcome` (`allow`, `block`, `transform`, or `error`). A validated deployment-controlled `harness.guardrail.reason_code` may appear only on block/transform outcomes. These attributes are content-free.
+
+Every evaluation records `harness.guardrail.evaluations` (counter) and `harness.guardrail.duration` (seconds histogram) with the same rail/phase/outcome dimensions; failures additionally carry `error.type`. A block is an expected enforcement result and leaves the guardrail span status `UNSET`; a timeout, malformed action result, or action failure sets status `ERROR`. The addon emits structured logs for block, transform, and error only, with the same content-free identity/outcome fields.
+
+`modelCheckRail` must call a configured Harness model handle. Its model call is a nested ordinary `LLM` span and retains the standard model protocol: `harness.model.alias`, provider/model attributes, `gen_ai.usage.*`, `llm.token_count.*`, finish reason, `gen_ai.client.operation.duration`, and `gen_ai.client.token.usage` when usage is reported. The guardrail parent never copies or estimates token counts; trace hierarchy is the authoritative cost-attribution relationship.
+
+Sensitive-data guardrails are specified by [31-sensitive-data-guardrails.md](./31-sensitive-data-guardrails.md). Each detector inspection is a child `harness.sensitive_data.inspect` `GUARDRAIL` span and records only the bounded detector id, `local|cloud` execution mode, `detect|mask` operation, `allow|block|transform|error` outcome, finding count, sorted configured category identifiers, and `error.type` on failure. It emits `harness.sensitive_data.inspections` and `harness.sensitive_data.duration` with the same content-free dimensions. It never emits text, entity text, offsets, endpoint/request metadata, model identity, `gen_ai.*`, `llm.*`, token usage or cost. A detector is not a model call; a nested standard LLM span is the only cost record for a model-backed rail action.
 
 ## GenAI operations
 
@@ -144,9 +156,9 @@ The harness emits:
 | `RERANKER` | Rerank model call |
 | `TOOL` | Tool call |
 | `GUARDRAIL` | Optional governance policy evaluation |
-| `EVALUATOR` | Prompt candidate evaluation helper |
+| `EVALUATOR` | Generic evaluation scorer |
 
-The harness does not emit `RETRIEVER` or `PROMPT` in v1 because core has no
+The harness does not emit `RETRIEVER` or `PROMPT` in v3 because core has no
 retrieval store or prompt store. `GUARDRAIL` is emitted only when optional
 governance is configured.
 
@@ -196,7 +208,7 @@ Span: `{operation} {request.model}`
 `'text' | 'text_stream' | 'object' | 'object_stream' | 'embed' | 'rerank'`.
 
 Provider adapters must set `gen_ai.provider.name` and `gen_ai.system` to the
-same provider id for v1 compatibility. `gen_ai.provider.name` is canonical;
+same provider id for v3 compatibility. `gen_ai.provider.name` is canonical;
 `gen_ai.system` remains for older backends.
 
 ## Tool span attributes
@@ -257,22 +269,43 @@ Emitted only when `.governance(...)` is configured.
 Policy spans never emit raw policy input, tool input, tool output, prompts,
 completion content, approval comments, headers, credentials, or sandbox output.
 
-## Evaluator span attributes
+## Evaluation span attributes
 
-Span: `harness.eval.candidate`
+Spans: `harness.eval.run`, `harness.eval.case`, and `harness.eval.scorer`.
 
-Emitted by `evaluatePromptCandidates`.
+The exact approved attribute and privacy contract is defined in
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md). Task and scorer
+IDs/versions, ordinals, counts, policy, attempts, terminal status, and stable
+`error.type` are allowed. Evaluation run, dataset, case, candidate, trial,
+observation, feedback target, output, assessment, scorer context, evidence,
+score, label, segment, model identity, usage, cost, and correlation fields are
+not emitted. Content capture mode never widens this rule.
 
-| Key | Type |
-| --- | --- |
-| `openinference.span.kind` | string, `EVALUATOR` |
-| `harness.eval.candidate.id` | string |
-| `harness.eval.item.id` | string |
-| `harness.eval.score` | double |
-| `harness.eval.passed` | boolean |
+| Key | Type | Spans |
+| --- | --- | --- |
+| `openinference.span.kind` | string, `EVALUATOR` | scorer in `dual`/`openinference_only` |
+| `harness.eval.task.id` | string | run, case, scorer |
+| `harness.eval.task.version` | string | run, case, scorer |
+| `harness.eval.mode` | string, `execute_and_score` or `score_only` | run, case, scorer |
+| `harness.eval.candidate.count` | integer | run |
+| `harness.eval.case.count` | integer | run |
+| `harness.eval.scorer.count` | integer | run |
+| `harness.eval.max_concurrency` | integer | run |
+| `harness.eval.failure_policy` | string, `continue` or `fail_fast` | run |
+| `harness.eval.candidate.ordinal` | integer | case |
+| `harness.eval.case.ordinal` | integer | case |
+| `harness.eval.trial.count` | integer | run |
+| `harness.eval.scorer.id` | string | scorer |
+| `harness.eval.scorer.version` | string | scorer |
+| `harness.eval.scorer.ordinal` | integer | scorer |
+| `harness.eval.attempts` | integer | scorer |
+| `harness.eval.status` | string, terminal enum from spec 35 | run, case, scorer |
+| `error.type` | string | failed/timed-out/cancelled case or scorer |
 
-No prompt, input, expected output, or context content is emitted by v1 core,
-regardless of `contentCaptureMode`.
+`harness.eval.scorer` carries `openinference.span.kind = EVALUATOR` in `dual`
+and `openinference_only`. The previously declared `harness.eval.candidate`
+span was never implemented and is removed together with the obsolete
+aggregate evaluator. No replacement alias or compatibility instrument exists.
 
 ## Memory span attributes
 
@@ -280,7 +313,7 @@ Spans: `harness.memory.get`, `harness.memory.set`, `harness.memory.delete`,
 `harness.memory.list`, `harness.memory.search`.
 
 Memory spans use only `harness.*` attributes. The harness does not emit
-OpenInference `RETRIEVER` in v1 because memory search is a generic adapter
+OpenInference `RETRIEVER` in v3 because memory search is a generic adapter
 operation, not a full retrieval pipeline contract.
 
 | Key | Type | Notes |
@@ -313,7 +346,7 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `harness.workspace.adapter` | string | `DurableWorkspaceStore.info.id` |
+| `harness.workspace.adapter` | string | `DurableWorkspace.info.id` |
 | `harness.workspace.operation` | string | `start`, `pause`, `resume`, `abort`, `cleanup`, `inspect` |
 | `harness.workspace.state` | string | lifecycle state returned by the adapter |
 | `harness.workspace.ref_hash` | string | SHA-256 hex of `workspaceRef` |
@@ -322,9 +355,9 @@ Workspace spans use only `harness.*` attributes. Operation is one of `start`,
 | `harness.workspace.attempt` | integer | start/pause/resume only |
 | `harness.workspace.sequence` | integer | pause only |
 | `harness.workflow.step_id` | string | pause only |
-| `harness.workspace_store.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
-| `harness.workspace_store.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
-| `harness.workspace_store.quota` | string | quota id when a quota is checked or exceeded |
+| `harness.workspace.checkpoint_ref_hash` | string | SHA-256 hex of `snapshotRef` when available |
+| `harness.workspace.cleanup.reason` | string | cleanup reason when operation is `cleanup` |
+| `harness.workspace.quota` | string | quota id when a quota is checked or exceeded |
 | `harness.run.id` | string | when available |
 | `harness.session.id` | string | when available |
 | `harness.workflow.id` | string | when available |
@@ -341,6 +374,31 @@ checkpoint records; spans, metrics, and logs emit only hashes.
 | --- | --- |
 | `harness.exec.exit_code` | integer |
 | `harness.exec.duration` | double seconds |
+
+### Sandbox lifecycle and administration
+
+Spans: `harness.sandbox.register_owner`, `harness.sandbox.open`,
+`harness.sandbox.detach`, `harness.sandbox.terminate`,
+`harness.sandbox.list`, `harness.sandbox.purge`, `harness.sandbox.sweep`, and
+`harness.sandbox.delete_snapshot`. Adapter-owned administration operations use
+the same content-free attributes; no owner, selector, provider resource, path,
+or snapshot reference is emitted.
+
+| Key | Type |
+| --- | --- |
+| `harness.sandbox.adapter` | string |
+| `harness.sandbox.operation` | string: operation named by the span |
+| `harness.sandbox.disposition` | string: `created`, `attached`, `resumed`, or `restored`; open only |
+| `harness.sandbox.live_process_state` | string: `preserved`, `restarted`, `not_preserved`, or `unknown`; open only |
+| `harness.status` | string |
+| `error.type` | string, failures only |
+
+Scope fields, tenant/principal values, generations, leases, fencing tokens,
+provider references, checkpoint references, paths, commands, content,
+credentials, and provider response bodies are forbidden regardless of content
+capture mode. Existing trace, session, and run context supplies correlation; no
+new lifecycle correlation id is added. Provider-specific child spans may exist,
+but adapters do not duplicate these standard spans.
 
 ### `harness.plugin.{operation}`
 
@@ -364,50 +422,29 @@ Plugin roots/data paths, commands, arguments, environment values, URLs,
 headers, schemas, skill text, file names/content, credentials, tool inputs, and
 tool results are never span attributes or events in any capture mode.
 
-### `harness.runtime.{operation}`
+### `harness.storage.{operation}`
 
-Operation is one of `start`, `load_checkpoint`, `checkpoint`, or `finish`.
+Operation is one of `acquire_run`, `load_checkpoint`, `commit_checkpoint`,
+`finish_run`, `register_wait`, or `signal_wait`.
 
 | Key | Type |
 | --- | --- |
-| `harness.runtime.adapter` | string |
-| `harness.runtime.operation` | string |
-| `harness.runtime.persistent` | boolean |
-| `harness.runtime.resumed` | boolean, start only |
-| `harness.runtime.attempt` | integer |
-| `harness.runtime.sequence` | integer, checkpoint only |
-| `harness.runtime.step_id` | string, checkpoint only |
+| `harness.storage.adapter` | string |
+| `harness.storage.operation` | string |
+| `harness.storage.persistent` | boolean |
+| `harness.storage.resumed` | boolean, acquire only |
+| `harness.storage.attempt` | integer |
+| `harness.storage.sequence` | integer, checkpoint only |
+| `harness.storage.step_id` | string, checkpoint only |
 | `harness.run.id` | string |
 | `harness.run.status` | string, finish only |
 | `harness.session.id` | string |
 | `error.type` | string, failure only |
 
-### `harness.context_checkpoint.{operation}`
-
-Operation is one of `write`, `read`, `list`, or `delete`.
-
-| Key | Type |
-| --- | --- |
-| `harness.context_checkpoint.adapter` | string |
-| `harness.context_checkpoint.operation` | string |
-| `harness.context_checkpoint.kind` | string, when available |
-| `harness.context_checkpoint.ref_hash` | string, when available |
-| `harness.context_checkpoint.sequence` | integer, when available |
-| `harness.context_checkpoint.result_count` | integer, list only |
-| `harness.context_checkpoint.limit` | integer, list only |
-| `harness.context_checkpoint.payload_size_bytes` | integer, write only |
-| `harness.run.id` | string, when available |
-| `harness.session.id` | string, when available |
-| `harness.workflow.id` | string, when available |
-| `harness.agent.id` | string, when available |
-| `error.type` | string, failure only |
-
-Context checkpoint payload content is never emitted by core.
-
 ### `harness.local_sandbox.{operation}`
 
 Operation is one of `open`, `read`, `read_text`, `write`, `remove`, `list`,
-`stat`, `exists`, `mount`, or `exec`. All attribute keys use the
+`search_text`, `stat`, `exists`, `mount`, or `exec`. All attribute keys use the
 `harness.sandbox.*` namespace.
 
 | Key | Type |
@@ -451,7 +488,7 @@ Latest experimental event:
 
 - `gen_ai.client.inference.operation.details`
 
-v1 core does not emit these content events. Future implementations that add
+v3 core does not emit these content events. Future implementations that add
 content events must follow `contentCaptureMode` and preserve `NO_CONTENT` as the
 default.
 
@@ -530,23 +567,29 @@ aggregating metrics.
 | `harness.events.persist_errors` | Counter | `1` | `harness.session.id`, `harness.run.id` |
 | `harness.permission.denials` | Counter | `1` | `gen_ai.tool.name`, `harness.agent.id`, `harness.session.id` |
 | `harness.policy.evaluations` | Counter | `1` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
+| `harness.policy.duration` | Histogram | `s` | `harness.policy.engine`, `harness.policy.effect`, `harness.policy.enforced`, `harness.policy.mode`, `harness.policy.phase`, `harness.agent.id`, `harness.tool.id`, `error.type` |
 | `harness.policy.denials` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id` |
 | `harness.approval.requests` | Counter | `1` | `harness.policy.engine`, `harness.policy.rule_id`, `harness.agent.id`, `harness.tool.id`, `harness.approval.status` |
-| `harness.eval.candidate.score` | Histogram | `1` | `harness.eval.candidate.id` |
+| `harness.eval.runs` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status`, `harness.eval.failure_policy` |
+| `harness.eval.run.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.cases` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.case.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.status` |
+| `harness.eval.scorer.results` | Counter | `1` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.scorer.id`, `harness.eval.scorer.version`, `harness.eval.status` |
+| `harness.eval.scorer.duration` | Histogram | `s` | `harness.eval.task.id`, `harness.eval.task.version`, `harness.eval.mode`, `harness.eval.scorer.id`, `harness.eval.scorer.version`, `harness.eval.status` |
 | `harness.memory.operation.duration` | Histogram | `s` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `error.type` |
 | `harness.memory.operations` | Counter | `1` | `harness.memory.provider`, `harness.memory.operation`, `harness.memory.scope`, `harness.memory.hit`, `error.type` |
 | `harness.memory.search.results` | Histogram | `1` | `harness.memory.provider`, `harness.memory.scope` |
 | `harness.workspace.operation.duration` | Histogram | `s` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.operations` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.operation`, `harness.workspace.state`, `error.type` |
 | `harness.workspace.bytes` | Histogram | `By` | `harness.workspace.adapter`, `harness.workspace.operation` |
-| `harness.workspace_store.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.cleanup.reason`, `error.type` |
-| `harness.workspace_store.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace_store.quota` |
-| `harness.runtime.operation.duration` | Histogram | `s` | `harness.runtime.adapter`, `harness.runtime.operation`, `error.type` |
-| `harness.runtime.operations` | Counter | `1` | `harness.runtime.adapter`, `harness.runtime.operation`, `error.type` |
-| `harness.context_checkpoint.operation.duration` | Histogram | `s` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
-| `harness.context_checkpoint.operations` | Counter | `1` | `harness.context_checkpoint.adapter`, `harness.context_checkpoint.operation`, `error.type` |
+| `harness.workspace.cleanup.failures` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.cleanup.reason`, `error.type` |
+| `harness.workspace.quota.exceeded` | Counter | `1` | `harness.workspace.adapter`, `harness.workspace.quota` |
+| `harness.storage.operation.duration` | Histogram | `s` | `harness.storage.adapter`, `harness.storage.operation`, `error.type` |
+| `harness.storage.operations` | Counter | `1` | `harness.storage.adapter`, `harness.storage.operation`, `error.type` |
 | `harness.local_sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
 | `harness.local_sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.exec_enabled`, `error.type` |
+| `harness.sandbox.operation.duration` | Histogram | `s` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.disposition`, `harness.sandbox.live_process_state`, `harness.status`, `error.type` |
+| `harness.sandbox.operations` | Counter | `1` | `harness.sandbox.adapter`, `harness.sandbox.operation`, `harness.sandbox.disposition`, `harness.sandbox.live_process_state`, `harness.status`, `error.type` |
 | `harness.plugin.operation.duration` | Histogram | `s` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
 | `harness.plugin.operations` | Counter | `1` | `harness.plugin.operation`, `harness.plugin.trusted`, `harness.mcp.transport`, `error.type` |
 
@@ -590,3 +633,7 @@ Known warning codes:
 - [12-streaming](./12-streaming.md)
 - [19-ai-eval-core](./19-ai-eval-core.md)
 - [21-durable-workspaces](./21-durable-workspaces.md)
+
+## Approved decision-boundary alignment
+
+Decision events/audit/errors share safe evidence only; provider spans remain the sole token metric source. model.completed owns generative run-summary accounting, not model.object. Guardrail action timers reuse the core decision executor. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

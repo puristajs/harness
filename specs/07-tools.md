@@ -1,10 +1,14 @@
 # Tools
 
-**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered via `defineHarness().tools({...})`. There is no standalone `defineTool` factory; only inline-in-builder objects achieve cross-key type safety. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md).
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for native registration outside those concerns.
+
+**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered directly via repeatable `defineHarness().tool(id, definition)` or `.tools(definitions)` calls. There is no standalone `defineTool` factory. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md) and the clean authoring contract in [42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
 
 ## Built-in tools
 
-The harness ships seven built-in tools that operate directly against the `SandboxSession`. They are available to every agent by default — the user opts out, not in.
+The harness ships seven built-in tools that operate directly against the
+`SandboxSession`. They are disabled by default and enabled per agent by an
+explicit canonical-name allowlist.
 
 ### Inventory
 
@@ -17,10 +21,10 @@ Locked canonical names (lowercase) and PascalCase aliases:
 | `write`   | `Write`       | `SandboxSession.write`                 | Write a file to the sandbox |
 | `edit`    | `Edit`        | `read+write`                           | String replacement edit (find old_string → new_string) |
 | `glob`    | `Glob`        | `SandboxSession.list` (recursive + glob) | Pattern-match files |
-| `grep`    | `Grep`        | `bash` (`grep -rn`) when executor available, else `read+match` fallback | Search file contents |
+| `grep`    | `Grep`        | `SandboxSession.searchText` (`sandbox.text_search`) | Search file contents without granting shell access |
 | `list`    | `LS`, `List`  | `SandboxSession.list`                  | List directory entries |
 
-### Schemas (Zod, locked)
+### Built-in schemas (internal Zod, locked)
 
 ```ts
 const builtinTools = {
@@ -50,9 +54,9 @@ const builtinTools = {
     output: z.object({ paths: z.array(z.string()) }),
   },
   grep: {
-    description: 'Search file contents for a regex pattern. Returns matching lines with paths and line numbers.',
-    input: z.object({ pattern: z.string().min(1), path: z.string().default('/'), maxResults: z.number().int().positive().default(100) }),
-    output: z.object({ matches: z.array(z.object({ path: z.string(), line: z.number().int(), text: z.string() })) }),
+    description: 'Search sandbox text files with a literal or safe regular expression. Reports when limits make the result incomplete.',
+    input: z.object({ pattern: z.string().min(1), path: z.string().default('/'), syntax: z.enum(['literal', 'safe_regex_v1']).default('safe_regex_v1'), caseSensitive: z.boolean().default(true), maxResults: z.number().int().positive().max(100).default(100) }),
+    output: z.object({ matches: z.array(z.object({ path: z.string(), line: z.number().int(), text: z.string(), textTruncated: z.boolean() })), complete: z.boolean(), limitReasons: z.array(z.enum(['result_limit','scan_byte_limit','file_byte_limit','file_count_limit','line_byte_limit'])), scannedFiles: z.number().int().nonnegative(), scannedBytes: z.number().int().nonnegative() }),
   },
   list: {
     description: 'List directory entries (non-recursive).',
@@ -70,12 +74,37 @@ Locked: when the model emits a tool call with a PascalCase alias, the harness di
 
 Locked rules:
 
-- Built-in tools are available to every agent by default — the user opts out, not in.
-- If `SandboxSession.executor === 'unavailable'`: `bash` and grep's exec-backed path are auto-disabled. `grep` falls back to a read+match implementation (slower; warned once per session via log).
+- Built-in tools are disabled by default. An omitted field never grants file or process capabilities.
+- If `SandboxSession.executor === 'unavailable'`, `bash` is auto-disabled. `grep` is independent of the executor and requires `sandbox.text_search`.
+- Enabling `grep` adds `sandbox.text_search` to the effective Harness requirements. A custom adapter without it fails `build()` before model or sandbox I/O. There is no JavaScript `RegExp`, `read+match`, shell, or compatibility fallback.
 - Per-agent `builtinTools` field controls inclusion:
-  - `builtinTools: undefined` (default) — all built-ins enabled (subject to executor availability).
-  - `builtinTools: false` — none.
+  - `builtinTools: undefined` (default) — none.
+  - `builtinTools: false` — none; retained as an explicit equivalent form.
   - `builtinTools: ['bash','read','grep']` — explicit subset (canonical names only; aliases are not allowed in config to avoid ambiguity).
+
+This is a behavioral change for applications that previously relied on an
+omitted field to register every built-in tool. Those agents must declare the
+smallest required allowlist explicitly. Existing `builtinTools: false`
+declarations remain valid, but are redundant.
+
+Skills do not widen this list. A default-loop agent that declares a skill must
+explicitly include `read`; agent registration otherwise fails with
+`SkillManifestError{reason:'skill_read_tool_missing'}` before model or sandbox
+I/O. The skill system itself never requires `bash`, `write`, or `edit`.
+
+### Safe search contract
+
+`safe_regex_v1` is the non-backtracking syntax defined in
+[05-sandbox](./05-sandbox.md). Harness validates it before permission and
+governance evaluation; the sandbox validates it again at its trust boundary.
+It requires an ASCII pattern and `caseSensitive: true`. Prefer `literal` when
+regex features are unnecessary; its insensitive mode folds ASCII letters only.
+
+Fixed upper bounds are 512 UTF-8 pattern bytes, 100 results, 4 KiB per returned
+line, 2 MiB per file, 50 MiB aggregate scan, and 10,000 files. `maxResults` may
+lower but never raise the result cap. Any exhausted/skipped bound makes the
+result explicitly incomplete so an agent cannot treat a partial search as
+exhaustive.
 
 ### Tool definitions are model-facing
 
@@ -87,17 +116,21 @@ When the harness translates the agent's tool set for the model API, built-in too
 type ToolDefinition = TsToolDefinition | McpStdioToolDefinition | McpHttpToolDefinition
 ```
 
-All three carry `description` (and optionally `kind`). Tool ids (the keys of `.tools({...})`) match `/^[a-z][a-z0-9_]*$/` (≤64 chars), enforced at the builder call.
+All three carry `description` (and optionally `kind`). Tool ids supplied to
+`.tool(...)` or used as `.tools({...})` keys match
+`/^[a-z][a-z0-9_]*$/` (≤64 chars) and reject `harness_`/`system_` prefixes.
+Native definitions are ordinary direct values; no helper callback or private
+registration brand is part of the contract.
 
 ## TS tool
 
 ```ts
-interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.ZodTypeAny = z.ZodTypeAny> {
+interface TsToolDefinition<I extends ModelSchema = ModelSchema, O extends Schema = Schema> {
   kind?: 'ts'                                // default 'ts' if omitted
   description: string
   input: I
   output: O
-  handler: (ctx: ToolHandlerContext, input: z.infer<I>) => Promise<z.infer<O>>
+  handler: (ctx: ToolHandlerContext, input: Infer<I>) => Promise<InferIn<O>>
   configureHarnessContext?: (context: HarnessAdapterContext) => void
 }
 
@@ -117,9 +150,9 @@ interface ToolHandlerContext {
 
 Behavior:
 
-- Input is validated with `input.parse` before the handler runs. Failure throws [`ValidationError`](./15-error-catalog.md) (`category: 'validation'`, `retriable: false`).
+- Input is awaited through the shared Standard Schema validator before the handler runs. Failure throws [`ValidationError`](./15-error-catalog.md) (`category: 'validation'`, `retriable: false`). The handler's return is validated through `output` before it reaches the model or persistence.
 - If `.governance(...).exposure` is configured, exposure rules can hide tools before the model call. If execution `policies` are configured, policy evaluation runs after input validation and before the handler runs. Policy denial or rejected approval returns a recoverable `PolicyDeniedError` tool result to the model.
-- Output is validated with `output.parse` after the handler returns. Failure throws `ValidationError`.
+- Output is awaited through the shared Standard Schema validator after the handler returns. Failure throws `ValidationError`.
 - The `sandbox` exposed to the handler is the same `SandboxSession` the agent loop opened. Backend-internal policy (network deny lists, etc.) applies.
 - Per-call timeout: `defaults.toolTimeoutMs`. On timeout: `OperationTimeoutError`.
 - On `signal.abort`: `OperationCancelledError`.
@@ -235,7 +268,7 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 | `ValidationError`      | input or output schema mismatch                          | no        |
 | `PermissionDeniedError`| permission policy denied the call (per-call; recoverable)| no        |
 | `PolicyDeniedError`    | governance policy or approval denied the call (recoverable)| no      |
-| `PolicyEvaluationError`| governance adapter or predicate failed                   | no        |
+| `DecisionEvaluationError`| governance adapter or predicate failed                   | no        |
 | `ToolError`            | handler threw a non-harness error                        | as cause  |
 | `SandboxNoExecutorError`| `bash` invoked when sandbox executor is unavailable     | no        |
 | `McpProtocolError`     | MCP connection/list/call protocol failure                | yes       |
@@ -251,3 +284,7 @@ The agent context exposes `tools` typed by the agent's declared tool ids (only t
 - [09-agents](./09-agents.md) — agent context `tools`, default loop, permissions.
 - [15-error-catalog](./15-error-catalog.md).
 - [14-otel-conventions](./14-otel-conventions.md) — `execute_tool {tool.name}` span (GenAI conv).
+
+## Effective-input execution boundary
+
+The [prepared-tool contract](./37-decision-boundaries/03-contracts/decisions.md) supersedes lifecycle ordering here: preflight rails and schema before approval/effects; one deadline; transformed wire history; parsed authority/handler input; validated output then JSON presentation rails.

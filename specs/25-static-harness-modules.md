@@ -111,17 +111,16 @@ and reusable. A module has no access to a source-level direct-builder stage
 that is forbidden by the normal builder; its callbacks use the same runtime
 validation as direct contributions.
 
-The existing agent/workflow inline helper callbacks remain the required way to
-retain cross-key schema inference. A module that defines an agent SHOULD use
-`.agents(({ agent }) => ({ ... }))` when its definition depends on accumulated
-model/tool/skill keys.
+Modules use the same direct singular/plural model, tool, skill, agent, and
+workflow registration as the main builder. The module builder's accumulated
+state preserves registry, schema, and sandbox-capability constraints without
+identity or native-tool helper callbacks.
 
 ## Additive registration and deterministic resolution
 
-Module composition changes models, tools, skills, agents, and workflows from
-replacement behavior to additive registration. A direct builder method is still
-callable at most once by normal source-level staging; modules may invoke a
-family repeatedly. Every family is resolved by caller order and is append-only.
+Module composition keeps all five registry families additive. Every family is
+repeatable through singular or plural calls on both direct and module builders,
+resolved by caller order, and append-only.
 
 For each registration:
 
@@ -181,7 +180,7 @@ Modules SHALL NOT define close hooks or own resource cleanup. The harness owns
 the final resolved adapter graph. One shutdown operation is shared by concurrent
 callers. It closes sequentially in this order: MCP runner registry; opened
 session sandbox handles; unique model providers in reverse model-alias order;
-governance adapter (if closable); context checkpoints; workspace store; runtime;
+governance adapter (if closable); context checkpoints; workspace; runtime;
 memory; configured sandbox; state; logger. Every object is identity-deduplicated
 across this list and `close()` is attempted once only. It continues after every
 failure, normalizes failures to `HarnessError`, and aggregates them in the
@@ -195,15 +194,19 @@ no close method again.
 Every independently evolving optional capability SHALL have one documented
 family with these roles:
 
-1. **definition/port** — stable provider-neutral contract in core;
+1. **definition/port** — stable provider-neutral contract in core or an explicitly approved optional contract-owner addon;
 2. **provider adapter** — implementation and its official SDK dependency;
 3. **consumer integration** — model-facing tool or static harness module;
 4. **optional policy/diagnostic contributor** — only with a separate lifecycle
    and contract;
 5. **conformance suite** — core testing helper plus a consuming-package fixture.
 
-Provider/adapter packages continue to depend only on public core exports and
-their official SDK. They MUST NOT import core internals or another adapter.
+Provider/adapter packages continue to depend on public core exports and
+their official SDK. The only approved addon contract-owner edges are the three
+sensitive-data detectors to public `@purista/harness-guardrails` exports in
+[spec 31](./31-sensitive-data-guardrails.md), as enumerated by
+[the architecture boundary](./01-architecture.md#dependency-direction).
+They MUST NOT import core internals or another concrete adapter.
 Core MUST NOT gain an optional implementation SDK merely to support a module.
 The first extraction pilot SHALL be an existing optional integration with an
 independently useful release cadence; it must retain deprecated forwarding
@@ -214,9 +217,11 @@ exports for one minor release unless a documented major migration is approved.
 output. `scripts/verify-capability-catalog.mjs` regenerates in memory and fails
 on stale output, missing owner/port/provider/consumer/conformance fields, or a
 forbidden package edge read from workspace manifests. `npm run verify:architecture`
-runs it in CI. Provider/adapter packages may depend only on public
-`@purista/harness` plus their SDK; core may not depend on a provider/adapter;
-and provider/adapter packages may not depend on each other. The first pilot is
+runs it in CI. It checks runtime, peer, development, and optional dependencies.
+The three approved detector-to-contract-owner edges do not relax the general
+rule: core may not depend on an addon, and provider/adapter packages may not
+depend on each other. Sandbox adapters depend only on public `@purista/harness`
+ports. The first pilot is
 the existing `@purista/harness-openai` provider family, with a consumer fixture
 at `packages/harness-openai/test/static-module-consumer.test.ts`. The verifier
 is architecture-only: it does not load modules, execute application code, or

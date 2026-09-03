@@ -1,0 +1,168 @@
+contract_version: 1
+public_api_inventory:
+  - contract_id: CTR-MEM-IDENTITY
+    owner: harness_core
+    kind: type
+    name: HarnessIdentity
+    definition:
+      tenantId: optional non-empty string maximum 256 characters
+      principalId: optional non-empty string maximum 256 characters
+    execution_semantics: First session creation persists the exact optional dimensions; every reopen compares exact presence and value before runtime resource access.
+  - contract_id: CTR-MEM-MODEL-REF
+    owner: harness_core
+    kind: type
+    name: MemoryModelReference
+    definition:
+      alias: literal key from the model map
+      capabilities: literal capabilities from the alias
+      brand: module-private unique symbol
+    execution_semantics: The builder callback creates frozen symbolic references and core resolves the alias through the existing model registry during build.
+  - contract_id: CTR-MEM-CONFIG
+    owner: harness_core
+    kind: builder
+    name: HarnessBuilder.memory
+    definition:
+      direct: MemoryEngine
+      callback: function receiving model references and returning MemoryConfiguration
+      configuration_fields: engine, embedding, summary
+    execution_semantics: Direct engine composition enables engine-only features; callback composition validates model-reference and literal engine capabilities and creates one core MemoryAdapter. A statically KV-only engine rejects embedding configuration at typecheck; dynamically discovered database features are revalidated during build.
+  - contract_id: CTR-MEM-ENGINE
+    owner: harness_core
+    kind: interface
+    name: MemoryEngine<Capabilities>
+    definition:
+      metadata: info and a readonly literal capabilities tuple preserved by the generic
+      operations: get, put, delete, list, searchText, searchVector, searchHybrid, close
+      required_operations: get, put, delete, list
+      optional_operations: searchText, searchVector, searchHybrid, close
+      list_options: prefix, limit, opaque cursor
+    execution_semantics: Core passes validated canonical records and scopes; put atomically updates the value and every supplied index representation. Factory literal capabilities drive builder type safety while runtime validation remains mandatory for injected/custom engines and database feature probes.
+  - contract_id: CTR-MEM-RECORD
+    owner: harness_core
+    kind: data_shape
+    name: MemoryRecord
+    definition:
+      required: scopeKey, key, value, createdAt, updatedAt
+      optional: expiresAt, tags, metadata, indexText, vector, indexDescriptor
+    execution_semantics: Engines persist the canonical closed shape; expired records are invisible to reads, lists, and search.
+  - contract_id: CTR-MEM-SEARCH
+    owner: harness_core
+    kind: query
+    name: MemorySearchQuery
+    definition:
+      required: text
+      optional: mode, limit, cursor, tags, metadata, createdAfter, createdBefore, updatedAfter, updatedBefore
+      modes: text, semantic, hybrid
+    execution_semantics: Core chooses the effective mode, creates a query vector through the configured alias, invokes scoped engine queries, and normalizes one deduplicated ranking.
+  - contract_id: CTR-MEM-SUMMARY
+    owner: harness_core
+    kind: configuration
+    name: MemorySummaryConfiguration
+    definition:
+      shorthand: object-capable model reference
+      advanced: model, everyTurns, sourceTurns
+      defaults: everyTurns 20 and sourceTurns 50
+    execution_semantics: After a successful completed turn interval, core reads bounded history, invokes the object model with the core schema, and stores provenance-bearing summary memory without changing history.
+  - contract_id: CTR-MEM-SESSION
+    owner: harness_core
+    kind: api
+    name: Harness.getSession
+    definition:
+      id: non-empty session id following the existing session pattern
+      identity: optional HarnessIdentity
+    execution_semantics: The first call binds identity and returns a typed Session; an identity mismatch fails before sandbox, memory, model, or run work.
+  - contract_id: CTR-MEM-TELEMETRY
+    owner: harness_core
+    kind: telemetry
+    name: Memory telemetry protocol
+    definition:
+      operation_spans: harness.memory.get, harness.memory.set, harness.memory.delete, harness.memory.list, harness.memory.search, harness.memory.summary
+      model_spans: existing GenAI model spans
+      metrics: operation count, duration, result count, summary count, summary failure count
+    execution_semantics: Memory spans parent nested model spans; nested model spans exclusively own provider, model, input tokens, output tokens, cached tokens, reasoning tokens, and cost attributes.
+  - contract_id: CTR-MEM-SQLITE
+    owner: sqlite_engine
+    kind: factory
+    name: sqliteMemoryEngine
+    definition:
+      required_options: file
+      optional_options: vector
+      defaults: vector false
+      base_runtime: node:sqlite on Node.js and bun:sqlite on Bun
+      vector_runtime: sqlite-vec 0.1.9 optional peer
+    execution_semantics: The engine requires FTS5, opens one local connection, applies a versioned schema, and commits canonical record plus FTS5 and optional sqlite-vec representations in one transaction. vector true explicitly permits initialization-time native extension loading and fails build when the peer or platform support is absent.
+  - contract_id: CTR-MEM-NATS
+    owner: nats_engine
+    kind: factory
+    name: natsMemoryEngine
+    definition:
+      required_choice: exactly one of servers or connection
+      optional_options: bucket, createBucket, connectionOptions, maxEnumeratedKeys, replicas
+      defaults: bucket purista-harness-memory-v1, createBucket true, maxEnumeratedKeys 10000, replicas 1, file storage, history 1
+      connection_ownership: injected connection is caller-owned; created connection is engine-owned
+    execution_semantics: One canonical record is one JetStream KV value under a scope-prefixed key. Get/list hide expired records and lazily delete only with the observed revision, list applies the optional logical-key prefix, sorts matching keys, rejects namespaces exceeding maxEnumeratedKeys, and no search capability is advertised.
+  - contract_id: CTR-MEM-PURISTA
+    owner: purista_core
+    kind: runtime_binding
+    name: AgentRuntimeOptions.memory
+    definition:
+      memory: optional MemoryEngine or typed MemoryConfiguration factory compatible with the resolved model map
+      identity_source: EBMessage tenantId and principalId
+    execution_semantics: PURISTA composes the memory definition after models and calls Harness getSession with identity from the validated message envelope.
+engine_capabilities:
+  - memory.kv
+  - memory.list
+  - memory.delete
+  - memory.ttl
+  - memory.text_search
+  - memory.vector_search
+  - memory.hybrid_search
+  - memory.persistent
+  - memory.multi_instance
+scope_kinds:
+  - application
+  - tenant
+  - principal
+  - session
+  - run
+  - agent
+index_descriptor:
+  fields:
+    - alias
+    - providerId
+    - model
+    - dimensions
+    - distance
+    - extractorRevision
+  distance_default: cosine
+  extractor_revision_default: harness.string-or-explicit-text.v1
+  mismatch_result: HarnessConfigError with reason memory_index_reindex_required
+summary_record:
+  key: _harness/conversation-summary
+  schema:
+    summary: string
+    sourceMessageIds: string array
+    sourceDigest: sha256 string
+    generatedAt: ISO timestamp
+    modelAlias: string
+    providerId: string
+    model: string
+    revision: harness.conversation-summary.v1
+validation:
+  identifiers: non-empty after trim and maximum 256 characters
+  key: existing memory key pattern and maximum 256 characters
+  query_text: non-empty after trim and maximum 8000 characters
+  index_text: non-empty after trim and maximum 32000 characters
+  dimensions: positive integer maximum 65535
+  vectors: finite numbers with exact persisted dimensions
+  times: ISO timestamps with lower bound strictly before upper bound
+  pagination: limit defaults to 20 and maximum 100; cursor is opaque and engine-bound
+clean_break_removals:
+  - sandboxMemory
+  - MemoryScope user
+  - MemoryScope userId
+  - MemoryFacade user
+  - memory.search capability
+  - arbitrary external MemoryAdapter implementation as the database extension point
+  - string model aliases in memory configuration
+  - profile

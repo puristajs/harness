@@ -7,15 +7,22 @@ import { createLocalDurableHarness } from './index.js'
 describe('local durable example', () => {
   it('resumes from the first committed step after a rebuild', async () => {
     const root = await mkdtemp(join(tmpdir(), 'purista-local-durable-example-'))
-    const first = await createLocalDurableHarness(root)
+    const first = await createLocalDurableHarness(root, { crashAfterOutline: true })
     const firstSession = await first.harness.getSession('demo')
-    await expect(firstSession.workflows.plan.prompt({ topic: 'docs', failAfterFirstStep: true }, { durable: { runId: 'demo-run' } })).rejects.toThrow('simulated crash')
+    await expect(
+      firstSession.workflows.plan.run({ topic: 'docs' }, { durable: { runId: 'demo-run' } }),
+    ).rejects.toThrow('simulated crash')
     await first.harness.shutdown()
 
     const second = await createLocalDurableHarness(root)
     const secondSession = await second.harness.getSession('demo')
-    await expect(secondSession.workflows.plan.prompt({ topic: 'docs', failAfterFirstStep: false }, { durable: { runId: 'demo-run' } })).resolves.toEqual({ done: true, topic: 'docs' })
-    await expect(second.local.checkpoints.list({ runId: 'demo-run', sessionId: 'demo' })).resolves.toHaveLength(1)
+    await expect(
+      secondSession.workflows.plan.run({ topic: 'docs' }, { durable: { runId: 'demo-run' } }),
+    ).resolves.toMatchObject({ status: 'completed', output: { done: true, topic: 'docs' } })
+    await expect(second.local.storage.loadCheckpoint('demo-run')).resolves.toMatchObject({
+      stepId: 'draft',
+      sequence: 2,
+    })
     await second.harness.shutdown()
   })
 })

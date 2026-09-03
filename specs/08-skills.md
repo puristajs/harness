@@ -52,7 +52,8 @@ Locked validation:
 - `compatibility`: 1-500 chars when present.
 - `metadata`: string keys and string values only.
 - `allowed-tools`: parsed and preserved as a string. Enforcement is not part of
-  v1; permission systems may consume it later.
+  v3; it neither grants nor restricts Harness tools. The application-owned
+  agent definition remains authoritative.
 - Parent directory name should match `name`. Strict mode treats mismatch as an
   error. Lenient mode records a diagnostic and loads the skill under the
   frontmatter name unless that name collides.
@@ -140,8 +141,8 @@ for developer clarity. `mountPath` is always `/skills/<name>`.
 
 ## 5. Discovery
 
-Direct users may pass explicit `.skills({...})` bindings or use discovery
-helpers before calling `.skills(...)`.
+Direct users may pass explicit `.skill(id, definition)` or `.skills({...})`
+bindings, or use discovery helpers before plural registration.
 
 `@purista/harness-agent-plugins` may construct explicit bindings from approved
 portable Agent Plugins. It reuses this loader and mount path after performing
@@ -203,12 +204,12 @@ Trust:
 
 ## 6. Builder Integration
 
-`.skills(skills)` resolves explicit definitions synchronously when all
+`.skill(id, definition)` and `.skills(skills)` resolve explicit definitions synchronously when all
 directories are local and readable. If implementations need async discovery,
 they call `discoverSkills(...)` before `defineHarness().skills(...)`.
 
 Every `agent.skills[]` entry must match a resolved `.skills(...)` key. This is
-checked in `.agents(...)` and fails before `.build()`.
+checked during agent registration and fails before `.build()`.
 
 Tool ids and skill ids share a namespace for model exposure. A custom tool id
 must not collide with a skill id or a built-in tool name.
@@ -278,16 +279,40 @@ run agents with declared skills.
 
 For default-loop agents with declared skills:
 
-- `read` must be enabled, otherwise `.agents(...)` or `.build()` fails with a
-  skill/tool configuration error.
+- `read` must be explicitly enabled, otherwise `.agents(...)` fails with
+  `SkillManifestError{reason:'skill_read_tool_missing'}` before model or sandbox
+  I/O.
 - `list` and `grep` are recommended but not required.
 - `bash`, `write`, and `edit` are never required by the skill system itself.
+
+Omitting `builtinTools` enables no built-ins. Declaring `skills` never expands
+that tool set, and `allowed-tools` frontmatter is metadata only.
 
 For handler-based agents, the harness mounts declared skills and exposes the
 catalog to handler context, but handlers decide whether to call models or file
 tools.
 
-## 11. Logging, Telemetry, Privacy
+## 11. Trust And Executable Content
+
+A skill is trusted instruction and resource content, not a security boundary.
+`SKILL.md` and referenced files can contain misleading or harmful instructions,
+and the mounted directory may contain scripts or binaries. Registration and
+mounting never execute those files automatically. Execution becomes possible
+only through an explicitly exposed execution-capable built-in, TypeScript tool,
+MCP server, or custom handler, subject to its sandbox and governance policy.
+
+Applications must:
+
+- review the exact skill source and version or digest before binding it;
+- keep project discovery behind `trustedProjectRoots` and inspect discovery
+  diagnostics;
+- grant the smallest built-in/custom tool set independently of skill metadata;
+- treat `allowed-tools` as an author hint, not an enforced permission;
+- use an isolating sandbox with default-deny egress and scoped credentials when
+  model-directed execution is allowed; and
+- re-review and re-test a skill when its files or dependencies change.
+
+## 12. Logging, Telemetry, Privacy
 
 The harness logs diagnostics without skill bodies or supporting file contents.
 
@@ -312,7 +337,7 @@ Forbidden fields in logs, metrics, spans, persisted events, and errors:
 Harness GenAI/model/tool metrics remain under the telemetry conventions in
 `14-otel-conventions.md`.
 
-## 12. Errors
+## 13. Errors
 
 See `15-error-catalog.md`.
 
@@ -333,7 +358,7 @@ Locked skill error reasons:
 Lenient diagnostics do not throw unless all candidate skills required by a
 declared agent were skipped.
 
-## 13. Tests
+## 14. Tests
 
 The test catalog in `16-testing.md` must cover:
 
@@ -346,10 +371,15 @@ The test catalog in `16-testing.md` must cover:
 - resource files mounted under `/skills/<name>/`;
 - once-per-session mounting;
 - failure when `read` is disabled for a default-loop skill agent;
+- failure occurs during agent registration, before model or sandbox I/O;
+- omitting `builtinTools` exposes no built-ins and skill registration does not
+  widen the set;
+- skill scripts are mounted as inert files and are not executed by registration
+  or mounting;
 - no sensitive skill content in logs, spans, metrics, persisted events, or
   sanitized errors.
 
-## 14. Cross-References
+## 15. Cross-References
 
 - `02-harness-config.md` for builder shape.
 - `05-sandbox.md` for mount semantics.

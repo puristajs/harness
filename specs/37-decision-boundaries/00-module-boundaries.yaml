@@ -1,0 +1,99 @@
+module_boundary_version: 1
+modules:
+  - module_id: "decisions"
+    owner: "decisions"
+    public_entrypoint: "packages/harness/src/decisions/index.ts"
+    owned_concepts:
+      - "safe_evidence"
+      - "callback_lifecycle"
+      - "occurrence_identity"
+    allowed_dependencies:
+      - "zod"
+      - "core_json"
+      - "core_errors"
+      - "core_abort"
+      - "core_ulid"
+    forbidden_dependencies:
+      - "purista_core"
+      - "provider_sdk"
+      - "guardrails_addon"
+      - "review_store"
+  - module_id: "governance"
+    owner: "governance"
+    public_entrypoint: "packages/harness/src/governance/index.ts"
+    owned_concepts:
+      - "policy_reduction"
+      - "approval"
+      - "exposure"
+      - "permission_patterns"
+    allowed_dependencies:
+      - "decisions"
+      - "core_tools"
+    forbidden_dependencies:
+      - "provider_sdk"
+      - "guardrails_addon"
+      - "review_store"
+  - module_id: "tool_execution"
+    owner: "tool_execution"
+    public_entrypoint: "packages/harness/src/agents/tool-execution.ts"
+    owned_concepts:
+      - "prepared_invocation"
+      - "batch_lifecycle"
+    allowed_dependencies:
+      - "governance"
+      - "decisions"
+      - "core_tools"
+      - "core_models"
+    forbidden_dependencies:
+      - "provider_sdk"
+      - "review_store"
+  - module_id: "guardrails"
+    owner: "guardrails"
+    public_entrypoint: "packages/harness-guardrails/src/index.ts"
+    owned_concepts:
+      - "rail_compilation"
+      - "phase_binding"
+      - "sensitive_data_actions"
+    allowed_dependencies:
+      - "harness_public"
+      - "yaml"
+      - "zod"
+    forbidden_dependencies:
+      - "core_internals"
+      - "provider_sdk"
+      - "purista_core"
+  - module_id: "external_wait"
+    owner: "external_wait"
+    public_entrypoint: "packages/harness/src/storage/external-wait.ts"
+    owned_concepts:
+      - "strict_wait_shape"
+      - "terminal_state"
+    allowed_dependencies:
+      - "zod"
+      - "core_errors"
+    forbidden_dependencies:
+      - "review_store"
+      - "provider_sdk"
+  - module_id: "review_example"
+    owner: "review_example"
+    public_entrypoint: "examples/durable-human-review/src/payment-review.ts"
+    owned_concepts:
+      - "application_claim"
+      - "application_receipt"
+    allowed_dependencies:
+      - "harness_public"
+      - "zod"
+    forbidden_dependencies:
+      - "core_internals"
+  - module_id: "provider_adapters"
+    owner: "provider_adapters"
+    public_entrypoint: "packages/harness-openai/src/index.ts"
+    owned_concepts:
+      - "provider_continuation_mapping"
+    allowed_dependencies:
+      - "harness_public"
+      - "existing_sdk"
+    forbidden_dependencies:
+      - "guardrails_addon"
+      - "purista_core"
+architecture_check: "Extend existing scripts/package-boundaries.mjs and add scripts/check-decision-boundaries.mjs for exact removed-symbol and private-import checks."

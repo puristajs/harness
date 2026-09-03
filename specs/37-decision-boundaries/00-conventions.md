@@ -1,0 +1,11 @@
+# CONV-DB-STYLE — PURISTA conventions
+
+Follow composition, explicit builder wiring, small modules by responsibility, schema-first validation and inference. Harness remains provider-neutral and independent of @purista/core. Core consumes Harness public APIs; addons import only supported package exports. Preserve existing builder generic inference and configuration chaining. Do not build a policy framework, generic registry, global service, alternate tool envelope or application approval engine.
+
+Non-generic closed types derive from strict Zod schemas; generic correlated contexts use discriminated unions. Unknown is allowed only at untrusted parse ingress; no exported any, unchecked shape assertions, index signatures or duplicate interface/schema declarations. Reuse JsonValue as the explicitly open JSON leaf. Keep exact undefined abstention distinct from malformed output. One schema/result projection and one bounded decision executor serve both core and addons. Existing runtime error inheritance is retained only for canonical error integration; prefer functions/composition for behavior.
+
+Use each repository formatter, tabs/single quotes in PURISTA, existing Harness conventions in Harness, kebab-case modules and *.test.ts. Do not reformat unrelated code. Every new public export/config field has IDE-friendly TSDoc, ownership, failure behavior and a short usage example for non-obvious APIs. No console logging of inspected values. Preserve RFC 9457 boundary projection and existing structured trace correlation.
+
+D0 permits deterministic source-derived implementation and generated declarations. D1 permits private naming, splitting cohesive helpers within declared directories, and test arrangement using existing fixtures. D2 public/behavior/security/data choices are already fixed in this spec; agents cannot alter them. D3 business/external/irreversible work is excluded. A missing contract, dependency or out-of-scope file requires a blocker report and reviewed spec/plan update; agents do not guess.
+
+No numerical coverage threshold is introduced. Existing repository policies remain; add behavioral coverage for changed success, failure, cancellation, privacy and replay paths. Extend existing tests except the new decisions module and focused static/integration checker tests, which have no existing natural owner.

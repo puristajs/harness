@@ -1,11 +1,9 @@
 import { resolve } from 'node:path'
-import type { StateStore } from '../ports/state.js'
-import type { DurableRuntime } from '../runtime/durable.js'
-import type { DurableWorkspacePolicy, DurableWorkspaceStore } from '../ports/workspace.js'
-import type { ContextCheckpointStore } from '../ports/context-checkpoints.js'
-import { createLocalWorkspaceCoordinator, localDirectoryWorkspaceStore } from './local-workspace.js'
+import type { DurableWorkspacePolicy, DurableWorkspace } from '../ports/workspace.js'
+import type { HarnessStorage } from '../storage/types.js'
+import { createLocalWorkspaceCoordinator, localDirectoryWorkspace } from './local-workspace.js'
 import { localDirectorySandbox, type LocalDurableSandbox, type LocalHostExecPolicy } from './local-sandbox.js'
-import { SqliteHarnessStorage, type SqliteDurableRuntimeOptions, type SqliteContextCheckpointStoreOptions, type SqliteStateStoreOptions, sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore } from './sqlite-storage.js'
+import { SqliteHarnessStorage, type SqliteHarnessStorageOptions, sqliteHarnessStorage } from '../storage/sqlite.js'
 
 export type {
   LocalHostExecPolicy,
@@ -14,11 +12,11 @@ export type {
   LocalFilesOnlySandboxCapabilities,
   LocalExecSandboxCapabilities
 } from './local-sandbox.js'
-export type { LocalDirectoryWorkspaceStoreOptions } from './local-workspace.js'
-export type { SqliteDurableRuntimeOptions, SqliteContextCheckpointStoreOptions, SqliteStateStoreOptions } from './sqlite-storage.js'
+export type { LocalDirectoryWorkspaceOptions } from './local-workspace.js'
+export type { SqliteHarnessStorageOptions } from '../storage/sqlite.js'
 export { localDirectorySandbox } from './local-sandbox.js'
-export { localDirectoryWorkspaceStore } from './local-workspace.js'
-export { sqliteContextCheckpointStore, sqliteDurableRuntime, sqliteStateStore, SqliteHarnessStorage } from './sqlite-storage.js'
+export { LocalDirectoryWorkspace, localDirectoryWorkspace } from './local-workspace.js'
+export { sqliteHarnessStorage, SqliteHarnessStorage } from '../storage/sqlite.js'
 
 export interface LocalDurableExecutionOptions {
   /** Host directory used for SQLite files, active workspaces, and snapshots. */
@@ -36,12 +34,10 @@ export interface LocalDurableExecutionOptions {
 }
 
 export interface LocalDurableExecution {
-  state: StateStore
-  runtime: DurableRuntime
+  storage: HarnessStorage
   /** Files-only by default; advertises `sandbox.exec` only when `exec` is configured (spec 22 §2). */
   sandbox: LocalDurableSandbox
-  workspaceStore: DurableWorkspaceStore
-  checkpoints: ContextCheckpointStore
+  workspace: DurableWorkspace
   close(): Promise<void>
 }
 
@@ -54,11 +50,9 @@ export function localDurableExecution(options: LocalDurableExecutionOptions): Lo
     ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {})
   })
   return {
-    state: storage,
-    runtime: storage,
-    checkpoints: storage,
+    storage,
     sandbox: localDirectorySandbox({ root, exec: options.exec ?? false, coordinator }),
-    workspaceStore: localDirectoryWorkspaceStore({ root, ...(options.policy ? { policy: options.policy } : {}), coordinator }),
+    workspace: localDirectoryWorkspace({ root, ...(options.policy ? { policy: options.policy } : {}), coordinator }),
     close: () => storage.close()
   }
 }

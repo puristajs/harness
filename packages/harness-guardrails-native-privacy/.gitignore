@@ -1,0 +1,6 @@
+dist/
+index.js
+index.d.ts
+harness_guardrails_native_privacy.*.node
+native/target/
+npm/*/*.node

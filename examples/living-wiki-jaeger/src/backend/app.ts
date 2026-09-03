@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { JsonLogger, serializeError, type RunEvent } from '../../../../packages/harness/src/index.js'
+import { JsonLogger, serializeError, type ExecutionEvent } from '@purista/harness'
 import { agentIds, createLivingWikiHarness, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
 import { slugSchema } from './data.js'
 import {
@@ -14,8 +14,13 @@ import {
   type ReviewRequest
 } from './schemas.js'
 
-type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
-type LivingWikiRunEvent = RunEvent | { type: 'answer.delta'; runId: string; at: string; delta: string }
+type RunStatus = 'running' | 'succeeded' | 'interrupted' | 'failed' | 'cancelled'
+type LivingWikiRunEvent = ExecutionEvent | {
+  type: 'run.failed'
+  runId: string
+  at: string
+  error: ReturnType<typeof serializeError>
+}
 
 interface ApiRun {
   runId: string
@@ -448,34 +453,27 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
             runs.set(run.runId, run)
             firstRun(run)
           }
-          if (event.type === 'run.finished' && event.output && !event.error) {
-            for (const delta of answerDeltas(event.runId, answerFromResult(event.output))) {
-              pending.events.push(delta)
-              for (const subscriber of pending.subscribers) subscriber(delta)
-              await new Promise((resolve) => setTimeout(resolve, 12))
-            }
-          }
           pending.events.push(event)
           for (const subscriber of pending.subscribers) subscriber(event)
           if (event.type === 'run.finished') {
-            pending.status = event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : event.error ? 'failed' : 'succeeded'
-            pending.result = event.output
-            pending.error = event.error
-            if (event.error) {
-              const log = pending.status === 'cancelled' ? logger.warn.bind(logger) : logger.error.bind(logger)
-              log('Living wiki run finished with error.', {
-                run_id: event.runId,
-                kind: args.kind,
-                target_id: args.targetId,
-                status: pending.status,
-                error: event.error
-              })
-            } else {
+            if (event.outcome.status === 'completed') {
+              pending.status = 'succeeded'
+              pending.result = event.outcome.output
               logger.info('Living wiki run finished.', {
                 run_id: event.runId,
                 kind: args.kind,
                 target_id: args.targetId,
                 status: pending.status
+              })
+            } else {
+              pending.status = 'interrupted'
+              pending.result = event.outcome.interrupt
+              logger.info('Living wiki run interrupted.', {
+                run_id: event.runId,
+                kind: args.kind,
+                target_id: args.targetId,
+                status: pending.status,
+                interrupt_type: event.outcome.interrupt.type
               })
             }
           }
@@ -483,6 +481,16 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
       } catch (error) {
         pending.status = controller.signal.aborted ? 'cancelled' : 'failed'
         pending.error = error instanceof Error ? { message: error.message } : { message: 'Run failed.' }
+        if (pending.runId) {
+          const failedEvent: LivingWikiRunEvent = {
+            type: 'run.failed',
+            runId: pending.runId,
+            at: new Date().toISOString(),
+            error: serializeError(error)
+          }
+          pending.events.push(failedEvent)
+          for (const subscriber of pending.subscribers) subscriber(failedEvent)
+        }
         if (!pending.runId || pending.events.every((event) => event.type !== 'run.finished')) {
           const log = pending.status === 'cancelled' ? logger.warn.bind(logger) : logger.error.bind(logger)
           log('Living wiki run failed before completion.', {
@@ -496,7 +504,7 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
         if (!pending.runId) failFirst(error)
       } finally {
         pending.resolveDone()
-        await session.close().catch(() => undefined)
+        await session.destroy().catch(() => undefined)
       }
     })()
 
@@ -550,24 +558,6 @@ function extractReviewRequest(result: unknown): ReviewRequest | undefined {
   if (!isRecord(reviewRequest)) return undefined
   if (typeof reviewRequest['id'] !== 'string' || typeof reviewRequest['runId'] !== 'string') return undefined
   return reviewRequest as ReviewRequest
-}
-
-function answerFromResult(result: unknown): string | undefined {
-  if (!isRecord(result)) return undefined
-  return typeof result['answer'] === 'string'
-    ? result['answer']
-    : typeof result['markdown'] === 'string'
-      ? result['markdown']
-      : undefined
-}
-
-function answerDeltas(runId: string, content: string | undefined): LivingWikiRunEvent[] {
-  if (!content) return []
-  const chunks: LivingWikiRunEvent[] = []
-  for (let index = 0; index < content.length; index += 24) {
-    chunks.push({ type: 'answer.delta', runId, at: new Date().toISOString(), delta: content.slice(index, index + 24) })
-  }
-  return chunks
 }
 
 function extractProposedChanges(result: unknown): ProposedPageChange[] {

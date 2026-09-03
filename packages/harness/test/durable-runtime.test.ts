@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest'
 import {
   DurableRunLeaseError,
   DurableTerminalRunError,
-  inMemoryDurableRuntime,
+  inMemoryHarnessStorage,
   isTerminalRunStatus
 } from '../src/index.js'
-import type { DurableRuntime, RunCheckpoint } from '../src/index.js'
+import type { HarnessStorage, RunCheckpoint } from '../src/index.js'
 
 async function commitStep(
-  runtime: DurableRuntime,
+  runtime: HarnessStorage,
   lease: { runId: string; sessionId: string; leaseId: string; workerId: string; attempt: number },
   sequence: number,
   stepId: string,
@@ -28,11 +28,22 @@ async function commitStep(
   })
 }
 
-describe('inMemoryDurableRuntime', () => {
+async function acquire(storage: HarnessStorage, record: { runId: string; sessionId: string; workerId: string; stepId: string; input: RunCheckpoint['input']; attempt?: number; metadata?: Record<string, RunCheckpoint['input']> }) {
+  if (!await storage.getRun(record.runId)) {
+    await storage.createRun({
+      id: record.runId, sessionId: record.sessionId, kind: 'workflow', target: record.stepId,
+      startedAt: new Date().toISOString(), status: 'running', input: record.input,
+      ...(record.metadata ? { metadata: record.metadata } : {})
+    })
+  }
+  return storage.acquireRun(record)
+}
+
+describe('InMemoryHarnessStorage durability', () => {
   it('fails after checkpoint N and resumes from checkpoint N', async () => {
-    const runtime = inMemoryDurableRuntime({ failAfterCheckpoint: 2 })
+    const runtime = inMemoryHarnessStorage({ failAfterCheckpoint: 2 })
     const input = { prompt: 'draft' }
-    const firstLease = await runtime.startRun({
+    const firstLease = await acquire(runtime, {
       runId: 'run-1',
       sessionId: 'session-1',
       workerId: 'worker-1',
@@ -42,7 +53,7 @@ describe('inMemoryDurableRuntime', () => {
 
     await commitStep(runtime, firstLease, 1, 'step-1', input)
     await expect(commitStep(runtime, firstLease, 2, 'step-2', input))
-      .rejects.toThrow('Injected durable runtime failure after checkpoint 2.')
+      .rejects.toThrow('Injected Harness storage failure after checkpoint 2.')
 
     await expect(runtime.loadCheckpoint('run-1')).resolves.toEqual(expect.objectContaining({
       runId: 'run-1',
@@ -53,7 +64,7 @@ describe('inMemoryDurableRuntime', () => {
       output: { sequence: 2 }
     }))
 
-    const retryLease = await runtime.startRun({
+    const retryLease = await acquire(runtime, {
       runId: 'run-1',
       sessionId: 'session-1',
       workerId: 'worker-2',
@@ -70,8 +81,8 @@ describe('inMemoryDurableRuntime', () => {
   })
 
   it('never resumes terminal runs', async () => {
-    const runtime = inMemoryDurableRuntime()
-    const lease = await runtime.startRun({
+    const runtime = inMemoryHarnessStorage()
+    const lease = await acquire(runtime, {
       runId: 'run-terminal',
       sessionId: 'session-terminal',
       workerId: 'worker-1',
@@ -82,7 +93,7 @@ describe('inMemoryDurableRuntime', () => {
     await runtime.finishRun(lease.runId, { status: 'succeeded', output: 'done' })
 
     expect(isTerminalRunStatus('succeeded')).toBe(true)
-    await expect(runtime.startRun({
+    await expect(acquire(runtime, {
       runId: 'run-terminal',
       sessionId: 'session-terminal',
       workerId: 'worker-2',
@@ -91,23 +102,23 @@ describe('inMemoryDurableRuntime', () => {
     })).rejects.toBeInstanceOf(DurableTerminalRunError)
   })
 
-  it('records failed runs as terminal but keeps them resumable', async () => {
-    const runtime = inMemoryDurableRuntime()
-    const lease = await runtime.startRun({
-      runId: 'run-failed',
-      sessionId: 'session-failed',
+  it('resumes interrupted runs but rejects failed runs', async () => {
+    const runtime = inMemoryHarnessStorage()
+    const lease = await acquire(runtime, {
+      runId: 'run-interrupted',
+      sessionId: 'session-interrupted',
       workerId: 'worker-1',
       stepId: 'step-0',
       input: 'payload'
     })
     await commitStep(runtime, lease, 1, 'step-1', 'payload')
-    await runtime.finishRun(lease.runId, { status: 'failed', error: { name: 'Error', message: 'boom' } })
+    await lease.release()
 
     // Only succeeded/cancelled block resume (spec 22 §3): a retry with the same
     // run id re-acquires the lease and replays the committed checkpoint.
-    const retry = await runtime.startRun({
-      runId: 'run-failed',
-      sessionId: 'session-failed',
+    const retry = await acquire(runtime, {
+      runId: 'run-interrupted',
+      sessionId: 'session-interrupted',
       workerId: 'worker-2',
       stepId: 'step-0',
       input: 'payload'
@@ -115,11 +126,14 @@ describe('inMemoryDurableRuntime', () => {
     expect(retry.resumed).toBe(true)
     expect(retry.attempt).toBe(lease.attempt + 1)
     expect(retry.checkpoint).toEqual(expect.objectContaining({ stepId: 'step-1' }))
+    await runtime.finishRun(retry.runId, { status: 'failed', error: { code: 'INTERNAL_ERROR', message: 'boom' } })
+    await expect(acquire(runtime, { runId: retry.runId, sessionId: retry.sessionId, workerId: 'worker-3', stepId: 'step-0', input: 'payload' }))
+      .rejects.toBeInstanceOf(DurableTerminalRunError)
   })
 
   it('prevents duplicate workers from owning the same session or run', async () => {
-    const runtime = inMemoryDurableRuntime()
-    await runtime.startRun({
+    const runtime = inMemoryHarnessStorage()
+    await acquire(runtime, {
       runId: 'run-owned',
       sessionId: 'session-owned',
       workerId: 'worker-1',
@@ -127,7 +141,7 @@ describe('inMemoryDurableRuntime', () => {
       input: null
     })
 
-    await expect(runtime.startRun({
+    await expect(acquire(runtime, {
       runId: 'run-owned',
       sessionId: 'session-owned',
       workerId: 'worker-2',
@@ -135,7 +149,7 @@ describe('inMemoryDurableRuntime', () => {
       input: null
     })).rejects.toBeInstanceOf(DurableRunLeaseError)
 
-    await expect(runtime.startRun({
+    await expect(acquire(runtime, {
       runId: 'run-other',
       sessionId: 'session-owned',
       workerId: 'worker-2',
@@ -145,9 +159,9 @@ describe('inMemoryDurableRuntime', () => {
   })
 
   it('preserves retried run metadata across attempts', async () => {
-    const runtime = inMemoryDurableRuntime()
+    const runtime = inMemoryHarnessStorage()
     const input = { message: 'same input' }
-    const firstLease = await runtime.startRun({
+    const firstLease = await acquire(runtime, {
       runId: 'run-retry',
       sessionId: 'session-retry',
       workerId: 'worker-1',
@@ -160,7 +174,7 @@ describe('inMemoryDurableRuntime', () => {
     await commitStep(runtime, firstLease, 1, 'initial-step', input)
     await firstLease.release()
 
-    const retryLease = await runtime.startRun({
+    const retryLease = await acquire(runtime, {
       runId: 'run-retry',
       sessionId: 'session-retry',
       workerId: 'worker-2',
@@ -186,10 +200,10 @@ describe('inMemoryDurableRuntime', () => {
   })
 
   it('persists workspace replay checkpoint metadata', async () => {
-    const runtime = inMemoryDurableRuntime()
-    expect(runtime.capabilities).toContain('runtime.workspace_checkpoint')
+    const runtime = inMemoryHarnessStorage()
+    expect(runtime.capabilities).toContain('storage.workspace_checkpoint')
 
-    const lease = await runtime.startRun({
+    const lease = await acquire(runtime, {
       runId: 'run-workspace',
       sessionId: 'session-workspace',
       workerId: 'worker-1',

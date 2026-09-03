@@ -1,0 +1,73 @@
+{
+  "name": "@purista/harness-guardrails-native-privacy",
+  "version": "3.0.0",
+  "description": "Local Rust Node-API sensitive-data recognizers for @purista/harness-guardrails.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "npm/*/*.node",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-guardrails-native-privacy"
+  },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist harness_guardrails_native_privacy.*.node",
+    "build": "npm run build:ts && npm run build:native",
+    "build:ts": "npm run clean && tsc -p tsconfig.json",
+    "build:native": "napi build --manifest-path native/Cargo.toml --platform --release --output-dir .",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:node": "node test/runtime-smoke.mjs",
+    "test:bun": "bun test/runtime-smoke.mjs",
+    "artifacts": "napi pre-publish --tag-style npm --npm-dir npm"
+  },
+  "peerDependencies": {
+    "@purista/harness-guardrails": "^3.0.0"
+  },
+  "devDependencies": {
+    "@purista/harness-guardrails": "^3.0.0",
+    "@types/node": "^26.2.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "napi": {
+    "binaryName": "harness_guardrails_native_privacy",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

@@ -1,15 +1,23 @@
 # Public API
 
-**Purpose.** Single source of truth for every symbol exported from the v1 package set. The published package set includes the core package plus independent provider addons:
+> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other authoring exports.
+
+**Purpose.** Single source of truth for every symbol exported from the v3 package set. The published package set includes the core package plus independent provider addons:
 
 - `@purista/harness` — harness, types, errors, in-memory adapters, local durable adapters, TS+MCP tools, built-in JSON logger, telemetry. Testing helpers ship under the subpath export `@purista/harness/testing`.
 - `@purista/harness-openai` — OpenAI provider.
+- `@purista/harness-google` — Google Gemini API provider.
 - `@purista/harness-anthropic` — Anthropic provider.
 - `@purista/harness-bedrock` — Amazon Bedrock provider.
+- `@purista/harness-guardrails` — optional NeMo-shaped typed input/output/tool/retrieval rails and provider-neutral sensitive-data detector port.
+- `@purista/harness-guardrails-presidio` — optional original Presidio Analyzer REST adapter.
+- `@purista/harness-guardrails-native-privacy` — optional Rust/Node-API local recognizer subset for Node.js and Bun.
 - `@purista/harness-azure-foundry` — Azure AI Foundry provider.
 - `@purista/harness-memory-*` — optional external memory adapters. Core ships only `sandboxMemory()`.
-- `@purista/harness-workspace-*` — optional external durable workspace stores. Core ships local durable adapters and test helpers.
-- `@purista/harness-policy-*` — optional governance policy adapters. Core exports the policy port and native policy types, but OPA/AGT/Eve/Cedar engines live outside core.
+- `@purista/harness-workspace-*` — optional external durable workspaces. Core ships local durable adapters and test helpers.
+- `@purista/harness-policy-opa` — optional typed Open Policy Agent Data API governance adapter and `./testing` fake. Core exports the provider-neutral policy port; Cedar, AGT/Eve, and other engines remain application-owned.
+- `@purista/harness-storage-postgres` — distributed PostgreSQL implementation of the complete HarnessStorage port.
+- `@purista/harness-sandbox-kubernetes` — self-hosted Kubernetes Sandbox and optional PVC/VolumeSnapshot DurableWorkspace runtime.
 - `@purista/harness-agent-plugins` — opt-in local Agent Plugins 1.0.0 client;
   it inspects reviewed portable packages and returns ordinary skill/tool
   bindings without evaluating plugin code.
@@ -47,6 +55,8 @@ export function defineHarnessModule<Required extends BuilderState = {}>(): <cons
   id: Id,
   definition: Omit<HarnessModule<Required, Result, Id>, 'id'>
 ) => HarnessModule<Required, Result, Id>
+// Opaque direct-binding key implemented by optional Guardrails packages
+export const agentGuardrailsBinding: unique symbol
 
 // Default adapters (in-memory)
 export class JsonLogger implements Logger {
@@ -56,40 +66,51 @@ export class JsonLogger implements Logger {
     bindings?: Record<string, unknown>
   })
 }
-export class InMemoryStateStore implements StateStore { constructor() }
+export class InMemoryHarnessStorage implements HarnessStorage { constructor() }
+export function inMemoryHarnessStorage(): InMemoryHarnessStorage
 
 // Sandbox factories (default adapters)
-export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs']>
-export function bashSandbox(opts?: {
-  network?: { allow?: string[]; deny?: string[] }
-  executionLimits?: { wallClockMs?: number; memoryMb?: number }
-  python?: boolean
-}): Sandbox<readonly ['sandbox.fs', 'sandbox.exec']>
+export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search']>
+export interface BashSandboxOptions {
+  readonly network?: { readonly allow?: readonly string[] }
+  readonly executionLimits?: { readonly wallClockMs?: number; readonly maxFileSystemBytes?: number }
+  readonly python?: boolean
+}
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']>
+export type SandboxTelemetryOperation = 'register_owner' | 'open' | 'detach' | 'terminate' | 'list' | 'purge' | 'sweep' | 'delete_snapshot'
+export function withSandboxTelemetry<T>(
+  telemetry: TelemetryShim | undefined,
+  adapterId: string,
+  operation: SandboxTelemetryOperation,
+  action: () => Promise<T>,
+  successAttributes?: (result: T) => SpanAttrs
+): Promise<T>
 
 // Memory factory (default reference adapter)
 export function sandboxMemory(): MemoryAdapter
 
 // Local durable execution factories
 export function localDurableExecution(options: LocalDurableExecutionOptions): LocalDurableExecution
-export function sqliteStateStore(options: SqliteStateStoreOptions): StateStore & { close(): Promise<void> }
-export function sqliteDurableRuntime(options: SqliteDurableRuntimeOptions): DurableRuntime & { close(): Promise<void> }
-export function localDirectoryWorkspaceStore(options: LocalDirectoryWorkspaceStoreOptions): DurableWorkspaceStore
+export function sqliteHarnessStorage(options: SqliteHarnessStorageOptions): HarnessStorage & { close(): Promise<void> }
+export class LocalDirectoryWorkspace implements DurableWorkspace
+export function localDirectoryWorkspace(options: LocalDirectoryWorkspaceOptions): DurableWorkspace
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): Sandbox
-export function sqliteContextCheckpointStore(options: SqliteContextCheckpointStoreOptions): ContextCheckpointStore & { close(): Promise<void> }
-export class SqliteHarnessStorage    // shared SQLite backend behind the sqlite* factories
+export class SqliteHarnessStorage implements HarnessStorage
 
-// Durable runtime (in-memory reference + durable workflow context)
-export function inMemoryDurableRuntime(options?: InMemoryDurableRuntimeOptions): DurableRuntime
-export function createDurableWorkflowContext(options: DurableWorkflowContextOptions): DurableWorkflowContext
+// Durable external wait errors; persistence is part of HarnessStorage
+export class ExternalWaitPendingError extends HarnessError {}
+export class ExternalWaitError extends HarnessError {}
+
+// Storage-owned recoverable execution primitives
 export function isTerminalRunStatus(status: DurableRunStatus): boolean
 export function isResumeBlockingRunStatus(status: DurableRunStatus): boolean
 export class DurableStepError extends Error {}
 export class DurableRunLeaseError extends Error {}
 export class DurableTerminalRunError extends Error {}
 
-// Durable workspace in-memory reference store (also re-exported from /testing)
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore
+// Durable workspace in-memory reference (also re-exported from /testing)
+export class InMemoryDurableWorkspace implements DurableWorkspace
+export function inMemoryDurableWorkspace(): DurableWorkspace
 
 // Shared model-adapter helpers (consumed by first-party provider packages)
 export function toTokenUsage(inputTokens?: number, outputTokens?: number, totalTokens?: number, details?: TokenUsageDetails): TokenUsage
@@ -103,15 +124,22 @@ export function accumulateStreamToolCallDeltas(state: StreamToolCallState, delta
 export function finalizeStreamToolCalls(state: StreamToolCallState, ctx: AdapterCallContext, malformedMessage: string): ToolCallSpec[]
 export function sanitizeProviderMessage(message: string): string
 
+// Provider concurrency and rate admission
+export function modelAdmissionKey(provider: Pick<ModelProvider, 'id' | 'genAiSystem'>, model: string, credentialScope?: string): ModelAdmissionKey
+export interface ModelAdmission { acquire(request: ModelAdmissionRequest): Promise<ModelAdmissionLease> }
+
 // Errors (every class from 15-error-catalog)
 export class HarnessError extends Error { /* see 03-foundation */ }
 export class HarnessConfigError extends HarnessError {}
 export class ValidationError extends HarnessError {}
+export class ModelAdmissionRejectedError extends HarnessError {}
 export class PermissionDeniedError extends HarnessError {}
 export class PolicyDeniedError extends HarnessError {}
-export class PolicyEvaluationError extends HarnessError {}
+export class DecisionEvaluationError extends HarnessError {}
+export class DecisionBlockedError extends HarnessError {}
 export class SandboxError extends HarnessError {}
 export class SandboxNoExecutorError extends HarnessError {}
+export class SandboxStateLostError extends HarnessError {}
 export class ModelError extends HarnessError {}
 export class ModelCapabilityError extends HarnessError {}
 export class ToolError extends HarnessError {}
@@ -143,7 +171,7 @@ export const HARNESS_VERSION: string                            // semver of the
 
 `JsonLogger` defaults: `level` is read from env `PURISTA_HARNESS_LOG_LEVEL` if set (invalid values fall back to `'info'` and emit one warning), else `'info'`; `out = process.stdout`; `bindings = {}`.
 
-**Removed in v1:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Inline builder definitions and static `defineHarnessModule` transforms preserve surrounding builder constraints; a module is not an independently buildable definition catalog. See [25-static-harness-modules](./25-static-harness-modules.md).
+**Removed in v3:** standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, `defineModel` factories are NOT exported. Inline builder definitions and static `defineHarnessModule` transforms preserve surrounding builder constraints; a module is not an independently buildable definition catalog. See [25-static-harness-modules](./25-static-harness-modules.md).
 
 ### Exports — types (main entry)
 
@@ -172,7 +200,7 @@ export type ModelsConfig
 export interface ModelAlias
 export type ToolsConfig
 export type ToolDefinition
-export interface TsToolDefinition<I, O>
+export interface TsToolDefinition<I, O, Context = ToolHandlerContext>
 export interface McpStdioToolDefinition
 export interface McpHttpToolDefinition
 export interface McpPluginProvenance
@@ -186,7 +214,16 @@ export interface DiscoveredSkills
 export function discoverSkills(options?: DiscoverSkillsOptions): Promise<DiscoveredSkills>
 export type AgentsConfig<S>
 export interface AgentDefinition<S, I, O>
-export interface AgentDefinitionHelpers<S>
+export interface AgentModelRequest
+export interface AgentExecutionInterceptorContext<S, I>
+export interface AgentBeforeInputInterceptorContext<S, I>
+export interface AgentBeforeModelInterceptorContext<S, I>
+export interface AgentAfterModelInterceptorContext<S, I>
+export interface AgentBeforeToolInterceptorContext<S, I>
+export interface AgentAfterToolInterceptorContext<S, I>
+export interface AgentExecutionInterceptor<S, I>
+export type AgentExecutionInterception<T>
+export interface AgentGuardrailsBinding
 export interface AgentPrepareStepContext<S, I>
 export interface AgentPrepareStepResult<S>
 export interface AgentStopWhenContext<S, I>
@@ -194,7 +231,6 @@ export type AgentPrepareStep<S, I>
 export type AgentStopWhen<S, I>
 export type WorkflowsConfig<S>
 export interface WorkflowDefinition<S, I, O>
-export interface WorkflowDefinitionHelpers<S>
 export interface WorkflowDelegationPolicy<S>
 export type WorkflowAgentInvokeOptions<S, K>
 export interface WorkflowFanOutOptions
@@ -213,7 +249,6 @@ export interface GovernanceConfig<S>
 export type GovernanceMode
 export type GovernanceEffect
 export type GovernanceExposureEffect
-export type GovernanceRiskLevel
 export type GovernanceToolId<S>
 export interface GovernanceContext<S, K>
 export interface GovernanceDecision
@@ -227,10 +262,11 @@ export type NativePolicyRule<S>
 export interface NativePolicyRuleForTool<S, K>
 export type GovernancePolicyDefinition<S>
 export interface GovernanceDefinitionHelpers<S>
-export interface GovernanceApprovalProvider
-export interface GovernanceApprovalRequest
-export type GovernanceApprovalResult
-export interface GovernanceAuditContext
+export interface ToolApprovalRequest
+export interface ToolApprovalInterrupt
+export interface ToolApprovalDecision
+export interface ToolApprovalResume
+export type GovernanceAuditRecord
 export interface GovernanceAuditSink
 export type ToolInput<S, K>
 
@@ -244,13 +280,13 @@ export interface SessionHistoryRetentionPolicy
 export interface AgentContext<S, I, O>
 export interface AgentContextMinimal<S, I>
 export interface WorkflowContext<S, I, O>
-export interface ToolHandlerContext
+export type ToolHandlerContext<C extends readonly AdapterCapability[] = readonly AdapterCapability[]>
 export interface Metrics
 export type SpanAttrs
 export interface TelemetryShim
+export function createTelemetryShim(): TelemetryShim
 export interface SessionMemory
 export interface MemoryFacade
-export interface ContextCheckpoints
 export interface ConversationHistory
 export interface SessionChildTasks
 
@@ -259,30 +295,8 @@ export type BuiltinToolName
 export type PermissionMode
 export interface PermissionPolicy
 export interface AgentPermissions
-export interface PermissionContext
-export type PermissionDecision
-export type OnPermission
 
-// Governance policy
-export interface GovernanceConfig<S>
-export interface GovernanceDefinitionHelpers<S>
-export type GovernanceMode
-export type GovernanceEffect
-export interface PolicyEvaluator<S>
-export interface PolicyEvaluatorInfo
-export type PolicyCapability
-export interface PolicyDecision
-export interface PolicyEvaluationContext<S>
-export type GovernanceToolId<S>
-export interface NativePolicy<S>
-export interface NativePolicyConfig<S>
-export interface NativePolicyRule<S, T>
-export interface NativeRuleContext<S, T>
-export interface GovernanceApprovalAdapter
-export interface GovernanceApprovalRequest
-export type GovernanceApprovalDecision
-export interface GovernanceAuditSink
-export interface GovernanceAuditRecord
+// Governance public types are inventoried above; no alternate policy/approval aliases.
 
 // Resolved skill (after frontmatter parse)
 export interface ResolvedSkill
@@ -316,7 +330,8 @@ export interface ModelCallOptions
 export type ModelMessage
 export type ContentPart
 export interface ToolCallSpec
-export interface ProviderItems
+export type ProviderContinuation
+export type ProviderContinuationItem
 export interface ModelToolSpec
 export interface TextRequest
 export interface TextResponse
@@ -352,8 +367,8 @@ export interface MemorySearchQuery
 export interface MemorySearchResult
 
 // Durable workspace replay
-export interface DurableWorkspaceStore
-export interface DurableWorkspaceStoreInfo
+export interface DurableWorkspace
+export interface DurableWorkspaceInfo
 export interface DurableWorkspacePolicy
 export type WorkspaceLifecycleState
 export interface WorkspaceStartOptions
@@ -367,6 +382,9 @@ export interface WorkspaceCleanupOptions
 export interface WorkspaceCleanupResult
 export interface WorkspaceInspectionOptions
 export interface WorkspaceInspection
+export interface WorkspacePinOptions
+export interface WorkspaceReleasePinOptions
+export interface WorkspaceFinishOptions
 export interface WorkspaceQuotaPolicy
 export interface WorkspaceRetentionPolicy
 export interface WorkspaceEncryptionInfo
@@ -377,19 +395,28 @@ export interface LocalDurableExecution
 export type LocalDurableSandbox
 export type LocalFilesOnlySandboxCapabilities
 export type LocalExecSandboxCapabilities
-export interface SqliteDurableRuntimeOptions
-export interface SqliteStateStoreOptions
-export interface LocalDirectoryWorkspaceStoreOptions
+export interface SqliteHarnessStorageOptions
+export interface LocalDirectoryWorkspaceOptions
 export interface LocalDirectorySandboxOptions
-export interface ContextCheckpointStore
-export interface ContextCheckpointStoreInfo
-export interface ContextCheckpoint
-export interface ContextCheckpointQuery
-export interface ContextCheckpointRef
-export interface SqliteContextCheckpointStoreOptions
 
-// Durable runtime
-export interface DurableRuntime
+// Adapter-author subpath: @purista/harness/adapter
+export function sameHarnessIdentity
+export function assertSessionSandboxBindingTransition
+export function sandboxScopeKey
+export function validateSandboxOpenOptions
+export function validateSandboxScope
+export function validateSandboxTerminateOptions
+export function asExternalWaitResolved
+export function createExternalWaitCancellation
+export function projectExternalWaitRequest
+export function validateBoundExternalWaitRequest
+export function validateExternalWaitId
+export function validateExternalWaitRegistration
+export function validateExternalWaitSignal
+export function validateExternalWaitSignalResult
+export function validateExternalWaitSnapshot
+
+// Storage-owned durable execution
 export interface DurableRunLease
 export interface DurableRunStart
 export type DurableRunStatus
@@ -402,7 +429,6 @@ export interface DurableStepRetryPolicy
 export type DurableStepRetrySetting
 export interface DurableWorkflowContext
 export interface DurableWorkflowContextOptions
-export interface InMemoryDurableRuntimeOptions
 
 // Feedback
 export interface FeedbackRecord
@@ -416,37 +442,53 @@ export interface TelemetryOptions
 export type TelemetryFlavor
 export type ContentCaptureMode
 
-// State / Sandbox ports
-export interface StateStore
-export abstract class StateStoreAdapterBase
+// Harness storage / Sandbox ports
+export interface HarnessStorage
+export interface HarnessStorageInfo
 export type FinishRunPatch
 export type AdapterCapability
 export interface AdapterCapabilities
-export interface DurableRuntimeAdapter
 export interface AdapterInspection
 export interface HarnessInspection
 export interface HarnessModuleInspection
 export interface HarnessModuleContribution
-export interface Sandbox
+export type Sandbox
 export interface SandboxSessionBase
 export interface ReadOnlyMountOptions
 export interface ReadOnlyMountCapableSandboxSession
 export function isReadOnlyMountCapableSession
 export interface ExecCapableSandboxSession
-export interface SandboxSession
+export function isExecCapableSession
+export interface TextSearchCapableSandboxSession
+export function isTextSearchCapableSession
+export type SandboxSession
 export type SandboxSessionFor
 export interface SnapshotResult
 export interface SandboxResumeOptions
 export interface SnapshotCapableSandbox
 export interface ResumeCapableSandbox
 export interface HibernateCapableSandbox
+export type SandboxScope
+export type SandboxOpenMode
+export interface SandboxOpenOptions
+export type SandboxOpenResult
+export interface SandboxTerminateOptions
 export interface SpawnOptions
 export interface SandboxProcess
 export interface SpawnCapableSandboxSession
+export function isSpawnCapableSession
 export interface ExecOptions
 export interface ExecResult
 export interface DirEntry
 export interface FileStat
+export type SandboxTextSearchSyntax
+export type SandboxTextSearchLimitReason
+export interface SandboxTextSearchRequest
+export interface SandboxTextSearchMatch
+export interface SandboxTextSearchResult
+export const SANDBOX_TEXT_SEARCH_LIMITS
+export function validateSandboxTextSearchRequest
+export function compileSafeRegex
 
 // Persistence shapes
 export interface SessionRecord
@@ -469,50 +511,124 @@ export interface McpStdioLaunchPreparation
 // Inference helper
 export type InferTypes<S>
 
-// AI evaluation core
-export interface PromptCandidate
-export interface EvaluationItem
-export interface CandidateScore
-export interface ScorerTarget
-export interface ScorerResult
-export interface EvaluatePromptCandidatesInput
-export function evaluatePromptCandidates<I = unknown>(
-  input: EvaluatePromptCandidatesInput<I>
-): Promise<CandidateScore[]>
+// Generic evaluations
+export interface EvaluationCase
+export interface EvaluationDataset
+export interface EvaluationCandidate
+export interface EvaluationTrial
+export type EvaluationDimensionDefinition
+export interface EvaluationCorrelation
+export interface EvaluationCost
+export interface EvaluationModelIdentity
+export interface EvaluationModelCall
+export interface EvaluationAccounting
+export interface EvaluationExecutionProvenance
+export interface EvaluationObservation
+export interface EvaluationTaskTarget
+export interface EvaluationTaskOutput
+export interface EvaluationTask
+export type EvaluationEvidence
+export type EvaluationDimensionResult
+export interface EvaluationScorerOutput
+export interface EvaluationScorerTarget
+export interface EvaluationScorer
+export interface DeterministicEvaluationScorerDefinition
+export type EvaluationFailurePolicy
+export interface EvaluationRetryPolicy
+export interface EvaluationTimeouts
+export interface EvaluationRunInput
+export interface EvaluationScoreInput
+export type EvaluationRunMode
+export type EvaluationRunStatus
+export type EvaluationCaseStatus
+export type EvaluationScorerStatus
+export interface EvaluationErrorRecord
+export interface EvaluationScorerResultRecord
+export interface EvaluationTaskResultRecord
+export interface EvaluationCaseResult
+export type EvaluationAggregateScope
+export interface EvaluationDistribution
+export interface EvaluationCoverage
+export interface EvaluationAccountingSummary
+export interface EvaluationCandidateAggregate
+export interface EvaluationDimensionAggregate
+export interface EvaluationRunResult
+export interface EvaluationFeedbackProjectionOptions
+export function runEvaluation<I, Assessment, Candidate, O, ScorerContext = unknown>(
+  input: EvaluationRunInput<I, Assessment, Candidate, O, ScorerContext>
+): Promise<EvaluationRunResult>
+export function scoreEvaluation<Assessment, O, ScorerContext = unknown>(
+  input: EvaluationScoreInput<Assessment, O, ScorerContext>
+): Promise<EvaluationRunResult>
+export function createDeterministicEvaluationScorer<Assessment = unknown, O = unknown, ScorerContext = unknown>(
+  definition: DeterministicEvaluationScorerDefinition<Assessment, O, ScorerContext>
+): EvaluationScorer<Assessment, O, ScorerContext>
+export function evaluationResultToFeedbackRecords(
+  result: EvaluationRunResult,
+  options: EvaluationFeedbackProjectionOptions
+): readonly FeedbackRecord[]
 ```
 
 ### `HarnessBuilder<S>` (locked)
 
 ```ts
-import type { z } from 'zod'
+export type Schema<Input extends JsonValue = JsonValue, Output extends JsonValue = Input> = StandardSchemaV1<Input, Output>
+export type ModelSchema<Input extends JsonValue = JsonValue, Output extends JsonValue = Input> =
+  StandardSchemaV1<Input, Output> & StandardJSONSchemaV1<Input, Output>
+export type Infer<S extends Schema> = StandardSchemaV1.InferOutput<S>
+export type InferIn<S extends Schema> = StandardSchemaV1.InferInput<S>
 
 interface HarnessBuilder<S extends BuilderState> {
   /** Apply a local static transform; unavailable to module callbacks. */
   use<Required extends BuilderState, Result extends BuilderState, Id extends string>(
     this: S extends Required ? HarnessBuilder<S> : never,
     module: HarnessModule<Required, Result, Id>
-  ): HarnessBuilder<Result>
+  ): HarnessBuilder<S & Result>
   // Foundation — optional, called at most once each
   telemetry(opts: TelemetryOptions): HarnessBuilder<S>
   logger(logger: Logger): HarnessBuilder<S>
-  state(store: StateStore): HarnessBuilder<S>
-  sandbox(sandbox: Sandbox): HarnessBuilder<S>
+  storage(storage: HarnessStorage): HarnessBuilder<S>
+  sandbox(): HarnessBuilder<S & { sandboxCapabilities: readonly AdapterCapability[] }>
+  sandbox<const A extends Sandbox>(sandbox: A): HarnessBuilder<S & { sandboxCapabilities: NonNullable<A['capabilities']> }>
   memory(adapter: MemoryAdapter): HarnessBuilder<S>
-  runtime(runtime: DurableRuntimeAdapter): HarnessBuilder<S>
-  workspaceStore(adapter: DurableWorkspaceStore): HarnessBuilder<S>
-  checkpoints(adapter: ContextCheckpointStore): HarnessBuilder<S>
+  workspace(workspace: DurableWorkspace): HarnessBuilder<S>
   requires(required: readonly AdapterCapability[]): HarnessBuilder<S>
   defaults(d: HarnessDefaults): HarnessBuilder<S>
 
-  // Domain — direct calls follow staged ordering. Module contributions append
-  // in caller order and reject duplicate keys; see 25-static-harness-modules.
+  // Registries are repeatable, append-only, and collision-rejecting.
+  model<const Id extends string, const D extends ModelAlias>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { models: Record<Id, D> }>
   models<const M extends ModelsConfig>(models: M): HarnessBuilder<S & { models: M }>
-  tools<const T extends ToolsConfig>(tools: T): HarnessBuilder<S & { tools: T }>
+  tool<const Id extends string, const I extends ModelSchema, const O extends Schema>(
+    id: Id,
+    definition: TsToolDefinition<I, O, ToolHandlerContext<SandboxCapabilitiesFor<S>>>
+  ): HarnessBuilder<S & { tools: Record<Id, TsToolDefinition<I, O, ToolHandlerContext<SandboxCapabilitiesFor<S>>>> }>
+  tool<const Id extends string, const D extends McpStdioToolDefinition | McpHttpToolDefinition>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { tools: Record<Id, D> }>
+  tools<const T extends Record<string, ToolDefinition<ToolHandlerContext<SandboxCapabilitiesFor<S>>>>>(
+    tools: T & ToolsConfigFromSchemaMaps<T, ToolHandlerContext<SandboxCapabilitiesFor<S>>>
+  ): HarnessBuilder<S & { tools: T }>
+  skill<const Id extends string, const D extends SkillDefinition>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { skills: Record<Id, D> }>
   skills<const K extends SkillsConfig>(skills: K): HarnessBuilder<S & { skills: K }>
-  agents<const A extends AgentsConfig<S & { models: any; tools: any; skills: any }>>(
+  agent<const Id extends string, const D extends AgentDefinition<S>>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { agents: Record<Id, D> }>
+  agents<const A extends AgentsConfig<S>>(
     agents: A
   ): HarnessBuilder<S & { agents: A }>
-  workflows<const W extends WorkflowsConfig<S & { agents: any }>>(
+  workflow<const Id extends string, const D extends WorkflowDefinition<S>>(
+    id: Id,
+    definition: D
+  ): HarnessBuilder<S & { workflows: Record<Id, D> }>
+  workflows<const W extends WorkflowsConfig<S>>(
     workflows: W
   ): HarnessBuilder<S & { workflows: W }>
   governance(
@@ -523,14 +639,20 @@ interface HarnessBuilder<S extends BuilderState> {
 }
 ```
 
-`HarnessModuleBuilder<S>` is `HarnessBuilder<S>` without `build` and `use`.
+All five singular/plural registry families are repeatable and accumulate exact
+registry keys. Singular and plural calls share one validation/merge path;
+duplicate IDs fail rather than replace. Identity callbacks, native-tool helper
+callbacks, registration brands, and their public helper types do not exist.
+`HarnessModuleBuilder<S>` exposes the same ten registration methods and is
+otherwise `HarnessBuilder<S>` without `build` and `use`.
 `HarnessModule<Required, Result, Id>.register` receives the declared minimum
 state and returns its inferred result. `.use()` is callable only when the
-accumulated state extends `Required`, and returns `HarnessBuilder<Result>`.
-The shipped declaration must preserve literal model/tool/skill/agent keys
-without public `any`/`unknown` escape hatches. Direct
-builder types omit already-set or out-of-order methods so incorrect direct
-chains fail at the type level. At runtime, `.build()` fails with
+accumulated state extends `Required`, and returns `HarnessBuilder<S & Result>`
+so existing definitions and sandbox capability inference are retained.
+The shipped declaration must preserve literal model/tool/skill/agent keys,
+schema directions, and sandbox capabilities without public `any`/`unknown`
+escape hatches. A consumer definition can reference only registry keys already
+accumulated in its builder state. At runtime, `.build()` fails with
 `HarnessConfigError{reason:'missing_models'}` when no accumulated module/direct
 contribution supplied models. Behavioral ordering rules and validation are
 described in [02-harness-config](./02-harness-config.md).
@@ -559,27 +681,27 @@ interface Session<S extends BuilderState> {
   /** Frees live sandbox/MCP resources but preserves persisted session state. */
   release(): Promise<void>
   /** Destructively removes persisted session state after releasing resources. */
-  close(): Promise<void>
+  destroy(): Promise<void>
 }
 
 interface AgentInvoker<S, K extends keyof S['agents']> {
-  prompt(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
+  run(input: AgentInput<S, K>, opts?: InvokeOptions): Promise<AgentOutput<S, K>>
   stream(input: AgentInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 interface WorkflowInvoker<S, K extends keyof S['workflows']> {
-  prompt(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
+  run(input: WorkflowInput<S, K>, opts?: InvokeOptions): Promise<WorkflowOutput<S, K>>
   stream(input: WorkflowInput<S, K>, opts?: InvokeOptions): AsyncIterable<RunEvent>
 }
 
 type AgentInput<S, K extends keyof S['agents']> =
-  S['agents'][K] extends { input: infer I } ? (I extends z.ZodTypeAny ? z.infer<I> : string) : string
+  S['agents'][K] extends { input: infer I extends Schema } ? InferIn<I> : string
 type AgentOutput<S, K extends keyof S['agents']> =
-  S['agents'][K] extends { output: infer O } ? (O extends z.ZodTypeAny ? z.infer<O> : string) : string
+  S['agents'][K] extends { output: infer O extends Schema } ? Infer<O> : string
 type WorkflowInput<S, K extends keyof S['workflows']> =
-  S['workflows'][K] extends { input: infer I } ? (I extends z.ZodTypeAny ? z.infer<I> : string) : string
+  S['workflows'][K] extends { input: infer I extends Schema } ? InferIn<I> : string
 type WorkflowOutput<S, K extends keyof S['workflows']> =
-  S['workflows'][K] extends { output: infer O } ? (O extends z.ZodTypeAny ? z.infer<O> : string) : string
+  S['workflows'][K] extends { output: infer O extends Schema } ? Infer<O> : string
 ```
 
 ### `InferTypes<S>` namespace (locked)
@@ -718,38 +840,37 @@ Full memory scope, capability, validation, telemetry, metrics, and reference ada
 ```ts
 type AdapterCapability =
   | 'sandbox.fs'
+  | 'sandbox.text_search'
   | 'sandbox.exec'
   | 'sandbox.persistent_fs'
+  | 'sandbox.workspace_binding'
   | 'sandbox.snapshot'
   | 'sandbox.resume'
   | 'sandbox.hibernate'
-  | 'runtime.checkpoint'
-  | 'runtime.retry'
-  | 'runtime.distributed_lock'
-  | 'runtime.resume_from_checkpoint'
-  | 'runtime.workspace_checkpoint'
-  | 'runtime.checkpoint_retention'
-  | 'runtime.persistent'
-  | 'workspace_store.durable'
-  | 'workspace_store.persistent'
-  | 'workspace_store.checkpoint'
-  | 'workspace_store.resume'
-  | 'workspace_store.abort'
-  | 'workspace_store.cleanup'
-  | 'workspace_store.inspect'
-  | 'workspace_store.retention'
-  | 'workspace_store.quota'
-  | 'workspace_store.encrypted_storage'
-  | 'context_checkpoint.write'
-  | 'context_checkpoint.read'
-  | 'context_checkpoint.list'
-  | 'context_checkpoint.delete'
-  | 'context_checkpoint.persistent'
+  | 'sandbox.live_process_preservation'
+  | 'storage.checkpoint'
+  | 'storage.retry'
+  | 'storage.multi_instance'
+  | 'storage.resume'
+  | 'storage.workspace_checkpoint'
+  | 'storage.checkpoint_retention'
+  | 'storage.persistent'
+  | 'storage.external_wait'
+  | 'workspace.durable'
+  | 'workspace.persistent'
+  | 'workspace.checkpoint'
+  | 'workspace.resume'
+  | 'workspace.abort'
+  | 'workspace.cleanup'
+  | 'workspace.inspect'
+  | 'workspace.retention'
+  | 'workspace.quota'
+  | 'workspace.encrypted_storage'
   | 'feedback.record'
   | MemoryCapability
 
 interface AdapterInspection {
-  kind: 'state' | 'sandbox' | 'runtime' | 'workspace_store' | 'context_checkpoint' | 'feedback' | 'model' | 'memory'
+  kind: 'storage' | 'sandbox' | 'workspace' | 'feedback' | 'model' | 'memory'
   id: string
   capabilities: readonly AdapterCapability[]
 }
@@ -800,7 +921,11 @@ interface HarnessContextConfigurable {
 }
 ```
 
-`Harness` is not the application execution surface for model/tool/sandbox work. It exposes session creation and shutdown only. Application code opens a session and executes typed direct agents through `session.agents` or typed workflows through `session.workflows`.
+`Harness` exposes capability-projected `models` for deterministic application
+calls such as embeddings and reranking, plus session creation and shutdown.
+Agent and workflow execution remains session-scoped through `session.agents` and
+`session.workflows`; tools and sandbox authority are not exposed on the root
+handle.
 
 `harness.$infer` is a phantom value: at harness it is the literal `{}`. Its only purpose is compile-time inference via `typeof`:
 
@@ -869,18 +994,18 @@ interface DurableInvokeOptions {
   workerId?: string
   stepId?: string
   attempt?: number
-  /** Per-run workspace constraints; the workspace-store adapter validates and enforces them. */
+  /** Per-run workspace constraints; the workspace adapter validates and enforces them. */
   workspacePolicy?: Partial<DurableWorkspacePolicy>
 }
 ```
 
-`durable` opts a workflow run into durable execution against the configured
-`.runtime(...)` / `.workspaceStore(...)`; see
+`durable` opts a workflow run into recoverable execution against the configured
+`.storage(...)` and optional `.workspace(...)`; see
 [21-durable-workspaces](./21-durable-workspaces.md) §16.1 and
 [11-sessions](./11-sessions.md).
 
 `traceparent`/`tracestate` follow W3C Trace Context and are propagated into the
-run span before child workflow, agent, model, tool, sandbox, and state spans are
+run span before child workflow, agent, model, tool, sandbox, and storage spans are
 created. `metadata` is available to handlers and emitted only as sanitized
 scalar string, number, and boolean `harness.metadata.*` attributes as specified in
 [19-ai-eval-core](./19-ai-eval-core.md).
@@ -905,49 +1030,19 @@ interface RunSummary {
 `RunSummary.tokenTotals` includes the optional `TokenUsage` detail fields when
 one or more completed model events reported them.
 
-`Session.getRunSummary(runId)` derives this from the configured `StateStore`; it
+`Session.getRunSummary(runId)` derives this from the configured `HarnessStorage`; it
 does not inspect OTel spans.
 
-### AI evaluation core
+### Generic evaluation runs
 
-```ts
-interface PromptCandidate<I = unknown> {
-  id: string
-  prompt: string
-  metadata?: Record<string, JsonValue>
-}
-
-interface EvaluationItem<I = unknown> {
-  id: string
-  input: I
-  expected?: unknown
-  context?: unknown[]
-}
-
-interface CandidateScore {
-  candidateId: string
-  meanScore: number
-  passRate: number
-  itemCount: number
-  scorerCount: number
-}
-
-interface EvaluatePromptCandidatesInput<I = unknown> {
-  candidates: PromptCandidate<I>[]
-  items: EvaluationItem<I>[]
-  scorer: (target: ScorerTarget, signal: AbortSignal) => Promise<ScorerResult>
-  runCandidate: (
-    candidate: PromptCandidate<I>,
-    item: EvaluationItem<I>,
-    signal: AbortSignal
-  ) => Promise<unknown>
-  signal: AbortSignal
-}
-```
-
-`evaluatePromptCandidates` is provider-neutral and product-neutral. It does not
-generate candidates, persist datasets, call external optimizers, or know about
-Cloudgrid.
+The complete closed type unions, field optionality, validation, failure,
+ordering, aggregation, privacy, feedback-projection, and telemetry semantics for
+the exports above are authoritative in
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md). That approved
+specification replaces the previous aggregate prompt evaluator and standalone
+scorer types as one breaking cleanup. No dataset persistence, reporter/sink
+port, vendor SDK, UI, annotation, dashboard, or hosted judge export is added by
+this API.
 
 ## Type inference and DX
 
@@ -980,29 +1075,34 @@ Locked canonical → alias map (the harness normalizes alias dispatch to canonic
 
 ```ts
 // Fakes
-export class FakeModelProvider implements ModelProvider     // configurable scripted responses
-export class FakeStateStore extends InMemoryStateStore       // records invoked operations (`ops`, `opCount`, `resetOps`)
+export interface FakeModelProviderOptions { strict?: boolean }
+export class FakeModelProvider implements ModelProvider     // configurable scripted responses; strict mode rejects unscripted calls and assertExhausted() detects unused fixtures
+export class FakeHarnessStorage extends InMemoryHarnessStorage       // records invoked operations (`ops`, `opCount`, `resetOps`)
 export class FakeSandbox implements Sandbox                  // deterministic FS+exec; configurable executor flag
 export class FakeLogger implements Logger                    // captures log records in memory (`records`)
+export class RecordingTelemetry implements TelemetryShim     // captures deterministic spans, metrics, and parent links
 export class FakeMemoryAdapter implements MemoryAdapter      // deterministic KV/search fake
-export class InMemoryDurableWorkspaceStore implements DurableWorkspaceStore   // also a main-entry export
-export function inMemoryDurableWorkspaceStore(): DurableWorkspaceStore        // also a main-entry export
+export class InMemoryDurableWorkspace implements DurableWorkspace   // also a main-entry export
+export function inMemoryDurableWorkspace(): DurableWorkspace        // also a main-entry export
 export function fakeCapabilityAdapter(
   capabilities: readonly AdapterCapability[],
   opts?: { id?: string }
 ): FakeCapabilityAdapter
 export function fakeSnapshotSandbox(): Sandbox               // snapshot/resume/hibernate-capable in-memory sandbox
-export type FakeStateStoreOp
+export type FakeHarnessStorageOp
 export interface FakeSandboxOptions
 export interface FakeLogRecord
+export interface RecordedTelemetrySpan
+export interface RecordedTelemetryMetric
 export interface FakeCapabilityAdapter
 
 // Contract suites — each is a Vitest test factory
-export function stateStoreContract(make: () => StateStore | Promise<StateStore>): void
+export function harnessStorageContract(make: () => HarnessStorage | Promise<HarnessStorage>): void
 export function sandboxContract(
   make: () => Sandbox | Promise<Sandbox>,
   opts: { executor: 'available' | 'unavailable' }
 ): void
+export function sandboxTextSearchContract(make: () => Sandbox | Promise<Sandbox>): void
 export function modelProviderContract(
   make: () => ModelProvider,
   opts: { capabilities: ModelCapability[] }
@@ -1012,11 +1112,14 @@ export function memoryAdapterContract(
   make: () => MemoryAdapter | Promise<MemoryAdapter>,
   opts?: { search?: 'available' | 'unavailable'; persistence?: 'ephemeral' | 'persistent' }
 ): void
-export function durableWorkspaceStoreContract(
-  make: () => DurableWorkspaceStore | Promise<DurableWorkspaceStore>,
+export function durableWorkspaceContract(
+  make: () => DurableWorkspace | Promise<DurableWorkspace>,
 ): void
 export function adapterCapabilitiesContract(make: () => AdapterCapabilities | Promise<AdapterCapabilities>): void
 export function sandboxSnapshotContract(make: () => Sandbox | Promise<Sandbox>): void
+export function sandboxMultiClientContract(
+  makePair: () => readonly [Sandbox, Sandbox] | Promise<readonly [Sandbox, Sandbox]>
+): void
 
 // Helpers
 export function makeHarness(): HarnessBuilder<{}>            // alias for defineHarness() returning a fresh builder
@@ -1042,36 +1145,26 @@ export function assertDiagnosticInvariants(
   invariants: readonly HarnessDiagnosticInvariant[]
 ): void
 
-// AI eval test helpers
-export type DeterministicScorerDefinition
-export interface ScorerTarget
-export interface ScorerResult
-export function evaluateDeterministicScorer(
-  definition: DeterministicScorerDefinition,
-  target: ScorerTarget
-): ScorerResult
+// Generic evaluation test ergonomics; exact re-exports from the main package
+export interface DeterministicEvaluationScorerDefinition
+export function createDeterministicEvaluationScorer<Assessment = unknown, O = unknown, ScorerContext = unknown>(
+  definition: DeterministicEvaluationScorerDefinition<Assessment, O, ScorerContext>
+): EvaluationScorer<Assessment, O, ScorerContext>
 ```
 
 ```ts
-export type DeterministicScorerDefinition =
-  | { type: 'regex'; path: string; pattern: string; flags?: 'i' | 'm' | 'im' }
-  | { type: 'json-schema'; schema: JsonValue }
-  | { type: 'contains'; path: string; value: string; caseInsensitive?: boolean }
-  | { type: 'attribute-equality'; leftPath: string; rightPath: string }
-
-export interface ScorerTarget {
-  input: unknown
-  output: unknown
-  expected?: unknown
-  context?: unknown[]
-}
-
-export interface ScorerResult {
-  score: number
-  passed: boolean
-  evidence?: JsonValue
+export interface DeterministicEvaluationScorerDefinition<Assessment = unknown, O = unknown, ScorerContext = unknown> {
+  id: string
+  version: string
+  dimension: EvaluationDimensionDefinition
+  evaluate(observation: EvaluationObservation<Assessment, O, ScorerContext>): EvaluationDimensionResult
 }
 ```
+
+The factory returns a normal `EvaluationScorer`, has exactly the one declared
+dimension, and does not define a second callback, target, or result
+representation. Its callback is synchronous by design; asynchronous and
+model-backed judgments implement `EvaluationScorer.score` directly.
 
 ### Testing replay and diagnostic contracts
 
@@ -1141,8 +1234,8 @@ testing helper.
 
 The fake adapters and contract suites are only reachable via
 `@purista/harness/testing`, with two deliberate overlaps:
-`evaluateDeterministicScorer` (plus its deterministic scorer types) and
-`InMemoryDurableWorkspaceStore`/`inMemoryDurableWorkspaceStore` are main-entry
+`createDeterministicEvaluationScorer` (plus its definition types) and
+`InMemoryDurableWorkspace`/`inMemoryDurableWorkspace` are main-entry
 exports re-exported by the testing subpath for ergonomics.
 Implementation agents must add a CI test that verifies the actual exports of
 each entry against the lists above
@@ -1190,13 +1283,189 @@ export type OpenAiFactoryOptions
 export type OpenAiClient
 ```
 
-Additional provider packages follow the `@purista/harness-{addon}` naming convention and expose one provider factory plus factory options/client types. The `ModelProvider` port remains stable for v1.x provider packages.
+### `@purista/harness-google` package
+
+```ts
+import type { ModelProvider, BaseModelProviderOptions } from '@purista/harness'
+import type { GoogleGenAIOptions } from '@google/genai'
+
+export interface GoogleFactoryOptions extends GoogleGenAIOptions {
+  client?: GoogleClient
+  /** Optional adapter-level override. Defaults to the harness logger when registered. */
+  harnessLogger?: BaseModelProviderOptions['logger']
+  /** Optional adapter-level override. Defaults to the harness telemetry shim when registered. */
+  telemetry?: BaseModelProviderOptions['telemetry']
+  /** Optional adapter-level override. Defaults to `defaults.modelTimeoutMs` when registered. */
+  harnessTimeoutMs?: number
+}
+
+export interface GoogleClient {
+  models: {
+    generateContent(params: unknown): Promise<unknown>
+    generateContentStream(params: unknown): Promise<AsyncIterable<unknown>>
+    embedContent(params: unknown): Promise<unknown>
+  }
+}
+
+export function google(opts?: GoogleFactoryOptions): ModelProvider
+```
+
+`google(...)` is a thin official `@google/genai` SDK adapter. It implements
+text, text streaming, JSON-schema object output, object streaming, application
+function tools/results, and embeddings. It maps inline image/audio/file parts
+to the SDK, does not upload sandbox files, and does not implement reranking.
+Factory options accept Gemini API and Vertex/enterprise SDK settings. Harness
+owns retry, timeout, telemetry and client-side conversation history; the
+adapter applies `httpOptions.retryOptions.attempts: 1` unless the caller
+provides explicit SDK retry options. The provider id is `'google'` and the
+OpenTelemetry system identifier is `'google.gemini'`.
+
+Additional provider packages follow the `@purista/harness-{addon}` naming convention and expose one provider factory plus factory options/client types. The `ModelProvider` port remains stable for v3.x provider packages.
 
 Current provider addons:
 
+- `@purista/harness-google`: `google(options)`, `GoogleFactoryOptions`, `GoogleClient`
 - `@purista/harness-anthropic`: `anthropic(options)`, `AnthropicFactoryOptions`, `AnthropicClient`
 - `@purista/harness-bedrock`: `bedrock(options)`, `BedrockFactoryOptions`, `BedrockClient`
 - `@purista/harness-azure-foundry`: `azureFoundry(options)`, `AzureFoundryFactoryOptions`, `AzureFoundryClient`
+
+## `@purista/harness-storage-postgres` package
+
+The package exports exactly:
+
+```ts
+export interface PostgresHarnessStorageOptions {
+  readonly connectionString?: string
+  readonly pool?: import('pg').Pool
+  readonly leaseTtlMs?: number
+  readonly now?: () => number
+}
+
+export function postgresHarnessStorage(
+  options: PostgresHarnessStorageOptions,
+): HarnessStorage & { close(): Promise<void> }
+```
+
+Exactly one connection string or pool is required. A created pool is owned and
+closed idempotently; an injected pool is never closed. Package migrations,
+capabilities, transaction/fencing behavior, and telemetry are locked by spec
+43.
+
+## `@purista/harness-sandbox-kubernetes` package
+
+The primary application surface is:
+
+```ts
+export interface KubernetesWorkspaceRuntimeOptions {
+  readonly snapshotClassName?: string
+  readonly snapshotReadyTimeoutMs?: number
+}
+
+export interface KubernetesSandboxRuntimeOptions {
+  readonly namespace: string
+  readonly image: string
+  readonly runtimeId?: string
+  readonly containerName?: string
+  readonly serviceAccountName?: string
+  readonly runtimeClassName?: string
+  readonly imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'
+  readonly volumeSize?: string
+  readonly storageClassName?: string
+  readonly podReadyTimeoutMs?: number
+  readonly defaultCommandTimeoutMs?: number
+  readonly cpuLimit?: string
+  readonly memoryLimit?: string
+  readonly ephemeralStorageLimit?: string
+  readonly maxFileBytes?: number
+  readonly maxOutputBytes?: number
+  readonly workspace?: false | true | KubernetesWorkspaceRuntimeOptions
+  readonly kubeConfig?: import('@kubernetes/client-node').KubeConfig
+  readonly driver?: KubernetesSandboxDriver
+}
+
+export interface KubernetesSandboxRuntime {
+  readonly sandbox: Sandbox
+  readonly workspace?: DurableWorkspace
+  close(): Promise<void>
+}
+
+export interface KubernetesSandboxRuntimeWithWorkspace extends KubernetesSandboxRuntime {
+  readonly workspace: DurableWorkspace
+}
+
+export function kubernetesSandboxRuntime(
+  options: KubernetesSandboxRuntimeOptions & { readonly workspace: true | KubernetesWorkspaceRuntimeOptions },
+): KubernetesSandboxRuntimeWithWorkspace
+export function kubernetesSandboxRuntime(options: KubernetesSandboxRuntimeOptions): KubernetesSandboxRuntime
+```
+
+The package also exports the focused `KubernetesSandboxAdapter`,
+`KubernetesDurableWorkspace`, capability constants, public option/record types,
+`KubernetesSandboxDriver`, official driver factory, and resource-name helper so
+platform wrappers can inject a tested infrastructure boundary without deep
+imports. Application code normally uses only `kubernetesSandboxRuntime(...)`.
+Provider resources and control metadata remain adapter-private.
+
+## `@purista/harness-policy-opa` package
+
+### `package.json` exports map (locked)
+
+```json
+{
+  "name": "@purista/harness-policy-opa",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./testing": { "types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js" }
+  }
+}
+```
+
+### Main exports — values
+
+```ts
+export const OPA_DATA_API_PREFIX: 'v1/data'
+export const OPA_DEFAULT_MAX_RESPONSE_BYTES: 262_144
+export const OPA_DEFAULT_TIMEOUT_MS: 10_000
+export class OpaClientError extends Error {}
+export class OpaPolicyError extends Error {}
+export function createOpaClient(options: OpaClientOptions): OpaClient
+export function opaPolicy<
+  S extends BuilderState,
+  const ResultSchema extends Schema<any, any>,
+>(
+  registrar: OpaPolicyRegistrar<S>,
+  options: OpaPolicyOptions<S, ResultSchema>,
+): GovernancePolicyEvaluator<S>
+```
+
+### Main exports — types
+
+```ts
+export type OpaDecisionPath
+export type OpaClientErrorKind
+export type OpaPolicyErrorKind
+export type OpaQueryResult
+export type OpaJsonCompatible<T>
+export type OpaJsonResultSchema<ResultSchema extends Schema<any, any>>
+export interface OpaDecisionExecution
+export interface OpaClientOptions
+export interface OpaClient
+export interface OpaPolicyRegistrar<S extends BuilderState>
+export interface OpaPolicyOptions<S extends BuilderState, ResultSchema extends Schema<any, any>>
+```
+
+### Testing exports
+
+```ts
+export interface FakeOpaDataApiRequest
+export interface FakeOpaDataApiResponseOptions
+export interface FakeOpaDataApiDecisionOptions
+export class FakeOpaDataApi
+```
+
+The exact generic callbacks, transport behavior, validation, errors, and fake
+methods are locked in [41-opa-policy-adapter](./41-opa-policy-adapter.md).
 
 ## `@purista/harness-agent-plugins` package
 
@@ -1258,24 +1527,14 @@ Every export listed above must be re-exported from the appropriate entry point:
 
 ## Schema conversion
 
-The harness converts Zod schemas to JSON Schema (draft 2020-12) via an internal converter. Locked rules:
+The harness does not own a vendor-specific conversion matrix. Tool input and default-loop agent output implement `ModelSchema`; during `build()`, Harness calls the Standard JSON Schema input converter exactly once with target `draft-2020-12`, validates/freezes the returned `JsonValue`, and caches it. All other public value-schema boundaries require only `Schema`. Provider ports receive plain JSON Schema and adapters pass it through unchanged. Exact failure metadata, type directions, and cache rules are locked in [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/model-projection.md).
 
-- `z.string()` → `{type:'string'}` (with `minLength`/`maxLength`/`pattern` if set).
-- `z.number()` / `z.int()` → `{type:'number'|'integer'}` with bounds.
-- `z.boolean()` → `{type:'boolean'}`.
-- `z.literal(v)` → `{const: v}`.
-- `z.enum(values)` → `{enum: values}`.
-- `z.object({...})` → `{type:'object', properties, required}` with `additionalProperties: false`.
-- `z.array(t)` → `{type:'array', items}`.
-- `z.union([a,b])` → `{anyOf:[A,B]}`.
-- `z.discriminatedUnion(k, [...])` → `{oneOf:[...]}` with the discriminator preserved on each branch.
-- `z.optional(t)` makes the field optional in the parent object.
-- `z.nullable(t)` → `{anyOf:[T,{type:'null'}]}`.
-- `.describe(s)` populates `description`.
-- Any unsupported Zod type → `SkillManifestError`/`ValidationError` at schema-translation time, with a clear `meta.unsupported` field.
-
-The reverse conversion (JSON Schema → Zod) is not implemented; MCP tool input schemas are validated using a JSON-Schema validator embedded in the harness MCP runners, not converted to Zod.
+MCP tools retain their existing embedded JSON Schema validation path; JSON Schema is not converted into a user validator.
 
 ## Cross-references
 
 - All other spec files. This is the index of types they collectively define.
+
+## Decision boundary public inventory
+
+The [shared ABI, phase, governance, wait and continuation inventory](./37-decision-boundaries/03-contracts/decisions.md) adds the core decisions exports, beforeOutput hook/types, ProviderContinuation and ExternalWaitResolved. Its clean removals are mandatory; this index does not authorize old aliases.

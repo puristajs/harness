@@ -1,0 +1,59 @@
+{
+  "name": "@purista/harness-memory-redis",
+  "version": "3.0.0",
+  "description": "Redis Search memory engine for @purista/harness.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puristajs/harness",
+    "directory": "packages/harness-memory-redis"
+  },
+  "bugs": {
+    "url": "https://github.com/puristajs/harness/issues"
+  },
+  "homepage": "https://github.com/puristajs/harness#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:live": "vitest run test-live"
+  },
+  "dependencies": {
+    "redis": "^6.2.1"
+  },
+  "peerDependencies": {
+    "@purista/harness": "^3.0.0"
+  },
+  "devDependencies": {
+    "@purista/harness": "^3.0.0",
+    "@types/node": "^26.2.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

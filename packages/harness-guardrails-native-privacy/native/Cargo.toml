@@ -1,0 +1,15 @@
+[package]
+name = "harness_guardrails_native_privacy"
+version = "3.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3.12.2", features = ["napi8", "async"] }
+napi-derive = "3.6.3"
+regex = "1.12.3"
+tokio = { version = "1.48.0", features = ["rt"] }

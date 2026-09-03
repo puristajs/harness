@@ -2,11 +2,13 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "../..",
-    "types": ["node", "vitest/globals"],
-    "paths": {
-      "@purista/harness": ["../../packages/harness/src/index.ts"]
-    }
+    "rootDir": "src",
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

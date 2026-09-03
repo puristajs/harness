@@ -1,0 +1,17 @@
+generation_map_version: 1
+source_contract: 03-contracts/contracts.yaml
+generator_policy: TypeScript declaration emit and existing skill sync are the only deterministic generators; their checks are the required drift check.
+outputs:
+  - contract_ids: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    destination: packages/harness/dist declaration output
+    mode: TypeScript declaration emit from schema-first source generics
+    reason: Public types are projections of registered schema objects; no mirrored generated interface is allowed.
+    checks: [harness type tests, public API export test, declaration build]
+  - contract_ids: [CTR-SS-PROJECTION]
+    destination: private compiled runtime definitions
+    mode: build-time in-memory projection and deep freeze
+    reason: Providers require JSON Schema while validation retains the original schema object.
+    checks: [projection unit tests, build-cache tests]
+generated_outputs: [package declarations, existing generated skill mirrors]
+manual_boundaries: [provider SDK request translation, narrative documentation]
+forbidden_outputs: [committed projected JSON schemas, duplicated schema interfaces, vendor adapter wrappers, migration shims]

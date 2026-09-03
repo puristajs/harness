@@ -8,8 +8,8 @@ same session API.
 ```mermaid
 flowchart TD
   Harness["defineHarness"] --> Model["ModelProvider adapter"]
-  Harness --> State["StateStore adapter"]
-  Harness --> Memory["MemoryAdapter"]
+  Harness --> State["HarnessStorage adapter"]
+  Harness --> Memory["MemoryEngine"]
   Harness --> Sandbox["Sandbox adapter"]
   Harness --> Tools["TypeScript and MCP tools"]
   Harness --> Skills["Skill directories"]
@@ -34,22 +34,23 @@ schema-validated structured output. Expose `embed(...)` and `rerank(...)` only
 when the provider SDK can support those operations cleanly; otherwise omit the
 method and do not declare the matching capability.
 
-## Add A State Store Adapter
+## Add A Harness Storage Adapter
 
-Implement `StateStore` when sessions, runs, messages, and events must outlive
-the process.
+Implement `HarnessStorage` when sessions, messages, runs, events, workflow
+checkpoints, leases, or external waits must outlive the process. Use one shared
+transactional backend; do not split these operations across adapters.
 
-Durable adapters should pass the shared state-store contract tests.
+Durable adapters should pass the shared storage contract tests.
 
-## Add A Memory Adapter
+## Add A Memory Engine
 
-Implement `MemoryAdapter` when agent memory must live outside the default
-sandbox-backed `sandboxMemory()` adapter.
+Implement `MemoryEngine` when agent memory must live outside the dependency-free
+process-local default.
 
 Adapter responsibilities:
 
-- declare exact `memory.*` capabilities, including scopes and optional search,
-  TTL, and persistence;
+- declare exact `memory.*` capabilities, including TTL, text/vector/hybrid
+  search, persistence, and multi-instance behavior;
 - implement backend I/O only; core owns standard validation, telemetry, metrics,
   content-capture policy, and error wrapping;
 - respect `ctx.signal` on every backend call;
@@ -58,7 +59,7 @@ Adapter responsibilities:
 - keep Redis, Postgres, vector, graph, or product-specific adapters in separate
   `@purista/harness-memory-*` packages.
 
-Memory adapters should pass `memoryAdapterContract` from
+Memory engines should pass `memoryEngineContract` from
 `@purista/harness/testing`.
 
 ## Add A Sandbox Adapter
@@ -76,23 +77,74 @@ and `hibernate(...)`. Declare the matching adapter capabilities so applications
 can fail early when they require durable sandbox behavior:
 
 ```ts
-defineHarness()
-  .sandbox(snapshotCapableSandbox)
-  .requires(['sandbox.snapshot', 'sandbox.resume'])
+defineHarness().sandbox(snapshotCapableSandbox).requires(['sandbox.snapshot', 'sandbox.resume'])
 ```
+
+If the adapter should support built-in `grep`, also declare
+`sandbox.text_search` and implement `searchText(request)` on every opened
+session. Execute matching where the files live: inside the container or pod,
+through the remote provider's search API, or beside the backing volume. Do not
+download the whole workspace into the Harness process and do not turn text
+search into arbitrary command execution.
+
+```ts title="Text-search part of a custom sandbox session"
+import {
+  SANDBOX_TEXT_SEARCH_LIMITS,
+  validateSandboxTextSearchRequest,
+  type SandboxTextSearchRequest,
+  type SandboxTextSearchResult,
+} from '@purista/harness'
+
+type PodSearchClient = {
+  searchText(input: SandboxTextSearchRequest & {
+    limits: typeof SANDBOX_TEXT_SEARCH_LIMITS
+  }): Promise<SandboxTextSearchResult>
+}
+
+async function searchText(
+  client: PodSearchClient,
+  request: SandboxTextSearchRequest,
+): Promise<SandboxTextSearchResult> {
+  validateSandboxTextSearchRequest(request)
+  request.signal?.throwIfAborted()
+
+  // The fixed helper executes inside this session's pod and enforces all limits.
+  return await client.searchText({ ...request, limits: SANDBOX_TEXT_SEARCH_LIMITS })
+}
+
+export const podSandbox = {
+  capabilities: ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs'] as const,
+  // Implement info, administration, configureHarnessContext, registerOwner,
+  // open and terminate with the public Sandbox lifecycle.
+}
+```
+
+`validateSandboxTextSearchRequest(...)` is the adapter-side trust-boundary
+check. The portable `safe_regex_v1` language rejects backreferences,
+lookaround, inline flags, named groups, shorthand character classes, and
+Unicode property escapes; it accepts ASCII patterns and case-sensitive mode
+only. Literal insensitive search folds ASCII letters only. Implement it with a non-backtracking engine or a
+fixed provider search primitive. Never pass a pattern or path through shell
+string interpolation.
+
+Search results must be stably ordered and must report `complete: false` plus
+one or more `limitReasons` whenever input was skipped, matches were capped, or
+a returned line was truncated. Run `sandboxTextSearchContract(...)` for every
+adapter that advertises the capability. Platform tests must additionally prove
+tenant isolation, resource enforcement, cancellation, and cleanup.
 
 Preview ports and browser routing remain application concerns, not core
 sandbox capabilities.
 
-## Add A Durable Runtime Adapter
+## Add Recoverable Execution Storage
 
-Durable execution is opt-in. A runtime adapter declares capabilities and owns
-checkpoint storage, leases, retries, and resume behavior.
+Durable execution is opt-in per workflow invocation. `HarnessStorage` declares
+capabilities and owns checkpoint storage, leases, waits, retries, and resume.
 
 ```ts
 const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())
-  .requires(['runtime.checkpoint', 'runtime.resume_from_checkpoint'])
+  .storage(inMemoryHarnessStorage())
+  .requires(['storage.checkpoint', 'storage.resume'])
   .models(...)
   .agents(...)
   .build()
@@ -108,17 +160,16 @@ applications or addon packages own storage and learning workflows.
 
 ```ts
 feedback.record({
-  target: { kind: 'run', runId },
-  source: 'user',
-  label: 'useful'
+	target: { kind: 'run', runId },
+	source: 'user',
+	label: 'useful',
 })
 ```
 
 ## Add TypeScript Tools
 
 ```ts
-.tools({
-  policy_lookup: {
+.tool('policy_lookup', {
     description: 'Look up a short policy by topic.',
     input: z.object({ topic: z.string() }),
     output: z.object({ text: z.string() }),
@@ -126,8 +177,7 @@ feedback.record({
       ctx.logger.info('Looking up policy.', { tool_id: ctx.toolId })
       return { text: `Policy for ${input.topic}` }
     }
-  }
-})
+  })
 ```
 
 Rules:
@@ -169,11 +219,11 @@ or integration with an external policy engine:
     ]
   },
   approval: {
-    request: async ({ approvalId, decisions }) => ({
-      decision: 'approved',
-      approverId: 'ops',
-      reason: `${approvalId}:${decisions.map((decision) => decision.ruleId).join(',')}`
-    })
+    // Synthetic provider from the runnable guardrails example.
+    async request(request, execution) {
+      execution.signal.throwIfAborted()
+      return { decision: 'approved', reasonCode: 'review_approved' }
+    }
   },
   policies: [
     native({
@@ -198,7 +248,18 @@ or integration with an external policy engine:
 Native `rule(...)` predicates receive the selected TypeScript tool's parsed
 input. `exposureRule(...)` predicates run before the model call and can hide
 tools without seeing tool input. Adapter policies are the integration point for
-OPA, Cedar, Eve-style controls, or product-specific policy services.
+external engines. Use `@purista/harness-policy-opa` for OPA's Data API instead
+of recreating its transport in application code. Cedar, Eve-style controls,
+AWS Verified Permissions, and product-specific services still use focused
+application-owned evaluators because their execution contracts differ.
+
+The snippet's approving callback is a local fixture, not a production reviewer.
+Use the [tested composition](../../examples/guardrails/README.md) for one shared
+provider across static permission and policy demands. An application adapter
+receives `{ approvalId, subject, demands }` and bounded `{ signal, deadline }`;
+it returns only approved/rejected and an optional content-free reason code.
+See [decisions and approval](./decisions-and-approval.md) before adding durable
+review or logging decision data.
 
 ## Add Skills
 
@@ -227,7 +288,7 @@ Skill-backed agents need the `read` built-in so the model can load
 the use case explicitly requires them.
 
 ```ts
-agent({
+.agent('incident_writer', {
   model: 'assistant',
   skills: ['incident-responder'],
   builtinTools: ['read'],
@@ -240,17 +301,15 @@ agent({
 Use workflows for orchestration:
 
 ```ts
-.workflows(({ workflow }) => ({
-  review_incident: workflow({
-    input: z.object({ incident: z.string() }),
-    output: z.object({ summary: z.string(), needsReview: z.boolean() }),
-    delegation: { agents: ['incident_writer'] },
-    handler: async (ctx) => {
-      const summary = await ctx.agents.incident_writer({ incident: ctx.input.incident })
-      return { ...summary, needsReview: true }
-    }
-  })
-}))
+.workflow('review_incident', {
+  input: z.object({ incident: z.string() }),
+  output: z.object({ summary: z.string(), needsReview: z.boolean() }),
+  delegation: { agents: ['incident_writer'] },
+  handler: async (ctx) => {
+    const summary = await ctx.agents.incident_writer({ incident: ctx.input.incident })
+    return { ...summary, needsReview: true }
+  }
+})
 ```
 
 Keep business sequencing in workflows. Keep reusable model behavior in agents.

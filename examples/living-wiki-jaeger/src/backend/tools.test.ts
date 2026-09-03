@@ -3,26 +3,9 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-
-async function loadToolsModule() {
-  return import(new URL('./tools.js', import.meta.url).href) as Promise<{
-    createLivingWikiTools: (store: unknown) => Record<
-      string,
-      {
-        description: string
-        input: { safeParse: (value: unknown) => { success: boolean } }
-        output: { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
-        handler: (ctx: unknown, input: unknown) => Promise<unknown>
-      }
-    >
-  }>
-}
-
-async function loadDataModule() {
-  return import(new URL('./data.js', import.meta.url).href) as Promise<{
-    createLivingWikiStore: (options: { dataRoot: string }) => unknown
-  }>
-}
+import { defineHarness, type ToolHandlerContext } from '@purista/harness'
+import { createLivingWikiStore } from './data.js'
+import { createLivingWikiTools } from './tools.js'
 
 async function createTempDataRoot(): Promise<string> {
   const root = join(tmpdir(), `living-wiki-tools-${randomUUID()}`)
@@ -35,29 +18,39 @@ async function createTempDataRoot(): Promise<string> {
   return root
 }
 
-function toolContext() {
+async function createRegisteredLivingWikiTools() {
+  const store = createLivingWikiStore({ dataRoot: await createTempDataRoot() })
+  const tools = createLivingWikiTools(store)
+  defineHarness().tools(tools)
+  return tools
+}
+
+function toolContext(): ToolHandlerContext {
   return {
     signal: new AbortController().signal,
+    metadata: {},
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn()
-    },
-    telemetry: { span: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()) },
-    sandbox: {},
+    } as unknown as ToolHandlerContext['logger'],
+    telemetry: { span: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()) } as unknown as ToolHandlerContext['telemetry'],
+    sandbox: {} as ToolHandlerContext['sandbox'],
+    metrics: {} as ToolHandlerContext['metrics'],
+    memory: {} as ToolHandlerContext['memory'],
     runId: 'run_test',
     sessionId: 'session_test',
     agentId: 'wiki_curator',
-    toolId: 'test_tool'
+    toolId: 'test_tool',
+    callId: 'call_test',
+    idempotencyKey: 'run_test:call_test'
   }
 }
 
 describe('wiki tool contracts', () => {
   it('defines the required typed tools with Zod input and output schemas', async () => {
-    const { createLivingWikiTools } = await loadToolsModule()
-    const { createLivingWikiStore } = await loadDataModule()
-    const tools = createLivingWikiTools(createLivingWikiStore({ dataRoot: await createTempDataRoot() }))
+    const tools = await createRegisteredLivingWikiTools()
 
     expect(Object.keys(tools).sort()).toEqual([
       'append_log',
@@ -78,9 +71,7 @@ describe('wiki tool contracts', () => {
   })
 
   it('performs file IO through safe slug-based tools and returns structured JSON', async () => {
-    const { createLivingWikiTools } = await loadToolsModule()
-    const { createLivingWikiStore } = await loadDataModule()
-    const tools = createLivingWikiTools(createLivingWikiStore({ dataRoot: await createTempDataRoot() }))
+    const tools = await createRegisteredLivingWikiTools()
     const ctx = toolContext()
 
     const source = await tools['read_source']!.handler(ctx, { slug: 'harness-flow' })
@@ -100,9 +91,7 @@ describe('wiki tool contracts', () => {
   })
 
   it('rejects invalid tool inputs and validates JSON-renderer panel specs', async () => {
-    const { createLivingWikiTools } = await loadToolsModule()
-    const { createLivingWikiStore } = await loadDataModule()
-    const tools = createLivingWikiTools(createLivingWikiStore({ dataRoot: await createTempDataRoot() }))
+    const tools = await createRegisteredLivingWikiTools()
     const ctx = toolContext()
 
     expect(tools['read_wiki_page']!.input.safeParse({ slug: '../agent-harness' }).success).toBe(false)

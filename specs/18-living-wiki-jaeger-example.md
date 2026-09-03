@@ -112,7 +112,7 @@ Rules:
 The backend builds one harness using:
 
 - `defineHarness()`;
-- an in-memory or local-file state store suitable for the example;
+- in-memory or local-file Harness storage suitable for the example;
 - a local sandbox rooted at the example workspace;
 - the OpenAI provider when `OPENAI_API_KEY` is present;
 - fake provider scripts for tests;

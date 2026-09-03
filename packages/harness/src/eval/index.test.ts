@@ -1,221 +1,201 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+
+import { ValidationError } from '../errors/index.js'
+import { RecordingTelemetry } from '../testing/recordingTelemetry.js'
 import {
-  evaluateDeterministicScorer,
-  evaluatePromptCandidates,
-  ValidationError,
-  type PromptCandidate,
-  type EvaluationItem
-} from '../index.js'
+  createDeterministicEvaluationScorer,
+  runEvaluation,
+  scoreEvaluation,
+  type EvaluationObservation,
+  type EvaluationScorer
+} from './index.js'
 
-describe('deterministic scorer helpers', () => {
-  it('scores regex and contains definitions against JSON Pointer selected output', () => {
-    const target = {
-      input: { id: 'item-1' },
-      output: { answer: 'The deployment is healthy', nested: { status: 'green' } }
+const scorer: EvaluationScorer<{ expected: string }, { answer: string }> = {
+  id: 'correctness',
+  version: '1',
+  dimensions: [{ id: 'correct', kind: 'boolean' }, { id: 'reason', kind: 'label', labels: ['ok', 'wrong'] }],
+  async score({ observation }) {
+    const passed = observation.output.answer === observation.assessment?.expected
+    return {
+      dimensions: [
+        { outcome: 'scored', dimensionId: 'correct', kind: 'boolean', value: passed, passed },
+        { outcome: 'scored', dimensionId: 'reason', kind: 'label', value: passed ? 'ok' : 'wrong' }
+      ]
     }
+  }
+}
 
-    expect(evaluateDeterministicScorer({ type: 'regex', path: '/answer', pattern: 'deploy.*healthy' }, target)).toEqual({
-      score: 1,
-      passed: true
-    })
-    expect(evaluateDeterministicScorer({ type: 'contains', path: '/nested/status', value: 'GREEN', caseInsensitive: true }, target)).toEqual({
-      score: 1,
-      passed: true
-    })
-  })
-
-  it('returns deterministic evidence for missing pointers and attribute inequality', () => {
-    expect(evaluateDeterministicScorer({ type: 'contains', path: '/missing', value: 'x' }, { input: null, output: {} })).toEqual({
-      score: 0,
-      passed: false,
-      evidence: { reason: 'missing_pointer', path: '/missing' }
-    })
-
-    expect(evaluateDeterministicScorer(
-      { type: 'attribute-equality', leftPath: '/actual', rightPath: '/expected' },
-      { input: null, output: { actual: 'a', expected: 'b' } }
-    )).toEqual({
-      score: 0,
-      passed: false,
-      evidence: { left: 'a', right: 'b' }
-    })
-  })
-
-  it('scores JSON Schema validation failures without throwing', () => {
-    const result = evaluateDeterministicScorer({
-      type: 'json-schema',
-      schema: {
-        type: 'object',
-        properties: { status: { const: 'ok' } },
-        required: ['status'],
-        additionalProperties: false
-      }
-    }, { input: null, output: { status: 'fail' } })
-
-    expect(result.score).toBe(0)
-    expect(result.passed).toBe(false)
-    expect(result.evidence).toMatchObject({ reason: 'schema_validation_failed' })
-  })
-
-  it('supports root pointers, escaped pointer segments, arrays, enum, and equality pass cases', () => {
-    expect(evaluateDeterministicScorer({ type: 'contains', path: '', value: 'root' }, { input: null, output: 'root value' })).toEqual({
-      score: 1,
-      passed: true
-    })
-    expect(evaluateDeterministicScorer({ type: 'contains', path: '/a~1b/~0key/0', value: 'needle' }, {
-      input: null,
-      output: { 'a/b': { '~key': ['needle'] } }
-    })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'attribute-equality', leftPath: '/left', rightPath: '/right' }, {
-      input: null,
-      output: { left: { ok: true }, right: { ok: true } }
-    })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { enum: ['a', 'b'] } }, { input: null, output: 'b' })).toEqual({
-      score: 1,
-      passed: true
-    })
-  })
-
-  it('compares values structurally, insensitive to object key order', () => {
-    expect(evaluateDeterministicScorer({ type: 'attribute-equality', leftPath: '/left', rightPath: '/right' }, {
-      input: null,
-      output: {
-        left: { a: 1, nested: { x: [1, { y: true }], z: null } },
-        right: { nested: { z: null, x: [1, { y: true }] }, a: 1 }
-      }
-    })).toEqual({ score: 1, passed: true })
-
-    expect(evaluateDeterministicScorer({ type: 'attribute-equality', leftPath: '/left', rightPath: '/right' }, {
-      input: null,
-      output: { left: { a: 1 }, right: { a: 1, extra: true } }
-    })).toEqual({ score: 0, passed: false, evidence: { left: { a: 1 }, right: { a: 1, extra: true } } })
-
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { const: { b: 2, a: 1 } } }, {
-      input: null,
-      output: { a: 1, b: 2 }
-    })).toEqual({ score: 1, passed: true })
-  })
-
-  it('reports JSON Schema type, required, and additional-property issues', () => {
-    const result = evaluateDeterministicScorer({
-      type: 'json-schema',
-      schema: {
-        type: 'object',
-        properties: { count: { type: 'integer' } },
-        required: ['count', 'name'],
-        additionalProperties: false
-      }
-    }, { input: null, output: { count: 1.5, extra: true } })
-
-    expect(result.score).toBe(0)
-    expect(result.passed).toBe(false)
-    expect(JSON.stringify(result.evidence)).toContain('required')
-    expect(JSON.stringify(result.evidence)).toContain('additional_properties')
-    expect(JSON.stringify(result.evidence)).toContain('integer')
-  })
-
-  it('covers JSON Schema primitive type checks and invalid pointer forms', () => {
-    expect(evaluateDeterministicScorer({ type: 'contains', path: 'not-a-pointer', value: 'x' }, { input: null, output: 'x' })).toEqual({
-      score: 0,
-      passed: false,
-      evidence: { reason: 'missing_pointer', path: 'not-a-pointer' }
-    })
-    expect(evaluateDeterministicScorer({ type: 'contains', path: '/5', value: 'x' }, { input: null, output: ['x'] })).toEqual({
-      score: 0,
-      passed: false,
-      evidence: { reason: 'missing_pointer', path: '/5' }
-    })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { type: 'array' } }, { input: null, output: [] })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { type: 'string' } }, { input: null, output: 'x' })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { type: 'number' } }, { input: null, output: 1.5 })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { type: 'boolean' } }, { input: null, output: false })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: { type: 'null' } }, { input: null, output: null })).toEqual({ score: 1, passed: true })
-    expect(evaluateDeterministicScorer({ type: 'json-schema', schema: true }, { input: null, output: Symbol('x') })).toEqual({ score: 1, passed: true })
-  })
-})
-
-describe('evaluatePromptCandidates', () => {
-  it('runs candidates and items in stable order, aggregates scores, and sorts deterministically', async () => {
-    const candidates: PromptCandidate[] = [
-      { id: 'b', prompt: 'second' },
-      { id: 'a', prompt: 'first' }
-    ]
-    const items: EvaluationItem[] = [
-      { id: '1', input: 'one' },
-      { id: '2', input: 'two' }
-    ]
-    const calls: string[] = []
-
-    const scores = await evaluatePromptCandidates({
-      candidates,
-      items,
-      signal: new AbortController().signal,
-      runCandidate: async (candidate, item) => {
-        calls.push(`${candidate.id}:${item.id}`)
-        return { candidateId: candidate.id, itemId: item.id }
+describe('generic evaluation runs', () => {
+  it('keeps assessment out of tasks, orders the matrix, and reports separate accounting', async () => {
+    const seen: unknown[] = []
+    const result = await runEvaluation({
+      runId: 'eval-1',
+      dataset: {
+        id: 'dataset',
+        version: '1',
+        cases: [
+          { id: 'a', input: 'one', assessment: { expected: 'one' }, segments: { locale: 'en' } },
+          { id: 'b', input: 'two', assessment: { expected: 'two' } }
+        ]
       },
-      scorer: async (target) => {
-        const output = target.output as { candidateId: string; itemId: string }
+      candidates: [{ id: 'candidate', version: '1', config: { prefix: '' } }],
+      trials: [{ id: 'first' }, { id: 'second' }],
+      task: {
+        id: 'task',
+        version: '1',
+        async run(target) {
+          seen.push(target)
+          expect('assessment' in target).toBe(false)
+          return {
+            output: { answer: target.input },
+            accounting: { completeness: 'complete', modelCalls: [{ model: { providerId: 'fake', model: 'fake', alias: 'task' }, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } }] }
+          }
+        }
+      },
+      scorers: [scorer],
+      aggregateBy: ['locale']
+    })
+
+    expect(seen).toHaveLength(4)
+    expect(result.mode).toBe('execute_and_score')
+    expect(result.cases.map(row => [row.caseId, row.trialId])).toEqual([['a', 'first'], ['a', 'second'], ['b', 'first'], ['b', 'second']])
+    expect(result.cases.every(row => row.scorers[0]?.status === 'completed')).toBe(true)
+    expect(result.candidateAggregates[0]?.taskAccounting.tokenTotals).toMatchObject({ totalTokens: 12 })
+    expect(result.candidateAggregates[0]?.scorerAccounting.completeness).toBe('unknown')
+    expect(JSON.stringify(result)).not.toContain('expected')
+    expect(Object.isFrozen(result)).toBe(true)
+  })
+
+  it('re-scores observations without executing a task and preserves no-task accounting as unknown', async () => {
+    const observation: EvaluationObservation<{ expected: string }, { answer: string }> = {
+      id: 'saved-1', datasetId: 'dataset', datasetVersion: '1', caseId: 'a',
+      candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1',
+      trialId: 'default', trialOrdinal: 0, output: { answer: 'yes' }, assessment: { expected: 'yes' }
+    }
+    const result = await scoreEvaluation({ runId: 'rescore-1', observations: [observation], scorers: [scorer] })
+
+    expect(result.mode).toBe('score_only')
+    expect(result.cases[0]?.task).toEqual({ status: 'not_run', attempts: 0 })
+    expect(result.cases[0]?.scorers[0]?.dimensions[0]).toMatchObject({ outcome: 'scored', value: true })
+    expect(result.candidateAggregates[0]?.taskAccounting.completeness).toBe('unknown')
+  })
+
+  it('keeps not-applicable and inconclusive dimensions out of value aggregates', async () => {
+    const adapter: EvaluationScorer = {
+      id: 'coverage', version: '1',
+      dimensions: [{ id: 'quality', kind: 'number' }, { id: 'safety', kind: 'boolean' }],
+      async score() {
         return {
-          score: output.candidateId === 'a' || output.itemId === '1' ? 1 : 0,
-          passed: output.candidateId === 'a' || output.itemId === '1'
+          dimensions: [
+            { outcome: 'not_applicable', dimensionId: 'quality', kind: 'number' },
+            { outcome: 'inconclusive', dimensionId: 'safety', kind: 'boolean', reason: 'insufficient_evidence' }
+          ]
         }
       }
+    }
+    const result = await scoreEvaluation({
+      runId: 'coverage-1',
+      observations: [{ id: 'o', datasetId: 'd', datasetVersion: '1', caseId: 'c', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'default', trialOrdinal: 0, output: null }],
+      scorers: [adapter]
     })
-
-    expect(calls).toEqual(['b:1', 'b:2', 'a:1', 'a:2'])
-    expect(scores).toEqual([
-      { candidateId: 'a', meanScore: 1, passRate: 1, itemCount: 2, scorerCount: 2 },
-      { candidateId: 'b', meanScore: 0.5, passRate: 0.5, itemCount: 2, scorerCount: 2 }
+    expect(result.dimensionAggregates.map(item => item.coverage)).toEqual([
+      { planned: 1, completed: 1, scored: 0, notApplicable: 1, inconclusive: 0, errored: 0, skipped: 0 },
+      { planned: 1, completed: 1, scored: 0, notApplicable: 0, inconclusive: 1, errored: 0, skipped: 0 }
     ])
   })
 
-  it('rejects empty candidate or item inputs', async () => {
-    await expect(evaluatePromptCandidates({
-      candidates: [],
-      items: [{ id: '1', input: 'x' }],
-      signal: new AbortController().signal,
-      runCandidate: vi.fn(),
-      scorer: vi.fn()
+  it('validates definitions before callbacks and normalizes oversized evidence', async () => {
+    let called = false
+    await expect(runEvaluation({
+      runId: 'bad',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: 'x' }] },
+      candidates: [{ id: 'same', version: '1', config: {} }, { id: 'same', version: '2', config: {} }],
+      task: { id: 'task', version: '1', async run() { called = true; return { output: null } } },
+      scorers: [scorer]
     })).rejects.toBeInstanceOf(ValidationError)
+    expect(called).toBe(false)
 
-    await expect(evaluatePromptCandidates({
-      candidates: [{ id: 'c', prompt: 'p' }],
-      items: [],
-      signal: new AbortController().signal,
-      runCandidate: vi.fn(),
-      scorer: vi.fn()
-    })).rejects.toBeInstanceOf(ValidationError)
+    const adapter = createDeterministicEvaluationScorer({
+      id: 'bounded', version: '1', dimension: { id: 'check', kind: 'boolean' },
+      evaluate: () => ({ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true, evidence: { kind: 'inline', value: 'x'.repeat(4097) } })
+    })
+    const result = await scoreEvaluation({
+      runId: 'bound',
+      observations: [{ id: 'observation', datasetId: 'd', datasetVersion: '1', caseId: 'c', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'default', trialOrdinal: 0, output: null }],
+      scorers: [adapter]
+    })
+    expect(result.cases[0]?.scorers[0]?.dimensions[0]?.evidence).toEqual({ kind: 'omitted', reason: 'size_limit', originalBytes: 4099 })
   })
 
-  it('propagates abort before scheduling more work', async () => {
-    const controller = new AbortController()
-    controller.abort(new Error('stop'))
-
-    await expect(evaluatePromptCandidates({
-      candidates: [{ id: 'c', prompt: 'p' }],
-      items: [{ id: 'i', input: 'x' }],
-      signal: controller.signal,
-      runCandidate: vi.fn(),
-      scorer: vi.fn()
-    })).rejects.toThrow('stop')
-  })
-
-  it('uses expected and context values when scoring candidate outputs and sorts ties by id', async () => {
-    const scores = await evaluatePromptCandidates({
-      candidates: [
-        { id: 'b', prompt: 'p' },
-        { id: 'a', prompt: 'p' }
-      ],
-      items: [{ id: 'i', input: 'x', expected: 'expected', context: ['ctx'] }],
-      signal: new AbortController().signal,
-      runCandidate: async () => 'expected',
-      scorer: async (target) => ({
-        score: target.output === target.expected && target.context?.[0] === 'ctx' ? 1 : 0,
-        passed: target.output === target.expected
-      })
+  it('keeps matrix identity when a task fails or fail-fast skips a later row', async () => {
+    const result = await runEvaluation({
+      runId: 'fail-fast',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'a', input: 'a' }, { id: 'b', input: 'b' }] },
+      candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { throw new Error('broken task') } },
+      scorers: [scorer],
+      failurePolicy: 'fail_fast'
     })
 
-    expect(scores.map((score) => score.candidateId)).toEqual(['a', 'b'])
+    expect(result.status).toBe('failed')
+    expect(result.cases.map(row => [row.caseId, row.status, row.task.status])).toEqual([
+      ['a', 'task_error', 'error'],
+      ['b', 'skipped', 'not_run']
+    ])
+    expect(result.cases[1]).toMatchObject({ datasetId: 'dataset', candidateId: 'candidate', taskId: 'task', trialId: 'default' })
+  })
+
+  it('turns a throwing retry predicate into a terminal row error', async () => {
+    const result = await runEvaluation({
+      runId: 'retry-predicate',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'a', input: 'a' }] },
+      candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { throw new Error('callback failed') } },
+      scorers: [scorer],
+      retry: { task: { maxAttempts: 2, shouldRetry() { throw new Error('policy failed') } } }
+    })
+
+    expect(result.status).toBe('completed_with_errors')
+    expect(result.cases[0]?.task).toMatchObject({ status: 'error', attempts: 1, error: { code: 'EVALUATION_CALLBACK_ERROR' } })
+  })
+
+  it('stops remaining scorers immediately after a fail-fast scorer error', async () => {
+    let secondCalled = false
+    const result = await scoreEvaluation({
+      runId: 'scorer-fail-fast',
+      observations: [{ id: 'o', datasetId: 'd', datasetVersion: '1', caseId: 'c', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'default', trialOrdinal: 0, output: null }],
+      scorers: [
+        { id: 'broken', version: '1', dimensions: [{ id: 'first', kind: 'boolean' }], async score() { throw new Error('broken scorer') } },
+        { id: 'not-called', version: '1', dimensions: [{ id: 'second', kind: 'boolean' }], async score() { secondCalled = true; return { dimensions: [{ outcome: 'scored', dimensionId: 'second', kind: 'boolean', value: true }] } } }
+      ],
+      failurePolicy: 'fail_fast'
+    })
+
+    expect(secondCalled).toBe(false)
+    expect(result.cases[0]?.scorers.map(item => [item.status, item.skipReason])).toEqual([['error', undefined], ['skipped', 'failure_policy']])
+  })
+
+  it('emits only content-free evaluation telemetry and lifecycle metrics', async () => {
+    const telemetry = new RecordingTelemetry()
+    await runEvaluation({
+      runId: 'private-run',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'a', input: 'secret input', assessment: { expected: 'secret assessment' } }] },
+      candidates: [{ id: 'candidate', version: '1', config: { secret: 'candidate config' } }],
+      task: { id: 'task', version: '1', async run() { return { output: { answer: 'secret output' } } } },
+      scorers: [{
+        id: 'private-scorer',
+        version: '1',
+        dimensions: [{ id: 'check', kind: 'boolean' }],
+        async score() {
+          return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true, evidence: { kind: 'reference', ref: 'private-reference' } }] }
+        }
+      }],
+      telemetry
+    })
+
+    expect(telemetry.spans.map(span => span.name)).toEqual(['harness.eval.run', 'harness.eval.case', 'harness.eval.scorer'])
+    expect(telemetry.spans[0]?.attrs).toMatchObject({ 'harness.eval.candidate.count': 1, 'harness.eval.case.count': 1, 'harness.eval.scorer.count': 1 })
+    const emitted = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics })
+    for (const secret of ['private-run', 'dataset', 'secret input', 'secret assessment', 'secret output', 'private-reference', 'candidate config']) expect(emitted).not.toContain(secret)
   })
 })

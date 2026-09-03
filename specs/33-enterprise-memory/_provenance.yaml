@@ -1,0 +1,12 @@
+spec_lineage:
+  source_specs:
+    - ../20-memory-adapters.md
+    - ../32-harness-storage.md
+  user_direction: "2026-08-25 clean provider-agnostic memory refinement"
+research:
+  reviewed_at: "2026-08-25T12:00:00+02:00"
+  evidence: 00-stack.md
+spec_manifest:
+  content_digest: sha256:31ac7db905fa8695b24e51f148e122748fd7e2dfcbacddfe1edea24fe081fa52
+  source_revision: ai-harness-a1fd74a-purista-7a4107a-2026-08-25
+  generated_at: 2026-08-25T09:47:49.223Z

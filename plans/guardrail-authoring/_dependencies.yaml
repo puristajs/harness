@@ -1,0 +1,47 @@
+tickets:
+  TICKET-001:
+    depends_on: []
+    blocked_by: []
+    unblocks:
+      - TICKET-002
+  TICKET-002:
+    depends_on:
+      - TICKET-001
+    blocked_by: []
+    unblocks:
+      - TICKET-003
+  TICKET-003:
+    depends_on:
+      - TICKET-002
+    blocked_by: []
+    unblocks:
+      - TICKET-004
+  TICKET-004:
+    depends_on:
+      - TICKET-003
+    blocked_by: []
+    unblocks:
+      - TICKET-005
+  TICKET-005:
+    depends_on:
+      - TICKET-004
+    blocked_by: []
+    unblocks:
+      - TICKET-006
+  TICKET-006:
+    depends_on:
+      - TICKET-005
+    blocked_by: []
+    unblocks:
+      - TICKET-007
+  TICKET-007:
+    depends_on:
+      - TICKET-006
+    blocked_by: []
+    unblocks:
+      - TICKET-008
+  TICKET-008:
+    depends_on:
+      - TICKET-007
+    blocked_by: []
+    unblocks: []

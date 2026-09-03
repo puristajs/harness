@@ -116,7 +116,7 @@ abstract class HarnessError extends Error {
   - `harness.tool.duration` / `harness.run.duration`: `Histogram` (unit `s`, seconds, double).
   - `harness.permission.denials`: `Counter` (unit `1`).
   - `harness.run.errors`: `Counter` (unit `1`).
-  - `harness.events.persist_errors`: `Counter` (unit `1`); attributes `harness.session.id`, `harness.run.id`. Incremented on every `state.appendEvents` failure.
+  - `harness.events.persist_errors`: `Counter` (unit `1`); attributes `harness.session.id`, `harness.run.id`. Incremented on every `storage.appendEvents` failure.
   - `harness.memory.operation.duration`: `Histogram` (unit `s`).
   - `harness.memory.operations`: `Counter` (unit `1`).
   - `harness.memory.search.results`: `Histogram` (unit `1`).

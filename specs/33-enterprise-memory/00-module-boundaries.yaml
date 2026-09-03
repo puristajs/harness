@@ -1,0 +1,103 @@
+module_boundary_version: 1
+modules:
+  - module_id: harness_core
+    owner: harness_core
+    public_entrypoint: @purista/harness
+    owned_concepts:
+      - memory orchestration
+      - identity binding
+      - model references
+      - validation
+      - telemetry
+      - in-memory engine
+    allowed_dependencies:
+      - harness_testing
+    forbidden_dependencies:
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+      - purista_core
+  - module_id: harness_testing
+    owner: harness_core
+    public_entrypoint: @purista/harness/testing
+    owned_concepts:
+      - engine contract
+      - fake engine
+      - deterministic fixtures
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+  - module_id: sqlite_engine
+    owner: harness_adapters
+    public_entrypoint: @purista/harness-memory-sqlite
+    owned_concepts:
+      - SQLite memory schema
+      - FTS5 queries
+      - optional sqlite-vec loading and exact vector queries
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+      - purista_core
+  - module_id: postgres_engine
+    owner: harness_adapters
+    public_entrypoint: @purista/harness-memory-postgres
+    owned_concepts:
+      - PostgreSQL schema
+      - PostgreSQL queries
+      - pgvector integration
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - sqlite_engine
+      - redis_engine
+      - nats_engine
+      - purista_core
+  - module_id: redis_engine
+    owner: harness_adapters
+    public_entrypoint: @purista/harness-memory-redis
+    owned_concepts:
+      - Redis schema
+      - Redis commands
+      - Redis vector integration
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - sqlite_engine
+      - postgres_engine
+      - nats_engine
+      - purista_core
+  - module_id: nats_engine
+    owner: harness_adapters
+    public_entrypoint: @purista/harness-memory-nats
+    owned_concepts:
+      - NATS JetStream KV bucket and key schema
+      - compare-and-set writes
+      - bounded enumeration and lazy expiry
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - purista_core
+  - module_id: purista_core
+    owner: purista_core
+    public_entrypoint: @purista/core
+    owned_concepts:
+      - message identity propagation
+      - attached agent composition
+    allowed_dependencies:
+      - harness_core
+    forbidden_dependencies:
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine

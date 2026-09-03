@@ -1,0 +1,49 @@
+spec_manifest_version: 1
+content_digest: sha256:31ac7db905fa8695b24e51f148e122748fd7e2dfcbacddfe1edea24fe081fa52
+artifacts:
+  - path: 00-applicability.yaml
+    sha256: sha256:6d048b3e2c0add74048360b29e65eeef4fdb2c9f287ea6b00094fd414a002c32
+  - path: 00-architecture-overview.md
+    sha256: sha256:11a93f4228e6dc1e9cc2ca97fa3934b8ea2cffb036511d1af5da76a21b363a55
+  - path: 00-conventions.md
+    sha256: sha256:e827a2df7ced182c8567274a2800dacf3776c571c00fcc578edaee74902023f4
+  - path: 00-decision-authority.yaml
+    sha256: sha256:1e7857c1d0d179649a1b2825dc723585ef45eadcba8f0aaca8fcecef193c399e
+  - path: 00-file-structure.md
+    sha256: sha256:f05ecdc4d9312e6d80a017f98ab1392559ea58e512a81fdeb3b6e8a690af4886
+  - path: 00-module-boundaries.yaml
+    sha256: sha256:51910e79d6f8fc1601881033083681b372cb8ef7644912df862f6879186d04b8
+  - path: 00-policy-profile.yaml
+    sha256: sha256:7306337f1bea4166dc959a5a2e476b9683c4e51f8b0d43a5cfec72f4cd3a22e4
+  - path: 00-reuse-inventory.yaml
+    sha256: sha256:047ea96deeb228e68d59d4aec7b36bb8b0fa191c4bc138b780fa30323fe882fa
+  - path: 00-stack.md
+    sha256: sha256:51e320dd6f578f89157219f532081911c32cf99e621b957960804543f83fecc6
+  - path: 00-traceability.yaml
+    sha256: sha256:434a6ea8f78852f74723aec40edaea873b6c4819e1196f8093c6a0639d96cb81
+  - path: 00-vision.md
+    sha256: sha256:bfe38f37ecea03b1b8b0af70a8dba068e94b2f6a23e11af9b8d3d5ff8a72e628
+  - path: 02-capabilities/capability-inventory.md
+    sha256: sha256:bc75f818f553622c35f3ea7f65115b55077049ebd9b9607c9f28e27c0ffb8b76
+  - path: 03-contracts/contracts.yaml
+    sha256: sha256:8a95b63f939dfdd649ee294cf34614c58b915ca1ed7aabb30a373bef7cb0dec8
+  - path: 03-contracts/generation-map.yaml
+    sha256: sha256:12841492bb563f504918928d1d434b20e6c8a8fb6d35df4506d8bddcae902500
+  - path: 03-contracts/representation-catalog.yaml
+    sha256: sha256:384053a40f692e6064903c30bc3fdb8d198c6c6da09d412197b8d3c6349673ee
+  - path: 03-flows/e2e-coverage.md
+    sha256: sha256:46d587f2875b4fdf520aedd793cef80c69953a90e482f65021dfe3c1e4477f42
+  - path: 04-delivery/migration-requirements.md
+    sha256: sha256:5349e392662893b340bea5c025be18ddf435c9a98c33673916745c68d5cb5076
+  - path: 04-nfr/requirements.md
+    sha256: sha256:072469f78ec1dd925abe5bfd7187d1e2e6ae560ed032acefb1e0d39b89f0b2a9
+  - path: 04-operations/runbook-requirements.md
+    sha256: sha256:201f758d674a89de1d549e3f163b5e71774bb170fbd273d49ff05243e351aed0
+  - path: _registry.yaml
+    sha256: sha256:fc4258e83b4b77c43c8fa7921dcd3d85c094014e43abcb2ec5538ef384fd46c2
+  - path: glossary.md
+    sha256: sha256:a2e2f6ec10ea8733bae0e24a7bd78048bce9d7176392587c55dfac1e8de2554a
+provenance:
+  source_revision: ai-harness-a1fd74a-purista-7a4107a-2026-08-25
+  generated_at: 2026-08-25T09:47:49.223Z
+  generator: spec-manifest/v1

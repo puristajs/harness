@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "ticket_id": "TICKET-013",
+  "status": "review_pending",
+  "spec_manifest_digest": "sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb",
+  "plan_manifest_digest": "sha256:c00ece981670799bfe3b68a15e445ecdc2938e2c582ea5f67db612992258ab9c",
+  "changed_artifacts": [
+    {
+      "path": "scripts/check-purista-sandbox.mjs",
+      "kind": "module",
+      "spec_refs": ["04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA", "05-purista.md#CTR-SOWN-PURISTA"],
+      "asset_refs": ["sown.framework-policy", "sown.framework-manifest"],
+      "module_refs": ["scripts"]
+    },
+    {
+      "path": "scripts/check-sandbox-packages.mjs",
+      "kind": "module",
+      "spec_refs": ["04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA"],
+      "asset_refs": ["sown.framework-manifest"],
+      "module_refs": ["scripts"]
+    },
+    {
+      "path": "scripts/check-purista-sandbox.test.mjs",
+      "kind": "contract",
+      "spec_refs": ["04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA", "00-vision.md#REQ-SOWN-SAFETY"],
+      "asset_refs": ["sown.framework-manifest"]
+    },
+    {
+      "path": "scripts/fixtures/purista-sandbox-consumer.ts",
+      "kind": "contract",
+      "spec_refs": ["05-purista.md#CTR-SOWN-PURISTA"],
+      "asset_refs": ["sown.framework-policy"]
+    },
+    {
+      "path": "scripts/fixtures/purista-sandbox-source.ts",
+      "kind": "contract",
+      "spec_refs": ["05-purista.md#CTR-SOWN-PURISTA"],
+      "asset_refs": ["sown.framework-policy"]
+    },
+    {
+      "path": ".gitignore",
+      "kind": "configuration",
+      "spec_refs": ["04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA", "00-vision.md#REQ-SOWN-SAFETY"],
+      "module_refs": ["verification-output-boundary"]
+    }
+  ],
+  "commands": [
+    { "id": "CMD-RUNNER_TEST", "command": "node --test ai-harness/scripts/check-purista-sandbox.test.mjs", "effect": "local_write", "expected_result": "exit 0; 10 tests passed" },
+    { "id": "CMD-SOURCE", "command": "node ai-harness/scripts/check-purista-sandbox.mjs --mode source", "effect": "local_write", "expected_result": "exit 0 under an active Node runtime satisfying Core's >=24.15.0 engine; fresh local Harness tarball resolves in staged Core, Core typechecks, and 23 selected tests pass; an older runtime must fail closed without engine override, lockfile change, or registry Harness fallback" }
+  ],
+  "consumer_impact": [
+    {
+      "asset_or_symbol": "packed Harness/PURISTA verification runner",
+      "consumers": ["wave_03_port_cutover/TICKET-004", "wave_11_release_review/TICKET-012"],
+      "disposition": "reviewed",
+      "evidence": ["plans/sandbox-ownership/wave_03_port_cutover/tickets/TICKET-004-port_cutover.md", "plans/sandbox-ownership/wave_11_release_review/tickets/TICKET-012-release_review.md"]
+    }
+  ],
+  "architecture_checks": [
+    { "command": "node --check ai-harness/scripts/check-purista-sandbox.mjs", "status": "passed" },
+    { "command": "node --check ai-harness/scripts/check-sandbox-packages.mjs", "status": "passed" },
+    { "command": "The source gate passed under the already-installed FNM Node v24.15.0; an older Node v24.3.0 correctly fails closed because it is below PURISTA Core's declared minimum, with no fallback path.", "status": "passed" }
+  ]
+}

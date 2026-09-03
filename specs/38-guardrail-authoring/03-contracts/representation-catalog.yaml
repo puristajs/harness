@@ -1,0 +1,249 @@
+catalog_version: 1
+applicability:
+  status: applicable
+  scope_refs:
+    - CAP-GA-CALLBACKS
+    - CAP-GA-CONFIG
+    - CAP-GA-REQUIREMENTS
+    - CAP-GA-ACTIONS
+    - CAP-GA-BINDING
+    - CAP-GA-DOCS
+    - CAP-GA-WEBSITE
+    - CAP-GA-CLEANUP
+shapes:
+  - shape_id: guardrails.config-input
+    representation_class: boundary
+    canonical_source: 03-contracts/configuration.md#CTR-GA-CONFIG
+    owner: guardrails
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-CONFIG
+    mapping_refs:
+      - MAP-GA-DEFAULTS
+  - shape_id: guardrails.config
+    representation_class: domain
+    canonical_source: 03-contracts/configuration.md#CTR-GA-CONFIG
+    owner: guardrails
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-CONFIG
+    mapping_refs:
+      - MAP-GA-DEFAULTS
+  - shape_id: guardrails.action-definition
+    representation_class: boundary
+    canonical_source: 03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+    owner: guardrails
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-ACTIONS
+    mapping_refs:
+      - MAP-GA-ACTION
+  - shape_id: guardrails.action-token
+    representation_class: domain
+    canonical_source: 03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+    owner: guardrails
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-ACTIONS
+    mapping_refs:
+      - MAP-GA-ACTION
+  - shape_id: agent.requirements
+    representation_class: domain
+    canonical_source: 03-contracts/actions-and-binding.md#CTR-GA-BINDING
+    owner: core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-BINDING
+    mapping_refs: []
+  - shape_id: tool.definition
+    representation_class: domain
+    canonical_source: 03-contracts/callbacks.md#CTR-GA-CALLBACKS
+    owner: core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-CALLBACKS
+    mapping_refs:
+      - MAP-GA-TOOL
+  - shape_id: tool.registered-definition
+    representation_class: domain
+    canonical_source: 03-contracts/callbacks.md#CTR-GA-CALLBACKS
+    owner: core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-CALLBACKS
+    mapping_refs:
+      - MAP-GA-TOOL
+  - shape_id: guardrails.config-error-meta
+    representation_class: boundary
+    canonical_source: 03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+    owner: guardrails
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-ERRORS
+    mapping_refs:
+      - MAP-GA-ERROR
+  - shape_id: runtime.serialized-error
+    representation_class: projection
+    canonical_source: 03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+    owner: core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_contract_refs:
+      - CTR-GA-ERRORS
+    mapping_refs:
+      - MAP-GA-ERROR
+    reuse_provenance: Existing public SerializedError and serializeError in packages/harness/src/errors/harness-error.ts; no addon serializer or replacement shape.
+mappings:
+  - mapping_id: MAP-GA-DEFAULTS
+    from_shape: guardrails.config-input
+    to_shape: guardrails.config
+    direction: custom
+    allowed_differences:
+      - "rails:default_empty"
+      - "all_other_fields:copy_exact"
+    redaction_or_loss_policy: Only the specified field operations are permitted; opaque implementation data is never serialized.
+    field_operations:
+      - "rails:default_empty"
+      - "all_other_fields:copy_exact"
+    verification:
+      - 03-flows/e2e-coverage.md
+  - mapping_id: MAP-GA-ACTION
+    from_shape: guardrails.action-definition
+    to_shape: guardrails.action-token
+    direction: custom
+    allowed_differences:
+      - "phase:copy_literal"
+      - "callback_and_schema:private_prepared_thunk"
+      - "dependency_declarations:clone_private"
+      - "public_callback:omit"
+    redaction_or_loss_policy: Only the specified field operations are permitted; opaque implementation data is never serialized.
+    field_operations:
+      - "phase:copy_literal"
+      - "callback_and_schema:private_prepared_thunk"
+      - "dependency_declarations:clone_private"
+      - "public_callback:omit"
+    verification:
+      - 03-flows/e2e-coverage.md
+  - mapping_id: MAP-GA-TOOL
+    from_shape: tool.definition
+    to_shape: tool.registered-definition
+    direction: custom
+    allowed_differences:
+      - "all_definition_fields:copy"
+      - "private_symbol:add_true"
+    redaction_or_loss_policy: Only the specified field operations are permitted; opaque implementation data is never serialized.
+    field_operations:
+      - "all_definition_fields:copy"
+      - "private_symbol:add_true"
+    verification:
+      - 03-flows/e2e-coverage.md
+  - mapping_id: MAP-GA-ERROR
+    from_shape: guardrails.config-error-meta
+    to_shape: runtime.serialized-error
+    direction: custom
+    allowed_differences:
+      - "meta:copy_validated_fields"
+      - "code:constant_GUARDRAILS_CONFIG_ERROR"
+      - "message:fixed"
+      - "category:config"
+      - "retriable:false"
+      - "cause:omit"
+    redaction_or_loss_policy: Only the specified field operations are permitted; opaque implementation data is never serialized.
+    field_operations:
+      - "meta:copy_validated_fields"
+      - "code:constant_GUARDRAILS_CONFIG_ERROR"
+      - "message:fixed"
+      - "category:config"
+      - "retriable:false"
+      - "cause:omit"
+    verification:
+      - 03-flows/e2e-coverage.md

@@ -13,18 +13,18 @@ assistant/tool exchange, and the terminal assistant output; the Harness never
 keeps a partial tool exchange merely to fit a limit.
 
 ```ts
-import { defineHarness, InMemoryStateStore } from '@purista/harness'
+import { defineHarness, InMemoryHarnessStorage } from '@purista/harness'
 
 const harness = defineHarness({ name: 'support' })
-  .state(new InMemoryStateStore())
-  .defaults({
-    historyRetention: { maxTurns: 50, maxBytes: 256_000 },
-  })
-  // models, tools, and agents
-  .build()
+	.storage(new InMemoryHarnessStorage())
+	.defaults({
+		historyRetention: { maxTurns: 50, maxBytes: 256_000 },
+	})
+	// models, tools, and agents
+	.build()
 ```
 
-`historyRetention` requires a state store that implements atomic
+`historyRetention` requires a Harness storage that implements atomic
 `replaceMessages`. The Harness fails at build time instead of falling back to a
 non-atomic read/trim/write sequence. If the newest complete turn alone exceeds
 `maxBytes`, the call fails rather than persisting an invalid partial history.
@@ -43,9 +43,11 @@ from prompt text.
 
 ```ts
 const session = await harness.getSession(`customer:${customerId}`)
-const output = await session.agents.support.prompt(input, {
-  idempotencyKey: message.id,
+const outcome = await session.agents.support.run(input, {
+	idempotencyKey: message.id,
 })
+
+if (outcome.status === 'completed') console.log(outcome.output)
 ```
 
 The key is scoped to this session and agent. Reuse the transport delivery id
@@ -53,12 +55,12 @@ for a retry of the same message; another conversation may safely use the same
 delivery id without sharing a replay record.
 
 When the same session, agent, key, and input are delivered again after a
-successful run, Harness returns the recorded output without another provider
+successful run, Harness returns the recorded completed outcome without another provider
 call or another transcript write. Provider retries before a successful turn
 commit also leave no partial transcript. This does not make external tool or
 service side effects exactly-once: design those operations with their own
 idempotency contracts.
 
-For workflows, use the existing durable runtime/workspace idempotency contract;
+For workflows, use the existing Harness storage/workspace idempotency contract;
 the direct-agent `idempotencyKey` is intentionally not inferred for a workflow
 because workflow inputs and side effects need an explicit durable policy.

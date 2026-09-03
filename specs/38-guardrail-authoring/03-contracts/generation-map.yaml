@@ -1,0 +1,27 @@
+generation_map_version: 1
+source_contract: 03-contracts/contracts.yaml
+outputs:
+  - contract_ids:
+      - CTR-GA-CONFIG
+      - CTR-GA-ACTIONS
+      - CTR-GA-BINDING
+      - CTR-GA-CALLBACKS
+    destination: existing dist declarations and schema-derived type aliases
+    mode: TypeScript declaration emit and indexed/generic projections
+    reason: The Zod schema is the one runtime field/default owner; declaration emit exposes its types without a second artifact.
+    checks:
+      - core and addon type suites
+      - existing public-api tests
+generated_outputs:
+  - existing dist declarations
+  - existing package skill overlays
+manual_boundaries:
+  - generic helper/token adapter
+  - requirements traversal
+  - runtime selector integration
+  - narrative guides
+forbidden_outputs:
+  - configuration files or loaders
+  - committed configuration schema or reference artifacts
+  - schema/interface field mirrors
+  - new compiler plugin or verifier runtime

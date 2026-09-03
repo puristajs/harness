@@ -1,0 +1,22 @@
+findings:
+  - id: REVIEW-013-006
+    severity: blocking
+    category: TRACEABILITY
+    root_cause: tooling_gap
+    status: open
+    owner_ticket: TICKET-013
+    route: planner
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#VERIFY-SOWN-PACKAGED-PURISTA
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Operational-Path-Coverage
+    impacted_path: "CMD-SOURCE staged Core compilation and AgentQueueBuilder proof"
+    location: "ai-harness/plans/sandbox-ownership/_status.yaml:68-72; ai-harness/plans/implementation-evidence/TICKET-013.json:48-50"
+    expected: "Status and evidence claim a passing source proof only when the exact recorded command runs to completion on an engine satisfying Core's declared requirement. Missing or incompatible engines remain explicit blockers."
+    actual: "The status/evidence claim a fresh tarball, Core compilation, and 23 selected tests, but the required command currently stops at staged npm install with EBADENGINE: host Node v24.3.0 is below @purista/core's >=24.15.0 requirement and engine-strict=true."
+    evidence: "Independent command run on 2026-08-27: local Harness build/pack succeeded; staged offline install exited 1 before assertInstalledHarness, TypeScript, or Vitest."
+    fix_boundary: "Controller-owned status/evidence/proof record and an explicitly supplied compliant Node runtime only; do not weaken engine checks, install dependencies, use network, or change package contracts."
+    required_verification:
+      - "On a Node runtime satisfying >=24.15.0, run exactly: node ai-harness/scripts/check-purista-sandbox.mjs --mode source."
+      - "Record the successful fresh-tarball, staged-lockfile, Core typecheck, and selected-test proof with runtime version/provenance."
+      - "Until then, change the ticket status/evidence to an honest blocked/partial state rather than asserting pass."
+    agent_instruction: "Do not add an engine override or fallback. Preserve the current offline/cache/package-directory behavior; obtain the required runtime through authorized environment setup, then return for independent review."

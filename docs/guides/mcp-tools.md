@@ -3,6 +3,12 @@
 MCP tools let agents call capabilities exposed by Model Context Protocol
 servers. The harness supports two transport modes.
 
+Install the optional `@modelcontextprotocol/client` dependency only where MCP
+is used. The runtime uses protocol `2026-07-28` with modern stdio or stateless
+Streamable HTTP; stateful HTTP+SSE and exec-only stdio are unsupported. Adapter
+implementations should run the public Harness type and contract suites against
+the same core package version as the application.
+
 | Mode | Use When | Execution Boundary |
 |---|---|---|
 | `mcp_stdio` | The MCP server is a local command. | Persistent process via a spawn-capable `SandboxSession`. |

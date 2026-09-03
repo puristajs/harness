@@ -14,7 +14,7 @@ import type {
   SkillFrontmatter,
   SkillValidationMode
 } from '../harness/defineHarness.js'
-import type { SandboxSession } from '../sandbox/index.js'
+import type { SandboxSessionBase } from '../sandbox/index.js'
 
 const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
 const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.astro'])
@@ -234,7 +234,7 @@ async function readDirRecursive(root: string, skillId: string): Promise<Map<stri
 }
 
 export async function mountSkillsOnce(
-  session: SandboxSession,
+  session: SandboxSessionBase,
   mounted: Set<string>,
   skills: Record<string, ResolvedSkill>,
   skillIds: readonly string[]

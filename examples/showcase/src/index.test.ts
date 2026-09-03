@@ -7,11 +7,13 @@ describe('showcase harness examples', () => {
     const { harness } = createShowcaseHarness(provider)
     const session = await harness.getSession('showcase-skills')
 
-    const result = await session.workflows.summarize_incident.prompt({
+    const result = await session.workflows.summarize_incident.run({
       incident: 'Checkout errors increased for EU users after deploy.'
     })
 
-    expect(result.summary).toContain('Impact')
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('Expected completed incident workflow.')
+    expect(result.output.summary).toContain('Impact')
     expect(JSON.stringify(provider.requests[0]?.messages)).toContain('incident-responder')
     await harness.shutdown()
   })
@@ -21,11 +23,13 @@ describe('showcase harness examples', () => {
     const { harness } = createShowcaseHarness(provider)
     const session = await harness.getSession('showcase-tools')
 
-    const result = await session.workflows.answer_policy_question.prompt({
+    const result = await session.workflows.answer_policy_question.run({
       question: 'What should we do for a customer-impacting security incident?'
     })
 
-    expect(result.answer).toContain('Policy for security')
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('Expected completed policy workflow.')
+    expect(result.output.answer).toContain('Policy for security')
     expect(provider.requests[0]?.tools).toHaveLength(1)
     await harness.shutdown()
   })

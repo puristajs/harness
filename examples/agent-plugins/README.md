@@ -12,8 +12,9 @@ Run it against the included data-only fixture (it binds an HTTPS MCP declaration
 but does not connect to it):
 
 ```bash
-npm run build --workspace @purista/agent-plugins-example
-npm run start --workspace @purista/agent-plugins-example -- ./fixtures/knowledge-plugin
+npm install
+npm run build
+npm run start -- ./fixtures/knowledge-plugin
 ```
 
 The example deliberately does not auto-expose tools, install packages, load

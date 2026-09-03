@@ -24,15 +24,15 @@ import { NodeSDK } from '@opentelemetry/sdk-node'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 
 export function startOpenTelemetry(): NodeSDK {
-  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318'
-  const sdk = new NodeSDK({
-    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'my-harness-app' }),
-    traceExporter: new OTLPTraceExporter({
-      url: endpoint.endsWith('/v1/traces') ? endpoint : `${endpoint.replace(/\/$/, '')}/v1/traces`
-    })
-  })
-  sdk.start()
-  return sdk
+	const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318'
+	const sdk = new NodeSDK({
+		resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'my-harness-app' }),
+		traceExporter: new OTLPTraceExporter({
+			url: endpoint.endsWith('/v1/traces') ? endpoint : `${endpoint.replace(/\/$/, '')}/v1/traces`,
+		}),
+	})
+	sdk.start()
+	return sdk
 }
 ```
 
@@ -57,10 +57,10 @@ Adapters and tools receive a minimal shim:
 
 ```ts
 interface TelemetryShim {
-  span<T>(name: string, attrs: SpanAttrs, fn: (span: Span) => Promise<T>): Promise<T>
-  recordHistogram(name: string, value: number, attrs: SpanAttrs): void
-  recordCounter(name: string, value: number, attrs: SpanAttrs): void
-  currentTraceparent(): string | undefined
+	span<T>(name: string, attrs: SpanAttrs, fn: (span: Span) => Promise<T>): Promise<T>
+	recordHistogram(name: string, value: number, attrs: SpanAttrs): void
+	recordCounter(name: string, value: number, attrs: SpanAttrs): void
+	currentTraceparent(): string | undefined
 }
 ```
 
@@ -68,12 +68,13 @@ Use `currentTraceparent()` to propagate W3C trace context into provider calls or
 
 ## Span Names
 Important emitted spans:
-- `harness.session.prompt`
+- `harness.session.run`
 - `harness.workflow.run`
 - `invoke_agent {agent.name}`
 - `{operation} {request.model}` for model calls (for example `chat model-a` or `embeddings model-b`)
 - `execute_tool {tool.name}`
-- `harness.sandbox.exec`
+- `harness.sandbox.open`, `harness.sandbox.detach`, and `harness.sandbox.terminate`
+- `harness.sandbox.register_owner`, `harness.sandbox.list`, `harness.sandbox.purge`, `harness.sandbox.sweep`, and `harness.sandbox.delete_snapshot`
 - `harness.state.op`
 
 Every relevant span should carry `harness.name`, `harness.session.id`, `harness.run.id`, and when available `harness.workflow.id` / `harness.agent.id`.
@@ -101,6 +102,14 @@ provider reports them. The `gen_ai.client.token.usage` metric is emitted in
 addition because production trace backends may sample or drop spans while still
 aggregating metrics.
 
+For persisted run summaries, `model.completed` is the sole generative
+invocation/token owner across direct, nested, text/object, and successful fully
+consumed streaming calls. Content events do not contribute counts or usage.
+A later guardrail block does not erase the completed model operation; failed
+attempts and failed/abandoned streams do not emit a successful completion.
+Approval subjects and reviewer content never belong in decision telemetry;
+use the runtime's content-free evidence and terminal reason/error codes.
+
 Successful harness spans intentionally leave OpenTelemetry status `UNSET`.
 Errors set status `ERROR`; the same low-cardinality `error.type` is attached to
 the failed span and its matching duration metric. Timeouts and cancellations
@@ -111,11 +120,11 @@ Handler code should use the scoped `ctx.metrics` helper for application-owned
 measurements:
 
 ```ts
-handler: async (ctx) => {
-  ctx.metrics.counter('app.workflow.started', 1, { workflow: 'triage' })
-  return ctx.metrics.duration('app.workflow.duration', { workflow: 'triage' }, async () => {
-    return ctx.agents.triage(ctx.input)
-  })
+handler: async ctx => {
+	ctx.metrics.counter('app.workflow.started', 1, { workflow: 'triage' })
+	return ctx.metrics.duration('app.workflow.duration', { workflow: 'triage' }, async () => {
+		return ctx.agents.triage(ctx.input)
+	})
 }
 ```
 
@@ -130,19 +139,20 @@ Use `JsonLogger` or a compatible `Logger`. Tool handlers receive `ctx.logger`; i
 
 ```ts
 handler: async (ctx, input) => {
-  ctx.logger.info('Searching documents.', {
-    tool_id: ctx.toolId,
-    session_id: ctx.sessionId,
-    run_id: ctx.runId
-  })
-  return search(input)
+	ctx.logger.info('Searching documents.', {
+		tool_id: ctx.toolId,
+		session_id: ctx.sessionId,
+		run_id: ctx.runId,
+	})
+	return search(input)
 }
 ```
 
 Avoid logging prompts, full documents, secrets, provider request bodies, and tool outputs unless intentionally redacted.
 
 ## Adapter Context Propagation
-Providers extending `BaseModelProvider`, `StateStoreAdapterBase`, tools, sandboxes, and other configurable adapters can inherit harness context:
+Providers extending `BaseModelProvider`, `HarnessStorage` implementations,
+tools, sandboxes, and other configurable adapters can inherit Harness context:
 
 ```ts
 configureHarnessContext(context) {
@@ -153,6 +163,16 @@ configureHarnessContext(context) {
 ```
 
 `BaseModelProvider` uses inherited logger/telemetry/default model timeout unless explicitly configured. Prefer inheriting harness context over creating independent tracers/loggers inside each adapter.
+
+Each evaluated governance execution policy emits one content-free
+`harness.policy.evaluate` OpenInference `GUARDRAIL` span for each native or
+external policy. It also emits `harness.policy.evaluations`,
+`harness.policy.duration`, enforced `harness.policy.denials`, and
+`harness.approval.requests` metrics. Policy
+telemetry carries stable engine/policy/rule and operation identifiers only.
+For the first-party OPA adapter, the configured client forwards only W3C
+`traceparent` to its fixed trusted Data API endpoint; it never copies policy
+input, results, URLs, headers, or credentials into spans or metrics.
 
 ## Privacy Gate
 When `contentCaptureMode: 'NO_CONTENT'`:

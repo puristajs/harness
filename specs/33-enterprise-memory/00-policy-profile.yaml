@@ -1,0 +1,17 @@
+policy_profile_version: 1
+allowed_default_refs:
+  - POLICY-HARNESS-CONVENTIONS
+  - POLICY-PURISTA-CONVENTIONS
+profiles:
+  - policy_ref: POLICY-HARNESS-CONVENTIONS
+    name: Existing AI Harness package and builder conventions
+    source_ref: ../../packages/harness/src/harness/defineHarness.ts
+    allowed_classes:
+      - D0
+      - D1
+  - policy_ref: POLICY-PURISTA-CONVENTIONS
+    name: Existing PURISTA attached-agent runtime conventions
+    source_ref: ../../../../purista/packages/core/src/AgentQueueBuilder/types.ts
+    allowed_classes:
+      - D0
+      - D1

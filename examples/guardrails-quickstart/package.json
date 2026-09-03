@@ -1,0 +1,28 @@
+{
+  "name": "@purista/guardrails-quickstart",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "vitest run src",
+    "start": "node --env-file-if-exists=.env dist/index.js"
+  },
+  "dependencies": {
+    "@purista/harness": "^3.0.0",
+    "@purista/harness-guardrails": "^3.0.0",
+    "@purista/harness-openai": "^3.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

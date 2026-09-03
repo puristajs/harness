@@ -31,16 +31,16 @@ Unit and integration tests should not require live provider credentials. Inject 
 import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '@purista/harness'
 
 class FakeObjectProvider implements ModelProvider {
-  readonly id = 'fake'
-  readonly genAiSystem = 'fake'
+	readonly id = 'fake'
+	readonly genAiSystem = 'fake'
 
-  async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
-    return {
-      object: { answer: 'fake answer' } as T,
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop'
-    }
-  }
+	async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+		return {
+			object: { answer: 'fake answer' } as T,
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+			finishReason: 'stop',
+		}
+	}
 }
 ```
 
@@ -67,14 +67,42 @@ Add type tests for builder inference:
 
 Use `@ts-expect-error` for negative cases.
 
+## Guardrails Tests
+
+Treat Guardrails configuration as one inline TypeScript object passed to
+`defineGuardrails({ config, actions })`. Test the action map and configuration
+together: a flow id must resolve to an opaque `defineGuardrailAction(...)`
+token with the matching phase, action outcomes must use the phase's transform
+target, and invalid configuration must produce the safe
+`GuardrailsConfigError` without exposing policy content or parser diagnostics.
+Tool-input and tool-output action tests must reject missing or empty `tools`
+selectors before a protected value can be evaluated.
+
+Use the existing fake provider and detector helpers to prove both protected and
+unprotected paths. Cover an action allow, block, transform, timeout, and
+callback failure. For structured sensitive-data values, test the reviewed codec
+against the exact schema/value it protects; do not test a recursive scan of
+arbitrary JSON.
+
+Test build preflight separately from invocation. Construct the complete Harness
+with `defineHarness(...).build()` and assert missing active model/tool
+requirements fail before creating a session or requesting a model. The runnable
+`examples/guardrails` composition exposes `preflightGuardrailsExample()` for a
+real zero-effect check: before shutdown, model requests, detector inspections,
+tool invocations, and approval requests must all be zero. A no-effect preflight
+does not replace the separate invocation tests for ordering and handler output.
+
 ## Contract Tests
 Use `@purista/harness/testing` for reusable adapter contracts when available:
 - `FakeModelProvider`
-- `FakeMemoryAdapter`
+- `FakeMemoryEngine`
 - `makeHarness`
-- `stateStoreContract`
-- `memoryAdapterContract`
+- `FakeHarnessStorage`
+- `harnessStorageContract`
+- `durableWorkspaceContract`
+- `memoryEngineContract`
 - `sandboxContract`
+- `sandboxTextSearchContract`
 - `sandboxSnapshotContract`
 - `fakeSnapshotSandbox`
 - `adapterCapabilitiesContract`
@@ -88,13 +116,13 @@ Adapters should prove cancellation, timeout, validation failure, and shutdown be
 ```ts
 const model = new FakeModelProvider()
 model.enqueueObject({
-  object: { answer: 'ok' },
-  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-  finishReason: 'stop'
+	object: { answer: 'ok' },
+	usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+	finishReason: 'stop',
 })
 model.enqueueEmbedding({
-  embeddings: [{ index: 0, vector: [0.1, 0.2] }],
-  usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 }
+	embeddings: [{ index: 0, vector: [0.1, 0.2] }],
+	usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 },
 })
 ```
 
@@ -104,25 +132,19 @@ Collect stream events and assert lifecycle behavior:
 ```ts
 const events = []
 for await (const event of session.workflows.audit.stream({ scope: 'all' })) {
-  events.push(event)
+	events.push(event)
 }
 
-expect(events.some((event) => event.type === 'run.started')).toBe(true)
-expect(events.some((event) => event.type === 'run.finished')).toBe(true)
+expect(events.some(event => event.type === 'run.started')).toBe(true)
+expect(events.some(event => event.type === 'run.finished')).toBe(true)
 ```
 
-For model streaming, queue fake provider chunks and test both privacy modes.
-Consumed `textStream(...)` / `objectStream(...)` chunks emit no run-event
-partials by default. Calls that pass `{ emitRunEvents: true }` emit
-`model.delta`, `model.object.partial`, and streamed final `model.object`.
-`text(...)` / `object(...)` final calls emit no partials. Public stream tests
-should assert grouping metadata: generated `streamId` stability per stream
-invocation, distinct ids across parallel streams, `modelAlias`, and available
-`workflowId` / `agentId`.
-
-Test stream consumers against `RunEvent`, not provider-specific HTTP/SSE chunks. HTTP/SSE mapping belongs to the application integration layer.
-Breaking out of a stream iterator should not abort the run; test cancellation
-through an explicit `AbortSignal` when run termination is expected.
+For model streaming, queue fake provider chunks and test the definition's
+declared update mode. Test public consumers against `ExecutionEvent` and the
+terminal `RunOutcome`. Test detailed operational consumers against the separate
+`observe(...)` / `RunEvent` surface. Protocol adapters should be tested with
+their own wire fixtures. Test cancellation with an `AbortSignal` or the owning
+integration's cancellation bridge.
 
 Governance tests should cover both exposure and execution layers:
 - exposure-only governance hides tools before the fake provider request and does not require `policies`
@@ -148,6 +170,7 @@ State, memory, and sandbox adapters should cover:
 - append atomicity where required
 - missing sessions/files/runs
 - executor unavailable behavior
+- bounded literal and `safe_regex_v1` search, adversarial patterns, cancellation, all incomplete-result reasons, data locality, and content-free telemetry when `sandbox.text_search` is advertised
 - snapshot/resume behavior when implemented
 - scope isolation, unsupported capability gates, and content-capture behavior for memory adapters
 # Replay and diagnostics

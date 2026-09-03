@@ -12,6 +12,8 @@ export type ErrorCategory =
   | 'validation'
   /** Permission and approval denials. */
   | 'permission'
+  /** A provider-neutral agent interception denied or failed closed. */
+  | 'interceptor'
   /** Sandbox filesystem or execution failures. */
   | 'sandbox'
   /** Model/provider invocation failures. */
@@ -73,7 +75,7 @@ export class HarnessError extends Error {
       category: this.category,
       retriable: this.retriable,
       message: this.message,
-      ...(this.meta ? { meta: sanitizeMeta(this.meta) } : {})
+      ...(this.meta ? { meta: sanitizeMeta(this.meta) } : {}),
     }
   }
 }
@@ -83,7 +85,15 @@ export function isHarnessError(value: unknown): value is HarnessError {
   return value instanceof HarnessError
 }
 
-/** Converts unknown thrown values into a stable serializable error envelope. */
+/**
+ * Converts an unknown thrown value into a stable envelope for trusted
+ * persistence, run events, logging, and telemetry.
+ *
+ * This is not a public HTTP/queue error formatter. Unknown `Error` instances
+ * retain their original message, and Harness error metadata can contain
+ * operational identifiers. Map the envelope through an application-owned
+ * allowlist before returning any part of it across an untrusted boundary.
+ */
 export function serializeError(error: unknown): {
   code: string
   category: string
@@ -102,7 +112,7 @@ export function serializeError(error: unknown): {
       code: error.code,
       category: error.category,
       retriable: error.retriable,
-      message: error.message
+      message: error.message,
     }
     const meta = sanitizeMeta(error.meta)
     if (meta) serialized.meta = meta
@@ -113,6 +123,6 @@ export function serializeError(error: unknown): {
     code: 'INTERNAL_ERROR',
     category: 'internal',
     retriable: false,
-    message: error instanceof Error ? error.message : String(error)
+    message: error instanceof Error ? error.message : String(error),
   }
 }

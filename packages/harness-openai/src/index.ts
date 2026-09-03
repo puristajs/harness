@@ -3,17 +3,24 @@ import type {
   BaseModelProviderOptions,
   EmbeddingRequest,
   EmbeddingResponse,
+  ImageProviderResponse,
+  ImageRequest,
   ModelMessage,
   ModelProvider,
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
-  ProviderItems,
+  ProviderContinuation,
   TextRequest,
   TextResponse,
   TextStreamChunk,
   ToolCallSpec,
   TokenUsage,
+  SpeechProviderResponse,
+  SpeechRequest,
+  VideoProviderResponse,
+  VideoProviderStreamChunk,
+  VideoRequest,
   JsonValue
 } from '@purista/harness'
 import {
@@ -22,8 +29,10 @@ import {
   accumulateStreamToolCallDeltas,
   createStreamToolCallState,
   finalizeStreamToolCalls,
+  isJsonValue,
   malformedResponseError,
   parseProviderJson,
+  parseProviderContinuation,
   safePartialJson,
   sanitizeProviderMessage,
   toTokenUsage
@@ -42,6 +51,16 @@ export interface OpenAiFactoryOptions extends ClientOptions {
    * existing OpenAI-compatible chat-completions endpoints working.
    */
   api?: 'chat_completions' | 'responses'
+  /**
+   * Request field used for the Harness `maxTokens` setting on the Chat
+   * Completions API. The compatibility-preserving default is `max_tokens`.
+   *
+   * Set `max_completion_tokens` for a native OpenAI Chat Completions model
+   * that requires the newer field. Keep `max_tokens` for an
+   * OpenAI-compatible endpoint unless that endpoint documents the newer
+   * field. The Responses API always uses `max_output_tokens` instead.
+   */
+  chatCompletionMaxTokensParameter?: 'max_tokens' | 'max_completion_tokens'
   /** Optional injected client for tests or custom transport behavior. */
   client?: OpenAiClient
   /** Optional adapter-level logger override. Defaults to the harness logger when registered. */
@@ -91,7 +110,7 @@ export interface OpenAiFactoryOptions extends ClientOptions {
  *   .build()
  *
  * const session = await harness.getSession('demo')
- * const response = await session.workflows.summarize.prompt('Summarize this issue.')
+ * const response = await session.workflows.summarize.run('Summarize this issue.')
  * ```
  */
 export function openai(options: OpenAiFactoryOptions = {}): ModelProvider {
@@ -109,17 +128,17 @@ class OpenAiModelProvider extends BaseModelProvider {
       ...(options.telemetry ? { telemetry: options.telemetry } : {}),
       ...(options.harnessTimeoutMs !== undefined ? { timeoutMs: options.harnessTimeoutMs } : options.timeout !== undefined ? { timeoutMs: options.timeout } : {})
     })
-    this.client = options.client ?? new OpenAI(toClientOptions(options))
+    this.client = options.client ?? (new OpenAI(toClientOptions(options)) as unknown as OpenAiClient)
   }
 
   protected override async doText(req: TextRequest): Promise<TextResponse> {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
-        const response = await createResponse(this.client, req, false)
+        const response = await createResponse(this.client, req, false, 'text')
         throwIfResponsesFailure(response, req, 'text')
         return mapResponsesTextResponse(response, req)
       }
-      const response = await createChatCompletion(this.client, req, false, this.getLogger())
+      const response = await createChatCompletion(this.client, req, false, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       return mapChatTextResponse(response, req)
   }
 
@@ -129,7 +148,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         yield * streamResponsesText(this.client, req)
         return
       }
-      const stream = await createChatCompletion(this.client, req, true, this.getLogger())
+      const stream = await createChatCompletion(this.client, req, true, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
       let finishReason: TextResponse['finishReason'] = 'stop'
       let providerFinishReason: unknown
@@ -162,22 +181,22 @@ class OpenAiModelProvider extends BaseModelProvider {
   protected override async doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
       req.signal.throwIfAborted()
       if (this.options.api === 'responses') {
-        const response = await createResponse(this.client, req, false)
+        const response = await createResponse(this.client, req, false, 'object')
         throwIfResponsesFailure(response, req, 'object')
         const content = extractResponsesText(response)
         const toolCalls = extractResponsesToolCalls(response, req, 'object')
-        const providerItems = toResponsesProviderItems(response.output, toolCalls)
+        const providerContinuation = toResponsesProviderContinuation(response.output, toolCalls, req, 'object')
         return {
         object: parseJson(content || '{}', req, 'object') as T,
         ...(toolCalls ? { toolCalls } : {}),
-        ...(providerItems ? { providerItems } : {}),
+        ...(providerContinuation ? { providerContinuation } : {}),
         usage: toResponsesUsage(response.usage),
         finishReason: toResponsesFinishReason(response),
         outcome: toResponsesOutcome(response),
         raw: response
       }
       }
-      const response = await createChatCompletion(this.client, req, false, this.getLogger())
+      const response = await createChatCompletion(this.client, req, false, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       const textContent = response.choices[0]?.message?.content ?? '{}'
       const toolCalls = extractChatToolCalls(response, req, 'object')
       return {
@@ -201,7 +220,7 @@ class OpenAiModelProvider extends BaseModelProvider {
         yield * streamResponsesObject<T>(this.client, req)
         return
       }
-      const stream = await createChatCompletion(this.client, req, true, this.getLogger())
+      const stream = await createChatCompletion(this.client, req, true, this.getLogger(), this.options.chatCompletionMaxTokensParameter)
       for await (const chunk of stream) {
         req.signal.throwIfAborted()
         if (chunk.usage) {
@@ -247,25 +266,233 @@ class OpenAiModelProvider extends BaseModelProvider {
       raw: response
     }
   }
+
+  protected override async doImage(req: ImageRequest): Promise<ImageProviderResponse> {
+    req.signal.throwIfAborted()
+    if (!this.client.images) throw this.methodMissing('image')
+    const { requestOptions, ...bodyOptions } = mediaProviderOptions(req)
+    const response = await this.client.images.generate({
+      model: req.model,
+      prompt: req.prompt,
+      ...(req.count !== undefined ? { n: req.count } : {}),
+      ...(req.size ? { size: req.size } : {}),
+      ...(req.outputFormat ? { output_format: req.outputFormat } : {}),
+      ...(req.aspectRatio ? { aspect_ratio: req.aspectRatio } : {}),
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    const mediaType = imageMediaType(req.outputFormat)
+    const artifacts = await Promise.all((response.data ?? []).map(async (item: any, index: number) => ({
+      body: await openAiMediaBody(item, req.signal),
+      mediaType,
+      filename: `image-${index + 1}.${imageExtension(mediaType)}`,
+    })))
+    if (artifacts.length === 0) {
+      throw malformedResponseError(callContext(req, 'image'), 'OpenAI returned no generated image.', response, undefined)
+    }
+    return { artifacts, raw: response }
+  }
+
+  protected override async doSpeech(req: SpeechRequest): Promise<SpeechProviderResponse> {
+    req.signal.throwIfAborted()
+    if (!this.client.audio?.speech) throw this.methodMissing('speech')
+    const { requestOptions, ...bodyOptions } = mediaProviderOptions(req)
+    const outputFormat = req.outputFormat ?? 'mp3'
+    const response = await this.client.audio.speech.create({
+      model: req.model,
+      input: req.text,
+      voice: req.voice ?? 'alloy',
+      ...(req.instructions ? { instructions: req.instructions } : {}),
+      ...(req.speed !== undefined ? { speed: req.speed } : {}),
+      response_format: outputFormat,
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    const body = new Uint8Array(await response.arrayBuffer())
+    return {
+      artifact: {
+        body,
+        mediaType: audioMediaType(outputFormat),
+        filename: `speech.${outputFormat}`,
+        size: body.byteLength,
+      },
+    }
+  }
+
+  protected override async doVideo(req: VideoRequest): Promise<VideoProviderResponse> {
+    for await (const chunk of this.doVideoStream(req)) {
+      if (chunk.kind === 'finish') return { artifact: chunk.artifact, ...(chunk.raw ? { raw: chunk.raw } : {}) }
+    }
+    throw malformedResponseError(callContext(req, 'video'), 'OpenAI video generation ended without an artifact.', {}, undefined)
+  }
+
+  protected override async *doVideoStream(req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> {
+    req.signal.throwIfAborted()
+    if (!this.client.videos) throw this.methodMissing('videoStream')
+    const { requestOptions, pollIntervalMs, ...bodyOptions } = mediaProviderOptions(req)
+    const inputReference = req.inputReference ? await toOpenAiVideoReference(req.inputReference, req.signal) : undefined
+    let job = await this.client.videos.create({
+      model: req.model,
+      prompt: req.prompt,
+      ...(inputReference ? { input_reference: inputReference } : {}),
+      ...(req.durationSeconds !== undefined ? { seconds: String(req.durationSeconds) } : {}),
+      ...(req.size ? { size: req.size } : {}),
+      ...bodyOptions,
+    }, { ...requestOptions, signal: req.signal })
+    yield { kind: 'queued' }
+    let lastProgress = -1
+    while (job?.status !== 'completed') {
+      req.signal.throwIfAborted()
+      if (job?.status === 'failed' || job?.error) {
+        throw new ModelError('OpenAI video generation failed.', {
+          provider: 'openai',
+          model: req.model,
+          method: 'video',
+          reason: 'provider_unavailable',
+          ...(typeof job?.error?.code === 'string' ? { providerCode: job.error.code } : {}),
+          ...(typeof job?.error?.message === 'string' ? { providerMessage: sanitizeProviderMessage(job.error.message) } : {}),
+        })
+      }
+      const progress = typeof job?.progress === 'number' ? Math.max(0, Math.min(100, job.progress)) : undefined
+      if (progress !== undefined && progress !== lastProgress) {
+        lastProgress = progress
+        yield { kind: 'progress', progress }
+      }
+      await abortableDelay(normalizePollInterval(pollIntervalMs), req.signal)
+      job = await this.client.videos.retrieve(String(job.id), { ...requestOptions, signal: req.signal })
+    }
+    const response = await this.client.videos.downloadContent(String(job.id), undefined, { ...requestOptions, signal: req.signal })
+    const body = new Uint8Array(await response.arrayBuffer())
+    yield {
+      kind: 'finish',
+      artifact: { body, mediaType: 'video/mp4', filename: `${String(job.id)}.mp4`, size: body.byteLength },
+      raw: job,
+    }
+  }
 }
 
 type ChatRequest = TextRequest | ObjectRequest
+type OpenAiRequest = ChatRequest | ImageRequest | SpeechRequest | VideoRequest
+
+/** Narrow OpenAI SDK surface accepted for test or custom transport injection. */
 export type OpenAiClient = {
+  /** Chat Completions API operations used by the adapter. */
   chat: {
     completions: {
       create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
     }
   }
+  /** Optional Responses API operations used when Responses mode is selected. */
   responses?: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  /** Embeddings API operations used by embedding model bindings. */
   embeddings: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  /** Optional Images API operations used by image-generation bindings. */
+  images?: {
+    generate(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
+  }
+  /** Optional Audio API operations used by speech-generation bindings. */
+  audio?: {
+    speech?: {
+      create(payload: unknown, options?: { signal?: AbortSignal }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>
+    }
+  }
+  /** Optional Videos API operations used by video-generation bindings. */
+  videos?: {
+    create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
+    retrieve(id: string, options?: { signal?: AbortSignal }): Promise<any>
+    downloadContent(id: string, query?: unknown, options?: { signal?: AbortSignal }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>
+  }
+}
+
+function mediaProviderOptions(req: ImageRequest | SpeechRequest | VideoRequest): Record<string, any> & {
+  requestOptions?: Record<string, unknown>
+  pollIntervalMs?: number
+} {
+  return { ...(req.call?.providerOptions ?? {}) }
+}
+
+async function openAiMediaBody(item: any, signal: AbortSignal): Promise<Uint8Array> {
+  if (typeof item?.b64_json === 'string') return new Uint8Array(Buffer.from(item.b64_json, 'base64'))
+  if (typeof item?.url === 'string') {
+    const response = await fetch(item.url, { signal })
+    if (!response.ok) throw new Error(`OpenAI media download failed with HTTP ${response.status}.`)
+    return new Uint8Array(await response.arrayBuffer())
+  }
+  throw new Error('OpenAI media response contains neither base64 data nor a URL.')
+}
+
+function imageMediaType(format: string | undefined): string {
+  switch (format?.toLowerCase()) {
+    case 'jpeg':
+    case 'jpg': return 'image/jpeg'
+    case 'webp': return 'image/webp'
+    default: return 'image/png'
+  }
+}
+
+function imageExtension(mediaType: string): string {
+  return mediaType === 'image/jpeg' ? 'jpg' : mediaType.slice('image/'.length)
+}
+
+function audioMediaType(format: string): string {
+  switch (format.toLowerCase()) {
+    case 'mp3': return 'audio/mpeg'
+    case 'opus': return 'audio/opus'
+    case 'aac': return 'audio/aac'
+    case 'flac': return 'audio/flac'
+    case 'wav': return 'audio/wav'
+    case 'pcm': return 'audio/L16'
+    default: return `audio/${format.toLowerCase()}`
+  }
+}
+
+async function toOpenAiVideoReference(
+  input: NonNullable<VideoRequest['inputReference']>,
+  signal: AbortSignal,
+): Promise<File> {
+  if (input.kind === 'image') {
+    return new File([Buffer.from(input.dataBase64, 'base64')], 'reference-image', { type: input.mimeType })
+  }
+  const response = await fetch(input.url, { signal })
+  if (!response.ok) throw new Error(`Video reference download failed with HTTP ${response.status}.`)
+  const mediaType = input.mimeType ?? response.headers.get('content-type') ?? 'application/octet-stream'
+  return new File([await response.arrayBuffer()], 'reference-image', { type: mediaType })
+}
+
+function normalizePollInterval(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 100 ? Math.floor(value) : 1_000
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) signal.throwIfAborted()
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      cleanup()
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
 }
 
 function toClientOptions(options: OpenAiFactoryOptions): ClientOptions {
-  const { api: _api, client: _client, harnessLogger: _harnessLogger, telemetry: _telemetry, harnessTimeoutMs: _harnessTimeoutMs, ...clientOptions } = options
+  const {
+    api: _api,
+    chatCompletionMaxTokensParameter: _chatCompletionMaxTokensParameter,
+    client: _client,
+    harnessLogger: _harnessLogger,
+    telemetry: _telemetry,
+    harnessTimeoutMs: _harnessTimeoutMs,
+    ...clientOptions
+  } = options
   return { maxRetries: 0, ...clientOptions }
 }
 
@@ -298,7 +525,13 @@ function extractChatToolCalls(response: any, req: ChatRequest, method: string): 
     }))
 }
 
-async function createChatCompletion(client: any, req: ChatRequest, stream: boolean, logger?: BaseModelProviderOptions['logger']): Promise<any> {
+async function createChatCompletion(
+  client: any,
+  req: ChatRequest,
+  stream: boolean,
+  logger?: BaseModelProviderOptions['logger'],
+  chatCompletionMaxTokensParameter: 'max_tokens' | 'max_completion_tokens' = 'max_tokens'
+): Promise<any> {
   const messages = toOpenAiMessages(req.messages)
   const providerOptions = {
     ...(req.defaults?.providerOptions ?? {}),
@@ -306,6 +539,8 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
   } as Record<string, unknown> & { requestOptions?: Record<string, unknown> }
   const { requestOptions, ...bodyOptions } = providerOptions
   const normalizedBodyOptions = omitUnsupportedChatCompletionOptions(bodyOptions, req, logger)
+
+  const maxTokens = req.call?.maxTokens ?? req.defaults?.maxTokens
 
   return client.chat.completions.create({
     model: req.model,
@@ -315,7 +550,7 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
     ...(stream ? { stream_options: { include_usage: true } } : {}),
     tools: toTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
-    max_tokens: req.call?.maxTokens ?? req.defaults?.maxTokens,
+    ...(maxTokens !== undefined ? { [chatCompletionMaxTokensParameter]: maxTokens } : {}),
     top_p: req.call?.topP ?? req.defaults?.topP,
     stop: req.call?.stopSequences ?? req.defaults?.stopSequences,
     ...(req.tools && (req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls) !== undefined ? { parallel_tool_calls: req.call?.parallelToolCalls ?? req.defaults?.parallelToolCalls } : {}),
@@ -324,7 +559,7 @@ async function createChatCompletion(client: any, req: ChatRequest, stream: boole
   }, { ...requestOptions, signal: req.signal })
 }
 
-async function createResponse(client: any, req: ChatRequest, stream: boolean): Promise<any> {
+async function createResponse(client: any, req: ChatRequest, stream: boolean, method: string): Promise<any> {
   if (!client.responses?.create) {
     throw new ModelError('OpenAI client does not expose the Responses API.', {
       provider: 'openai',
@@ -332,6 +567,17 @@ async function createResponse(client: any, req: ChatRequest, stream: boolean): P
       method: stream ? ('schema' in req ? 'objectStream' : 'textStream') : ('schema' in req ? 'object' : 'text'),
       reason: 'unstructured_response',
       providerBody: { api: 'responses' }
+    })
+  }
+
+  const stopSequences = req.call?.stopSequences ?? req.defaults?.stopSequences
+  if (stopSequences && stopSequences.length > 0) {
+    throw new ModelError('OpenAI Responses API does not support stop sequences.', {
+      provider: 'openai',
+      model: req.model,
+      method,
+      reason: 'unsupported_request_option',
+      providerBody: { api: 'responses', option: 'stopSequences' }
     })
   }
 
@@ -343,7 +589,7 @@ async function createResponse(client: any, req: ChatRequest, stream: boolean): P
 
   return client.responses.create({
     model: req.model,
-    input: toResponsesInput(req.messages),
+    input: toResponsesInput(req.messages, req, method),
     stream,
     tools: toResponsesTools(req.tools),
     temperature: req.call?.temperature ?? req.defaults?.temperature,
@@ -456,7 +702,7 @@ function toOpenAiMessages(messages: ModelMessage[]): any[] {
   })
 }
 
-function toResponsesInput(messages: ModelMessage[]): any[] {
+function toResponsesInput(messages: ModelMessage[], req: ChatRequest, method: string): any[] {
   const input: any[] = []
   for (const message of messages) {
     if (message.role === 'tool') {
@@ -468,12 +714,14 @@ function toResponsesInput(messages: ModelMessage[]): any[] {
       continue
     }
 
-    if (message.role === 'assistant' && message.providerItems?.providerId === 'openai' && message.providerItems.items.length > 0) {
-      // Echo the captured turn (reasoning, message, and function_call items)
-      // verbatim, as the Responses API expects for manually managed state.
-      // Foreign provider items fall through to provider-neutral reconstruction.
-      input.push(...message.providerItems.items)
-      continue
+    if (message.role === 'assistant' && message.providerContinuation?.providerId === 'openai') {
+      const continuation = parseProviderContinuation(message.providerContinuation, (message.toolCalls ?? []).map((call) => call.id))
+      if (!continuation) throw invalidProviderContinuation(req, method)
+      validateOpenAiContinuation(continuation, req, method)
+      if (continuation.items.length > 0) {
+        input.push(...toOpenAiContinuationInput(message, req, method))
+        continue
+      }
     }
 
     if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
@@ -563,11 +811,11 @@ function toResponsesTools(tools: TextRequest['tools'] | ObjectRequest['tools']):
 
 function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse {
   const toolCalls = extractResponsesToolCalls(response, req, 'text')
-  const providerItems = toResponsesProviderItems(response.output, toolCalls)
+  const providerContinuation = toResponsesProviderContinuation(response.output, toolCalls, req, 'text')
   return {
     content: extractResponsesText(response),
     ...(toolCalls ? { toolCalls } : {}),
-    ...(providerItems ? { providerItems } : {}),
+    ...(providerContinuation ? { providerContinuation } : {}),
     usage: toResponsesUsage(response.usage),
     finishReason: toResponsesFinishReason(response),
     outcome: toResponsesOutcome(response),
@@ -575,21 +823,133 @@ function mapResponsesTextResponse(response: any, req: TextRequest): TextResponse
   }
 }
 
-/**
- * Captures the turn's raw Responses output items on tool-call responses so
- * they can be replayed verbatim on the follow-up round. OpenAI requires
- * reasoning items returned with tool calls to be passed back with the tool
- * outputs for reasoning models; echoing `response.output` unchanged is the
- * pattern documented in the Responses migration guide.
- */
-function toResponsesProviderItems(output: unknown, toolCalls: ToolCallSpec[] | undefined): ProviderItems | undefined {
+function toResponsesProviderContinuation(
+  output: unknown,
+  toolCalls: ToolCallSpec[] | undefined,
+  req: ChatRequest,
+  method: string
+): ProviderContinuation | undefined {
   if (!toolCalls || toolCalls.length === 0) return undefined
-  if (!Array.isArray(output) || output.length === 0) return undefined
-  return { providerId: 'openai', items: output as JsonValue[] }
+  if (!Array.isArray(output)) throw invalidProviderContinuation(req, method)
+
+  const items: ProviderContinuation['items'][number][] = []
+  let assistantContentCaptured = false
+  for (const outputItem of output) {
+    if (!isOpenAiRecord(outputItem)) throw invalidProviderContinuation(req, method)
+    if (outputItem['type'] === 'reasoning') {
+      if (!isStrictJsonValue(outputItem)) throw invalidProviderContinuation(req, method)
+      items.push({ kind: 'opaque', data: outputItem })
+      continue
+    }
+    if (outputItem['type'] === 'function_call') {
+      if (typeof outputItem['call_id'] !== 'string' || outputItem['call_id'].length === 0 || typeof outputItem['name'] !== 'string' || outputItem['name'].length === 0) {
+        throw invalidProviderContinuation(req, method)
+      }
+      if (outputItem['id'] !== undefined && typeof outputItem['id'] !== 'string') throw invalidProviderContinuation(req, method)
+      items.push({
+        kind: 'tool_call',
+        callId: outputItem['call_id'],
+        ...(typeof outputItem['id'] === 'string' ? { data: { itemId: outputItem['id'] } } : {})
+      })
+      continue
+    }
+    if (outputItem['type'] === 'message') {
+      if (!assistantContentCaptured) {
+        items.push({ kind: 'assistant_content' })
+        assistantContentCaptured = true
+      }
+      continue
+    }
+    throw invalidProviderContinuation(req, method)
+  }
+
+  const continuation = { providerId: 'openai', items }
+  const parsed = parseProviderContinuation(continuation, toolCalls.map((call) => call.id))
+  if (!parsed) throw invalidProviderContinuation(req, method)
+  validateOpenAiContinuation(parsed, req, method)
+  return parsed
+}
+
+function toOpenAiContinuationInput(message: Extract<ModelMessage, { role: 'assistant' }>, req: ChatRequest, method: string): any[] {
+  const toolCalls = message.toolCalls ?? []
+  const continuation = parseProviderContinuation(message.providerContinuation, toolCalls.map((call) => call.id))
+  if (!continuation) throw invalidProviderContinuation(req, method)
+  validateOpenAiContinuation(continuation, req, method)
+
+  const calls = new Map(toolCalls.map((call) => [call.id, call]))
+  const input: any[] = []
+  for (const item of continuation.items) {
+    if (item.kind === 'opaque') {
+      input.push(item.data)
+      continue
+    }
+    if (item.kind === 'assistant_content') {
+      if (typeof message.content === 'string' ? message.content.length > 0 : message.content.length > 0) {
+        input.push({
+          type: 'message',
+          role: 'assistant',
+          content: typeof message.content === 'string' ? message.content : toResponsesMessageContent(message)
+        })
+      }
+      continue
+    }
+    const call = calls.get(item.callId)
+    if (!call) throw invalidProviderContinuation(req, method)
+    const itemId = openAiToolCallItemId(item.data, req, method)
+    input.push({
+      type: 'function_call',
+      ...(itemId ? { id: itemId } : {}),
+      call_id: call.id,
+      name: call.name,
+      arguments: JSON.stringify(call.arguments)
+    })
+  }
+  return input
+}
+
+function validateOpenAiContinuation(
+  continuation: ProviderContinuation,
+  req: ChatRequest,
+  method: string
+): void {
+  for (const item of continuation.items) {
+    if (item.kind === 'opaque') {
+      if (!isOpenAiRecord(item.data) || item.data['type'] !== 'reasoning' || !isJsonValue(item.data)) throw invalidProviderContinuation(req, method)
+      continue
+    }
+    if (item.kind === 'tool_call') openAiToolCallItemId(item.data, req, method)
+  }
+}
+
+function openAiToolCallItemId(data: JsonValue | undefined, req: ChatRequest, method: string): string | undefined {
+  if (data === undefined) return undefined
+  if (!isOpenAiRecord(data) || !isJsonValue(data)) throw invalidProviderContinuation(req, method)
+  const keys = Object.keys(data)
+  if (keys.length !== 1 || keys[0] !== 'itemId' || typeof data['itemId'] !== 'string' || data['itemId'].length === 0) {
+    throw invalidProviderContinuation(req, method)
+  }
+  return data['itemId']
+}
+
+function isOpenAiRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStrictJsonValue(value: unknown): value is JsonValue {
+  return isJsonValue(value)
+}
+
+function invalidProviderContinuation(req: ChatRequest, method: string): ModelError {
+  return new ModelError('OpenAI provider continuation is invalid.', {
+    provider: 'openai',
+    model: req.model,
+    method,
+    reason: 'invalid_provider_continuation'
+  })
 }
 
 async function* streamResponsesText(client: any, req: TextRequest): AsyncIterable<TextStreamChunk> {
-  const stream = await createResponse(client, req, true)
+  const stream = await createResponse(client, req, true, 'textStream')
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
   let outcome: NonNullable<TextResponse['outcome']> = toOutcome('stop')
@@ -626,12 +986,12 @@ async function* streamResponsesText(client: any, req: TextRequest): AsyncIterabl
   for (const call of toolCalls) {
     yield { kind: 'tool_call', call }
   }
-  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
+  const providerContinuation = toResponsesProviderContinuation(completedOutput, toolCalls, req, 'textStream')
+  yield { kind: 'finish', usage, finishReason, outcome, ...(providerContinuation ? { providerContinuation } : {}) }
 }
 
 async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: any, req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
-  const stream = await createResponse(client, req, true)
+  const stream = await createResponse(client, req, true, 'objectStream')
   let partial = ''
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   let finishReason: TextResponse['finishReason'] = 'stop'
@@ -671,8 +1031,8 @@ async function* streamResponsesObject<T extends JsonValue = JsonValue>(client: a
     yield { kind: 'tool_call', call }
   }
   const object = parseJson(partial || '{}', req, 'objectStream') as T
-  const providerItems = toResponsesProviderItems(completedOutput, toolCalls)
-  yield { kind: 'finish', object, usage, finishReason, outcome, ...(providerItems ? { providerItems } : {}) }
+  const providerContinuation = toResponsesProviderContinuation(completedOutput, toolCalls, req, 'objectStream')
+  yield { kind: 'finish', object, usage, finishReason, outcome, ...(providerContinuation ? { providerContinuation } : {}) }
 }
 
 function extractResponsesText(response: any): string {
@@ -748,7 +1108,7 @@ function finalizeResponsesStreamToolCalls(state: ResponsesStreamToolCallState, r
 const MALFORMED_TOOL_ARGS_MESSAGE = 'OpenAI returned malformed tool-call argument JSON.'
 const MALFORMED_OBJECT_MESSAGE = 'OpenAI returned malformed structured object JSON.'
 
-function callContext(req: ChatRequest, method: string): AdapterCallContext {
+function callContext(req: OpenAiRequest, method: string): AdapterCallContext {
   return { provider: 'openai', model: req.model, method }
 }
 

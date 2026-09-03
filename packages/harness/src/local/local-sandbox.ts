@@ -1,14 +1,22 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import process from 'node:process'
 import { mkdir, readFile, writeFile, rm, readdir, stat, lstat, realpath } from 'node:fs/promises'
 import { resolve, dirname, posix, join, basename } from 'node:path'
-import { SandboxError, SandboxNoExecutorError, OperationTimeoutError } from '../errors/index.js'
+import { HarnessError, SandboxError, SandboxNoExecutorError, SandboxStateLostError, OperationTimeoutError } from '../errors/index.js'
 import type { DirEntry, ExecOptions, ExecResult, FileStat } from '../harness/types.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import { abortError } from '../runtime/abort.js'
-import type { ExecCapableSandboxSession, Sandbox, SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
+import { SandboxAdapterCatalog } from '../sandbox/adapter-catalog.js'
+import type { SandboxAdministration, SandboxAdministrationOptions, SandboxResourceSummary } from '../sandbox/administration.js'
+import { LocalSandboxCatalog } from './local-sandbox-catalog.js'
+import type { ExecCapableSandboxSession, Sandbox, SandboxOpenOptions, SandboxOpenResult, SandboxProcess, SandboxScope, SandboxSessionBase, SandboxTerminateOptions, SandboxTextSearchRequest, SandboxTextSearchResult, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
+import { searchSandboxTextLocally } from '../sandbox/text-search.js'
+import type { SandboxOwnerRegistrationOptions } from '../sandbox/ownership.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { LocalWorkspaceCoordinator } from './local-workspace.js'
+import { LocalSandboxState, type LocalSandboxAttachment } from './local-sandbox-state.js'
 import { sha256Hex } from './ref-hash.js'
+import { sandboxScopeKey } from '../sandbox/lifecycle.js'
 
 export interface LocalHostExecPolicy {
   env?: Record<string, string>
@@ -20,22 +28,18 @@ export interface LocalDirectorySandboxOptions {
   root: string
   exec?: false | LocalHostExecPolicy
   coordinator?: LocalWorkspaceCoordinator
+  /** Bounded private inventory and cleanup limits for this adapter. */
+  administration?: SandboxAdministrationOptions
 }
 
-/** Capability tuple advertised by the files-only local sandbox (spec 22 §2). */
-export type LocalFilesOnlySandboxCapabilities = readonly ['sandbox.fs', 'sandbox.persistent_fs']
+/** Capability tuple advertised by the non-executable local sandbox (spec 22 §2). */
+export type LocalFilesOnlySandboxCapabilities = readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
 
 /** Capability tuple advertised by the exec-enabled local sandbox (spec 22 §2). */
-export type LocalExecSandboxCapabilities = readonly ['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs']
+export type LocalExecSandboxCapabilities = readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
 
 /** Sandbox shape returned by `localDirectorySandbox(...)` (spec 22 §2). */
 export type LocalDurableSandbox = Sandbox<LocalFilesOnlySandboxCapabilities> | Sandbox<LocalExecSandboxCapabilities>
-
-/** Files-only session: `exec` is present but always throws `SandboxNoExecutorError`. */
-export type LocalFilesOnlySandboxSession = SandboxSessionBase & {
-  readonly executor: 'unavailable'
-  exec(command: string, opts?: ExecOptions): Promise<ExecResult>
-}
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000
 /** Maximum captured stdout/stderr bytes per exec call (spec 22 §5). */
@@ -43,15 +47,6 @@ const MAX_EXEC_CAPTURE_BYTES = 10 * 1024 * 1024
 const EXEC_OUTPUT_TRUNCATION_MARKER = '\n[truncated: local sandbox capture limit reached]'
 /** Shell metacharacters rejected outside quotes when an allow-list is active (spec 22 §5). */
 const SHELL_METACHARACTERS = new Set([';', '|', '&', '<', '>', '`', '$', '(', ')', '\n', '\r'])
-/** Path-segment-safe id for sandbox session roots (no separators, no dot segments). */
-const SANDBOX_ID_SEGMENT_PATTERN = /^[A-Za-z0-9_.:-]{1,200}$/
-
-function assertSafeIdSegment(value: string, field: 'sessionId' | 'runId'): void {
-  if (!SANDBOX_ID_SEGMENT_PATTERN.test(value) || value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
-    throw new SandboxError(`Sandbox ${field} contains unsupported path characters.`, { reason: 'invalid_path' })
-  }
-}
-
 /**
  * Tokenizes a command line without invoking a shell. Supports single/double
  * quotes for grouping; performs no expansion, substitution, or redirection.
@@ -108,7 +103,7 @@ function appendCapped(target: CapturedOutput, chunk: string): void {
     return
   }
   const remaining = MAX_EXEC_CAPTURE_BYTES - target.bytes
-  target.text += chunk.slice(0, Math.max(0, remaining)) + EXEC_OUTPUT_TRUNCATION_MARKER
+  target.text += Buffer.from(chunk).subarray(0, Math.max(0, remaining)).toString('utf8') + EXEC_OUTPUT_TRUNCATION_MARKER
   target.bytes = MAX_EXEC_CAPTURE_BYTES
   target.truncated = true
 }
@@ -119,13 +114,31 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
   private readonly execPolicy: false | LocalHostExecPolicy
   private readonly telemetry: TelemetryShim | undefined
   private readonly fallbackExecTimeoutMs: number
+  private closed = false
+  private cleanupComplete = false
+  private closePromise: Promise<void> | undefined
+  private terminated = false
+  private readonly processStops = new Set<(signal?: 'SIGTERM' | 'SIGKILL') => Promise<void>>()
+  private readonly unregister: () => void
 
-  public constructor(root: string, execPolicy: false | LocalHostExecPolicy, telemetry: TelemetryShim | undefined, fallbackExecTimeoutMs: number | undefined) {
-    this.root = resolve(root)
+  public constructor(
+    private readonly state: LocalSandboxState,
+    private readonly attachment: LocalSandboxAttachment,
+    execPolicy: false | LocalHostExecPolicy,
+    telemetry: TelemetryShim | undefined,
+    fallbackExecTimeoutMs: number | undefined,
+    private readonly assertActive: () => void | Promise<void> = () => undefined
+  ) {
+    this.root = resolve(attachment.root)
     this.execPolicy = execPolicy
     this.telemetry = telemetry
     this.fallbackExecTimeoutMs = fallbackExecTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
     this.executor = execPolicy === false ? 'unavailable' : 'available'
+    this.unregister = state.register(attachment, async () => {
+      this.terminated = true
+      await this.stopProcesses()
+      this.unregister()
+    })
   }
 
   public async read(path: string): Promise<Uint8Array> {
@@ -156,14 +169,7 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     return this.sandboxSpan('list', {
       'harness.sandbox.recursive': opts.recursive ?? false,
       'harness.sandbox.has_glob': Boolean(opts.glob)
-    }, async () => {
-      const root = await this.toPhysical(path)
-      const entries: DirEntry[] = []
-      await this.collect(root, path, opts.recursive ?? false, entries)
-      if (!opts.glob) return entries
-      const globPattern = globToRegExp(opts.glob)
-      return entries.filter((entry) => globPattern.test(entry.path))
-    })
+    }, async () => this.listUnchecked(path, opts))
   }
 
   public async stat(path: string): Promise<FileStat> {
@@ -175,11 +181,13 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
 
   public async exists(path: string): Promise<boolean> {
     return this.sandboxSpan('exists', {}, async () => {
+      const physical = await this.toPhysical(path, { forWrite: true })
       try {
-        await this.toPhysical(path)
+        await stat(physical)
         return true
-      } catch {
-        return false
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+        throw error
       }
     })
   }
@@ -190,14 +198,25 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     }, async () => {
       for (const [name, data] of files) {
         const target = posix.join(atPath, name)
-        await this.write(target, data)
+        const physical = await this.toPhysical(target, { forWrite: true })
+        await mkdir(dirname(physical), { recursive: true })
+        await writeFile(physical, data)
       }
     })
   }
 
+  public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
+    return this.sandboxSpan('search_text', {}, async () => searchSandboxTextLocally(request, {
+      list: async (path, options) => this.listUnchecked(path, options),
+      read: async path => readFile(await this.toPhysical(path)),
+    }))
+  }
+
   /** Starts a long-lived process using the same allowlist and environment policy as exec(). */
   public async spawn(command: string, opts: SpawnOptions = {}): Promise<SandboxProcess> {
-    return this.sandboxSpan('spawn', { 'harness.sandbox.has_cwd': Boolean(opts.cwd) }, async () => {
+    const releaseProcess = await this.attachment.writerFence?.trackProcess()
+    try {
+      const processHandle = await this.sandboxSpan('spawn', { 'harness.sandbox.has_cwd': Boolean(opts.cwd) }, async () => {
       if (this.execPolicy === false) throw new SandboxNoExecutorError('Sandbox executor unavailable.', { session_id: 'local' })
       if (opts.signal?.aborted) throw abortError(opts.signal, 'sandbox', 'Sandbox run was cancelled.')
       const policy = this.execPolicy
@@ -214,30 +233,47 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
       }
       const args = await Promise.all((opts.args ?? []).map(mapSandboxPathValue))
       const envEntries = await Promise.all(Object.entries(opts.env ?? {}).map(async ([name, value]) => [name, await mapSandboxPathValue(value)] as const))
+      this.requireUsable()
+      if (opts.signal?.aborted) throw abortError(opts.signal, 'sandbox', 'Sandbox run was cancelled.')
       const child = spawn(commandName, args, {
         cwd,
         env: { PATH: process.env['PATH'] ?? '', HOME: this.root, ...policy.env, ...Object.fromEntries(envEntries) },
+        detached: process.platform !== 'win32',
         stdio: ['pipe', 'pipe', 'pipe']
       })
       const exit = new Promise<{ exitCode: number; signal?: string }>((resolveExit) => {
         child.once('close', (exitCode, signal) => resolveExit({ exitCode: exitCode ?? 1, ...(signal ? { signal } : {}) }))
       })
-      const onAbort = () => { child.kill('SIGTERM') }
+      const stop = this.trackProcess(child, exit)
+      child.stdin.on('error', () => undefined)
+      await new Promise<void>((resolveSpawn, rejectSpawn) => {
+        child.once('spawn', resolveSpawn)
+        child.once('error', () => rejectSpawn(new SandboxError('Local sandbox process could not be started.', { reason: 'exec_failed' })))
+      })
+      const onAbort = () => { void stop().catch(() => undefined) }
       opts.signal?.addEventListener('abort', onAbort, { once: true })
+      if (opts.signal?.aborted) {
+        await stop()
+        throw abortError(opts.signal, 'sandbox', 'Sandbox process was cancelled.')
+      }
       void exit.finally(() => opts.signal?.removeEventListener('abort', onAbort))
-      return {
+      const sandboxProcess: SandboxProcess = {
         writeStdin: async (chunk) => await new Promise<void>((resolveWrite, rejectWrite) => {
-          child.stdin.write(chunk, (error) => error ? rejectWrite(error) : resolveWrite())
+          child.stdin.write(chunk, (error) => error ? rejectWrite(new SandboxError('Local sandbox stdin is unavailable.', { reason: 'exec_failed' })) : resolveWrite())
         }),
         stdout: (async function * () { for await (const chunk of child.stdout) yield String(chunk) })(),
         stderr: (async function * () { for await (const chunk of child.stderr) yield String(chunk) })(),
         exit,
-        kill: async (signal = 'SIGTERM') => {
-          if (!child.killed) child.kill(signal)
-          await exit
-        }
+        kill: stop
       }
-    })
+        return sandboxProcess
+      })
+      void processHandle.exit.finally(() => releaseProcess?.())
+      return processHandle
+    } catch (error) {
+      releaseProcess?.()
+      throw error
+    }
   }
 
   public async exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
@@ -266,21 +302,27 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
       if (signal?.aborted) throw abortError(signal, 'sandbox', 'Sandbox exec was cancelled.')
       const started = Date.now()
       return new Promise<ExecResult>((resolveExec, rejectExec) => {
+        this.requireUsable()
         const child = spawn(commandName, argv.slice(1), {
           cwd,
           env: { PATH: process.env['PATH'] ?? '', HOME: this.root, ...policy.env, ...opts.env },
+          detached: process.platform !== 'win32',
           stdio: ['pipe', 'pipe', 'pipe']
         })
+        const exit = new Promise<void>(resolveExit => child.once('close', () => resolveExit()))
+        const stop = this.trackProcess(child, exit)
+        child.stdin.on('error', () => undefined)
         const stdout: CapturedOutput = { text: '', bytes: 0, truncated: false }
         const stderr: CapturedOutput = { text: '', bytes: 0, truncated: false }
         let settled = false
+        let interrupted: 'cancelled' | 'timeout' | undefined
         const onAbort = (): void => {
-          child.kill('SIGTERM')
-          finish(() => rejectExec(abortError(signal as AbortSignal, 'sandbox', 'Sandbox exec was cancelled.')))
+          interrupted = 'cancelled'
+          void stop().catch(() => finish(() => rejectExec(new SandboxError('Local sandbox process cleanup failed.', { reason: 'cleanup_failed' }))))
         }
         const timer = setTimeout(() => {
-          child.kill('SIGKILL')
-          finish(() => rejectExec(new OperationTimeoutError('Sandbox exec timed out.', { scope: 'sandbox_run', timeout_ms: timeoutMs })))
+          interrupted = 'timeout'
+          void stop('SIGKILL').catch(() => finish(() => rejectExec(new SandboxError('Local sandbox process cleanup failed.', { reason: 'cleanup_failed' }))))
         }, timeoutMs)
         const finish = (settle: () => void): void => {
           if (settled) return
@@ -292,13 +334,15 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
         signal?.addEventListener('abort', onAbort, { once: true })
         child.stdout.on('data', (chunk) => { appendCapped(stdout, String(chunk)) })
         child.stderr.on('data', (chunk) => { appendCapped(stderr, String(chunk)) })
-        child.on('error', (error) => {
-          finish(() => rejectExec(new SandboxError('Local sandbox exec failed.', { reason: 'exec_failed', stdout: stdout.text, stderr: stderr.text }, error)))
+        child.on('error', () => {
+          finish(() => rejectExec(new SandboxError('Local sandbox exec failed.', { reason: 'exec_failed' })))
         })
         child.on('close', (exitCode, exitSignal) => {
           finish(() => {
+            if (interrupted === 'cancelled') { rejectExec(abortError(signal as AbortSignal, 'sandbox', 'Sandbox exec was cancelled.')); return }
+            if (interrupted === 'timeout') { rejectExec(new OperationTimeoutError('Sandbox exec timed out.', { scope: 'sandbox_run', timeout_ms: timeoutMs })); return }
             if (exitCode === null) {
-              rejectExec(new SandboxError(`Local sandbox exec was terminated by signal ${exitSignal ?? 'unknown'}.`, { reason: 'exec_failed', stdout: stdout.text, stderr: stderr.text }))
+              rejectExec(new SandboxError('Local sandbox exec was terminated.', { reason: 'exec_failed' }))
               return
             }
             resolveExec({ stdout: stdout.text, stderr: stderr.text, exitCode, durationSeconds: (Date.now() - started) / 1000 })
@@ -306,17 +350,63 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
         })
         if (opts.stdin) child.stdin.end(opts.stdin)
         else child.stdin.end()
+        if (signal?.aborted) onAbort()
       })
     })
   }
 
-  public async close(): Promise<void> {}
+  public async close(): Promise<void> {
+    if (this.cleanupComplete) return
+    this.closed = true
+    this.closePromise ??= this.stopProcesses().then(() => {
+      this.cleanupComplete = true
+      this.unregister()
+    }).finally(() => { this.closePromise = undefined })
+    await this.closePromise
+  }
+
+  private async stopProcesses(): Promise<void> {
+    const results = await Promise.allSettled([...this.processStops].map(stop => stop()))
+    if (results.some(result => result.status === 'rejected')) throw new SandboxError('Local sandbox process cleanup failed.', { reason: 'cleanup_failed' })
+  }
+
+  private trackProcess(child: ChildProcessWithoutNullStreams, exit: Promise<unknown>): (signal?: 'SIGTERM' | 'SIGKILL') => Promise<void> {
+    let exited = false
+    let stopping: Promise<void> | undefined
+    const wait = async (milliseconds: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try { return await Promise.race([exit.then(() => true), new Promise<boolean>(resolveWait => { timer = setTimeout(() => resolveWait(false), milliseconds) })]) }
+      finally { if (timer) clearTimeout(timer) }
+    }
+    const send = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+      if (exited || !child.pid) return
+      try {
+        if (process.platform === 'win32') child.kill(signal)
+        else process.kill(-child.pid, signal)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw new SandboxError('Local sandbox process cleanup failed.', { reason: 'cleanup_failed' })
+      }
+    }
+    const stop = (signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): Promise<void> => {
+      if (stopping) return stopping
+      stopping = (async () => {
+        send(signal)
+        if (await wait(signal === 'SIGKILL' ? 1000 : 100)) return
+        send('SIGKILL')
+        if (!await wait(1000)) throw new SandboxError('Local sandbox process did not stop.', { reason: 'cleanup_failed' })
+      })().catch(error => { stopping = undefined; throw error })
+      return stopping
+    }
+    this.processStops.add(stop)
+    void exit.then(() => { exited = true; this.processStops.delete(stop) })
+    return stop
+  }
 
   private async collect(root: string, virtualRoot: string, recursive: boolean, out: DirEntry[]): Promise<void> {
     for (const entry of await readdir(root, { withFileTypes: true })) {
       const physical = join(root, entry.name)
       const virtual = posix.join(virtualRoot, entry.name)
-      const info = await stat(physical)
+      const info = await lstat(physical)
       out.push({ name: entry.name, path: virtual, kind: entry.isDirectory() ? 'directory' : 'file', ...(entry.isFile() ? { size: info.size } : {}) })
       if (recursive && entry.isDirectory()) await this.collect(physical, virtual, recursive, out)
     }
@@ -345,6 +435,16 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     return target
   }
 
+  /** Filesystem listing used only while the caller already holds the attachment fence. */
+  private async listUnchecked(path: string, opts: { recursive?: boolean; glob?: string }): Promise<DirEntry[]> {
+    const root = await this.toPhysical(path)
+    const entries: DirEntry[] = []
+    await this.collect(root, path, opts.recursive ?? false, entries)
+    if (!opts.glob) return entries
+    const globPattern = globToRegExp(opts.glob)
+    return entries.filter(entry => globPattern.test(entry.path))
+  }
+
   private async sandboxSpan<T>(operation: string, attrs: SpanAttrs, fn: () => Promise<T>): Promise<T> {
     const spanAttrs: SpanAttrs = {
       'harness.sandbox.adapter': 'local_directory_sandbox',
@@ -355,90 +455,173 @@ class LocalDirectorySandboxSession implements SandboxSessionBase {
     const started = Date.now()
     const run = async (): Promise<T> => {
       try {
-        const result = await fn()
+        await this.assertActive()
+        this.requireUsable()
+        const result = await this.state.use(this.attachment, async () => {
+          await this.assertActive()
+          this.requireUsable()
+          return await fn()
+        }, operation !== 'exec' && operation !== 'spawn')
+        await this.assertActive()
         this.telemetry?.recordCounter('harness.local_sandbox.operations', 1, spanAttrs)
         return result
+      } catch (error) {
+        if (error instanceof HarnessError) throw error
+        throw new SandboxError('Local sandbox operation failed.', { reason: 'fs_failed' })
       } finally {
         this.telemetry?.recordHistogram('harness.local_sandbox.operation.duration', (Date.now() - started) / 1000, spanAttrs)
       }
     }
     return this.telemetry ? this.telemetry.span(`harness.local_sandbox.${operation}`, spanAttrs, run) : run()
   }
+
+  private requireUsable(): void {
+    if (this.terminated) {
+      throw new SandboxStateLostError('Local sandbox lifecycle state is missing.', {
+        reason: 'lifecycle_state_missing', lifetime: this.attachment.scope.lifetime, adapter_id: 'local_directory'
+      })
+    }
+    if (this.closed) throw new SandboxError('Local sandbox attachment is closed.', { reason: 'session_closed' })
+  }
 }
 
 class FilesOnlyLocalSandboxSession extends LocalDirectorySandboxSession {
   declare public readonly executor: 'unavailable'
 
-  public constructor(root: string, telemetry: TelemetryShim | undefined) {
-    super(root, false, telemetry, undefined)
+  public constructor(state: LocalSandboxState, attachment: LocalSandboxAttachment, telemetry: TelemetryShim | undefined, assertActive?: () => void | Promise<void>) {
+    super(state, attachment, false, telemetry, undefined, assertActive)
   }
 }
 
 class ExecLocalSandboxSession extends LocalDirectorySandboxSession implements ExecCapableSandboxSession, SpawnCapableSandboxSession {
   declare public readonly executor: 'available'
 
-  public constructor(root: string, execPolicy: LocalHostExecPolicy, telemetry: TelemetryShim | undefined, fallbackExecTimeoutMs: number | undefined) {
-    super(root, execPolicy, telemetry, fallbackExecTimeoutMs)
+  public constructor(state: LocalSandboxState, attachment: LocalSandboxAttachment, execPolicy: LocalHostExecPolicy, telemetry: TelemetryShim | undefined, fallbackExecTimeoutMs: number | undefined, assertActive?: () => void | Promise<void>) {
+    super(state, attachment, execPolicy, telemetry, fallbackExecTimeoutMs, assertActive)
   }
 }
 
 abstract class BaseLocalDirectorySandbox {
+  public readonly telemetryAdapterId = 'local_directory_sandbox'
   protected telemetry: TelemetryShim | undefined
   protected toolTimeoutMs: number | undefined
+  protected readonly state: LocalSandboxState
+  private readonly catalog: SandboxAdapterCatalog
 
-  protected constructor(protected readonly options: LocalDirectorySandboxOptions, private readonly execEnabled: boolean) {}
+  protected constructor(protected readonly options: LocalDirectorySandboxOptions, private readonly execEnabled: boolean) {
+    this.state = new LocalSandboxState(options.root)
+    this.catalog = new SandboxAdapterCatalog(new LocalSandboxCatalog({
+      root: options.root,
+      ...(options.administration ? { administration: options.administration } : {}),
+      callbacks: {
+        deleteResource: async (resource: SandboxResourceSummary, signal?: AbortSignal) => {
+          if (resource.kind === 'sandbox' && resource.scope) {
+            await this.state.terminate({ scope: resource.scope, reason: 'manual', ...(signal ? { signal } : {}) })
+          }
+        }
+      }
+    }))
+  }
+
+  public get administration(): SandboxAdministration { return this.catalog.administration }
+
+  public async registerOwner(options: SandboxOwnerRegistrationOptions): Promise<void> {
+    await this.catalog.registerOwner(options)
+  }
 
   public configureHarnessContext(context: HarnessAdapterContext): void {
     this.telemetry = context.telemetry
+    this.catalog.configureHarnessContext(context, 'local_directory_sandbox')
     // Spec 22 §2: exec timeout falls back to the configured harness toolTimeoutMs.
     this.toolTimeoutMs = context.defaults.toolTimeoutMs
   }
 
-  protected async openRoot<T extends SandboxSessionBase>(opts: { sessionId: string; runId: string; signal?: AbortSignal }, make: (root: string) => T): Promise<T> {
-    assertSafeIdSegment(opts.sessionId, 'sessionId')
-    assertSafeIdSegment(opts.runId, 'runId')
-    const active = this.options.coordinator?.get(opts.runId, opts.sessionId)
+  protected async openRoot<T extends SandboxSessionBase>(options: SandboxOpenOptions, make: (attachment: LocalSandboxAttachment, assertActive: () => void | Promise<void>) => T): Promise<{ session: T; disposition: 'created' | 'attached' | 'restored' | 'resumed'; liveProcessState: 'not_preserved' }> {
+    const { scope } = options
+    const aggregate = this.options.coordinator?.get(scope)
+    if (scope.lifetime === 'run' && this.options.coordinator && !aggregate) {
+      throw new SandboxStateLostError('Local sandbox has no compatible active workspace binding.', {
+        reason: 'durable_workspace_recovery_unavailable', lifetime: 'run', adapter_id: 'local_directory'
+      })
+    }
+    if (aggregate) {
+      try {
+        const activePath = await stat(aggregate.activePath)
+        if (!activePath.isDirectory()) throw new Error('Invalid workspace directory')
+      } catch {
+        throw new SandboxStateLostError('Local sandbox has no compatible active workspace binding.', {
+          reason: 'durable_workspace_recovery_unavailable', lifetime: 'run', adapter_id: 'local_directory'
+        })
+      }
+    }
+    const active = aggregate
+      ? {
+          ...aggregate,
+          activePath: join(aggregate.activePath, 'partitions', sha256Hex(sandboxScopeKey(scope))),
+          ownerPath: join(dirname(aggregate.activePath), 'sandbox-owner')
+        }
+      : undefined
     const spanAttrs: SpanAttrs = {
       'harness.sandbox.adapter': 'local_directory_sandbox',
       'harness.sandbox.operation': 'open',
       'harness.sandbox.exec_enabled': this.execEnabled,
-      ...(active ? { 'harness.workspace.ref_hash': sha256Hex(active.workspaceRef) } : {}),
-      'harness.run.id': opts.runId,
-      'harness.session.id': opts.sessionId
+      'harness.sandbox.lifetime': scope.lifetime
     }
     const started = Date.now()
-    const run = async (): Promise<T> => {
-      const root = active?.activePath ?? resolve(this.options.root, 'sessions', opts.sessionId, opts.runId)
-      await mkdir(join(root, 'workspace'), { recursive: true })
+    const run = async () => {
+      let attachmentAssertActive: () => void | Promise<void> = () => undefined
+      const opened = await this.catalog.open(options, async () => {
+        const state = await this.state.open(options, active)
+        return { session: make(state.attachment, () => attachmentAssertActive()), disposition: state.disposition, assertActive: () => undefined }
+      })
+      attachmentAssertActive = opened.assertActive
       this.telemetry?.recordCounter('harness.local_sandbox.operations', 1, spanAttrs)
       this.telemetry?.recordHistogram('harness.local_sandbox.operation.duration', (Date.now() - started) / 1000, spanAttrs)
-      return make(root)
+      return {
+        session: opened.session,
+        disposition: opened.disposition,
+        liveProcessState: 'not_preserved' as const
+      }
     }
     return this.telemetry ? this.telemetry.span('harness.local_sandbox.open', spanAttrs, async () => run()) : run()
+  }
+
+  protected async terminateScope(options: SandboxTerminateOptions): Promise<void> {
+    await this.catalog.terminate(options, async () => await this.state.terminate(options))
   }
 }
 
 class FilesOnlyLocalDirectorySandbox extends BaseLocalDirectorySandbox implements Sandbox<LocalFilesOnlySandboxCapabilities> {
-  public readonly capabilities = ['sandbox.fs', 'sandbox.persistent_fs'] as const
+  public readonly capabilities: LocalFilesOnlySandboxCapabilities
 
   public constructor(options: LocalDirectorySandboxOptions) {
     super(options, false)
+    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.text_search', 'sandbox.persistent_fs']
   }
 
-  public async open(opts: { sessionId: string; runId: string; signal?: AbortSignal }): Promise<LocalFilesOnlySandboxSession> {
-    return this.openRoot(opts, (root) => new FilesOnlyLocalSandboxSession(root, this.telemetry))
+  public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<LocalFilesOnlySandboxCapabilities>> {
+    return await this.openRoot(options, (attachment, assertActive) => new FilesOnlyLocalSandboxSession(this.state, attachment, this.telemetry, assertActive))
+  }
+
+  public async terminate(options: SandboxTerminateOptions): Promise<void> {
+    await this.terminateScope(options)
   }
 }
 
 class ExecLocalDirectorySandbox extends BaseLocalDirectorySandbox implements Sandbox<LocalExecSandboxCapabilities> {
-  public readonly capabilities = ['sandbox.fs', 'sandbox.exec', 'sandbox.persistent_fs'] as const
+  public readonly capabilities: LocalExecSandboxCapabilities
 
   public constructor(options: LocalDirectorySandboxOptions, private readonly execPolicy: LocalHostExecPolicy) {
     super(options, true)
+    this.capabilities = options.coordinator ? ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding'] : ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs']
   }
 
-  public async open(opts: { sessionId: string; runId: string; signal?: AbortSignal }): Promise<ExecCapableSandboxSession> {
-    return this.openRoot(opts, (root) => new ExecLocalSandboxSession(root, this.execPolicy, this.telemetry, this.toolTimeoutMs))
+  public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<LocalExecSandboxCapabilities>> {
+    return await this.openRoot(options, (attachment, assertActive) => new ExecLocalSandboxSession(this.state, attachment, this.execPolicy, this.telemetry, this.toolTimeoutMs, assertActive))
+  }
+
+  public async terminate(options: SandboxTerminateOptions): Promise<void> {
+    await this.terminateScope(options)
   }
 }
 
@@ -459,6 +642,9 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`)
 }
 
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec: LocalHostExecPolicy }): Sandbox<LocalExecSandboxCapabilities>
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec?: false }): Sandbox<LocalFilesOnlySandboxCapabilities>
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions): LocalDurableSandbox
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): LocalDurableSandbox {
   const exec = options.exec ?? false
   return exec === false ? new FilesOnlyLocalDirectorySandbox(options) : new ExecLocalDirectorySandbox(options, exec)

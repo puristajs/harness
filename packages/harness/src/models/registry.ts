@@ -1,4 +1,4 @@
-import { ModelCapabilityError, ModelError } from '../errors/index.js'
+import { HarnessConfigError, ModelCapabilityError, ModelError } from '../errors/index.js'
 import {
   ATTR_ERROR_TYPE,
   ATTR_GEN_AI_CONVERSATION_ID,
@@ -22,6 +22,8 @@ import {
 import type {
   EmbeddingRequest,
   EmbeddingResponse,
+  ImageRequest,
+  ImageResponse,
   ContentPart,
   ModelAlias,
   ModelCallOptions,
@@ -30,18 +32,32 @@ import type {
   ObjectRequest,
   ObjectResponse,
   ObjectStreamChunk,
-  ProviderItems,
+  ProviderContinuation,
   RerankRequest,
   RerankResponse,
+  SpeechRequest,
+  SpeechResponse,
   TextRequest,
   TextResponse,
   TextStreamChunk,
   TokenUsage,
-  ToolCallSpec
+  ToolCallSpec,
+  VideoRequest,
+  VideoResponse,
+  VideoStreamChunk,
+  VideoProviderStreamChunk,
+  ProviderArtifact,
 } from '../ports/model-provider.js'
+import type { ArtifactReference, ArtifactStore } from '../ports/artifact-store.js'
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import type { JsonValue } from './json.js'
 import { pumpStreamThroughSpan } from './stream-pump.js'
+import type {
+  ModelAdmission,
+  ModelAdmissionLease,
+  ModelAdmissionOperation,
+} from '../ports/model-admission.js'
+import { modelAdmissionKey } from '../ports/model-admission.js'
 
 export interface ModelInvokeContext {
   /** Harness instance name used for telemetry and run-event attribution. */
@@ -56,7 +72,7 @@ export interface ModelInvokeContext {
   agentId?: string
   /**
    * Mirrors this call's supported result events into the enclosing session
-   * `RunEvent` stream. Defaults to `false`.
+   * diagnostic `RunEvent` observation stream. Defaults to `false`.
    *
    * `textStream(...)` and `objectStream(...)` emit consumed stream chunks;
    * `object(...)`, `embed(...)`, and `rerank(...)` emit their respective
@@ -64,6 +80,8 @@ export interface ModelInvokeContext {
    * callers can opt in without constructing or emitting events themselves.
    */
   emitRunEvents?: boolean
+  /** Stable base key used when publishing generated artifacts. */
+  artifactIdempotencyKey?: string
 }
 
 interface HandleRequest {
@@ -84,8 +102,19 @@ type AudioPart = Extract<ContentPart, { kind: 'audio' }>
 type FilePart = Extract<ContentPart, { kind: 'file' | 'file_url' }>
 type EmbeddingRequestInput = Omit<EmbeddingRequest, 'model' | 'signal'>
 type RerankRequestInput = Omit<RerankRequest, 'model' | 'signal'>
+type ImageRequestInput = Omit<ImageRequest, 'model' | 'signal'>
+type SpeechRequestInput = Omit<SpeechRequest, 'model' | 'signal'>
+type VideoRequestInput = Omit<VideoRequest, 'model' | 'signal'>
 type AliasCapabilities<A> = A extends { capabilities: readonly (infer C)[] } ? C : never
 type HasCapability<A, C extends ModelCapability> = C extends AliasCapabilities<A> ? true : false
+
+/** Returns whether a configured alias declares every requested capability. */
+export function hasModelCapabilities(
+  alias: Pick<ModelAlias, 'capabilities'>,
+  capabilities: readonly ModelCapability[]
+): boolean {
+  return capabilities.every((capability) => alias.capabilities.includes(capability))
+}
 type ContentPartFor<A> =
   | TextPart
   | (HasCapability<A, 'vision_input'> extends true ? VisionPart : never)
@@ -96,7 +125,7 @@ type ToolInputFor<A> = HasCapability<A, 'tool_use'> extends true ? { tools?: Mod
 type ModelMessageFor<A> =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPartFor<A>[] }
-  | ({ role: 'assistant'; content: string | ContentPartFor<A>[]; providerItems?: ProviderItems } & ToolCallsFor<A>)
+  | ({ role: 'assistant'; content: string | ContentPartFor<A>[]; providerContinuation?: ProviderContinuation } & ToolCallsFor<A>)
   | (HasCapability<A, 'tool_use'> extends true ? { role: 'tool'; toolCallId: string; content: string } : never)
 type TextRequestInputFor<A> = Omit<TextRequest, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
   messages: ModelMessageFor<A>[]
@@ -135,6 +164,23 @@ type RerankModelMethods = {
   rerank(req: RerankRequestInput, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<RerankResponse>
 }
 
+type ImageModelMethods = {
+  /** Generates and publishes one or more images. */
+  image(req: ImageRequestInput, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<ImageResponse>
+}
+
+type SpeechModelMethods = {
+  /** Generates and publishes speech audio. */
+  speech(req: SpeechRequestInput, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<SpeechResponse>
+}
+
+type VideoModelMethods = {
+  /** Generates and publishes a video, waiting for the provider job to finish. */
+  video(req: VideoRequestInput, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<VideoResponse>
+  /** Streams provider-neutral video job progress and a published terminal artifact. */
+  videoStream(req: VideoRequestInput, signal: AbortSignal, ctx?: ModelInvokeContext): AsyncIterable<VideoStreamChunk>
+}
+
 /**
  * Bound model handle produced by {@link createModelRegistry}.
  *
@@ -147,7 +193,10 @@ export type ModelHandle<A extends { capabilities: readonly ModelCapability[] } =
   (HasCapability<A, 'object'> extends true ? ObjectModelMethods<A> : {}) &
   (HasCapability<A, 'object_stream'> extends true ? ObjectStreamModelMethods<A> : {}) &
   (HasCapability<A, 'embeddings'> extends true ? EmbeddingModelMethods : {}) &
-  (HasCapability<A, 'rerank'> extends true ? RerankModelMethods : {})
+  (HasCapability<A, 'rerank'> extends true ? RerankModelMethods : {}) &
+  (HasCapability<A, 'image_generation'> extends true ? ImageModelMethods : {}) &
+  (HasCapability<A, 'speech_generation'> extends true ? SpeechModelMethods : {}) &
+  (HasCapability<A, 'video_generation'> extends true ? VideoModelMethods : {})
 
 /**
  * Creates per-alias model handles that enforce capability gates before provider invocation.
@@ -162,14 +211,18 @@ export type ModelHandle<A extends { capabilities: readonly ModelCapability[] } =
  */
 export function createModelRegistry<const M extends Record<string, ModelAlias>>(
   aliases: M,
-  options: { telemetry?: TelemetryShim; harnessName?: string } = {}
+  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission; artifacts?: ArtifactStore } = {}
 ): { readonly [K in keyof M]: ModelHandle<M[K]> } {
   return Object.fromEntries(
     Object.entries(aliases).map(([aliasKey, alias]) => [aliasKey, createHandle(aliasKey, alias, options)])
   ) as unknown as { readonly [K in keyof M]: ModelHandle<M[K]> }
 }
 
-function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?: TelemetryShim; harnessName?: string }): ModelHandle {
+function createHandle(
+  aliasKey: string,
+  alias: ModelAlias,
+  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission; artifacts?: ArtifactStore },
+): ModelHandle {
   return {
     text(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'text', req)
@@ -183,7 +236,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq))
+      return withModelAdmission(options.admission, alias, 'text', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq)),
+      )
     },
     textStream(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'text_stream', req)
@@ -197,7 +252,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq))
+      return withModelAdmissionStream(options.admission, alias, 'text_stream', signal, () =>
+        withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq)),
+      )
     },
     object<T extends JsonValue = JsonValue>(req: Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults'>, signal: AbortSignal, ctx?: ModelInvokeContext) {
       ensureCapabilities(aliasKey, alias, 'object', req)
@@ -213,7 +270,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq))
+      return withModelAdmission(options.admission, alias, 'object', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq)),
+      )
     },
     objectStream<T extends JsonValue = JsonValue>(req: Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults'>, signal: AbortSignal, ctx?: ModelInvokeContext) {
       ensureCapabilities(aliasKey, alias, 'object_stream', req)
@@ -229,7 +288,9 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq))
+      return withModelAdmissionStream(options.admission, alias, 'object_stream', signal, () =>
+        withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq)),
+      )
     },
     embed(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'embeddings', req)
@@ -242,8 +303,10 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
-        (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response)
+      return withModelAdmission(options.admission, alias, 'embeddings', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
+          (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response),
+        ),
       )
     },
     rerank(req, signal, ctx) {
@@ -258,11 +321,183 @@ function createHandle(aliasKey: string, alias: ModelAlias, options: { telemetry?
         signal,
         traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
-        (response) => validateRerankResponse(aliasKey, alias, fullReq, response)
+      return withModelAdmission(options.admission, alias, 'rerank', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
+          (response) => validateRerankResponse(aliasKey, alias, fullReq, response),
+        ),
+      )
+    },
+    async image(req, signal, ctx) {
+      ensureCapabilities(aliasKey, alias, 'image_generation', req)
+      if (!alias.provider.image) throw methodMissing(aliasKey, 'image')
+      const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'image')
+      const fullReq: ImageRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const response = await withModelAdmission(options.admission, alias, 'image_generation', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'image_generation', ctx, () => alias.provider.image!(fullReq)),
+      )
+      return {
+        artifacts: await Promise.all(response.artifacts.map((artifact, index) => publishArtifact(
+          artifacts,
+          artifact,
+          signal,
+          ctx,
+          `${aliasKey}:image:${index}`,
+          options.harnessName,
+        ))),
+      }
+    },
+    async speech(req, signal, ctx) {
+      ensureCapabilities(aliasKey, alias, 'speech_generation', req)
+      if (!alias.provider.speech) throw methodMissing(aliasKey, 'speech')
+      const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'speech')
+      const fullReq: SpeechRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const response = await withModelAdmission(options.admission, alias, 'speech_generation', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'speech_generation', ctx, () => alias.provider.speech!(fullReq)),
+      )
+      return { artifact: await publishArtifact(artifacts, response.artifact, signal, ctx, `${aliasKey}:speech`, options.harnessName) }
+    },
+    async video(req, signal, ctx) {
+      ensureCapabilities(aliasKey, alias, 'video_generation', req)
+      if (!alias.provider.video) throw methodMissing(aliasKey, 'video')
+      const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'video')
+      const fullReq: VideoRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const response = await withModelAdmission(options.admission, alias, 'video_generation', signal, () =>
+        withModelSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.video!(fullReq)),
+      )
+      return { artifact: await publishArtifact(artifacts, response.artifact, signal, ctx, `${aliasKey}:video`, options.harnessName) }
+    },
+    videoStream(req, signal, ctx) {
+      ensureCapabilities(aliasKey, alias, 'video_generation', req)
+      if (!alias.provider.videoStream) throw methodMissing(aliasKey, 'videoStream')
+      const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'videoStream')
+      const fullReq: VideoRequest = mediaRequest(alias, req, signal, options.telemetry)
+      return publishVideoStream(
+        withModelAdmissionStream(options.admission, alias, 'video_generation', signal, () =>
+          withModelStreamSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.videoStream!(fullReq)),
+        ),
+        artifacts,
+        signal,
+        ctx,
+        aliasKey,
+        options.harnessName,
       )
     }
   }
+}
+
+function mediaRequest<T extends ImageRequest | SpeechRequest | VideoRequest>(
+  alias: ModelAlias,
+  req: Omit<T, 'model' | 'signal'>,
+  signal: AbortSignal,
+  telemetry?: TelemetryShim,
+): T {
+  return {
+    ...req,
+    model: alias.model,
+    ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
+    signal,
+    traceparent: req.traceparent ?? telemetry?.currentTraceparent(),
+  } as T
+}
+
+function requireArtifactStore(store: ArtifactStore | undefined, alias: string, method: string): ArtifactStore {
+  if (store) return store
+  throw new HarnessConfigError('Generated media requires an artifact store.', {
+    id: alias,
+    path: `models.${alias}.${method}`,
+    reason: 'artifact_store_missing',
+  })
+}
+
+async function publishArtifact(
+  store: ArtifactStore,
+  artifact: ProviderArtifact,
+  signal: AbortSignal,
+  ctx: ModelInvokeContext | undefined,
+  suffix: string,
+  harnessName?: string,
+): Promise<ArtifactReference> {
+  const resolvedHarnessName = ctx?.harnessName ?? harnessName
+  return store.publish({
+    body: artifact.body,
+    mediaType: artifact.mediaType,
+    ...(artifact.filename ? { filename: artifact.filename } : {}),
+    ...(artifact.size !== undefined ? { size: artifact.size } : {}),
+    ...(artifact.metadata ? { metadata: artifact.metadata } : {}),
+    scope: {
+      ...(resolvedHarnessName ? { harnessName: resolvedHarnessName } : {}),
+      ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
+      ...(ctx?.runId ? { runId: ctx.runId } : {}),
+      ...(ctx?.workflowId ? { workflowId: ctx.workflowId } : {}),
+      ...(ctx?.agentId ? { agentId: ctx.agentId } : {}),
+    },
+    ...(ctx?.artifactIdempotencyKey ? { idempotencyKey: `${ctx.artifactIdempotencyKey}:${suffix}` } : {}),
+    signal,
+  })
+}
+
+async function* publishVideoStream(
+  stream: AsyncIterable<VideoProviderStreamChunk>,
+  store: ArtifactStore,
+  signal: AbortSignal,
+  ctx: ModelInvokeContext | undefined,
+  alias: string,
+  harnessName?: string,
+): AsyncIterable<VideoStreamChunk> {
+  for await (const chunk of stream) {
+    if (chunk.kind !== 'finish') {
+      yield chunk
+      continue
+    }
+    yield {
+      kind: 'finish',
+      artifact: await publishArtifact(store, chunk.artifact, signal, ctx, `${alias}:video`, harnessName),
+    }
+  }
+}
+
+async function withModelAdmission<T>(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+  run: () => Promise<T>,
+): Promise<T> {
+  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  try {
+    return await run()
+  } finally {
+    await lease?.release()
+  }
+}
+
+async function* withModelAdmissionStream<T>(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+  run: () => AsyncIterable<T>,
+): AsyncIterable<T> {
+  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  try {
+    yield* run()
+  } finally {
+    await lease?.release()
+  }
+}
+
+function acquireModelAdmission(
+  admission: ModelAdmission | undefined,
+  alias: ModelAlias,
+  operation: ModelAdmissionOperation,
+  signal: AbortSignal,
+): Promise<ModelAdmissionLease> | undefined {
+  if (!admission) return undefined
+  return admission.acquire({
+    ...modelAdmissionKey(alias.provider, alias.model, alias.credentialScope),
+    operation,
+    signal,
+  })
 }
 
 /**
@@ -490,7 +725,7 @@ function openInferenceSpanKind(method: ModelCapability): string {
  * Throws {@link ModelCapabilityError} when required capabilities are missing.
  */
 function ensureCapabilities(aliasKey: string, alias: ModelAlias, method: ModelCapability, req: HandleRequest): void {
-  if (!alias.capabilities.includes(method)) {
+  if (!hasModelCapabilities(alias, [method])) {
     throw new ModelCapabilityError('Model alias does not provide requested capability.', {
       alias: aliasKey,
       method,

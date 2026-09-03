@@ -26,46 +26,40 @@ registered agent keys. There is no standalone `defineWorkflow(...)` helper.
 
 ```ts
 const harness = defineHarness({ name: 'incident-review' })
-  .models({
-    reasoning: {
-      provider,
-      model: 'gpt-5-mini',
-      capabilities: ['object']
-    }
-  })
-  .agents(({ agent }) => ({
-    facts: agent({
-      model: 'reasoning',
-      input: z.object({ report: z.string() }),
-      output: z.object({ facts: z.array(z.string()) }),
-      builtinTools: false,
-      instructions: 'Extract only concrete facts from the report.'
-    }),
-    risk: agent({
-      model: 'reasoning',
-      input: z.object({ facts: z.array(z.string()) }),
-      output: z.object({ level: z.enum(['low', 'medium', 'high']), reasons: z.array(z.string()) }),
-      builtinTools: false,
-      instructions: 'Assess operational risk from the supplied facts.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    review_incident: workflow({
-      input: z.object({ report: z.string() }),
-      output: z.object({
-        facts: z.array(z.string()),
-        level: z.enum(['low', 'medium', 'high']),
-        reasons: z.array(z.string())
-      }),
-      delegation: { agents: ['facts', 'risk'] },
-      handler: async (ctx) => {
-        const facts = await ctx.agents.facts({ report: ctx.input.report })
-        const risk = await ctx.agents.risk({ facts: facts.facts })
-        return { facts: facts.facts, level: risk.level, reasons: risk.reasons }
-      }
-    })
-  }))
-  .build()
+	.models({
+		reasoning: {
+			provider,
+			model: 'gpt-5-mini',
+			capabilities: ['object'],
+		},
+	})
+	.agent('facts', {
+		model: 'reasoning',
+		input: z.object({ report: z.string() }),
+		output: z.object({ facts: z.array(z.string()) }),
+		instructions: 'Extract only concrete facts from the report.',
+	})
+	.agent('risk', {
+		model: 'reasoning',
+		input: z.object({ facts: z.array(z.string()) }),
+		output: z.object({ level: z.enum(['low', 'medium', 'high']), reasons: z.array(z.string()) }),
+		instructions: 'Assess operational risk from the supplied facts.',
+	})
+	.workflow('review_incident', {
+		input: z.object({ report: z.string() }),
+		output: z.object({
+			facts: z.array(z.string()),
+			level: z.enum(['low', 'medium', 'high']),
+			reasons: z.array(z.string()),
+		}),
+		delegation: { agents: ['facts', 'risk'] },
+		handler: async ctx => {
+			const facts = await ctx.agents.facts({ report: ctx.input.report })
+			const risk = await ctx.agents.risk({ facts: facts.facts })
+			return { facts: facts.facts, level: risk.level, reasons: risk.reasons }
+		},
+	})
+	.build()
 ```
 
 ## Fan-Out And Fan-In
@@ -97,15 +91,19 @@ starts a longer document review. The handle has typed output, but its descriptor
 and session lookup status deliberately contain no prompts or model output.
 
 ```ts
-handler: async (ctx) => {
-  const task = await ctx.childTasks.start('reviewer', {
-    documentId: ctx.input.documentId
-  }, {
-    timeoutMs: 60_000,
-    model: 'deep_review'
-  })
+handler: async ctx => {
+	const task = await ctx.childTasks.start(
+		'reviewer',
+		{
+			documentId: ctx.input.documentId,
+		},
+		{
+			timeoutMs: 60_000,
+			model: 'deep_review',
+		},
+	)
 
-  return { reviewTaskId: task.id }
+	return { reviewTaskId: task.id }
 }
 
 // Application code, later:
@@ -114,7 +112,12 @@ const review = await task?.result()
 ```
 
 Tasks retain the selected agent's existing tools, skills, model allowlists, and
-permissions, but have their own sandbox and never inherit parent history. They
+permissions, but never inherit parent history. Without an explicit sandbox
+policy, a task gets a new task-run shared sandbox partition. Select
+`sandbox: { sharing: 'inherit' }` to use the parent partition, `private` for
+a child-private partition, or `group` with an application-authorized group id.
+The adapter never exposes or selects its topology; a child can detach but never
+terminates a partition it does not own. Tasks
 queue under `maxParallelChildAgentCalls`; creating a task reserves the total
 call budget without turning a temporary parallel limit into a start failure.
 
@@ -134,25 +137,23 @@ Prefer workflow-local opt-in because it documents the orchestration contract
 next to the handler:
 
 ```ts
-.workflows(({ workflow }) => ({
-  answer_with_review: workflow({
-    input: z.object({ question: z.string() }),
-    output: z.object({ answer: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['answerer', 'reviewer'],
-      maxChildAgentCalls: 4,
-      maxParallelChildAgentCalls: 2,
-      agentModelAliases: {
-        reviewer: ['deep_review']
-      }
-    },
-    handler: async (ctx) => {
-      const draft = await ctx.agents.answerer({ question: ctx.input.question })
-      const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
-      return { answer: draft.answer, approved: review.approved }
+.workflow('answer_with_review', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string(), approved: z.boolean() }),
+  delegation: {
+    agents: ['answerer', 'reviewer'],
+    maxChildAgentCalls: 4,
+    maxParallelChildAgentCalls: 2,
+    agentModelAliases: {
+      reviewer: ['deep_review']
     }
-  })
-}))
+  },
+  handler: async (ctx) => {
+    const draft = await ctx.agents.answerer({ question: ctx.input.question })
+    const review = await ctx.agents.reviewer(draft, { model: 'deep_review' })
+    return { answer: draft.answer, approved: review.approved }
+  }
+})
 ```
 
 Policy reference mistakes fail during builder setup. Runtime budget violations
@@ -191,16 +192,13 @@ Workflow handlers can call `ctx.models.<alias>` directly for deterministic
 orchestration steps that should not become reusable agents.
 
 ```ts
-const embedding = await ctx.models.retrieval.embed(
-  { input: ctx.input.question },
-  ctx.signal
-)
+const embedding = await ctx.models.retrieval.embed({ input: ctx.input.question }, ctx.signal)
 ```
 
 Storage, retrieval policy, authorization, and writes remain application code.
 The harness owns provider calls, cancellation, validation, and telemetry.
 
-Use `ctx.log` for handler-level logging; it is the harness logger, so workflow
+Use `ctx.logger` for handler-level logging; it is the harness logger, so workflow
 log lines carry the configured logger fields and follow the redaction rules.
 Never log prompts, model outputs, or other content payloads.
 
@@ -208,7 +206,7 @@ Never log prompts, model outputs, or other content payloads.
 
 `ctx.step(stepId, fn)` marks a JSON-serializable checkpoint boundary. It is a
 transparent pass-through unless the workflow call opts into durable execution
-and a durable runtime adapter is configured.
+and a Harness storage adapter is configured.
 
 ```ts
 delegation: { agents: ['outline', 'writer'] },
@@ -220,18 +218,16 @@ return report
 Retry transient step failures before a checkpoint is committed:
 
 ```ts
-const enriched = await ctx.step(
-  'enrich',
-  () => ctx.agents.enricher(ctx.input),
-  { retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 } }
-)
+const enriched = await ctx.step('enrich', () => ctx.agents.enricher(ctx.input), {
+	retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 },
+})
 ```
 
 Invoke durably with a stable run id:
 
 ```ts
-await session.workflows.research_report.prompt(input, {
-  durable: { runId: 'report-2026-06-12' }
+await session.workflows.research_report.run(input, {
+	durable: { runId: 'report-2026-06-12' },
 })
 ```
 
@@ -299,21 +295,24 @@ way to explain which version produced each durable step.
 
 ## Streaming Workflow Runs
 
-`session.workflows.<id>.stream(input)` emits typed `RunEvent` values for the
-workflow run, child agent lifecycle events, tool calls, and final output. Direct
-model stream chunks inside workflow code stay private unless that model stream
-call opts in with `emitRunEvents: true`.
+`session.workflows.<id>.stream(input)` emits the portable `ExecutionEvent`
+contract: run boundaries, selected output updates, client-visible tool and
+approval activity, artifacts, progress, and the terminal outcome. Direct model
+stream chunks inside workflow code stay private unless the model call opts in
+with `emitRunEvents: true` and the workflow declares the matching `updates`
+mode.
 
 ```ts
 for await (const event of session.workflows.review_incident.stream(input)) {
-  if (event.type === 'agent.started') console.log('agent', event.agentId)
-  if (event.type === 'model.delta') process.stdout.write(event.delta)
-  if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'output.text.delta') process.stdout.write(event.delta)
+	if (event.type === 'run.finished') console.log(event.outcome)
 }
 ```
 
-Map `RunEvent` to SSE, WebSocket, or UI events in your application. The harness
-does not emit the Vercel stream protocol.
+Use `@purista/harness-ai-sdk-ui/v1` to map portable execution events to AI SDK
+UI Message Stream v1. Use `.observe(input)` separately when operators or tests
+need diagnostic `RunEvent` values such as `agent.started`, `fanout.started`, or
+`model.delta`; never send that diagnostic stream directly to a browser.
 
 ## Cancellation And Failure
 
@@ -325,14 +324,19 @@ Handlers should still check `ctx.signal` before starting long-running side
 effects and should stop starting new child work after cancellation.
 
 Errors from child agents bubble unchanged unless the workflow catches them.
-Workflow input and output are validated with the workflow Zod schemas.
+Workflow input and output are validated with their Standard Schema validators.
+Zod remains the default in these examples, but a workflow boundary does not
+need JSON Schema projection: only TypeScript tool input and default-loop agent
+output are model-facing `ModelSchema` boundaries.
 
 ## Testing
 
 Test workflows with fake providers and deterministic adapters first:
 
-- assert `session.workflows.<id>.prompt(...)` returns the validated output;
-- assert `.stream(...)` emits lifecycle and final events you map in the UI;
+- assert `session.workflows.<id>.run(...)` returns `status: 'completed'` with
+  validated `output`, or the expected resumable interrupt;
+- assert `.stream(...)` emits portable lifecycle, output, and terminal events;
+- assert `.observe(...)` emits the diagnostic events required by operations;
 - test child-agent failures and partial-result paths;
 - test durable resume by repeating the same durable `runId`;
 - assert prompts, tool inputs, raw documents, and secrets are absent from logs,

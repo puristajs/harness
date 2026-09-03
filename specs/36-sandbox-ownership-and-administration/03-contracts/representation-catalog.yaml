@@ -1,0 +1,128 @@
+catalog_version: 1
+applicability:
+  status: applicable
+  scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-PURISTA]
+shapes:
+  - shape_id: sown.owner
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-OWNER
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-OWNER]
+    mapping_refs: [MAP-SOWN-SCOPE]
+  - shape_id: sown.scope
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-OPEN
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-OPEN]
+    mapping_refs: [MAP-SOWN-SCOPE]
+  - shape_id: sown.binding
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-OWNER
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-OWNER]
+    mapping_refs: []
+  - shape_id: sown.policy
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-POLICY
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-POLICY]
+    mapping_refs: [MAP-SOWN-PURISTA]
+  - shape_id: sown.administration
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-ADMIN
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-ADMIN]
+    mapping_refs: [MAP-SOWN-SAFE]
+  - shape_id: sown.checkpoint
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-WORKSPACE
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-WORKSPACE]
+    mapping_refs: []
+  - shape_id: sown.framework-policy
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-PURISTA
+    owner: purista
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-PURISTA]
+    mapping_refs: [MAP-SOWN-PURISTA, MAP-SOWN-MANIFEST]
+  - shape_id: sown.safe-error
+    representation_class: projection
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-ERRORS
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [runtime, adapters, contract_tests]
+    source_contract_refs: [CTR-SOWN-ERRORS]
+    mapping_refs: [MAP-SOWN-SAFE]
+  - shape_id: sown.options
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-OPTIONS
+    owner: harness
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [application, adapters, tests]
+    source_contract_refs: [CTR-SOWN-OPTIONS]
+    mapping_refs: []
+  - shape_id: sown.framework-manifest
+    representation_class: projection
+    canonical_source: 03-contracts/contracts.yaml#CTR-SOWN-PURISTA
+    owner: purista
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [framework, application, tests]
+    source_contract_refs: [CTR-SOWN-PURISTA]
+    mapping_refs: [MAP-SOWN-MANIFEST]
+mappings:
+  - mapping_id: MAP-SOWN-MANIFEST
+    from_shape: sown.framework-policy
+    to_shape: sown.framework-manifest
+    direction: domain_to_projection
+    allowed_differences: [drop_executable_bindings_and_project_declared_options]
+    redaction_or_loss_policy: No callbacks adapter objects or resolved owner identity in public manifests.
+    field_operations: [sharing_copy, groups_copy_when_declared, defaultPolicy_copy_when_declared, usesExplicitOwner_derive]
+    verification: [ACC-SOWN-PURISTA, ACC-SOWN-SAFETY]
+  - mapping_id: MAP-SOWN-SCOPE
+    from_shape: sown.owner
+    to_shape: sown.scope
+    direction: domain_to_boundary
+    allowed_differences: [append_resolved_partition_and_lifetime]
+    redaction_or_loss_policy: Preserve exact optional identity; actor identity is not owner key material.
+    field_operations: [owner_copy_exact, partition_derive, lifetime_derive]
+    verification: [ACC-SOWN-OWNER, ACC-SOWN-POLICY]
+  - mapping_id: MAP-SOWN-PURISTA
+    from_shape: sown.framework-policy
+    to_shape: sown.policy
+    direction: custom
+    allowed_differences: [map_sharing_property_to_definition_sandbox]
+    redaction_or_loss_policy: Reuse public Harness types; resolver callback and adapters are not serialized.
+    field_operations: [sharing_copy, options_copy, identity_from_trusted_context]
+    verification: [ACC-SOWN-PURISTA]
+  - mapping_id: MAP-SOWN-SAFE
+    from_shape: sown.administration
+    to_shape: sown.safe-error
+    direction: custom
+    allowed_differences: [retain_low_cardinality_outcomes_only]
+    redaction_or_loss_policy: Drop owner identity refs paths cursors payload and provider diagnostics.
+    field_operations: [reason_classify, operation_copy, counts_copy]
+    verification: [ACC-SOWN-SAFETY]

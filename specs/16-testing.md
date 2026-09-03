@@ -1,5 +1,7 @@
 # Testing
 
+> **Approved schema test update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-flows/e2e-coverage.md) adds mandatory Zod/ArkType/Valibot type fixtures, sync/async/transform runtime conformance, build-cache/projection failures, exact provider pass-through, privacy-safe errors, memory-summary regression, consumer audits, and forbidden legacy scans. These are additive release gates; fake or live provider substitution is not allowed.
+
 **Purpose.** Specifies the test framework, the port contract test suites every adapter must pass, coverage gates, and the fakes shipped under `@purista/harness/testing`.
 
 ## Framework
@@ -14,9 +16,11 @@
 |----------------------|------------|----------|-----------|-------|
 | `@purista/harness`   | ≥85%       | ≥80%     | ≥85%      | ≥85%  |
 | `@purista/harness-openai` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
+| `@purista/harness-google` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
 | `@purista/harness-anthropic` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
 | `@purista/harness-bedrock` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
 | `@purista/harness-azure-foundry` | ≥80%  | ≥75%     | ≥80%      | ≥80%  |
+| `@purista/harness-policy-opa` | ≥85% | ≥80% | ≥85% | ≥85% |
 | `@purista/harness-agent-plugins` | ≥85% | ≥80%     | ≥85%      | ≥85%  |
 
 CI fails if any gate is unmet.
@@ -29,13 +33,28 @@ must run the matching contract suite against every port implementation they
 ship; first-party model provider packages run `modelProviderContract` against
 their adapter wired to an offline fake client.
 
+Application tests SHOULD construct `FakeModelProvider({ strict: true })`, queue
+each expected model operation in order, and call `assertExhausted()` after the
+interaction. Strict mode rejects an unqueued request or a queued response for a
+different operation. The default remains non-strict for compatibility with
+existing low-level tests that intentionally use deterministic fallback values.
+
 There is no `streamContract` — streaming is internal to the harness; see "Streaming generator" in the core test catalog below.
+
+`@purista/harness-policy-opa/testing` exports the strict `FakeOpaDataApi`
+defined by [spec 41](./41-opa-policy-adapter.md). It scripts the supported Data
+API envelope and records test-only requests; it never evaluates Rego. Package
+tests must cover transport, byte bounds, cancellation/deadlines, undefined
+decisions, Standard Schema result validation, content-free failures, and
+builder-cascading tool-input/result types. The maintained OPA example uses the
+fake for routine tests and a separately started real OPA for the executable
+integration path.
 
 ## Port contract test catalogs
 
 Each contract suite calls `make()` per test for isolation. Required tests:
 
-### StateStore
+### HarnessStorage
 
 1. `getSession` returns undefined for unknown id.
 2. `upsertSession` then `getSession` returns the record.
@@ -51,13 +70,31 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 
 ### Sandbox
 
-1. `open()` returns a `SandboxSession` whose `executor` matches the contract option.
+1. `open(options)` returns a `SandboxOpenResult` whose session `executor`
+   matches the contract option and whose disposition/live-process state belongs
+   to the closed public unions.
 2. `read`/`write`/`list`/`stat`/`exists`/`remove` round-trip a file at an absolute POSIX path.
 3. `mount(files, '/skills/foo')` makes every entry visible under `/skills/foo/`.
 4. Relative paths throw `SandboxError{reason:'invalid_path'}`.
 5. When `executor === 'available'`: `exec('echo hi')` returns `{stdout:'hi\n', exitCode:0}`; `timeoutMs` honored; `signal` honored.
 6. When `executor === 'unavailable'`: precise TypeScript session types do not expose `exec`; dynamically widened calls to `exec(...)` throw `SandboxNoExecutorError`.
-7. Optional snapshot/resume/hibernate adapters pass the sandbox snapshot contract: snapshot ids are stable, resumed sessions can read prior files, unknown snapshots throw `SandboxError`, and hibernation closes the active session after snapshotting.
+7. `SandboxSession.close()` is idempotent detach, `Sandbox.terminate()` is
+   idempotent logical termination, and a known provider-missing sandbox fails
+   without creating empty state.
+8. `mode: 'create'` is idempotent for one newly allocated scope;
+   `mode: 'attach'` never creates missing state; `mode: 'restore'` succeeds only
+   after the caller has authorized committed-workspace recovery.
+9. Optional snapshot/resume/hibernate adapters pass the sandbox snapshot contract: snapshot ids are stable, resumed sessions can read prior files, unknown snapshots throw `SandboxError`, and hibernation closes the active session after snapshotting.
+10. Every distributed adapter passes `sandboxMultiClientContract` with two
+   independently constructed clients sharing one deterministic fake backend.
+   The contract covers second-client attach, retained files, termination, and
+   stale attachment rejection. Provider integration tests additionally cover
+   concurrent first open, handoff, not-found versus outage, explicit workspace
+   recovery, no empty fallback, cancellation, cleanup retry, and telemetry
+   privacy.
+11. The multi-client contract inspects generations, fences, and provider
+   references only through private fake-backend assertions; none appear in the
+   public adapter result or standard telemetry.
 
 ### ModelProvider
 
@@ -103,7 +140,7 @@ test suite cover the scripted tool-use, capability-gate, and error/retry items
 11. Standard memory spans and metrics are emitted by the core wrapper, not by adapter code.
 12. Content capture tests cover `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT`; raw keys/values/queries/results appear only in the modes allowed by [20-memory-adapters](./20-memory-adapters.md).
 
-### DurableWorkspaceStore
+### DurableWorkspace
 
 1. `info.id`, `info.packageName`, and `info.capabilities` pass [21-durable-workspaces](./21-durable-workspaces.md) validation.
 2. `startWorkspace` is idempotent for the same idempotency key and throws `WorkspaceError{meta.reason:'idempotency_conflict'}` for conflicting input.
@@ -111,7 +148,7 @@ test suite cover the scripted tool-use, capability-gate, and error/retry items
 4. `resumeWorkspace` succeeds only for committed, non-expired, non-aborted, non-cleaned checkpoints.
 5. `abortWorkspace` is idempotent and blocks later resume.
 6. `cleanupWorkspace` is idempotent, returns `cleaned` for full deletion, and returns `cleanup_pending` with retry metadata for partial deletion.
-7. `inspectWorkspace` is read-only and returns policy metadata when `workspace_store.inspect`, `workspace_store.retention`, `workspace_store.encrypted_storage`, or `workspace_store.quota` is advertised.
+7. `inspectWorkspace` is read-only and returns policy metadata when `workspace.inspect`, `workspace.retention`, `workspace.encrypted_storage`, or `workspace.quota` is advertised.
 8. Quota failures throw `WorkspaceQuotaExceededError` and expose no visible partial checkpoint except an inspectable orphan marked for cleanup.
 9. `signal` cancellation causes `OperationCancelledError{meta.scope:'workspace'}`.
 10. Backend failures surface as `WorkspaceError` or `WorkspaceCleanupError`.
@@ -123,7 +160,9 @@ test suite cover the scripted tool-use, capability-gate, and error/retry items
 The harness package additionally has integration tests:
 
 - `defineHarness` builder validation: every `HarnessConfigError` path, thrown synchronously by the originating builder method.
-- Built-in tools: `bash`/`read`/`write`/`edit`/`glob`/`grep`/`list` round-trip against a sandbox; alias dispatch (PascalCase → canonical) verified; `bash` auto-disabled when `executor === 'unavailable'`; `grep` falls back to read+match.
+- Built-in tools: `bash`/`read`/`write`/`edit`/`glob`/`grep`/`list` round-trip against a sandbox; alias dispatch (PascalCase → canonical) verified; `bash` auto-disabled when `executor === 'unavailable'`; `grep` delegates only to `sandbox.text_search` and never calls sandbox `list`/`readText`/`exec` itself.
+- Text-search adapter contract: literal and `safe_regex_v1` matching, stable ordering, UTF-8 byte bounds, truthful incomplete results, invalid syntax, adversarial patterns, line/file/aggregate/result/file-count limits, cancellation, closed/stale attachments, and absence of pattern/path/match content in telemetry. Every adapter advertising `sandbox.text_search` runs the same corpus.
+- Build validation: any agent enabling built-in `grep` implicitly requires `sandbox.text_search`; missing capability fails before model or sandbox I/O. The default in-memory and auto-detected sandboxes satisfy the requirement without an executor.
 - Skills:
   1. Strict YAML parsing accepts quoted strings, block scalars, nested `metadata`, comments, and colons inside quoted/block values.
   2. Lenient parsing retries common unquoted colon scalar failures without mutating files.
@@ -135,16 +174,30 @@ The harness package additionally has integration tests:
   8. Project skills are skipped unless the project root is trusted or the explicit binding is trusted.
   9. Collision precedence is deterministic and logs one warning diagnostic per shadowed skill.
   10. Skill catalogs include `name`, `description`, `Location`, and optional `Compatibility`, and are omitted when no skills exist.
-  11. Default-loop agents with declared skills fail before model I/O when the `read` built-in is disabled.
+  11. Default-loop agents with declared skills fail during `.agents(...)`, before model or sandbox I/O, when the `read` built-in is omitted or disabled.
   12. Reading `/skills/<name>/SKILL.md` marks the skill activated without duplicate mounting.
   13. History compaction either preserves activated skill tool results or keeps the catalog sufficient for reread activation.
   14. Logs, spans, metrics, persisted events, and sanitized errors exclude skill bodies, supporting file content, prompts, completions, credentials, headers, and raw attachments in every content-capture mode.
-- Permissions: `'allow'` proceeds; `'deny'` produces a `PERMISSION_DENIED` tool result message and run continues; `'ask'` invokes the hook; hook failure denies and increments `harness.permission.denials`; read-only built-ins cannot be denied.
-- Builder ordering: out-of-order or repeated direct calls (`.tools()` before `.models()`, two direct `.agents()` calls, `.build()` without models) fail at the type level (verified via `tsd` or equivalent type tests). Static-module type tests prove cross-module literal inference and that module builders expose neither `.build()` nor `.use()`.
+- Permissions: allow proceeds; deny produces a safe recoverable PERMISSION_DENIED result; require_approval joins governance demands; malformed approval terminates; read-only built-ins retain their scope. See decision-boundary acceptance matrix for combined precedence and cancellation tests.
+- Builder registration: singular, plural, repeated, mixed, and static-module
+  model/tool/skill/agent/workflow calls accumulate exact literal keys and reject
+  duplicates. Consumer definitions reject references not already present in
+  builder state. `.build()` without models fails synchronously. Module builders
+  expose neither `.build()` nor `.use()`.
+- Native tool authoring: direct singular and plural definitions infer parsed
+  inputs, raw handler outputs, and configured sandbox capabilities. Mixed
+  native/MCP records preserve discriminants; stronger-than-configured sandbox
+  requirements and wrong handler outputs fail typechecking. No helper callback,
+  registration brand, or public helper type is tested or shipped.
+- Clean runtime API: agent/workflow `run` and `stream`, session `release` and
+  `destroy`, `ctx.logger`, and application-handler telemetry are covered. Type,
+  runtime, export, and repository searches reject removed `prompt`, destructive
+  session `close`, workflow `log`, and native-tool helper surfaces.
 - Static modules: composition across separate model/tool/skill/agent/workflow modules, duplicate module and definition rejection, atomic failure, JavaScript reference validation, ordered data-only inspection provenance, capability closure, and comprehensive deduplicated/idempotent shutdown.
 - Context projection: UTF-8 boundaries, idempotence, tool-call/result pairing, precedence, one context-length retry, cancellation, no duplicate tool execution/history/events, skill preservation, and redacted byte-only diagnostics.
 - Test replay and diagnostic invariants: explicit sanitizer requirement, no-provider-I/O replay, strict ordering/mismatch/exhaustion/unused fixture failures, disabled-by-default invariants, and content-free invariant findings.
 - Default agent loop: tool-use round trip, iteration cap triggers `AgentLoopBudgetError`, explicit agent and harness-default budgets above 64 are honored without silent clamping, non-positive or non-integer budgets are rejected at configuration time, output validation, abort propagation.
+- Guardrails: deterministic `FakeModelProvider` tests prove ordered input/output transformation, fail-closed blocking before history persistence and tool side effects, explicit retrieval filtering, strict NeMo-shaped YAML rejection, and model-check rails resolved through registered Harness model handles.
 - MCP tools: fake stdio and HTTP MCP servers cover `tools/list`, `tools/call`, auth failure, schema validation failure, malformed response, process death, timeout, cancellation, SDK dynamic import behavior, and shutdown cleanup.
 - Current MCP: hermetic MCP `2026-07-28` fixtures cover stateless routing and
   protocol headers, list-cache TTL/invalidation, task-augmented `tools/call`,
@@ -155,13 +208,19 @@ The harness package additionally has integration tests:
 - `SessionMemory` round-trip: `write('foo', value)` then `read('foo')` returns the value; `list()` returns the keys; non-serializable value throws `ValidationError{where:'memory_value'}`; the model can read the same `/memory/foo.json` file via the built-in `read` tool.
 - Memory adapter integration: default `sandboxMemory()` is used when `.memory(...)` is omitted; `.memory(custom)` replaces it; `.requires(['memory.persistent'])` fails at `build()` unless the configured memory adapter advertises the capability; `ctx.memory.session`, `ctx.memory.run`, `ctx.memory.agent`, `ctx.memory.user()`, and `ctx.memory.tenant()` scope isolation is verified.
 - `sandboxMemory()` behavior: writes and reads session memory from `/memory/session/<key>.json`, writes and reads run memory from `/memory/runs/<runId>/<key>.json`, and rejects search through the capability gate.
-- Durable workspace integration: `.workspaceStore(custom)` registers a durable workspace store; `.requires(['workspace_store.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, runtime checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
-- Local durable execution: `localDurableExecution({ root })` wires `.runtime(...)`, `.sandbox(...)`, `.workspaceStore(...)`, and `.checkpoints(...)`; a workflow writes a file under `/workspace`, commits a durable step, rebuilds the bundle/harness from the same root/database, retries with the same durable `runId`, reads the file, and proves the committed step was not re-run.
-- SQLite durable runtime: fresh run, retry, process-style rebuild, active lease conflict, stale lease takeover after `leaseTtlMs`, checkpoint idempotency, checkpoint conflict, terminal-run retry rejection, JSON serialization rejection, cancellation, WAL/busy timeout setup, and `close()`.
-- Local directory workspace store: start/pause/resume/abort/cleanup/inspect, idempotency conflict, missing checkpoint, expired/aborted/cleaned resume rejection, orphan inspection, realpath cleanup guard, and quota metadata.
-- Local directory sandbox: read/write/list/stat/remove/mount, files-only default, disabled exec behavior, enabled exec behavior, command allow-list, cwd jailing, symlink escape prevention, timeout, minimal env, and close.
+- Durable workspace integration: `.workspace(custom)` registers a durable workspace; `.requires(['workspace.durable'])` fails at `build()` without it; `harness.inspect()` reports adapter id, package, capabilities, and policy without opening a workspace; workflow checkpoint tests cover start, pause, storage checkpoint commit, resume, abort, cleanup, crash-after-workspace-before-runtime-commit, crash-after-runtime-commit-before-return, and missing workspace checkpoint.
+- Local durable execution: `localDurableExecution({ root })` wires `.storage(local.storage)`, `.sandbox(local.sandbox)`, and `.workspace(local.workspace)`; a workflow writes a file under `/workspace`, commits a step, rebuilds the bundle/harness from the same root/database, retries with the same durable `runId`, reads the file, and proves the committed step was not re-run.
+- Distributed sandbox integration: two Harness instances use one fake remote
+  sandbox backend and ordinary existing Harness storage. Release/reattach
+  preserves the generation; session destroy requests termination before storage
+  deletion; durable recovery resumes and binds the committed workspace before
+  authorizing replacement; non-durable loss throws `SandboxStateLostError`.
+  No sandbox lifecycle method is added to storage.
+- SQLite durable storage: fresh run, retry, process-style rebuild, active lease conflict, stale lease takeover after `leaseTtlMs`, checkpoint idempotency, checkpoint conflict, terminal-run retry rejection, JSON serialization rejection, cancellation, WAL/busy timeout setup, and `close()`.
+- Local directory workspace: start/pause/resume/abort/cleanup/inspect, idempotency conflict, missing checkpoint, expired/aborted/cleaned resume rejection, orphan inspection, realpath cleanup guard, and quota metadata.
+- Local directory sandbox: read/write/list/stat/remove/mount, bounded text-search default, disabled exec behavior, enabled exec behavior, command allow-list, cwd jailing, symlink escape prevention, timeout, minimal env, and close.
 - Context checkpoint store: write/read/list/delete, process-style rebuild, ordering by sequence, kind filtering, payload JSON serialization rejection, delete idempotency, capability gates, and OTel/log privacy.
-- Durable run state ordering: durable lease acquisition happens before `StateStore.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
+- Durable run state ordering: durable lease acquisition happens before `HarnessStorage.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
 - Streaming generator (replaces the deleted Stream contract suite):
   1. `stream()` yields `run.started` first and `run.finished` last.
@@ -170,7 +229,7 @@ The harness package additionally has integration tests:
   4. Breaking out of a stream iterator detaches that consumer but does not cancel the underlying run; explicit `opts.signal` cancellation still aborts the run.
   5. Consumer `take()` throwing logs `STREAM_SUBSCRIBER_FAILED` and removes the subscription; the run continues.
   6. Per-run total ordering matches the rules in [12-streaming](./12-streaming.md).
-  7. Persistence: every emitted event is written to `state.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
+  7. Persistence: every emitted event is written to `storage.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
 - Provider runtime parity:
   1. Missing `object`, `object_stream`, `embeddings`, or `rerank` capability fails before provider I/O.
   2. Missing provider method fails with `ModelCapabilityError{meta.reason:'method_missing'}`.
@@ -188,10 +247,13 @@ The harness package additionally has integration tests:
 - Adapter capability policy:
   1. `.requires(...)` fails during `build()` when required adapter capabilities are missing.
   2. `harness.inspect()` returns only data and includes effective capabilities, required capabilities, and adapter descriptors.
-  3. `inMemorySandbox()` type tests assert files-only sessions do not expose `exec`.
+  3. `inMemorySandbox()` type tests assert its files-and-search session does not expose `exec`.
 - Public API surface: actual exports of `@purista/harness` (main entry) and `@purista/harness/testing` match [13-public-api](./13-public-api.md) symbol lists.
 - Error catalog: every class is exported; every `code`/`category`/`retriable` matches [15-error-catalog](./15-error-catalog.md).
-- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.runtime.*`, `harness.context_checkpoint.*`, and `harness.local_sandbox.open` spans and metrics.
+- OTel: every span name and metric in [14-otel-conventions](./14-otel-conventions.md) is emitted at least once across the integration tests; verified via an in-memory tracer/meter, including `harness.memory.*`, `harness.workspace.*`, `harness.storage.*`, and `harness.local_sandbox.open` spans and metrics.
+- Sandbox lifecycle telemetry tests assert the standard open/detach/terminate
+  spans and two metrics, plus absence of scope identity, generation, lease,
+  fence, provider, checkpoint, path, command, and content values.
 - Agent Plugins addon: valid/invalid 1.0.0 manifest and `mcp.json` fixtures,
   no-schema-fetch behavior, component failure isolation, trusted-root/default
   denial/digest checks, explicit alias/type allowlists, and no automatic
@@ -206,8 +268,17 @@ The harness package additionally has integration tests:
 - Telemetry flavor: `dual`, `gen_ai_only`, and `openinference_only` are covered by integration tests that assert namespace presence and absence exactly.
 - Content capture modes: `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, and `SPAN_AND_EVENT` are covered by tests asserting content appears only on the allowed span attributes/events.
 - Trace Context: valid inbound `traceparent` becomes the parent of the run span and all child spans; invalid inbound context logs `INVALID_TRACE_CONTEXT` and starts a new trace.
-- Run summary: `Session.getRunSummary(runId)` derives status, token totals, model/tool/agent counts, and errors from `StateStore` data without reading OTel spans.
-- AI eval core: deterministic scorer helper and `evaluatePromptCandidates` tests listed in [19-ai-eval-core](./19-ai-eval-core.md) are required.
+- Run summary: `Session.getRunSummary(runId)` derives status, token totals, model/tool/agent counts, and errors from `HarnessStorage` data without reading OTel spans.
+- Generic evaluations: delete the obsolete aggregate evaluator tests and add a
+  stale-symbol gate covering its functions, types, exports, docs, examples,
+  and telemetry claims. The generic execute-and-score and score-only runners,
+  shared scorer engine, and deterministic scorer factory must satisfy every acceptance row in
+  [35-generic-evaluation-runs](./35-generic-evaluation-runs.md), including
+  observation/task isolation, bounded concurrency, fixed trial-aware result
+  cardinality, retry/failure/cancel/timeout, deterministic ordering,
+  `scored`/`not_applicable`/`inconclusive` coverage, accounting completeness
+  and model-call no-double-counting, aggregation/segmentation, feedback
+  projection, and no-content telemetry tests.
 
 ## Fixtures
 
@@ -227,3 +298,7 @@ The harness package additionally has integration tests:
 - [21-durable-workspaces](./21-durable-workspaces.md).
 - [29-agent-plugins](./29-agent-plugins.md).
 - [17-implementation-plan](./17-implementation-plan.md).
+
+## Decision-boundary regression scope
+
+[Approved capability and acceptance traceability](./37-decision-boundaries/00-traceability.yaml) adds strict malformed-output, cancellation, transformed replay, final-only rails, storage parity and claim/receipt crash-window tests. Existing fake providers/storage/telemetry harnesses are reused.

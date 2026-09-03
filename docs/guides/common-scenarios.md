@@ -51,13 +51,15 @@ Recommended output schema:
 
 ```ts
 z.object({
-  answer: z.string(),
-  citations: z.array(z.object({
-    id: z.string(),
-    quoteOrSummary: z.string(),
-    confidence: z.enum(['low', 'medium', 'high'])
-  })),
-  confidenceNotes: z.array(z.string())
+	answer: z.string(),
+	citations: z.array(
+		z.object({
+			id: z.string(),
+			quoteOrSummary: z.string(),
+			confidence: z.enum(['low', 'medium', 'high']),
+		}),
+	),
+	confidenceNotes: z.array(z.string()),
 })
 ```
 
@@ -73,19 +75,19 @@ evidence to a normal object-output agent.
 
 ```ts
 const queryEmbedding = await ctx.models.retrieval.embed({
-  input: ctx.input.question
+	input: ctx.input.question,
 })
 
 const candidates = await vectorIndex.search(queryEmbedding.embeddings[0].vector)
 
 const ranked = await ctx.models.ranker.rerank({
-  query: ctx.input.question,
-  documents: candidates.map((doc) => ({
-    id: doc.id,
-    text: doc.text,
-    metadata: { source: doc.source }
-  })),
-  topN: 5
+	query: ctx.input.question,
+	documents: candidates.map(doc => ({
+		id: doc.id,
+		text: doc.text,
+		metadata: { source: doc.source },
+	})),
+	topN: 5,
 })
 ```
 
@@ -93,11 +95,13 @@ The harness owns provider calls, timeout/cancellation, usage metadata, and run
 observation. The vector database, retrieval policy, and final prompt assembly
 stay in application code.
 
-## Human-In-The-Loop Review
+## Application-Owned Human Review
 
 Use a workflow when proposed changes should not be applied until a human
-approves them. The proposal agent drafts the change; the workflow owns the gate
-and decides whether a write tool may run.
+approves them. The proposal agent drafts the change; the application owns the
+review record, user interface, identity checks, and decision persistence, then
+decides whether a write tool may run. The Harness does not currently provide a
+durable review queue or suspend and resume a workflow across a process restart.
 
 ```mermaid
 flowchart LR
@@ -198,7 +202,7 @@ The Living Wiki Jaeger example combines:
 - decision memo workflow;
 - architecture review workflow;
 - wiki audit workflow;
-- human review gate;
+- application-owned human review task;
 - SSE run inspector;
 - Jaeger trace links;
 - Mermaid, draw.io XML, JSON panels, and Three.js graph.

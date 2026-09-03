@@ -6,6 +6,17 @@ function mockSignal(): AbortSignal {
   return new AbortController().signal
 }
 
+// This is the already-compiled Standard JSON Schema cache value supplied by
+// the Harness core. Provider adapters must carry it to the SDK untouched.
+const distinctiveCompiledSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  $defs: { tag: { type: 'string', pattern: '^[a-z]+$' } },
+  properties: { filter: { anyOf: [{ $ref: '#/$defs/tag' }, { type: 'null' }] } },
+  required: ['filter'],
+  unevaluatedProperties: false,
+}
+
 describe('bedrock provider factory', () => {
   it('returns provider metadata and maps text response', async () => {
     const provider = bedrock({
@@ -17,10 +28,10 @@ describe('bedrock provider factory', () => {
             inputTokens: 4,
             outputTokens: 2,
             cacheReadInputTokens: 3,
-            cacheWriteInputTokens: 1
-          }
-        })
-      }
+            cacheWriteInputTokens: 1,
+          },
+        }),
+      },
     })
 
     expect(provider.id).toBe('bedrock')
@@ -29,7 +40,7 @@ describe('bedrock provider factory', () => {
     const response = await provider.text!({
       model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.content).toBe('hello')
@@ -38,7 +49,7 @@ describe('bedrock provider factory', () => {
       outputTokens: 2,
       totalTokens: 6,
       cachedInputTokens: 3,
-      cacheCreationInputTokens: 1
+      cacheCreationInputTokens: 1,
     })
     expect(response.finishReason).toBe('stop')
   })
@@ -50,12 +61,16 @@ describe('bedrock provider factory', () => {
         send: async (command: any) => {
           calls.push(command.input)
           return {
-            output: { message: { content: [{ toolUse: { toolUseId: 'toolu_1', name: 'harness_response', input: { ok: true } } }] } },
+            output: {
+              message: {
+                content: [{ toolUse: { toolUseId: 'toolu_1', name: 'harness_response', input: { ok: true } } }],
+              },
+            },
             stopReason: 'tool_use',
-            usage: { inputTokens: 3, outputTokens: 2 }
+            usage: { inputTokens: 3, outputTokens: 2 },
           }
-        }
-      }
+        },
+      },
     })
 
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
@@ -63,7 +78,7 @@ describe('bedrock provider factory', () => {
       model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
       messages: [{ role: 'user', content: 'object please' }],
       schema,
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.object).toEqual({ ok: true })
@@ -71,31 +86,118 @@ describe('bedrock provider factory', () => {
     expect(calls[0]).toMatchObject({
       toolConfig: {
         toolChoice: { tool: { name: 'harness_response' } },
-        tools: [{ toolSpec: { name: 'harness_response', inputSchema: { json: schema } } }]
-      }
+        tools: [{ toolSpec: { name: 'harness_response', inputSchema: { json: schema } } }],
+      },
     })
+  })
+
+  it('forwards compiled JSON Schema unchanged for object and tool requests', async () => {
+    const calls: any[] = []
+    const provider = bedrock({
+      client: {
+        send: async (command: any) => {
+          calls.push(command.input)
+          return {
+            output: {
+              message: {
+                content: [{ toolUse: { toolUseId: 'toolu_1', name: 'harness_response', input: { ok: true } } }],
+              },
+            },
+            stopReason: 'tool_use',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+    })
+
+    await provider.object!({
+      model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: distinctiveCompiledSchema,
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: distinctiveCompiledSchema }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0]?.toolConfig.tools[0]?.toolSpec.inputSchema.json).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.toolConfig.tools[1]?.toolSpec.inputSchema.json).toEqual(distinctiveCompiledSchema)
+  })
+
+  it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {
+    let calls = 0
+    const provider = bedrock({
+      client: {
+        send: async (command: any) => {
+          calls += 1
+          if (command.input.toolConfig.tools[0]?.toolSpec.inputSchema.json === distinctiveCompiledSchema) {
+            throw Object.assign(new Error('Unsupported schema keyword.'), {
+              name: 'ValidationException',
+              $metadata: { httpStatusCode: 400 },
+            })
+          }
+          return {
+            output: {
+              message: {
+                content: [{ toolUse: { toolUseId: 'toolu_1', name: 'harness_response', input: { ok: true } } }],
+              },
+            },
+            stopReason: 'tool_use',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+    })
+
+    await expect(
+      provider.object!({
+        model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: distinctiveCompiledSchema,
+        signal: mockSignal(),
+      }),
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: {
+        provider: 'bedrock',
+        method: 'object',
+        status: 400,
+        reason: 'http_error',
+        providerCode: 'ValidationException',
+      },
+    })
+    expect(calls).toBe(1)
+
+    await expect(
+      provider.object!({
+        model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: { type: 'object' },
+        signal: mockSignal(),
+      }),
+    ).resolves.toMatchObject({ object: { ok: true } })
+    expect(calls).toBe(2)
   })
 
   it('maps Bedrock malformed and context stop reasons without losing provider detail', async () => {
     for (const [providerReason, finishReason] of [
       ['malformed_model_output', 'malformed'],
       ['malformed_tool_use', 'malformed'],
-      ['model_context_window_exceeded', 'context_limit']
+      ['model_context_window_exceeded', 'context_limit'],
     ] as const) {
       const provider = bedrock({
         client: {
           send: async () => ({
             output: { message: { content: [{ text: 'status' }] } },
             stopReason: providerReason,
-            usage: { inputTokens: 1, outputTokens: 1 }
-          })
-        }
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }),
+        },
       })
 
       const response = await provider.text!({
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
-        signal: mockSignal()
+        signal: mockSignal(),
       })
 
       expect(response.finishReason).toBe(finishReason)
@@ -109,9 +211,13 @@ describe('bedrock provider factory', () => {
       client: {
         send: async (command: any) => {
           calls.push(command.input)
-          return { output: { message: { content: [{ text: 'ok' }] } }, stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } }
-        }
-      }
+          return {
+            output: { message: { content: [{ text: 'ok' }] } },
+            stopReason: 'end_turn',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
     })
 
     await provider.text!({
@@ -119,7 +225,7 @@ describe('bedrock provider factory', () => {
       messages: [{ role: 'user', content: 'hi' }],
       call: { temperature: 0 },
       defaults: { topP: 0.9, stopSequences: ['END'] },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0].inferenceConfig.temperature).toBe(0)
@@ -134,12 +240,16 @@ describe('bedrock provider factory', () => {
         send: async (command: any) => {
           calls.push(command.input)
           return {
-            output: { message: { content: [{ toolUse: { toolUseId: 'toolu_search', name: 'search_docs', input: { query: 'harness' } } }] } },
+            output: {
+              message: {
+                content: [{ toolUse: { toolUseId: 'toolu_search', name: 'search_docs', input: { query: 'harness' } } }],
+              },
+            },
             stopReason: 'tool_use',
-            usage: { inputTokens: 3, outputTokens: 2 }
+            usage: { inputTokens: 3, outputTokens: 2 },
           }
-        }
-      }
+        },
+      },
     })
 
     const response = await provider.object!({
@@ -147,11 +257,14 @@ describe('bedrock provider factory', () => {
       messages: [{ role: 'user', content: 'search first' }],
       schema: { type: 'object' },
       tools: [{ name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.toolCalls).toEqual([{ id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } }])
-    expect(calls[0]?.toolConfig.tools.map((tool: any) => tool.toolSpec.name)).toEqual(['search_docs', 'harness_response'])
+    expect(calls[0]?.toolConfig.tools.map((tool: any) => tool.toolSpec.name)).toEqual([
+      'search_docs',
+      'harness_response',
+    ])
     expect(calls[0]?.toolConfig).not.toHaveProperty('toolChoice')
   })
 
@@ -164,27 +277,30 @@ describe('bedrock provider factory', () => {
           return {
             output: { message: { content: [{ text: 'ok' }] } },
             stopReason: 'end_turn',
-            usage: { inputTokens: 1, outputTokens: 1 }
+            usage: { inputTokens: 1, outputTokens: 1 },
           }
-        }
-      }
+        },
+      },
     })
 
     await provider.text!({
       model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-      messages: [{ role: 'system', content: 'Be terse.' }, { role: 'user', content: 'hi' }],
+      messages: [
+        { role: 'system', content: 'Be terse.' },
+        { role: 'user', content: 'hi' },
+      ],
       defaults: {
         temperature: 0.1,
         providerOptions: {
-          additionalModelRequestFields: { top_k: 50 }
-        }
+          additionalModelRequestFields: { top_k: 50 },
+        },
       },
       call: {
         providerOptions: {
-          performanceConfig: { latency: 'optimized' }
-        }
+          performanceConfig: { latency: 'optimized' },
+        },
       },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]).toMatchObject({
@@ -192,7 +308,7 @@ describe('bedrock provider factory', () => {
       system: [{ text: 'Be terse.' }],
       inferenceConfig: { temperature: 0.1 },
       additionalModelRequestFields: { top_k: 50 },
-      performanceConfig: { latency: 'optimized' }
+      performanceConfig: { latency: 'optimized' },
     })
   })
 
@@ -202,9 +318,9 @@ describe('bedrock provider factory', () => {
         send: async () => ({
           output: { message: { content: [{ text: '{"ok":' }] } },
           stopReason: 'end_turn',
-          usage: { inputTokens: 1, outputTokens: 1 }
-        })
-      }
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }),
+      },
     })
 
     await expect(
@@ -212,8 +328,8 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'object please' }],
         schema: { type: 'object' },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       meta: {
@@ -221,8 +337,8 @@ describe('bedrock provider factory', () => {
         method: 'object',
         reason: 'malformed_response',
         // Raw model output never leaks into error metadata (POR-07).
-        providerBody: { redacted: true, contentLength: '{"ok":'.length }
-      }
+        providerBody: { redacted: true, contentLength: '{"ok":'.length },
+      },
     })
   })
 
@@ -232,9 +348,13 @@ describe('bedrock provider factory', () => {
       client: {
         send: async (command: any, options: any) => {
           calls.push({ input: command.input, options })
-          return { output: { message: { content: [{ text: 'ok' }] } }, stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } }
-        }
-      }
+          return {
+            output: { message: { content: [{ text: 'ok' }] } },
+            stopReason: 'end_turn',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
     })
 
     await provider.text!({
@@ -243,10 +363,10 @@ describe('bedrock provider factory', () => {
       call: {
         providerOptions: {
           performanceConfig: { latency: 'optimized' },
-          requestOptions: { requestTimeout: 5_000 }
-        }
+          requestOptions: { requestTimeout: 5_000 },
+        },
       },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.input).not.toHaveProperty('requestOptions')
@@ -258,12 +378,22 @@ describe('bedrock provider factory', () => {
   it('keeps interleaved real tool calls out of the streamed object JSON', async () => {
     async function* stream() {
       // A real application tool call streams before the object block.
-      yield { contentBlockStart: { contentBlockIndex: 0, start: { toolUse: { toolUseId: 'toolu_search', name: 'search_docs' } } } }
+      yield {
+        contentBlockStart: {
+          contentBlockIndex: 0,
+          start: { toolUse: { toolUseId: 'toolu_search', name: 'search_docs' } },
+        },
+      }
       yield { contentBlockDelta: { contentBlockIndex: 0, delta: { toolUse: { input: '{"query":' } } } }
       yield { contentBlockDelta: { contentBlockIndex: 0, delta: { toolUse: { input: '"harness"}' } } } }
       yield { contentBlockStop: { contentBlockIndex: 0 } }
       // The synthetic harness_response block carries the structured object.
-      yield { contentBlockStart: { contentBlockIndex: 1, start: { toolUse: { toolUseId: 'toolu_obj', name: 'harness_response' } } } }
+      yield {
+        contentBlockStart: {
+          contentBlockIndex: 1,
+          start: { toolUse: { toolUseId: 'toolu_obj', name: 'harness_response' } },
+        },
+      }
       yield { contentBlockDelta: { contentBlockIndex: 1, delta: { toolUse: { input: '{"ok":' } } } }
       yield { contentBlockDelta: { contentBlockIndex: 1, delta: { toolUse: { input: 'true}' } } } }
       yield { contentBlockStop: { contentBlockIndex: 1 } }
@@ -273,8 +403,8 @@ describe('bedrock provider factory', () => {
 
     const provider = bedrock({
       client: {
-        send: async () => ({ stream: stream() })
-      }
+        send: async () => ({ stream: stream() }),
+      },
     })
 
     const received: any[] = []
@@ -283,20 +413,20 @@ describe('bedrock provider factory', () => {
       messages: [{ role: 'user', content: 'object plus tool' }],
       schema: { type: 'object' },
       tools: [{ name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
 
     const toolCalls = received.filter((chunk) => chunk.kind === 'tool_call')
     expect(toolCalls).toEqual([
-      { kind: 'tool_call', call: { id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } } }
+      { kind: 'tool_call', call: { id: 'toolu_search', name: 'search_docs', arguments: { query: 'harness' } } },
     ])
     expect(received.at(-1)).toMatchObject({
       kind: 'finish',
       object: { ok: true },
       finishReason: 'tool_calls',
-      outcome: { finishReason: 'tool_calls', providerFinishReason: 'tool_use' }
+      outcome: { finishReason: 'tool_calls', providerFinishReason: 'tool_use' },
     })
   })
 
@@ -307,15 +437,15 @@ describe('bedrock provider factory', () => {
 
     const provider = bedrock({
       client: {
-        send: async () => ({ stream: stream() })
-      }
+        send: async () => ({ stream: stream() }),
+      },
     })
 
     const received: any[] = []
     for await (const chunk of provider.textStream!({
       model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
@@ -332,10 +462,10 @@ describe('bedrock provider factory', () => {
           throw Object.assign(new Error('Too many requests, please wait before trying again.'), {
             name: 'ThrottlingException',
             $metadata: { httpStatusCode: 429 },
-            $response: { headers: { 'retry-after': '2', 'x-amzn-requestid': 'req_throttle' } }
+            $response: { headers: { 'retry-after': '2', 'x-amzn-requestid': 'req_throttle' } },
           })
-        }
-      }
+        },
+      },
     })
 
     await expect(
@@ -343,8 +473,8 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       retriable: true,
@@ -352,8 +482,8 @@ describe('bedrock provider factory', () => {
         status: 429,
         reason: 'rate_limited',
         providerCode: 'ThrottlingException',
-        retryAfterMs: 2_000
-      }
+        retryAfterMs: 2_000,
+      },
     })
   })
 
@@ -363,10 +493,10 @@ describe('bedrock provider factory', () => {
         send: async () => {
           throw Object.assign(new Error('Throttled.'), {
             name: 'ThrottlingException',
-            $metadata: {}
+            $metadata: {},
           })
-        }
-      }
+        },
+      },
     })
 
     await expect(
@@ -374,11 +504,11 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       retriable: true,
-      meta: { status: 429, reason: 'rate_limited', providerCode: 'ThrottlingException' }
+      meta: { status: 429, reason: 'rate_limited', providerCode: 'ThrottlingException' },
     })
   })
 
@@ -388,10 +518,10 @@ describe('bedrock provider factory', () => {
         send: async () => {
           throw Object.assign(new Error('Malformed input request.'), {
             name: 'ValidationException',
-            $metadata: { httpStatusCode: 400 }
+            $metadata: { httpStatusCode: 400 },
           })
-        }
-      }
+        },
+      },
     })
 
     await expect(
@@ -399,11 +529,11 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       retriable: false,
-      meta: { status: 400, reason: 'http_error', providerCode: 'ValidationException' }
+      meta: { status: 400, reason: 'http_error', providerCode: 'ValidationException' },
     })
   })
 
@@ -413,10 +543,10 @@ describe('bedrock provider factory', () => {
         send: async () => {
           throw Object.assign(new Error('You do not have access to the model.'), {
             name: 'AccessDeniedException',
-            $metadata: { httpStatusCode: 403 }
+            $metadata: { httpStatusCode: 403 },
           })
-        }
-      }
+        },
+      },
     })
 
     await expect(
@@ -424,11 +554,11 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       retriable: false,
-      meta: { status: 403, reason: 'http_error', providerCode: 'AccessDeniedException' }
+      meta: { status: 403, reason: 'http_error', providerCode: 'AccessDeniedException' },
     })
   })
 
@@ -438,10 +568,10 @@ describe('bedrock provider factory', () => {
         send: async () => {
           throw Object.assign(new Error('Internal server error.'), {
             name: 'InternalServerException',
-            $metadata: { httpStatusCode: 500 }
+            $metadata: { httpStatusCode: 500 },
           })
-        }
-      }
+        },
+      },
     })
 
     await expect(
@@ -449,11 +579,11 @@ describe('bedrock provider factory', () => {
         model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       retriable: true,
-      meta: { status: 500, reason: 'provider_unavailable', providerCode: 'InternalServerException' }
+      meta: { status: 500, reason: 'provider_unavailable', providerCode: 'InternalServerException' },
     })
   })
 })

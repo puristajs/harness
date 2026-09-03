@@ -23,6 +23,7 @@ import {
 } from '@purista/harness'
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 
+/** Configuration for the Anthropic model provider factory. */
 export interface AnthropicFactoryOptions extends ClientOptions {
   /** Optional injected client for tests or custom transport behavior. */
   client?: AnthropicClient
@@ -222,7 +223,9 @@ function toolBlockInputJson(state: StreamToolBlockState): string {
   return JSON.stringify(state.startInput ?? {})
 }
 
+/** Narrow Anthropic SDK surface accepted for test or custom transport injection. */
 export type AnthropicClient = {
+  /** Anthropic Messages API operations used by the adapter. */
   messages: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }

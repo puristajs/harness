@@ -1307,7 +1307,9 @@ export interface AgentContext<S extends BuilderState, I, O> extends AgentContext
 	 *
 	 * Calls retain the harness trace/session/run attribution. Pass
 	 * `{ emitRunEvents: true }` as the final invocation argument when the
-	 * corresponding model completion or stream chunks should be exposed through
+	 * corresponding model completion or stream chunks should be mirrored into
+	 * `session.agents.<id>.observe(...)`. A target whose `updates` declaration
+	 * allows the matching output kind also projects portable updates through
 	 * `session.agents.<id>.stream(...)`. The harness owns event identity and
 	 * persistence; custom handlers cannot forge arbitrary run events.
 	 *
@@ -1909,7 +1911,8 @@ export interface RunSummary {
 }
 
 /**
- * Harness streaming events emitted from `session.workflows.<id>.stream(...)`.
+ * Harness diagnostic events emitted from `session.workflows.<id>.observe(...)`
+ * and `session.agents.<id>.observe(...)`.
  *
  * `text(...)` and `object(...)` model calls return final results and do not
  * expose partial output. Consumed model streams are private by default.

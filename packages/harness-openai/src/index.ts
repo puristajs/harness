@@ -371,26 +371,34 @@ class OpenAiModelProvider extends BaseModelProvider {
 
 type ChatRequest = TextRequest | ObjectRequest
 type OpenAiRequest = ChatRequest | ImageRequest | SpeechRequest | VideoRequest
+
+/** Narrow OpenAI SDK surface accepted for test or custom transport injection. */
 export type OpenAiClient = {
+  /** Chat Completions API operations used by the adapter. */
   chat: {
     completions: {
       create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
     }
   }
+  /** Optional Responses API operations used when Responses mode is selected. */
   responses?: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  /** Embeddings API operations used by embedding model bindings. */
   embeddings: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  /** Optional Images API operations used by image-generation bindings. */
   images?: {
     generate(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
   }
+  /** Optional Audio API operations used by speech-generation bindings. */
   audio?: {
     speech?: {
       create(payload: unknown, options?: { signal?: AbortSignal }): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>
     }
   }
+  /** Optional Videos API operations used by video-generation bindings. */
   videos?: {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<any>
     retrieve(id: string, options?: { signal?: AbortSignal }): Promise<any>

@@ -42,6 +42,7 @@ export interface GoogleFactoryOptions extends GoogleGenAIOptions {
  * `apiKey`/Vertex options to {@link google}.
  */
 export interface GoogleClient {
+  /** Google Gen AI model operations used by the adapter. */
   models: {
     generateContent(params: unknown): Promise<any>
     generateContentStream(params: unknown): Promise<AsyncIterable<any>>

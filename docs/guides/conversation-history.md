@@ -43,9 +43,11 @@ from prompt text.
 
 ```ts
 const session = await harness.getSession(`customer:${customerId}`)
-const output = await session.agents.support.run(input, {
+const outcome = await session.agents.support.run(input, {
 	idempotencyKey: message.id,
 })
+
+if (outcome.status === 'completed') console.log(outcome.output)
 ```
 
 The key is scoped to this session and agent. Reuse the transport delivery id
@@ -53,7 +55,7 @@ for a retry of the same message; another conversation may safely use the same
 delivery id without sharing a replay record.
 
 When the same session, agent, key, and input are delivered again after a
-successful run, Harness returns the recorded output without another provider
+successful run, Harness returns the recorded completed outcome without another provider
 call or another transcript write. Provider retries before a successful turn
 commit also leave no partial transcript. This does not make external tool or
 service side effects exactly-once: design those operations with their own

@@ -295,21 +295,24 @@ way to explain which version produced each durable step.
 
 ## Streaming Workflow Runs
 
-`session.workflows.<id>.stream(input)` emits typed `RunEvent` values for the
-workflow run, child agent lifecycle events, tool calls, and final output. Direct
-model stream chunks inside workflow code stay private unless that model stream
-call opts in with `emitRunEvents: true`.
+`session.workflows.<id>.stream(input)` emits the portable `ExecutionEvent`
+contract: run boundaries, selected output updates, client-visible tool and
+approval activity, artifacts, progress, and the terminal outcome. Direct model
+stream chunks inside workflow code stay private unless the model call opts in
+with `emitRunEvents: true` and the workflow declares the matching `updates`
+mode.
 
 ```ts
 for await (const event of session.workflows.review_incident.stream(input)) {
-	if (event.type === 'agent.started') console.log('agent', event.agentId)
-	if (event.type === 'model.delta') process.stdout.write(event.delta)
-	if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'output.text.delta') process.stdout.write(event.delta)
+	if (event.type === 'run.finished') console.log(event.outcome)
 }
 ```
 
-Map `RunEvent` to SSE, WebSocket, or UI events in your application. The harness
-does not emit the Vercel stream protocol.
+Use `@purista/harness-ai-sdk-ui/v1` to map portable execution events to AI SDK
+UI Message Stream v1. Use `.observe(input)` separately when operators or tests
+need diagnostic `RunEvent` values such as `agent.started`, `fanout.started`, or
+`model.delta`; never send that diagnostic stream directly to a browser.
 
 ## Cancellation And Failure
 
@@ -330,8 +333,10 @@ output are model-facing `ModelSchema` boundaries.
 
 Test workflows with fake providers and deterministic adapters first:
 
-- assert `session.workflows.<id>.run(...)` returns the validated output;
-- assert `.stream(...)` emits lifecycle and final events you map in the UI;
+- assert `session.workflows.<id>.run(...)` returns `status: 'completed'` with
+  validated `output`, or the expected resumable interrupt;
+- assert `.stream(...)` emits portable lifecycle, output, and terminal events;
+- assert `.observe(...)` emits the diagnostic events required by operations;
 - test child-agent failures and partial-result paths;
 - test durable resume by repeating the same durable `runId`;
 - assert prompts, tool inputs, raw documents, and secrets are absent from logs,

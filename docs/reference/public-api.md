@@ -20,6 +20,7 @@ adapter packages.
 | `@purista/harness-storage-postgres` | Distributed PostgreSQL HarnessStorage with migrations, leases, fencing, checkpoints, and external waits. |
 | `@purista/harness-sandbox-kubernetes` | Restricted Kubernetes sandbox and optional PVC/VolumeSnapshot durable workspace runtime. |
 | `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection and explicit, application-owned Skill/MCP bindings. |
+| `@purista/harness-ai-sdk-ui` | Versioned AI SDK UI Message Stream v1 conversion and approval-resume helpers. |
 | `@purista/harness-memory-sqlite` | Local durable SQLite/FTS5 memory; optional explicit sqlite-vec exact vectors. |
 | `@purista/harness-memory-postgres` | PostgreSQL 16+ and pgvector memory engine. |
 | `@purista/harness-memory-redis` | Redis Search memory engine with optional vector index. |
@@ -41,8 +42,10 @@ const harness = defineHarness({ name: 'my-service' })
   .build()
 
 const session = await harness.getSession('tenant:user:thread')
-const answer = await session.agents.answerer.run(input)
-const report = await session.workflows.research_report.run(input)
+const answerOutcome = await session.agents.answerer.run(input)
+const reportOutcome = await session.workflows.research_report.run(input)
+if (answerOutcome.status === 'completed') console.log(answerOutcome.output)
+if (reportOutcome.status === 'completed') console.log(reportOutcome.output)
 await session.release()
 await harness.shutdown()
 ```
@@ -247,9 +250,31 @@ model `call` options. `stopWhen` runs after a model response and before tool
 execution; if it returns `true`, the response object is validated as the final
 agent output.
 
-## Run Events
+## Aggregate outcomes and streams
 
-Streaming invokers yield `RunEvent` values:
+`run(...)` resolves to `RunOutcome<Output>`:
+
+- `{ status: 'completed', runId, output }` contains the validated result;
+- `{ status: 'interrupted', runId, interrupt }` contains a resumable external
+  wait or tool-approval request.
+
+`stream(...)` yields the portable `ExecutionEvent<Output>` contract. It is safe
+to carry across a service or browser boundary after applying the selected
+standard protocol adapter:
+
+| Execution event | Meaning |
+|---|---|
+| `run.started` | Run identity and start time. |
+| `output.text.delta` | Portable text update when the agent/workflow declares `updates: 'text-delta'`. |
+| `output.object.snapshot` | Portable structured snapshot when it declares `updates: 'object-snapshot'`. |
+| `output.file` | Artifact reference suitable for a client boundary. |
+| `output.progress` | Provider-neutral media progress. |
+| `tool.input.available`, `tool.started`, `tool.finished` | Client-visible tool lifecycle. |
+| `approval.requested`, `approval.responded` | Approval UI lifecycle. |
+| `run.finished` | Terminal event carrying the same `RunOutcome` shape as `run(...)`. |
+
+`observe(...)` yields the diagnostic `RunEvent` contract for operators and
+tests:
 
 | Event | Meaning |
 |---|---|
@@ -266,10 +291,11 @@ Streaming invokers yield `RunEvent` values:
 | `model.delta` | Text delta from a `textStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
 | `model.object.partial` | Structured partial from an `objectStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
 | `model.object` | Final object from the default agent `object(...)` call or an opted-in `objectStream(...)` finish chunk. |
-| `run.finished` | Completed output or a typed interrupted outcome. |
+| `run.finished` | Completed output or a serialized diagnostic failure. Resumable waits have their own diagnostic events. |
 | `stream.overflow` | Stream buffer dropped old events. |
 
-`text(...)` and `object(...)` are final request-response operations and do not
+Do not send diagnostic events directly to an untrusted client. `text(...)` and
+`object(...)` are final request-response operations and do not
 produce partial run events. They do emit `model.completed` on successful
 invocation, including direct and nested calls. Fully consumed successful model
 streams also emit it once, independent of `emitRunEvents`; failed attempts and
@@ -286,7 +312,10 @@ Harness-emitted opted-in model stream events include generated `streamId` and
 `modelAlias`. They also include `workflowId` and `agentId` when the stream call
 is made from that scope. `streamId` is unique to the model stream invocation, so
 parallel streams can be grouped independently.
-They remain harness events, not a Vercel stream protocol.
+They remain diagnostic Harness events. `stream(...)` projects only the
+portable subset selected by the target's `updates` declaration. Use
+`@purista/harness-ai-sdk-ui/v1` for AI SDK UI Message Stream v1 rather than
+inventing a browser protocol.
 
 Child-agent lifecycle events emitted from workflows include `workflowId`,
 `delegationCallId`, `delegationDepth`, and `modelAlias`. Persisted payloads keep
@@ -466,13 +495,12 @@ Use `object` and `object_stream` for structured outputs. Use `embeddings` and
 `rerank` for retrieval workflows; storage and retrieval policy stay outside
 core.
 
-Streaming methods return provider chunks to the caller. By default those chunks
-are internal to the workflow or custom agent handler. When a public-facing model
-stream should be forwarded through `session.*.stream(...)`, pass
-`{ emitRunEvents: true }` to that specific model stream call. Application
-SSE/WebSocket adapters can then forward a single run-event stream without
-treating provider protocols as public API, while owning any UI labels or
-client-facing event names.
+Streaming model methods return provider chunks to workflow or custom-handler
+code. By default those chunks remain internal. Pass `{ emitRunEvents: true }`
+to mirror supported chunks into diagnostic `RunEvent` values. To project them
+through `session.*.stream(...)`, also declare the target's portable `updates`
+mode. Use a versioned protocol adapter such as `@purista/harness-ai-sdk-ui/v1`
+at the HTTP boundary.
 
 Adapter authors extend `BaseModelProvider` and reuse the shared helpers
 exported from the main entry (`toTokenUsage`, `parseProviderJson`,

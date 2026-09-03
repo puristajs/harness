@@ -78,7 +78,7 @@ sequenceDiagram
   Agent->>Model: object request
   Model-->>Agent: validated object
   Agent-->>Workflow: typed output
-  Workflow-->>App: typed output
+  Workflow-->>App: completed or interrupted RunOutcome
 ```
 
 The key rule: application code calls sessions, not provider adapters directly.
@@ -103,6 +103,8 @@ const session = await harness.getSession('quickstart')
 const response = await session.agents.assistant.run({
 	topic: 'enterprise agent harnesses',
 })
+
+if (response.status === 'completed') console.log(response.output)
 ```
 
 Use workflows when you need pre-processing, post-processing, fan-out/fan-in,

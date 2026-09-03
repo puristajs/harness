@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { defineHarness, type ModelProvider, type Schema } from '@purista/harness'
+import { defineHarness, type ModelProvider, type RunOutcome, type Schema } from '@purista/harness'
 import {
 	defineGuardrailAction,
 	defineGuardrails,
@@ -150,8 +150,11 @@ const harness = defineHarness()
 	})
 	.build()
 const session = await harness.getSession('attached-types')
-const output: { answer: string } = await session.agents.answer.run('question')
-void output
+const outcome: RunOutcome<{ answer: string }> = await session.agents.answer.run('question')
+if (outcome.status === 'completed') {
+	const output: { answer: string } = outcome.output
+	void output
+}
 // @ts-expect-error attachment preserves the agent's string input schema.
 session.agents.answer.run(123)
 // @ts-expect-error attachment preserves the agent's structured output schema.

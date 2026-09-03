@@ -46,7 +46,11 @@ const provider = {
 
 const harness = createAppHarness(provider)
 const session = await harness.getSession('test')
-await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({ answer: 'fake answer' })
+await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({
+	status: 'completed',
+	runId: expect.any(String),
+	output: { answer: 'fake answer' },
+})
 ```
 
 ## Test Streaming Events
@@ -61,15 +65,22 @@ expect(events).toContain('run.started')
 expect(events).toContain('run.finished')
 ```
 
-For model streaming behavior, queue provider stream chunks and assert both
-privacy modes. A consumed `textStream(...)` / `objectStream(...)` call should
-not produce model partial run events by default. A call with
-`{ emitRunEvents: true }` should produce `model.delta` for text streams and
-`model.object.partial` plus final `model.object` for object streams. Plain
-`text(...)` / `object(...)` calls should not produce partial events. For
-public stream tests, assert the grouping metadata too: generated `streamId`
-stability per stream invocation, distinct ids across parallel streams,
-`modelAlias`, and available `workflowId` / `agentId`.
+This test consumes the portable `ExecutionEvent` contract. Assert that the
+terminal `run.finished.outcome` matches the corresponding aggregate call.
+
+For diagnostic model-stream behavior, consume `.observe(...)`, queue provider
+stream chunks, and assert both privacy modes. A consumed `textStream(...)` /
+`objectStream(...)` call should not produce model partial `RunEvent` values by
+default. A call with `{ emitRunEvents: true }` should produce `model.delta` for
+text streams and `model.object.partial` plus final `model.object` for object
+streams. Plain `text(...)` / `object(...)` calls should not produce partial
+events. Assert generated `streamId` stability per model-stream invocation,
+distinct IDs across parallel streams, `modelAlias`, and available `workflowId`
+/ `agentId` on this diagnostic surface.
+
+For public stream tests, assert only portable execution events and test the
+selected protocol adapter, such as `@purista/harness-ai-sdk-ui/v1`, at its own
+HTTP/SSE boundary.
 
 ## Test Tools
 

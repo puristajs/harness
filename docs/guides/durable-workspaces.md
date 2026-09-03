@@ -59,6 +59,8 @@ const result = await session.workflows.report.run(input, {
 	durable: { runId: `report:${input.reportId}:v1` },
 })
 
+if (result.status === 'completed') console.log(result.output)
+
 // Inside the workflow:
 const facts = await ctx.step('collect-facts-v1', () => collectFacts(ctx.input))
 const draft = await ctx.step('draft-v1', () => ctx.agents.writer(facts))

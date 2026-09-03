@@ -29,6 +29,7 @@ import ModelClient, { type ModelClientOptions } from '@azure-rest/ai-inference'
 import { AzureKeyCredential, type KeyCredential, type TokenCredential } from '@azure/core-auth'
 import { createSseStream } from '@azure/core-sse'
 
+/** Configuration for the Azure AI Foundry model provider factory. */
 export interface AzureFoundryFactoryOptions extends ModelClientOptions {
   /** Azure AI Foundry model endpoint. Not required when `client` is injected. */
   endpoint?: string
@@ -209,7 +210,9 @@ class AzureFoundryModelProvider extends BaseModelProvider {
   }
 }
 
+/** Narrow Azure AI Inference SDK surface accepted for test or custom transport injection. */
 export type AzureFoundryClient = {
+  /** Selects one of the Azure inference endpoints used by the adapter. */
   path(path: '/chat/completions' | '/embeddings'): {
     post(options: unknown): Promise<any> & { asNodeStream?: () => Promise<any> }
   }

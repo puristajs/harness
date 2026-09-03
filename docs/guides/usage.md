@@ -80,10 +80,12 @@ A session provides:
 
 | API | Purpose |
 |---|---|
-| `session.agents.<id>.run(input)` | Direct agent call. |
-| `session.agents.<id>.stream(input)` | Direct agent call with run events. |
-| `session.workflows.<id>.run(input)` | Workflow call. |
-| `session.workflows.<id>.stream(input)` | Workflow call with run events. |
+| `session.agents.<id>.run(input)` | Direct agent call returning a completed or interrupted `RunOutcome`. |
+| `session.agents.<id>.stream(input)` | Portable `ExecutionEvent` stream for a client or service boundary. |
+| `session.agents.<id>.observe(input)` | Detailed diagnostic `RunEvent` stream for operators and tests. |
+| `session.workflows.<id>.run(input)` | Workflow call returning a completed or interrupted `RunOutcome`. |
+| `session.workflows.<id>.stream(input)` | Portable workflow execution events. |
+| `session.workflows.<id>.observe(input)` | Detailed workflow diagnostics. |
 | `session.history.list()` | Conversation messages for this session. |
 | `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
 | `session.release()` | Close live sandbox/MCP resources while retaining persisted history and runs. |
@@ -110,7 +112,7 @@ has a stricter SLA:
 
 ```ts
 const controller = new AbortController()
-const result = await session.agents.answerer.run(input, {
+const outcome = await session.agents.answerer.run(input, {
 	signal: controller.signal,
 	timeoutMs: 30_000,
 })
@@ -123,11 +125,15 @@ handler code is not cooperative, but handler code should still check
 `ctx.signal` to stop side effects promptly.
 
 ```ts
-const result = await session.agents.answerer.run({
+const outcome = await session.agents.answerer.run({
 	question: 'How do tools work?',
 })
 
-console.log(result.answer)
+if (outcome.status === 'completed') {
+	console.log(outcome.output.answer)
+} else {
+	console.log(`Run ${outcome.runId} needs application input: ${outcome.interrupt.type}`)
+}
 ```
 
 ## Stream A Run
@@ -137,28 +143,33 @@ for await (const event of session.agents.answerer.stream({
 	question: 'How do tools work?',
 })) {
 	if (event.type === 'tool.started') console.log('tool:', event.toolId)
-	if (event.type === 'run.finished') console.log(event.output)
+	if (event.type === 'output.text.delta') process.stdout.write(event.delta)
+	if (event.type === 'run.finished' && event.outcome.status === 'completed') {
+		console.log(event.outcome.output)
+	}
 }
 ```
 
-Streaming reports lifecycle and tool events. The default agent loop uses
-`object(...)`, so it emits final `model.object` events rather than text deltas.
-When workflow code or a custom agent handler consumes `ctx.models.alias.textStream(...)`,
-those chunks stay private by default. Pass `{ emitRunEvents: true }` to that
-specific stream call to publish `model.delta` events. The same opt-in on
-`ctx.models.alias.objectStream(...)` publishes `model.object.partial` events
-and a final `model.object` event.
+`stream(...)` yields the portable `ExecutionEvent` contract. Text deltas or
+object snapshots appear only when the agent/workflow declares the matching
+`updates` mode and its model path emits those updates. The terminal event
+carries the same outcome shape as `run(...)`.
 
-Harness streams are typed `RunEvent` values. They are not the Vercel stream
-protocol; application HTTP or SSE routes can map them to whatever client event
-shape they own.
+Use `@purista/harness-ai-sdk-ui/v1` to expose AI SDK UI Message Stream v1 to a
+browser. Do not invent a Harness-specific consumer protocol.
+
+Use `.observe(...)` for detailed diagnostics. When workflow code or a custom
+agent handler consumes `ctx.models.alias.textStream(...)`, provider chunks stay
+private by default. Pass `{ emitRunEvents: true }` to publish `model.delta`
+diagnostics. The same opt-in on `objectStream(...)` publishes
+`model.object.partial` and final `model.object` events.
 
 ```ts
 for await (const chunk of ctx.models.publicAnswer.textStream({ messages }, ctx.signal, { emitRunEvents: true })) {
 	// Still consume provider chunks in workflow code.
 }
 
-for await (const event of session.workflows.research.stream(input)) {
+for await (const event of session.workflows.research.observe(input)) {
 	if (event.type === 'model.delta') process.stdout.write(event.delta)
 	if (event.type === 'model.object.partial') renderDraft(event.partial)
 	if (event.type === 'run.finished') renderFinal(event.output)
@@ -245,9 +256,11 @@ invoke several agents in sequence or parallel, run deterministic checks, ask
 for application-owned human review, and decide whether to write state or artifacts.
 
 ```ts
-const result = await session.workflows.answer_with_review.run({
+const outcome = await session.workflows.answer_with_review.run({
 	question: 'How do tools work?',
 })
+
+if (outcome.status === 'completed') console.log(outcome.output)
 ```
 
 The workflow handler owns orchestration. It can call one agent, many agents,

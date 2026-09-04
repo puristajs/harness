@@ -55,7 +55,7 @@ backends differ:
 | --- | --- | --- |
 | PURISTA `StateStore` | `@purista/core` | General application/service key-value state used by AI and non-AI code. It is unchanged by this specification. |
 | `HarnessStorage` | `@purista/harness` | Harness conversations and recoverable execution state. |
-| `MemoryAdapter` | `@purista/harness` | Optional core-orchestrated application/tenant/principal/session/run/agent recall, TTL, and search. Database engines implement the separate `MemoryEngine` contract from spec 33. |
+| `MemoryEngine` | `@purista/harness` | Optional database extension point for application/tenant/principal/session/run/agent recall. Core owns the `MemoryAdapter` orchestration result, TTL, scoping, search fusion, model routing, and validation defined by spec 33. |
 | `Sandbox` | `@purista/harness` | Active filesystem and process lifecycle. |
 | `DurableWorkspace` | `@purista/harness` | Optional durable file snapshots, quotas, retention, and encryption metadata. |
 | Review/domain records | Application service | Authorization, reviewer identity, evidence, revisions, expiry, and business invariants. |
@@ -80,7 +80,9 @@ The Harness builder exposes:
 ```ts
 interface HarnessBuilder<S extends BuilderState = {}> {
   storage(storage: HarnessStorage): HarnessBuilder<S>
-  memory(adapter: MemoryAdapter): HarnessBuilder<S>
+  memory<const Capabilities extends readonly MemoryCapability[]>(
+    engine: MemoryEngine<Capabilities>,
+  ): HarnessBuilder<S>
   sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
   workspace(workspace: DurableWorkspace): HarnessBuilder<S>
 }
@@ -98,8 +100,12 @@ The following builder methods are removed:
 - `.externalWait(...)`
 - `.workspaceStore(...)`
 
-`HarnessInspection` reports one `storage` adapter and, when present, separate
-`memory`, `sandbox`, and `workspace` adapters. It does not report storage's
+The exact typed direct-engine and model-reference callback overloads are owned
+by spec 33; the simplified signature above denotes their shared engine input
+and is not an additional overload. Omitted memory creates
+`inMemoryMemoryEngine()` in core. `HarnessInspection` reports one `storage`
+adapter and, when present, separate `memory`, `sandbox`, and `workspace`
+adapters. It does not report storage's
 internal execution/wait facets as independently configured adapters.
 
 ## 4. Storage contract
@@ -116,7 +122,8 @@ The contract covers:
 3. One run create/read/list/transition model.
 4. Ordered event append/list.
 5. Durable run acquisition, lease release, and attempt tracking.
-6. Durable step checkpoint read/commit.
+6. Durable step checkpoint read/commit, fenced replacement, and terminal
+   deletion.
 7. External wait registration/read/signal/cancel bound to a run and session.
 8. Idempotent close and Harness adapter-context configuration.
 
@@ -125,6 +132,321 @@ Every implementation MUST pass `harnessStorageContract` from
 adapters. Differences between in-memory, local persistent, and distributed
 implementations are guarantees represented by storage capabilities, not
 missing methods.
+
+The v4 leased-run mutation surface adds exactly these operations to
+`HarnessStorage`; they remain part of the same adapter and transaction domain:
+
+```ts
+interface CreateRunRequest {
+  readonly id: string
+  readonly sessionId: string
+  readonly kind: 'agent' | 'workflow' | 'child_task'
+  readonly target: string
+  readonly startedAt: string
+  readonly input: JsonValue
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}
+
+type RunAcquisitionMode = 'initial' | 'resume'
+
+interface RunAcquisitionCheckpointExpectation {
+  readonly stepId: string
+  readonly sequence: number | null
+}
+
+interface RunAcquisitionExpectation {
+  readonly revision: number
+  readonly status: 'running' | 'waiting' | 'interrupted'
+  readonly checkpoint: RunAcquisitionCheckpointExpectation
+}
+
+interface AcquireRunRequest {
+  readonly mode: RunAcquisitionMode
+  readonly runId: string
+  readonly sessionId: string
+  readonly workerId: string
+  readonly acquisitionId: string
+  readonly expected: RunAcquisitionExpectation
+  readonly requestedAttempt?: number
+}
+
+interface DurableRunLease {
+  readonly runId: string
+  readonly sessionId: string
+  readonly workerId: string
+  readonly acquisitionId: string
+  readonly leaseId: string
+  readonly attempt: number
+  readonly resumed: boolean
+  readonly acquiredFrom: RunAcquisitionExpectation
+  readonly run: RunRecord
+  readonly checkpoint?: RunCheckpoint
+  readonly checkpoints: readonly RunCheckpoint[]
+  release(): Promise<void>
+}
+
+interface ReplaceCheckpointRequest {
+  readonly runId: string
+  readonly sessionId: string
+  readonly stepId: string
+  readonly expectedSequence: number
+  readonly leaseId: string
+  readonly workerId: string
+  readonly replacement: RunCheckpoint
+}
+
+interface AppliedApprovalDecisionV1 {
+  readonly approvalId: string
+  readonly approved: boolean
+}
+
+interface ApprovalResumeReceiptV1 {
+  readonly schemaVersion: 1
+  readonly interruptId: string
+  readonly resumeEventId: string
+  readonly decisions: readonly AppliedApprovalDecisionV1[]
+  readonly deploymentRevision: string
+  readonly compiledGraphDigest: string
+  readonly sessionIdentityDigest: string
+  readonly rootTarget: Readonly<{
+    kind: 'agent' | 'workflow'
+    id: string
+  }>
+}
+
+type TerminalApprovalReceiptV1 = ApprovalResumeReceiptV1
+
+type FinalizeRunPatch =
+  | Readonly<{
+      status: 'succeeded'
+      finishedAt: string
+      output: JsonValue
+      error?: never
+      approvalReceipt?: TerminalApprovalReceiptV1
+    }>
+  | Readonly<{
+      status: 'failed' | 'cancelled'
+      finishedAt: string
+      output?: never
+      error: SerializedError
+      approvalReceipt?: TerminalApprovalReceiptV1
+    }>
+
+interface FinalizeRunRequest {
+  readonly runId: string
+  readonly sessionId: string
+  readonly leaseId: string
+  readonly workerId: string
+  readonly patch: FinalizeRunPatch
+  readonly terminalEvent: PersistedRunEvent
+  readonly checkpointDisposition: 'delete-all'
+}
+
+interface HarnessStorage {
+  createRun(request: CreateRunRequest): Promise<RunRecord>
+  acquireRun(request: AcquireRunRequest): Promise<DurableRunLease>
+  replaceCheckpoint(request: ReplaceCheckpointRequest): Promise<void>
+  finalizeRun(request: FinalizeRunRequest): Promise<void>
+}
+```
+
+`CreateRunRequest` is strict and contains exactly the caller-owned immutable
+creation fields shown above. It excludes `revision`, `status`, `finishedAt`,
+`output`, `error`, `approvalReceipt`, `attempt`, `workerId`, `initialStepId`,
+lease identity, and every other storage-authored field. `id`, `sessionId`,
+`kind`, `target`, and `startedAt` use their existing validators;
+`startedAt` is ISO 8601 UTC. `input` must be canonicalizable JSON. `metadata`,
+when present, is a plain JSON object whose full nested value is immutable; its
+absence is distinct from an explicitly supplied empty object. Unknown keys,
+undefined values, non-JSON prototypes, and non-finite values are rejected before
+storage mutation with the same fixed
+`StateError{op:'createRun',reason:'run_conflict'}` contract below.
+
+`createRun` atomically creates
+`{...request,status:'running',revision:1}` and returns a recursively frozen
+authoritative `RunRecord`. Storage canonicalizes and copies `input` and
+`metadata`; it never retains a caller-mutable object. The immutable creation
+identity is the canonical tuple
+`['harness-run-create-v1',id,sessionId,kind,target,startedAt,input,
+metadata-is-present,metadata ?? null]`. JSON values use spec 42's canonical
+encoder, so object-key insertion order is irrelevant and array order remains
+significant.
+
+When `id` already exists, storage compares that tuple against the immutable
+creation fields retained on the current record. A byte-equivalent retry returns
+the current recursively frozen authoritative record exactly as it now exists,
+including a later revision/status/attempt or terminal result, without changing
+any record, event, message, checkpoint, wait, or lease. A mismatch rejects with
+fixed message `Run creation conflicts with an existing logical run.` and exact
+metadata `StateError{op:'createRun',reason:'run_conflict'}`. Comparison
+precedence is request shape/identifier validation, then existing-record
+`sessionId`, `kind`, `target`, `startedAt`, canonical input bytes, metadata
+presence, and canonical metadata bytes. The run id is the lookup key and the
+first member of the identity tuple. Errors never expose the differing field,
+input, metadata, canonical bytes, target content, or stored record.
+
+These rules apply identically to `agent`, `workflow`, and `child_task` records.
+For a caller-owned durable `runId`, Harness checks or creates this record before
+building an acquisition request. Reusing that run id with different agent or
+workflow input, target, session, or immutable metadata fails at `createRun`
+before `acquireRun`, even when the existing run remains non-terminal. Child-task
+creation uses its spec 28 canonical input and immutable descriptor/lineage
+metadata through the same fence.
+
+`AcquireRunRequest` replaces `DurableRunStart` as the sole `acquireRun` input,
+and the lease has exactly the result fields above; the former duplicated
+`lease.start` payload is removed. Immutable target/session/input metadata lives
+only on the authoritative `RunRecord` created before acquisition.
+
+`RunRecord.revision` is a positive safe integer. The creation winner receives
+revision `1`; an exact create retry returns the current revision. A successful
+acquisition, checkpoint commit or replacement, resumable release or wait
+transition, and terminal mutation each increment it by exactly one in the same
+transaction as that mutation. Message and event append operations do not
+change it. This revision is the storage-owned acquisition CAS token and is not
+a deployment, schema, definition, or graph version.
+
+Before acquisition, Harness reads the authoritative `RunRecord` and the
+checkpoint named by `expected.checkpoint.stepId`. It copies the record's exact
+`revision` and `status`, and uses that checkpoint's sequence or `null` when the
+step is absent. `AcquireRunRequest` and all nested objects are strict. The
+revision and a present checkpoint sequence are positive safe integers;
+`requestedAttempt`, when present, is a positive safe integer. Identifiers use
+their existing closed grammars. Harness derives `acquisitionId` exactly as
+`acq_` plus lowercase SHA-256 of the canonical JSON tuple
+`['harness-run-acquisition-v1',mode,runId,sessionId,workerId,
+expected.revision,expected.status,expected.checkpoint.stepId,
+expected.checkpoint.sequence,requestedAttempt ?? null]`. Applications and
+adapters never choose or reinterpret it.
+
+`mode:'initial'` requires the pristine created record: revision `1`, status
+`running`, no stored attempt or worker, no active or historical acquisition,
+and no checkpoint for any step. Its checkpoint expectation therefore has
+`sequence:null`. `mode:'resume'` requires a previously acquired non-terminal
+record; it may be `running` after process loss, `waiting`, or `interrupted`, and
+the selected checkpoint may be present or absent. A terminal record is never
+acquired. `resumed` is exactly `mode === 'resume'`, including a recovery with
+no checkpoint; it remains false for an initial acquisition with a caller
+requested attempt greater than one. The acquired attempt is
+`max(previousAttempt + 1, requestedAttempt ?? 1)`, treating an absent previous
+attempt as zero. Acquisition atomically changes the record to `running`, stores
+that attempt and worker, sets `initialStepId` from
+`expected.checkpoint.stepId` only for the initial acquisition (resume retains
+the stored value), increments its revision, and installs the exclusive
+run/session lease.
+
+Within that transaction, storage compares the exact record revision/status and
+the named checkpoint step/sequence before mutating anything. It then returns
+the newly revised `run`, the selected checkpoint when present, and every
+checkpoint as one immutable ascending-sequence snapshot under the installed
+lease. `acquiredFrom` is the exact frozen expectation. H4-008 compares the
+returned record/checkpoint bytes with its optimistic values; no second
+unfenced read is used as proof of ownership.
+
+An unexpired lease stores the exact acquisition id, canonical request bytes,
+and acquired record revision. Repeating the byte-equivalent request while the
+record still has that acquired revision and the expected checkpoint is
+unchanged returns the same lease id, attempt, revision, record, and checkpoint
+snapshots without extending expiry or incrementing anything. This is the
+response-loss idempotency window before the lease holder's first fenced
+mutation. If that logical attempt has already advanced its record or selected
+checkpoint, the retry fails closed as `acquisition_conflict`; it never joins,
+restarts, releases, or rewinds the active execution. Reusing an acquisition id
+with different bytes, or any record/checkpoint expectation mismatch, fails before mutation with
+`StateError{op:'acquireRun',reason:'acquisition_conflict'}`. Another unexpired
+run or session lease fails with
+`StateError{op:'acquireRun',reason:'lease_conflict'}`. A missing run is
+`StateError{op:'acquireRun',reason:'run_not_found'}`; a terminal record uses the
+canonical terminal-run error. After expiry, a caller must reread and create the
+new deterministic acquisition id from the current revision; an old request
+cannot reacquire.
+
+Validation order is strict request shape and identifier grammar; run existence
+and session identity; terminal status; same-acquisition exact-retry handling;
+record revision/status/mode and checkpoint expectation; then competing run or
+session lease availability. The first applicable failure wins and no failure
+changes record, checkpoint, or lease state.
+
+`release()` is fenced by `(runId,sessionId,workerId,leaseId,acquisitionId)`.
+While that exact lease is active it atomically marks a still-running record
+`interrupted`, increments revision once, and removes both run and session
+lease rows. Repeating the same release is a no-op. A stale release after
+another acquisition cannot mutate or release the newer owner. Checkpoint,
+wait, replacement, and finalization writes remain fenced by the active lease
+and fail without mutation when its identity is stale.
+
+Both `FinalizeRunPatch` variants and their nested values are strict and reject
+unknown keys. `finishedAt` is valid ISO 8601 UTC. The authoritative v4
+`RunRecord` adds exactly
+`readonly approvalReceipt?: TerminalApprovalReceiptV1` to its existing fields;
+it is absent on every non-terminal record and on a terminal record that did not
+consume an approval resume. Storage readers validate that field together with
+the status/output/error discriminant before returning a record.
+`RunRecord.input` is required for `kind:'agent'|'workflow'` and is the exact
+canonical pre-transform JSON wire input; it never stores the schema-transformed
+value. The existing spec 28 `child_task` input remains required as its canonical
+child-call input, but `approvalReceipt` is forbidden for `kind:'child_task'`.
+The terminal receipt intentionally references root input by residing on
+the same immutable run record rather than duplicating content or a second
+digest. Its `rootTarget` must equal the record's `(kind,target)`.
+
+`replaceCheckpoint` requires the active unexpired lease and the exact existing
+`(runId,sessionId,stepId,expectedSequence)`. The replacement keeps that run,
+session, step, lease, worker, attempt, and root input and uses
+`sequence === expectedSequence + 1`. It atomically removes the old value and
+installs the replacement. Retrying the already installed byte-equivalent
+replacement succeeds. Any other observed checkpoint, sequence, owner, or
+replacement is `StateError{op:'replaceCheckpoint',reason:'checkpoint_conflict'}`
+without exposing checkpoint data.
+
+`finalizeRun` is the sole terminal operation for an acquired run. In one
+transaction it verifies the active lease, writes the terminal run patch,
+validates and appends the matching terminal `run.finished` event, deletes every
+checkpoint owned by that run, removes the lease, and commits. `terminalEvent`
+must use the same run id and status/output/error as `patch`, the next unused
+sequence, and the deterministic event id from spec 42. It is strict and
+privacy-safe. A mismatch is
+`StateError{op:'finalizeRun',reason:'event_conflict'}` and changes nothing.
+An exact retry against the already stored terminal record succeeds; a different
+terminal patch or receipt is
+`StateError{op:'finalizeRun',reason:'run_conflict'}`; an exact retry includes the
+same terminal event and succeeds without appending it twice. A failed
+transaction changes none of those records. `finishRun` remains the terminal
+operation only for an ordinary run that never acquired a durable lease; using
+it while a run lease exists is
+`StateError{op:'finishRun',reason:'active_lease_requires_finalize'}`.
+
+`TerminalApprovalReceiptV1` is present only when this terminal attempt resumed
+a tool-approval interruption. The `decisions` array is sorted bytewise by
+`approvalId`, contains each approval id exactly once, and stores only the
+boolean decision. The receipt and every nested object are strict: unknown
+keys, duplicate ids, invalid identifiers, another schema version, unsorted
+rows, a malformed lowercase `sha256:` digest, an empty deployment revision, a
+root-target mismatch, or a non-boolean decision fail validation before the transaction. It
+never stores reviewer reason text, identity, input, output, arguments, prompts,
+messages, credentials, provider state, or arbitrary metadata. `RunRecord`
+exposes the receipt only through its optional exact `approvalReceipt` field;
+there is no receipt table or checkpoint copy after terminalization.
+
+The receipt is part of the terminal patch's byte-equivalence test. After
+checkpoint deletion or process restart, the same `(resumeEventId, normalized
+decisions)` returns the already committed terminal result from the authoritative
+`RunRecord` without reopening execution. Reusing that `resumeEventId` with a
+different normalized decision set is `ApprovalResumeError{reason:'event_conflict'}`.
+Any new event id for the consumed interrupt is
+`ApprovalResumeError{reason:'stale_continuation'}`. Failed and cancelled runs
+reconstruct only their canonical local terminal error contract; the receipt
+does not make transported errors trusted. An exact `finalizeRun` retry includes
+the byte-equivalent receipt and succeeds idempotently.
+
+`appendEvents` receives records with positive safe-integer `sequence` and the
+deterministic event id defined by spec 42. For one run it atomically accepts a
+contiguous batch beginning at the next unused sequence. A byte-equivalent
+record at an already stored sequence/id is an idempotent retry. Changed reuse
+of an id or sequence is `event_conflict`; a new gap or non-increasing member is
+`event_sequence_conflict`. Validation applies to the whole batch before any
+new event is written. `listEvents` returns ascending sequence order and its
+`after` cursor is the last returned `eventId`.
 
 ## 5. One run model
 
@@ -142,13 +464,20 @@ Statuses are:
 - `cancelled`: terminal cancellation.
 
 Only `waiting` and `interrupted` may resume. `succeeded`, `failed`, and
-`cancelled` reject acquisition. A non-durable execution failure becomes
-`failed`; a durable execution failure becomes `interrupted` unless explicitly
-terminalized by the caller/runtime policy.
+`cancelled` reject acquisition. An observed execution failure terminalizes as
+`failed` and observed cancellation terminalizes as `cancelled`, for both
+durable-target and approval-recovery leases. Only a typed Harness interruption
+or registered external wait deliberately releases a resumable record. Process
+loss before a terminal or interruption commit leaves the run lease-owned
+`running`; after lease expiry, acquisition resumes from its latest checkpoint.
 
 Run transitions, lease changes, and associated wait registration MUST be
-transactional when they are part of one operation. There is one terminal/run
-transition method; there are no two `finishRun` patch types or union overloads.
+transactional when they are part of one operation. There are two deliberately
+disjoint terminal mutations: ordinary unleased runs use the existing
+`FinishRunPatch` with `finishRun`, while acquired runs use the strict
+`FinalizeRunPatch` with the fenced atomic `finalizeRun` operation above. Only
+the latter may carry `TerminalApprovalReceiptV1`; there are no overloads or
+alternative approval receipt representations.
 
 ## 6. Durable steps and waits
 
@@ -252,7 +581,7 @@ Harness configuration becomes:
 type AgentRuntimeOptions<Models> = {
   models: AgentRuntimeModelBindings<Models>
   storage?: HarnessStorage
-  memory?: MemoryAdapter
+  memory?: MemoryEngine<readonly MemoryCapability[]> | MemoryConfigurationFactory<Models>
   sandbox?: Sandbox<any>
   workspace?: DurableWorkspace
   onSuspended?: (notice: AgentSuspendedNotice) => Promise<unknown> | unknown
@@ -316,6 +645,18 @@ Implementation is incomplete until all of the following pass:
 1. Public API/type tests prove `.storage(...)`/`.workspace(...)` and prove every
    removed symbol/method is absent.
 2. `harnessStorageContract` passes for in-memory and SQLite implementations.
+   It proves strict create requests for all three run kinds, rejection of every
+   storage-authored request field, revision-one running frozen returns, exact
+   retry returning the current authoritative record, deterministic content-free
+   conflict precedence, and repeated durable agent/workflow input mismatch
+   before acquisition. It also proves initial and resume acquisition from exact optimistic record
+   revision/status and checkpoint step/sequence; deterministic acquisition-id
+   response-loss replay; changed-id/request, stale revision/checkpoint, and
+   competing-lease rejection; expiry takeover and stale-release fencing; strict
+   terminal approval-receipt validation; atomic receipt plus
+   terminal patch plus terminal event plus checkpoint deletion plus lease
+   release, exact retry, byte-different receipt conflict, required canonical
+   root input, and receipt revision/graph/session/root-target validation.
 3. SQLite rebuild tests prove history, one run record, attempt increments,
    checkpoint replay, wait suspension/signal/resume, lease takeover, and
    idempotent close.
@@ -345,4 +686,9 @@ released.
 
 ## Approved decision-boundary alignment
 
-Wait requests, signals and snapshots have strict schema-derived closed shapes. Workflow wait returns ExternalWaitResolved, while storage retains the waiting/terminal union. Application execution claims and receipts remain outside HarnessStorage. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).
+Wait requests, signals and snapshots have strict schema-derived closed shapes.
+Workflow wait returns ExternalWaitResolved, while storage retains the
+waiting/terminal union. Application review records, reviewer identity, business
+claims, and comments remain outside HarnessStorage. The sole runtime receipt is
+the strict content-free `TerminalApprovalReceiptV1` attached atomically to a
+terminal `RunRecord`. Exact authority: [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md).

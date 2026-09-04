@@ -48,6 +48,8 @@ taxonomy and are never emitted by normal harness execution.
   `{reason:'invalid_child_task_timeout'}`,
   `{reason:'invalid_child_task_context'}`, or
   `{reason:'approval_capable_child_task_unsupported'}`.
+- supplying `InvokeOptions.durable` to a target without `durable:true` uses the
+  content-free issue `{reason:'target_not_durable'}`.
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
@@ -167,8 +169,12 @@ tokens, raw headers, or attachments.
 - code: `AGENT_LOOP_BUDGET_EXCEEDED`
 - category: `validation`
 - retriable: `false`
-- when: default loop iterations exceed the effective agent budget (`agent.maxSteps` when configured, otherwise `defaults.agentMaxIterations`).
-- meta: `agent_id: string`, `reason: 'iterations_exceeded'`, `limit: number`.
+- when: the standard agent loop would exceed the effective local step, tool
+  call, subagent call, or delegation-depth budget.
+- meta: exactly
+  `{agent_id:string,reason:'max_steps'|'max_tool_calls'|'max_subagent_calls'|'max_depth',limit:number}`.
+- the operation that would exceed the limit does not start; metadata never
+  includes input, output, prompts, messages, tool arguments, or provider data.
 
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`
@@ -176,6 +182,30 @@ tokens, raw headers, or attachments.
 - retriable: `false`
 - when: session accessed via unknown workflow id.
 - meta: `workflow_id: string`.
+
+### `ApprovalResumeError`
+- code: `APPROVAL_RESUME_ERROR`
+- category: `validation`
+- retriable: `false`
+- message: fixed `Tool approval resume is invalid.`
+- when: a public approval resume is malformed, does not identify the current
+  root/session/interruption/deployment graph, conflicts with a prior event, has
+  an incomplete decision set, or addresses a consumed continuation.
+- meta: exactly `{reason:'invalid_resume'|'run_mismatch'|'input_mismatch'|'interrupt_mismatch'|'revision_mismatch'|'graph_mismatch'|'session_identity_mismatch'|'invalid_checkpoint'|'event_conflict'|'decision_set_mismatch'|'stale_continuation'}`.
+- reason precedence is exact: strict resume/options/identifier and raw-JSON
+  validation; session, run, and root target; canonical pre-transform root input;
+  selection by interrupt id of the terminal receipt, current pending interrupt,
+  or retained immediately-prior receipt; revision; graph and session identity;
+  checkpoint kind/version; selected receipt or pending-event replay/conflict;
+  decision-set equality. A valid input for the right run whose canonical JSON wire value
+  differs from the stored root input uses `input_mismatch`. A new event for a
+  consumed interrupt uses `stale_continuation` after prior-event handling. On a
+  pending run, any well-formed interrupt id that selects neither the current
+  interrupt nor the retained immediately-prior receipt is
+  `stale_continuation`; the bounded contract does not retain older receipts.
+  Metadata never
+  includes event ids, decisions, reviewer reason, checkpoint data, digests,
+  input, output, prompt, message, credentials, or provider continuation.
 
 ### `WorkflowCallReplayConflictError`
 - code: `WORKFLOW_CALL_REPLAY_CONFLICT`
@@ -267,7 +297,7 @@ tokens, raw headers, or attachments.
 - category: `state`
 - retriable: `true`
 - when: HarnessStorage, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
-- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
+- meta: `op: 'getSession'|'invoke'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'finalizeRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'acquireRun'|'loadCheckpoint'|'commitCheckpoint'|'replaceCheckpoint'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|'run_conflict'|'run_not_found'|'acquisition_conflict'|'lease_conflict'|'active_lease_requires_finalize'|'event_conflict'|'event_sequence_conflict'|'instance_closed'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
 
 ### `WorkspaceError`
 - code: `WORKSPACE_ERROR`

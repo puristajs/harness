@@ -194,6 +194,8 @@ type ExecutionTerminalOutcome<Output, Interrupt> =
   | Readonly<{ status: 'cancelled'; runId: string; error: SerializedError }>
 
 type ExecutionEventCorrelation = Readonly<{
+  eventId: string
+  sequence: number
   runId: string
   parentRunId?: string
   parentInvocationId?: string
@@ -457,6 +459,17 @@ interruption is data rather than an error, while failed and cancelled streams
 finish with one sanitized `SerializedError`.
 Aggregate `run` rejects for failed or cancelled execution and returns
 `RunOutcome` only for completed or interrupted execution.
+
+`sequence` is a positive safe integer scoped to the event's own `runId`. It
+starts at `1` for `run.started` and increases by exactly one for every logical
+event, including a synthesized `stream.overflow` and the terminal event.
+`eventId` is `event_` plus lowercase SHA-256 of the canonical JSON tuple
+`['harness.event.v1',runId,sequence,type]`. The same logical event retains both
+values across persistence retry and process resume. `nextEventSequence` in a
+checkpoint is exactly the next unused value. Storage append accepts an exact
+duplicate idempotently and rejects a changed duplicate, a sequence gap, or a
+non-increasing new event before writing any member of the batch. Live delivery
+uses the already assigned values and never allocates another sequence.
 
 The v4 inventory removes `skill.started` and `skill.finished`. Skills are inert
 guidance packages, not executable calls; a script deliberately wrapped as a
@@ -1500,15 +1513,15 @@ calls. H4-008 binds the content-free `session.childTasks.get()` and `list()`
 facade and owns shutdown coordination around those H4-007 task records.
 
 Child tasks do not add a second approval/resume protocol. Before creating a
-task, reserving budget, writing a run record, or emitting an event, H4-007 uses
-the package-private `agentCanRequestApproval(agent)` helper in
-`runtime/runtime-requirements.ts`. The helper recursively follows the selected
-agent's exact definition references, uses the hidden identities and a visited
-set, and returns true when a selected tool permission or compiled governance
-effect can require approval. The same helper owns approval-derived durability
-requirements; another approval graph walk is forbidden. If the selected agent
-or a reachable subagent can request approval through permissions or governance,
-start rejects
+task, reserving budget, writing a run record, or emitting an event, the workflow
+runtime reads exactly
+`compiledGraph.approval.agents[selectedAgent.id].reachable`. H4-008 passes the
+compiler-owned immutable approval inventory into the accepted H4-007 workflow
+runtime and removes its transitional `agentCanRequestApproval` traversal; the
+workflow runtime must not walk definitions or derive requirements. If the row
+is absent, runtime assembly fails closed as an invalid compiled graph before a
+session is published. If the selected agent or a reachable subagent can request
+approval through permissions or governance, start rejects
 with `ValidationError{where:'invoke_options',issues:{reason:
 'approval_capable_child_task_unsupported'}}`. This applies equally to
 one-shot, continuable, awaited, and background tasks. Approval remains fully
@@ -1939,6 +1952,47 @@ identity with the same `(kind, id)` fails with `HarnessConfigError`. The stable
 `agent_cycle`, and `model_name_collision`. Only agent-to-subagent edges
 participate in cycle detection; an MCP tool's private exact-owner edge never does.
 
+The compiler also owns the sole recursive approval-reachability projection:
+
+```ts
+interface CompiledTargetApprovalInventory {
+  readonly reachable: boolean
+  readonly agentIds: readonly string[]
+}
+
+interface CompiledApprovalInventory {
+  readonly agents: Readonly<
+    Record<string, CompiledTargetApprovalInventory>
+  >
+  readonly workflows: Readonly<
+    Record<string, CompiledTargetApprovalInventory>
+  >
+}
+
+interface CompiledDefinitionGraph {
+  // existing immutable per-kind definition maps and RuntimeRequirements
+  readonly approval: CompiledApprovalInventory
+}
+```
+
+For an agent root, `agentIds` is the deduplicated bytewise-sorted set of that
+agent and recursively reachable subagents whose own permission declaration or
+compiled governance effect declaration contains `require_approval`. Guardrail
+requirements, including `requirements.durable:true`, never add approval
+reachability because Guardrails cannot request tool approval. For a workflow root, it is the
+union from every declared agent edge and each agent's recursive subagent
+closure. `reachable` is exactly `agentIds.length > 0`. The maps contain every
+compiled agent and workflow id, use deterministic key order, and every map,
+inventory, and array is frozen. Cycles have already failed before this pass.
+The compiler calculates this once while it owns the validated graph. Runtime
+requirement derivation consumes this projection for the permission/governance
+approval contribution to `storage.durable` and separately adds Guardrail
+`requirements.durable:true`; H4-007
+approval-capable child-task checks and H4-008 root lease selection consume the
+same entries. None traverses definitions or reconstructs approval reachability.
+The projection remains package-private and is excluded from catalog,
+inspection, digest, export, and public type surfaces.
+
 The compiler remains package-private. It may accept a package-private dependency
 reader solely so tests can forge cyclic branded fixtures that eager immutable
 public factories cannot construct. Production composition always uses the
@@ -2304,8 +2358,8 @@ registries, initializes per-instance in-memory storage or memory only when the
 corresponding public group is forbidden because the graph does not require it,
 and implements startup rollback plus idempotent shutdown. Executable assembly
 never closes borrowed admissions, logger, telemetry, or host dependencies. It
-closes clients, processes, and internal adapters the Harness creates; supplied
-providers and adapters follow their existing explicit ownership contracts.
+closes only the Harness-created defaults and MCP bundles listed in the exact
+ownership table below; every caller-supplied provider or adapter is borrowed.
 
 H4-004 owns immutable Skill loading, MCP server initialization, built-in tool
 definitions, and the first package-private executable bindings for portable,
@@ -2615,6 +2669,139 @@ interface HarnessDefinition<
 }
 ```
 
+The standalone public runtime surface is exact. It exposes only definition-keyed
+target invokers and session facilities; model handles, compiled registries,
+definition identities, and lifecycle internals are not public instance fields.
+
+```ts
+interface DurableInvokeOptions {
+  readonly runId: string
+  readonly workerId?: string
+  readonly stepId?: string
+  readonly attempt?: number
+  readonly workspacePolicy?: Partial<DurableWorkspacePolicy>
+}
+
+interface InvokeOptions {
+  readonly signal?: AbortSignal
+  readonly timeoutMs?: number
+  readonly historyWindow?: number
+  readonly idempotencyKey?: string
+  readonly contextProjection?: ContextProjectionPolicy
+  readonly traceparent?: string
+  readonly tracestate?: string
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+  readonly resume?: ToolApprovalResume
+  readonly durable?: DurableInvokeOptions
+}
+
+interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
+  run(
+    input: HarnessTargetInput<Target>,
+    options?: InvokeOptions,
+  ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
+  stream(
+    input: HarnessTargetInput<Target>,
+    options?: InvokeOptions,
+  ): AsyncIterable<ExecutionEvent<HarnessTargetOutput<Target>>>
+}
+
+interface HarnessSession<Contracts extends HarnessContracts> {
+  readonly id: string
+  readonly agents: Readonly<{
+    [Id in keyof Contracts['agents']]:
+      HarnessTargetInvoker<Contracts['agents'][Id]>
+  }>
+  readonly workflows: Readonly<{
+    [Id in keyof Contracts['workflows']]:
+      HarnessTargetInvoker<Contracts['workflows'][Id]>
+  }>
+  readonly childTasks: SessionChildTasks
+  readonly memory: SessionMemory
+  readonly history: ConversationHistory
+  getRunSummary(runId: string): Promise<RunSummary | undefined>
+  clearHistory(): Promise<void>
+  replaceHistory(
+    messages: readonly Omit<Message, 'id' | 'timestamp'>[],
+  ): Promise<void>
+  release(): Promise<void>
+  destroy(): Promise<void>
+}
+
+interface HarnessInstance<Contracts extends HarnessContracts> {
+  getSession(
+    id: string,
+    options?: SessionOptions,
+  ): Promise<HarnessSession<Contracts>>
+  close(): Promise<void>
+}
+```
+
+`SessionOptions` is the existing closed sandbox-ownership contract
+`{identity?: HarnessIdentity; sandboxOwner?: SandboxOwner}` from spec 36
+`CTR-SOWN-POLICY`; H4-008 reuses that exported type and schema rather than
+declaring another session-options representation.
+
+`InvokeOptions` has exactly the keys above. In particular it has no
+`hostContext`, target selector, model override, tool list, registry, provider,
+or runtime adapter. `run` resolves only a `completed` or `interrupted`
+`RunOutcome`; failed and cancelled execution rejects with its canonical local
+error. `stream` yields the same logical execution as ordered events and always
+ends with one `run.finished`, whose outcome may additionally be `failed` or
+`cancelled`. Breaking iteration does not cancel execution; only the invocation
+signal or runtime lifecycle does. Input is accepted in its schema input type,
+validated exactly once by the receiving target, and output uses its schema
+output type. Unknown target properties do not type-check and are not available
+through a string lookup.
+
+The `agents` and `workflows` maps and every invoker are frozen. Each invoker
+closes over one hidden compiled target identity and the instance-private local
+dispatcher. Tool, Skill, MCP, model, agent, workflow, binding, and continuation
+registries are separate private immutable maps keyed by their owning typed
+identity. They are never merged into a public registry, placed on a context, or
+looked up through an unchecked string. Runtime assembly consumes the canonical
+compiled graph, `RuntimeRequirements`, H4-003 validated binding snapshot, and
+the one frozen resolved-defaults object; it never derives requirements or
+definition closure again.
+
+`close()` is the sole standalone shutdown method. The first call atomically
+stops admission of new sessions and invocations, cancels live root trees and
+child tasks, waits for their settlement and session attachment release, then
+closes owned resources in reverse creation order. Concurrent calls return the
+same promise and every cleanup is attempted once. Cleanup failures are
+normalized to content-free Harness errors and thrown in one `AggregateError`
+with fixed message `Harness close failed.` after all cleanup attempts. Calls
+after close fail with `StateError{op:'getSession',reason:'instance_closed'}` or
+the corresponding invocation operation; there is no reopen operation.
+
+Ownership is fixed for v4:
+
+| Runtime value | Ownership |
+| --- | --- |
+| caller-supplied model provider, storage, MemoryEngine, graph sandbox, workspace, artifact store | borrowed; never closed by Harness |
+| caller-supplied agent/model admission, logger, telemetry, hosted dispatcher/context dependencies and MCP stdio sandbox adapter | borrowed; never closed by Harness |
+| in-memory storage, spec 33 `inMemoryMemoryEngine()` or sandbox default created by Harness | owned and closed once when it exposes `close` |
+| one initialized MCP server bundle, including its HTTP client or stdio process and synthetic session-scoped sandbox session | owned and closed once by the bundle |
+
+Object identity, rather than alias count, deduplicates cleanup. Startup is
+transactional: an initializer failure closes only resources already created by
+that attempt in reverse order, leaves borrowed values untouched, and publishes
+no partially constructed instance. Adapter objects are never frozen or
+mutated.
+
+If startup rollback itself succeeds, the initializer's canonical Harness error
+is rethrown with its original identity; an unknown initializer throw is first
+normalized to one content-free `InternalError`. If any rollback cleanup fails,
+all remaining cleanup is still attempted and startup rejects one
+`AggregateError` with fixed message
+`Harness initialization failed and rollback cleanup failed.` Its `errors`
+array is ordered as the normalized primary initializer error followed by each
+normalized cleanup error in reverse resource-creation order, and its `cause`
+is that same primary error. No raw adapter error message, path, command,
+credential, input, output, prompt, or provider payload crosses this boundary.
+The same object-identity deduplication and exactly-once cleanup rule used by
+`close()` applies during rollback.
+
 The sanitized inspection shape is exact:
 
 ```ts
@@ -2845,16 +3032,63 @@ logical result.
 
 ## 10. Invocation, streaming, and approval
 
-Definition `durable: true` enables durable invocation for that target and makes
-durable Harness storage an instance requirement. A call is durable only when it
-supplies `InvokeOptions.durable`; an invocation without that option remains
-ephemeral. Supplying `InvokeOptions.durable` to a target that did not declare
-`durable: true` fails before execution. `context.externalWait` exists only on a
-workflow declared durable and rejects an ephemeral invocation before it
-registers a wait. Definition `workspace: true` enables a workspace for the
-target; per-run `DurableInvokeOptions.workspacePolicy` may narrow the declared
-constraint but cannot create the capability. Approval-capable graph paths
-independently require durable storage even when the initial call is ephemeral.
+Definition `durable: true` has the same meaning for an agent and a workflow:
+every invocation of that target is lease-backed and recoverable, and durable
+Harness storage is an instance requirement. `InvokeOptions.durable` supplies
+caller-owned durable identity/options; it does not switch durability on. When
+it is omitted for a durable target, Harness generates `run_<ulid>`, uses the
+instance's single opaque `worker_<ulid>`, the reserved root step id
+`harness:root:v1`, and attempt `1`. When present, its `runId`, optional
+`workerId`, optional `stepId`, optional `attempt`, and optional narrowed
+workspace policy are used after strict validation; omitted members resolve to
+those same Harness-owned defaults. Supplying it to a target that did not
+declare `durable: true` is
+`ValidationError{where:'invoke_options',issues:{reason:'target_not_durable'}}`
+before storage or target execution. `context.externalWait` exists only on a
+workflow declared durable. Definition `workspace: true` enables a workspace
+for the target; per-run `DurableInvokeOptions.workspacePolicy` may narrow the
+declared constraint but cannot create the capability.
+
+A non-durable agent for which
+`compiledGraph.approval.agents[agentId].reachable` is true, or non-durable
+workflow for which `compiledGraph.approval.workflows[workflowId].reachable` is
+true, remains an ordinary ephemeral authoring target, but each root invocation
+uses an approval-recovery lease. Guardrail `requirements.durable:true` requires
+storage but does not select this approval-recovery lifecycle. After raw JSON input validation and
+session locking, and before `run.started`, model, workflow, or tool activity,
+Harness creates the revision-one run, reads that authoritative record and the
+absent `harness:root:v1` checkpoint, and submits spec 32's exact
+`AcquireRunRequest{mode:'initial',...}` with generated `run_<ulid>`, the
+instance `worker_<ulid>`, deterministic acquisition id, and requested attempt
+`1`. Durable targets use the same initial acquisition contract with their
+validated durable ids/options. Thus every
+possible approval effect is already fenced. A target with neither
+`durable:true` nor approval reachability uses the ordinary unleased
+`createRun`/`finishRun` lifecycle.
+
+Both durable-target and approval-recovery invocations commit the interruption
+checkpoint at `harness:interrupt:v1` under the active lease, then release the
+lease; release marks the run `interrupted`. A crash after checkpoint commit but
+before release leaves no unfenced effect: another worker waits for lease expiry
+and reacquires the same run/checkpoint. Resume uses `ToolApprovalResume.runId`
+to read the authoritative run first. A terminal run validates its
+`TerminalApprovalReceiptV1` and either replays, conflicts, or reports a stale
+continuation without lease acquisition. That path validates the requested
+session and root invoker against `RunRecord.sessionId/kind/target`, compares the
+canonical pre-transform input with required `RunRecord.input`, and compares
+interrupt id, deployment revision, compiled graph digest, and session identity
+digest with the receipt before event/decision equality. For a non-terminal
+resumable run, Harness optimistically reads and validates the record and
+`harness:interrupt:v1` checkpoint, then submits spec 32's exact
+`AcquireRunRequest{mode:'resume',expected:{revision,status,checkpoint:{stepId,
+sequence}},...}`. The returned post-CAS record/checkpoint snapshot is the
+under-lease reread and must be byte-equivalent to the optimistic identity and
+checkpoint before replacement or effects. The new lease/attempt identity is
+used for every replacement. Completion, failure, and
+cancellation use `finalizeRun`; `replaceCheckpoint` and `finalizeRun` are never
+called without the currently active matching lease. A resume/finalization
+storage failure executes no new effect after the failed fence and is exposed as
+the canonical storage error. There is no unleased approval checkpoint path.
 
 Agent and workflow invokers retain `run` for aggregate outcomes and `stream`
 for an ordered, bounded portable consumer event stream. Its terminal outcome is
@@ -2871,6 +3105,12 @@ correlation fields `parentRunId` and `parentInvocationId`. Harness emits those
 fields before a dispatcher or host observes the event; adapters preserve them
 and do not invent enrichment. Child events therefore remain correlated across
 process boundaries.
+
+Approval-resume streams use the exact persisted-start replay contract from
+spec 12: the original sequence-one `run.started` is the first iterator item but
+is never appended, broadcast, or counted again; newly produced events retain
+the checkpoint's next unused sequence. Terminal receipt replay similarly
+returns only the stored start and terminal events without reopening execution.
 
 The compatibility contract follows the current official AI SDK APIs:
 `DefaultChatTransport` consumes the UI message stream; assistant messages
@@ -3057,6 +3297,11 @@ interface SuspendedAgentTurnStateV1 {
   readonly agentStarted: true
 }
 
+interface WorkflowAgentCallBudgetStateV1 {
+  readonly schemaVersion: 1
+  readonly usedCalls: number
+}
+
 type SuspensionFrameV1 =
   | Readonly<{
       kind: 'agent'
@@ -3071,11 +3316,7 @@ type SuspensionFrameV1 =
       invocationId: string
       input: JsonValue
       activeCallIds: readonly string[]
-      agentCallBudget: Readonly<{
-        maxCalls: number
-        maxParallel: number
-        totalReserved: number
-      }>
+      agentCallBudget: WorkflowAgentCallBudgetStateV1
     }>
   | Readonly<{
       kind: 'host-tool'
@@ -3106,10 +3347,111 @@ interface HarnessInterruptionCheckpointV1 {
   readonly sessionIdentityDigest: string
   readonly interrupt: HarnessInterrupt
   readonly continuation: SuspensionNodeV1
+  readonly priorResumeReceipt?: ApprovalResumeReceiptV1
   readonly nextEventSequence: number
   readonly startedAgentRunIds: readonly string[]
 }
 ```
+
+The root interruption checkpoint is stored as `RunCheckpoint.output` at the
+single reserved step id `harness:interrupt:v1`. Its `RunCheckpoint.input` is the
+root target's canonical JSON wire input captured before the Standard Schema
+validator or any transforming schema runs. The transformed validated input used
+by execution remains inside the appropriate continuation frame. Metadata is exactly
+`{checkpointKind:'harness_interruption',schemaVersion:1}`. The checkpoint's
+`sequence` is the next global checkpoint sequence for that run, while
+`nextEventSequence` is the next portable event sequence and therefore belongs
+to the execution protocol rather than the storage adapter. Every workflow
+frame stores the accepted H4-007 `WorkflowAgentCallBudgetStateV1` returned by
+that workflow runtime. H4-008 restores that state into H4-007; it does not
+derive `usedCalls` from children, events, or completed checkpoints.
+
+`priorResumeReceipt` is absent on the first interruption. If resuming the
+current pending checkpoint produces another interruption, its
+`ApprovalResumeReceiptV1` becomes the new pending checkpoint's sole
+`priorResumeReceipt`. Retrying that receipt's exact event and normalized
+decisions returns the current interrupted `RunOutcome` represented by this
+checkpoint without acquiring a lease, emitting an event, rerunning a schema,
+or executing an effect. Reusing its event id with changed decisions is
+`event_conflict`. For a pending checkpoint, Harness selects the bounded
+approval context before comparing revision or digest values: the supplied
+`interruptId` selects the current `interrupt.interruptId`, or it selects the
+`priorResumeReceipt.interruptId` when that receipt is present. The prior-receipt
+path requires the same `resumeEventId`; another event is `stale_continuation`.
+Any other well-formed interrupt id for this already established root run is
+also `stale_continuation`, because it can only address an unretained consumed
+or otherwise non-current continuation. A different new event may resume only
+the checkpoint's current interrupt. If it reuses the retained prior receipt's
+event id, it is `event_conflict`; otherwise its complete decision set is
+validated before execution. When another resume produces a third interruption,
+the previous field is replaced rather than chained. H4-008 therefore retains
+at most the current interruption and one immediately consumed receipt; it
+promises no replay for older approval events and reports them as stale without
+retaining an unbounded history.
+
+One approval resume moves the same step through two exact checkpoint states.
+`AppliedApprovalDecisionV1` and `ApprovalResumeReceiptV1` are the single
+canonical receipt representations owned by spec 32:
+
+```ts
+interface HarnessResumingInterruptionCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'harness_interruption_resuming'
+  readonly rootRunId: string
+  readonly sessionId: string
+  readonly interruptId: string
+  readonly resumeEventId: string
+  readonly decisions: readonly AppliedApprovalDecisionV1[]
+  readonly deploymentRevision: string
+  readonly compiledGraphDigest: string
+  readonly sessionIdentityDigest: string
+  readonly continuation: SuspensionNodeV1
+  readonly nextEventSequence: number
+  readonly startedAgentRunIds: readonly string[]
+}
+
+interface HarnessPostApprovalCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'harness_post_approval'
+  readonly rootRunId: string
+  readonly sessionId: string
+  readonly interruptId: string
+  readonly resumeEventId: string
+  readonly decisions: readonly AppliedApprovalDecisionV1[]
+  readonly deploymentRevision: string
+  readonly compiledGraphDigest: string
+  readonly sessionIdentityDigest: string
+  readonly continuation: SuspensionNodeV1
+  readonly nextEventSequence: number
+  readonly startedAgentRunIds: readonly string[]
+}
+```
+
+The pending checkpoint is atomically replaced by the resuming checkpoint before
+the first `approval.responded` or approved tool effect. Decisions are sorted by
+`approvalId`; their optional application comments are never stored. The
+resuming checkpoint is replaced after every completed tool or child transition,
+so replay observes completed entries and never repeats an effect. It may retain
+`SuspendedAgentTurnStateV1.providerContinuation` only until the first subsequent
+provider request using that continuation returns one validated response or
+valid stream finish. The runtime then atomically replaces it with
+`HarnessPostApprovalCheckpointV1`, whose validator recursively forbids every
+`providerContinuation` property and whose continuation represents execution
+immediately after that accepted provider response. A later interruption
+atomically replaces the step with the new pending checkpoint. Root terminal
+commit calls spec 32 `finalizeRun` with the exact sorted
+`TerminalApprovalReceiptV1` for the consumed interrupt; the same transaction
+writes that receipt into the terminal `RunRecord`, appends the matching
+deterministic `run.finished`, deletes every checkpoint, and releases the lease.
+That terminal receipt is the sole restart-safe source
+for equal-event replay, changed-event conflict, and new-event stale-continuation
+decisions after checkpoint deletion. There is no second checkpoint store or
+approval registry.
+
+All checkpoint variants are strict, versioned, frozen after validation, and
+reject unknown keys. A replacement retains the same run, session, lease,
+worker, step id, root input, and attempt and advances the checkpoint sequence by
+exactly one. The storage operations and fencing semantics are owned by spec 32.
 
 For `denied`, `ready`, `completed`, and `suspended-child`, stored
 `call.arguments` is the post-`beforeTool` JSON wire value used in the assistant
@@ -3157,6 +3499,33 @@ workflow side effects remain application-owned. H4-008 owns the root tree,
 strict schema/version validation, storage, event sequence, lifecycle set, and
 terminal deletion.
 
+Resume uses one exact optimistic-read and fenced-recheck sequence. It first
+reads the `RunRecord` and current `harness:interrupt:v1` checkpoint, when one
+exists, and performs every side-effect-free validation through receipt/event
+and decision equality. A terminal receipt replay returns here without acquiring
+a lease. For a resumable run, Harness then calls spec 32 `acquireRun` with the
+optimistically observed record revision/status and reserved checkpoint
+step/sequence. The returned `DurableRunLease.run` and checkpoint snapshot are
+the atomic under-lease reread. Harness requires the returned record to be
+`running` under that exact worker/attempt/lease result, with the same immutable
+session/target/input identity and byte-equivalent checkpoint value it validated
+optimistically. Acquisition must have consumed that exact expectation. It
+repeats strict checkpoint, receipt/event, digest,
+target, root-input, and decision validation before emitting an event or
+executing an effect. A changed or missing value is
+`ApprovalResumeError{reason:'invalid_checkpoint'}`. Only the successfully
+revalidated lease holder may replace the checkpoint or continue execution.
+
+Any validation failure after lease acquisition releases that lease before it
+rejects. If release succeeds, the original canonical validation error retains
+its identity. If release also fails, Harness attempts no effect and rejects one
+`AggregateError` with fixed message
+`Harness approval resume validation failed and lease release failed.` Its
+`errors` array is exactly the original validation error followed by the
+content-free normalized lease-release error, and its `cause` is the validation
+error. Raw storage messages and checkpoint or application content are never
+exposed.
+
 On resume, H4-008 validates root, session, interrupt, revision, event, and the
 complete decision set. It reopens the exact root target and continuation tree,
 requires the same deployment revision and compiled graph digest, and compares
@@ -3164,8 +3533,15 @@ the session record's normalized identity digest. Every binding resolves only in
 its owning agent's private immutable binding map and must match the stored
 contract digest.
 An in-process resume also requires the same hidden definition identity token.
-A mismatch fails closed as stale continuation. No resume reruns
-`beforeTool`, input parsing, permission, governance, audit, or
+A mismatch fails closed as stale continuation. The invoker's required `input`
+argument is first checked as JSON data and canonically encoded without invoking
+the target schema. Its bytes must equal the authoritative
+`RunCheckpoint.input`; otherwise resume fails with
+`ApprovalResumeError{reason:'input_mismatch'}` before any schema transform,
+handler, model, event, or effect. The original transformed input is restored
+from the continuation. This prevents a non-idempotent transforming schema from
+changing resume identity or running twice. No resume reruns
+`beforeTool`, input parsing, the root input schema, permission, governance, audit, or
 `approval.requested`. One `approval.responded` is emitted for each accepted
 boolean decision. Approved and ungated ready entries execute; rejected entries
 become recoverable approval tool errors without `tool.started`. A leaf child is
@@ -3180,6 +3556,35 @@ beforeTool -> input parse once -> permission/governance/audit -> approval
 -> tool.started -> invokeValidated -> output parse once -> afterTool
 -> tool.finished
 ```
+
+Resume validation is side-effect free and stops at the first failure in this
+order: strict `ToolApprovalResume`/invoke-option shape, identifier grammar, and
+raw JSON input; session, root run, and root target; canonical pre-transform
+root input; select the terminal receipt, current pending interrupt, or retained
+immediately-prior receipt by interrupt id (a non-current pending id is stale as
+defined above); deployment revision; compiled graph and session identity
+digests; persisted checkpoint kind/version; selected receipt or pending
+`eventId` handling; then the complete approval decision set. It uses `ApprovalResumeError` and the
+exact reasons in spec 15. A repeated `eventId` with byte-identical normalized
+decisions returns the terminal result recorded with its strict approval receipt,
+replays the already committed logical outcome, or rejoins the one live
+resume promise. Reusing that `eventId` with different decisions is
+`event_conflict`. A new event for an already consumed interrupt is
+`stale_continuation`. Decision validation rejects duplicate ids, then sorts by
+approval id and requires exactly one boolean decision for every requested
+approval with no missing or unknown id; any mismatch is
+`decision_set_mismatch`. Application-owned `reason` text is accepted by the
+public parser but excluded from comparison, checkpoints, events, errors, and
+runtime policy.
+
+The runtime resumes all leaves before their parents. Within a parent, children
+are visited in stored order. It replaces each parent frame only after the
+resumed child terminal has been validated and installed. Completed siblings,
+prepared preflight, `approval.requested`, `tool.started`, model turns, and
+managed checkpoint effects are replayed from state and are never emitted or
+executed again. A failure during leaf resume leaves the last fenced checkpoint
+authoritative; the same event rejoins or replays from it rather than beginning
+a second resume attempt.
 
 The three checkpoint digests use the same canonical encoder and lowercase
 `sha256:` rendering. Their preimages are exact and version tagged.
@@ -3684,6 +4089,51 @@ durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+H4-008 specifically proves: exact definition-keyed instance/session/invoker
+inference and negative unknown-key/config cases; aggregate/stream terminal
+parity; positive contiguous event sequences, deterministic ids, exact append
+retry, and conflict/gap rejection; terminal events that survive live overflow;
+strict `CreateRunRequest` for agent, workflow, and child-task records;
+storage-authored revision-one running state; recursively frozen authoritative
+returns; exact creation retry after later state changes; deterministic
+content-free conflict precedence; and durable same-run-id input mismatch before
+acquisition;
+the original persisted `run.started` as the first approval-resume stream item
+without another append, broadcast, id, or sequence allocation;
+one agent start and one eventual finish across process restart; one
+`model.completed` carrying the loop-supplied stream id; strict approval
+validation precedence, equal-event coalescing, changed-event conflict, fenced
+checkpoint progression, ProviderContinuation scrubbing, and atomic terminal
+checkpoint deletion; a strict terminal approval receipt that replays the same
+event/decisions after restart, rejects changed same-event decisions, and marks
+a new event stale; a second sequential interruption whose pending checkpoint
+replays exactly its immediately consumed prior event and treats older events as
+stale; complete receipt revision/graph/session/root context plus required
+authoritative `RunRecord.input`; canonical pre-transform input comparison using a deliberately
+transforming input schema whose transform runs only on the initial invocation;
+nondestructive optimistic validation followed by lease CAS and exact
+record/checkpoint byte revalidation, including initial/resume acquisition,
+stale revision or checkpoint rejection, exact pre-effect acquisition retry,
+competing lease, expiry takeover, stale release, and lease-release failure
+precedence;
+nested leaf-first resume with completed siblings and
+workflow `WorkflowAgentCallBudgetStateV1` preserved; startup rollback after
+each initialization stage, including simultaneous initializer and reverse-order
+cleanup failures with the exact aggregate; durable-by-definition agent and
+workflow calls, generated durable defaults, and approval-recovery lease
+acquire/interrupt/reacquire/finalize behavior; the spec 33
+`inMemoryMemoryEngine()` default with no sandbox-memory path; concurrent
+idempotent close and identity-deduplicated ownership; session release/destroy
+and child-task cancellation; and graph
+digest stability plus independent sensitivity to both workflow overrides and
+both resolved workflow defaults. Compiler tests prove the immutable recursive
+permission/governance-only approval inventory for agent and workflow roots,
+proves a Guardrail durable requirement does not set approval reachability, and
+proves requirements, child-task preflight, and session lease selection consume
+the exact `graph.approval.agents/workflows[id].reachable` rows without a second
+definition traversal. The storage contract suite runs these atomic
+operations against in-memory and SQLite implementations.
 
 The release removes rather than deprecates inline builder registration,
 `.define()`, `.build()`, `defineHarnessModule`, `HarnessModule`,

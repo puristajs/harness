@@ -421,22 +421,32 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:9f90c5ad2e361906a8ebd610ae2246eaaabcf50c0dd9398d64fd13bbb58a6947"
+      scope_digest: "sha256:c9f715f439bc1c0d6db1d7f0b2c05c6998b49df54b23376c3941e80f5b56add6"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
         - specs/00-overview.md
         - specs/01-architecture.md
         - specs/02-harness-config.md
+        - specs/04-state-queue-stream.md
         - specs/07-tools.md
         - specs/08-skills.md
         - specs/09-agents.md
         - specs/10-workflows.md
+        - specs/11-sessions.md
+        - specs/12-streaming.md
         - specs/13-public-api.md
         - specs/15-error-catalog.md
         - specs/17-implementation-plan.md
+        - specs/22-local-durable-execution.md
         - specs/25-static-harness-modules.md
         - specs/28-workflow-child-tasks.md
+        - specs/32-harness-storage.md
+        - specs/33-enterprise-memory/00-conventions.md
+        - specs/33-enterprise-memory/00-architecture-overview.md
+        - specs/33-enterprise-memory/03-contracts/contracts.yaml
+        - specs/36-sandbox-ownership-and-administration/01-behavior.md
+        - specs/36-sandbox-ownership-and-administration/03-contracts/api.md
         - specs/29-agent-plugins.md
         - specs/30-guardrails.md
         - specs/38-guardrail-authoring/03-contracts/callbacks.md

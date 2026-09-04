@@ -99,7 +99,14 @@ partial compatibility path.
 - authoritative run transitions and attempt increments;
 - one active run and session lease per storage boundary;
 - lease expiry/takeover and checkpoint heartbeats;
+- the exact spec 32 `AcquireRunRequest` optimistic-CAS contract, including
+  record revision, selected checkpoint step/sequence, deterministic
+  acquisition id, response-loss idempotency, and stale-owner fencing;
 - deterministic step checkpoint idempotency;
+- lease-fenced atomic checkpoint replacement and atomic terminal run
+  finalization with checkpoint deletion, exactly as defined by spec 32;
+- deterministic event-sequence append with exact-retry idempotency and
+  conflicting-reuse rejection;
 - transactional wait registration that marks the run `waiting` and releases
   its lease;
 - idempotent external signals keyed by `(waitId, eventId)`;
@@ -109,6 +116,38 @@ partial compatibility path.
 It advertises persistence and local durable capabilities, but not
 `storage.multi_instance`. SQLite locking protects processes sharing one local
 database file; this is not a supported distributed/multi-host topology.
+
+`harness_runs.revision` is a non-null positive integer initialized to `1`.
+Every mutation assigned a revision increment by spec 32 updates the record and
+revision in the same SQLite transaction. `harness_run_leases` stores
+`acquisition_id`, the canonical acquisition-request digest, and the acquired
+record revision in addition to its lease owner and expiry. It has one unique
+active lease per run and one per session.
+
+`SqliteHarnessStorage.createRun` accepts only spec 32's strict
+`CreateRunRequest`. In one transaction it inserts the caller-owned immutable
+fields with storage-authored `status='running'` and `revision=1`, or loads an
+existing row and compares the exact canonical creation identity in spec 32's
+fixed precedence. The exact retry returns the current authoritative row;
+another input, metadata value, target, session, kind, or start time returns the
+content-free `StateError{op:'createRun',reason:'run_conflict'}` without an
+update. In-memory storage performs the same copy, recursive freeze, comparison,
+and return under its session mutex. Neither adapter accepts a caller-authored
+status, revision, attempt, worker, terminal, checkpoint, or lease field.
+
+`SqliteHarnessStorage.acquireRun` executes in one immediate transaction. It
+loads the run, selected checkpoint, run lease, and session lease; applies spec
+32's validation precedence and exact-retry rule; and performs the record update
+with a compare-and-set predicate over `(id,session_id,revision,status)`. It also
+requires the selected checkpoint row to have the expected `(step_id,sequence)`
+or remain absent when sequence is `null`. A zero-row update or changed
+checkpoint is
+`StateError{op:'acquireRun',reason:'acquisition_conflict'}` and rolls back.
+Only after those comparisons succeed may it insert the new lease rows and
+return the transaction's post-CAS run/checkpoint snapshot. It never uses an
+upsert that replaces another acquisition. In-memory storage performs the same
+checks and mutations under its single session mutex. Both implementations
+reject stale checkpoint, record, and lease identities identically.
 
 ## 6. Local workspace layout
 

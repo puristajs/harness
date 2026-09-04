@@ -32,7 +32,7 @@ interface HarnessStorage {
   replaceMessages?(sessionId: string, messages: Message[]): Promise<void>
 
   // Runs
-  createRun(record: RunRecord): Promise<void>
+  createRun(request: CreateRunRequest): Promise<RunRecord>
   finishRun(runId: string, patch: FinishRunPatch): Promise<void>
   getRun(runId: string): Promise<RunRecord | undefined>
   listRuns(sessionId: string, opts?: { limit?: number; before?: string }): Promise<RunRecord[]>
@@ -42,9 +42,11 @@ interface HarnessStorage {
   listEvents(runId: string, opts?: { limit?: number; after?: string }): Promise<PersistedRunEvent[]>
 
   // Recoverable execution
-  acquireRun(record: DurableRunStart): Promise<DurableRunLease>
-  loadCheckpoint(runId: string): Promise<RunCheckpoint | undefined>
+  acquireRun(request: AcquireRunRequest): Promise<DurableRunLease>
+  loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined>
   commitCheckpoint(checkpoint: RunCheckpoint): Promise<void>
+  replaceCheckpoint(request: ReplaceCheckpointRequest): Promise<void>
+  finalizeRun(request: FinalizeRunRequest): Promise<void>
   withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T>
 
   // Opaque external waits, transactionally bound to the run/session
@@ -97,21 +99,33 @@ interface Message {
 type RunStatus = 'running' | 'waiting' | 'interrupted' |
   'succeeded' | 'failed' | 'cancelled'
 
+interface CreateRunRequest {
+  readonly id: string
+  readonly sessionId: string
+  readonly kind: 'workflow' | 'agent' | 'child_task'
+  readonly target: string
+  readonly startedAt: string
+  readonly input: JsonValue
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}
+
 interface RunRecord {
-  id: string                      // run_<ulid>
-  sessionId: string
-  kind: 'workflow' | 'agent' | 'child_task'
-  target: string                  // workflow id
-  startedAt: string
-  finishedAt?: string
-  status: RunStatus
-  input?: JsonValue
-  output?: JsonValue
-  error?: SerializedError         // see 12-streaming
-  attempt?: number
-  workerId?: string
-  initialStepId?: string
-  metadata?: Record<string, JsonValue>
+  readonly id: string                      // run_<ulid>
+  readonly sessionId: string
+  readonly kind: 'workflow' | 'agent' | 'child_task'
+  readonly target: string                  // target agent/workflow id
+  readonly startedAt: string
+  readonly finishedAt?: string
+  readonly status: RunStatus
+  readonly revision: number                // positive storage CAS revision; starts at 1
+  readonly input: JsonValue                // canonical pre-transform wire input
+  readonly output?: JsonValue
+  readonly error?: SerializedError         // see 12-streaming
+  readonly approvalReceipt?: TerminalApprovalReceiptV1 // exact v4 shape in spec 32; terminal only
+  readonly attempt?: number
+  readonly workerId?: string
+  readonly initialStepId?: string
+  readonly metadata?: Readonly<Record<string, JsonValue>>
 }
 
 interface PersistedRunEvent {
@@ -122,6 +136,18 @@ interface PersistedRunEvent {
   payload: JsonValue              // privacy-safe event payload without runId/at/type
 }
 ```
+
+`CreateRunRequest` is the strict caller-owned creation projection. Storage adds
+`status:'running'` and `revision:1`; request values cannot supply revision,
+status, terminal result/error/receipt fields, attempt, worker, initial step, or
+lease data. `input` is required for every run kind. For root `agent` and `workflow` runs it
+is the authoritative canonical pre-transform wire input used by approval
+resume. A `child_task` retains the canonical child-call input required by spec
+28. `approvalReceipt` is permitted only on a terminal `agent` or `workflow`
+record; it is forbidden on `child_task` and every non-terminal record.
+`revision` starts at `1` when `createRun` wins and increases by exactly one for
+each successful acquisition, checkpoint mutation, resumable release/wait
+transition, or terminal mutation. Event and message appends do not change it.
 
 `SerializedError` is defined in [12-streaming](./12-streaming.md) and reused here.
 
@@ -151,11 +177,13 @@ interface PersistedRunEvent {
 - `closeSession(id, expectedInstanceId)` atomically deletes the session and its
   owned records only when the stored instance matches. Stale and absent closes
   are no-ops; they never delete a new conversation that reused the same id.
-- `createRun` is normally insert-only. For durable workflow retries, if a
-  non-terminal run with the same id already exists and the new record matches
-  `sessionId`, `kind`, and `target`, `createRun` is idempotent and must not
-  reset messages, events, or committed durable checkpoints. Existing terminal
-  runs are never overwritten.
+- `createRun` atomically inserts the strict request as a revision-one running
+  record and returns the authoritative recursively frozen record. For agent,
+  workflow, and child-task retries, an exact creation-identity retry returns
+  the current authoritative record without resetting its status, revision,
+  messages, events, lease, or checkpoints. Any mismatch uses spec 32's
+  content-free `StateError{op:'createRun',reason:'run_conflict'}`. Existing
+  terminal runs are never overwritten.
 - Durable run acquisition, checkpoint commits, wait registration, and terminal
   transitions follow [32-harness-storage](./32-harness-storage.md). A new wait
   MUST atomically mark its run `waiting` and release the lease.

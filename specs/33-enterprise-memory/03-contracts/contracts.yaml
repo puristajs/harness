@@ -66,10 +66,10 @@ public_api_inventory:
   - contract_id: CTR-MEM-SESSION
     owner: harness_core
     kind: api
-    name: Harness.getSession
+    name: HarnessInstance.getSession
     definition:
       id: non-empty session id following the existing session pattern
-      identity: optional HarnessIdentity
+      options: optional closed SessionOptions with identity and sandboxOwner
     execution_semantics: The first call binds identity and returns a typed Session; an identity mismatch fails before sandbox, memory, model, or run work.
   - contract_id: CTR-MEM-TELEMETRY
     owner: harness_core

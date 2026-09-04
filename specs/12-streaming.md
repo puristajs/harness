@@ -1,48 +1,36 @@
 # Streaming
 
-**Purpose.** Defines the `RunEvent` tagged union, ordering guarantees, bounded live observation, and privacy-safe persistence rule. Streaming is internal to the harness: there is no pluggable stream adapter.
+**Purpose.** Defines ordering guarantees, bounded live observation, and the
+privacy-safe persisted envelope for the canonical v4 `ExecutionEvent` union.
+Streaming is internal to the harness: there is no pluggable stream adapter.
 
-## `RunEvent`
+## Portable and persisted events
+
+The exact portable `ExecutionEvent` discriminated union and its common
+`eventId`, `sequence`, `runId`, `parentRunId?`, and `parentInvocationId?`
+correlation are owned by
+[spec 42 section 2](./42-composable-definitions-and-catalogs.md#2-shared-definition-contracts).
+This specification owns ordering, bounded live observation, and privacy-safe
+persistence and does not define a second event union.
+
+The persisted envelope is exact:
 
 ```ts
-type RunEvent =
-  | { type: 'run.started';     runId: string; at: string }
-  | { type: 'run.finished';    runId: string; at: string; output?: JsonValue; error?: SerializedError }
-  | { type: 'fanout.started';  runId: string; batchId: string; at: string; count: number; concurrency: number }
-  | { type: 'fanout.finished'; runId: string; batchId: string; at: string; count: number; status: 'succeeded'|'failed'|'cancelled' }
-  | { type: 'child_task.started'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; modelAlias: string; contextPolicy: 'isolated'; mode: 'one_shot'|'continuable' }
-  | { type: 'child_task.settled'; runId: string; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; status: 'succeeded'|'failed'|'cancelled'; error?: SerializedError }
-
-  | { type: 'agent.started';   runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }
-  | { type: 'agent.finished';  runId: string; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }
-
-  | { type: 'model.delta';     runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }
-  | { type: 'model.message';   runId: string; agentId: string; message: Message }
-  | { type: 'model.object.partial'; runId: string; streamId: string; agentId?: string; workflowId?: string; modelAlias?: string; partial: JsonValue }
-  | { type: 'model.object';    runId: string; agentId?: string; workflowId?: string; modelAlias?: string; streamId?: string; object: JsonValue }
-  | { type: 'model.completed'; runId: string; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text'|'object'|'textStream'|'objectStream'; usage?: TokenUsage; finishReason?: FinishReason }
-  | { type: 'model.embedding.completed'; runId: string; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }
-  | { type: 'model.rerank.completed'; runId: string; agentId?: string; count: number; topN?: number; usage?: TokenUsage }
-
-  // policy.evaluated, policy.exposure, approval.requested, approval.responded
-  // use the exact closed evidence/occurrence members in spec 37.
-
-  | { type: 'tool.started';    runId: string; agentId: string; toolId: string; callId: string; input: JsonValue }
-  | { type: 'tool.finished';   runId: string; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }
-
-  | { type: 'skill.started';   runId: string; agentId: string; skillId: string; callId: string; input: JsonValue }
-  | { type: 'skill.finished';  runId: string; agentId: string; skillId: string; callId: string; output?: JsonValue; error?: SerializedError }
-
-interface SerializedError {
-  code: string
-  category: ErrorCategory
-  retriable: boolean
-  message: string
-  meta?: Record<string, JsonValue>
+interface PersistedRunEvent {
+  readonly id: string
+  readonly sequence: number
+  readonly runId: string
+  readonly at: string
+  readonly type: HarnessExecutionEventType
+  readonly payload: JsonValue
 }
 ```
 
-`SerializedError` is the canonical shape for error fields anywhere a `HarnessError` is exposed via persisted state or the run queue — including `RunRecord.error` (see [04-state-queue-stream](./04-state-queue-stream.md)).
+`id` equals the portable event's `eventId`; the other envelope fields equal the
+corresponding portable event fields. `payload` is the privacy-safe projection
+after removing `eventId`, `sequence`, `runId`, `at`, and `type`. The canonical
+`SerializedError` from spec 15 is used wherever an error is exposed in an event,
+run record, or checkpoint.
 
 `at` is ISO 8601 UTC. `callId` is `tc_<ulid>` for tool calls and `sk_<ulid>` for skill calls; the same id appears in `started` and `finished`. `delegationCallId` is `delegate_<ulid>` for workflow-local child-agent calls and appears on the matching `agent.started` / `agent.finished` pair.
 
@@ -59,32 +47,52 @@ opted-in stream events, `streamId` is generated by the harness and is unique per
 model stream invocation. `modelAlias` is included for harness-emitted model
 stream events, and `workflowId` / `agentId` are included when available. UI
 labels, semantic buckets, and client protocol names belong in the application
-integration layer, not in `RunEvent`.
+integration layer, not in `ExecutionEvent`.
 
-Within a workflow or custom agent handler, passing `{ emitRunEvents: true }` to
+Within a workflow handler, passing `{ emitRunEvents: true }` to
 `object(...)`, `embed(...)`, or `rerank(...)` emits the corresponding final
 completion event. The enclosing session supplies the immutable run identity;
 handler-provided invocation context cannot relabel a run, workflow, or agent.
 
-The harness does NOT auto-emit log-style events from logger calls; there is no `'log'` variant in `RunEvent`. Loggers and run events are independent surfaces.
+The harness does NOT auto-emit log-style events from logger calls; there is no `'log'` variant in `ExecutionEvent`. Loggers and run events are independent surfaces.
 
 ## Streaming API
 
 ```ts
-session.workflows[id].stream(input, opts?): AsyncIterable<RunEvent>
+session.workflows[id].stream(input, opts?): AsyncIterable<ExecutionEvent>
 ```
 
-Each `prompt`/`stream` invocation creates an internal async generator. Events are appended to an in-process bounded queue scoped to the run. `stream()` returns an `AsyncIterable<RunEvent>` reading from that queue. Consumer slowness MUST NOT pause model/tool/workflow execution. Persistence of events for audit goes through `HarnessStorage.appendEvents`. There is no pluggable stream adapter and no `Stream` port.
+Each `run`/`stream` invocation drives one event producer. `stream()` returns an
+async iterator over an in-process bounded queue scoped to that run. Consumer
+slowness MUST NOT pause model/tool/workflow execution. Persistence of events
+for audit goes through `HarnessStorage.appendEvents`. There is no pluggable
+stream adapter and no `Stream` port.
 
 - The first event is always `run.started` (with `runId` matching the iterator's run).
 - The last event is always `run.finished`.
 - After `run.finished` is yielded, the iterator returns `{done: true}`.
 - If the consumer breaks early or aborts, the run continues (it is not cancelled by stream consumer disconnect). Use `opts.signal` to cancel the run.
 - If `opts.signal` aborts, the run aborts; the iterator yields a final `run.finished` with `error` set, then ends.
-- The non-streaming `prompt(...)` variant still drives the same lifecycle internally; events are appended and persisted, but no consumer reads them.
+- The aggregate `run(...)` variant still drives the same lifecycle internally;
+  events are appended and persisted, but no consumer reads them.
+
+For an approval resume through `.stream(...)`, the first iterator item is the
+original privacy-safe `run.started` loaded from persisted sequence `1`. Harness
+does not append it again, deliver it to other live subscribers, increment the
+checkpoint's `nextEventSequence`, or allocate another event id. New resume
+events then begin at the checkpoint's existing `nextEventSequence`; intermediate
+events from the prior attempt are not replayed. If terminal-receipt validation
+selects an already committed outcome, the iterator yields the stored original
+`run.started` followed by the stored terminal `run.finished` and ends, with no
+write or live emission. A missing, duplicate, malformed, or non-sequence-one
+persisted start fails before lease acquisition or effects with
+`StateError{op:'listEvents',reason:'event_sequence_conflict'}`.
 
 ## Ordering guarantees
 
+0. Event sequence starts at one for each run and is contiguous through the one
+   terminal event. An exact persisted retry keeps the same event id and
+   sequence; storage never allocates either value.
 1. Per-run total order: events for a given `runId` are yielded in the order they are produced.
 2. `run.started` precedes every other event for the run.
 3. `run.finished` succeeds every other event for the run.
@@ -125,7 +133,17 @@ When `telemetry.contentCaptureMode` is `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_E
 
 ## Persistence
 
-Every `RunEvent` is also written to `storage.appendEvents(runId, [event])` from inside the run lifecycle using the privacy-safe payload mapping above. Persistence failures are logged at `error` level and counted via `harness.events.persist_errors`; they do NOT fail the run. There is no separate persistence span — the work happens inline in the run lifecycle.
+Every `ExecutionEvent` is also written to `storage.appendEvents(runId, [event])`
+from inside the run lifecycle using the privacy-safe payload mapping above.
+Spec 32 owns exact contiguous-batch validation, idempotent retry, and conflict
+behavior. Ordinary backend persistence failures are logged at `error` level and
+counted via `harness.events.persist_errors`; they do not fail the model/tool
+operation. For a lease-backed run, the terminal `run.finished` is the exception:
+spec 32 `finalizeRun` appends it atomically with the terminal record, approval
+receipt when present, checkpoint deletion, and lease release; failure prevents
+terminal commit. Approval checkpoint transitions retain their own fenced state and
+event sequence, so recovery cannot allocate a second logical event. There is no
+separate persistence span; the work happens inline in the run lifecycle.
 
 ## Cross-references
 

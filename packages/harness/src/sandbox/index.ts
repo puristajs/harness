@@ -8,6 +8,7 @@ import type { HarnessAdapterContext } from '../ports/harness-context.js'
 import type { AdapterCapabilities, AdapterCapability } from '../ports/capabilities.js'
 import type { HarnessIdentity } from '../identity/index.js'
 import type { JsonValue } from '../models/json.js'
+import type { SkillRuntimeId } from '../definitions/types.js'
 import type { SandboxAdministration } from './administration.js'
 import type { SandboxOwnerRegistrationOptions, SandboxScope } from './ownership.js'
 import { SandboxAdapterCatalog } from './adapter-catalog.js'
@@ -198,6 +199,8 @@ export interface SandboxTerminateOptions {
 type SandboxBase = Partial<AdapterCapabilities> & {
   /** Operations and recovery guarantees this adapter actually implements. */
   readonly capabilities?: readonly AdapterCapability[]
+  /** Executable Skill runtimes installed in this sandbox. */
+  readonly runtimes?: readonly SkillRuntimeId[]
   /** Stable low-cardinality adapter label used only in standard lifecycle telemetry. */
   readonly telemetryAdapterId?: string
   /** Receives Harness logging, telemetry, and defaults when composed into a Harness. */
@@ -235,6 +238,16 @@ export type Sandbox<C extends readonly AdapterCapability[] = readonly AdapterCap
     readonly capabilities?: C
     open(options: SandboxOpenOptions): Promise<SandboxOpenResult<C>>
   }
+
+/** Sandbox adapter whose literal capabilities guarantee process spawning. */
+export type SpawnCapableSandbox<C extends readonly AdapterCapability[] = readonly AdapterCapability[]> =
+  number extends C['length']
+    ? Omit<Sandbox<C>, 'capabilities' | 'open'>
+      & Readonly<{ capabilities: C }>
+      & Readonly<{ open(options: SandboxOpenOptions): Promise<SandboxOpenResultBase & { readonly session: SpawnCapableSandboxSession }> }>
+    : DeclaresSandboxCapability<C, 'sandbox.spawn'> extends true
+      ? Sandbox<C> & Readonly<{ capabilities: C }>
+      : never
 
 /** Result produced when a sandbox adapter records a restorable checkpoint. */
 export interface SnapshotResult {

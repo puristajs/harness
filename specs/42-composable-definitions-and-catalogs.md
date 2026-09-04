@@ -2577,11 +2577,13 @@ and error lifecycle.
 To keep every intermediate ticket buildable without creating two public
 executors, H4-005 adds the v4 loop and tool pipeline as package-private modules
 beside the still-used v3 session runner. No v4 definition or instance path may
-call that old runner. H4-008 switches `sessions/index.ts` to the v4 loop and
-deletes the old runner, old tool pipeline, and their approval/governance-only
-support in the same change. H4-011 verifies that none remains. This is an
-implementation sequence only; no compatibility symbol, overload, or dual
-runtime is shipped in the v4 package.
+call that old runner. H4-008 assembles every v4
+`HarnessDefinition.getInstance` exclusively through
+`runtime/standalone-instance.ts` and the accepted v4 loop, tool pipeline,
+dispatcher, and workflow runtime. The staged v3 session runner and its baseline
+tests may remain physically present but isolated until H4-011, which removes
+them before any v4 release. H4-008 adds no compatibility alias or fallback, and
+no v4 path exposes or invokes the old code. H4-011 verifies that none remains.
 
 H4-005 also owns the contract-only declarations of `HarnessTargetDispatcher`
 and `HarnessCheckpointStep`, because the common binding context must compile

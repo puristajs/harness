@@ -115,7 +115,7 @@ describe('catalog composition and graph compilation', () => {
 				},
 			} },
 		})
-		const requirements = defineHarness({ name: 'guardedHarness' }).addAgent(guarded).requirements
+		const requirements = defineHarness({ name: 'guardedHarness', revision: 'v1' }).addAgent(guarded).requirements
 		expect(requirements.models.guardModel).toEqual({ capabilities: ['text'] })
 		expect(requirements.memory.capabilities).toEqual(['memory.text_search'])
 		expect(requirements.sandbox.capabilities).toEqual(['sandbox.fs'])
@@ -151,7 +151,7 @@ describe('catalog composition and graph compilation', () => {
 		const approval = defineAgent('approval', {
 			instructions: 'Ask.', tools: [bash], permissions: { bash: 'require_approval' },
 		})
-		expect(defineHarness({ name: 'approvalHarness' }).addAgent(approval).requirements.storage.durable).toBe(true)
+		expect(defineHarness({ name: 'approvalHarness', revision: 'v1' }).addAgent(approval).requirements.storage.durable).toBe(true)
 		expect(() => defineAgent('badFlagAgent', { instructions: 'Bad.', durable: false } as never)).toThrow(HarnessConfigError)
 		expect(() => defineWorkflow('badFlagWorkflow', {
 			input, output, workspace: false, async handler() { return { answer: 'bad' } },
@@ -306,7 +306,7 @@ describe('catalog composition and graph compilation', () => {
 	it('composes direct additions and catalogs through equivalent immutable compilation', () => {
 		const value = fixture()
 		const packaged = defineCatalog('bankingAi', { workflows: [value.resolve] })
-		const base = defineHarness({ name: 'banking' })
+		const base = defineHarness({ name: 'banking', revision: 'v1' })
 		const viaCatalog = base.use(packaged)
 		const direct = base.addWorkflow(value.resolve)
 
@@ -330,7 +330,7 @@ describe('catalog composition and graph compilation', () => {
 
 	it('returns a frozen sanitized inspection without executable or prompt material', () => {
 		const value = fixture()
-		const inspection = defineHarness({ name: 'banking' }).addWorkflow(value.resolve).inspect()
+		const inspection = defineHarness({ name: 'banking', revision: 'v1' }).addWorkflow(value.resolve).inspect()
 		const serialized = JSON.stringify(inspection)
 
 		expect(inspection.definitions).toEqual({

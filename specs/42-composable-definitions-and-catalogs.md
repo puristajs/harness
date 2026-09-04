@@ -95,6 +95,17 @@ literal `kind`, literal `id`, optional description, input/output Standard JSON
 Schemas, aggregate/stream support, output-update kind, and interrupt types. The
 contract contains no implementation, prompt, provider, or credential data.
 
+Every public Harness schema boundary accepts and produces `JsonValue` at the
+TypeScript level. Schema validators and transforms must be pure,
+deterministic, and side-effect free. Runtime validation also rejects any
+non-JSON validated result. This is required because target input/output, tool
+arguments/results, events, checkpoints, and hosted dispatch can cross process
+boundaries. A schema that transforms JSON into `Date`, a class instance, or
+another non-JSON value is not a valid Harness definition. Definition factory
+option types reject a schema whose inferred input or output is not
+JSON-compatible; target inference additionally intersects both sides with
+`JsonValue` so no non-portable value appears in an invocation contract.
+
 The public shape is exact and intentionally small:
 
 ```ts
@@ -132,17 +143,17 @@ type AnyHarnessTargetContract = HarnessTargetContract<
 
 type HarnessTargetInput<Target> =
   Target extends HarnessTargetContract<any, any, infer Input, any, any, any>
-    ? InferIn<Input>
+    ? InferIn<Input> & JsonValue
     : never
 
 type HarnessValidatedTargetInput<Target> =
   Target extends HarnessTargetContract<any, any, infer Input, any, any, any>
-    ? Infer<Input>
+    ? Infer<Input> & JsonValue
     : never
 
 type HarnessTargetOutput<Target> =
   Target extends HarnessTargetContract<any, any, any, infer Output, any, any>
-    ? Infer<Output>
+    ? Infer<Output> & JsonValue
     : never
 
 const harnessExecutionEventTypesV1 = Object.freeze([
@@ -1119,8 +1130,10 @@ const answerQuestion = defineAgent('answerQuestion', {
 ```
 
 The object key is the provider-facing delegation name. The referenced agent
-provides its description, input schema, output schema, and stable identity. A
-long form may override only the parent-facing description:
+provides its input schema, output schema, and stable identity. The generated
+tool description is the referenced agent's non-empty `description` when one is
+present; otherwise it is exactly `Delegate to the "<agent-id>" agent.`. A long
+form may override only the parent-facing description with a non-empty string:
 
 ```ts
 subagents: {
@@ -1227,11 +1240,15 @@ logical child call consumes no additional depth. `maxSteps`, `maxToolCalls`, and
 `maxSubagentCalls` are local to each agent invocation;
 `maxParallelSubagents` is local to the invoking parent. A future root-global
 call limit requires a separate atomic distributed budget port.
-`maxSteps`, `maxToolCalls`, and `maxSubagentCalls` are checked before starting
+`maxSteps`, `maxToolCalls`, `maxSubagentCalls`, and exhausted delegation depth
+are checked before starting
 the operation that would exceed them and fail with
 `AgentLoopBudgetError{code:'AGENT_LOOP_BUDGET_EXCEEDED',category:'validation',retriable:false}`.
 Its content-free metadata reason is respectively `max_steps`,
-`max_tool_calls`, or `max_subagent_calls`, with the configured limit. Tool-call
+`max_tool_calls`, `max_subagent_calls`, or `max_depth`, with the configured
+limit. For `max_depth`, `limit` is the current invocation's absolute effective
+depth ceiling, computed once as `depth + remainingDepth`; dispatch is never
+opened when `remainingDepth` is zero. Tool-call
 batch scheduling preserves provider call order among waiting entries.
 `maxParallelToolCalls` bounds every executable tool occurrence;
 `maxParallelSubagents` additionally bounds the subset whose binding kind is
@@ -1252,6 +1269,24 @@ correlated child continuation. Resume routes to the exact child target, run,
 interrupt id, revision, and event id. Once the child completes, its validated
 output becomes the delegation-tool result and the suspended parent loop
 continues. A child interrupt never becomes a tool error.
+
+The generated subagent binding consumes exactly one `run.finished` event from
+the child stream after relaying every child event in order. A missing or
+duplicate terminal event is `ValidationError{where:'model_response'}`. Terminal
+outcomes project as follows:
+
+- `completed` returns the already validated child output as the tool result;
+- `interrupted` throws `HarnessChildTargetInterruption` with the child
+  invocation id and outcome;
+- `cancelled` throws `OperationCancelledError` with the fixed message
+  `Subagent execution was cancelled.`, metadata `{scope:'agent'}`, and the
+  transported `SerializedError` as its cause, so cancellation terminates the
+  parent operation rather than becoming model-visible tool failure; and
+- `failed` throws `ToolError` with the fixed message `Subagent execution
+  failed.`, metadata `{tool_id:<provider-facing-subagent-name>,
+  tool_kind:'subagent'}`, and the transported `SerializedError` as its cause.
+  Transported error fields are never reconstructed as trusted local error
+  classes or copied into top-level metadata.
 
 Model-selected delegation uses the provider tool-call id as its stable call id.
 `invocationId` is an opaque hash of parent run id, caller kind/id, call id, and
@@ -1916,6 +1951,8 @@ interface AgentToolInvocationContext {
   readonly parentRunId?: string
   readonly parentInvocationId?: string
   readonly invocationId: string
+  readonly depth: number
+  readonly remainingDepth: number
   readonly agentId: string
   readonly workflowId?: string
   readonly step: number
@@ -1923,6 +1960,7 @@ interface AgentToolInvocationContext {
   readonly callId: string
   readonly idempotencyKey?: string
   readonly identity?: HarnessIdentity
+  readonly trace?: HarnessTraceContext
   readonly deadline?: number
   readonly signal: AbortSignal
   readonly metadata: Readonly<Record<string, JsonValue>>
@@ -1947,11 +1985,33 @@ interface AgentExecutableBinding<
   readonly implementationKind: AgentBindingKind
   readonly definitionIdentity: DefinitionIdentity
   readonly contractDigest: string
+  readonly outputValidation: 'required' | 'already-validated-target'
   invokeValidated(
     context: AgentToolInvocationContext,
-    input: Infer<Input>,
+    input: Infer<Input> & JsonValue,
+    wireInput: InferIn<Input> & JsonValue,
   ): Promise<unknown>
 }
+
+declare const harnessChildTargetInterruptionBrand: unique symbol
+
+interface HarnessChildTargetInterruption {
+  readonly [harnessChildTargetInterruptionBrand]: true
+  readonly childInvocationId: string
+  readonly outcome: Extract<
+    RunOutcome<never>,
+    { readonly status: 'interrupted' }
+  >
+}
+
+declare function createHarnessChildTargetInterruption(
+  childInvocationId: string,
+  outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>,
+): HarnessChildTargetInterruption
+
+declare function isHarnessChildTargetInterruption(
+  value: unknown,
+): value is HarnessChildTargetInterruption
 ```
 
 `DefinitionIdentity` is the existing package-private identity record; the
@@ -1972,6 +2032,22 @@ type BindingDigestPreimageV1 = readonly [
   remoteMcpName: string | null,
   normalizedProviderInputJsonSchema: JsonValue,
 ]
+
+interface AgentExecutableBindingSource<
+  Input extends ModelSchema = ModelSchema,
+  Output extends Schema = Schema,
+> extends Omit<AgentExecutableBinding<Input, Output>, 'contractDigest'> {
+  readonly digestDefinition: BindingDigestPreimageV1[3]
+  readonly mcpOwner: BindingDigestPreimageV1[4]
+  readonly remoteMcpName: BindingDigestPreimageV1[5]
+}
+
+declare function createAgentExecutableBinding<
+  Input extends ModelSchema,
+  Output extends Schema,
+>(
+  source: AgentExecutableBindingSource<Input, Output>,
+): AgentExecutableBinding<Input, Output>
 ```
 
 Non-MCP bindings use `null` for both MCP positions. No tuple position is omitted
@@ -2002,11 +2078,28 @@ synthetic definition or catalog entry. Its binding `id` stays the reserved
 `read_skill` model-facing name, while its identity token and digest definition
 come from the owning agent. Only an MCP binding may use non-null MCP positions;
 every other combination fails internal compilation.
+`createAgentExecutableBinding` is the sole package-private binding finalizer.
+It validates the implementation-kind mapping above, computes the canonical
+digest, removes the three digest-source-only fields, and deeply freezes the
+returned binding. It also requires
+`outputValidation:'already-validated-target'` exactly for `subagent` and
+`outputValidation:'required'` for every other implementation kind. H4-004
+binding factories, H4-006 subagent bindings, and H4-009 host bindings all use
+this helper; none reimplement digest or freeze rules.
 `AgentToolInvocationContext` is package-private. Binding factories project its
 memory and sandbox handles to a portable tool's declared requirement type. A
 subagent binding uses `targetDispatcher` and relays every child event through
 `relayChildEvent`, which preserves the child correlation already added by
-H4-008. No application handler receives this broad internal shape directly.
+H4-008. Its dispatch request takes `depth`, `remainingDepth`, and `trace` only
+from this runtime-authored context. When a child stream terminates with an
+interrupted outcome, the subagent binding throws the frozen package-private
+`HarnessChildTargetInterruption` created by the factory above. The common tool
+pipeline recognizes that value before generic error projection, emits neither
+`tool.finished(error)` nor `ToolError`, and rethrows the same control value for
+the root runtime to convert into its interrupted outcome. The control symbol,
+factory, and type guard are owned by package-private `runtime/steps.ts`. No
+application handler receives this broad internal shape or either control helper
+directly.
 H4-009 creates a run-scoped immutable overlay of host bindings whose closures
 capture that run's fresh authenticated `HostInvocation`; the value never enters
 this context, an instance registry, a checkpoint, or persistence.
@@ -2024,6 +2117,25 @@ or telemetry. No H4-004 initializer or binding is a public service locator or
 direct invocation API. H4-008 calls the Skill and MCP initializers, owns
 cross-initializer rollback and the returned private immutable bundles, and
 closes instance-owned resources.
+
+The pipeline preserves two input values after `beforeTool`: `wireInput` is the
+post-transform JSON value typed as `InferIn<Input>`, while `input` is the one
+schema-parsed `Infer<Input>` value used by permission, governance, approval,
+and ordinary handlers. It passes both to `invokeValidated`. Portable,
+built-in, `read_skill`, MCP, and host bindings use `input`; a subagent binding
+dispatches `wireInput`, allowing the receiving target to validate that wire
+value once without treating an already transformed output as fresh input.
+Because schemas are pure and deterministic, the parent policy parse and the
+receiving target parse produce the same validated value from the same wire
+value.
+
+For `outputValidation:'required'`, the pipeline validates the returned value
+with the binding output schema. For
+`outputValidation:'already-validated-target'`, the dispatcher has already
+validated the child target output; the pipeline asserts only that it is still
+a `JsonValue` and does not run the output schema or its transform again. Both
+branches retain the same common output event, telemetry, checkpoint, timeout,
+and error lifecycle.
 
 To keep every intermediate ticket buildable without creating two public
 executors, H4-005 adds the v4 loop and tool pipeline as package-private modules

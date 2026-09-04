@@ -360,29 +360,31 @@ export class SkillNotFoundError extends HarnessError {
   }
 }
 
+/** Stable reasons emitted while loading or mounting one v4 Agent Skill. */
+export type SkillManifestErrorReason =
+  | 'invalid_skill_url'
+  | 'directory_missing'
+  | 'missing_skill_md'
+  | 'invalid_frontmatter'
+  | 'missing_description'
+  | 'invalid_name'
+  | 'name_mismatch'
+  | 'unsafe_skill_entry'
+  | 'invalid_skill_path'
+  | 'invalid_skill_encoding'
+  | 'skill_file_too_large'
+  | 'scan_limit_reached'
+  | 'readonly_mount_unsupported'
+
 /** Skill manifest/frontmatter/config validation failure. */
 export class SkillManifestError extends HarnessError {
   public constructor(
     message: string,
     meta: {
       directory?: string
-      reason:
-        | 'missing_skill_md'
-        | 'invalid_frontmatter'
-        | 'missing_description'
-        | 'invalid_name'
-        | 'name_mismatch'
-        | 'directory_missing'
-        | 'reserved_name'
-        | 'skill_not_declared'
-        | 'skill_read_tool_missing'
-        | 'skill_sandbox_unsupported'
-        | 'untrusted_project_skill'
-        | 'collision_shadowed'
-        | 'scan_limit_reached'
+      reason: SkillManifestErrorReason
       skill_id?: string
-      source?: string
-      agent_id?: string
+      path?: string
     },
     cause?: unknown,
   ) {

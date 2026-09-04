@@ -10,6 +10,7 @@ import type { McpHttpToolDefinition, McpPluginProvenance, McpStdioToolDefinition
 import { isJsonValue, type JsonValue } from '../../models/json.js'
 import type { ModelToolSpec } from '../../ports/model-provider.js'
 import type { SandboxSessionBase } from '../../sandbox/index.js'
+import { abortError } from '../../runtime/abort.js'
 import { assertMcpJsonSchema, validateMcpJsonSchema, type McpSchemaWarning } from './schema.js'
 
 export type McpToolKind = 'mcp_stdio' | 'mcp_http'
@@ -357,8 +358,16 @@ function normalizeContentBlock(block: unknown): JsonValue {
 }
 
 export async function withMcpTimeout<T>(opts: { signal?: AbortSignal; timeoutMs?: number; scope: 'tool' }, fn: (signal?: AbortSignal) => Promise<T>): Promise<T> {
-  opts.signal?.throwIfAborted()
-  if (!opts.timeoutMs || opts.timeoutMs <= 0) return fn(opts.signal)
+  if (opts.signal?.aborted) throw abortError(opts.signal, 'tool', 'MCP tool operation was cancelled.')
+  if (!opts.timeoutMs || opts.timeoutMs <= 0) {
+    try {
+      return await fn(opts.signal)
+    } catch (error) {
+      if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) throw error
+      if (opts.signal?.aborted) throw abortError(opts.signal, 'tool', 'MCP tool operation was cancelled.')
+      throw error
+    }
+  }
   const controller = new AbortController()
   const relay = () => controller.abort(opts.signal?.reason)
   opts.signal?.addEventListener('abort', relay, { once: true })
@@ -376,7 +385,7 @@ export async function withMcpTimeout<T>(opts: { signal?: AbortSignal; timeoutMs?
   } catch (error) {
     if (controller.signal.reason instanceof OperationTimeoutError) throw controller.signal.reason
     if (controller.signal.aborted && !(controller.signal.reason instanceof OperationTimeoutError)) {
-      throw new OperationCancelledError('MCP tool operation was cancelled.', { scope: 'tool' }, controller.signal.reason ?? error)
+      throw abortError(controller.signal, 'tool', 'MCP tool operation was cancelled.')
     }
     throw error
   } finally {

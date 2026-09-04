@@ -30,6 +30,22 @@ export type {
 } from './text-search.js'
 
 const require = createRequire(import.meta.url)
+const SKILL_RUNTIME_IDS = Object.freeze(['node', 'python', 'shell'] as const)
+
+/** @internal Validates, canonicalizes, and freezes explicit runtime metadata. */
+export function normalizeSkillRuntimes(value: readonly SkillRuntimeId[] | undefined, execCapable: boolean, pathName = 'sandbox.runtimes'): readonly SkillRuntimeId[] {
+  const runtimes = value ?? []
+  if (!Array.isArray(runtimes) || runtimes.some(runtime => !SKILL_RUNTIME_IDS.includes(runtime))) {
+    throw new HarnessConfigError('Sandbox runtimes are invalid.', { reason: 'invalid_runtime_binding', path: pathName })
+  }
+  if (new Set(runtimes).size !== runtimes.length) {
+    throw new HarnessConfigError('Sandbox runtimes must be unique.', { reason: 'invalid_runtime_binding', path: pathName })
+  }
+  if (runtimes.length > 0 && !execCapable) {
+    throw new HarnessConfigError('Sandbox runtimes require an exec-capable adapter.', { reason: 'invalid_runtime_binding', path: pathName })
+  }
+  return Object.freeze([...runtimes].sort())
+}
 
 export interface SandboxSessionBase {
   read(path: string): Promise<Uint8Array>
@@ -152,6 +168,7 @@ export type SandboxSessionFor<C extends readonly AdapterCapability[]> =
       & (DeclaresSandboxCapability<C, 'sandbox.text_search'> extends true ? TextSearchCapableSandboxSession : unknown)
       & (DeclaresSandboxCapability<C, 'sandbox.exec'> extends true ? ExecCapableSandboxSession : unknown)
       & (DeclaresSandboxCapability<C, 'sandbox.spawn'> extends true ? SpawnCapableSandboxSession : unknown)
+      & (DeclaresSandboxCapability<C, 'sandbox.readonly_mount'> extends true ? ReadOnlyMountCapableSandboxSession : unknown)
       & (Extract<C[number], 'sandbox.exec' | 'sandbox.spawn'> extends never ? { readonly executor: 'unavailable' } : unknown)
 
 /** Controls whether the adapter may allocate, only attach, or restore a scope. */
@@ -330,10 +347,12 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
   private fs = new Map<string, Node>()
   readonly executor: E
   private bashExec: ((command: string, opts?: ExecOptions) => Promise<ExecResult>) | undefined
+  private readonly readOnlyRoots: Set<string>
 
-  constructor(executor: E, bashExec?: (command: string, opts?: ExecOptions) => Promise<ExecResult>, private readonly engineFs?: IFileSystem) {
+  constructor(executor: E, bashExec?: (command: string, opts?: ExecOptions) => Promise<ExecResult>, private readonly engineFs?: IFileSystem, readOnlyRoots = new Set<string>()) {
     this.executor = executor
     this.bashExec = bashExec
+    this.readOnlyRoots = readOnlyRoots
     this.fs.set('/', { kind: 'directory', modifiedAt: now() })
   }
 
@@ -358,6 +377,7 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
 
   async write(filePath: string, data: Uint8Array | string): Promise<void> {
     const p = normalizePath(filePath)
+    this.assertMutable(p)
     if (this.engineFs) {
       return this.filesystemOperation(async () => {
         await this.engineFs!.mkdir(path.posix.dirname(p), { recursive: true })
@@ -370,6 +390,7 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
 
   async remove(filePath: string, opts?: { recursive?: boolean }): Promise<void> {
     const p = normalizePath(filePath)
+    this.assertMutable(p)
     if (this.engineFs) return this.filesystemOperation(() => this.engineFs!.rm(p, { ...opts, force: true }))
     if (opts?.recursive) {
       for (const key of [...this.fs.keys()]) {
@@ -428,10 +449,21 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
 
   async mount(files: ReadonlyMap<string, Uint8Array | string>, atPath: string): Promise<void> {
     const base = normalizePath(atPath)
+    this.assertMutable(base)
     for (const [rel, data] of files.entries()) {
       const relNorm = rel.startsWith('/') ? rel.slice(1) : rel
       await this.write(`${base}/${relNorm}`, data)
     }
+  }
+
+  async mountReadOnly(files: ReadonlyMap<string, Uint8Array | string>, atPath: string): Promise<void> {
+    const base = normalizePath(atPath)
+    this.assertMutable(base)
+    for (const [rel, data] of files.entries()) {
+      const relative = assertRelativeMountPath(rel)
+      await this.write(`${base}/${relative}`, data)
+    }
+    this.readOnlyRoots.add(base)
   }
 
   async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
@@ -447,6 +479,14 @@ class MemorySandboxSession<E extends SandboxSessionBase['executor']> implements 
 
   private async filesystemOperation<T>(operation: () => Promise<T>): Promise<T> {
     try { return await operation() } catch { throw new SandboxError('Sandbox filesystem operation failed.', { reason: 'fs_failed' }) }
+  }
+
+  private assertMutable(target: string): void {
+    for (const root of this.readOnlyRoots) {
+      if (target === root || target.startsWith(`${root}/`) || root.startsWith(`${target}/`)) {
+        throw new SandboxError('Read-only sandbox mount cannot be mutated.', { reason: 'fs_failed' })
+      }
+    }
   }
 }
 
@@ -471,6 +511,9 @@ class AttachedMemorySandboxSession<E extends SandboxSessionBase['executor']> imp
     await this.assertOpen()
     const base = normalizePath(atPath)
     for (const [relative, data] of files) await this.write(`${base}/${relative.startsWith('/') ? relative.slice(1) : relative}`, data)
+  }
+  public async mountReadOnly(files: ReadonlyMap<string, Uint8Array | string>, atPath: string): Promise<void> {
+    return this.use(() => this.backing.mountReadOnly(files, atPath))
   }
   public async searchText(request: SandboxTextSearchRequest): Promise<SandboxTextSearchResult> {
     return this.use(() => this.backing.searchText({
@@ -510,13 +553,14 @@ class AttachedMemorySandboxSession<E extends SandboxSessionBase['executor']> imp
   }
 }
 
-export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search']> {
+export function inMemorySandbox(): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search']> & { readonly runtimes: readonly [] } {
   const lifecycle = new ProcessLocalSandboxLifecycle<MemorySandboxSession<'unavailable'>>()
   const catalog = SandboxAdapterCatalog.inMemory(async (resource) => {
     if (resource.kind === 'sandbox' && resource.scope) await lifecycle.terminate({ scope: resource.scope, reason: 'manual' })
   })
   return {
     capabilities: ['sandbox.fs', 'sandbox.text_search'],
+    runtimes: Object.freeze([]) as readonly [],
     telemetryAdapterId: 'in_memory_sandbox',
     administration: catalog.administration,
     registerOwner: async (options) => await catalog.registerOwner(options),
@@ -557,7 +601,10 @@ const bashSandboxOptionsSchema = z.object({
 }).strict()
 
 /** Creates a process-local Bash emulator whose file and command APIs share one filesystem. */
-export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec']> {
+export function bashSandbox(opts: BashSandboxOptions & { readonly python: true }): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount']> & { readonly runtimes: readonly ['python', 'shell'] }
+export function bashSandbox(opts?: BashSandboxOptions & { readonly python?: false }): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount']> & { readonly runtimes: readonly ['shell'] }
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount']> & { readonly runtimes: readonly SkillRuntimeId[] }
+export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount']> & { readonly runtimes: readonly SkillRuntimeId[] } {
   const parsed = bashSandboxOptionsSchema.safeParse(opts ?? {})
   if (!parsed.success) throw new HarnessConfigError('Bash sandbox configuration is invalid.', { reason: 'invalid_bash_sandbox_options', path: 'sandbox' })
   const configuration = parsed.data
@@ -574,8 +621,10 @@ export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandb
     if (resource.kind === 'sandbox' && resource.scope) await lifecycle.terminate({ scope: resource.scope, reason: 'manual' })
   })
   let defaultTimeoutMs = 120_000
+  const runtimes = Object.freeze(configuration.python === true ? ['python', 'shell'] as const : ['shell'] as const)
   return {
-    capabilities: ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec'],
+    capabilities: ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount'],
+    runtimes,
     telemetryAdapterId: 'bash_sandbox',
     administration: catalog.administration,
     registerOwner: async (options) => await catalog.registerOwner(options),
@@ -585,7 +634,12 @@ export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandb
     },
     async open(options) {
       const { session, disposition, assertActive } = await catalog.open(options, async () => await lifecycle.open(options, async () => {
+        const readOnlyRoots = new Set<string>()
+        const engineFs = createReadOnlyFileSystem(new justBash.InMemoryFs(undefined, {
+          ...(configuration.executionLimits?.maxFileSystemBytes !== undefined ? { maxTotalBytes: configuration.executionLimits.maxFileSystemBytes } : {}),
+        }), readOnlyRoots)
         const engine = new justBash.Bash({
+          fs: engineFs,
           cwd: '/workspace',
           ...(configuration.network?.allow ? { network: { allowedUrlPrefixes: configuration.network.allow } } : {}),
           ...(configuration.python !== undefined ? { python: configuration.python } : {}),
@@ -636,7 +690,7 @@ export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandb
             if (abortListener) sourceSignal?.removeEventListener('abort', abortListener)
           }
         }
-        return new MemorySandboxSession('available', exec, engine.fs)
+        return new MemorySandboxSession('available', exec, engine.fs, readOnlyRoots)
       }))
       return { session: new AttachedMemorySandboxSession(session, assertActive), disposition, liveProcessState: 'not_preserved' }
     },
@@ -644,6 +698,41 @@ export function bashSandbox(opts?: BashSandboxOptions): Sandbox<readonly ['sandb
       await catalog.terminate(options, async () => await lifecycle.terminate(options))
     }
   }
+}
+
+function assertRelativeMountPath(value: string): string {
+  if (!value || value.startsWith('/') || value.includes('\\') || value.split('/').some(segment => !segment || segment === '.' || segment === '..')) {
+    throw new SandboxError('Mounted file path is invalid.', { reason: 'invalid_path' })
+  }
+  return value
+}
+
+function createReadOnlyFileSystem(fileSystem: IFileSystem, roots: Set<string>): IFileSystem {
+  const guarded: Readonly<Record<string, readonly number[]>> = Object.freeze({
+    writeFile: [0], appendFile: [0], rm: [0], mkdir: [0], mkdirSync: [0], writeFileSync: [0],
+    writeFileLazy: [0], cp: [1], mv: [0, 1], chmod: [0], symlink: [1], link: [0, 1], utimes: [0],
+  })
+  const assertMutable = (candidate: unknown) => {
+    if (typeof candidate !== 'string') return
+    const target = normalizePath(candidate)
+    for (const root of roots) {
+      if (target === root || target.startsWith(`${root}/`) || root.startsWith(`${target}/`)) {
+        throw new SandboxError('Read-only sandbox mount cannot be mutated.', { reason: 'fs_failed' })
+      }
+    }
+  }
+  return new Proxy(fileSystem, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver)
+      if (typeof property !== 'string' || typeof value !== 'function') return value
+      const positions = guarded[property]
+      if (positions === undefined) return value.bind(target)
+      return (...args: unknown[]) => {
+        for (const position of positions) assertMutable(args[position])
+        return Reflect.apply(value, target, args)
+      }
+    },
+  })
 }
 
 /**

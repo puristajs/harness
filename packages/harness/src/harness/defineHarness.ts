@@ -3615,36 +3615,6 @@ class Builder<S extends BuilderState> {
 	 * tool name.
 	 */
 	private validateToolSkillNamespace(): void {
-		const toolIds = Object.keys(this.configured.tools ?? {})
-		const skillIds = new Set(Object.keys(this.configured.skills ?? {}))
-		const builtinNames = new Set<string>(BUILTIN_TOOL_NAMES)
-
-		for (const id of toolIds) {
-			if (builtinNames.has(id)) {
-				throw new SkillManifestError(`Custom tool id "${id}" collides with a built-in tool name.`, {
-					reason: 'reserved_name',
-					skill_id: id,
-					source: 'tool',
-				})
-			}
-			if (skillIds.has(id)) {
-				throw new SkillManifestError(`Custom tool id "${id}" collides with a skill id.`, {
-					reason: 'reserved_name',
-					skill_id: id,
-					source: 'tool',
-				})
-			}
-		}
-
-		for (const id of skillIds) {
-			if (builtinNames.has(id)) {
-				throw new SkillManifestError(`Skill id "${id}" collides with a built-in tool name.`, {
-					reason: 'reserved_name',
-					skill_id: id,
-					source: 'skill',
-				})
-			}
-		}
 	}
 
 	/** Rejects JavaScript-defined policies that are not part of the composition root's group vocabulary. */
@@ -3765,16 +3735,6 @@ class Builder<S extends BuilderState> {
 						id: skillId,
 					})
 				}
-			}
-			if (
-				!agent.handler &&
-				(agent.skills?.length ?? 0) > 0 &&
-				!resolveEnabledBuiltinTools(agent.builtinTools).includes('read')
-			) {
-				throw new SkillManifestError('Default-loop agents with skills must explicitly enable the read built-in tool.', {
-					reason: 'skill_read_tool_missing',
-					agent_id: agentId,
-				})
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-import { McpAuthError, McpProtocolError, OperationTimeoutError } from '../../errors/index.js'
+import { McpAuthError, McpProtocolError, OperationCancelledError, OperationTimeoutError } from '../../errors/index.js'
 import type { McpAuth } from '../../harness/defineHarness.js'
 import type { ResolvedMcpHttpTool, McpDiscoveredTool, McpTransportRunner } from './runner.js'
 import { withMcpTimeout } from './runner.js'
@@ -32,6 +32,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
         try {
           await client.connect(transport, toSdkOptions(options))
         } catch (error) {
+          if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) throw error
           throw mapHttpError(config, 'connect', error)
         }
         return { client, transport }
@@ -52,6 +53,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
         const { client } = await connect(options)
         return (await client.listTools(undefined, toSdkOptions(options))).tools
       } catch (error) {
+        if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) throw error
         if (error instanceof McpAuthError || error instanceof McpProtocolError) throw error
         throw mapHttpError(config, 'list', error)
       }
@@ -64,7 +66,7 @@ export function createHttpMcpTransportRunner(config: ResolvedMcpHttpTool): McpTr
         )
       } catch (error) {
         if (error instanceof McpAuthError || error instanceof McpProtocolError) throw error
-        if (error instanceof OperationTimeoutError) throw error
+        if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) throw error
         throw mapHttpError(config, 'call', error)
       }
     },

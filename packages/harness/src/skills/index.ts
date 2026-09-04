@@ -16,6 +16,9 @@ import type {
 } from '../harness/defineHarness.js'
 import type { SandboxSessionBase } from '../sandbox/index.js'
 
+export { createReadSkillBinding, loadSkillSnapshots } from './runtime.js'
+export type { LoadedSkillSnapshot, SkillManifest } from './runtime.js'
+
 const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
 const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.astro'])
 
@@ -40,11 +43,14 @@ function diagnostic(
 }
 
 function throwManifest(diag: SkillDiagnostic, skillId?: string, cause?: unknown): never {
+  const reason = [
+    'directory_missing', 'invalid_frontmatter', 'invalid_name', 'missing_description',
+    'missing_skill_md', 'name_mismatch', 'scan_limit_reached',
+  ].includes(diag.code) ? diag.code as ConstructorParameters<typeof SkillManifestError>[1]['reason'] : 'invalid_frontmatter'
   throw new SkillManifestError(diag.message, {
-    reason: diag.code,
+    reason,
     directory: diag.directory ?? '',
     ...(skillId ? { skill_id: skillId } : {}),
-    ...(diag.source ? { source: diag.source } : {})
   }, cause)
 }
 
@@ -240,7 +246,7 @@ export async function mountSkillsOnce(
   skillIds: readonly string[]
 ): Promise<void> {
   if (skillIds.length > 0 && typeof session.mount !== 'function') {
-    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'skill_sandbox_unsupported' })
+    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'readonly_mount_unsupported' })
   }
   for (const skillId of skillIds) {
     if (mounted.has(skillId)) continue

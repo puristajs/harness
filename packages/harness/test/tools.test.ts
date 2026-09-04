@@ -2,6 +2,12 @@ import { expect, it } from 'vitest'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { invokeBuiltinTool, resolveEnabledBuiltinTools } from '../src/tools/index.js'
 import { SandboxNoExecutorError, ValidationError } from '../src/errors/index.js'
+import { z } from 'zod'
+import { defineTool } from '../src/definitions/tool.js'
+import { builtInTools } from '../src/tools/index.js'
+import { bindBuiltInTool, bindHostToolSeam, bindPortableTool } from '../src/tools/bindings.js'
+import { createDefinitionIdentity, freezeDefinition } from '../src/definitions/identity.js'
+import type { HostToolDefinition } from '../src/definitions/types.js'
 
 async function openSandbox() {
   const sandbox = inMemorySandbox()
@@ -14,6 +20,47 @@ async function openSandbox() {
   await sandbox.registerOwner({ owner: scope.owner, mode: 'create' })
   return (await sandbox.open({ scope, mode: 'create' })).session
 }
+
+it('exposes immutable built-in definition references with exact capabilities', () => {
+  expect(Object.keys(builtInTools)).toEqual(['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list'])
+  expect(builtInTools.bash.requires.sandbox).toEqual(['sandbox.exec'])
+  expect(builtInTools.grep.requires.sandbox).toEqual(['sandbox.text_search'])
+  expect(builtInTools.read.requires.sandbox).toEqual(['sandbox.fs'])
+  expect(Object.isFrozen(builtInTools)).toBe(true)
+  expect(Object.values(builtInTools).every(Object.isFrozen)).toBe(true)
+})
+
+it('accepts readonly mount as a portable tool sandbox requirement', () => {
+  const definition = defineTool('readSnapshot', {
+    description: 'Read an immutable snapshot.',
+    input: z.object({ path: z.string() }),
+    output: z.object({ value: z.string() }),
+    requires: { sandbox: ['sandbox.readonly_mount'] },
+    async handler() { return { value: 'snapshot' } },
+  })
+
+  expect(definition.requires.sandbox).toEqual(['sandbox.readonly_mount'])
+})
+
+it('prepares a portable binding without validation, policy, registry lookup, or lifecycle side effects', async () => {
+  const definition = defineTool('uppercase', { description: 'Uppercase text.', input: z.object({ value: z.string() }), output: z.object({ value: z.string() }), async handler(_context, input) { return { value: input.value.toUpperCase() } } })
+  const binding = bindPortableTool(definition)
+  expect(binding.definition).toBe(definition)
+  expect(binding.implementationKind).toBe('portable')
+  expect(Object.isFrozen(binding)).toBe(true)
+  await expect(binding.invokeValidated(undefined as never, { value: 'ok' })).resolves.toEqual({ value: 'OK' })
+})
+
+it('prepares built-in execution and a non-callable host seam without exposing a lookup registry', async () => {
+  const builtIn = bindBuiltInTool(builtInTools.read, async (_context: { source: string }, input) => ({ source: _context.source, input }))
+  await expect(builtIn.invokeValidated({ source: 'sandbox' }, { path: '/x' })).resolves.toMatchObject({ source: 'sandbox' })
+  const hostValue = { kind: 'tool' as const, id: 'invokeCommand', description: 'Invoke one command.', input: z.object({ value: z.string() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) }
+  const host = freezeDefinition(hostValue, createDefinitionIdentity('host-tool', 'invokeCommand')) as unknown as HostToolDefinition
+  const seam = bindHostToolSeam(host)
+  expect(seam).toMatchObject({ id: 'invokeCommand', implementationKind: 'host', definition: host })
+  expect('invokeValidated' in seam).toBe(false)
+  expect(Object.isFrozen(seam)).toBe(true)
+})
 
 it('keeps built-in tools disabled unless an agent explicitly enables them', () => {
   expect(resolveEnabledBuiltinTools(undefined)).toEqual([])

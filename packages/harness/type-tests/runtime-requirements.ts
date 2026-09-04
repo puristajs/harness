@@ -1,4 +1,5 @@
 import type { RuntimeRequirements } from '../src/runtime/runtime-requirements.js'
+import type { RuntimeRequirementsFor } from '../src/runtime/runtime-requirements.js'
 import type {
 	HarnessInstanceConfig,
 	McpBinding,
@@ -8,7 +9,32 @@ import type { ModelProvider } from '../src/ports/model-provider.js'
 import type { ModelCapability } from '../src/ports/model-provider.js'
 import type { MemoryCapability } from '../src/ports/memory/types.js'
 import type { SandboxCapabilityId } from '../src/definitions/types.js'
-import type { Sandbox, SpawnCapableSandbox } from '../src/sandbox/index.js'
+import { bashSandbox, inMemorySandbox, type Sandbox, type SandboxSessionFor, type SpawnCapableSandbox } from '../src/sandbox/index.js'
+import type { SkillDefinition, SkillRuntimeId } from '../src/definitions/types.js'
+import { builtInTools } from '../src/tools/index.js'
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
+type Expect<T extends true> = T
+type SkillRequirements = RuntimeRequirementsFor<{}, {
+	guide: SkillDefinition<'guide', readonly []>
+	runtime: SkillDefinition<'runtime', readonly ['python']>
+}, {}, {}, {}>
+type _skillRuntimeExact = Expect<Equal<SkillRequirements['skillRuntimes'][number], 'python'>>
+type _skillMountCapabilities = Expect<Equal<SkillRequirements['sandbox']['capabilities'][number], 'sandbox.fs' | 'sandbox.readonly_mount'>>
+type GuidanceRequirements = RuntimeRequirementsFor<{}, { guide: SkillDefinition<'guide', never> }, {}, {}, {}>
+type _guidanceNoRuntime = Expect<Equal<GuidanceRequirements['skillRuntimes'][number], never>>
+type _guidanceNoSandbox = Expect<Equal<GuidanceRequirements['sandbox']['capabilities'][number], never>>
+declare const readonlySession: SandboxSessionFor<readonly ['sandbox.fs', 'sandbox.readonly_mount']>
+readonlySession.mountReadOnly(new Map(), '/skills/demo')
+declare const mutableOnlySession: SandboxSessionFor<readonly ['sandbox.fs']>
+// @ts-expect-error mountReadOnly is capability-narrowed
+mutableOnlySession.mountReadOnly(new Map(), '/skills/demo')
+type BuiltInRequirements = RuntimeRequirementsFor<{ bash: typeof builtInTools.bash; grep: typeof builtInTools.grep }, {}, {}, {}, {}>
+type _builtInCapabilities = Expect<Equal<BuiltInRequirements['sandbox']['capabilities'][number], 'sandbox.exec' | 'sandbox.text_search'>>
+type _memoryRuntimes = Expect<Equal<ReturnType<typeof inMemorySandbox>['runtimes'][number], never>>
+type _bashRuntimes = Expect<Equal<ReturnType<typeof bashSandbox>['runtimes'][number], SkillRuntimeId>>
+const pythonBash = bashSandbox({ python: true })
+type _pythonBashRuntimes = Expect<Equal<typeof pythonBash.runtimes[number], 'python' | 'shell'>>
 
 type EmptyModels = Readonly<Record<never, never>>
 type Requirements<

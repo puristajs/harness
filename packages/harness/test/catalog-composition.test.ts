@@ -206,7 +206,7 @@ describe('catalog composition and graph compilation', () => {
 			skillRuntimes: ['python'],
 			storage: { durable: true },
 			memory: { capabilities: ['memory.kv', 'memory.vector_search'], modelAliases: ['embeddings'] },
-			sandbox: { capabilities: ['sandbox.exec'] },
+			sandbox: { capabilities: ['sandbox.exec', 'sandbox.fs', 'sandbox.readonly_mount'] },
 			workspace: true,
 			artifacts: true,
 			hostTools: [],

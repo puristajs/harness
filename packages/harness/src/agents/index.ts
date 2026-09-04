@@ -334,12 +334,6 @@ async function runDefaultAgentInner(args: {
   const instructions = `${baseInstructions}${buildSkillIndex(args.skills, skillIds)}`
 
   const enabledBuiltins: readonly BuiltinToolName[] = resolveEnabledBuiltinTools(args.agent.builtinTools)
-  if (skillIds.length > 0 && !enabledBuiltins.includes('read')) {
-    throw new SkillManifestError('Agents with skills require the read built-in tool for skill activation.', {
-      reason: 'skill_read_tool_missing',
-      agent_id: args.agentId,
-    })
-  }
   const builtinSpecs = getBuiltinToolSpecs(enabledBuiltins, args.session)
   const enabledCustomTools = new Set<string>((args.agent.tools ?? []) as readonly string[])
   const tsCustomSpecs = Object.entries(args.customTools)

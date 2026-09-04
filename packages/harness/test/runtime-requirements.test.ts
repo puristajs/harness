@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { HarnessConfigError } from '../src/errors/index.js'
 import type { RuntimeRequirements } from '../src/runtime/runtime-requirements.js'
 import { validateHarnessInstanceConfig } from '../src/runtime/instance-config.js'
+import { deriveRuntimeRequirements } from '../src/runtime/runtime-requirements.js'
+import { defineSkill } from '../src/definitions/skill.js'
+import { defineAgent } from '../src/definitions/agent.js'
+import { z } from 'zod'
 
 const emptyRequirements = requirements()
 
@@ -37,6 +41,16 @@ function errorOf(run: () => unknown): HarnessConfigError {
 }
 
 describe('exact Harness instance requirements', () => {
+	it('derives guidance and runtime Skill requirements without granting execution', () => {
+		const guidance = defineSkill('guidance', { directory: new URL('file:///tmp/guidance') })
+		const runtime = defineSkill('runtime', { directory: new URL('file:///tmp/runtime'), runtimes: ['python', 'shell'] as const })
+		const agent = defineAgent('helper', { instructions: 'Use selected guidance.', skills: [guidance], output: z.string() })
+		const required = deriveRuntimeRequirements({ tools: {}, skills: { guidance, runtime }, mcpServers: {}, agents: { helper: agent }, workflows: {} })
+		expect(required.skillRuntimes).toEqual(['python', 'shell'])
+		expect(required.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.readonly_mount'])
+		expect(required.models.primary?.capabilities).toContain('tool_use')
+		expect(required.sandbox.capabilities).not.toContain('sandbox.exec')
+	})
 	it('accepts an empty graph, rejects unknown configuration, and freezes a detached snapshot', () => {
 		const snapshot = validateHarnessInstanceConfig(emptyRequirements, {})
 		expect(snapshot.models).toEqual({})

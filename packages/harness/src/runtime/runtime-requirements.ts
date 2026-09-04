@@ -50,9 +50,12 @@ type ToolMemoryCapabilities<Tool> = Tool extends { readonly requires: { readonly
 type ToolSandboxCapabilities<Tool> = Tool extends { readonly requires: { readonly sandbox: readonly (infer Capability)[] } }
 	? Extract<Capability, SandboxCapabilityId>
 	: never
-type SkillRuntimes<Skill> = Skill extends { readonly runtimes: readonly (infer Runtime)[] }
-	? Extract<Runtime, SkillRuntimeId>
+type SkillRuntimes<Skill> = Skill extends SkillDefinition<string, infer Runtimes>
+	? Extract<Runtimes[number], SkillRuntimeId>
 	: never
+type RuntimeSkillSandboxCapabilities<Skill> = [SkillRuntimes<Skill>] extends [never]
+	? never
+	: 'sandbox.fs' | 'sandbox.readonly_mount'
 type AgentMemory<Agent> = Agent extends { readonly memory: infer Memory } ? Memory : never
 type AgentMemoryCapabilities<Agent> = AgentMemory<Agent> extends { readonly capabilities: readonly (infer Capability)[] }
 	? Extract<Capability, MemoryCapability>
@@ -79,10 +82,13 @@ type HasAgentTools<Agent> = Agent extends { readonly tools: infer Tools extends 
 type HasAgentSubagents<Agent> = Agent extends { readonly subagents: infer Subagents extends Readonly<Record<string, unknown>> }
 	? keyof Subagents extends never ? never : 'tool_use'
 	: never
+type HasAgentSkills<Agent> = Agent extends { readonly skills: infer Skills extends readonly unknown[] }
+	? Skills[number] extends never ? never : 'tool_use'
+	: never
 type AgentMainCapabilities<Agent> = Agent extends AnyAgentDefinition
 	? (
 		Agent['contract']['updates'] extends 'text-delta' ? 'text' | 'text_stream' : 'object' | 'object_stream'
-	) | HasAgentTools<Agent> | HasAgentSubagents<Agent> | NonNullable<Agent['inputCapabilities']>[number]
+	) | HasAgentTools<Agent> | HasAgentSubagents<Agent> | HasAgentSkills<Agent> | NonNullable<Agent['inputCapabilities']>[number]
 	: never
 type AgentEmbeddingModelEntry<Agent> = [AgentMemory<Agent>] extends [never]
 	? never
@@ -165,7 +171,7 @@ export type RuntimeRequirementsFor<
 		SkillRuntimes<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'skillRuntimes'>, SkillRuntimeId>,
 		ToolMemoryCapabilities<Values<Tools>> | AgentMemoryCapabilities<Values<Agents>> | Extract<GuardrailArrayMember<Values<Agents>, 'memory'>, MemoryCapability>,
 	AgentMemoryAliases<Values<Agents>>,
-		ToolSandboxCapabilities<Values<Tools>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>,
+		ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>,
 		HostToolIds<Values<Tools>>,
 		IsTrue<AgentDurability<Values<Agents>> | WorkflowDurability<Values<Workflows>>>,
 		IsTrue<AgentWorkspace<Values<Agents>> | WorkflowWorkspace<Values<Workflows>>>,
@@ -208,12 +214,16 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 	}
 	for (const skill of Object.values(sources.skills)) {
 		for (const runtime of skill.runtimes ?? []) skillRuntimes.add(runtime)
+		if ((skill.runtimes?.length ?? 0) > 0) {
+			sandboxCapabilities.add('sandbox.fs')
+			sandboxCapabilities.add('sandbox.readonly_mount')
+		}
 	}
 	for (const agent of Object.values(sources.agents)) {
 		const capabilities: ModelCapability[] = agent.contract.updates === 'text-delta'
 			? ['text', 'text_stream']
 			: ['object', 'object_stream']
-		if ((agent.tools?.length ?? 0) > 0 || Object.keys(agent.subagents ?? {}).length > 0) capabilities.push('tool_use')
+		if ((agent.tools?.length ?? 0) > 0 || (agent.skills?.length ?? 0) > 0 || Object.keys(agent.subagents ?? {}).length > 0) capabilities.push('tool_use')
 		capabilities.push(...(agent.inputCapabilities ?? []))
 		addModel('model' in agent ? agent.model : 'primary', capabilities)
 

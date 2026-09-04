@@ -122,6 +122,7 @@ const MODEL_CAPABILITIES: readonly ModelCapability[] = Object.freeze([
 const SANDBOX_CAPABILITIES = Object.freeze([
 	'sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.persistent_fs', 'sandbox.workspace_binding',
 	'sandbox.snapshot', 'sandbox.resume', 'sandbox.hibernate', 'sandbox.spawn', 'sandbox.live_process_preservation',
+	'sandbox.readonly_mount',
 ] as const)
 const SKILL_RUNTIMES = Object.freeze(['node', 'python', 'shell'] as const)
 
@@ -320,9 +321,11 @@ function validateSandbox(value: unknown, capabilities: readonly string[], runtim
 	if (!isObject(value['administration'])) fail('invalid_runtime_binding', `${path}.administration`)
 	for (const method of ['list', 'purge', 'sweep', 'deleteSnapshot'] as const) if (typeof value['administration'][method] !== 'function') fail('invalid_runtime_binding', `${path}.administration.${method}`)
 	if (value['capabilities'] !== undefined && (!Array.isArray(value['capabilities']) || value['capabilities'].some(item => typeof item !== 'string' || !SANDBOX_CAPABILITIES.includes(item as typeof SANDBOX_CAPABILITIES[number])))) fail('invalid_runtime_binding', `${path}.capabilities`)
+	if (Array.isArray(value['capabilities']) && new Set(value['capabilities']).size !== value['capabilities'].length) fail('invalid_runtime_binding', `${path}.capabilities`)
 	if (capabilities.length > 0 && value['capabilities'] === undefined) fail('missing_required_capability', `${path}.capabilities`)
 	for (const capability of [...capabilities].sort()) if (!(value['capabilities'] as unknown[]).includes(capability)) fail('missing_required_capability', `${path}.capabilities`)
 	if (value['runtimes'] !== undefined && (!Array.isArray(value['runtimes']) || value['runtimes'].some(item => typeof item !== 'string' || !SKILL_RUNTIMES.includes(item as typeof SKILL_RUNTIMES[number])))) fail('invalid_runtime_binding', `${path}.runtimes`)
+	if (Array.isArray(value['runtimes']) && new Set(value['runtimes']).size !== value['runtimes'].length) fail('invalid_runtime_binding', `${path}.runtimes`)
 	if (runtimes.length > 0 && value['runtimes'] === undefined) fail('missing_required_capability', `${path}.runtimes`)
 	for (const runtime of [...runtimes].sort()) if (!(value['runtimes'] as unknown[]).includes(runtime)) fail('missing_required_capability', `${path}.runtimes`)
 	return value as unknown as Sandbox

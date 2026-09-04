@@ -1,189 +1,83 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { env as processEnv } from 'node:process'
-import type { Readable } from 'node:stream'
-import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { OperationTimeoutError, ValidationError } from '../../errors/index.js'
-import { inMemorySandbox, type SandboxProcess, type SandboxSession, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
-import { invokeMcpTool } from './runner.js'
-import { createStdioMcpTransportRunner } from './stdio.js'
+import { describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
+import { defineMcpServer } from '../../definitions/mcp-server.js'
+import { OperationCancelledError, OperationTimeoutError } from '../../errors/index.js'
+import type { McpRuntimeClient, McpRuntimeDependencies } from './runtime.js'
+import { initializeMcpRuntimeBundles } from './runtime.js'
 
-const fakeServerPath = fileURLToPath(new URL('../../testing/fixtures/mcp/fake-stdio-server.mjs', import.meta.url))
-
-function config(sandbox: SandboxSession, timeoutMs = 5_000) {
+function client(tools: readonly { name: string; inputSchema?: unknown }[]): McpRuntimeClient & { callTool: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } {
   return {
-    localToolId: 'echoLocal',
-    kind: 'mcp_stdio' as const,
-    description: 'Echo through stdio',
-    upstreamToolName: 'echo',
-    timeoutMs,
-    serverKey: `echoLocal-${Math.random()}`,
-    command: '/usr/bin/env',
-    args: ['node', fakeServerPath],
-    env: { MCP_FAKE_SECRET: 'redacted-secret' },
-    sandbox
+    connect: vi.fn(async () => undefined),
+    listTools: vi.fn(async () => tools),
+    callTool: vi.fn(async (name: string, input: unknown) => ({ name, input })),
+    close: vi.fn(async () => undefined),
   }
 }
 
-describe('stdio MCP runner', () => {
-  it('discovers tools and invokes a fake stdio MCP server', async () => {
-    const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox as any)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      const output = await invokeMcpTool(localConfig, runner, { message: 'hello' }, new AbortController().signal)
-      expect(output).toEqual({ echo: 'hello' })
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
-
-  it('validates input before calling the stdio server', async () => {
-    const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox as any)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      await expect(invokeMcpTool(localConfig, runner, { message: 123 }, new AbortController().signal)).rejects.toBeInstanceOf(ValidationError)
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
-
-  it('maps process death during calls and respawns on the next call', async () => {
-    const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox, 5_000)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      await expect(invokeMcpTool(localConfig, runner, { message: 'boom', die: true }, new AbortController().signal)).rejects.toMatchObject({
-        code: 'MCP_PROTOCOL_ERROR',
-        meta: { phase: 'call', transport: 'stdio' }
-      })
-
-      await expect(invokeMcpTool(localConfig, runner, { message: 'after' }, new AbortController().signal)).resolves.toEqual({ echo: 'after' })
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
-
-  it('enforces call timeouts', async () => {
-    const sandbox = hostExecSandbox()
-    const localConfig = config(sandbox, 5_000)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      await expect(invokeMcpTool(localConfig, runner, { message: 'ready' }, new AbortController().signal)).resolves.toEqual({ echo: 'ready' })
-      localConfig.timeoutMs = 20
-      await expect(invokeMcpTool(localConfig, runner, { message: 'slow', delayMs: 250 }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
-
-  it('enforces connection and discovery timeouts and tears down the partial process', async () => {
-    const sandbox = hangingSpawnSandbox()
-    const localConfig = config(sandbox as never, 20)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      await expect(invokeMcpTool(localConfig, runner, { message: 'hello' }, new AbortController().signal)).rejects.toBeInstanceOf(OperationTimeoutError)
-      expect(sandbox.wasKilled()).toBe(true)
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
-
-  it('does not run stdio MCP outside a sandbox executor', async () => {
-    const adapter = inMemorySandbox()
-    const scope = { owner: { namespace: 'mcp-test', id: 'mcp-test', instanceId: '01J00000000000000000000000' }, partition: { kind: 'shared' as const }, lifetime: 'run' as const, runId: 'r1' }
-    await adapter.registerOwner({ owner: scope.owner, mode: 'create' })
-    const sandbox = (await adapter.open({ scope, mode: 'create' })).session
-    const localConfig = config(sandbox as any)
-    const runner = createStdioMcpTransportRunner(localConfig)
-    try {
-      await expect(invokeMcpTool(localConfig, runner, { message: 'hello' }, new AbortController().signal)).rejects.toMatchObject({
-        code: 'SANDBOX_NO_EXECUTOR'
-      })
-    } finally {
-      await runner.close()
-      await sandbox.close()
-    }
-  })
+const server = defineMcpServer('knowledge', {
+  tools: {
+    searchKnowledge: {
+      remoteName: 'search_knowledge', description: 'Search knowledge.',
+      input: z.object({ query: z.string(), limit: z.number().optional() }),
+      output: z.object({ result: z.string() }),
+    },
+  },
 })
 
-function hostExecSandbox(): SpawnCapableSandboxSession {
-  const children = new Set<ChildProcessWithoutNullStreams>()
-  return {
-    executor: 'available',
-    async read() { throw new Error('not implemented') },
-    async readText() { throw new Error('not implemented') },
-    async write() {},
-    async remove() {},
-    async list() { return [] },
-    async stat() { throw new Error('not implemented') },
-    async exists() { return false },
-    async mount() {},
-    async spawn(command, opts): Promise<SandboxProcess> {
-      const child = spawn(command, [...(opts?.args ?? [])], {
-        cwd: opts?.cwd,
-        env: { ...processEnv, ...(opts?.env ?? {}) },
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
-      children.add(child)
-      const exit = new Promise<{ exitCode: number; signal?: string }>((resolve) => {
-        child.on('exit', (code, signal) => resolve({ exitCode: code ?? 0, ...(signal ? { signal } : {}) }))
-      })
-      opts?.signal?.addEventListener('abort', () => child.kill(), { once: true })
-      return {
-        async writeStdin(chunk) { child.stdin.write(chunk) },
-        stdout: decodeStream(child.stdout),
-        stderr: decodeStream(child.stderr),
-        exit,
-        async kill(signal) { child.kill(signal ?? 'SIGTERM') }
-      }
-    },
-    async close() { for (const child of children) child.kill('SIGKILL') }
-  }
+function dependencies(runtimeClient: McpRuntimeClient): McpRuntimeDependencies {
+  return { createClient: () => runtimeClient, createHttpTransport: () => Object.freeze({}), createStdioTransport: () => Object.freeze({}) }
 }
 
-async function* decodeStream(stream: Readable): AsyncIterable<string> {
-  const decoder = new TextDecoder()
-  for await (const chunk of stream) yield decoder.decode(chunk as Buffer, { stream: true })
-}
+describe('v4 MCP HTTP bundle', () => {
+  it('discovers every declared remote exactly once, ignores undeclared tools, and routes by hidden owner bundle', async () => {
+    const runtimeClient = client([
+      { name: 'unrelated', inputSchema: { type: 'object' } },
+      { name: 'search_knowledge', inputSchema: { '$schema': 'https://json-schema.org/draft/2020-12/schema', description: 'ignored', required: ['query'], type: 'object', properties: { limit: { type: 'number' }, query: { type: 'string' } } } },
+    ])
+    const bundles = await initializeMcpRuntimeBundles({
+      harnessName: 'banking', harnessInstanceId: '01J00000000000000000000000', timeoutMs: 100,
+      servers: { knowledge: server }, bindings: { knowledge: { transport: 'http', url: 'https://example.test/mcp' } },
+      dependencies: dependencies(runtimeClient),
+    })
+    expect(bundles).toHaveLength(1)
+    expect(Object.keys(bundles[0]!.tools)).toEqual(['searchKnowledge'])
+    await expect(bundles[0]!.tools.searchKnowledge!.invokeValidated({}, { query: 'x' })).resolves.toEqual({ name: 'search_knowledge', input: { query: 'x' } })
+    expect(runtimeClient.callTool).toHaveBeenCalledOnce()
+    await bundles[0]!.close(); await bundles[0]!.close()
+    expect(runtimeClient.close).toHaveBeenCalledOnce()
+  })
 
-function hangingSpawnSandbox(): SpawnCapableSandboxSession & { wasKilled(): boolean } {
-  let killed = false
-  return {
-    executor: 'available',
-    async read() { throw new Error('not implemented') },
-    async readText() { throw new Error('not implemented') },
-    async write() {},
-    async remove() {},
-    async list() { return [] },
-    async stat() { throw new Error('not implemented') },
-    async exists() { return false },
-    async mount() {},
-    wasKilled: () => killed,
-    async spawn(): Promise<SandboxProcess> {
-      let resolveExit!: (result: { exitCode: number }) => void
-      const exit = new Promise<{ exitCode: number }>((resolve) => { resolveExit = resolve })
-      return {
-        async writeStdin() {},
-        stdout: neverStream(),
-        stderr: neverStream(),
-        exit,
-        async kill() {
-          killed = true
-          resolveExit({ exitCode: 137 })
-        }
-      }
-    },
-    async close() {}
-  }
-}
+  it('fails closed for missing, duplicate, unequal, and unsupported selected schemas', async () => {
+    const base = { harnessName: 'banking', harnessInstanceId: '01J00000000000000000000000', timeoutMs: 100, servers: { knowledge: server }, bindings: { knowledge: { transport: 'http' as const, url: 'https://example.test/mcp' } } }
+    for (const tools of [
+      [],
+      [{ name: 'search_knowledge', inputSchema: { type: 'object' } }, { name: 'search_knowledge', inputSchema: { type: 'object' } }],
+      [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: { other: { type: 'string' } } } }],
+      [{ name: 'search_knowledge', inputSchema: { type: 'object', unevaluatedProperties: false } }],
+    ]) {
+      const runtimeClient = client(tools)
+      await expect(initializeMcpRuntimeBundles({ ...base, dependencies: dependencies(runtimeClient) })).rejects.toMatchObject({ code: 'MCP_PROTOCOL_ERROR', meta: { phase: 'list' } })
+      expect(runtimeClient.close).toHaveBeenCalledOnce()
+    }
+  })
 
-async function* neverStream(): AsyncIterable<string> {
-  await new Promise<void>(() => undefined)
-}
+  it('normalizes string cancellation reasons and preserves canonical MCP call timeouts', async () => {
+    const runtimeClient = client([
+      { name: 'search_knowledge', inputSchema: { '$schema': 'https://json-schema.org/draft/2020-12/schema', required: ['query'], type: 'object', properties: { limit: { type: 'number' }, query: { type: 'string' } } } },
+    ])
+    const bundles = await initializeMcpRuntimeBundles({
+      harnessName: 'banking', harnessInstanceId: '01J00000000000000000000000', timeoutMs: 100,
+      servers: { knowledge: server }, bindings: { knowledge: { transport: 'http', url: 'https://example.test/mcp' } },
+      dependencies: dependencies(runtimeClient),
+    })
+    const controller = new AbortController()
+    controller.abort('caller detail')
+    runtimeClient.callTool.mockRejectedValueOnce('caller detail')
+    await expect(bundles[0]!.tools.searchKnowledge!.invokeValidated({ signal: controller.signal }, { query: 'x' })).rejects.toBeInstanceOf(OperationCancelledError)
+
+    const timeout = new OperationTimeoutError('MCP tool operation timed out.', { scope: 'tool', timeout_ms: 100 })
+    runtimeClient.callTool.mockRejectedValueOnce(timeout)
+    await expect(bundles[0]!.tools.searchKnowledge!.invokeValidated({}, { query: 'x' })).rejects.toBe(timeout)
+    await bundles[0]!.close()
+  })
+})

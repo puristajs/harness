@@ -6,6 +6,8 @@ import type { BuiltinToolName } from '../harness/defineHarness.js'
 import type { ModelToolSpec } from '../ports/model-provider.js'
 import { isExecCapableSession, isTextSearchCapableSession, validateSandboxTextSearchRequest, type SandboxSessionBase } from '../sandbox/index.js'
 import { ulid } from '../ulid/index.js'
+import { createDefinitionIdentity, freezeDefinition } from '../definitions/identity.js'
+import type { BuiltInToolDefinition, SandboxCapabilityId } from '../definitions/types.js'
 
 /** Canonical built-in tool names. Custom tool ids and skill ids must not collide with these. */
 export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']
@@ -102,6 +104,43 @@ const schemas = {
     description: 'List directory entries (non-recursive).',
   },
 } as const
+
+type BuiltInName = keyof typeof schemas
+type BuiltInCapability<Name extends BuiltInName> = Name extends 'bash'
+  ? 'sandbox.exec'
+  : Name extends 'grep' ? 'sandbox.text_search' : 'sandbox.fs'
+type BuiltInDefinitions = Readonly<{
+  [Name in BuiltInName]: BuiltInToolDefinition<Name, (typeof schemas)[Name]['input'], (typeof schemas)[Name]['output']> & Readonly<{
+    requires: Readonly<{ sandbox: readonly [BuiltInCapability<Name>] }>
+  }>
+}>
+
+function builtInDefinition<Name extends BuiltInName>(name: Name): BuiltInDefinitions[Name] {
+  const spec = schemas[name]
+  const sandbox = Object.freeze([
+    name === 'bash' ? 'sandbox.exec' : name === 'grep' ? 'sandbox.text_search' : 'sandbox.fs',
+  ] satisfies SandboxCapabilityId[]) as readonly [BuiltInCapability<Name>]
+  const value = {
+    kind: 'tool' as const,
+    id: name,
+    description: spec.description,
+    input: spec.input,
+    output: spec.output,
+    requires: Object.freeze({ sandbox }),
+  }
+  return freezeDefinition(value, createDefinitionIdentity('built-in-tool', name)) as BuiltInDefinitions[Name]
+}
+
+/** Immutable built-in definition references selected through an agent's ordinary tool list. */
+export const builtInTools: BuiltInDefinitions = Object.freeze({
+  bash: builtInDefinition('bash'),
+  read: builtInDefinition('read'),
+  write: builtInDefinition('write'),
+  edit: builtInDefinition('edit'),
+  glob: builtInDefinition('glob'),
+  grep: builtInDefinition('grep'),
+  list: builtInDefinition('list'),
+})
 
 export function getBuiltinToolSpecs(enabled: readonly BuiltinToolName[], session: SandboxSessionBase): ModelToolSpec[] {
   return enabled

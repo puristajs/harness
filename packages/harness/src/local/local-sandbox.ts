@@ -12,6 +12,8 @@ import { LocalSandboxCatalog } from './local-sandbox-catalog.js'
 import type { ExecCapableSandboxSession, Sandbox, SandboxOpenOptions, SandboxOpenResult, SandboxProcess, SandboxScope, SandboxSessionBase, SandboxTerminateOptions, SandboxTextSearchRequest, SandboxTextSearchResult, SpawnCapableSandboxSession, SpawnOptions } from '../sandbox/index.js'
 import { searchSandboxTextLocally } from '../sandbox/text-search.js'
 import type { SandboxOwnerRegistrationOptions } from '../sandbox/ownership.js'
+import type { SkillRuntimeId } from '../definitions/types.js'
+import { normalizeSkillRuntimes } from '../sandbox/index.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
 import type { LocalWorkspaceCoordinator } from './local-workspace.js'
 import { LocalSandboxState, type LocalSandboxAttachment } from './local-sandbox-state.js'
@@ -30,6 +32,8 @@ export interface LocalDirectorySandboxOptions {
   coordinator?: LocalWorkspaceCoordinator
   /** Bounded private inventory and cleanup limits for this adapter. */
   administration?: SandboxAdministrationOptions
+  /** Explicit logical runtimes available to exec-capable sessions. */
+  runtimes?: readonly SkillRuntimeId[]
 }
 
 /** Capability tuple advertised by the non-executable local sandbox (spec 22 §2). */
@@ -39,7 +43,9 @@ export type LocalFilesOnlySandboxCapabilities = readonly ['sandbox.fs', 'sandbox
 export type LocalExecSandboxCapabilities = readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs', 'sandbox.workspace_binding']
 
 /** Sandbox shape returned by `localDirectorySandbox(...)` (spec 22 §2). */
-export type LocalDurableSandbox = Sandbox<LocalFilesOnlySandboxCapabilities> | Sandbox<LocalExecSandboxCapabilities>
+export type LocalDurableSandbox = (
+  Sandbox<LocalFilesOnlySandboxCapabilities> | Sandbox<LocalExecSandboxCapabilities>
+) & Readonly<{ runtimes: readonly SkillRuntimeId[] }>
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000
 /** Maximum captured stdout/stderr bytes per exec call (spec 22 §5). */
@@ -503,12 +509,14 @@ class ExecLocalSandboxSession extends LocalDirectorySandboxSession implements Ex
 
 abstract class BaseLocalDirectorySandbox {
   public readonly telemetryAdapterId = 'local_directory_sandbox'
+  public readonly runtimes: readonly SkillRuntimeId[]
   protected telemetry: TelemetryShim | undefined
   protected toolTimeoutMs: number | undefined
   protected readonly state: LocalSandboxState
   private readonly catalog: SandboxAdapterCatalog
 
   protected constructor(protected readonly options: LocalDirectorySandboxOptions, private readonly execEnabled: boolean) {
+    this.runtimes = normalizeSkillRuntimes(options.runtimes, execEnabled, 'localDirectorySandbox.runtimes')
     this.state = new LocalSandboxState(options.root)
     this.catalog = new SandboxAdapterCatalog(new LocalSandboxCatalog({
       root: options.root,
@@ -642,8 +650,8 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`)
 }
 
-export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec: LocalHostExecPolicy }): Sandbox<LocalExecSandboxCapabilities>
-export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec?: false }): Sandbox<LocalFilesOnlySandboxCapabilities>
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec: LocalHostExecPolicy }): Sandbox<LocalExecSandboxCapabilities> & Readonly<{ runtimes: readonly SkillRuntimeId[] }>
+export function localDirectorySandbox(options: LocalDirectorySandboxOptions & { exec?: false }): Sandbox<LocalFilesOnlySandboxCapabilities> & Readonly<{ runtimes: readonly [] }>
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): LocalDurableSandbox
 export function localDirectorySandbox(options: LocalDirectorySandboxOptions): LocalDurableSandbox {
   const exec = options.exec ?? false

@@ -19,7 +19,7 @@ const memoryCapabilities: readonly MemoryCapability[] = Object.freeze([
 	'memory.vector_search', 'memory.hybrid_search', 'memory.persistent', 'memory.multi_instance',
 ])
 const sandboxCapabilities: readonly SandboxCapabilityId[] = Object.freeze([
-	'sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.persistent_fs', 'sandbox.workspace_binding',
+	'sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount', 'sandbox.persistent_fs', 'sandbox.workspace_binding',
 	'sandbox.snapshot', 'sandbox.resume', 'sandbox.hibernate', 'sandbox.spawn', 'sandbox.live_process_preservation',
 ])
 

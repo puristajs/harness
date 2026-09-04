@@ -1,4 +1,4 @@
-import { McpProtocolError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
+import { McpProtocolError, OperationCancelledError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
 import { isExecCapableSession, isSpawnCapableSession, type SandboxProcess, type SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import type { McpDiscoveredTool, McpTransportRunner, ResolvedMcpStdioTool } from './runner.js'
 import { withMcpTimeout } from './runner.js'
@@ -92,7 +92,7 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
       )
     } catch (error) {
       const finalization = await closeConnectionParts(client, transport, cleanup)
-      const primary = error instanceof OperationTimeoutError ? error : mapStdioError(config, 'connect', error)
+      const primary = error instanceof OperationCancelledError || error instanceof OperationTimeoutError ? error : mapStdioError(config, 'connect', error)
       if (finalization.cleanupFailure !== undefined) {
         throw new AggregateError([primary, ...finalization.failures], 'MCP stdio connection failed and its staged resources could not be finalized.')
       }
@@ -123,7 +123,7 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
           (signal) => raceTransportClose(active.transport, () => active.client.listTools(undefined, toSdkOptions(signal ? { signal } : undefined)))
         )).tools
       } catch (error) {
-        if (error instanceof OperationTimeoutError) {
+        if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) {
           const current = await connected?.catch(() => undefined)
           if (current) return resetConnection(current, error)
           throw error
@@ -140,7 +140,7 @@ function createPersistentStdioRunner(config: ResolvedMcpStdioTool, session: Spaw
           (signal) => raceTransportClose(active.transport, () => active.client.callTool({ name, arguments: input }, toSdkOptions(signal ? { signal } : undefined)))
         )
       } catch (error) {
-        if (error instanceof OperationTimeoutError) {
+        if (error instanceof OperationCancelledError || error instanceof OperationTimeoutError) {
           const current = await connected?.catch(() => undefined)
           if (current) return resetConnection(current, error)
           throw error
@@ -264,8 +264,8 @@ class SandboxStdioTransport {
             newline = buffer.indexOf('\n')
           }
         }
-      } catch (error) {
-        this.report(error)
+      } catch {
+        this.report(new Error('MCP stdio stdout stream failed.'))
       }
       if (this.process === process && !this.closed) {
         this.handleUnexpectedClose(new Error('MCP server closed its stdout stream.'))
@@ -274,8 +274,8 @@ class SandboxStdioTransport {
     void (async () => {
       try {
         for await (const chunk of process.stderr) this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_LIMIT)
-      } catch (error) {
-        this.report(error)
+      } catch {
+        this.report(new Error('MCP stdio stderr stream failed.'))
       }
     })()
     void process.exit.then((result) => {
@@ -289,8 +289,8 @@ class SandboxStdioTransport {
     try {
       const message: unknown = JSON.parse(line)
       if (typeof message === 'object' && message !== null) this.onmessage?.(message)
-    } catch (error) {
-      this.report(error)
+    } catch {
+      this.report(new Error('MCP stdio stdout contained invalid JSON.'))
     }
   }
 

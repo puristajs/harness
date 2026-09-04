@@ -11,6 +11,8 @@ export type AdapterCapability =
   | 'sandbox.text_search'
   /** Sandbox supports command execution. */
   | 'sandbox.exec'
+  /** Sandbox can mount trees that remain immutable to APIs and sandbox processes. */
+  | 'sandbox.readonly_mount'
   /** Sandbox filesystem survives adapter-level close/reopen for the same session. */
   | 'sandbox.persistent_fs'
   /** Sandbox mounts the active DurableWorkspace into a run-scoped session. */

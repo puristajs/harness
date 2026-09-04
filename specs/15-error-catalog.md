@@ -41,6 +41,13 @@ taxonomy and are never emitted by normal harness execution.
 - retriable: `false`
 - when: Standard Schema or JSON Schema validation failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
 - meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`. For public Standard Schema boundaries, `issues` is exactly `{count:number,truncated:boolean}`; vendor messages, paths, values and causes are private and omitted. Validator throws and non-JSON successful transforms map to the `InternalError` reasons locked in [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/runtime-validation.md).
+- workflow/child-task invoke-option issues are content-free and exactly one of
+  `{reason:'invalid_workflow_call_id'}`, `{reason:'invalid_child_task_idempotency_key'}`,
+  `{reason:'child_task_idempotency_key_required'}`,
+  `{reason:'durable_continuable_child_task_unsupported'}`,
+  `{reason:'invalid_child_task_timeout'}`,
+  `{reason:'invalid_child_task_context'}`, or
+  `{reason:'approval_capable_child_task_unsupported'}`.
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
@@ -163,19 +170,83 @@ tokens, raw headers, or attachments.
 - when: default loop iterations exceed the effective agent budget (`agent.maxSteps` when configured, otherwise `defaults.agentMaxIterations`).
 - meta: `agent_id: string`, `reason: 'iterations_exceeded'`, `limit: number`.
 
-### `DelegationPolicyError`
-- code: `DELEGATION_POLICY_ERROR`
-- category: `validation`
-- retriable: `false`
-- when: a workflow-local `ctx.agents.<id>(...)` call violates the workflow delegation policy or the effective delegation budgets.
-- meta: `workflow_id: string`, `agent_id: string`, `reason: 'delegation_disabled'|'agent_not_allowed'|'max_child_agent_calls_exceeded'|'max_parallel_child_agent_calls_exceeded'|'max_delegation_depth_exceeded'|'model_alias_not_allowed'`, `limit?: number`, `model_alias?: string`.
-
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`
 - category: `validation`
 - retriable: `false`
 - when: session accessed via unknown workflow id.
 - meta: `workflow_id: string`.
+
+### `WorkflowCallReplayConflictError`
+- code: `WORKFLOW_CALL_REPLAY_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: one workflow invocation reuses a `callId` across direct-agent calls or
+  child-task starts with another operation, target, canonical JSON wire input,
+  normalized options, or idempotency key. Equal concurrent tuples coalesce and
+  do not throw this error.
+- message: fixed `Workflow call id conflicts with an existing logical child call.`
+- meta: exactly `{reason:'operation_mismatch'|'target_mismatch'|'input_mismatch'|'idempotency_key_mismatch'|'options_mismatch',workflow_id:string,call_id:string,expected_operation:'agent_run'|'child_task_start',received_operation:'agent_run'|'child_task_start',expected_target_kind:'agent',expected_target_id:string,received_target_kind:'agent',received_target_id:string}`.
+- when multiple fields differ, reason precedence is operation, target, input,
+  idempotency key, then remaining normalized options.
+- forbidden meta: input, output, canonical JSON, digests, prompts, messages,
+  credentials, or provider payloads.
+
+### `WorkflowAgentCallBudgetError`
+- code: `WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED`
+- category: `validation`
+- retriable: `false`
+- when: one logical workflow invocation exceeds its effective total agent-call
+  budget, or a direct awaited agent call cannot enter immediately because the
+  effective parallel ceiling is full or a queued child-task turn has priority.
+- message: fixed `Workflow agent-call budget exceeded.`
+- meta: exactly `{workflow_id:string,agent_id:string,reason:'max_calls'|'max_parallel',limit:number}`.
+- forbidden meta: input, output, call id, idempotency key, queue contents,
+  prompts, messages, credentials, and provider payloads.
+
+### `WorkflowChildTargetError`
+- code: `WORKFLOW_CHILD_TARGET_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: an agent target selected by a direct workflow call or child task
+  returns a validated `failed` terminal. The transported error remains an
+  untrusted private cause and is never reconstructed as its remote class.
+- message: fixed `Workflow child target failed.`
+- meta: exactly the discriminated union
+  `{reason:'agent_call_failed',workflow_id:string,call_id:string,target_kind:'agent',target_id:string}`
+  or
+  `{reason:'child_task_failed',workflow_id:string,call_id:string,task_id:string,target_kind:'agent',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, prompts, credentials, and provider payloads.
+
+### `ChildTaskConflictError`
+- code: `CHILD_TASK_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: a durable task id derived from `(parentRunId,idempotencyKey)` already
+  exists but its persisted start tuple differs by call id, agent, input, mode,
+  timeout, or context.
+- message: fixed `Child-task idempotency key conflicts with an existing task.`
+- meta: exactly `{reason:'idempotency_key_reused',workflow_id:string,parent_run_id:string,task_id:string,agent_id:string,call_id:string}`.
+- `agent_id` and `call_id` are always the received attempted values, never the
+  values from the existing record.
+- forbidden meta: idempotency key, input, output, canonical JSON, hashes,
+  prompts, messages, credentials, and provider payloads.
+
+### `ChildTaskStateError`
+- code: `CHILD_TASK_STATE_ERROR`
+- category: `state`
+- retriable: `false`
+- when: a matching durable task is running but not resident in this Harness
+  instance, a persisted child-task record is malformed, or an operation is
+  attempted after the continuable task begins closing or reaches terminal
+  state.
+- message: fixed `Child task is not available in the requested state.`
+- meta: exactly the discriminated union
+  `{reason:'invalid_record',task_id:string}` or
+  `{reason:'recovery_required'|'closing'|'terminal',task_id:string,workflow_id:string,agent_id:string}`.
+- forbidden meta: input, output, task error details, idempotency key, prompts,
+  messages, credentials, and provider payloads.
 
 ### `SessionNotFoundError`
 - code: `SESSION_NOT_FOUND`
@@ -224,14 +295,14 @@ tokens, raw headers, or attachments.
 - category: `timeout`
 - retriable: `true`
 - when: any timed budget elapsed.
-- meta: `scope: 'run'|'model'|'tool'|'decision'|'sandbox_run'|'memory'|'workspace'|'evaluation_run'|'evaluation_task'|'evaluation_scorer'`, `timeout_ms: number`.
+- meta: `scope: 'run'|'model'|'tool'|'decision'|'sandbox_run'|'memory'|'workspace'|'child_task'|'evaluation_run'|'evaluation_task'|'evaluation_scorer'`, `timeout_ms: number`.
 
 ### `OperationCancelledError`
 - code: `OPERATION_CANCELLED`
 - category: `cancelled`
 - retriable: `false`
 - when: AbortSignal aborted (including pre-aborted signals at entry points).
-- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'|'evaluation'`.
+- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'|'child_task'|'evaluation'`.
 
 Generic evaluation callbacks use these existing error classes as abort reasons.
 The runner serializes terminal callback errors into the content-free

@@ -1255,6 +1255,11 @@ batch scheduling preserves provider call order among waiting entries.
 `subagent`. A subagent starts only after it owns capacity from both semaphores.
 Neither concurrency limit rejects work under normal load; excess calls wait
 within the inherited deadline and cancellation signal.
+These agent-loop limits belong only to that agent invocation. They never count
+a workflow's direct agent calls, child-task starts, or continuable turns.
+Workflow-owned agent-call budgets are defined separately in section 7. When a
+workflow-called agent delegates, the outer workflow call consumes one workflow
+slot while the child agent independently enforces its own subagent limits.
 The standalone dispatcher opens a registered local target. A host
 dispatcher has no implicit local fallback.
 
@@ -1333,7 +1338,7 @@ registry lookup.
 
 Inside a workflow, every agent call requires a stable `callId` identifying one
 logical child call and matching the durable step-id grammar. Re-entering the
-handler with the same `callId`, target, and canonically equivalent validated
+handler with the same `callId`, target, and canonically equivalent JSON wire
 input replays the saved result. Reuse with another target or input fails
 closed. Parallel logical child calls use distinct ids. Workflow child-call ids
 and `context.step` ids occupy separate internal namespaces. Declared invokers
@@ -1349,9 +1354,382 @@ calls. Arbitrary workflow side effects are replay-safe only when wrapped in
 handler is re-entered. Existing child-task fan-out is restricted to the
 workflow's declared agent map and uses the same dispatcher.
 
+The workflow context is conditional on the definition's literal durability.
+The `Durable` generic is the exact `true | undefined` value inferred by
+`defineWorkflow`; it is not widened to `boolean`:
+
+```ts
+type WorkflowExternalWait<Durable extends true | undefined> =
+  Durable extends true
+    ? Readonly<{
+        externalWait: Readonly<{
+          wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved>
+        }>
+      }>
+    : Readonly<Record<never, never>>
+
+type WorkflowContext<
+  Input extends ModelSchema,
+  Output extends ModelSchema,
+  Agents extends WorkflowAgentMap | undefined,
+  Models extends WorkflowModelMap | undefined,
+  Durable extends true | undefined,
+> = WorkflowContextBase<Input, Output, Agents, Models>
+  & WorkflowExternalWait<Durable>
+```
+
+`WorkflowOptions.handler` binds this same `Durable` generic. A non-durable
+workflow therefore has no `externalWait` property at compile time. A durable
+definition exposes it, while an invocation of that definition without
+`InvokeOptions.durable` rejects `externalWait.wait(...)` before registering a
+wait.
+
+The retained bounded child-task surface is exact. It does not allow a workflow
+to override the selected agent's model or sandbox policy:
+
+```ts
+type ChildTaskContextPolicy = 'isolated'
+type ChildTaskMode = 'one_shot' | 'continuable'
+
+interface ChildTaskDescriptor {
+  readonly id: string
+  readonly parentRunId: string
+  readonly sessionId: string
+  readonly workflowId: string
+  readonly workflowInvocationId: string
+  readonly callId: string
+  readonly agentId: string
+  readonly modelAlias: string
+  readonly contextPolicy: ChildTaskContextPolicy
+  readonly mode: ChildTaskMode
+  readonly createdAt: string
+}
+
+interface ChildTaskStatus {
+  readonly descriptor: ChildTaskDescriptor
+  readonly status: 'running' | 'succeeded' | 'failed' | 'cancelled'
+  readonly finishedAt?: string
+  readonly error?: SerializedError
+}
+
+interface ChildTaskHandle<Output> {
+  readonly id: string
+  result(): Promise<Output>
+  status(): Promise<ChildTaskStatus>
+  cancel(reason?: string): Promise<void>
+}
+
+interface ContinuableChildTaskHandle<Input, Output>
+  extends ChildTaskHandle<Output> {
+  send(input: Input): Promise<Output>
+  close(): Promise<Output | undefined>
+}
+
+type ChildTaskStartOptions = Readonly<{
+  callId: string
+  idempotencyKey?: string
+  timeoutMs?: number
+  context?: 'isolated'
+  mode?: 'one_shot'
+}>
+
+type ContinuableChildTaskStartOptions = Readonly<{
+  callId: string
+  timeoutMs?: number
+  context?: 'isolated'
+  mode: 'continuable'
+}>
+
+interface WorkflowAgentCallLimits {
+  readonly maxCalls?: number
+  readonly maxParallel?: number
+}
+
+interface WorkflowChildTasks<Agents extends WorkflowAgentMap | undefined> {
+  start<K extends keyof NonNullable<Agents>>(
+    agent: K,
+    input: NonNullable<Agents>[K]['$infer']['input'],
+    options: ContinuableChildTaskStartOptions,
+  ): Promise<ContinuableChildTaskHandle<
+    NonNullable<Agents>[K]['$infer']['input'],
+    NonNullable<Agents>[K]['$infer']['output']
+  >>
+  start<K extends keyof NonNullable<Agents>>(
+    agent: K,
+    input: NonNullable<Agents>[K]['$infer']['input'],
+    options: ChildTaskStartOptions,
+  ): Promise<ChildTaskHandle<NonNullable<Agents>[K]['$infer']['output']>>
+}
+
+type WorkflowContextBase<
+  Input extends ModelSchema,
+  Output extends ModelSchema,
+  Agents extends WorkflowAgentMap | undefined,
+  Models extends WorkflowModelMap | undefined,
+> = Readonly<{
+  input: Infer<Input> & JsonValue
+  agents: WorkflowAgentInvokers<Agents>
+  models: WorkflowModelHandles<Models>
+  logger: Logger
+  telemetry: TelemetryShim
+  metrics: Metrics
+  signal: AbortSignal
+  runId: string
+  sessionId: string
+  metadata: Readonly<Record<string, JsonValue>>
+  step: HarnessCheckpointStep
+  fanOut: <Item, Result>(
+    items: readonly Item[],
+    worker: (item: Item, index: number) => Promise<Result>,
+    options?: Readonly<{ concurrency?: number }>,
+  ) => Promise<Result[]>
+  childTasks: WorkflowChildTasks<Agents>
+}>
+```
+
+`context.childTasks.start(...)` has typed overloads for those two option
+shapes and only accepts keys from the workflow's declared `agents` map.
+One-shot tasks may outlive a successful handler return. Continuable tasks are
+in-process only and reject any invocation with `InvokeOptions.durable` before
+creating the task. A durable one-shot start requires a non-empty
+`idempotencyKey`; its effective task id derives from the durable parent run id
+and that key. `callId` identifies the logical start within one handler
+execution and is still required independently of the durable task id.
+H4-007 owns the typed handles, bounded execution, task records, and dispatcher
+calls. H4-008 binds the content-free `session.childTasks.get()` and `list()`
+facade and owns shutdown coordination around those H4-007 task records.
+
+Child tasks do not add a second approval/resume protocol. Before creating a
+task, reserving budget, writing a run record, or emitting an event, H4-007 uses
+the package-private `agentCanRequestApproval(agent)` helper in
+`runtime/runtime-requirements.ts`. The helper recursively follows the selected
+agent's exact definition references, uses the hidden identities and a visited
+set, and returns true when a selected tool permission or compiled governance
+effect can require approval. The same helper owns approval-derived durability
+requirements; another approval graph walk is forbidden. If the selected agent
+or a reachable subagent can request approval through permissions or governance,
+start rejects
+with `ValidationError{where:'invoke_options',issues:{reason:
+'approval_capable_child_task_unsupported'}}`. This applies equally to
+one-shot, continuable, awaited, and background tasks. Approval remains fully
+supported through `context.agents.*.run(...)`, whose child interruption uses
+the normal root protocol. The rejected start creates no task record, status,
+or event.
+
+Workflow agent-call limits resolve once from `agentCalls.maxCalls` and
+`agentCalls.maxParallel`, then Harness defaults `maxWorkflowAgentCalls` and
+`maxParallelWorkflowAgentCalls`, then constants `32` and `8`. Every configured
+value is a positive safe integer. One budget state belongs to one logical
+workflow invocation, resets for a later independent invocation, and is restored
+unchanged for handler re-entry after interruption or durable resume. It counts
+direct calls, one-shot initial turns, continuable initial turns, and every
+accepted continuable `send`; `fanOut` itself adds no count. Equal replay or
+coalescing consumes no additional count.
+
+Admission order is exact: validate options and resolve replay first; reserve
+one total call second; acquire parallel capacity third. Direct calls fail
+immediately when the parallel ceiling is full or a queued task turn already
+exists. Task initial/send turns enter one cancellation-aware FIFO and wait for
+capacity. Total-capacity failure starts no dispatch or turn. Cancellation while
+queued removes the waiter, but its accepted total reservation remains consumed.
+A direct parallel failure rolls back its tentative total reservation. `fanOut`
+never reserves total budget or acquires a workflow agent-call slot; it only
+clamps worker concurrency to the effective parallel ceiling and preserves input
+order. Every agent call or task turn inside a worker performs its own admission.
+Limit failures use `WorkflowAgentCallBudgetError` with code
+`WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED`, category `validation`, retriable
+`false`, fixed message `Workflow agent-call budget exceeded.`, and exact
+metadata `{workflow_id,agent_id,reason,limit}`. Reason is `max_calls` or
+`max_parallel`. No v3 delegation-policy allowlist, model override, or depth
+error participates in this budget.
+
+One `callId` namespace covers direct calls and child-task starts. Its identity
+tuple is `(operation,target,canonical JSON wire input,normalized options)`,
+where operation is `agent_run` or `child_task_start`; `signal` is never part of
+identity. Direct options contain `idempotencyKey|null`. Child-task options
+contain `mode`, `idempotencyKey|null`, `timeoutMs|null`, and
+`context:'isolated'`. Equal tuples replay or coalesce to the same output or
+handle. Reuse with a changed operation, target, input, options, or idempotency
+key throws `WorkflowCallReplayConflictError` before budget or effects.
+
+Workflow direct-agent replay uses one exact logical record:
+
+```ts
+type WorkflowAgentCallStoredErrorV1 =
+  | Readonly<{
+      code: 'WORKFLOW_CHILD_TARGET_FAILED'
+      message: 'Workflow child target failed.'
+      category: 'internal'
+      retriable: false
+      meta: Readonly<{
+        reason: 'agent_call_failed'
+        workflow_id: string
+        call_id: string
+        target_kind: 'agent'
+        target_id: string
+      }>
+    }>
+  | Readonly<{
+      code: 'OPERATION_CANCELLED'
+      message: 'Workflow agent call was cancelled.'
+      category: 'cancelled'
+      retriable: false
+      meta: Readonly<{ scope: 'agent' }>
+    }>
+
+type WorkflowChildCallStoredOutcomeV1 =
+  | Readonly<{ status: 'completed'; output: JsonValue }>
+  | Readonly<{
+      status: 'failed'
+      error: Extract<
+        WorkflowAgentCallStoredErrorV1,
+        { readonly code: 'WORKFLOW_CHILD_TARGET_FAILED' }
+      >
+    }>
+  | Readonly<{
+      status: 'cancelled'
+      error: Extract<
+        WorkflowAgentCallStoredErrorV1,
+        { readonly code: 'OPERATION_CANCELLED' }
+      >
+    }>
+
+interface WorkflowChildCallCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'workflow_child_call'
+  readonly callId: string
+  readonly target: Readonly<{ kind: 'agent'; id: string }>
+  readonly input: JsonValue
+  readonly outcome: WorkflowChildCallStoredOutcomeV1
+  readonly lineage: Readonly<{
+    rootRunId: string
+    workflowRunId: string
+    workflowInvocationId: string
+    childRunId: string
+    childInvocationId: string
+  }>
+}
+```
+
+The persistent checkpoint key is exactly `workflow:call:<callId>`. Managed
+workflow steps use `workflow:step:<stepId>`, so equal public ids never collide.
+The child-call record is stored as the `RunCheckpoint.output`; the enclosing
+checkpoint remains the single owner of run, session, lease, worker, attempt,
+sequence, and commit-time fields. `RunCheckpoint.input` is exactly the
+validated root workflow handler input; the child wire input exists only in
+`WorkflowChildCallCheckpointV1.input`. Checkpoint metadata is exactly
+`{checkpointKind:'workflow_child_call',schemaVersion:1}`. No new HarnessStorage
+method or second checkpoint registry is introduced. The record's `input` is the caller's JSON wire value
+before the receiving target's Standard Schema validation or transform.
+Equality uses the canonical JSON encoder defined by this specification, so
+object property order is irrelevant. This preserves the dispatcher contract:
+only the receiving target validates and transforms target input, exactly once.
+
+Each active workflow invocation also owns a map from `callId` to the complete
+operation/target/input/options tuple above and one shared pending or completed
+promise. Concurrent calls with the same id and equal tuple coalesce onto that
+promise and dispatch once, including when that promise rejects. A different
+tuple fails immediately and never opens a second dispatch. Conflict reason
+precedence is `operation_mismatch`, `target_mismatch`, `input_mismatch`,
+`idempotency_key_mismatch`, then `options_mismatch`; only the first difference
+is reported. An ordinary non-interruptible ephemeral
+invocation keeps this map only for that invocation: equal ids replay or
+coalesce inside the invocation, but a later independent invocation starts a
+new map. Durable invocations load and commit the namespaced `RunCheckpoint`
+record above. A completed terminal returns its stored validated output. A
+failed terminal rejects with the same canonical `WorkflowChildTargetError`, and
+a cancelled terminal rejects with the same canonical `OperationCancelledError`;
+both are committed before the handler observes the rejection. A handler may
+therefore catch either error and continue, and later handler re-entry rejects
+the equal call from the stored outcome without dispatching again. The stored
+error is validated as the exact local canonical serialization before its fixed
+class is reconstructed; transported remote class, category, and retriable data
+are never trusted. Cancellation before call admission creates no call-table or
+checkpoint entry. Cancellation after admission, whether transported as the
+target terminal or observed locally while consuming it, uses the same
+`cancelled` outcome; durable commit uses the non-aborted lifecycle signal and
+finishes before the handler receives `OperationCancelledError`.
+Approval-capable invocations already require durable storage;
+H4-008 provisions the same H4-007 checkpoint access even when the root call did
+not select `InvokeOptions.durable`, because interruption resume is the same
+logical invocation. H4-008 preserves that access as part of root continuation
+ownership and supplies the stored records when the workflow is re-entered.
+
+Tuple mismatch throws this public error and never includes input, hashes, or
+other content in its message or metadata:
+
+```ts
+class WorkflowCallReplayConflictError extends HarnessError {
+  readonly code: 'WORKFLOW_CALL_REPLAY_CONFLICT'
+  readonly category: 'validation'
+  readonly retriable: false
+  readonly message: 'Workflow call id conflicts with an existing logical child call.'
+  readonly meta: Readonly<{
+    reason:
+      | 'operation_mismatch'
+      | 'target_mismatch'
+      | 'input_mismatch'
+      | 'idempotency_key_mismatch'
+      | 'options_mismatch'
+    workflow_id: string
+    call_id: string
+    expected_operation: 'agent_run' | 'child_task_start'
+    received_operation: 'agent_run' | 'child_task_start'
+    expected_target_kind: 'agent'
+    expected_target_id: string
+    received_target_kind: 'agent'
+    received_target_id: string
+  }>
+}
+```
+
+Malformed or unavailable persisted records remain storage/internal failures;
+they are not mislabeled as caller replay conflicts.
+
+H4-007 extracts H4-006's already implemented target-stream consumption from
+`runtime/subagent-execution.ts` into one package-private strict consumer in
+that same module:
+
+```ts
+interface ConsumedHarnessTarget<Output> {
+  readonly outcome: ExecutionTerminalOutcome<Output, HarnessInterrupt>
+  readonly lineage: Readonly<{
+    parentRunId: string
+    childRunId: string
+    childInvocationId: string
+  }>
+}
+
+function consumeHarnessTargetStream<Output>(options: Readonly<{
+  stream: HarnessTargetDispatchStream<Output>
+  signal: AbortSignal
+  parentRunId: string
+  childInvocationId: string
+  relay(event: ExecutionEvent<Output>): Promise<void>
+}>): Promise<ConsumedHarnessTarget<Output>>
+```
+
+It validates correlation and event shapes, requires exactly one terminal,
+rejects events after terminal, relays every valid event in order including the
+terminal exactly once, cleans up iterator and stream on failure or cancellation,
+and returns the already target-validated terminal plus lineage without applying
+a caller-specific error mapping. Subagents and workflows both use it. A second
+terminal consumer or copied validation switch is forbidden. The model-facing
+subagent binding retains H4-006's `ToolError` mapping. A direct workflow call
+returns a completed output, maps `failed` to `WorkflowChildTargetError` reason
+`agent_call_failed`, maps `cancelled` to `OperationCancelledError` with fixed
+message `Workflow agent call was cancelled.` and scope `agent`, and maps
+`interrupted` to the existing package-private
+`HarnessChildTargetInterruption` with that lineage. H4-008 alone
+persists and resumes the root interruption tree. Child-task starts can never
+reach this interrupted branch because approval-capable task targets are
+rejected before dispatch. A `failed` envelope that claims a remote timeout is
+still the target-failure wrapper; its code never selects a local error class.
+
 `defineWorkflow` has required Standard JSON Schema `input` and `output` plus a
 required `handler`; optional
-`description`, exact typed `agents`, exact typed `models`, existing sandbox
+`description`, exact typed `agents`, exact typed `models`, exact
+`agentCalls: WorkflowAgentCallLimits`, existing sandbox
 policy, positive integer `maxDepth`, literal `workspace: true`, and literal
 `durable: true`. Its model
 entries declare an alias and nonempty capability list. Workspace and durable
@@ -1367,6 +1745,8 @@ interface HarnessExecutionDefaults {
   readonly maxToolCalls?: number
   readonly maxSubagentCalls?: number
   readonly maxParallelSubagents?: number
+  readonly maxWorkflowAgentCalls?: number
+  readonly maxParallelWorkflowAgentCalls?: number
   readonly maxDepth?: number
   readonly runTimeoutMs?: number
   readonly modelTimeoutMs?: number
@@ -1390,6 +1770,8 @@ interface ResolvedHarnessExecutionDefaults {
   readonly maxToolCalls: number
   readonly maxSubagentCalls: number
   readonly maxParallelSubagents: number
+  readonly maxWorkflowAgentCalls: number
+  readonly maxParallelWorkflowAgentCalls: number
   readonly maxDepth: number
   readonly runTimeoutMs: number
   readonly modelTimeoutMs: number
@@ -1404,7 +1786,8 @@ interface ResolvedHarnessExecutionDefaults {
 ```
 
 The resolved constants are `maxSteps:16`, `maxToolCalls:32`,
-`maxSubagentCalls:32`, `maxParallelSubagents:8`, `maxDepth:1`,
+`maxSubagentCalls:32`, `maxParallelSubagents:8`,
+`maxWorkflowAgentCalls:32`, `maxParallelWorkflowAgentCalls:8`, `maxDepth:1`,
 `runTimeoutMs:600_000`, `modelTimeoutMs:300_000`,
 `toolTimeoutMs:120_000`, `skillTimeoutMs:60_000`,
 `decisionTimeoutMs:10_000`, and `maxParallelToolCalls:8`.
@@ -2688,6 +3071,11 @@ type SuspensionFrameV1 =
       invocationId: string
       input: JsonValue
       activeCallIds: readonly string[]
+      agentCallBudget: Readonly<{
+        maxCalls: number
+        maxParallel: number
+        totalReserved: number
+      }>
     }>
   | Readonly<{
       kind: 'host-tool'
@@ -2959,6 +3347,10 @@ type AgentTargetPolicyDigestV1 = readonly [
 type WorkflowTargetPolicyDigestV1 = readonly [
   'workflow',
   id: string,
+  agentCalls: readonly [
+    maxCalls: number | null,
+    maxParallel: number | null,
+  ],
   maxDepth: number | null,
   sandbox: SandboxPolicyDigestV1 | null,
   workspace: boolean,
@@ -3002,6 +3394,8 @@ type GraphDigestPreimageV1 = readonly [
     maxToolCalls: number,
     maxSubagentCalls: number,
     maxParallelSubagents: number,
+    maxWorkflowAgentCalls: number,
+    maxParallelWorkflowAgentCalls: number,
     maxDepth: number,
     runTimeoutMs: number,
     modelTimeoutMs: number,
@@ -3052,7 +3446,12 @@ model-facing id.
 `targetPolicies` uses only `AgentTargetPolicyDigestV1` and
 `WorkflowTargetPolicyDigestV1`, sorted by kind then id. Omitted policies use the
 shown `null` or `false` values; resolved governance defaults are encoded rather
-than omitted. Tool-key selectors, external declared effects, phase names,
+than omitted. A workflow target encodes its definition-level `agentCalls`
+overrides as `[maxCalls|null,maxParallel|null]` immediately after its id. The
+graph `defaults` tuple encodes resolved `maxWorkflowAgentCalls` and
+`maxParallelWorkflowAgentCalls` immediately after `maxParallelSubagents` and
+before `maxDepth`. Overrides never move into `RuntimeRequirementsDigestV1`.
+Tool-key selectors, external declared effects, phase names,
 capabilities, and runtimes are set-like and bytewise lexicographically sorted.
 Permission pattern arrays, native policies/rules, external policies, and
 exposure rules preserve declaration order because it may affect decisions and
@@ -3065,7 +3464,11 @@ arbitrary Standard Schema validators, prompts, secrets, providers, and live
 adapters; `deploymentRevision` covers those application-controlled semantics.
 `sessionIdentityDigest` hashes `SessionIdentityDigestPreimageV1` after
 `normalizeHarnessIdentity`; an absent identity hashes the two `null` values.
-H4-008 rejects a mismatch before any handler or model call.
+H4-008 owns this final graph-preimage assembly and rejects a mismatch before any
+handler or model call. Its graph-digest tests independently change each workflow
+override and each resolved workflow default, prove the digest changes, and prove
+otherwise equal definitions/configurations remain stable with the exact tuple
+order above.
 
 ## 11. PURISTA integration
 

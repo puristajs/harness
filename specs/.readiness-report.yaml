@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:4da05205e97ff01f89fb000a26b9e3a8f32d19650c7ab4b83fda9f04ea0842b2"
+      scope_digest: "sha256:9f90c5ad2e361906a8ebd610ae2246eaaabcf50c0dd9398d64fd13bbb58a6947"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -433,6 +433,7 @@ follow_up_waves:
         - specs/09-agents.md
         - specs/10-workflows.md
         - specs/13-public-api.md
+        - specs/15-error-catalog.md
         - specs/17-implementation-plan.md
         - specs/25-static-harness-modules.md
         - specs/28-workflow-child-tasks.md
@@ -479,6 +480,9 @@ follow_up_waves:
       - review: "independent agent-loop, governance, registry, resume, and digest implementation-readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after agent governance was bound to the complete model-facing tool map, approval durability and revisions became statically decidable, trusted host identity/trace projection was explicit, nested continuation trees and provider-turn stream ids were closed, cross-process digest preimages were fully typed, staged executor ownership was aligned, and generated read_skill bindings were assigned to their owning agent identity."
+      - review: "independent workflow orchestration and child-task implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after workflow-local call budgets and graph digest ownership, exact fulfilled/failed/cancelled replay, stable durable comparison, lifetime timeout and terminal races, approval-capable task prohibition, fanOut no-budget behavior, strict persisted projections, and one shared caller-neutral target-stream consumer were made deterministic."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:
@@ -513,7 +517,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        count: 8
+        count: 9
       contradiction_check:
         status: passed
       strong_boundary_type_gate:

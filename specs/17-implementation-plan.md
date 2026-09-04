@@ -1,5 +1,10 @@
 # Implementation plan
 
+> **Superseded build plan:** this plan describes the completed pre-v4 baseline.
+> The clean-break implementation plan generated from
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
+> is authoritative for current work.
+
 **Purpose.** Ordered build plan for an AI agent. Each phase has explicit deliverables, files to create, tests to pass, and exit criteria. Phases must be completed in order; later phases may depend on earlier exits.
 
 The published package set contains `@purista/harness` plus independent provider addons. Non-core packages follow the convention `@purista/harness-{addon}`.

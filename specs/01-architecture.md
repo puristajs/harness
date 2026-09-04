@@ -1,5 +1,9 @@
 # Architecture
 
+> **V4 composition precedence:** [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
+> replaces the public builder/module topology in this file. Dependency
+> direction and package-family isolation remain normative.
+
 **Purpose.** Describes the layering, dependency direction, and package layout. Implementation agents must respect the dependency rules; violations are bugs.
 
 ## Layering

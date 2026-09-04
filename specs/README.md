@@ -1,8 +1,8 @@
-# `@purista/harness` — Specification v3
+# `@purista/harness` — Specification v4
 
-This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here. All persistence-related specs have been reconciled with the v3 `HarnessStorage` clean break in `32-harness-storage.md`. Proposed specs remain non-implementable until their matching readiness scope is approved. Spec 42 is the owner-approved clean builder and runtime API contract; its registration rules supersede spec 40 while spec 40's direct Guardrails binding remains active. Spec 43 is the owner-approved distributed production stack selection and implementation contract.
+This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No decision may be improvised beyond what is locked here. All persistence-related specs remain reconciled with the `HarnessStorage` clean break in `32-harness-storage.md`. Spec 42 is the repository-owner-directed v4 authoring and composition contract. It replaces the builder/module/custom-agent surface from specs 00, 02, 07, 08, 09, 10, 13, 25, and 40 where they conflict. Spec 43 remains the production stack selection contract.
 
-The folder contains numbered specifications through 43 plus this index; spec 33 is a structured, manifest-bound feature folder, spec 34 defines the distributed sandbox contract, spec 35 is the approved clean-break generic evaluation contract, and spec 43 records the completed production-provider selection. The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-google`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-storage-postgres`, `@purista/harness-sandbox-kubernetes`, `@purista/harness-agent-plugins`, `@purista/harness-policy-opa`, `@purista/harness-guardrails-presidio`, `@purista/harness-guardrails-native-privacy`, and the planned `@purista/harness-memory-postgres` and `@purista/harness-memory-redis` engines. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+The folder contains numbered specifications through 43 plus this index; spec 42 defines the v4 public API and spec 43 records the production-provider selection. The published package set includes `@purista/harness` plus independent provider and adapter addons. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the Harness contract.
 
 ## Active sandbox follow-up
 
@@ -51,7 +51,7 @@ For an implementation agent starting cold, read in this order:
 23. [22-local-durable-execution.md](./22-local-durable-execution.md) — built-in local durable execution with native SQLite Harness storage, host-directory workspace/sandbox binding, and secure defaults.
 24. [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) — provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata.
 25. [24-governance-policy.md](./24-governance-policy.md) — optional policy-driven governance layer for typed tool exposure, execution policy, approvals, audit events, and external policy adapters.
-26. [25-static-harness-modules.md](./25-static-harness-modules.md) — static typed modules, provenance, lifecycle ownership, and capability-family rules.
+26. [25-static-harness-modules.md](./25-static-harness-modules.md) — supersession record; v4 uses immutable catalogs.
 27. [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) — transient context projection and bounded recovery.
 28. [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) — sanitized test replay and opt-in diagnostic invariants.
 29. [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) — typed background child tasks, bounded fan-out, and in-process continuables.
@@ -62,9 +62,9 @@ For an implementation agent starting cold, read in this order:
 34. [33-enterprise-memory](./33-enterprise-memory/00-vision.md) — core memory orchestration, typed model references, tenant/principal identity, search, summaries, SQLite/PostgreSQL/Redis/NATS engines, PURISTA integration, and release gates.
 35. [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) — approved topology-transparent Sandbox lifecycle with adapter-private distributed coordination, local development/test adapters, durable-file recovery, PURISTA boundary, telemetry, tests, and provider bake-off gate.
 36. [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) — provider-neutral execute-and-score and score-only observation contract, versioned trials, multi-scorer outcomes, separate task/judge accounting, aggregates, cancellation, feedback projection, and safe telemetry.
-37. [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) — repeatable singular/plural agent and workflow registration plus direct optional Guardrails binding.
+37. [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) — supersession record plus the surviving direct Guardrails rule.
 38. [41-opa-policy-adapter.md](./41-opa-policy-adapter.md) — first-party typed OPA Data API client and governance evaluator adapter.
-39. [42-clean-builder-and-runtime-api.md](./42-clean-builder-and-runtime-api.md) — uniform singular/plural registries, direct native tools, clean run/destroy naming, context consistency, and end-to-end migration.
+39. [42-composable-definitions-and-catalogs.md](./42-composable-definitions-and-catalogs.md) — standalone definitions, immutable catalogs, agent-owned capabilities, typed subagents, simple Skill runtimes, workflow orchestration, and direct runtime composition.
 40. [43-distributed-production-reference-stack.md](./43-distributed-production-reference-stack.md) — PostgreSQL Harness storage, self-hosted Kubernetes sandbox/workspace runtime, one shared Harness per PURISTA service, and the distributed reference deployment.
 
 ## File index (one-liners)
@@ -98,7 +98,7 @@ For an implementation agent starting cold, read in this order:
 | [22-local-durable-execution.md](./22-local-durable-execution.md) | Local durable execution bundle using native SQLite Harness storage, host-directory workspaces, and durable sandbox binding. |
 | [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) | Provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata. |
 | [24-governance-policy.md](./24-governance-policy.md) | Optional tool-exposure and tool-call governance, typed native policy rules, approval adapters, shadow mode, and external policy engine adapters. |
-| [25-static-harness-modules.md](./25-static-harness-modules.md) | Static typed module composition, provenance, capability-family ownership, and lifecycle rules. |
+| [25-static-harness-modules.md](./25-static-harness-modules.md) | Supersession record; v4 uses immutable catalogs. |
 | [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) | Model-visible context projection, tool-result pruning, and single-retry recovery. |
 | [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) | Sanitized offline provider replay and explicit diagnostic invariant contracts. |
 | [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) | Typed child-task lifecycle, queued fan-out, durable descriptors, and in-process continuables. |
@@ -107,9 +107,9 @@ For an implementation agent starting cold, read in this order:
 | [33-enterprise-memory](./33-enterprise-memory/00-vision.md) | Manifest-bound memory orchestration, identity, search, summary, SQLite, PostgreSQL, Redis, NATS, PURISTA, testing, operations, and migration contract. |
 | [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md) | Approved topology-transparent Sandbox lifecycle, adapter conformance boundaries, and provider bake-off criteria; production adapter selection remains blocked. |
 | [35-generic-evaluation-runs.md](./35-generic-evaluation-runs.md) | Clean-break generic evaluation run/observation/result contract, including score-only reuse, trials, assessment coverage, accounting, and optional OTel. |
-| [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) | Clean singular/plural agent/workflow registration and direct optional Guardrails binding. |
+| [40-declarative-registration-and-guardrails-binding.md](./40-declarative-registration-and-guardrails-binding.md) | Supersession record plus the surviving direct Guardrails rule. |
 | [41-opa-policy-adapter.md](./41-opa-policy-adapter.md) | Typed, fail-closed Open Policy Agent Data API client, governance adapter, fake, example, and operational boundary. |
-| [42-clean-builder-and-runtime-api.md](./42-clean-builder-and-runtime-api.md) | Owner-approved clean-break builder, tool authoring, invocation, session lifecycle, context, PURISTA integration, and migration contract. |
+| [42-composable-definitions-and-catalogs.md](./42-composable-definitions-and-catalogs.md) | Clean-break definition factories, immutable catalogs, agent-owned capabilities, typed subagents, simple Skill runtimes, workflow orchestration, and direct runtime composition. |
 | [43-distributed-production-reference-stack.md](./43-distributed-production-reference-stack.md) | Owner-approved distributed production stack with PostgreSQL storage, Kubernetes execution, and one shared Harness runtime per PURISTA service. |
 
 ## Authoritative anchors
@@ -121,7 +121,7 @@ For an implementation agent starting cold, read in this order:
 - Local durable execution, native SQLite Harness storage, and workspace binding → [22-local-durable-execution.md](./22-local-durable-execution.md).
 - Provider outcomes, active/deferred retry, and rate-limit metadata → [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md).
 - Tool-exposure and tool-call governance, approvals → [24-governance-policy.md](./24-governance-policy.md).
-- Static module behavior and provenance → [25-static-harness-modules.md](./25-static-harness-modules.md).
+- Reusable composition and catalogs → [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 - Transient context projection → [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md).
 - Test-only replay and diagnostics → [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md).
 - Workflow child tasks, fan-out, and continuables → [28-workflow-child-tasks.md](./28-workflow-child-tasks.md).
@@ -130,9 +130,9 @@ For an implementation agent starting cold, read in this order:
 - Memory orchestration, typed model references, database engines, and PURISTA `ai.memory` integration → [33-enterprise-memory](./33-enterprise-memory/00-vision.md).
 - Distributed sandbox scope, adapter-private generations/leases/fencing, durable recovery, PURISTA boundary, and provider bake-off → [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
 - Generic evaluation execution and result behavior → [35-generic-evaluation-runs](./35-generic-evaluation-runs.md).
-- Agent/workflow registration and direct Guardrails binding → [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md).
+- Agent/workflow registration and catalogs → [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md); surviving direct Guardrails rule → [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md).
 - Open Policy Agent governance adapter → [41-opa-policy-adapter](./41-opa-policy-adapter.md).
-- Clean builder/runtime API and migration → [42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
+- Public authoring, catalogs, subagents, and runtime API → [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 - Distributed PostgreSQL/Kubernetes/PURISTA production stack → [43-distributed-production-reference-stack](./43-distributed-production-reference-stack.md).
 - Build order → [17-implementation-plan.md](./17-implementation-plan.md).
 

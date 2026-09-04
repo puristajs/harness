@@ -1,5 +1,10 @@
 # Workflow Child Tasks
 
+> **V4 dispatch precedence:** typed agent references, workflow allowlists,
+> distributed dispatch, and nested interruption behavior are defined by
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Existing bounded fan-out and durable checkpoint rules remain normative.
+
 **Purpose.** Defines typed, workflow-owned child tasks, bounded fan-out, and
 in-process continuables. The feature adds background lifecycles without turning
 agents into autonomous orchestrators or introducing a model-authored workflow

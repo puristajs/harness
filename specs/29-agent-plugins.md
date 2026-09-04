@@ -1,5 +1,10 @@
 # Agent Plugins integration
 
+> **V4 composition precedence:** plugin-provided Skills and MCP definitions are
+> adapted to the immutable definitions/catalog contract in
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Static Harness modules are removed.
+
 **Status:** approved implementation scope. This specification defines the
 first-party `@purista/harness-agent-plugins` package and the narrowly-scoped
 core MCP-runtime additions it requires. It implements the portable Agent

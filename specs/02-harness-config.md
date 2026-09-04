@@ -1,5 +1,11 @@
 # Harness configuration
 
+> **V4 replacement:** public construction, definition registration, model
+> requirement inference, and runtime binding are defined by
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Builder and static-module APIs described below are removed and are not an
+> implementation contract.
+
 **Purpose.** Defines the synchronous `defineHarness()` chainable builder, every method's input shape, defaults, and validation rules. Invalid inputs throw [`HarnessConfigError`](./15-error-catalog.md) synchronously at the call site of the offending builder method. See also second-stage validators in [06-models](./06-models.md), [07-tools](./07-tools.md), [08-skills](./08-skills.md), [09-agents](./09-agents.md), and [10-workflows](./10-workflows.md).
 
 ## Signature
@@ -16,7 +22,7 @@ There are no standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill
 
 All registry registration, invocation naming, session lifecycle naming, and
 handler-context consistency follow the approved clean-break contract in
-[42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
+[42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 
 ## Builder ordering and static modules (locked)
 

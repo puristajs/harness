@@ -1,5 +1,11 @@
 # Agents
 
+> **V4 replacement:** agent authoring and subagent dispatch are defined by
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Standalone `defineAgent` is required, arbitrary agent handlers are removed,
+> and old builder registration examples below are not an implementation
+> contract. Unchanged loop, permission, and lifecycle rules remain normative.
+
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
 >
 > **Approved registration update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) supersedes agent callback-helper registration and Guardrails attachment in this document and spec 38.

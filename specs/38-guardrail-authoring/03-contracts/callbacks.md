@@ -15,7 +15,7 @@ setup.
 
 Model, tool, skill, agent, and workflow registration uses the direct
 singular/plural methods in
-[spec 42](../../42-clean-builder-and-runtime-api.md). Identity callbacks,
+[spec 42](../../42-composable-definitions-and-catalogs.md). Identity callbacks,
 native-tool helper callbacks, private registration brands, and standalone
 definition helpers do not exist.
 

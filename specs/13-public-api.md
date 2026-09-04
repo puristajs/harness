@@ -1,5 +1,11 @@
 # Public API
 
+> **V4 replacement in progress:** the exported authoring and host SPI required
+> by [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
+> replaces every contradictory v3 export statement below. This file must be
+> regenerated from the implemented v4 declarations before release; removed
+> builder/module symbols are not retained.
+
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other authoring exports.
 
 **Purpose.** Single source of truth for every symbol exported from the v3 package set. The published package set includes the core package plus independent provider addons:

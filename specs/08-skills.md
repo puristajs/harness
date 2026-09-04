@@ -1,5 +1,10 @@
 # Skills
 
+> **V4 authoring precedence:** Skill definitions and runtime requirements are
+> defined by [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Script manifests, script schemas, review hashes, and implicit broad file tools
+> are not part of the v4 contract.
+
 `@purista/harness` implements Agent Skills as a generic runtime capability. A
 skill is a directory containing `SKILL.md` plus optional supporting files. The
 harness discloses only compact metadata to the model at run start; the model

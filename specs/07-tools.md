@@ -1,8 +1,14 @@
 # Tools
 
+> **V4 authoring precedence:** tool factories, host tools, and MCP definition
+> and binding are defined by
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> Runtime validation, permission, execution, and telemetry rules below remain
+> normative where they do not conflict.
+
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for native registration outside those concerns.
 
-**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered directly via repeatable `defineHarness().tool(id, definition)` or `.tools(definitions)` calls. There is no standalone `defineTool` factory. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md) and the clean authoring contract in [42-clean-builder-and-runtime-api](./42-clean-builder-and-runtime-api.md).
+**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered directly via repeatable `defineHarness().tool(id, definition)` or `.tools(definitions)` calls. There is no standalone `defineTool` factory. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md) and the clean authoring contract in [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 
 ## Built-in tools
 

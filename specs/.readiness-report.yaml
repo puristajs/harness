@@ -413,6 +413,103 @@ follow_up_waves:
       strict_plan_check: passed
       production_provider_gate: unchanged
       release_prerequisites: "Fresh authorized local Docker evidence and strict packed Core consumer declarations; existing dependency failures are not waived."
+  - id: "2026-09-04-composable-definitions-and-catalogs"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-09-04"
+      approver: "repo owner (active interactive Codex task)"
+      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
+      approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
+      scope_digest: "sha256:861db9e3c596aa5415c20ec065e88246cde75b6d6d7ac618849affe712acda19"
+      digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/02-harness-config.md
+        - specs/07-tools.md
+        - specs/08-skills.md
+        - specs/09-agents.md
+        - specs/10-workflows.md
+        - specs/13-public-api.md
+        - specs/17-implementation-plan.md
+        - specs/25-static-harness-modules.md
+        - specs/28-workflow-child-tasks.md
+        - specs/29-agent-plugins.md
+        - specs/30-guardrails.md
+        - specs/38-guardrail-authoring/03-contracts/callbacks.md
+        - specs/40-declarative-registration-and-guardrails-binding.md
+        - specs/42-composable-definitions-and-catalogs.md
+        - specs/README.md
+        - ../purista/specs/20-agents/88-harness-first-service-integration.md
+    summary:
+      updated_at: "2026-09-04"
+      purpose: "Approve the Harness v4 composition model and its PURISTA host boundary: standalone immutable tool, Skill, MCP server, agent, workflow, catalog, and Harness definitions; exact inferred runtime requirements; typed local and hosted target dispatch; standard streaming and approval behavior; and address-first PURISTA mounting."
+      implementation_status: ready
+    precedence: "Spec 42 supersedes conflicting Harness construction, registration, module, agent, workflow, tool, Skill, runtime-instantiation, and host-binding APIs. PURISTA spec 88 is the authoritative companion projection of the same contracts into ServiceBuilder, EventBridge, Hono, CLI, export metadata, and testing."
+    compatibility: "Clean break: no legacy aliases, deprecated overloads, wrappers, shims, dual behavior, migration runtime, or backward-compatible builder/module surface. Migration material contains source rewrites only."
+    independent_reviews:
+      - review: "independent contract and architecture readiness review"
+        status: passed
+        evidence: "PASS after definition ownership, composition, runtime requirements, standalone behavior, PURISTA separation, and representation boundaries were made deterministic."
+      - review: "independent end-to-end API and runtime readiness review"
+        status: passed
+        evidence: "PASS after prompt roles, memory, durability/workspace, local budgets, workflow call replay, RuntimeRequirements, MCP, hosted SPI, and owner branding were resolved."
+      - review: "independent final hosted-dispatch readiness review"
+        status: passed
+        evidence: "PASS after hidden-identity dispatcher binding tables, Contracts-constrained hosted calls, sender/receiver depth ceilings, per-run HostInvocation, nested-target handling, and standard SSE framing were resolved."
+      - review: "independent exact event and PURISTA streaming-boundary review"
+        status: passed
+        evidence: "PASS after the canonical ExecutionEvent union, terminal outcome parity, one-time input validation, before-start errors, after-guard terminal replacement, directional JSON Schema export, and standard SSE failure behavior were made exact."
+      - review: "independent catalog and private-registry implementation-readiness review"
+        status: passed
+        evidence: "PASS after exact original-definition catalog maps, MCP nesting and owner identity, shared non-MCP tool contracts, normalized requirements ownership, stable compiler errors, a private cycle test seam, and sanitized inspection were made exact."
+    dependency_and_ui_protocol_evidence:
+      captured_at: "2026-09-04"
+      standard_schema:
+        manifest: packages/harness/package.json
+        version: "@standard-schema/spec 1.1.0"
+      mcp:
+        manifest: packages/harness/package.json
+        version: "@modelcontextprotocol/client ^2.0.0"
+        evidence: "Spec 42 separates typed MCP server declarations from exact HTTP or stdio runtime bindings and requires discovered-schema equality before instance creation."
+      ai_sdk_ui:
+        manifest: packages/harness-ai-sdk-ui/package.json
+        tested_version: "ai 7.0.90"
+        peer_range: "ai ^7.0.0"
+        protocol: "AI SDK UI Message Stream v1"
+        evidence: "Spec 42 pins the current official DefaultChatTransport/UI-message parts contract, standard tool approval request/response flow, official stream reader conformance, data-only framework SSE events, and a single [DONE] sentinel without custom client libraries."
+        official_sources:
+          - https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+          - https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage
+          - https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat
+    gates:
+      human_approval:
+        status: passed
+      scope_digest:
+        status: passed
+      independent_readiness_reviews:
+        status: passed
+        count: 3
+      contradiction_check:
+        status: passed
+      strong_boundary_type_gate:
+        status: passed
+      clean_rebuild_boundary_gate:
+        status: passed
+      representation_ownership_gate:
+        status: passed
+      standalone_and_hosted_parity_gate:
+        status: passed
+      async_streaming_and_approval_gate:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      current_dependency_research_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed
 
 decision_boundary_refactor_2026_08_26:
   status: approved

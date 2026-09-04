@@ -14,9 +14,13 @@ import type { McpServerDefinition, McpToolDefinition, McpToolOptions } from './t
 
 type McpToolOptionsRecord = Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>>
 
-type McpToolsFromOptions<Tools extends McpToolOptionsRecord> = {
+type McpServerFromOptions<ServerId extends string, Tools extends McpToolOptionsRecord> = McpServerDefinition<
+	ServerId,
+	McpToolsFromOptions<ServerId, Tools>
+>
+type McpToolsFromOptions<ServerId extends string, Tools extends McpToolOptionsRecord> = {
 	readonly [K in keyof Tools]: Tools[K] extends McpToolOptions<infer Input, infer Output>
-		? McpToolDefinition<K & string, Input, Output>
+		? McpToolDefinition<K & string, Input, Output, McpServerFromOptions<ServerId, Tools>>
 		: never
 }
 
@@ -49,7 +53,7 @@ export interface McpServerOptions<Tools extends McpToolOptionsRecord> {
 export function defineMcpServer<const Id extends string, const Tools extends McpToolOptionsRecord>(
 	id: Id,
 	options: McpServerOptions<Tools>,
-): McpServerDefinition<Id, McpToolsFromOptions<Tools>> {
+): McpServerDefinition<Id, McpToolsFromOptions<Id, Tools>> {
 	assertDefinitionId(id, 'mcpServer.id')
 	assertKnownFields(options, ['tools'], 'mcpServer', id)
 	if (typeof options.tools !== 'object' || options.tools === null || Array.isArray(options.tools)) {
@@ -84,7 +88,7 @@ export function defineMcpServer<const Id extends string, const Tools extends Mcp
 	}
 
 	Object.freeze(toolValues)
-	return Object.freeze(serverValue) as McpServerDefinition<Id, McpToolsFromOptions<Tools>>
+	return Object.freeze(serverValue) as McpServerDefinition<Id, McpToolsFromOptions<Id, Tools>>
 }
 
 function throwInvalidTools(id: string): never {

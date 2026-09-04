@@ -17,7 +17,7 @@ import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { AgentGuardrailsBinding, AgentPermissions } from '../harness/defineHarness.js'
 import type { DurableStepOptions } from '../runtime/steps.js'
 import type { ExternalWaitRequest, ExternalWaitResolved } from '../storage/external-wait.js'
-import type { DefinitionReference } from './identity.js'
+import type { DefinitionReference, NonMcpToolIdentityKind } from './identity.js'
 
 /** Executable definition families addressable through a Harness target contract. */
 export type HarnessTargetKind = 'agent' | 'workflow'
@@ -138,22 +138,50 @@ export interface ToolOptions<Input extends ModelSchema, Output extends Schema, R
 	) => Promise<InferIn<Output>>
 }
 
-/** Frozen portable native tool reference. */
-export type ToolDefinition<
-	Id extends string = string,
-	Input extends ModelSchema = ModelSchema,
-	Output extends Schema = Schema,
-	Requires extends ToolRequirements = ToolRequirements,
+/** Shared identity-bearing model-facing contract for every non-MCP tool. */
+export type NonMcpToolDefinition<
+	IdentityKind extends NonMcpToolIdentityKind,
+	Id extends string,
+	Input extends ModelSchema,
+	Output extends Schema,
 > = Readonly<{
 	kind: 'tool'
 	id: Id
 	description: string
 	input: Input
 	output: Output
+	readonly $infer: DefinitionInference<Input, Output>
+}> & DefinitionReference<IdentityKind, Id>
+
+/** Frozen portable native tool reference. */
+export type ToolDefinition<
+	Id extends string = string,
+	Input extends ModelSchema = ModelSchema,
+	Output extends Schema = Schema,
+	Requires extends ToolRequirements = ToolRequirements,
+> = NonMcpToolDefinition<'tool', Id, Input, Output> & Readonly<{
 	requires?: Requires
 	handler: ToolOptions<Input, Output, Requires>['handler']
-	readonly $infer: DefinitionInference<Input, Output>
-}> & DefinitionReference<'tool', Id>
+}>
+
+/** Immutable built-in tool reference supplied by the Harness package. */
+export type BuiltInToolDefinition<
+	Id extends string = string,
+	Input extends ModelSchema = ModelSchema,
+	Output extends Schema = Schema,
+> = NonMcpToolDefinition<'built-in-tool', Id, Input, Output> & Readonly<{
+	requires: ToolRequirements<readonly [], readonly SandboxCapabilityId[]>
+}>
+
+/** Immutable host-aware tool reference supplied by an integrator package. */
+export type HostToolDefinition<
+	Id extends string = string,
+	Input extends ModelSchema = ModelSchema,
+	Output extends Schema = Schema,
+	HostContext = unknown,
+> = NonMcpToolDefinition<'host-tool', Id, Input, Output> & Readonly<{
+	handler: (context: HostContext, input: Infer<Input>) => Promise<InferIn<Output>>
+}>
 
 /** Authoring contract for one selected tool on an MCP server. */
 export interface McpToolOptions<Input extends ModelSchema = ModelSchema, Output extends Schema = Schema> {
@@ -168,14 +196,21 @@ export type McpToolDefinition<
 	Id extends string = string,
 	Input extends ModelSchema = ModelSchema,
 	Output extends Schema = Schema,
+	Owner extends McpServerDefinition<any, any> = McpServerDefinition<string, any>,
 > = Readonly<McpToolOptions<Input, Output> & {
 	kind: 'tool'
 	id: Id
 	readonly $infer: DefinitionInference<Input, Output>
-}> & DefinitionReference<'mcp-tool', Id>
+}> & DefinitionReference<'mcp-tool', Id, { readonly owner: Owner }>
 
-/** Identity-bearing portable or MCP tool reference accepted by agents. */
-export type AnyToolDefinition = ToolDefinition<any, any, any, any> | McpToolDefinition<any, any, any>
+/** Closed set of identity-bearing non-MCP tool definitions. */
+export type AnyNonMcpToolDefinition =
+	| ToolDefinition<any, any, any, any>
+	| BuiltInToolDefinition<any, any, any>
+	| HostToolDefinition<any, any, any, any>
+
+/** Identity-bearing non-MCP or MCP tool reference accepted by agents. */
+export type AnyToolDefinition = AnyNonMcpToolDefinition | McpToolDefinition<any, any, any>
 
 /** Frozen transport-free declaration of an MCP server and its selected tools. */
 export type McpServerDefinition<Id extends string, Tools extends Record<string, McpToolDefinition>> = Readonly<{
@@ -241,8 +276,20 @@ export interface AgentMemoryPolicy<C extends readonly MemoryCapability[]> {
 export type AnyAgentDefinition = Readonly<{
 	kind: 'agent'
 	id: string
+	description?: string | undefined
+	model: ModelAliasId
 	input: ModelSchema
 	output: ModelSchema
+	inputCapabilities?: readonly AgentInputCapability[] | undefined
+	tools?: readonly AnyToolDefinition[] | undefined
+	skills?: readonly SkillDefinition[] | undefined
+	guardrails?: AgentGuardrailsBinding | undefined
+	permissions?: AgentPermissions | undefined
+	subagents?: AgentSubagentMap | undefined
+	memory?: AgentMemoryPolicy<readonly MemoryCapability[]> | undefined
+	sandbox?: SandboxPolicy | undefined
+	workspace?: true | undefined
+	durable?: true | undefined
 	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', readonly ['tool-approval']>
 	readonly $infer: { readonly input: any; readonly validatedInput: any; readonly output: any }
 }> & DefinitionReference<'agent', string>
@@ -269,6 +316,10 @@ export type AgentOptions<
 	Subagents extends AgentSubagentMap | undefined,
 	Capabilities extends readonly AgentInputCapability[],
 	Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined,
+	Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
+	Permissions extends AgentPermissions | undefined = undefined,
+	Workspace extends true | undefined = undefined,
+	Durable extends true | undefined = undefined,
 > = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & {
 	readonly description?: string
 	readonly model?: Model
@@ -276,14 +327,14 @@ export type AgentOptions<
 	readonly inputCapabilities?: Capabilities
 	readonly tools?: Tools
 	readonly skills?: Skills
-	readonly guardrails?: AgentGuardrailsBinding
-	readonly permissions?: AgentPermissions
+	readonly guardrails?: Guardrails
+	readonly permissions?: Permissions
 	readonly subagents?: Subagents
 	readonly loop?: AgentLoopOptions
 	readonly memory?: Memory
 	readonly sandbox?: SandboxPolicy
-	readonly workspace?: true
-	readonly durable?: true
+	readonly workspace?: Workspace
+	readonly durable?: Durable
 }
 
 type PresentField<Key extends PropertyKey, Value> = [Value] extends [undefined]
@@ -302,6 +353,11 @@ export type AgentDefinition<
 	Capabilities extends readonly AgentInputCapability[] = readonly [],
  	Updates extends 'text-delta' | 'object-snapshot' = 'text-delta' | 'object-snapshot',
 	Prompt extends AgentPrompt<any, Capabilities> | undefined = AgentPrompt<Infer<Input>, Capabilities> | undefined,
+	Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined = undefined,
+	Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
+	Permissions extends AgentPermissions | undefined = undefined,
+	Workspace extends true | undefined = undefined,
+	Durable extends true | undefined = undefined,
 > = Readonly<{
 	kind: 'agent'
 	id: Id
@@ -311,16 +367,16 @@ export type AgentDefinition<
 	output: Output
 	instructions: string
 	inputCapabilities?: Capabilities
-	guardrails?: AgentGuardrailsBinding
-	permissions?: AgentPermissions
 	loop?: AgentLoopOptions
-	memory?: AgentMemoryPolicy<readonly MemoryCapability[]>
 	sandbox?: SandboxPolicy
-	workspace?: true
-	durable?: true
 	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, readonly ['tool-approval']>
 	readonly $infer: DefinitionInference<Input, Output>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
+	& PresentField<'memory', Memory>
+	& PresentField<'guardrails', Guardrails>
+	& PresentField<'permissions', Permissions>
+	& PresentField<'workspace', Workspace>
+	& PresentField<'durable', Durable>
 	& DefinitionReference<'agent', Id>
 
 /** One model alias and its exact workflow-visible capabilities. */
@@ -382,6 +438,8 @@ export interface WorkflowOptions<
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined,
 	Models extends WorkflowModelMap | undefined,
+	Workspace extends true | undefined,
+	Durable extends true | undefined,
 > {
 	readonly input: Input
 	readonly output: Output
@@ -390,8 +448,8 @@ export interface WorkflowOptions<
 	readonly models?: Models
 	readonly sandbox?: SandboxPolicy
 	readonly maxDepth?: number
-	readonly workspace?: true
-	readonly durable?: true
+	readonly workspace?: Workspace
+	readonly durable?: Durable
 	readonly handler: (context: WorkflowContext<Input, Output, Agents, Models>) => Promise<InferIn<Output>>
 }
 
@@ -402,6 +460,8 @@ export type WorkflowDefinition<
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined = undefined,
 	Models extends WorkflowModelMap | undefined = undefined,
+	Workspace extends true | undefined = undefined,
+	Durable extends true | undefined = undefined,
 > = Readonly<{
 	kind: 'workflow'
 	id: Id
@@ -410,9 +470,27 @@ export type WorkflowDefinition<
 	output: Output
 	sandbox?: SandboxPolicy
 	maxDepth?: number
-	workspace?: true
-	durable?: true
-	handler: WorkflowOptions<Input, Output, Agents, Models>['handler']
+	handler: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable>['handler']
 	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', readonly ['tool-approval', 'external-wait']>
 	readonly $infer: DefinitionInference<Input, Output>
-}> & PresentField<'agents', Agents> & PresentField<'models', Models> & DefinitionReference<'workflow', Id>
+}> & PresentField<'agents', Agents> & PresentField<'models', Models>
+	& PresentField<'workspace', Workspace> & PresentField<'durable', Durable>
+	& DefinitionReference<'workflow', Id>
+
+/** Identity-bearing workflow shape accepted by catalogs and Harness composition. */
+export type AnyWorkflowDefinition = Readonly<{
+	kind: 'workflow'
+	id: string
+	description?: string | undefined
+	input: ModelSchema
+	output: ModelSchema
+	agents?: WorkflowAgentMap | undefined
+	models?: WorkflowModelMap | undefined
+	sandbox?: SandboxPolicy | undefined
+	maxDepth?: number | undefined
+	workspace?: true | undefined
+	durable?: true | undefined
+	handler: (...args: any[]) => Promise<any>
+	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', readonly ['tool-approval', 'external-wait']>
+	readonly $infer: { readonly input: any; readonly validatedInput: any; readonly output: any }
+}> & DefinitionReference<'workflow', string>

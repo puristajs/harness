@@ -884,7 +884,11 @@ export interface AgentBeforeOutputInterceptorContext<S extends BuilderState, I>
  * not apply to a custom `AgentDefinition.handler`, which owns its own model and
  * tool lifecycle.
  */
-export interface AgentExecutionInterceptor<S extends BuilderState = BuilderState, I = JsonValue> {
+export interface AgentExecutionInterceptor<
+	S extends BuilderState = BuilderState,
+	I = JsonValue,
+	Requirements extends AgentExecutionRequirements | undefined = AgentExecutionRequirements | undefined,
+> {
 	/** Stable, content-free identifier used in errors and telemetry. */
 	id: string
 	/**
@@ -892,7 +896,7 @@ export interface AgentExecutionInterceptor<S extends BuilderState = BuilderState
 	 * `.build()`. Requirements only validate configuration; they cannot widen
 	 * an agent's runtime permissions or activate a disabled tool.
 	 */
-	requirements?: AgentExecutionRequirements
+	requirements?: Requirements
 	beforeInput?: (
 		ctx: AgentBeforeInputInterceptorContext<S, I>,
 	) => AgentExecutionInterception<JsonValue> | void | Promise<AgentExecutionInterception<JsonValue> | void>
@@ -931,8 +935,10 @@ export const agentGuardrailsBinding = Symbol('@purista/harness/agent-guardrails-
  * The binding can validate requirements but cannot register models, enable
  * tools, or widen an agent's permissions.
  */
-export interface AgentGuardrailsBinding {
-	readonly [agentGuardrailsBinding]: AgentExecutionInterceptor
+export interface AgentGuardrailsBinding<
+	Requirements extends AgentExecutionRequirements | undefined = AgentExecutionRequirements | undefined,
+> {
+	readonly [agentGuardrailsBinding]: AgentExecutionInterceptor<BuilderState, JsonValue, Requirements>
 }
 
 /** Governance mode for policy evaluation. `shadow` records decisions without enforcement. */

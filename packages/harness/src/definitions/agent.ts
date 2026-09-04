@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { HarnessConfigError } from '../errors/index.js'
 import { agentPermissionsSchema } from '../decisions/schemas.js'
 import { agentGuardrailsBinding, type AgentGuardrailsBinding, type AgentPermissions } from '../harness/defineHarness.js'
+import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
 import type { Infer, ModelSchema } from '../schema/index.js'
 import {
 	assertDefinitionId,
@@ -82,9 +83,13 @@ export function defineAgent<
 	const Subagents extends AgentSubagentMap | undefined = undefined,
 	const Capabilities extends readonly AgentInputCapability[] = readonly [],
 	const Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined = undefined,
+	const Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
+	const Permissions extends AgentPermissions | undefined = undefined,
+	const Workspace extends true | undefined = undefined,
+	const Durable extends true | undefined = undefined,
 >(
 	id: Id,
-	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory>,
+	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Workspace, Durable>,
 ): AgentDefinition<
 	Id,
 	ResolvedInput<Input>,
@@ -95,7 +100,8 @@ export function defineAgent<
 	Subagents,
 	Capabilities,
 	ResolvedUpdates<Output>,
-	ResolvedPrompt<Input, Capabilities>
+	ResolvedPrompt<Input, Capabilities>,
+	Memory, Guardrails, Permissions, Workspace, Durable
 > {
 	assertDefinitionId(id, 'agent.id')
 	assertKnownFields(options, agentFields, 'agent', id)
@@ -103,6 +109,8 @@ export function defineAgent<
 	if (options.description !== undefined) assertNonemptyText(options.description, 'agent.description', id)
 	const model = options.model ?? 'primary'
 	assertDefinitionId(model, 'agent.model')
+	if (options.workspace !== undefined && options.workspace !== true) throw invalidPresenceFlag(id, 'agent.workspace')
+	if (options.durable !== undefined && options.durable !== true) throw invalidPresenceFlag(id, 'agent.durable')
 
 	const input = options.input ?? defaultStringInput
 	const output = options.output ?? defaultStringOutput
@@ -123,9 +131,9 @@ export function defineAgent<
 	const subagents = copySubagents(options.subagents, id) as Subagents
 	const loop = copyLoop(options.loop, id)
 	const memory = copyMemory(options.memory, id) as Memory
-	const permissions = snapshotPermissions(options.permissions, id)
+	const permissions = snapshotPermissions(options.permissions, id) as Permissions
 	const sandbox = snapshotSandboxPolicy(options.sandbox, id)
-	const guardrails = snapshotGuardrails(options.guardrails, id)
+	const guardrails = snapshotGuardrails(options.guardrails, id) as Guardrails
 
 	const identity = createDefinitionIdentity('agent', id)
 	const contract = attachDefinitionIdentity({
@@ -164,7 +172,7 @@ export function defineAgent<
 	}
 	return freezeDefinition(value, identity) as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
-		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>
+		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, Workspace, Durable
 	>
 }
 
@@ -264,7 +272,7 @@ function assertPromptStrings(value: Record<string, unknown>, fields: readonly st
 }
 
 function assertOptionalPromptString(value: Record<string, unknown>, field: string, id: string): void {
-	if (value[field] !== undefined && typeof value[field] !== 'string') throw invalidPrompt(id)
+	if (value[field] !== undefined && (typeof value[field] !== 'string' || (value[field] as string).length === 0)) throw invalidPrompt(id)
 }
 
 function invalidPrompt(id: string): HarnessConfigError {
@@ -303,7 +311,12 @@ function copyMemory<M extends AgentMemoryPolicy<readonly MemoryCapability[]>>(me
 	if (memory === undefined) return undefined
 	if (!isPlainObject(memory)) throw invalidMemory(id, 'agent.memory')
 	assertKnownFields(memory, ['capabilities', 'embedding', 'summary'], 'agent.memory', id)
-	if (!Array.isArray(memory.capabilities) || memory.capabilities.some(capability => !supportedMemoryCapabilities.includes(capability))) {
+	if (
+		!Array.isArray(memory.capabilities)
+		|| memory.capabilities.length === 0
+		|| new Set(memory.capabilities).size !== memory.capabilities.length
+		|| memory.capabilities.some(capability => !supportedMemoryCapabilities.includes(capability))
+	) {
 		throw invalidMemory(id, 'agent.memory.capabilities')
 	}
 	if (memory.embedding !== undefined) {
@@ -354,7 +367,7 @@ function snapshotPermissions(permissions: AgentPermissions | undefined, id: stri
 	return Object.freeze(snapshot) as AgentPermissions
 }
 
-function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any>['sandbox'], id: string) {
+function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
 	if (policy === undefined || policy === 'inherit' || policy === 'private') return policy
 	if (!isPlainObject(policy)) throw invalidSandbox(id)
 	assertKnownFields(policy, ['group'], 'agent.sandbox', id)
@@ -380,6 +393,9 @@ function snapshotGuardrails(binding: AgentGuardrailsBinding | undefined, id: str
 		throw invalidGuardrails(id)
 	}
 	if (!isAgentExecutionInterceptor(interceptor)) throw invalidGuardrails(id)
+	if (interceptor.requirements !== undefined && !agentExecutionRequirementsSchema.safeParse(interceptor.requirements).success) {
+		throw invalidGuardrails(id)
+	}
 	return Object.freeze({ [agentGuardrailsBinding]: interceptor })
 }
 
@@ -393,6 +409,12 @@ function isAgentExecutionInterceptor(value: unknown): value is AgentGuardrailsBi
 function invalidGuardrails(id: string): HarnessConfigError {
 	return new HarnessConfigError('Agent guardrails binding is invalid.', {
 		reason: 'invalid_agent_guardrails', path: 'agent.guardrails', id,
+	})
+}
+
+function invalidPresenceFlag(id: string, path: string): HarnessConfigError {
+	return new HarnessConfigError('Agent presence flags can only be literal true.', {
+		reason: 'invalid_agent_flag', path, id,
 	})
 }
 

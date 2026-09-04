@@ -1,13 +1,18 @@
 import { HarnessConfigError } from '../errors/index.js'
 
-type DefinitionIdentityKind = 'tool' | 'mcp-tool' | 'skill' | 'mcp-server' | 'agent' | 'workflow'
+export type NonMcpToolIdentityKind = 'tool' | 'built-in-tool' | 'host-tool'
+export type DefinitionIdentityKind = NonMcpToolIdentityKind | 'mcp-tool' | 'skill' | 'mcp-server' | 'agent' | 'workflow' | 'catalog' | 'harness'
 
 /** @internal Compile-time reference brand shared by all definition values. */
 export declare const definitionReference: unique symbol
 
 /** @internal Nominal type carried by definition references without adding a public field. */
-export type DefinitionReference<Kind extends DefinitionIdentityKind, Id extends string> = {
-	readonly [definitionReference]: Readonly<{ kind: Kind; id: Id }>
+export type DefinitionReference<
+	Kind extends DefinitionIdentityKind,
+	Id extends string,
+	PrivateMetadata extends object = Record<never, never>,
+> = {
+	readonly [definitionReference]: Readonly<{ kind: Kind; id: Id } & PrivateMetadata>
 }
 
 /** @internal Library-owned identity record used by graph compilation. */
@@ -43,7 +48,7 @@ export function attachDefinitionIdentity<T extends object>(value: T, identity: D
 
 /** @internal Returns the identity known by this package instance. */
 export function getDefinitionIdentity(value: unknown): DefinitionIdentity | undefined {
-	return typeof value === 'object' && value !== null
+	return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, runtimeDefinitionIdentity)
 		? (value as { readonly [runtimeDefinitionIdentity]?: DefinitionIdentity })[runtimeDefinitionIdentity]
 		: undefined
 }

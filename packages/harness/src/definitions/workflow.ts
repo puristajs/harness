@@ -50,10 +50,12 @@ export function defineWorkflow<
 	Output extends ModelSchema,
 	const Agents extends WorkflowAgentMap | undefined = undefined,
 	const Models extends WorkflowModelMap | undefined = undefined,
+	const Workspace extends true | undefined = undefined,
+	const Durable extends true | undefined = undefined,
 >(
 	id: Id,
-	options: WorkflowOptions<Input, Output, Agents, Models>,
-): WorkflowDefinition<Id, Input, Output, Agents, Models> {
+	options: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable>,
+): WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable> {
 	assertDefinitionId(id, 'workflow.id')
 	assertKnownFields(options, workflowFields, 'workflow', id)
 	assertModelSchema(options.input, 'workflow.input', id)
@@ -65,6 +67,8 @@ export function defineWorkflow<
 		})
 	}
 	if (options.maxDepth !== undefined) assertPositiveInteger(options.maxDepth, 'workflow.maxDepth', id)
+	if (options.workspace !== undefined && options.workspace !== true) throw invalidWorkflowConfig(id, 'workflow.workspace')
+	if (options.durable !== undefined && options.durable !== true) throw invalidWorkflowConfig(id, 'workflow.durable')
 
 	const agents = copyAgents(options.agents, id) as Agents
 	const models = copyModels(options.models, id) as Models
@@ -97,7 +101,7 @@ export function defineWorkflow<
 		handler: options.handler,
 		contract,
 	}
-	return freezeDefinition(value, identity) as WorkflowDefinition<Id, Input, Output, Agents, Models>
+	return freezeDefinition(value, identity) as WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable>
 }
 
 function copyAgents<A extends WorkflowAgentMap>(agents: A | undefined, workflowId: string): A | undefined {
@@ -125,6 +129,7 @@ function copyModels<M extends WorkflowModelMap>(models: M | undefined, workflowI
 		if (
 			!Array.isArray(model.capabilities)
 			|| model.capabilities.length === 0
+			|| new Set(model.capabilities).size !== model.capabilities.length
 			|| model.capabilities.some(capability => !modelCapabilities.includes(capability))
 		) {
 			throw new HarnessConfigError('Workflow model capabilities must be a non-empty array.', {
@@ -136,7 +141,7 @@ function copyModels<M extends WorkflowModelMap>(models: M | undefined, workflowI
 	return Object.freeze(copy) as M
 }
 
-function snapshotSandboxPolicy(policy: WorkflowOptions<any, any, any, any>['sandbox'], id: string) {
+function snapshotSandboxPolicy(policy: WorkflowOptions<any, any, any, any, any, any>['sandbox'], id: string) {
 	if (policy === undefined || policy === 'inherit' || policy === 'private') return policy
 	if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) throw invalidWorkflowConfig(id, 'workflow.sandbox')
 	assertKnownFields(policy, ['group'], 'workflow.sandbox', id)

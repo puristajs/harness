@@ -1,0 +1,256 @@
+import { HarnessConfigError } from '../errors/index.js'
+import { agentGuardrailsBinding } from '../harness/defineHarness.js'
+import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
+import {
+	getDefinitionIdentity,
+	sameDefinitionIdentity,
+	type DefinitionIdentity,
+} from '../definitions/identity.js'
+import type {
+	AnyAgentDefinition,
+	AnyNonMcpToolDefinition,
+	AnyToolDefinition,
+	AnyWorkflowDefinition,
+	McpServerDefinition,
+	McpToolDefinition,
+	SkillDefinition,
+} from '../definitions/types.js'
+import { deriveRuntimeRequirements, type RuntimeRequirements } from './runtime-requirements.js'
+
+/** @internal Definition roots accepted by the canonical graph compiler. */
+export interface DefinitionGraphRoots {
+	readonly tools?: readonly AnyNonMcpToolDefinition[]
+	readonly skills?: readonly SkillDefinition[]
+	readonly mcpServers?: readonly McpServerDefinition<any, any>[]
+	readonly agents?: readonly AnyAgentDefinition[]
+	readonly workflows?: readonly AnyWorkflowDefinition[]
+}
+
+type DefinitionNode =
+	| AnyNonMcpToolDefinition
+	| McpToolDefinition
+	| SkillDefinition
+	| McpServerDefinition<any, any>
+	| AnyAgentDefinition
+	| AnyWorkflowDefinition
+
+/** @internal Dependency record used by the cycle-fixture seam. */
+export interface DefinitionDependencies {
+	readonly dependencies: readonly DefinitionNode[]
+	readonly subagents?: readonly AnyAgentDefinition[]
+}
+
+/** @internal Identity-aware dependency reader. Public factories always use the default reader. */
+export type DefinitionDependencyReader = (definition: DefinitionNode) => DefinitionDependencies
+
+/** @internal Immutable result shared by catalog and direct Harness composition. */
+export interface CompiledDefinitionGraph {
+	readonly tools: Readonly<Record<string, AnyNonMcpToolDefinition>>
+	readonly skills: Readonly<Record<string, SkillDefinition>>
+	readonly mcpServers: Readonly<Record<string, McpServerDefinition<any, any>>>
+	readonly agents: Readonly<Record<string, AnyAgentDefinition>>
+	readonly workflows: Readonly<Record<string, AnyWorkflowDefinition>>
+	readonly requirements: RuntimeRequirements
+}
+
+/** @internal Default dependency reader for immutable public definitions. */
+export const readDefinitionDependencies: DefinitionDependencyReader = definition => {
+	const identity = getDefinitionIdentity(definition)
+	if (identity?.kind === 'mcp-tool') {
+		return { dependencies: identity.owner === undefined ? [] : [identity.owner as McpServerDefinition<any, any>] }
+	}
+	if (identity?.kind === 'mcp-server') {
+		return { dependencies: Object.values((definition as McpServerDefinition<any, any>).tools) }
+	}
+	if (identity?.kind === 'agent') {
+		const agent = definition as AnyAgentDefinition
+		const subagents = Object.values(agent.subagents ?? {}).map(reference => (
+			'agent' in reference ? reference.agent : reference
+		))
+		return {
+			dependencies: [...(agent.tools ?? []), ...(agent.skills ?? []), ...subagents],
+			subagents,
+		}
+	}
+	if (identity?.kind === 'workflow') {
+		return { dependencies: Object.values((definition as AnyWorkflowDefinition).agents ?? {}) }
+	}
+	return { dependencies: [] }
+}
+
+/**
+ * @internal Compiles one complete immutable graph in collection and validation phases.
+ * The optional reader exists solely for package tests that must forge cycles.
+ */
+export function compileDefinitionGraph(
+	roots: DefinitionGraphRoots,
+	dependencyReader: DefinitionDependencyReader = readDefinitionDependencies,
+): CompiledDefinitionGraph {
+	const byToken = new Map<object, DefinitionNode>()
+	const pending: DefinitionNode[] = rootValues(roots)
+	const strictPublicShape = dependencyReader === readDefinitionDependencies
+
+	// Phase one: collect the complete recursive closure by private identity.
+	while (pending.length > 0) {
+		const definition = pending.pop()!
+		const identity = requireIdentity(definition)
+		if (byToken.has(identity.token)) continue
+		byToken.set(identity.token, definition)
+		pending.push(...dependencyReader(definition).dependencies)
+	}
+
+	// Phase two: validate the completed closure before deriving any public view.
+	if (strictPublicShape) {
+		for (const definition of byToken.values()) assertDefinitionShape(definition, requireIdentity(definition))
+	}
+	validateDefinitionCollisions(byToken.values())
+	validateAgentCycles(byToken.values(), dependencyReader)
+	if (strictPublicShape) validateAgentNamesAndReferences(byToken.values())
+
+	const tools = definitionMap(byToken.values(), ['tool', 'built-in-tool', 'host-tool']) as Readonly<Record<string, AnyNonMcpToolDefinition>>
+	const skills = definitionMap(byToken.values(), ['skill']) as Readonly<Record<string, SkillDefinition>>
+	const mcpServers = definitionMap(byToken.values(), ['mcp-server']) as Readonly<Record<string, McpServerDefinition<any, any>>>
+	const agents = definitionMap(byToken.values(), ['agent']) as Readonly<Record<string, AnyAgentDefinition>>
+	const workflows = definitionMap(byToken.values(), ['workflow']) as Readonly<Record<string, AnyWorkflowDefinition>>
+	const requirements = deriveRuntimeRequirements({ tools, skills, mcpServers, agents, workflows })
+
+	return Object.freeze({ tools, skills, mcpServers, agents, workflows, requirements })
+}
+
+function validateDefinitionCollisions(definitions: Iterable<DefinitionNode>): void {
+	const byAddress = new Map<string, DefinitionNode>()
+	for (const definition of definitions) {
+		const identity = requireIdentity(definition)
+		const address = definitionAddress(identity)
+		const existing = byAddress.get(address)
+		if (existing !== undefined && !sameDefinitionIdentity(existing, definition)) {
+			throw graphError('duplicate_definition', address, identity.id)
+		}
+		byAddress.set(address, definition)
+	}
+}
+
+function rootValues(roots: DefinitionGraphRoots): DefinitionNode[] {
+	return [
+		...(roots.tools ?? []), ...(roots.skills ?? []), ...(roots.mcpServers ?? []),
+		...(roots.agents ?? []), ...(roots.workflows ?? []),
+	]
+}
+
+function requireIdentity(definition: unknown): DefinitionIdentity {
+	const identity = getDefinitionIdentity(definition)
+	if (identity === undefined) throw graphError('foreign_definition', 'definition')
+	return identity
+}
+
+function assertDefinitionShape(definition: DefinitionNode, identity: DefinitionIdentity): void {
+	if (definition.id !== identity.id || expectedPublicKind(identity.kind) !== definition.kind || !Object.isFrozen(definition)) {
+		throw graphError('foreign_definition', `${identity.kind}.${identity.id}`, identity.id)
+	}
+	if (identity.kind === 'agent' && !('contract' in definition && 'model' in definition)) {
+		throw graphError('foreign_definition', `agent.${identity.id}`, identity.id)
+	}
+	if (identity.kind === 'workflow' && !('contract' in definition && 'handler' in definition)) {
+		throw graphError('foreign_definition', `workflow.${identity.id}`, identity.id)
+	}
+	if (identity.kind === 'mcp-tool') assertMcpOwner(definition as McpToolDefinition, identity)
+}
+
+function assertMcpOwner(tool: McpToolDefinition, identity: DefinitionIdentity): void {
+	const owner = identity.owner
+	const ownerIdentity = getDefinitionIdentity(owner)
+	if (
+		ownerIdentity?.kind !== 'mcp-server'
+		|| !Object.isFrozen(owner)
+		|| !Object.values((owner as McpServerDefinition<any, any>).tools).some(candidate => sameDefinitionIdentity(candidate, tool))
+	) {
+		throw graphError('foreign_definition', `mcpTool.${identity.id}`, identity.id)
+	}
+}
+
+function expectedPublicKind(kind: DefinitionIdentity['kind']): DefinitionNode['kind'] {
+	if (kind === 'tool' || kind === 'built-in-tool' || kind === 'host-tool' || kind === 'mcp-tool') return 'tool'
+	if (kind === 'catalog' || kind === 'harness') throw graphError('foreign_definition', kind)
+	return kind
+}
+
+function definitionAddress(identity: DefinitionIdentity): string {
+	if (identity.kind === 'tool' || identity.kind === 'built-in-tool' || identity.kind === 'host-tool') {
+		return `tool:${identity.id}`
+	}
+	if (identity.kind !== 'mcp-tool') return `${identity.kind}:${identity.id}`
+	const owner = getDefinitionIdentity(identity.owner)
+	if (owner?.kind !== 'mcp-server') throw graphError('foreign_definition', `mcpTool.${identity.id}`, identity.id)
+	return `mcp-tool:${owner.id}:${identity.id}`
+}
+
+function definitionMap(
+	definitions: Iterable<DefinitionNode>,
+	kinds: readonly DefinitionIdentity['kind'][],
+): Readonly<Record<string, DefinitionNode>> {
+	const entries = [...definitions]
+		.filter(definition => {
+			const identity = getDefinitionIdentity(definition)
+			return identity !== undefined && kinds.includes(identity.kind)
+		})
+		.sort((left, right) => left.id.localeCompare(right.id))
+		.map(definition => [definition.id, definition] as const)
+	return Object.freeze(Object.fromEntries(entries))
+}
+
+function validateAgentCycles(definitions: Iterable<DefinitionNode>, reader: DefinitionDependencyReader): void {
+	const agents = [...definitions].filter(definition => getDefinitionIdentity(definition)?.kind === 'agent') as AnyAgentDefinition[]
+	const state = new Map<object, 'visiting' | 'visited'>()
+	const visit = (agent: AnyAgentDefinition) => {
+		const identity = requireIdentity(agent)
+		if (state.get(identity.token) === 'visiting') throw graphError('agent_cycle', `agent.${identity.id}`, identity.id)
+		if (state.get(identity.token) === 'visited') return
+		state.set(identity.token, 'visiting')
+		for (const child of reader(agent).subagents ?? []) visit(child)
+		state.set(identity.token, 'visited')
+	}
+	for (const agent of agents) visit(agent)
+}
+
+function validateAgentNamesAndReferences(definitions: Iterable<DefinitionNode>): void {
+	const agents = [...definitions].filter(definition => getDefinitionIdentity(definition)?.kind === 'agent') as AnyAgentDefinition[]
+	for (const agent of agents) {
+		const names = new Map<string, string>()
+		for (const tool of agent.tools ?? []) {
+			requireIdentity(tool)
+			claimModelName(names, tool.id, `tool.${tool.id}`, agent.id)
+		}
+		for (const [name, reference] of Object.entries(agent.subagents ?? {})) {
+			const child = 'agent' in reference ? reference.agent : reference
+			requireIdentity(child)
+			claimModelName(names, name, `subagent.${child.id}`, agent.id)
+		}
+		const declaredRequirements = agent.guardrails?.[agentGuardrailsBinding].requirements
+		const parsedRequirements = declaredRequirements === undefined
+			? undefined
+			: agentExecutionRequirementsSchema.safeParse(declaredRequirements)
+		if (parsedRequirements !== undefined && !parsedRequirements.success) {
+			throw graphError('foreign_definition', `agent.${agent.id}.guardrails.requirements`, agent.id)
+		}
+		const requiredTools = parsedRequirements?.data.tools ?? []
+		for (const required of requiredTools) {
+			if (!(agent.tools ?? []).some(tool => tool.id === required)) {
+				throw graphError('foreign_definition', `agent.${agent.id}.guardrails.tools.${required}`, required)
+			}
+		}
+	}
+}
+
+function claimModelName(names: Map<string, string>, name: string, origin: string, agentId: string): void {
+	const previous = names.get(name)
+	if (previous !== undefined) {
+		throw graphError('model_name_collision', `agent.${agentId}.${name}`, `${previous},${origin}`)
+	}
+	names.set(name, origin)
+}
+
+function graphError(reason: string, path: string, id?: string): HarnessConfigError {
+	return new HarnessConfigError('Definition graph validation failed.', {
+		reason, path, ...(id === undefined ? {} : { id }),
+	})
+}

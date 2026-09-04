@@ -1,7 +1,11 @@
 import { z } from 'zod'
 
 import { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow } from '../src/definitions/index.js'
+import { defineCatalog } from '../src/definitions/catalog.js'
+import { defineHarness } from '../src/definitions/harness.js'
 import type { ToolRequirements } from '../src/definitions/index.js'
+import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
+import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
@@ -115,12 +119,17 @@ defineSkill('bad-runtime', { directory: new URL('./bad/', import.meta.url), runt
 defineSkill('bad-field', { directory: new URL('./bad/', import.meta.url), install: 'npm install' })
 
 const mcp = defineMcpServer('knowledge', {
-	tools: { searchKnowledge: { remoteName: 'search_knowledge', description: 'Search.', input, output } },
+	tools: {
+		searchKnowledge: { remoteName: 'search_knowledge', description: 'Search.', input, output },
+		fetchKnowledge: { remoteName: 'fetch_knowledge', description: 'Fetch.', input, output },
+	},
 })
 const mcpToolId: 'searchKnowledge' = mcp.tools.searchKnowledge.id
 type _McpInput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.input, { message: string }>>
 type _McpOutput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.output, { answer: string }>>
 void mcpToolId
+// @ts-expect-error the owning server id is private type metadata
+mcp.tools.searchKnowledge.serverId
 // @ts-expect-error MCP definitions never contain runtime transport
 defineMcpServer('badMcp', { url: 'https://example.com', tools: { search: { remoteName: 'search', description: 'Search.', input, output } } })
 
@@ -247,3 +256,152 @@ defineWorkflow('badWorkflowOutput', { input, output, async handler() { return { 
 defineWorkflow('badWorkflowField', { input, output, retries: 3, async handler() { return { answer: 'ok' } } })
 
 void workflow
+
+const catalog = defineCatalog('supportAi', {
+	tools: [lookup], skills: [skill], mcpServers: [mcp], agents: [structuredAgent], workflows: [workflow],
+})
+const catalogToolId: 'lookup' = catalog.tools.lookup.id
+const catalogAgentId: 'classify' = catalog.agents.classify.id
+const catalogWorkflowId: 'resolveCase' = catalog.workflows.resolveCase.id
+const catalogContractId: 'classify' = catalog.contracts.agents.classify.id
+void catalogToolId
+void catalogAgentId
+void catalogWorkflowId
+void catalogContractId
+// @ts-expect-error exact catalog maps reject unknown definition ids
+catalog.agents.unknown
+// @ts-expect-error MCP tools remain nested under their owning server
+catalog.tools.searchKnowledge
+// @ts-expect-error catalogs accept definitions rather than structural string references
+defineCatalog('invalidCatalog', { agents: ['classify'] })
+
+const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgent).addWorkflow(workflow)
+const usedHarness = defineHarness({ name: 'support' }).use(catalog)
+const reusedCatalogHarness = usedHarness.use(catalog)
+const leafHarness = defineHarness({ name: 'leaves' }).addTool(lookup).addSkill(skill).addMcpServer(mcp)
+const memoryAgent = defineAgent('memoryAgent', {
+	instructions: 'Remember.',
+	memory: {
+		capabilities: ['memory.kv', 'memory.vector_search'],
+		embedding: { model: 'embeddings' },
+		summary: { model: 'summary' },
+	},
+})
+const knowledgeAgent = defineAgent('knowledgeAgent', { instructions: 'Search.', tools: [mcp.tools.searchKnowledge] })
+const inferredHarness = defineHarness({ name: 'inferred' }).addAgent(memoryAgent).addAgent(knowledgeAgent)
+const directAgentId: 'classify' = directHarness.catalog.agents.classify.id
+const usedWorkflowId: 'resolveCase' = usedHarness.catalog.workflows.resolveCase.id
+const reusedWorkflowId: 'resolveCase' = reusedCatalogHarness.catalog.workflows.resolveCase.id
+const leafToolId: 'lookup' = leafHarness.catalog.tools.lookup.id
+type _HarnessAgentInput = Expect<Equal<typeof directHarness.$infer.agents.classify.input, { message: string }>>
+type _HarnessWorkflowOutput = Expect<Equal<typeof usedHarness.$infer.workflows.resolveCase.output, { answer: string }>>
+type _MemoryCapabilities = Expect<Equal<
+	typeof inferredHarness.$infer.requirements.memory.capabilities[number],
+	'memory.kv' | 'memory.vector_search'
+>>
+type _MemoryModelAliases = Expect<Equal<
+	typeof inferredHarness.$infer.requirements.memory.modelAliases[number],
+	'embeddings' | 'summary'
+>>
+type _McpServerIds = Expect<Equal<typeof inferredHarness.$infer.requirements.mcpServers[number], 'knowledge'>>
+type _InferredModelAliases = Expect<Equal<keyof typeof inferredHarness.$infer.requirements.models, 'primary' | 'embeddings' | 'summary'>>
+const inferredMcpId: 'knowledge' = inferredHarness.catalog.mcpServers.knowledge.id
+const inferredSiblingMcpToolId: 'fetchKnowledge' = inferredHarness.catalog.mcpServers.knowledge.tools.fetchKnowledge.id
+void directAgentId
+void usedWorkflowId
+void reusedWorkflowId
+void leafToolId
+void inferredMcpId
+void inferredSiblingMcpToolId
+// @ts-expect-error the exact inferred MCP owner map rejects unknown nested tools
+inferredHarness.catalog.mcpServers.knowledge.tools.unknown
+
+const fullRequirementsAgent = defineAgent('fullRequirementsAgent', {
+	instructions: 'Guard.', tools: [lookup], workspace: true, durable: true,
+	permissions: { bash: 'require_approval' },
+	guardrails: { [agentGuardrailsBinding]: {
+		id: 'fullRequirements', requirements: {
+			tools: ['lookup'], models: [{ alias: 'guardModel', capabilities: ['text'] }],
+			memory: ['memory.text_search'], sandbox: ['sandbox.fs'], skillRuntimes: ['node'],
+			durable: true, workspace: true, artifacts: true,
+		},
+	} },
+})
+const exactPermission: 'require_approval' = fullRequirementsAgent.permissions.bash
+const exactGuardModelAlias: 'guardModel' = fullRequirementsAgent.guardrails[agentGuardrailsBinding].requirements.models[0].alias
+const exactWorkspace: true = fullRequirementsAgent.workspace
+const exactDurable: true = fullRequirementsAgent.durable
+void exactPermission
+void exactGuardModelAlias
+void exactWorkspace
+void exactDurable
+
+const invalidGuardrailMemory: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail memory requirements use the closed MemoryCapability vocabulary
+	memory: ['memory.unknown'],
+}
+const invalidGuardrailSandbox: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail sandbox requirements use sandbox capability ids only
+	sandbox: ['storage.persistent'],
+}
+const invalidGuardrailRuntime: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail Skill runtimes use the closed runtime vocabulary
+	skillRuntimes: ['ruby'],
+}
+const invalidGuardrailFlag: AgentExecutionRequirements = {
+	// @ts-expect-error presence flags can only be literal true
+	durable: false,
+}
+void invalidGuardrailMemory
+void invalidGuardrailSandbox
+void invalidGuardrailRuntime
+void invalidGuardrailFlag
+
+const durableWorkflow = defineWorkflow('durableWorkflow', {
+	input, output, workspace: true, durable: true,
+	models: { media: { alias: 'media', capabilities: ['image_generation'] } },
+	async handler({ input: value }) { return { answer: value.message } },
+})
+const featureHarness = defineHarness({ name: 'featureHarness' }).addAgent(fullRequirementsAgent).addWorkflow(durableWorkflow)
+const durableRequired: true = featureHarness.$infer.requirements.storage.durable
+const workspaceRequired: true = featureHarness.$infer.requirements.workspace
+const artifactsRequired: true = featureHarness.$infer.requirements.artifacts
+type _GuardMemoryCapability = Expect<Equal<typeof featureHarness.$infer.requirements.memory.capabilities[number], 'memory.text_search'>>
+type _GuardSandboxCapability = Expect<Equal<typeof featureHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.fs'>>
+type _GuardSkillRuntime = Expect<Equal<typeof featureHarness.$infer.requirements.skillRuntimes[number], 'node'>>
+type _GuardModelCapability = Expect<Equal<typeof featureHarness.$infer.requirements.models.guardModel.capabilities[number], 'text'>>
+const emptyRequirementsHarness = defineHarness({ name: 'emptyRequirements' })
+const durableNotRequired: false = emptyRequirementsHarness.$infer.requirements.storage.durable
+const workspaceNotRequired: false = emptyRequirementsHarness.$infer.requirements.workspace
+const artifactsNotRequired: false = emptyRequirementsHarness.$infer.requirements.artifacts
+void durableRequired
+void workspaceRequired
+void artifactsRequired
+void durableNotRequired
+void workspaceNotRequired
+void artifactsNotRequired
+
+const bashTool = defineTool('bash', {
+	description: 'Run a command.', input, output,
+	async handler(_context, value) { return { answer: value.message } },
+})
+const approvalAgent = defineAgent('approvalAgent', {
+	instructions: 'Ask first.', tools: [bashTool], permissions: { bash: 'require_approval' },
+})
+const approvalDurable: true = defineHarness({ name: 'approvalHarness' })
+	.addAgent(approvalAgent).$infer.requirements.storage.durable
+void approvalDurable
+
+// @ts-expect-error catalog composition requires the hidden catalog identity
+defineHarness({ name: 'copiedCatalog' }).use({ ...catalog })
+// @ts-expect-error Harness structural copies do not retain the hidden definition brand
+const copiedHarness: typeof directHarness = { ...directHarness }
+void copiedHarness
+// @ts-expect-error a Harness name is required
+defineHarness({})
+// @ts-expect-error immutable composition has no terminal define step
+directHarness.define()
+// @ts-expect-error Harness definitions are not string lookup registries
+directHarness.getAgent('classify')
+// @ts-expect-error MCP tools stay nested and cannot enter the non-MCP tool map
+directHarness.addTool(mcp.tools.searchKnowledge)

@@ -597,6 +597,12 @@ The Harness instance owns the HTTP clients and stdio processes created from
 these bindings and closes them once. The stdio sandbox follows its existing
 ownership marker.
 
+Each selected MCP tool carries private type metadata for the exact owning
+`McpServerDefinition`, including its complete typed tool map, as well as the
+exact runtime owner object in hidden identity metadata. This lets recursive
+catalog inference recover the original server definition and reject unknown
+nested tool keys without exposing a public `serverId` or string lookup.
+
 ## 4. Agent Skills and executable scripts
 
 The minimal Skill definition is:
@@ -674,8 +680,8 @@ The definition-time fields are closed and have these requirement effects:
 | `inputCapabilities` | readonly `vision_input | audio_input | file_input` ids | selected model capabilities |
 | `tools` | readonly branded tool references | tool and adapter requirements |
 | `skills` | readonly Skill references | Skill runtimes and scoped reader |
-| `guardrails` | `AgentGuardrailsBinding` | its declared model/adapter requirements |
-| `permissions` | existing `AgentPermissions` | restriction only; grants nothing |
+| `guardrails` | `AgentGuardrailsBinding<Requirements>` | its exact declared requirements |
+| `permissions` | existing `AgentPermissions` | restriction only; `require_approval` adds durable storage |
 | `subagents` | typed agent map | graph closure and delegation tools |
 | `loop` | closed positive integer limits | none |
 | `memory` | `AgentMemoryPolicy` | memory capabilities and declared model aliases |
@@ -686,6 +692,48 @@ The definition-time fields are closed and have these requirement effects:
 `model` is a lower-camel string literal `ModelAliasId` that identifies a
 runtime requirement. `ModelAlias` remains the concrete provider/model runtime
 binding and is never accepted by `defineAgent`.
+
+The Core-owned Guardrail requirement declaration is exact and does not grant a
+capability or inject a runtime handle:
+
+```ts
+interface AgentExecutionRequirements {
+  readonly tools?: readonly string[]
+  readonly models?: readonly Readonly<{
+    alias: ModelAliasId
+    capabilities: readonly ModelCapability[]
+  }>[]
+  readonly memory?: readonly MemoryCapability[]
+  readonly sandbox?: readonly SandboxCapabilityId[]
+  readonly skillRuntimes?: readonly SkillRuntimeId[]
+  readonly durable?: true
+  readonly workspace?: true
+  readonly artifacts?: true
+}
+
+interface AgentExecutionInterceptor<
+  Requirements extends AgentExecutionRequirements | undefined =
+    AgentExecutionRequirements | undefined,
+> {
+  readonly id: string
+  readonly requirements?: Requirements
+  // Existing interception callbacks remain unchanged.
+}
+
+interface AgentGuardrailsBinding<
+  Requirements extends AgentExecutionRequirements | undefined =
+    AgentExecutionRequirements | undefined,
+> {
+  readonly [agentGuardrailsBinding]: AgentExecutionInterceptor<Requirements>
+}
+```
+
+Every optional array is nonempty and duplicate-free when present. All ids and
+capability members are validated during definition/graph compilation; model
+aliases use the lower-camel grammar. Guardrail `tools` must already be selected by the agent. The
+concrete binding and `defineAgent` preserve the requirements type so static and
+runtime `RuntimeRequirements` contain the same contributions. Optional
+Guardrails packages must return this exact generic binding rather than erase it.
 
 The memory policy is exact:
 
@@ -1127,11 +1175,14 @@ interface RuntimeRequirements<
   MemoryModelAlias extends string = string,
   RequiredSandboxCapability extends SandboxCapabilityId = SandboxCapabilityId,
   HostToolId extends string = string,
+  Durable extends boolean = boolean,
+  Workspace extends boolean = boolean,
+  Artifacts extends boolean = boolean,
 > {
   readonly models: Models
   readonly mcpServers: readonly McpServerId[]
   readonly skillRuntimes: readonly RuntimeId[]
-  readonly storage: Readonly<{ durable: boolean }>
+  readonly storage: Readonly<{ durable: Durable }>
   readonly memory: Readonly<{
     capabilities: readonly RequiredMemoryCapability[]
     modelAliases: readonly MemoryModelAlias[]
@@ -1139,8 +1190,8 @@ interface RuntimeRequirements<
   readonly sandbox: Readonly<{
     capabilities: readonly RequiredSandboxCapability[]
   }>
-  readonly workspace: boolean
-  readonly artifacts: boolean
+  readonly workspace: Workspace
+  readonly artifacts: Artifacts
   readonly hostTools: readonly HostToolId[]
 }
 ```
@@ -1149,6 +1200,12 @@ All requirement arrays are deduplicated, lexicographically sorted, and frozen.
 Model maps and nested values are frozen and have deterministic key order.
 `hostTools` lets the ordinary standalone instance type reject a host-aware graph;
 only the integrator entry point can satisfy those bindings.
+The literal presence of agent/workflow `durable` and `workspace`, approval
+permissions, Guardrail requirement flags, and media-generation model
+capabilities is preserved through the definition types. The derived requirement
+type therefore exposes literal `true` or `false` for `storage.durable`,
+`workspace`, and `artifacts`; it never widens these fields to `boolean` for a
+concrete graph.
 
 Requirement derivation follows this order:
 

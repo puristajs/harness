@@ -254,8 +254,7 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 		if (interceptor?.requirements?.durable === true) durable = true
 		if (interceptor?.requirements?.workspace === true) workspace = true
 		if (interceptor?.requirements?.artifacts === true) artifactsRequired = true
-		if (hasApprovalPermission(agent)) durable = true
-		if (agent.governance?.policies?.some(policy => policy.effects.includes('require_approval'))) durable = true
+		if (agentCanRequestApproval(agent)) durable = true
 		if (Object.keys(agent.subagents ?? {}).length > 0) durable = true
 		if (agent.durable === true) durable = true
 		if (agent.workspace === true) workspace = true
@@ -293,6 +292,19 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 
 function sorted<T extends string>(values: Iterable<T>): readonly T[] {
 	return Object.freeze([...values].sort())
+}
+
+/** @internal Canonical recursive approval reachability check shared by requirements and task preflight. */
+export function agentCanRequestApproval(agent: AnyAgentDefinition, visited = new Set<object>()): boolean {
+	if (visited.has(agent)) return false
+	visited.add(agent)
+	if (hasApprovalPermission(agent)) return true
+	if (agent.governance?.policies?.some(policy => policy.effects.includes('require_approval'))) return true
+	for (const reference of Object.values(agent.subagents ?? {})) {
+		const child = 'kind' in reference ? reference : reference.agent
+		if (agentCanRequestApproval(child, visited)) return true
+	}
+	return false
 }
 
 function hasApprovalPermission(agent: AnyAgentDefinition): boolean {

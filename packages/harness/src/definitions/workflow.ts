@@ -10,16 +10,18 @@ import {
 	attachDefinitionIdentity,
 	createDefinitionIdentity,
 	freezeDefinition,
+	getDefinitionIdentity,
 } from './identity.js'
 import type {
 	WorkflowAgentMap,
+	WorkflowAgentCallLimits,
 	WorkflowDefinition,
 	WorkflowModelMap,
 	WorkflowOptions,
 } from './types.js'
 
 const workflowFields = [
-	'input', 'output', 'description', 'agents', 'models', 'sandbox', 'maxDepth', 'workspace', 'durable', 'handler',
+	'input', 'output', 'description', 'agents', 'models', 'agentCalls', 'sandbox', 'maxDepth', 'workspace', 'durable', 'handler',
 ] as const
 const modelCapabilities: readonly ModelCapability[] = Object.freeze([
 	'text', 'text_stream', 'object', 'object_stream', 'tool_use', 'vision_input', 'audio_input', 'file_input',
@@ -70,6 +72,7 @@ export function defineWorkflow<
 		})
 	}
 	if (options.maxDepth !== undefined) assertPositiveInteger(options.maxDepth, 'workflow.maxDepth', id)
+	const agentCalls = snapshotAgentCalls(options.agentCalls, id)
 	if (options.workspace !== undefined && options.workspace !== true) throw invalidWorkflowConfig(id, 'workflow.workspace')
 	if (options.durable !== undefined && options.durable !== true) throw invalidWorkflowConfig(id, 'workflow.durable')
 
@@ -97,6 +100,7 @@ export function defineWorkflow<
 		output: options.output,
 		...(agents === undefined ? {} : { agents }),
 		...(models === undefined ? {} : { models }),
+		...(agentCalls === undefined ? {} : { agentCalls }),
 		...(sandbox === undefined ? {} : { sandbox }),
 		...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
 		...(options.workspace === undefined ? {} : { workspace: options.workspace }),
@@ -107,12 +111,30 @@ export function defineWorkflow<
 	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable>
 }
 
+function snapshotAgentCalls(value: WorkflowAgentCallLimits | undefined, id: string) {
+	if (value === undefined) return undefined
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) throw invalidWorkflowConfig(id, 'workflow.agentCalls')
+	assertKnownFields(value, ['maxCalls', 'maxParallel'], 'workflow.agentCalls', id)
+	if (value.maxCalls !== undefined) assertPositiveInteger(value.maxCalls, 'workflow.agentCalls.maxCalls', id)
+	if (value.maxParallel !== undefined) assertPositiveInteger(value.maxParallel, 'workflow.agentCalls.maxParallel', id)
+	return Object.freeze({
+		...(value.maxCalls === undefined ? {} : { maxCalls: value.maxCalls }),
+		...(value.maxParallel === undefined ? {} : { maxParallel: value.maxParallel }),
+	})
+}
+
 function copyAgents<A extends WorkflowAgentMap>(agents: A | undefined, workflowId: string): A | undefined {
 	if (agents === undefined) return undefined
 	if (typeof agents !== 'object' || agents === null || Array.isArray(agents)) throw invalidWorkflowConfig(workflowId, 'workflow.agents')
 	const copy: Record<string, A[keyof A]> = {}
 	for (const [name, agent] of Object.entries(agents) as [string, A[keyof A]][]) {
 		assertDefinitionId(name, `workflow.${workflowId}.agents`)
+		const identity = getDefinitionIdentity(agent)
+		if (identity?.kind !== 'agent' || getDefinitionIdentity(agent.contract)?.token !== identity.token) {
+			throw new HarnessConfigError('Workflow agents must be exact package-owned definitions.', {
+				reason: 'foreign_definition', path: `workflow.${workflowId}.agents.${name}`, id: workflowId,
+			})
+		}
 		copy[name] = agent
 	}
 	return Object.freeze(copy) as unknown as A

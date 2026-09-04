@@ -78,6 +78,23 @@ export interface RunRecord {
   metadata?: Record<string, JsonValue>
 }
 
+/** Exact persisted metadata for one workflow-owned child task. */
+export interface ChildTaskRecordMetadataV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'workflow_child_task'
+  readonly parentRunId: string
+  readonly workflowId: string
+  readonly workflowInvocationId: string
+  readonly callId: string
+  readonly agentId: string
+  readonly modelAlias: string
+  readonly mode: 'one_shot' | 'continuable'
+  readonly context: 'isolated'
+  readonly timeoutMs: number | null
+  readonly idempotencyKey: string | null
+  readonly createdAt: string
+}
+
 /** Event payload persisted for run replay or audit. */
 export interface PersistedRunEvent {
   id: string

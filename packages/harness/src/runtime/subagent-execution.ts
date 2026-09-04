@@ -8,6 +8,7 @@ import { decisionEvidenceSchema } from '../decisions/schemas.js'
 import { AgentLoopBudgetError, OperationCancelledError, ToolError, ValidationError } from '../errors/index.js'
 import { isJsonValue, type JsonValue } from '../models/json.js'
 import type { Infer, InferIn } from '../schema/index.js'
+import type { HarnessTargetDispatchStream } from '../ports/target-dispatcher.js'
 import { finishReasonSchema } from '../ports/model-provider.js'
 import { withAbortSignal } from './abort.js'
 import { createHarnessChildTargetInterruption } from './steps.js'
@@ -81,9 +82,34 @@ async function executeSubagent(
 			signal: context.signal,
 		}),
 	}))
-	let terminal: Extract<ExecutionEvent<JsonValue>, { readonly type: 'run.finished' }> | undefined
+	const consumed = await consumeHarnessTargetStream({
+		stream, signal: context.signal, parentRunId: context.runId, childInvocationId,
+		relay: event => context.relayChildEvent(event),
+	})
+	const outcome = consumed.outcome
+	if (outcome.status === 'completed') return outcome.output
+	if (outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, outcome)
+	if (outcome.status === 'cancelled') throw new OperationCancelledError('Subagent execution was cancelled.', { scope: 'agent' }, outcome.error)
+	throw new ToolError('Subagent execution failed.', { tool_id: providerName, tool_kind: 'subagent' }, outcome.error)
+}
+
+export interface ConsumedHarnessTarget<Output> {
+	readonly outcome: Extract<ExecutionEvent<Output>, { readonly type: 'run.finished' }>['outcome']
+	readonly lineage: Readonly<{ parentRunId: string; childRunId: string; childInvocationId: string }>
+}
+
+/** @internal Strict shared target-stream consumer. Caller-specific code maps the terminal. */
+export async function consumeHarnessTargetStream<Output extends JsonValue>(options: Readonly<{
+	stream: HarnessTargetDispatchStream<Output>
+	signal: AbortSignal
+	parentRunId: string
+	childInvocationId: string
+	relay(event: ExecutionEvent<Output>): Promise<void>
+}>): Promise<ConsumedHarnessTarget<Output>> {
+	const { stream, signal, parentRunId, childInvocationId, relay } = options
+	let terminal: Extract<ExecutionEvent<Output>, { readonly type: 'run.finished' }> | undefined
 	let childRunId: string | undefined
-	let iterator: AsyncIterator<ExecutionEvent>
+	let iterator: AsyncIterator<ExecutionEvent<Output>>
 	try {
 		iterator = stream[Symbol.asyncIterator]()
 	} catch (error) {
@@ -92,35 +118,31 @@ async function executeSubagent(
 	}
 	try {
 		while (true) {
-			const next = await withAbortSignal(context.signal, 'agent', 'Subagent execution was cancelled.', () => iterator.next())
+			const next = await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => iterator.next())
 			if (next === null || typeof next !== 'object') throw malformedTerminal('invalid_event')
 			if (next.done) {
 				if (terminal === undefined) throw malformedTerminal('missing_terminal')
-				await withAbortSignal(context.signal, 'agent', 'Subagent execution was cancelled.', () => context.relayChildEvent(terminal!))
+				await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(terminal!))
 				break
 			}
 			if (terminal !== undefined) {
 				const reason = isPlainRecord(next.value) && next.value['type'] === 'run.finished' ? 'duplicate_terminal' : 'event_after_terminal'
 				throw malformedTerminal(reason)
 			}
-			const event = validateChildEvent(next.value, childRunId, context.runId, childInvocationId)
+			const event = validateChildEvent(next.value, childRunId, parentRunId, childInvocationId) as ExecutionEvent<Output>
 			childRunId ??= event.runId
 			if (event.type === 'run.finished') {
 				terminal = event
 				continue
 			}
-			await withAbortSignal(context.signal, 'agent', 'Subagent execution was cancelled.', () => context.relayChildEvent(event))
+			await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(event))
 		}
 	} catch (error) {
 		await cleanupChildStream(stream, iterator)
 		throw error
 	}
-	if (terminal === undefined) throw malformedTerminal('missing_terminal')
-	const outcome = terminal.outcome
-	if (outcome.status === 'completed') return outcome.output
-	if (outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, outcome as never)
-	if (outcome.status === 'cancelled') throw new OperationCancelledError('Subagent execution was cancelled.', { scope: 'agent' }, outcome.error)
-	throw new ToolError('Subagent execution failed.', { tool_id: providerName, tool_kind: 'subagent' }, outcome.error)
+	if (terminal === undefined || childRunId === undefined) throw malformedTerminal('missing_terminal')
+	return Object.freeze({ outcome: terminal.outcome, lineage: Object.freeze({ parentRunId, childRunId, childInvocationId }) })
 }
 
 function isReferenceWrapper(value: AgentSubagentReference): value is Readonly<{ agent: AnyAgentDefinition; description?: string }> {
@@ -251,7 +273,7 @@ async function cleanupChildStream(
 	iterator?: AsyncIterator<ExecutionEvent>,
 ): Promise<void> {
 	const cleanup: Promise<unknown>[] = []
-	try { cleanup.push(Promise.resolve(stream.cancel('subagent-consumer-stopped'))) } catch { /* preserve the primary failure */ }
+	try { cleanup.push(Promise.resolve(stream.cancel('target-consumer-stopped'))) } catch { /* preserve the primary failure */ }
 	try { if (iterator?.return !== undefined) cleanup.push(Promise.resolve(iterator.return())) } catch { /* preserve the primary failure */ }
 	await Promise.allSettled(cleanup)
 }
@@ -328,7 +350,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function malformedTerminal(reason: 'missing_terminal' | 'duplicate_terminal' | 'event_after_terminal' | 'invalid_event' | 'invalid_run_correlation' | 'invalid_terminal'): ValidationError {
-	return new ValidationError('Subagent stream must contain exactly one terminal event.', {
+	return new ValidationError('Harness target stream must contain exactly one terminal event.', {
 		where: 'model_response', issues: { reason },
 	})
 }

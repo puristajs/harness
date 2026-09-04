@@ -412,14 +412,95 @@ type WorkflowModelHandles<Models extends WorkflowModelMap | undefined> = Models 
 	? { readonly [K in keyof Models]: ModelHandle<Models[K]> }
 	: Record<never, never>
 
+/** Content policy for workflow-owned child tasks. */
+export type ChildTaskContextPolicy = 'isolated'
+/** Lifecycle mode for workflow-owned child tasks. */
+export type ChildTaskMode = 'one_shot' | 'continuable'
+
+/** Immutable content-free identity of one workflow-owned child task. */
+export interface ChildTaskDescriptor {
+	readonly id: string
+	readonly parentRunId: string
+	readonly sessionId: string
+	readonly workflowId: string
+	readonly workflowInvocationId: string
+	readonly callId: string
+	readonly agentId: string
+	readonly modelAlias: string
+	readonly contextPolicy: ChildTaskContextPolicy
+	readonly mode: ChildTaskMode
+	readonly createdAt: string
+}
+
+/** Content-free child-task lifecycle snapshot. */
+export interface ChildTaskStatus {
+	readonly descriptor: ChildTaskDescriptor
+	readonly status: 'running' | 'succeeded' | 'failed' | 'cancelled'
+	readonly finishedAt?: string
+	readonly error?: import('../models/state.js').SerializedError
+}
+
+/** Handle for an isolated workflow-owned one-shot task. */
+export interface ChildTaskHandle<Output> {
+	readonly id: string
+	result(): Promise<Output>
+	status(): Promise<ChildTaskStatus>
+	cancel(reason?: string): Promise<void>
+}
+
+/** Handle for an in-process child task with sequential turns. */
+export interface ContinuableChildTaskHandle<Input, Output> extends ChildTaskHandle<Output> {
+	send(input: Input): Promise<Output>
+	close(): Promise<Output | undefined>
+}
+
+export type ChildTaskStartOptions = Readonly<{
+	callId: string
+	idempotencyKey?: string
+	timeoutMs?: number
+	context?: 'isolated'
+	mode?: 'one_shot'
+}>
+
+export type ContinuableChildTaskStartOptions = Readonly<{
+	callId: string
+	timeoutMs?: number
+	context?: 'isolated'
+	mode: 'continuable'
+}>
+
+/** Definition-local workflow agent-call ceilings. */
+export interface WorkflowAgentCallLimits {
+	readonly maxCalls?: number
+	readonly maxParallel?: number
+}
+
+export interface WorkflowChildTasks<Agents extends WorkflowAgentMap | undefined> {
+	start<K extends keyof NonNullable<Agents>>(
+		agent: K,
+		input: NonNullable<Agents>[K]['$infer']['input'],
+		options: ContinuableChildTaskStartOptions,
+	): Promise<ContinuableChildTaskHandle<NonNullable<Agents>[K]['$infer']['input'], NonNullable<Agents>[K]['$infer']['output']>>
+	start<K extends keyof NonNullable<Agents>>(
+		agent: K,
+		input: NonNullable<Agents>[K]['$infer']['input'],
+		options: ChildTaskStartOptions,
+	): Promise<ChildTaskHandle<NonNullable<Agents>[K]['$infer']['output']>>
+}
+
+type WorkflowExternalWait<Durable extends true | undefined> = Durable extends true
+	? Readonly<{ externalWait: Readonly<{ wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> }> }>
+	: Readonly<Record<never, never>>
+
 /** Typed handler context limited to the agents and models declared by a workflow. */
-export interface WorkflowContext<
+export type WorkflowContext<
 	Input extends ModelSchema,
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined,
 	Models extends WorkflowModelMap | undefined,
-> {
-	readonly input: Infer<Input>
+	Durable extends true | undefined,
+> = Readonly<{
+	readonly input: Infer<Input> & JsonValue
 	readonly agents: WorkflowAgentInvokers<Agents>
 	readonly models: WorkflowModelHandles<Models>
 	readonly logger: Logger
@@ -429,17 +510,10 @@ export interface WorkflowContext<
 	readonly runId: string
 	readonly sessionId: string
 	readonly metadata: Readonly<Record<string, JsonValue>>
-	readonly externalWait: { wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> }
 	readonly step: <T extends JsonValue>(stepId: string, handler: () => Promise<T>, options?: DurableStepOptions) => Promise<T>
-	readonly fanOut: <T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: { concurrency?: number }) => Promise<R[]>
-	readonly childTasks: {
-		start<K extends keyof NonNullable<Agents>>(
-			agent: K,
-			input: NonNullable<Agents>[K]['$infer']['input'],
-			options: Readonly<{ callId: string; idempotencyKey?: string; timeoutMs?: number; mode?: 'one_shot' }>,
-		): Promise<{ readonly id: string; result(): Promise<NonNullable<Agents>[K]['$infer']['output']>; cancel(reason?: string): Promise<void> }>
-	}
-}
+	readonly fanOut: <T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: Readonly<{ concurrency?: number }>) => Promise<R[]>
+	readonly childTasks: WorkflowChildTasks<Agents>
+}> & WorkflowExternalWait<Durable>
 
 /** Closed authoring fields for an application-orchestration workflow. */
 export interface WorkflowOptions<
@@ -455,11 +529,12 @@ export interface WorkflowOptions<
 	readonly description?: string
 	readonly agents?: Agents
 	readonly models?: Models
+	readonly agentCalls?: WorkflowAgentCallLimits
 	readonly sandbox?: SandboxPolicy
 	readonly maxDepth?: number
 	readonly workspace?: Workspace
 	readonly durable?: Durable
-	readonly handler: (context: WorkflowContext<Input, Output, Agents, Models>) => Promise<InferIn<Output>>
+	readonly handler: (context: WorkflowContext<Input, Output, Agents, Models, Durable>) => Promise<InferIn<Output>>
 }
 
 /** Frozen definition of one custom orchestration workflow. */
@@ -477,6 +552,7 @@ export type WorkflowDefinition<
 	description?: string
 	input: Input
 	output: Output
+	agentCalls?: WorkflowAgentCallLimits
 	sandbox?: SandboxPolicy
 	maxDepth?: number
 	handler: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable>['handler']
@@ -495,6 +571,7 @@ export type AnyWorkflowDefinition = Readonly<{
 	output: ModelSchema
 	agents?: WorkflowAgentMap | undefined
 	models?: WorkflowModelMap | undefined
+	agentCalls?: WorkflowAgentCallLimits | undefined
 	sandbox?: SandboxPolicy | undefined
 	maxDepth?: number | undefined
 	workspace?: true | undefined

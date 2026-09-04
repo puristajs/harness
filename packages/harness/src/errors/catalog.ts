@@ -472,6 +472,59 @@ export class WorkflowNotFoundError extends HarnessError {
   }
 }
 
+/** One workflow call id was reused for another logical child call. */
+export class WorkflowCallReplayConflictError extends HarnessError {
+	public constructor(meta: {
+		reason: 'operation_mismatch' | 'target_mismatch' | 'input_mismatch' | 'idempotency_key_mismatch' | 'options_mismatch'
+		workflow_id: string
+		call_id: string
+		expected_operation: 'agent_run' | 'child_task_start'
+		received_operation: 'agent_run' | 'child_task_start'
+		expected_target_kind: 'agent'
+		expected_target_id: string
+		received_target_kind: 'agent'
+		received_target_id: string
+	}) {
+		super({ code: 'WORKFLOW_CALL_REPLAY_CONFLICT', category: 'validation', retriable: false,
+			message: 'Workflow call id conflicts with an existing logical child call.', meta })
+	}
+}
+
+/** One logical workflow invocation exhausted its agent-call budget. */
+export class WorkflowAgentCallBudgetError extends HarnessError {
+	public constructor(meta: { workflow_id: string; agent_id: string; reason: 'max_calls' | 'max_parallel'; limit: number }) {
+		super({ code: 'WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED', category: 'validation', retriable: false,
+			message: 'Workflow agent-call budget exceeded.', meta })
+	}
+}
+
+/** An agent target selected by workflow orchestration returned a failed terminal. */
+export class WorkflowChildTargetError extends HarnessError {
+	public constructor(meta:
+		| { reason: 'agent_call_failed'; workflow_id: string; call_id: string; target_kind: 'agent'; target_id: string }
+		| { reason: 'child_task_failed'; workflow_id: string; call_id: string; task_id: string; target_kind: 'agent'; target_id: string }, cause?: unknown) {
+		super({ code: 'WORKFLOW_CHILD_TARGET_FAILED', category: 'internal', retriable: false,
+			message: 'Workflow child target failed.', meta, cause })
+	}
+}
+
+/** A durable task id was reused with another stable start tuple. */
+export class ChildTaskConflictError extends HarnessError {
+	public constructor(meta: { reason: 'idempotency_key_reused'; workflow_id: string; parent_run_id: string; task_id: string; agent_id: string; call_id: string }) {
+		super({ code: 'CHILD_TASK_CONFLICT', category: 'validation', retriable: false,
+			message: 'Child-task idempotency key conflicts with an existing task.', meta })
+	}
+}
+
+/** A child-task record or live handle is unavailable in the requested state. */
+export class ChildTaskStateError extends HarnessError {
+	public constructor(meta: { reason: 'invalid_record'; task_id: string }
+		| { reason: 'recovery_required' | 'closing' | 'terminal'; task_id: string; workflow_id: string; agent_id: string }) {
+		super({ code: 'CHILD_TASK_STATE_ERROR', category: 'state', retriable: false,
+			message: 'Child task is not available in the requested state.', meta })
+	}
+}
+
 /** Session id not found in backing store. */
 export class SessionNotFoundError extends HarnessError {
   public constructor(message: string, meta: { session_id: string }, cause?: unknown) {
@@ -607,7 +660,7 @@ export class WorkspaceCleanupError extends HarnessError {
 export class OperationTimeoutError extends HarnessError {
   public constructor(
     message: string,
-    meta: { scope: 'run' | 'model' | 'tool' | 'decision' | 'sandbox_run' | 'memory' | 'workspace'; timeout_ms: number },
+    meta: { scope: 'run' | 'model' | 'tool' | 'decision' | 'sandbox_run' | 'memory' | 'workspace' | 'child_task'; timeout_ms: number },
     cause?: unknown,
   ) {
     super({ code: 'OPERATION_TIMEOUT', category: 'timeout', retriable: true, message, meta, cause })
@@ -618,7 +671,7 @@ export class OperationTimeoutError extends HarnessError {
 export class OperationCancelledError extends HarnessError {
   public constructor(
     message: string,
-    meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' | 'workspace' },
+    meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' | 'workspace' | 'child_task' },
     cause?: unknown,
   ) {
     super({ code: 'OPERATION_CANCELLED', category: 'cancelled', retriable: false, message, meta, cause })

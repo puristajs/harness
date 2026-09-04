@@ -52,6 +52,35 @@ export interface RunCheckpoint {
   readonly committedAt?: string
 }
 
+/** Exact stored terminal for one replay-safe direct workflow agent call. */
+export type WorkflowChildCallStoredOutcomeV1 =
+  | Readonly<{ status: 'completed'; output: JsonValue }>
+  | Readonly<{ status: 'failed'; error: Readonly<{
+      code: 'WORKFLOW_CHILD_TARGET_FAILED'; message: 'Workflow child target failed.'; category: 'internal'; retriable: false
+      meta: Readonly<{ reason: 'agent_call_failed'; workflow_id: string; call_id: string; target_kind: 'agent'; target_id: string }>
+    }> }>
+  | Readonly<{ status: 'cancelled'; error: Readonly<{
+      code: 'OPERATION_CANCELLED'; message: 'Workflow agent call was cancelled.'; category: 'cancelled'; retriable: false
+      meta: Readonly<{ scope: 'agent' }>
+    }> }>
+
+/** Namespaced replay value stored in RunCheckpoint.output. */
+export interface WorkflowChildCallCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'workflow_child_call'
+  readonly callId: string
+  readonly target: Readonly<{ kind: 'agent'; id: string }>
+  readonly input: JsonValue
+  readonly outcome: WorkflowChildCallStoredOutcomeV1
+  readonly lineage: Readonly<{
+    rootRunId: string
+    workflowRunId: string
+    workflowInvocationId: string
+    childRunId: string
+    childInvocationId: string
+  }>
+}
+
 /** Raised when code attempts to resume a terminal run. */
 export class DurableTerminalRunError extends Error {
   public constructor(runId: string, status: DurableTerminalRunStatus) {

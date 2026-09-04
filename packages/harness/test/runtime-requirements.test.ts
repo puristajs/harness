@@ -9,6 +9,8 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { z } from 'zod'
+import { resolveHarnessExecutionDefaults } from '../src/runtime/execution-defaults.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
 
 const emptyRequirements = requirements()
 
@@ -233,6 +235,20 @@ describe('exact Harness instance requirements', () => {
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { telemetry: { flavor: 'invalid' } }))).toBe('invalid_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { agentAdmission: {} }))).toBe('invalid_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { logger: {} }))).toBe('invalid_runtime_binding')
+	})
+})
+
+describe('workflow agent-call defaults', () => {
+	it('resolves the documented 32/8 constants and accepts explicit overrides', () => {
+		expect(resolveHarnessExecutionDefaults()).toMatchObject({ maxWorkflowAgentCalls: 32, maxParallelWorkflowAgentCalls: 8 })
+		expect(resolveHarnessExecutionDefaults({ maxWorkflowAgentCalls: 4, maxParallelWorkflowAgentCalls: 2 })).toMatchObject({ maxWorkflowAgentCalls: 4, maxParallelWorkflowAgentCalls: 2 })
+	})
+
+	it('validates and freezes definition-local agent call limits', () => {
+		const workflow = defineWorkflow('bounded', { input: z.string(), output: z.string(), agentCalls: { maxCalls: 3, maxParallel: 2 }, async handler({ input }) { return input } })
+		expect(workflow.agentCalls).toEqual({ maxCalls: 3, maxParallel: 2 })
+		expect(Object.isFrozen(workflow.agentCalls)).toBe(true)
+		expect(() => defineWorkflow('invalidBound', { input: z.string(), output: z.string(), agentCalls: { maxCalls: 0 }, async handler({ input }) { return input } })).toThrow(HarnessConfigError)
 	})
 })
 

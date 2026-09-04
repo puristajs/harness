@@ -8,6 +8,8 @@ export interface HarnessExecutionDefaults {
 	readonly maxToolCalls?: number
 	readonly maxSubagentCalls?: number
 	readonly maxParallelSubagents?: number
+	readonly maxWorkflowAgentCalls?: number
+	readonly maxParallelWorkflowAgentCalls?: number
 	readonly maxDepth?: number
 	readonly runTimeoutMs?: number
 	readonly modelTimeoutMs?: number
@@ -26,6 +28,8 @@ export interface ResolvedHarnessExecutionDefaults {
 	readonly maxToolCalls: number
 	readonly maxSubagentCalls: number
 	readonly maxParallelSubagents: number
+	readonly maxWorkflowAgentCalls: number
+	readonly maxParallelWorkflowAgentCalls: number
 	readonly maxDepth: number
 	readonly runTimeoutMs: number
 	readonly modelTimeoutMs: number
@@ -39,7 +43,7 @@ export interface ResolvedHarnessExecutionDefaults {
 }
 
 const fields = Object.freeze([
-	'maxSteps', 'maxToolCalls', 'maxSubagentCalls', 'maxParallelSubagents', 'maxDepth',
+	'maxSteps', 'maxToolCalls', 'maxSubagentCalls', 'maxParallelSubagents', 'maxWorkflowAgentCalls', 'maxParallelWorkflowAgentCalls', 'maxDepth',
 	'runTimeoutMs', 'modelTimeoutMs', 'toolTimeoutMs', 'skillTimeoutMs', 'decisionTimeoutMs',
 	'maxParallelToolCalls', 'historyWindow', 'contextProjection', 'historyRetention',
 ] as const)
@@ -49,6 +53,8 @@ const constants = Object.freeze({
 	maxToolCalls: 32,
 	maxSubagentCalls: 32,
 	maxParallelSubagents: 8,
+	maxWorkflowAgentCalls: 32,
+	maxParallelWorkflowAgentCalls: 8,
 	maxDepth: 1,
 	runTimeoutMs: 600_000,
 	modelTimeoutMs: 300_000,
@@ -66,7 +72,7 @@ export function resolveHarnessExecutionDefaults(value?: HarnessExecutionDefaults
 	if (ownKeys.some(key => typeof key !== 'string')) fail('defaults')
 	const unknown = (ownKeys as string[]).sort(codePointCompare).find(key => !(fields as readonly string[]).includes(key))
 	if (unknown !== undefined) fail(`defaults.${unknown}`)
-	for (const field of fields.slice(0, 11)) {
+	for (const field of fields.slice(0, 13)) {
 		const candidate = input[field]
 		if (candidate === undefined) continue
 		const permitsZero = field === 'runTimeoutMs'
@@ -82,7 +88,7 @@ export function resolveHarnessExecutionDefaults(value?: HarnessExecutionDefaults
 	const historyRetention = retentionValue === undefined ? undefined : snapshotRetention(retentionValue)
 	return Object.freeze({
 		...constants,
-		...Object.fromEntries(fields.slice(0, 11).flatMap(field => input[field] === undefined ? [] : [[field, input[field]]])),
+		...Object.fromEntries(fields.slice(0, 13).flatMap(field => input[field] === undefined ? [] : [[field, input[field]]])),
 		...(historyWindow === undefined ? {} : { historyWindow }),
 		...(contextProjection === undefined ? {} : { contextProjection }),
 		...(historyRetention === undefined ? {} : { historyRetention }),

@@ -616,15 +616,20 @@ const transactionAnalysis = defineSkill('transaction-analysis', {
 
 `runtimes` is optional and contains logical runtime ids. A runtime requirement
 is an availability requirement, not permission and not an installation
-instruction. The selected sandbox/runtime adapter reports its available
-runtimes. A Harness instance fails before use when an assigned Skill requires a
-runtime the instance cannot provide.
+instruction. The selected sandbox reports its available runtimes through
+Sandbox runtime metadata. A Harness instance fails before use when an assigned
+Skill requires a runtime the instance cannot provide.
 
-The initial closed runtime-id union is `'node' | 'python' | 'shell'`. A sandbox
-reports `readonly runtimes: readonly SkillRuntimeId[]` in its capability
-metadata. `defineSkill` validates the id grammar synchronously; instance
-compilation loads `SKILL.md` and verifies that its declared `name` matches the
-definition id before `getInstance()` resolves.
+The initial closed runtime-id union is `'node' | 'python' | 'shell'`. The public
+`Sandbox` port has optional data-only
+`readonly runtimes?: readonly SkillRuntimeId[]` metadata; omission means that
+the adapter declares no Skill runtimes. When the compiled graph requires at
+least one Skill runtime, the graph-level sandbox binding type requires the
+`runtimes` property and instance validation requires it to contain every
+required runtime id. Runtime metadata never grants process execution,
+filesystem, environment, or network permission. `defineSkill` validates the id
+grammar synchronously; instance compilation loads `SKILL.md` and verifies that
+its declared `name` matches the definition id before `getInstance()` resolves.
 
 Skill definitions do not enumerate scripts and do not declare script input or
 output schemas, hashes, review state, or per-script policies. `SKILL.md`
@@ -1227,9 +1232,131 @@ typed model handles. Media results are artifact references and emit artifact
 and progress events. Multimodal input uses the pure prompt mapper and explicit
 provider-neutral content parts.
 
-With only the default `primary` model requirement, `getInstance` accepts the
-concise `model` binding. Multiple aliases use an exact `models` record. Runtime
-bindings contain concrete providers and deployment infrastructure:
+`HarnessInstanceConfig` is derived only from the canonical
+`RuntimeRequirements` value. It does not derive requirements again from
+definitions, catalogs, or runtime values. The public conditional shape is:
+
+```ts
+type HasMembers<Values extends readonly unknown[]> =
+  [Values[number]] extends [never] ? false : true
+
+type Or<Left extends boolean, Right extends boolean> =
+  true extends Left | Right ? true : false
+
+type RequiredField<
+  Needed extends boolean,
+  Key extends PropertyKey,
+  Value,
+> = Needed extends true
+  ? Readonly<{ [Field in Key]: Value }>
+  : Readonly<{ [Field in Key]?: never }>
+
+type ModelAliases<Requirements extends RuntimeRequirements> =
+  keyof Requirements['models'] & string
+
+type ModelRuntimeBinding = Readonly<Omit<ModelAlias, 'capabilities'>>
+
+type ModelFields<Requirements extends RuntimeRequirements> =
+  [ModelAliases<Requirements>] extends [never]
+    ? Readonly<{ model?: never; models?: never }>
+    : [ModelAliases<Requirements>] extends ['primary']
+      ? ['primary'] extends [ModelAliases<Requirements>]
+        ? Readonly<{ model: ModelRuntimeBinding; models?: never }>
+        : never
+      : Readonly<{
+          model?: never
+          models: Readonly<{
+            [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding
+          }>
+        }>
+
+type SandboxBinding<Requirements extends RuntimeRequirements> =
+  Sandbox
+  & (HasMembers<Requirements['sandbox']['capabilities']> extends true
+    ? Readonly<{ capabilities: readonly AdapterCapability[] }>
+    : object)
+  & (HasMembers<Requirements['skillRuntimes']> extends true
+    ? Readonly<{ runtimes: readonly SkillRuntimeId[] }>
+    : object)
+
+type HarnessInstanceConfig<Requirements extends RuntimeRequirements> =
+  [Requirements['hostTools'][number]] extends [never]
+    ? Readonly<
+        ModelFields<Requirements>
+        & RequiredField<
+          HasMembers<Requirements['mcpServers']>,
+          'mcp',
+          Readonly<{
+            [ServerId in Requirements['mcpServers'][number]]: McpBinding
+          }>
+        >
+        & RequiredField<
+          Requirements['storage']['durable'],
+          'storage',
+          HarnessStorage
+        >
+        & RequiredField<
+          Or<
+            HasMembers<Requirements['memory']['capabilities']>,
+            HasMembers<Requirements['memory']['modelAliases']>
+          >,
+          'memory',
+          MemoryEngine
+        >
+        & RequiredField<
+          Or<
+            HasMembers<Requirements['sandbox']['capabilities']>,
+            HasMembers<Requirements['skillRuntimes']>
+          >,
+          'sandbox',
+          SandboxBinding<Requirements>
+        >
+        & RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
+        & RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
+        & Readonly<{
+          agentAdmission?: AgentAdmission
+          admission?: ModelAdmission
+          logger?: Logger
+          telemetry?: TelemetryOptions
+        }>
+      >
+    : never
+```
+
+The model cases are exact:
+
+- an empty model-alias set forbids both `model` and `models`;
+- the exact alias set `{ primary }` requires `model` and forbids `models`; and
+- every other nonempty alias set requires an exact `models` record and forbids
+  `model`.
+
+The caller never supplies `capabilities` on a model binding. The compiler
+injects the exact, frozen capability tuple from
+`RuntimeRequirements.models[alias]` into the normalized alias after validation.
+This keeps capability declarations derived from graph behavior and prevents a
+runtime caller from weakening or widening them.
+
+Each conditional infrastructure group is required when its canonical
+requirement is present and forbidden with `?: never` when it is absent:
+
+- `mcp` is required exactly when `mcpServers` is nonempty;
+- `storage` is required exactly when `storage.durable` is literal `true`;
+- `memory` is required when memory capabilities or memory model aliases are
+  nonempty;
+- `sandbox` is required when sandbox capabilities or Skill runtimes are
+  nonempty;
+- `workspace` is required exactly when `workspace` is literal `true`; and
+- `artifacts` is required exactly when `artifacts` is literal `true`.
+
+`agentAdmission`, provider `admission`, `logger`, and `telemetry` remain
+optional deployment controls for every standalone graph. A nonempty
+`hostTools` requirement makes the standalone config type `never`. The runtime
+also rejects a forced or erased-type call for such a graph with
+`standalone_host_tools_unsupported`; only the integrator entry point can supply
+host bindings.
+
+Runtime bindings contain concrete providers and deployment infrastructure. A
+graph with multiple aliases therefore uses this shape:
 
 ```ts
 const runtime = await bankingHarness.getInstance({
@@ -1257,27 +1384,110 @@ const runtime = await bankingHarness.getInstance({
 })
 ```
 
-The required shape is inferred from catalog requirements. Applications are not
-asked for empty configuration groups. Missing, extra, or incompatible bindings
-fail before a session or provider call starts. Runtime bindings are
-instance-local and shut down exactly once according to existing ownership
-rules.
-
-The concise `model` field is accepted only when the complete required model
-alias set is exactly `{ primary }`; in that case `models` is rejected. Every
-other graph requires an exact `models` record and rejects `model`. Optional
-in-memory defaults may satisfy non-durable storage and memory. A requirement for
-durability, a specific memory or sandbox capability, Skill runtime, workspace,
-or artifacts makes the matching binding mandatory. Extra user-supplied keys
-outside the inferred public configuration fail; host-injected bindings use a
-separate integrator channel.
-
-MCP definitions contribute server ids and declared tool contracts, never a
-transport-level sandbox requirement. Transport is selected by the runtime
-binding. An HTTP branch validates its URL and headers atomically; a stdio
-branch validates the spawn-capable `sandbox` carried by that branch atomically.
-The stdio sandbox is not also supplied through the graph-level `sandbox`
+`McpBinding` is the exact `http | stdio` union in section 3; it has no additional
+timeout, redirect, authentication, working-directory, install, or preparation
+fields. MCP keys must exactly equal the required server ids. HTTP URLs must be
+absolute `http:` or `https:` URLs and every header value must be a string. A
+stdio command must be nonempty, and every argument and environment value must
+be a string. Its nested sandbox must declare `sandbox.spawn`. This transport
+sandbox is validated independently and never satisfies a graph-level sandbox
 requirement.
+
+Instance validation reuses the existing adapter validators and then checks the
+compiled requirement supersets. Durable storage passes
+`validateHarnessStorage` and declares `storage.persistent`. Memory passes
+`validateMemoryEngine` and declares every required memory capability. The
+graph-level sandbox declares every required sandbox capability and every
+required Skill runtime in its Sandbox runtime metadata. Workspace passes
+`validateDurableWorkspace`. Required model aliases, MCP server ids,
+capabilities, and runtimes are checked in deterministic lexical order.
+
+For each model binding, `provider.id`, `provider.genAiSystem`, and `model` must
+be nonempty strings. Required provider methods are:
+
+| Required model capability | Required provider method |
+| --- | --- |
+| `text` | `text` |
+| `text_stream` | `textStream` |
+| `object` | `object` |
+| `object_stream` | `objectStream` |
+| `embeddings` | `embed` |
+| `rerank` | `rerank` |
+| `image_generation` | `image` |
+| `speech_generation` | `speech` |
+| `video_generation` | both `video` and `videoStream` |
+
+`tool_use`, `vision_input`, `audio_input`, and `file_input` are metadata-only
+marker capabilities and do not require a unique provider method. When
+`provider.info.models` is absent, method validation is authoritative and these
+marker capabilities cannot be prevalidated. When it is present, the selected
+model must exist and its declared capability list must contain every required
+capability, including marker capabilities. Provider metadata never excuses a
+missing required method.
+
+Validation is atomic, pure, synchronous, and performs no I/O. It follows this
+stable order and stops at the first failure:
+
+1. reject a graph with host-tool requirements;
+2. require a non-array object config;
+3. reject the lexicographically first unknown top-level key;
+4. validate the empty, exact-primary, or multi-model selector form;
+5. validate exact aliases and model binding structure;
+6. validate provider methods and optional provider model metadata;
+7. validate required or forbidden groups in `mcp`, `storage`, `memory`,
+   `sandbox`, `workspace`, `artifacts` order;
+8. validate each present group in that same order;
+9. validate present admissions, logger, and telemetry structurally; and
+10. create and freeze the validated snapshot.
+
+All binding failures are `HarnessConfigError` values with a stable
+`meta.reason` and the most specific deterministic `meta.path` available:
+
+| `meta.reason` | Meaning |
+| --- | --- |
+| `standalone_host_tools_unsupported` | ordinary instance creation was attempted for a host-aware graph |
+| `invalid_instance_config` | the top-level value or selector form is invalid |
+| `missing_runtime_binding` | an inferred alias or infrastructure group is absent |
+| `unexpected_runtime_binding` | an unknown alias/key or a forbidden group is present |
+| `invalid_runtime_binding` | a supplied binding has an invalid field or adapter shape |
+| `model_capability_mismatch` | provider methods or optional model metadata cannot satisfy a required model capability |
+| `missing_required_capability` | storage, memory, sandbox, workspace, or Skill-runtime metadata lacks a compiled requirement |
+
+The reason assignment is exact. A non-object config or simultaneous `model`
+and `models` selector uses `invalid_instance_config`. An absent required
+selector, alias, or infrastructure group uses `missing_runtime_binding`. An
+unknown top-level or nested key, unknown alias, forbidden selector, or forbidden
+group uses `unexpected_runtime_binding`. A malformed supplied field or adapter
+surface uses `invalid_runtime_binding`. Provider method and model-descriptor
+failures use `model_capability_mismatch`; a valid adapter that lacks a compiled
+non-model capability or runtime uses `missing_required_capability`. Paths use
+dot-separated public config keys such as `models.fast.provider.textStream`,
+`mcp.knowledge.url`, `sandbox.capabilities`, or `sandbox.runtimes`. When several
+keys, aliases, capabilities, or runtimes could fail at the same validation
+step, the lexicographically first path wins.
+
+The package-private
+`validateHarnessInstanceConfig(requirements, value)` introduced for this
+contract consumes the canonical `RuntimeRequirements` snapshot and returns a
+frozen `ValidatedHarnessInstanceBindings`. It normalizes all supplied model
+bindings into an exact alias-keyed record with the derived capabilities
+injected, and copies and freezes configuration wrappers, arrays, MCP data,
+maps, and plain option records. Caller-owned providers and adapters retain
+their object identity and are never frozen or mutated. The snapshot contains
+only validated supplied bindings: it contains no definitions, alternate
+requirement derivation, execution registry, client, process, lifecycle callback,
+or synthesized storage/memory default.
+
+H4-003 owns only these public config types and this package-private, pure
+validation snapshot. It does not implement executable instance assembly.
+`getInstance` below remains the final public API and is assembled in H4-008,
+which consumes the validated snapshot, creates clients/processes and execution
+registries, initializes per-instance in-memory storage or memory only when the
+corresponding public group is forbidden because the graph does not require it,
+and implements startup rollback plus idempotent shutdown. Executable assembly
+never closes borrowed admissions, logger, telemetry, or host dependencies. It
+closes clients, processes, and internal adapters the Harness creates; supplied
+providers and adapters follow their existing explicit ownership contracts.
 
 The provider-neutral host SPI is public and stable. Its generic spelling may
 use internal helper types, but it exposes this information without requiring a

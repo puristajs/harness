@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:a0022df39ddb62d761b92f8d9cba169c16216b3226fb88e0a5f108b3530833f1"
+      scope_digest: "sha256:cc1cd59db936d5110deed234e9547db2ef7f5cc74c46c7415f68b159b94be30a"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -468,6 +468,9 @@ follow_up_waves:
       - review: "independent catalog implementation semantic review"
         status: passed_after_contract_repair
         evidence: "The review rejected missing catalog/Harness identity, erased Guardrail and presence requirements, and inexact inferred MCP owner types. The approved contract and ticket now require all four repairs before acceptance."
+      - review: "independent exact runtime-binding readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after exact conditional configuration, pure deterministic validation, provider and MCP capability checks, Skill-runtime metadata, stable error precedence, and separated initialization and lifecycle ownership were made implementation-exact."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:
@@ -494,7 +497,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        count: 3
+        count: 7
       contradiction_check:
         status: passed
       strong_boundary_type_gate:

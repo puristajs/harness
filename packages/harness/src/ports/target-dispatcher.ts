@@ -1,17 +1,31 @@
 import type { HarnessIdentity } from '../identity/index.js'
 import type { ExecutionEvent } from '../definitions/execution-events.js'
-import type { HarnessTargetContract } from '../definitions/types.js'
+import type {
+	HarnessInterruptKind,
+	HarnessOutputUpdateKind,
+	HarnessTargetContract,
+	HarnessTargetKind,
+} from '../definitions/types.js'
+import type { JsonValue } from '../models/json.js'
 import type { Infer, InferIn, ModelSchema } from '../schema/index.js'
 import type { HarnessTraceContext } from '../telemetry/trace-context.js'
 
-type AnyTarget = HarnessTargetContract<any, any, ModelSchema, ModelSchema, any, any>
-type TargetInput<T> = T extends HarnessTargetContract<any, any, infer I, any, any, any> ? InferIn<I> : never
-type TargetOutput<T> = T extends HarnessTargetContract<any, any, any, infer O, any, any> ? Infer<O> : never
+export type AnyHarnessTargetContract = HarnessTargetContract<
+	HarnessTargetKind,
+	string,
+	ModelSchema,
+	ModelSchema,
+	HarnessOutputUpdateKind,
+	readonly HarnessInterruptKind[]
+>
+export type HarnessTargetInput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, infer I, ModelSchema, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? InferIn<I> & JsonValue : never
+export type HarnessValidatedTargetInput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, infer I, ModelSchema, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? Infer<I> & JsonValue : never
+export type HarnessTargetOutput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, ModelSchema, infer O, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? Infer<O> & JsonValue : never
 
 /** Trusted transport-neutral request for one Harness target. */
-export type HarnessTargetDispatchRequest<Target extends AnyTarget> = Readonly<{
+export type HarnessTargetDispatchRequest<Target extends AnyHarnessTargetContract> = Readonly<{
 	target: Target
-	input: TargetInput<Target>
+	input: HarnessTargetInput<Target>
 	invocation: Readonly<{
 		sessionId: string
 		invocationId: string
@@ -35,5 +49,5 @@ export interface HarnessTargetDispatchStream<Output> extends AsyncIterable<Execu
 
 /** Runtime/integrator SPI for identity-first local or remote target dispatch. */
 export interface HarnessTargetDispatcher {
-	open<Target extends AnyTarget>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<TargetOutput<Target>>>
+	open<Target extends AnyHarnessTargetContract>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
 }

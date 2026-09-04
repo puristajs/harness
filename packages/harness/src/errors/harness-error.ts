@@ -18,6 +18,8 @@ export type ErrorCategory =
   | 'sandbox'
   /** Model/provider invocation failures. */
   | 'model'
+  /** Complete agent-loop admission capacity failures. */
+  | 'admission'
   /** Tool execution failures. */
   | 'tool'
   /** Skill discovery, loading, or manifest failures. */

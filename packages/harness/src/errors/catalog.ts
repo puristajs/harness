@@ -3,6 +3,12 @@ import { decisionEvidenceSchema, decisionFailureKindSchema, policyDenialReasonSc
 import { z } from 'zod'
 import type { DecisionEvidence, DecisionFailureKind } from '../decisions/types.js'
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
 /** Stable locations for public value-schema validation failures. */
 export type ValidationWhere =
   | 'agent_input'
@@ -77,6 +83,28 @@ export class ModelAdmissionRejectedError extends HarnessError {
       cause,
     })
     this.retryAfterMs = retryAfterMs
+  }
+}
+
+/** Complete agent-loop capacity was not admitted and the caller may retry. */
+export class AgentAdmissionRejectedError extends HarnessError {
+  public constructor(options: Readonly<{ retryAfterMs?: number }> = {}) {
+    if (!isPlainRecord(options) || Reflect.ownKeys(options).some(key => typeof key !== 'string' || key !== 'retryAfterMs')) {
+      throw new HarnessConfigError('Agent admission rejection options are invalid.', {
+        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      })
+    }
+    const retryAfterMs = options.retryAfterMs
+    if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0)) {
+      throw new HarnessConfigError('Agent admission retryAfterMs must be a positive safe integer.', {
+        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      })
+    }
+    super({
+      code: 'AGENT_ADMISSION_REJECTED', category: 'admission', retriable: true,
+      message: 'Agent admission capacity is exhausted.',
+      meta: { reason: 'capacity_exhausted', ...(retryAfterMs === undefined ? {} : { retryAfterMs }) },
+    })
   }
 }
 

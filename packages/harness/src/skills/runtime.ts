@@ -3,8 +3,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import { parseDocument } from 'yaml'
 import { z } from 'zod'
-import type { SkillDefinition, SkillRuntimeId, BuiltInToolDefinition } from '../definitions/types.js'
-import { createDefinitionIdentity, freezeDefinition } from '../definitions/identity.js'
+import type { AnyAgentDefinition, SkillDefinition, SkillRuntimeId } from '../definitions/types.js'
 import { OperationCancelledError, OperationTimeoutError, SkillManifestError } from '../errors/index.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { isReadOnlyMountCapableSession, type SandboxSessionBase } from '../sandbox/index.js'
@@ -133,19 +132,14 @@ async function loadOneSkill<const Id extends string>(definition: SkillDefinition
 
 /** @internal Creates the reserved reader only for an agent with selected Skills. */
 export function createReadSkillBinding<const Id extends string>(
+	owner: AnyAgentDefinition,
 	selected: Readonly<Record<Id, LoadedSkillSnapshot<Id>>>,
 ): ExecutableToolBinding | undefined {
 	const ids = Object.keys(selected).sort() as Id[]
 	if (ids.length === 0) return undefined
 	const input = z.object({ skill: z.enum(ids as [Id, ...Id[]]), path: z.string().optional().default('SKILL.md') }).strict()
 	const output = z.object({ skill: z.enum(ids as [Id, ...Id[]]), path: z.string(), content: z.string() }).strict()
-	const value = {
-		kind: 'tool' as const, id: 'read_skill' as const,
-		description: 'Read one text file from a selected Agent Skill snapshot.', input, output,
-		requires: Object.freeze({ memory: Object.freeze([]), sandbox: Object.freeze([]) }),
-	}
-	const definition = freezeDefinition(value, createDefinitionIdentity('built-in-tool', 'read_skill')) as unknown as BuiltInToolDefinition<'read_skill', typeof input, typeof output>
-	return bindReadSkillTool(definition, async value => {
+	return bindReadSkillTool(owner, input, output, async value => {
 		return selected[value.skill].readText(value.path)
 	})
 }

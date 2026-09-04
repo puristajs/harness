@@ -3,6 +3,49 @@ import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import type { HarnessStorage } from '../storage/types.js'
 import type { DurableRunLease, RunCheckpoint } from '../storage/execution.js'
 import { abortError } from './abort.js'
+import type { RunOutcome } from '../harness/defineHarness.js'
+import type { SuspendedAgentTurnStateV1 } from '../approvals/prepared-tool-checkpoint.js'
+
+const harnessChildTargetInterruptionBrand: unique symbol = Symbol('harness.child-target-interruption')
+const harnessChildTargetInterruptionState: unique symbol = Symbol('harness.child-target-interruption-state')
+export interface HarnessChildTargetInterruption {
+	readonly [harnessChildTargetInterruptionBrand]: true
+	readonly [harnessChildTargetInterruptionState]: { preparedState?: SuspendedAgentTurnStateV1 }
+	readonly childInvocationId: string
+	readonly outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>
+	readonly preparedState: SuspendedAgentTurnStateV1 | undefined
+}
+
+/** @internal Creates the only trusted child-interruption control value. */
+export function createHarnessChildTargetInterruption(
+	childInvocationId: string,
+	outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>,
+): HarnessChildTargetInterruption {
+	if (childInvocationId.length === 0) throw new TypeError('Child invocation id is required.')
+	const state: { preparedState?: SuspendedAgentTurnStateV1 } = {}
+	return Object.freeze({ [harnessChildTargetInterruptionBrand]: true as const, [harnessChildTargetInterruptionState]: state,
+		childInvocationId, outcome, get preparedState() { return state.preparedState } })
+}
+
+/** @internal Attaches the parent frame without changing the branded control identity. */
+export function attachHarnessChildTargetInterruptionState(
+	interruption: HarnessChildTargetInterruption,
+	state: SuspendedAgentTurnStateV1,
+): HarnessChildTargetInterruption {
+	interruption[harnessChildTargetInterruptionState].preparedState = state
+	return interruption
+}
+
+/** @internal Recognizes child interruption by package-private brand only. */
+export function isHarnessChildTargetInterruption(value: unknown): value is HarnessChildTargetInterruption {
+	return typeof value === 'object' && value !== null
+		&& (value as Partial<HarnessChildTargetInterruption>)[harnessChildTargetInterruptionBrand] === true
+}
+
+/** Contract-only checkpoint function supplied by the durable execution owner. */
+export interface HarnessCheckpointStep {
+	<T extends JsonValue>(stepId: string, handler: () => Promise<T>, options?: DurableStepOptions): Promise<T>
+}
 
 const STEP_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
 

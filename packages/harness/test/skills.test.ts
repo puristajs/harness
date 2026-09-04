@@ -7,6 +7,7 @@ import { defineSkill } from '../src/definitions/skill.js'
 import { OperationCancelledError, SkillManifestError } from '../src/errors/index.js'
 import { bashSandbox, inMemorySandbox } from '../src/sandbox/index.js'
 import { createReadSkillBinding, loadSkillSnapshots } from '../src/skills/runtime.js'
+import { defineAgent } from '../src/definitions/agent.js'
 import { FakeSandbox } from '../src/testing/fakeSandbox.js'
 import { localDirectorySandbox } from '../src/local/local-sandbox.js'
 
@@ -40,7 +41,7 @@ describe('v4 Agent Skill snapshots', () => {
 		const loaded = await loadSkillSnapshots([definition])
 		expect(loaded.demo.manifest).toMatchObject({ 'allowed-tools': 'bash write', metadata: { owner: 'docs' } })
 		await fs.writeFile(path.join(new URL(definition.directory).pathname, 'notes.txt'), 'changed later')
-		const reader = createReadSkillBinding(loaded)!
+		const reader = createReadSkillBinding(defineAgent('readerAgent', { instructions: 'Read.' }), loaded)!
 		expect(reader.id).toBe('read_skill')
 		expect(reader.implementationKind).toBe('read-skill')
 		expect(Object.isFrozen(reader)).toBe(true)

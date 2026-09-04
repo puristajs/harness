@@ -6,6 +6,8 @@ import { validateHarnessInstanceConfig } from '../src/runtime/instance-config.js
 import { deriveRuntimeRequirements } from '../src/runtime/runtime-requirements.js'
 import { defineSkill } from '../src/definitions/skill.js'
 import { defineAgent } from '../src/definitions/agent.js'
+import { defineHarness } from '../src/definitions/harness.js'
+import { defineTool } from '../src/definitions/tool.js'
 import { z } from 'zod'
 
 const emptyRequirements = requirements()
@@ -277,3 +279,28 @@ function workspaceAdapter(touch: () => void) {
 function logger() {
 	return { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return this } }
 }
+
+describe('agent-scoped governance requirements', () => {
+	it('requires a revision whenever agent governance can require approval', () => {
+		const tool = defineTool('lookup', { description: 'Lookup.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
+		const agent = defineAgent('reviewer', { instructions: 'Review.', tools: [tool], governance: ({ native, rule }) => ({
+			policies: [native({ id: 'policy', rules: [rule({ id: 'approval', tools: ['lookup'], effect: 'require_approval' })] })],
+		}) })
+		expect(() => defineHarness({ name: 'missingRevision' }).addAgent(agent)).toThrow(HarnessConfigError)
+		const harness = defineHarness({ name: 'versioned', revision: '2026-09-04' }).addAgent(agent)
+		expect(harness.requirements.storage.durable).toBe(true)
+		const direct = defineAgent('directReviewer', { instructions: 'Review.', tools: [tool], governance: { policies: [{
+			kind: 'native', id: 'directPolicy', rules: [{ id: 'directApproval', tools: ['lookup'], effect: 'require_approval' }],
+		}] } })
+		expect(() => defineHarness({ name: 'missingDirectRevision' }).addAgent(direct)).toThrow(HarnessConfigError)
+		expect(defineHarness({ name: 'directVersioned', revision: '2026-09-04' }).addAgent(direct).requirements.storage.durable).toBe(true)
+	})
+
+	it('requires durable revision storage for every configured subagent', () => {
+		const child = defineAgent('durableChild', { instructions: 'Child.' })
+		const parent = defineAgent('durableParent', { instructions: 'Parent.', subagents: { child } })
+		expect(() => defineHarness({ name: 'missingSubagentRevision' }).addAgent(parent)).toThrow(HarnessConfigError)
+		const harness = defineHarness({ name: 'subagents', revision: '2026-09-04' }).addAgent(parent)
+		expect(harness.requirements.storage.durable).toBe(true)
+	})
+})

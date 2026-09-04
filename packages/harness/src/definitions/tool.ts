@@ -1,5 +1,5 @@
 import { HarnessConfigError } from '../errors/index.js'
-import type { ModelSchema, Schema } from '../schema/index.js'
+import type { JsonSchemaBoundary, ModelSchema, Schema } from '../schema/index.js'
 import type { MemoryCapability } from '../ports/memory/types.js'
 import {
 	assertDefinitionId,
@@ -47,7 +47,10 @@ export function defineTool<
 	Input extends ModelSchema,
 	Output extends Schema,
 	const Requires extends ToolRequirements = EmptyRequirements,
->(id: Id, options: ToolOptions<Input, Output, Requires>): ToolDefinition<Id, Input, Output, Requires> {
+>(id: Id, options: ToolOptions<Input, Output, Requires> & Readonly<{
+	input: JsonSchemaBoundary<Input>
+	output: JsonSchemaBoundary<Output>
+}>): ToolDefinition<Id, Input, Output, Requires> {
 	assertDefinitionId(id, 'tool.id')
 	assertKnownFields(options, ['description', 'input', 'output', 'requires', 'handler'], 'tool', id)
 	assertNonemptyText(options.description, 'tool.description', id)
@@ -67,7 +70,7 @@ export function defineTool<
 		...(requires === undefined ? {} : { requires }),
 		handler: options.handler,
 	}
-	return freezeDefinition(value, createDefinitionIdentity('tool', id)) as ToolDefinition<Id, Input, Output, Requires>
+	return freezeDefinition(value, createDefinitionIdentity('tool', id)) as unknown as ToolDefinition<Id, Input, Output, Requires>
 }
 
 function copyRequirements<R extends ToolRequirements>(requires: R | undefined, id: string): R | undefined {

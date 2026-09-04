@@ -26,10 +26,16 @@ import type {
 import type { JsonValue } from '../models/json.js'
 import { governancePolicyResultSchema, permissionPolicySchema } from '../decisions/schemas.js'
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
+import type { AgentEventSink } from '../definitions/execution-events.js'
+import type { GovernanceConfig as V4GovernanceConfig } from './types.js'
 
 type Invocation = {
   readonly agentId: string
   readonly runId: string
+  readonly rootRunId?: string
+  readonly agentRunId?: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
   readonly sessionId: string
   readonly workflowId?: string
   readonly invocationId: string
@@ -40,6 +46,7 @@ type Invocation = {
   readonly deadline?: number
   readonly metadata: Readonly<Record<string, JsonValue>>
   readonly emitEvent?: (event: RunEvent) => Promise<void>
+  readonly eventSink?: AgentEventSink
 }
 
 type ToolInvocation = Invocation & {
@@ -47,7 +54,7 @@ type ToolInvocation = Invocation & {
   readonly callId: string
   readonly input: JsonValue
   readonly permissions?: AgentPermissions
-  readonly governance?: GovernanceConfig
+  readonly governance?: GovernanceConfig | V4GovernanceConfig<any>
 }
 
 type Evaluated = { readonly effect: GovernanceEffect; readonly evidence: DecisionEvidence; readonly engine: string }
@@ -104,9 +111,8 @@ export async function enforceToolGovernance(
         decision.effect === winner?.effect &&
         (decision.effect === 'deny' || decision.effect === 'require_approval'),
     )
-    await invocation.emitEvent?.({
+    await emitAgentEvent(invocation, {
       type: 'policy.evaluated',
-      runId: invocation.runId,
       agentId: invocation.agentId,
       invocationId: invocation.invocationId,
       toolId: invocation.toolId,
@@ -161,9 +167,8 @@ export async function enforceToolGovernance(
       ? undefined
       : {
           decision: 'rejected',
-      approvalId,
-          ...(supplied.reason ? { reason: supplied.reason } : {}),
-  }
+          approvalId,
+        }
   }
   for (const demand of demands) {
     invocation.telemetry?.recordCounter(
@@ -172,9 +177,8 @@ export async function enforceToolGovernance(
       approvalMetricAttrs(invocation, demand, evaluated),
     )
   }
-  await invocation.emitEvent?.({
+  await emitAgentEvent(invocation, {
     type: 'approval.requested',
-    runId: invocation.runId,
     agentId: invocation.agentId,
     invocationId: invocation.invocationId,
     toolId: invocation.toolId,
@@ -187,7 +191,10 @@ export async function enforceToolGovernance(
     decision: 'approval_required',
     request: Object.freeze({
       approvalId,
-      runId: invocation.runId,
+      runId: invocation.rootRunId ?? invocation.runId,
+      agentRunId: invocation.agentRunId ?? invocation.runId,
+      ...(invocation.parentRunId ? { parentRunId: invocation.parentRunId } : {}),
+      ...(invocation.parentInvocationId ? { parentInvocationId: invocation.parentInvocationId } : {}),
       agentId: invocation.agentId,
       ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}),
       invocationId: invocation.invocationId,
@@ -202,7 +209,7 @@ export async function enforceToolGovernance(
 
 /** Applies fail-closed tool exposure rules before one model step. */
 export async function applyToolExposure(
-  invocation: Invocation & { readonly governance?: GovernanceConfig; readonly tools: readonly { name: string }[] },
+  invocation: Invocation & { readonly governance?: GovernanceConfig | V4GovernanceConfig<any>; readonly tools: readonly { name: string }[] },
 ): Promise<string[]> {
   const governance = invocation.governance
   const exposure = governance?.exposure
@@ -258,9 +265,8 @@ export async function applyToolExposure(
       if (!matched) continue
       const candidate = { effect: rule.effect, evidence }
       if (!selected || (candidate.effect === 'hide' && selected.effect !== 'hide')) selected = candidate
-      await invocation.emitEvent?.({
+      await emitAgentEvent(invocation, {
         type: 'policy.exposure',
-        runId: invocation.runId,
         agentId: invocation.agentId,
         invocationId: invocation.invocationId,
         toolId: tool.name,
@@ -374,6 +380,9 @@ async function evaluatePolicies(invocation: ToolInvocation, occurrence: Decision
       continue
     }
     const values = Array.isArray(result) ? result : [result]
+	const declaredEffects = 'effects' in externalPolicy && Array.isArray(externalPolicy.effects) ? externalPolicy.effects : undefined
+	const undeclared = declaredEffects === undefined ? undefined : values.find(value => !declaredEffects.includes(value.effect))
+	if (undeclared !== undefined) throw new DecisionEvaluationError(baseEvidence, 'invalid_result')
     ordinal += Math.max(1, values.length)
     for (const [index, value] of values.entries()) {
       const evidence = createDecisionEvidence({
@@ -573,9 +582,9 @@ function runGovernanceCallback<T>(
   invocation: Invocation,
   operation: (execution: DecisionExecutionContext) => Promise<T> | T,
 ): Promise<T> {
-  const deadline = Date.now() + invocation.decisionTimeoutMs
+  const deadline = Math.min(Date.now() + invocation.decisionTimeoutMs, invocation.deadline ?? Number.POSITIVE_INFINITY)
   return runDecisionOperation({ signal: invocation.signal, deadline }, signal =>
-    operation({ signal, deadline: Math.min(deadline, invocation.deadline ?? Number.POSITIVE_INFINITY) }),
+    operation({ signal, deadline }),
   )
 }
 
@@ -593,7 +602,8 @@ function approvalIdentity(invocation: ToolInvocation, demands: readonly Decision
   return `approval_${createHash('sha256')
     .update(
       JSON.stringify([
-        invocation.runId,
+        invocation.rootRunId ?? invocation.runId,
+        invocation.agentRunId ?? invocation.runId,
         invocation.invocationId,
         'approval',
         invocation.step,
@@ -626,6 +636,14 @@ async function safeTerminalEvent(
   approvalId: string,
   outcome: 'approved' | 'rejected',
 ): Promise<void> {
+  if (invocation.eventSink) {
+    await invocation.eventSink.emit({
+      type: 'approval.responded', agentId: invocation.agentId, invocationId: invocation.invocationId,
+      toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, approvalId,
+      approved: outcome === 'approved',
+    })
+    return
+  }
   await invocation.emitEvent?.({
     type: 'approval.finished',
     runId: invocation.runId,
@@ -637,4 +655,12 @@ async function safeTerminalEvent(
     approvalId,
     outcome,
   })
+}
+
+async function emitAgentEvent(invocation: Invocation, event: Parameters<AgentEventSink['emit']>[0]): Promise<void> {
+  if (invocation.eventSink) {
+    await invocation.eventSink.emit(event)
+    return
+  }
+  await invocation.emitEvent?.({ ...event, runId: invocation.runId } as RunEvent)
 }

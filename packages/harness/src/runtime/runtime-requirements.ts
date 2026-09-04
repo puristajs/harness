@@ -138,10 +138,20 @@ type AgentApproval<Agent> = Agent extends { readonly permissions: infer Permissi
 		? Id extends keyof Permissions ? ApprovalPermission<Permissions[Id]> : never
 		: never
 	: never
+type GovernancePolicyEffects<Agent> = Agent extends { readonly governance: { readonly policies?: readonly (infer Policy)[] } }
+	? Policy extends { readonly kind: 'native'; readonly rules: readonly (infer Rule)[] }
+		? Rule extends { readonly effect: infer Effect } ? Effect : never
+		: Policy extends { readonly effects: readonly (infer Effect)[] } ? Effect : never
+	: never
+type AgentGovernanceApproval<Agent> = Extract<GovernancePolicyEffects<Agent>, 'require_approval'> extends never ? never : true
 type AgentDurability<Agent> =
 	| (Agent extends { readonly durable: true } ? true : never)
+	| (Agent extends { readonly subagents: infer Subagents extends Readonly<Record<string, unknown>> }
+		? keyof Subagents extends never ? never : true
+		: never)
 	| ([AgentGuardrailRequirements<Agent>] extends [never] ? never : AgentGuardrailRequirements<Agent> extends { readonly durable: true } ? true : never)
 	| AgentApproval<Agent>
+	| AgentGovernanceApproval<Agent>
 type WorkflowDurability<Workflow> = Workflow extends { readonly durable: true } ? true : never
 type AgentWorkspace<Agent> =
 	| (Agent extends { readonly workspace: true } ? true : never)
@@ -245,6 +255,8 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 		if (interceptor?.requirements?.workspace === true) workspace = true
 		if (interceptor?.requirements?.artifacts === true) artifactsRequired = true
 		if (hasApprovalPermission(agent)) durable = true
+		if (agent.governance?.policies?.some(policy => policy.effects.includes('require_approval'))) durable = true
+		if (Object.keys(agent.subagents ?? {}).length > 0) durable = true
 		if (agent.durable === true) durable = true
 		if (agent.workspace === true) workspace = true
 	}

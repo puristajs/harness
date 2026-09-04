@@ -1,13 +1,16 @@
 import { expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { invokeBuiltinTool, resolveEnabledBuiltinTools } from '../src/tools/index.js'
 import { SandboxNoExecutorError, ValidationError } from '../src/errors/index.js'
 import { z } from 'zod'
 import { defineTool } from '../src/definitions/tool.js'
+import { defineMcpServer } from '../src/definitions/mcp-server.js'
 import { builtInTools } from '../src/tools/index.js'
-import { bindBuiltInTool, bindHostToolSeam, bindPortableTool } from '../src/tools/bindings.js'
+import { bindBuiltInTool, bindHostToolSeam, bindMcpTool, bindPortableTool, createAgentExecutableBinding } from '../src/tools/bindings.js'
 import { createDefinitionIdentity, freezeDefinition } from '../src/definitions/identity.js'
 import type { HostToolDefinition } from '../src/definitions/types.js'
+import { projectModelSchema } from '../src/schema/json-schema.js'
 
 async function openSandbox() {
   const sandbox = inMemorySandbox()
@@ -45,22 +48,78 @@ it('accepts readonly mount as a portable tool sandbox requirement', () => {
 it('prepares a portable binding without validation, policy, registry lookup, or lifecycle side effects', async () => {
   const definition = defineTool('uppercase', { description: 'Uppercase text.', input: z.object({ value: z.string() }), output: z.object({ value: z.string() }), async handler(_context, input) { return { value: input.value.toUpperCase() } } })
   const binding = bindPortableTool(definition)
-  expect(binding.definition).toBe(definition)
+  expect(binding.definitionIdentity).toMatchObject({ kind: 'tool', id: 'uppercase' })
+  expect(binding.contractDigest).toMatch(/^sha256:[0-9a-f]{64}$/)
+  expect('definition' in binding).toBe(false)
   expect(binding.implementationKind).toBe('portable')
   expect(Object.isFrozen(binding)).toBe(true)
-  await expect(binding.invokeValidated(undefined as never, { value: 'ok' })).resolves.toEqual({ value: 'OK' })
+  await expect(binding.invokeValidated({ signal: new AbortController().signal } as never, { value: 'ok' }, { value: 'ok' })).resolves.toEqual({ value: 'OK' })
 })
 
 it('prepares built-in execution and a non-callable host seam without exposing a lookup registry', async () => {
-  const builtIn = bindBuiltInTool(builtInTools.read, async (_context: { source: string }, input) => ({ source: _context.source, input }))
-  await expect(builtIn.invokeValidated({ source: 'sandbox' }, { path: '/x' })).resolves.toMatchObject({ source: 'sandbox' })
+  const builtIn = bindBuiltInTool(builtInTools.read, async (_context, input) => ({ source: _context.harnessName, input }))
+  await expect(builtIn.invokeValidated({ harnessName: 'sandbox' } as never, { path: '/x' })).resolves.toMatchObject({ source: 'sandbox' })
   const hostValue = { kind: 'tool' as const, id: 'invokeCommand', description: 'Invoke one command.', input: z.object({ value: z.string() }), output: z.object({ ok: z.boolean() }), handler: async () => ({ ok: true }) }
   const host = freezeDefinition(hostValue, createDefinitionIdentity('host-tool', 'invokeCommand')) as unknown as HostToolDefinition
   const seam = bindHostToolSeam(host)
-  expect(seam).toMatchObject({ id: 'invokeCommand', implementationKind: 'host', definition: host })
+  expect(seam).toMatchObject({ id: 'invokeCommand', implementationKind: 'host', contractDigest: expect.stringMatching(/^sha256:/) })
+	 expect('definition' in seam).toBe(false)
   expect('invokeValidated' in seam).toBe(false)
   expect(Object.isFrozen(seam)).toBe(true)
 })
+
+it('binds MCP tools only to their exact owner identity and remote name', () => {
+	const server = defineMcpServer('knowledge', { tools: { search: { remoteName: 'search_remote', description: 'Search.', input: z.string(), output: z.string() } } })
+	const binding = bindMcpTool(server.tools.search, async () => 'ok')
+	expect(binding).toMatchObject({ implementationKind: 'mcp', id: 'search' })
+	const identity = binding.definitionIdentity
+	const source = { id: 'search', description: 'Search.', input: server.tools.search.input, output: server.tools.search.output,
+		implementationKind: 'mcp' as const, definitionIdentity: identity, digestDefinition: ['mcp-tool', 'search'] as const,
+		outputValidation: 'required' as const, async invokeValidated() { return 'ok' } }
+	expect(() => createAgentExecutableBinding({ ...source, mcpOwner: ['mcp-server', 'other'], remoteMcpName: 'search_remote' })).toThrow(TypeError)
+	expect(() => createAgentExecutableBinding({ ...source, mcpOwner: ['mcp-server', 'knowledge'], remoteMcpName: 'other_remote' })).toThrow(TypeError)
+})
+
+it('rejects every non-canonical digest input and freezes the finalized binding', () => {
+	const tool = defineTool('digestTool', { description: 'Digest.', input: z.string(), output: z.string(), async handler() { return 'ok' } })
+	const source = { id: tool.id, description: tool.description, input: tool.input, output: tool.output,
+		implementationKind: 'portable' as const, definitionIdentity: createDefinitionIdentity('tool', tool.id),
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required' as const, async invokeValidated() { return 'ok' } }
+	const sparse: unknown[] = ['tool', tool.id]
+	sparse.length = 3
+	const extra = ['tool', tool.id]
+	;(extra as unknown as Record<string, unknown>)['extra'] = true
+	for (const digestDefinition of [sparse, extra, ['tool', tool.id, { [Symbol('private')]: true }],
+		['tool', tool.id, { value: undefined }], ['tool', tool.id, { value() {} }], ['tool', tool.id, new Date()]]) {
+		expect(() => createAgentExecutableBinding({ ...source, digestDefinition })).toThrow(TypeError)
+	}
+	const binding = createAgentExecutableBinding({ ...source, digestDefinition: ['tool', tool.id] })
+	expect(Object.isFrozen(binding)).toBe(true)
+	expect(Object.isFrozen(binding.definitionIdentity)).toBe(true)
+})
+
+it('orders canonical digest object keys by Unicode code point', () => {
+	const definition = defineTool('unicodeDigest', { description: 'Unicode.',
+		input: z.object({ '\uE000': z.string(), '𐀀': z.string() }), output: z.string(), async handler() { return 'ok' } })
+	const binding = bindPortableTool(definition)
+	const preimage = ['harness.binding.v1', definition.id, 'portable', ['tool', definition.id], null, null,
+		projectModelSchema(definition.input, 'tool_input', definition.id)]
+	const expected = `sha256:${createHash('sha256').update(canonicalForTest(preimage), 'utf8').digest('hex')}`
+	expect(binding.contractDigest).toBe(expected)
+})
+
+function canonicalForTest(value: unknown): string {
+	if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value)
+	if (Array.isArray(value)) return `[${value.map(canonicalForTest).join(',')}]`
+	const points = (text: string) => Array.from(text, character => character.codePointAt(0)!)
+	const compare = (left: string, right: string) => {
+		const a = points(left); const b = points(right)
+		for (let index = 0; index < Math.min(a.length, b.length); index += 1) if (a[index] !== b[index]) return a[index]! - b[index]!
+		return a.length - b.length
+	}
+	return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => compare(left, right))
+		.map(([key, child]) => `${JSON.stringify(key)}:${canonicalForTest(child)}`).join(',')}}`
+}
 
 it('keeps built-in tools disabled unless an agent explicitly enables them', () => {
   expect(resolveEnabledBuiltinTools(undefined)).toEqual([])

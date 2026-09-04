@@ -432,7 +432,7 @@ async function runDefaultAgentInner(args: {
       if (steps >= maxSteps)
         throw new AgentLoopBudgetError('Agent loop budget exceeded.', {
           agent_id: args.agentId,
-          reason: 'iterations_exceeded',
+          reason: 'max_steps',
           limit: maxSteps,
         })
       if (approvalResume) {

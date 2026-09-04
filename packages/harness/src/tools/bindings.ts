@@ -1,6 +1,19 @@
-import type { ModelSchema, Schema } from '../schema/index.js'
-import type { Infer } from '../schema/index.js'
+import { createHash } from 'node:crypto'
+
+import type { HarnessIdentity } from '../identity/index.js'
+import type { Logger } from '../logger/index.js'
+import type { JsonValue } from '../models/json.js'
+import type { MemoryFacade } from '../ports/memory.js'
+import type { HarnessTargetDispatcher } from '../ports/target-dispatcher.js'
+import type { SandboxSessionBase } from '../sandbox/index.js'
+import type { Infer, InferIn, ModelSchema, Schema } from '../schema/index.js'
+import { projectModelSchema } from '../schema/json-schema.js'
+import type { Metrics, TelemetryShim } from '../telemetry/index.js'
+import type { ExecutionEvent } from '../definitions/execution-events.js'
+import type { HarnessCheckpointStep } from '../runtime/steps.js'
+import { getDefinitionIdentity, type DefinitionIdentity } from '../definitions/identity.js'
 import type {
+	AnyAgentDefinition,
 	BuiltInToolDefinition,
 	HostToolDefinition,
 	McpToolDefinition,
@@ -8,92 +21,223 @@ import type {
 	ToolHandlerContext,
 	ToolRequirements,
 } from '../definitions/types.js'
-import { getDefinitionIdentity } from '../definitions/identity.js'
+
+export type AgentBindingKind = 'portable' | 'built-in' | 'read-skill' | 'mcp' | 'subagent' | 'host'
+
+/** @internal Broad runtime context; binding factories project narrower handler contexts. */
+export interface AgentToolInvocationContext {
+	readonly harnessName: string
+	readonly sessionId: string
+	readonly runId: string
+	readonly rootRunId: string
+	readonly parentRunId?: string
+	readonly parentInvocationId?: string
+	readonly invocationId: string
+	readonly agentId: string
+	readonly workflowId?: string
+	readonly depth: number
+	readonly remainingDepth: number
+	readonly trace?: import('../telemetry/trace-context.js').HarnessTraceContext
+	readonly step: number
+	readonly toolId: string
+	readonly callId: string
+	readonly idempotencyKey?: string
+	readonly identity?: HarnessIdentity
+	readonly deadline?: number
+	readonly signal: AbortSignal
+	readonly metadata: Readonly<Record<string, JsonValue>>
+	readonly logger: Logger
+	readonly metrics: Metrics
+	readonly telemetry: TelemetryShim
+	readonly memory: MemoryFacade
+	readonly sandbox: SandboxSessionBase
+	readonly targetDispatcher: HarnessTargetDispatcher
+	relayChildEvent(event: ExecutionEvent): Promise<void>
+	readonly checkpointStep: HarnessCheckpointStep
+}
 
 /** @internal Prepared implementation owned by one exact definition identity. */
-export interface ExecutableToolBinding<
-	Input extends ModelSchema = ModelSchema,
-	Output extends Schema = Schema,
-	Context = never,
-> {
+export interface AgentExecutableBinding<Input extends ModelSchema = ModelSchema, Output extends Schema = Schema> {
 	readonly id: string
 	readonly description: string
 	readonly input: Input
 	readonly output: Output
-	readonly implementationKind: 'portable' | 'built-in' | 'read-skill' | 'mcp' | 'host'
-	readonly definition: object
-	invokeValidated(context: Context, input: Infer<Input>): Promise<unknown>
+	readonly implementationKind: AgentBindingKind
+	readonly definitionIdentity: DefinitionIdentity
+	readonly contractDigest: string
+	readonly outputValidation: 'required' | 'already-validated-target'
+	invokeValidated(context: AgentToolInvocationContext, input: Infer<Input> & JsonValue, wireInput: InferIn<Input> & JsonValue): Promise<unknown>
 }
 
-function freezeBinding<Input extends ModelSchema, Output extends Schema, Context>(
-	binding: ExecutableToolBinding<Input, Output, Context>,
-): ExecutableToolBinding<Input, Output, Context> {
-	if (getDefinitionIdentity(binding.definition) === undefined) {
-		throw new TypeError('Executable tool binding requires a package-owned definition.')
+/** Internal spelling retained by H4-004 runtime bundles. */
+export type ExecutableToolBinding<Input extends ModelSchema = ModelSchema, Output extends Schema = Schema> = AgentExecutableBinding<Input, Output>
+
+type DigestDefinitionKind = 'tool' | 'built-in-tool' | 'host-tool' | 'mcp-tool' | 'agent'
+
+/** @internal Sole binding digest and freeze finalizer. */
+export interface AgentExecutableBindingSource<Input extends ModelSchema = ModelSchema, Output extends Schema = Schema>
+	extends Omit<AgentExecutableBinding<Input, Output>, 'contractDigest'> {
+	readonly digestDefinition: readonly [DigestDefinitionKind, string]
+	readonly mcpOwner: readonly ['mcp-server', string] | null
+	readonly remoteMcpName: string | null
+}
+
+export function createAgentExecutableBinding<Input extends ModelSchema, Output extends Schema>(options: AgentExecutableBindingSource<Input, Output>): AgentExecutableBinding<Input, Output> {
+	const expectedIdentityKind: Record<AgentBindingKind, DefinitionIdentity['kind']> = {
+		portable: 'tool', 'built-in': 'built-in-tool', 'read-skill': 'agent', mcp: 'mcp-tool', subagent: 'agent', host: 'host-tool',
 	}
-	return Object.freeze(binding)
+	if (options.definitionIdentity.kind !== expectedIdentityKind[options.implementationKind]) {
+		throw new TypeError('Executable binding definition identity does not match its implementation kind.')
+	}
+	if (options.digestDefinition[0] !== options.definitionIdentity.kind || options.digestDefinition[1] !== options.definitionIdentity.id) {
+		throw new TypeError('Executable binding digest identity must match its exact definition identity.')
+	}
+	const isMcp = options.implementationKind === 'mcp'
+	if (isMcp !== (options.mcpOwner !== null && options.remoteMcpName !== null)) {
+		throw new TypeError('Only MCP bindings may contain MCP digest identity fields.')
+	}
+	if (isMcp) {
+		const owner = options.definitionIdentity.owner
+		const ownerIdentity = getDefinitionIdentity(owner)
+		const ownerTool = owner !== null && typeof owner === 'object' && 'tools' in owner
+			? (owner as { readonly tools?: Readonly<Record<string, unknown>> }).tools?.[options.id]
+			: undefined
+		if (ownerIdentity?.kind !== 'mcp-server' || options.mcpOwner?.[0] !== 'mcp-server'
+			|| options.mcpOwner[1] !== ownerIdentity.id || getDefinitionIdentity(ownerTool)?.token !== options.definitionIdentity.token
+			|| typeof options.remoteMcpName !== 'string' || options.remoteMcpName.length === 0
+			|| (ownerTool as { readonly remoteName?: unknown } | undefined)?.remoteName !== options.remoteMcpName) {
+			throw new TypeError('MCP binding must match its exact owning server and remote tool name.')
+		}
+	}
+	const outputValidation = options.outputValidation
+	if ((outputValidation === 'already-validated-target') !== (options.implementationKind === 'subagent')) {
+		throw new TypeError('Only subagent bindings may skip repeated target output validation.')
+	}
+	const preimage = [
+		'harness.binding.v1', options.id, options.implementationKind, options.digestDefinition,
+		options.mcpOwner, options.remoteMcpName,
+		projectModelSchema(options.input, 'tool_input', options.id),
+	] as const
+	const contractDigest = `sha256:${createHash('sha256').update(canonicalJson(preimage), 'utf8').digest('hex')}`
+	return Object.freeze({
+		id: options.id, description: options.description, input: options.input, output: options.output,
+		implementationKind: options.implementationKind, definitionIdentity: options.definitionIdentity,
+		contractDigest, outputValidation, invokeValidated: options.invokeValidated,
+	})
 }
 
-/** @internal Prepares one portable handler without applying policy or validation. */
-export function bindPortableTool<
-	Id extends string,
-	Input extends ModelSchema,
-	Output extends Schema,
-	Requirements extends ToolRequirements,
->(definition: ToolDefinition<Id, Input, Output, Requirements>): ExecutableToolBinding<
-	Input,
-	Output,
-	ToolHandlerContext<Requirements>
-> {
-	return freezeBinding({
-		id: definition.id,
-		description: definition.description,
-		input: definition.input,
-		output: definition.output,
-		implementationKind: 'portable',
-		definition,
-		invokeValidated: async (context, input) => definition.handler(context, input),
+/** @internal Prepares one portable handler without policy, validation, or events. */
+export function bindPortableTool<Id extends string, Input extends ModelSchema, Output extends Schema, Requirements extends ToolRequirements>(
+	definition: ToolDefinition<Id, Input, Output, Requirements>,
+): AgentExecutableBinding<Input, Output> {
+	const identity = requireIdentity(definition, 'tool')
+	return createAgentExecutableBinding({
+		id: definition.id, description: definition.description, input: definition.input, output: definition.output,
+		implementationKind: 'portable', definitionIdentity: identity, digestDefinition: ['tool', definition.id],
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
+		invokeValidated: (context, input) => definition.handler(projectPortableContext(context, definition.requires), input),
 	})
 }
 
 /** @internal Prepares a built-in implementation supplied by the runtime. */
-export function bindBuiltInTool<Input extends ModelSchema, Output extends Schema, Context>(
+export function bindBuiltInTool<Input extends ModelSchema, Output extends Schema>(
 	definition: BuiltInToolDefinition<string, Input, Output>,
-	invoke: (context: Context, input: Infer<Input>) => Promise<unknown>,
-): ExecutableToolBinding<Input, Output, Context> {
-	return freezeBinding({
-		id: definition.id, description: definition.description, input: definition.input, output: definition.output,
-		implementationKind: 'built-in', definition, invokeValidated: invoke,
-	})
+	invoke: (context: AgentToolInvocationContext, input: Infer<Input>) => Promise<unknown>,
+): AgentExecutableBinding<Input, Output> {
+	const identity = requireIdentity(definition, 'built-in-tool')
+	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
+		implementationKind: 'built-in', definitionIdentity: identity, digestDefinition: ['built-in-tool', definition.id],
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required', invokeValidated: invoke })
 }
 
-/** @internal Prepares a reserved Skill reader implementation. */
+/** @internal Creates the generated reader owned by one exact agent definition. */
 export function bindReadSkillTool<Input extends ModelSchema, Output extends Schema>(
-	definition: BuiltInToolDefinition<'read_skill', Input, Output>,
+	owner: AnyAgentDefinition,
+	input: Input,
+	output: Output,
 	invoke: (input: Infer<Input>) => Promise<unknown>,
-): ExecutableToolBinding<Input, Output, undefined> {
-	return freezeBinding({
-		id: definition.id, description: definition.description, input: definition.input, output: definition.output,
-		implementationKind: 'read-skill', definition, invokeValidated: async (_context, input) => invoke(input),
-	})
+): AgentExecutableBinding<Input, Output> {
+	const identity = requireIdentity(owner, 'agent')
+	return createAgentExecutableBinding({ id: 'read_skill', description: 'Read one text file from a selected Agent Skill snapshot.', input, output,
+		implementationKind: 'read-skill', definitionIdentity: identity, digestDefinition: ['agent', owner.id],
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
+		invokeValidated: (_context, value) => invoke(value) })
 }
 
 /** @internal Prepares one selected MCP tool against its owning server bundle. */
 export function bindMcpTool<Input extends ModelSchema, Output extends Schema>(
 	definition: McpToolDefinition<string, Input, Output>,
-	invoke: (context: Readonly<{ signal?: AbortSignal }>, remoteName: string, input: Infer<Input>) => Promise<unknown>,
-): ExecutableToolBinding<Input, Output, Readonly<{ signal?: AbortSignal }>> {
-	return freezeBinding({
-		id: definition.id, description: definition.description, input: definition.input, output: definition.output,
-		implementationKind: 'mcp', definition,
-		invokeValidated: async (context, input) => invoke(context, definition.remoteName, input),
-	})
+	invoke: (context: AgentToolInvocationContext, remoteName: string, input: Infer<Input>) => Promise<unknown>,
+): AgentExecutableBinding<Input, Output> {
+	const identity = requireIdentity(definition, 'mcp-tool')
+	const owner = getDefinitionIdentity(identity.owner)
+	if (owner?.kind !== 'mcp-server') throw new TypeError('MCP tool binding requires its exact owning server identity.')
+	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
+		implementationKind: 'mcp', definitionIdentity: identity, digestDefinition: ['mcp-tool', definition.id],
+		mcpOwner: ['mcp-server', owner.id], remoteMcpName: definition.remoteName,
+		outputValidation: 'required',
+		invokeValidated: (context, value) => invoke(context, definition.remoteName, value) })
 }
 
-/** @internal Reserves host-aware definitions without making them callable standalone. */
-export function bindHostToolSeam(definition: HostToolDefinition): Omit<ExecutableToolBinding, 'invokeValidated'> {
+/** @internal Reserves a host-aware binding without a standalone call path. */
+export function bindHostToolSeam(definition: HostToolDefinition): Omit<AgentExecutableBinding, 'invokeValidated'> {
+	const identity = requireIdentity(definition, 'host-tool')
+	const binding = createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
+		implementationKind: 'host', definitionIdentity: identity, digestDefinition: ['host-tool', definition.id],
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
+		invokeValidated: async () => { throw new TypeError('Host tool is not bound.') } })
+	const { invokeValidated: _removed, ...seam } = binding
+	return Object.freeze(seam)
+}
+
+
+function requireIdentity(value: unknown, kind: DefinitionIdentity['kind']): DefinitionIdentity {
+	const identity = getDefinitionIdentity(value)
+	if (identity?.kind !== kind) throw new TypeError('Executable binding requires a package-owned definition identity.')
+	return identity
+}
+
+function projectPortableContext<Requirements extends ToolRequirements>(
+	context: AgentToolInvocationContext,
+	requirements: Requirements | undefined,
+): ToolHandlerContext<Requirements> {
 	return Object.freeze({
-		id: definition.id, description: definition.description, input: definition.input, output: definition.output,
-		implementationKind: 'host' as const, definition,
-	})
+		signal: context.signal, logger: context.logger, metrics: context.metrics, telemetry: context.telemetry,
+		...(context.identity === undefined ? {} : { identity: context.identity }), sessionId: context.sessionId,
+		runId: context.runId, agentId: context.agentId, toolId: context.toolId, callId: context.callId,
+		invocationId: context.invocationId, ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
+		metadata: context.metadata,
+		...((requirements?.memory?.length ?? 0) === 0 ? {} : { memory: context.memory }),
+		...((requirements?.sandbox?.length ?? 0) === 0 ? {} : { sandbox: context.sandbox }),
+	}) as ToolHandlerContext<Requirements>
+}
+
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value)
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) throw new TypeError('Binding digest input must be finite JSON.')
+		return JSON.stringify(value)
+	}
+	if (Array.isArray(value)) {
+		const allowedKeys = new Set<PropertyKey>(['length', ...Array.from({ length: value.length }, (_unused, index) => String(index))])
+		if (Reflect.ownKeys(value).some(key => !allowedKeys.has(key)) || Array.from({ length: value.length }, (_unused, index) => index).some(index => !(index in value))) {
+			throw new TypeError('Binding digest input must be dense canonical JSON.')
+		}
+		return `[${value.map(canonicalJson).join(',')}]`
+	}
+	if (typeof value !== 'object' || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+		throw new TypeError('Binding digest input must be canonical JSON.')
+	}
+	if (Reflect.ownKeys(value).some(key => typeof key === 'symbol')) throw new TypeError('Binding digest input must not contain symbol keys.')
+	const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => codePointCompare(left, right))
+	return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(',')}}`
+}
+
+function codePointCompare(left: string, right: string): number {
+	const leftPoints = Array.from(left, character => character.codePointAt(0)!)
+	const rightPoints = Array.from(right, character => character.codePointAt(0)!)
+	for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index += 1) {
+		if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!
+	}
+	return leftPoints.length - rightPoints.length
 }

@@ -15,6 +15,7 @@ import type { SandboxPolicy } from '../sandbox/ownership.js'
 import type { Infer, InferIn, ModelSchema, Schema } from '../schema/index.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
 import type { AgentGuardrailsBinding, AgentPermissions } from '../harness/defineHarness.js'
+import type { AgentGovernanceInput, GovernanceConfig } from '../governance/types.js'
 import type { DurableStepOptions } from '../runtime/steps.js'
 import type { ExternalWaitRequest, ExternalWaitResolved } from '../storage/external-wait.js'
 import type { DefinitionReference, NonMcpToolIdentityKind } from './identity.js'
@@ -278,6 +279,7 @@ export type AnyAgentDefinition = Readonly<{
 	id: string
 	description?: string | undefined
 	model: ModelAliasId
+	instructions: string
 	input: ModelSchema
 	output: ModelSchema
 	inputCapabilities?: readonly AgentInputCapability[] | undefined
@@ -285,7 +287,10 @@ export type AnyAgentDefinition = Readonly<{
 	skills?: readonly SkillDefinition[] | undefined
 	guardrails?: AgentGuardrailsBinding | undefined
 	permissions?: AgentPermissions | undefined
+	governance?: GovernanceConfig<any> | undefined
 	subagents?: AgentSubagentMap | undefined
+	loop?: AgentLoopOptions | undefined
+	prompt?: AgentPrompt<any, any> | undefined
 	memory?: AgentMemoryPolicy<readonly MemoryCapability[]> | undefined
 	sandbox?: SandboxPolicy | undefined
 	workspace?: true | undefined
@@ -318,6 +323,7 @@ export type AgentOptions<
 	Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined,
 	Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
 	Permissions extends AgentPermissions | undefined = undefined,
+	Governance extends AgentGovernanceInput<Tools, Skills, Subagents> | undefined = undefined,
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
 > = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & {
@@ -329,6 +335,7 @@ export type AgentOptions<
 	readonly skills?: Skills
 	readonly guardrails?: Guardrails
 	readonly permissions?: Permissions
+	readonly governance?: Governance
 	readonly subagents?: Subagents
 	readonly loop?: AgentLoopOptions
 	readonly memory?: Memory
@@ -337,7 +344,7 @@ export type AgentOptions<
 	readonly durable?: Durable
 }
 
-type PresentField<Key extends PropertyKey, Value> = [Value] extends [undefined]
+type PresentField<Key extends PropertyKey, Value> = undefined extends Value
 	? { readonly [K in Key]?: undefined }
 	: { readonly [K in Key]: Value }
 
@@ -356,6 +363,7 @@ export type AgentDefinition<
 	Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined = undefined,
 	Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
 	Permissions extends AgentPermissions | undefined = undefined,
+	Governance extends GovernanceConfig<any> | undefined = undefined,
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
 > = Readonly<{
@@ -375,6 +383,7 @@ export type AgentDefinition<
 	& PresentField<'memory', Memory>
 	& PresentField<'guardrails', Guardrails>
 	& PresentField<'permissions', Permissions>
+	& PresentField<'governance', Governance>
 	& PresentField<'workspace', Workspace>
 	& PresentField<'durable', Durable>
 	& DefinitionReference<'agent', Id>

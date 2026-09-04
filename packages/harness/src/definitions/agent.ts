@@ -4,7 +4,7 @@ import { HarnessConfigError } from '../errors/index.js'
 import { agentPermissionsSchema } from '../decisions/schemas.js'
 import { agentGuardrailsBinding, type AgentGuardrailsBinding, type AgentPermissions } from '../harness/defineHarness.js'
 import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
-import type { Infer, ModelSchema } from '../schema/index.js'
+import type { Infer, JsonSchemaBoundary, ModelSchema } from '../schema/index.js'
 import {
 	assertDefinitionId,
 	assertKnownFields,
@@ -24,8 +24,10 @@ import type {
 	AgentSubagentMap,
 	AnyToolDefinition,
 	SkillDefinition,
+	UserModelMessage,
 } from './types.js'
 import type { MemoryCapability } from '../ports/memory/types.js'
+import type { AgentGovernanceInput, GovernanceConfig, GovernanceDefinitionHelpers, GovernanceToolMap, ResolvedAgentGovernance } from '../governance/types.js'
 
 const defaultStringInput = z.string()
 const defaultStringOutput = z.string()
@@ -37,6 +39,7 @@ const supportedMemoryCapabilities: readonly MemoryCapability[] = Object.freeze([
 const agentFields = [
 	'description', 'model', 'input', 'output', 'instructions', 'prompt', 'inputCapabilities', 'tools', 'skills',
 	'guardrails', 'permissions', 'subagents', 'loop', 'memory', 'sandbox', 'workspace', 'durable',
+	'governance',
 ] as const
 
 type ResolvedInput<Input extends ModelSchema | undefined> = Input extends ModelSchema ? Input : typeof defaultStringInput
@@ -48,6 +51,7 @@ type ResolvedPrompt<
 > = [Input] extends [undefined]
 	? undefined
 	: AgentPrompt<Infer<ResolvedInput<Input>>, Capabilities>
+type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args: never[]) => infer Config ? Config : Value>
 
 /**
  * Defines one standard bounded model-loop agent.
@@ -85,11 +89,14 @@ export function defineAgent<
 	const Memory extends AgentMemoryPolicy<readonly MemoryCapability[]> | undefined = undefined,
 	const Guardrails extends AgentGuardrailsBinding<any> | undefined = undefined,
 	const Permissions extends AgentPermissions | undefined = undefined,
+	const Governance extends AgentGovernanceInput<Tools, Skills, Subagents> | undefined = AgentGovernanceInput<Tools, Skills, Subagents> | undefined,
 	const Workspace extends true | undefined = undefined,
 	const Durable extends true | undefined = undefined,
 >(
 	id: Id,
-	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Workspace, Durable>,
+	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Governance, Workspace, Durable>
+		& ([Input] extends [ModelSchema] ? Readonly<{ input: JsonSchemaBoundary<Extract<Input, ModelSchema>> }> : unknown)
+		& ([Output] extends [ModelSchema] ? Readonly<{ output: JsonSchemaBoundary<Extract<Output, ModelSchema>> }> : unknown),
 ): AgentDefinition<
 	Id,
 	ResolvedInput<Input>,
@@ -101,7 +108,7 @@ export function defineAgent<
 	Capabilities,
 	ResolvedUpdates<Output>,
 	ResolvedPrompt<Input, Capabilities>,
-	Memory, Guardrails, Permissions, Workspace, Durable
+	Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable
 > {
 	assertDefinitionId(id, 'agent.id')
 	assertKnownFields(options, agentFields, 'agent', id)
@@ -134,6 +141,11 @@ export function defineAgent<
 	const permissions = snapshotPermissions(options.permissions, id) as Permissions
 	const sandbox = snapshotSandboxPolicy(options.sandbox, id)
 	const guardrails = snapshotGuardrails(options.guardrails, id) as Guardrails
+	const governance = resolveGovernance(options.governance, id, new Set([
+		...(tools ?? []).map(tool => tool.id),
+		...((skills?.length ?? 0) > 0 ? ['read_skill'] : []),
+		...Object.keys(subagents ?? {}),
+	])) as ResolvedGovernance<Governance>
 
 	const identity = createDefinitionIdentity('agent', id)
 	const contract = attachDefinitionIdentity({
@@ -162,6 +174,7 @@ export function defineAgent<
 		...(skills === undefined ? {} : { skills }),
 		...(guardrails === undefined ? {} : { guardrails }),
 		...(permissions === undefined ? {} : { permissions }),
+		...(governance === undefined ? {} : { governance }),
 		...(subagents === undefined ? {} : { subagents }),
 		...(loop === undefined ? {} : { loop }),
 		...(memory === undefined ? {} : { memory }),
@@ -172,7 +185,7 @@ export function defineAgent<
 	}
 	return freezeDefinition(value, identity) as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
-		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, Workspace, Durable
+		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable
 	>
 }
 
@@ -203,10 +216,25 @@ function wrapPrompt(
 ): AgentPrompt<unknown, readonly AgentInputCapability[]> {
 	return input => {
 		const result = prompt(input)
-		const messages = Array.isArray(result) ? result : [result]
-		for (const message of messages) validateUserMessage(message, capabilities, id)
-		return result
+		return validateAgentPromptResult(result, capabilities, id)
 	}
+}
+
+/** @internal Revalidates and snapshots prompt output immediately before provider use. */
+export function validateAgentPromptResult(
+	value: unknown,
+	capabilities: readonly AgentInputCapability[],
+	id: string,
+): readonly UserModelMessage<readonly AgentInputCapability[]>[] {
+	const messages = Array.isArray(value) ? value : [value]
+	if (messages.length === 0) throw invalidPrompt(id)
+	return Object.freeze(messages.map(message => {
+		validateUserMessage(message, capabilities, id)
+		const content = (message as UserModelMessage<readonly AgentInputCapability[]>).content
+		return Object.freeze({ role: 'user' as const, content: typeof content === 'string'
+			? content
+			: Object.freeze(content.map(part => Object.freeze({ ...part }))) })
+	}))
 }
 
 function validateUserMessage(value: unknown, capabilities: readonly AgentInputCapability[], id: string): void {
@@ -367,7 +395,7 @@ function snapshotPermissions(permissions: AgentPermissions | undefined, id: stri
 	return Object.freeze(snapshot) as AgentPermissions
 }
 
-function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
+function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
 	if (policy === undefined || policy === 'inherit' || policy === 'private') return policy
 	if (!isPlainObject(policy)) throw invalidSandbox(id)
 	assertKnownFields(policy, ['group'], 'agent.sandbox', id)
@@ -412,12 +440,165 @@ function invalidGuardrails(id: string): HarnessConfigError {
 	})
 }
 
+function resolveGovernance(
+	input: unknown,
+	id: string,
+	toolIds: ReadonlySet<string>,
+): GovernanceConfig<GovernanceToolMap> | undefined {
+	if (input === undefined) return undefined
+	const helpers: GovernanceDefinitionHelpers<GovernanceToolMap> = Object.freeze({
+		rule: (definition: unknown) => definition,
+		exposureRule: (definition: unknown) => definition,
+		native: (definition: object) => ({ ...definition, kind: 'native' as const }),
+		adapter: (definition: unknown) => definition,
+	}) as GovernanceDefinitionHelpers<GovernanceToolMap>
+	let configured: unknown
+	try { configured = typeof input === 'function' ? input(helpers as never) : input } catch (error) {
+		throw new HarnessConfigError('Agent governance configuration failed.', {
+			reason: 'invalid_agent_governance', path: 'agent.governance', id,
+		}, error)
+	}
+	if (!isPlainObject(configured)) throw invalidGovernance(id, 'agent.governance')
+	assertGovernanceFields(configured, ['enabled', 'mode', 'defaultEffect', 'policies', 'exposure', 'audit'], 'agent.governance', id)
+	if (configured['enabled'] !== undefined && typeof configured['enabled'] !== 'boolean') throw invalidGovernance(id, 'agent.governance.enabled')
+	if (configured['mode'] !== undefined && (typeof configured['mode'] !== 'string' || !['enforce', 'shadow'].includes(configured['mode']))) throw invalidGovernance(id, 'agent.governance.mode')
+	if (configured['defaultEffect'] !== undefined && (typeof configured['defaultEffect'] !== 'string' || !['allow', 'deny'].includes(configured['defaultEffect']))) throw invalidGovernance(id, 'agent.governance.defaultEffect')
+	const policies = configured['policies'] === undefined ? undefined : snapshotGovernancePolicies(configured['policies'], id, toolIds)
+	const exposure = configured['exposure'] === undefined ? undefined : snapshotExposure(configured['exposure'], id, toolIds)
+	const audit = configured['audit']
+	if (audit !== undefined && (!isPlainObject(audit)
+		|| Reflect.ownKeys(audit).some(key => key !== 'record') || typeof audit['record'] !== 'function')) {
+		throw invalidGovernance(id, 'agent.governance.audit')
+	}
+	return Object.freeze({
+		...(configured['enabled'] === undefined ? {} : { enabled: configured['enabled'] as boolean }),
+		...(configured['mode'] === undefined ? {} : { mode: configured['mode'] as 'enforce' | 'shadow' }),
+		...(configured['defaultEffect'] === undefined ? {} : { defaultEffect: configured['defaultEffect'] as 'allow' | 'deny' }),
+		...(policies === undefined ? {} : { policies }),
+		...(exposure === undefined ? {} : { exposure }),
+		...(audit === undefined ? {} : { audit: Object.freeze({ record: audit['record'] }) }),
+	}) as GovernanceConfig<GovernanceToolMap>
+}
+
+function snapshotGovernancePolicies(value: unknown, id: string, toolIds: ReadonlySet<string>): readonly unknown[] {
+	if (!Array.isArray(value)) throw invalidGovernance(id, 'agent.governance.policies')
+	const policyIds = new Set<string>()
+	return Object.freeze(value.map((policy, index) => {
+		const path = `agent.governance.policies.${index}`
+		if (!isPlainObject(policy) || !validConfigurationId(policy['id']) || ['governance.default', 'governance.exposure'].includes(policy['id'])) throw invalidGovernance(id, path)
+		if (policyIds.has(policy['id'])) throw invalidGovernance(id, `${path}.id`)
+		policyIds.add(policy['id'])
+		if (policy['kind'] === 'native') {
+			assertGovernanceFields(policy, ['kind', 'id', 'version', 'description', 'rules'], path, id)
+			validateGovernanceTextFields(policy, path, id, ['version', 'description'])
+			if (!Array.isArray(policy['rules']) || policy['rules'].length === 0) throw invalidGovernance(id, `${path}.rules`)
+			const ruleIds = new Set<string>()
+			const rules = Object.freeze(policy['rules'].map((rule, ruleIndex) => {
+				const rulePath = `${path}.rules.${ruleIndex}`
+				const snapshot = snapshotRule(rule, rulePath, id, toolIds)
+				if (ruleIds.has(snapshot['id'] as string)) throw invalidGovernance(id, `${rulePath}.id`)
+				ruleIds.add(snapshot['id'] as string)
+				return snapshot
+			}))
+			const effects = Object.freeze([...new Set(rules.map(rule => rule['effect']))])
+			return Object.freeze({ kind: 'native', id: policy['id'], ...(policy['version'] === undefined ? {} : { version: policy['version'] }),
+				...(policy['description'] === undefined ? {} : { description: policy['description'] }), effects, rules })
+		}
+		assertGovernanceFields(policy, ['id', 'version', 'engine', 'effects', 'evaluate'], path, id)
+		if ((policy['version'] !== undefined && !validConfigurationId(policy['version']))
+			|| (policy['engine'] !== undefined && !validConfigurationId(policy['engine']))
+			|| typeof policy['evaluate'] !== 'function' || !validEffects(policy['effects'], true)) throw invalidGovernance(id, path)
+		return Object.freeze({ id: policy['id'], ...(policy['version'] === undefined ? {} : { version: policy['version'] }),
+			...(policy['engine'] === undefined ? {} : { engine: policy['engine'] }),
+			effects: Object.freeze([...(policy['effects'] as string[])]), evaluate: policy['evaluate'] })
+	}))
+}
+
+function snapshotRule(value: unknown, path: string, id: string, toolIds: ReadonlySet<string>): Readonly<Record<string, unknown>> {
+	if (!isPlainObject(value)) throw invalidGovernance(id, path)
+	assertGovernanceFields(value, ['id', 'description', 'effect', 'tools', 'when', 'reasonCode'], path, id)
+	if (!validConfigurationId(value['id']) || ['default', 'governance.default', 'governance.exposure'].includes(value['id']) || !validEffects([value['effect']], true)
+		|| (value['description'] !== undefined && !validDescription(value['description']))
+		|| (value['reasonCode'] !== undefined && !validReasonCode(value['reasonCode']))
+		|| (value['when'] !== undefined && typeof value['when'] !== 'function')) throw invalidGovernance(id, path)
+	const tools = snapshotSelectors(value['tools'], path, id, toolIds)
+	return Object.freeze({ id: value['id'], ...(value['description'] === undefined ? {} : { description: value['description'] }), effect: value['effect'],
+		...(tools === undefined ? {} : { tools }), ...(value['when'] === undefined ? {} : { when: value['when'] }),
+		...(value['reasonCode'] === undefined ? {} : { reasonCode: value['reasonCode'] }) })
+}
+
+function snapshotExposure(value: unknown, id: string, toolIds: ReadonlySet<string>): Readonly<Record<string, unknown>> {
+	if (!isPlainObject(value)) throw invalidGovernance(id, 'agent.governance.exposure')
+	assertGovernanceFields(value, ['id', 'version', 'defaultEffect', 'rules'], 'agent.governance.exposure', id)
+	if ((value['id'] !== undefined && (!validConfigurationId(value['id']) || ['governance.default', 'governance.exposure'].includes(value['id'])))
+		|| (value['version'] !== undefined && !validConfigurationId(value['version']))) throw invalidGovernance(id, 'agent.governance.exposure')
+	if (value['defaultEffect'] !== undefined && (typeof value['defaultEffect'] !== 'string' || !['expose', 'hide'].includes(value['defaultEffect']))) throw invalidGovernance(id, 'agent.governance.exposure.defaultEffect')
+	const rules = value['rules'] === undefined ? undefined : (() => {
+		if (!Array.isArray(value['rules'])) throw invalidGovernance(id, 'agent.governance.exposure.rules')
+		const ruleIds = new Set<string>()
+		return Object.freeze(value['rules'].map((rule, index) => {
+			const path = `agent.governance.exposure.rules.${index}`
+			if (!isPlainObject(rule)) throw invalidGovernance(id, path)
+			assertGovernanceFields(rule, ['id', 'description', 'effect', 'tools', 'when'], path, id)
+			if (!validConfigurationId(rule['id']) || ['default', 'governance.default', 'governance.exposure'].includes(rule['id']) || (rule['description'] !== undefined && !validDescription(rule['description']))
+				|| typeof rule['effect'] !== 'string' || !['expose', 'hide'].includes(rule['effect']) || (rule['when'] !== undefined && typeof rule['when'] !== 'function')) throw invalidGovernance(id, path)
+			if (ruleIds.has(rule['id'])) throw invalidGovernance(id, `${path}.id`)
+			ruleIds.add(rule['id'])
+			const tools = snapshotSelectors(rule['tools'], path, id, toolIds)
+			return Object.freeze({ ...rule, ...(tools === undefined ? {} : { tools }) })
+		}))
+	})()
+	return Object.freeze({ ...value, ...(rules === undefined ? {} : { rules }) })
+}
+
+function snapshotSelectors(value: unknown, path: string, id: string, toolIds: ReadonlySet<string>): readonly string[] | undefined {
+	if (value === undefined) return undefined
+	if (!Array.isArray(value) || value.length === 0 || new Set(value).size !== value.length
+		|| value.some(name => typeof name !== 'string' || !toolIds.has(name))) throw invalidGovernance(id, `${path}.tools`)
+	return Object.freeze([...value]) as readonly string[]
+}
+
+function validEffects(value: unknown, requireNonempty: boolean): value is readonly string[] {
+	return Array.isArray(value) && (!requireNonempty || value.length > 0) && new Set(value).size === value.length
+		&& value.every(effect => ['allow', 'deny', 'require_approval', 'audit'].includes(effect))
+}
+
+function invalidGovernance(id: string, path: string): HarnessConfigError {
+	return new HarnessConfigError('Agent governance configuration is invalid.', { reason: 'invalid_agent_governance', path, id })
+}
+
 function invalidPresenceFlag(id: string, path: string): HarnessConfigError {
 	return new HarnessConfigError('Agent presence flags can only be literal true.', {
 		reason: 'invalid_agent_flag', path, id,
 	})
 }
 
-function isPlainObject(value: unknown): value is Record<string, any> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value)
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+	const prototype = Object.getPrototypeOf(value)
+	return prototype === Object.prototype || prototype === null
+}
+
+function assertGovernanceFields(value: Record<string, unknown>, fields: readonly string[], path: string, id: string): void {
+	const allowed = new Set(fields)
+	if (Reflect.ownKeys(value).some(key => typeof key !== 'string' || !allowed.has(key))) throw invalidGovernance(id, path)
+}
+
+function validConfigurationId(value: unknown): value is string {
+	return typeof value === 'string' && Array.from(value).length >= 1 && Array.from(value).length <= 128 && !/\p{Cc}/u.test(value)
+}
+
+function validDescription(value: unknown): value is string {
+	return typeof value === 'string' && value.trim().length > 0
+}
+
+function validReasonCode(value: unknown): value is string {
+	return typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value)
+}
+
+function validateGovernanceTextFields(value: Record<string, unknown>, path: string, id: string, fields: readonly string[]): void {
+	for (const field of fields) {
+		if (value[field] === undefined) continue
+		if (field === 'description' ? !validDescription(value[field]) : !validConfigurationId(value[field])) throw invalidGovernance(id, `${path}.${field}`)
+	}
 }

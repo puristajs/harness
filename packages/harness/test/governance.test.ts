@@ -273,9 +273,9 @@ describe('governance policies', () => {
     ).resolves.toMatchObject({ status: 'completed', output: 'cancelled' })
     expect(transfers).toBe(1)
     const rejectionFollowUp = model.requests[3] as ObjectRequest
-    expect(rejectionFollowUp.messages.find(message => message.role === 'tool')).toMatchObject({
-      content: expect.stringContaining('Transfer was not expected.'),
-    })
+    const rejectionResult = rejectionFollowUp.messages.find(message => message.role === 'tool')
+    expect(rejectionResult).toMatchObject({ content: expect.stringContaining('"tool_kind":"approval"') })
+    expect(JSON.stringify(rejectionResult)).not.toContain('Transfer was not expected.')
   })
 
   it('blocks denied tool calls before the tool handler runs', async () => {

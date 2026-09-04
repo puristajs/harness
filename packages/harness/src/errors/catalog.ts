@@ -403,7 +403,11 @@ export class AgentNotFoundError extends HarnessError {
 export class AgentLoopBudgetError extends HarnessError {
   public constructor(
     message: string,
-    meta: { agent_id: string; reason: 'iterations_exceeded'; limit: number },
+    meta: {
+      agent_id: string
+      reason: 'max_steps' | 'max_tool_calls' | 'max_subagent_calls' | 'max_depth'
+      limit: number
+    },
     cause?: unknown,
   ) {
     super({ code: 'AGENT_LOOP_BUDGET_EXCEEDED', category: 'validation', retriable: false, message, meta, cause })

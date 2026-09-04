@@ -2,6 +2,11 @@ import { HarnessConfigError } from '../errors/index.js'
 import { compileDefinitionGraph, type DefinitionGraphRoots } from '../runtime/compiled-graph.js'
 import type { RuntimeRequirements, RuntimeRequirementsFor } from '../runtime/runtime-requirements.js'
 import {
+	resolveHarnessExecutionDefaults,
+	type HarnessExecutionDefaults,
+	type ResolvedHarnessExecutionDefaults,
+} from '../runtime/execution-defaults.js'
+import {
 	assertDefinitionId,
 	assertKnownFields,
 	createDefinitionIdentity,
@@ -105,6 +110,8 @@ export interface HarnessInspection<Requirements extends RuntimeRequirements = Ru
 export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends string = string> = {
 	readonly kind: 'harness'
 	readonly name: Name
+	readonly revision?: string
+	readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
 	readonly catalog: Catalog
 	readonly contracts: Catalog['contracts']
 	readonly requirements: Catalog['requirements']
@@ -119,7 +126,11 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 } & DefinitionReference<'harness', Name> & HarnessDefinitionBrand<Name>
 
 /** Definition-time Harness options. */
-export interface HarnessOptions<Name extends string = string> { readonly name: Name }
+export interface HarnessOptions<Name extends string = string> {
+	readonly name: Name
+	readonly revision?: string
+	readonly defaults?: HarnessExecutionDefaults
+}
 
 const inferPhantom = Object.freeze({})
 type CatalogProvenance = readonly HarnessCatalogDefinition<string, HarnessCatalogView>[]
@@ -127,24 +138,35 @@ type CatalogProvenance = readonly HarnessCatalogDefinition<string, HarnessCatalo
 /** Starts one immutable Harness definition without a terminal build step. */
 export function defineHarness<const Name extends string>(options: HarnessOptions<Name>): HarnessDefinition<EmptyCatalogView, Name> {
 	if (typeof options !== 'object' || options === null || Array.isArray(options)) throw invalidHarnessOptions()
-	assertKnownFields(options, ['name'], 'harness', typeof options.name === 'string' ? options.name : '')
+	assertKnownFields(options, ['name', 'revision', 'defaults'], 'harness', typeof options.name === 'string' ? options.name : '')
 	assertDefinitionId(options.name, 'harness.name')
-	return createHarnessDefinition(options.name, {}) as HarnessDefinition<EmptyCatalogView, Name>
+	if (options.revision !== undefined) assertRevision(options.revision)
+	const defaults = resolveHarnessExecutionDefaults(options.defaults)
+	return createHarnessDefinition(options.name, {}, Object.freeze([]), options.revision, defaults) as HarnessDefinition<EmptyCatalogView, Name>
 }
 
 function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extends string>(
 	name: Name,
 	roots: DefinitionGraphRoots,
 	catalogProvenance: CatalogProvenance = Object.freeze([]),
+	revision?: string,
+	defaults: Readonly<ResolvedHarnessExecutionDefaults> = resolveHarnessExecutionDefaults(),
 ): HarnessDefinition<Catalog, Name> {
 	const graph = compileDefinitionGraph(roots)
 	const catalog = createCatalogView(graph) as Catalog
+	if (catalog.requirements.storage.durable && revision === undefined) {
+		throw new HarnessConfigError('A deployment revision is required for a resumable Harness.', {
+			reason: 'missing_harness_revision', path: 'harness.revision', id: name,
+		})
+	}
 	const withRoots = (addition: DefinitionGraphRoots, provenance: CatalogProvenance = catalogProvenance) => (
-		createHarnessDefinition(name, mergeRoots(catalog, addition), provenance)
+		createHarnessDefinition(name, mergeRoots(catalog, addition), provenance, revision, defaults)
 	)
 	const value = {
 		kind: 'harness',
 		name,
+		...(revision === undefined ? {} : { revision }),
+		defaults,
 		catalog,
 		contracts: catalog.contracts,
 		requirements: catalog.requirements,
@@ -238,6 +260,14 @@ function invalidHarnessOptions(): HarnessConfigError {
 	return new HarnessConfigError('Harness options must contain a valid name.', {
 		reason: 'invalid_definition_id', path: 'harness.name',
 	})
+}
+
+function assertRevision(value: unknown): asserts value is string {
+	if (typeof value !== 'string' || Array.from(value).length < 1 || Array.from(value).length > 128 || /\p{Cc}/u.test(value)) {
+		throw new HarnessConfigError('Harness revision is invalid.', {
+			reason: 'invalid_harness_revision', path: 'harness.revision',
+		})
+	}
 }
 
 function foreignCatalog(): HarnessConfigError {

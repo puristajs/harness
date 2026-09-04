@@ -1,6 +1,6 @@
 import { HarnessConfigError } from '../errors/index.js'
 import type { ModelCapability } from '../ports/model-provider.js'
-import type { ModelSchema } from '../schema/index.js'
+import type { JsonSchemaBoundary, ModelSchema } from '../schema/index.js'
 import {
 	assertDefinitionId,
 	assertKnownFields,
@@ -54,7 +54,10 @@ export function defineWorkflow<
 	const Durable extends true | undefined = undefined,
 >(
 	id: Id,
-	options: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable>,
+	options: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable> & Readonly<{
+		input: JsonSchemaBoundary<Input>
+		output: JsonSchemaBoundary<Output>
+	}>,
 ): WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable> {
 	assertDefinitionId(id, 'workflow.id')
 	assertKnownFields(options, workflowFields, 'workflow', id)
@@ -101,7 +104,7 @@ export function defineWorkflow<
 		handler: options.handler,
 		contract,
 	}
-	return freezeDefinition(value, identity) as WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable>
+	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, Input, Output, Agents, Models, Workspace, Durable>
 }
 
 function copyAgents<A extends WorkflowAgentMap>(agents: A | undefined, workflowId: string): A | undefined {

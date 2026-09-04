@@ -5,11 +5,15 @@ import { HarnessError } from '../errors/harness-error.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
 import type { ModelMessage, ProviderContinuation, ToolCallSpec } from '../ports/model-provider.js'
+import type { SuspendedAgentTurnStateV1 } from './prepared-tool-checkpoint.js'
 
 /** One model-requested tool call that requires a human decision. */
 export interface ToolApprovalRequest {
   readonly approvalId: string
   readonly runId: string
+  readonly agentRunId: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
   readonly agentId: string
   readonly workflowId?: string
   readonly invocationId: string
@@ -67,6 +71,8 @@ export interface ToolApprovalCheckpoint {
 export class ToolApprovalPendingError extends HarnessError {
   public readonly interrupt: ToolApprovalInterrupt
   public state?: PendingAgentApprovalState
+  /** @internal Exact v4 data-only agent frame owned by the standard loop. */
+  public preparedState?: SuspendedAgentTurnStateV1
 
   public constructor(
     requests: readonly ToolApprovalRequest[],
@@ -111,4 +117,10 @@ export class ToolApprovalPendingError extends HarnessError {
     this.state = Object.freeze(state)
     return this
   }
+
+	/** @internal Attach the v4 prepared frame before the root runtime persists it. */
+	public attachPreparedState(state: SuspendedAgentTurnStateV1): this {
+		this.preparedState = state
+		return this
+	}
 }

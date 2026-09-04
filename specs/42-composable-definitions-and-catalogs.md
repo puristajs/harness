@@ -409,8 +409,8 @@ type ExecutionEvent<
 Every target supports aggregate `run` and progressive `stream`. A text agent
 has `updates: 'text-delta'`; an agent with any explicit output schema has
 `updates: 'object-snapshot'`. An agent contract declares
-`interrupts: ['tool-approval']` because a runtime or host policy may require
-approval for selected capabilities. A workflow has `updates: 'none'`: it may
+`interrupts: ['tool-approval']` because its declared permission or governance
+policy may require approval for selected capabilities. A workflow has `updates: 'none'`: it may
 relay child, model, progress, artifact, and terminal events, but its custom
 handler cannot manufacture output updates. A workflow declares
 `interrupts: ['tool-approval', 'external-wait']`. These arrays describe the
@@ -789,7 +789,8 @@ files is the second tier. Skill file bodies are never placed in the initial
 prompt.
 
 `read_skill` receives a synthesized default agent permission of `allow`, while
-runtime governance and Guardrails may still deny or require approval. It uses
+the agent's declared governance may still deny or require approval and its
+Guardrails may allow, block, or transform at their declared phases. It uses
 the same exposure, transform, input validation, policy, approval, execution,
 output validation, telemetry, event, timeout, and cancellation pipeline as
 native, built-in, MCP, and host-aware tools. There is no public direct-call
@@ -810,6 +811,16 @@ const transactionAnalyst = defineAgent('transactionAnalyst', {
   tools: [getTransaction],
   skills: [transactionAnalysis],
   guardrails: transactionGuardrails,
+  governance: ({ native, rule }) => ({
+    policies: [native({
+      id: 'transaction-policy',
+      rules: [rule({
+        id: 'review-large-lookup',
+        tools: ['getTransaction'],
+        effect: 'require_approval',
+      })],
+    })],
+  }),
   subagents: { policySpecialist },
   loop: {
     maxSteps: 8,
@@ -836,6 +847,7 @@ The definition-time fields are closed and have these requirement effects:
 | `skills` | readonly Skill references | `tool_use` and scoped reader; runtime-bearing Skills add runtimes, `sandbox.fs`, and `sandbox.readonly_mount` |
 | `guardrails` | `AgentGuardrailsBinding<Requirements>` | its exact declared requirements |
 | `permissions` | existing `AgentPermissions` | restriction only; `require_approval` adds durable storage |
+| `governance` | `AgentGovernanceInput<Tools, Skills, Subagents>` | policies are scoped to this agent's complete model-facing binding map; any declared `require_approval` effect adds durable storage |
 | `subagents` | typed agent map | graph closure and delegation tools |
 | `loop` | closed positive integer limits | none |
 | `memory` | `AgentMemoryPolicy` | memory capabilities and declared model aliases |
@@ -846,6 +858,104 @@ The definition-time fields are closed and have these requirement effects:
 `model` is a lower-camel string literal `ModelAliasId` that identifies a
 runtime requirement. `ModelAlias` remains the concrete provider/model runtime
 binding and is never accepted by `defineAgent`.
+
+Governance is authored on the agent because model-facing tool exposure and
+execution policy are agent-specific. The v4 type projection is:
+
+```ts
+type ExplicitAgentToolMap<Tools extends readonly AnyToolDefinition[]> = Readonly<{
+  [Tool in Tools[number] as Tool['id']]: Tool
+}>
+
+type NormalizeTools<Tools> =
+  Tools extends readonly AnyToolDefinition[] ? Tools : readonly []
+type NormalizeSkills<Skills> =
+  Skills extends readonly SkillDefinition[] ? Skills : readonly []
+type NormalizeSubagents<Subagents> =
+  Subagents extends AgentSubagentMap ? Subagents : Readonly<Record<never, never>>
+type ReferencedAgent<Reference> =
+  Reference extends Readonly<{ agent: infer Agent extends AnyAgentDefinition }>
+    ? Agent
+    : Reference extends AnyAgentDefinition ? Reference : never
+
+type ReadSkillGovernanceTool<Skills extends readonly SkillDefinition[]> =
+  Skills extends readonly [] ? Readonly<Record<never, never>> : Readonly<{
+    read_skill: Readonly<{
+      id: 'read_skill'
+      input: Schema<ReadSkillInput>
+      output: Schema<ReadSkillOutput>
+    }>
+  }>
+
+type SubagentGovernanceToolMap<Subagents extends AgentSubagentMap> = Readonly<{
+  [Name in keyof Subagents]: Readonly<{
+    id: Name
+    input: ReferencedAgent<Subagents[Name]>['input']
+    output: ReferencedAgent<Subagents[Name]>['output']
+  }>
+}>
+
+type AgentModelToolMap<Tools, Skills, Subagents> = Readonly<
+  ExplicitAgentToolMap<NormalizeTools<Tools>>
+  & ReadSkillGovernanceTool<NormalizeSkills<Skills>>
+  & SubagentGovernanceToolMap<NormalizeSubagents<Subagents>>
+>
+
+type AgentGovernanceInput<Tools, Skills, Subagents> =
+  | GovernanceConfig<AgentModelToolMap<Tools, Skills, Subagents>>
+  | ((helpers: GovernanceDefinitionHelpers<
+        AgentModelToolMap<Tools, Skills, Subagents>
+      >) => GovernanceConfig<AgentModelToolMap<Tools, Skills, Subagents>>)
+
+interface GovernancePolicyEvaluator<
+  ToolMap extends Readonly<Record<string, AnyToolDefinition>>,
+> {
+  readonly id: string
+  readonly version?: string
+  readonly engine?: string
+  readonly effects: readonly GovernanceEffect[]
+  evaluate(
+    context: GovernanceContext<ToolMap>,
+  ):
+    | GovernanceDecision
+    | readonly GovernanceDecision[]
+    | undefined
+    | Promise<
+        GovernanceDecision
+        | readonly GovernanceDecision[]
+        | undefined
+      >
+}
+```
+
+`GovernanceConfig`, `GovernanceContext`, and
+`GovernanceDefinitionHelpers` keep the decision semantics from spec 37, but
+their v4 generic is the exact readonly tool map rather than removed
+`BuilderState`. A helper callback is evaluated synchronously by `defineAgent`
+and its frozen result becomes the agent's governance snapshot. It cannot access
+providers, adapters, credentials, runtime registries, or host invocation data.
+The former Harness-builder `.governance(...)` method is removed.
+The map contains every explicit portable, built-in, MCP, or host tool, plus the
+conditional generated `read_skill` binding and every subagent delegation name.
+For a subagent key its input/output are the referenced child agent schemas;
+`read_skill` uses the exact schemas in section 4. Native rule and exposure
+selectors use readonly literal keys from this complete map. Unknown keys fail
+at compile time and runtime configuration validation. Runtime
+`GovernanceContext.toolId` remains the selected literal key and its `input`
+remains correlated to that binding's schema. These keys configure a frozen
+policy; they do not expose a runtime registry or dynamic lookup path.
+
+Every external `GovernancePolicyEvaluator` declares a nonempty frozen
+`effects: readonly GovernanceEffect[]` capability list. Native policies derive
+that list from their configured rule effects. Returning an effect absent from
+the evaluator's declaration is `DecisionEvaluationError{failureKind:
+'invalid_result'}`. The requirement compiler sets
+`storage.durable:true` whenever agent permissions, a native rule, or an external
+evaluator declaration contains `require_approval`, regardless of whether a
+predicate will match on a particular run. Runtime and host bindings cannot add
+another governance policy or return undeclared `require_approval`; PURISTA
+business authorization remains in service guards. This makes approval storage
+and revision requirements decidable entirely from the frozen graph.
 
 The Core-owned Guardrail requirement declaration is exact and does not grant a
 capability or inject a runtime handle:
@@ -908,13 +1018,14 @@ cadence, source-window behavior, validation, and orchestration retain the
 existing `MemoryConfiguration` semantics. The runtime `memory` binding is only
 a capability-compatible `MemoryEngine`; it contains no agent behavior
 configuration. Local in-memory memory satisfies only non-durable baseline
-capabilities. Approval-capable tools/Guardrails and delegated interruption
-require durable storage so resume can survive process boundaries. There is no
+capabilities. Permission/governance approval paths, Guardrails that explicitly
+declare `requirements.durable:true`, and delegated interruption require durable
+storage so resume can survive process boundaries. There is no
 evaluation definition or inferred evaluation runtime requirement in this
 composition contract.
 
 An agent owns configuration only: model alias, input/output contract,
-instructions, tools, Skills, Guardrails, permissions, subagents, sandbox
+instructions, tools, Skills, Guardrails, permissions, governance, subagents, sandbox
 policy, and bounded declarative loop settings. An agent has no general
 `handler`. Custom control flow is a workflow. Per-step agent hooks are not part
 of this release; adding them later requires a separate pure, typed contract.
@@ -926,9 +1037,39 @@ provider-facing names and schemas.
 If `input` is omitted, it is a string. If `output` is omitted, the agent is a
 text agent and its final output is a string. Supplying `output` makes the agent
 a structured agent. If `model` is omitted, the alias is `primary`. `run`
-aggregates; `stream` performs real provider streaming. Text agents produce text
-deltas and structured agents produce object snapshots. Agent authors do not
-configure a separate `updates` mode.
+aggregates with `text` or `object`; `stream` always uses the provider's real
+`textStream` or `objectStream` operation. Text agents produce text deltas and
+structured agents produce object snapshots. Agent authors do not configure a
+separate `updates` or buffering mode.
+
+Output disclosure is derived only from the final-output safety boundary. When
+the agent has no `beforeOutput` Guardrail, `stream` relays text deltas or object
+snapshots from every provider step immediately in provider order. These values
+are provisional UI updates: they are never added to canonical assistant
+history and never contribute to `RunOutcome.output`. A provider step that asks
+for tools may therefore show ordinary provider output while tool/status events
+continue live. Only the terminal no-tool step supplies the final candidate and
+canonical output.
+
+When the agent has `beforeOutput`, `stream` still consumes the real provider
+stream and still emits tool, policy, approval, and status activity, but it
+suppresses assistant output from every step. Tool-turn content is discarded.
+After the terminal candidate passes `beforeOutput` and the output schema, the
+Harness emits one complete `output.text.delta` or one complete
+`output.object.snapshot`. Tool, Skill, MCP, or subagent availability alone
+never selects buffering, because doing so would silently remove normal live
+chat and RAG behavior.
+
+For both invocation modes, `RunOutcome.output` is the validated terminal step
+only. In a text stream the terminal candidate is the concatenation of that
+step's ordered deltas. In an object stream it is the final object on that
+step's finish chunk. A provider stream must contain exactly one finish chunk,
+no chunks after it, and a final object in object mode. Violations fail with
+`ValidationError{where:'model_response'}`. `afterModel` and final output-schema
+validation may terminate an unguarded stream after provisional content has
+already reached the consumer; only `beforeOutput` is a pre-disclosure output
+safety boundary. Existing stream ids plus `model.completed` delimit provider
+turns for the AI SDK UI projection.
 
 A non-string input must declare a pure prompt mapper:
 
@@ -1000,8 +1141,22 @@ Every subagent call goes through a `HarnessTargetDispatcher` port. The standalon
 default resolves registered definitions locally. A PURISTA mount resolves the
 same logical target to a service/version/target address and always invokes it
 through EventBridge. Agent and provider admission apply at the target before
-model execution. Trusted identity, trace, session/run
-ancestry, cancellation, deadlines, and idempotency propagate.
+model execution. Trusted identity, trace, session/run ancestry, cancellation,
+deadlines, and idempotency propagate. `HarnessIdentity` is the one
+provider-neutral identity shape already owned by Harness.
+`HarnessTraceContext` is the existing W3C carrier normalized to the frozen
+shape `{traceparent:string,tracestate?:string}` using the existing validation
+and `INVALID_TRACE_CONTEXT` behavior.
+`HarnessTargetDispatcher` is a trusted runtime/integrator SPI, not application
+ingress. At the root boundary Harness applies `normalizeHarnessIdentity`,
+copies and freezes the result, and binds it to the session exactly once. Every
+descendant receives the same normalized identity values; dispatchers cannot widen,
+replace, or derive it from target input. A standalone application is the trust
+boundary for the root identity it supplies. A PURISTA dispatcher constructs it
+only from authenticated EventBridge sender identity; transported target input
+and caller-controlled message data can never set or replace it. Hosted resume
+must match the identity already bound to the stored session before reading or
+executing a continuation.
 
 ```ts
 type HarnessTargetDispatchRequest<
@@ -1018,7 +1173,8 @@ type HarnessTargetDispatchRequest<
     parentWorkflowId?: string
     depth: number
     remainingDepth: number
-    identity?: TrustedIdentity
+    identity?: HarnessIdentity
+    trace?: HarnessTraceContext
     deadline?: number
     idempotencyKey?: string
     signal: AbortSignal
@@ -1059,7 +1215,8 @@ id and parent invocation id. A child gets isolated conversation history and a
 fresh child session derived from the parent session; ancestry remains metadata.
 Only remaining delegation depth crosses the dispatch boundary. Every agent has
 `loop.maxDepth`; every workflow has `maxDepth`, using the same default when it
-is omitted. A root agent or workflow starts at depth zero with its configured
+is omitted. Agent `loop.maxDepth` and workflow `maxDepth` each override the
+Harness `defaults.maxDepth`. A root agent or workflow starts at depth zero with its configured
 maximum as `remainingDepth`. Every nested agent or workflow edge consumes one:
 dispatch requires positive remaining depth, child depth is parent depth plus
 one. The caller transmits `parentRemainingDepth - 1` as the child ceiling; it
@@ -1070,6 +1227,17 @@ logical child call consumes no additional depth. `maxSteps`, `maxToolCalls`, and
 `maxSubagentCalls` are local to each agent invocation;
 `maxParallelSubagents` is local to the invoking parent. A future root-global
 call limit requires a separate atomic distributed budget port.
+`maxSteps`, `maxToolCalls`, and `maxSubagentCalls` are checked before starting
+the operation that would exceed them and fail with
+`AgentLoopBudgetError{code:'AGENT_LOOP_BUDGET_EXCEEDED',category:'validation',retriable:false}`.
+Its content-free metadata reason is respectively `max_steps`,
+`max_tool_calls`, or `max_subagent_calls`, with the configured limit. Tool-call
+batch scheduling preserves provider call order among waiting entries.
+`maxParallelToolCalls` bounds every executable tool occurrence;
+`maxParallelSubagents` additionally bounds the subset whose binding kind is
+`subagent`. A subagent starts only after it owns capacity from both semaphores.
+Neither concurrency limit rejects work under normal load; excess calls wait
+within the inherited deadline and cancellation signal.
 The standalone dispatcher opens a registered local target. A host
 dispatcher has no implicit local fallback.
 
@@ -1152,8 +1320,89 @@ required `handler`; optional
 policy, positive integer `maxDepth`, literal `workspace: true`, and literal
 `durable: true`. Its model
 entries declare an alias and nonempty capability list. Workspace and durable
-fields contribute the same requirements as agent fields. Harness options contain only `name` and
-content-free execution defaults; they never contain live adapters.
+fields contribute the same requirements as agent fields. Harness options
+contain only `name` and content-free execution defaults; they never contain
+live adapters.
+
+The v4 execution defaults are one closed definition-time contract:
+
+```ts
+interface HarnessExecutionDefaults {
+  readonly maxSteps?: number
+  readonly maxToolCalls?: number
+  readonly maxSubagentCalls?: number
+  readonly maxParallelSubagents?: number
+  readonly maxDepth?: number
+  readonly runTimeoutMs?: number
+  readonly modelTimeoutMs?: number
+  readonly toolTimeoutMs?: number
+  readonly skillTimeoutMs?: number
+  readonly decisionTimeoutMs?: number
+  readonly maxParallelToolCalls?: number
+  readonly historyWindow?: number
+  readonly contextProjection?: ContextProjectionPolicy
+  readonly historyRetention?: SessionHistoryRetentionPolicy
+}
+
+interface HarnessOptions<Name extends string = string> {
+  readonly name: Name
+  readonly revision?: string
+  readonly defaults?: HarnessExecutionDefaults
+}
+
+interface ResolvedHarnessExecutionDefaults {
+  readonly maxSteps: number
+  readonly maxToolCalls: number
+  readonly maxSubagentCalls: number
+  readonly maxParallelSubagents: number
+  readonly maxDepth: number
+  readonly runTimeoutMs: number
+  readonly modelTimeoutMs: number
+  readonly toolTimeoutMs: number
+  readonly skillTimeoutMs: number
+  readonly decisionTimeoutMs: number
+  readonly maxParallelToolCalls: number
+  readonly historyWindow?: number
+  readonly contextProjection?: ContextProjectionPolicy
+  readonly historyRetention?: SessionHistoryRetentionPolicy
+}
+```
+
+The resolved constants are `maxSteps:16`, `maxToolCalls:32`,
+`maxSubagentCalls:32`, `maxParallelSubagents:8`, `maxDepth:1`,
+`runTimeoutMs:600_000`, `modelTimeoutMs:300_000`,
+`toolTimeoutMs:120_000`, `skillTimeoutMs:60_000`,
+`decisionTimeoutMs:10_000`, and `maxParallelToolCalls:8`.
+`historyWindow`, `contextProjection`, and `historyRetention` are absent by
+default. `defineHarness` rejects unknown default keys and produces one deeply
+frozen resolved snapshot. Every integer must be safe. `runTimeoutMs` and
+`historyWindow` accept zero with their existing meanings; every other numeric
+default is positive. Context projection and retention use their existing
+closed validators.
+
+`revision` is an application-controlled deployment revision using the bounded
+configuration-reference rule. It is required exactly when the compiled
+`RuntimeRequirements.storage.durable` value is `true`. Definitions that enable
+approvals, external waits, durable targets, or another resumable interrupt must
+therefore contribute that durable-storage requirement during graph compilation.
+A graph whose durable-storage requirement is `false` may omit it. The compiler
+validates this invariant after every immutable `add*` and `use` operation, and
+every returned Harness definition preserves the supplied revision. A deployment
+changes the revision whenever handler,
+Guardrail, policy, schema, prompt, or orchestration behavior changes in a way
+that must invalidate suspended work. Harness never hashes JavaScript function
+source as a substitute.
+
+An agent's `loop` field overrides the five matching loop defaults. Invocation
+`timeoutMs` overrides the root timeout, including zero disabling it, while an
+inherited parent deadline still bounds every nested run. Invocation
+`historyWindow` overrides the Harness history window. Context projection
+precedence is invocation, then selected model alias, then Harness. Model-alias
+generation defaults, retry, provider options, and credential scope remain
+model-specific and are not copied into this object. History retention remains
+Harness-wide. H4-004 Skill/MCP initialization, H4-005 execution, and H4-008
+session assembly consume this same resolved snapshot and do not derive another
+set of fallback values.
 
 ## 8. Catalogs and registries
 
@@ -1355,7 +1604,7 @@ Model maps and nested values are frozen and have deterministic key order.
 `hostTools` lets the ordinary standalone instance type reject a host-aware graph;
 only the integrator entry point can satisfy those bindings.
 The literal presence of agent/workflow `durable` and `workspace`, approval
-permissions, Guardrail requirement flags, and media-generation model
+permissions, governance effect declarations, Guardrail requirement flags, and media-generation model
 capabilities is preserved through the definition types. The derived requirement
 type therefore exposes literal `true` or `false` for `storage.durable`,
 `workspace`, and `artifacts`; it never widens these fields to `boolean` for a
@@ -1369,8 +1618,8 @@ Requirement derivation follows this order:
   needs contribute sandbox capabilities; Skills contribute logical runtimes,
   and each runtime-bearing Skill additionally contributes `sandbox.fs` and
   `sandbox.readonly_mount`;
-- agent/workflow `durable: true`, approvals, and durable child tasks require
-  durable storage;
+- agent/workflow `durable: true`, permission/governance approvals, Guardrail
+  `requirements.durable:true`, and durable child tasks require durable storage;
 - definition `workspace: true` requires a workspace binding;
 - workflow `models` declares embeddings, reranking, image, speech, and video;
 - image, speech, and video generation requires an artifact store; and
@@ -1641,24 +1890,209 @@ closes clients, processes, and internal adapters the Harness creates; supplied
 providers and adapters follow their existing explicit ownership contracts.
 
 H4-004 owns immutable Skill loading, MCP server initialization, built-in tool
-definitions, and package-private executable bindings for portable, built-in,
-`read_skill`, and MCP tools. A binding exposes its model-facing id,
+definitions, and the first package-private executable bindings for portable,
+built-in, `read_skill`, and MCP tools. H4-005 finalizes every such binding into
+the exact shared identity-and-digest shape below while constructing the common
+pipeline; later binding kinds must implement that same shape. A binding exposes its model-facing id,
 description, input/output schemas, implementation kind, hidden original
-definition identity, and an `invokeValidated` operation. It performs only the
-validated implementation or transport call and emits no portable tool
-lifecycle event. The binding shape reserves the host-aware implementation kind
-for the integrator without making a standalone host tool callable.
+definition identity, contract digest, and an `invokeValidated` operation. It
+performs only the validated implementation or transport call and emits no
+portable tool lifecycle event. The one package-private shape is:
+
+```ts
+type AgentBindingKind =
+  | 'portable'
+  | 'built-in'
+  | 'read-skill'
+  | 'mcp'
+  | 'subagent'
+  | 'host'
+
+interface AgentToolInvocationContext {
+  readonly harnessName: string
+  readonly sessionId: string
+  readonly runId: string
+  readonly rootRunId: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
+  readonly invocationId: string
+  readonly agentId: string
+  readonly workflowId?: string
+  readonly step: number
+  readonly toolId: string
+  readonly callId: string
+  readonly idempotencyKey?: string
+  readonly identity?: HarnessIdentity
+  readonly deadline?: number
+  readonly signal: AbortSignal
+  readonly metadata: Readonly<Record<string, JsonValue>>
+  readonly logger: Logger
+  readonly metrics: Metrics
+  readonly telemetry: TelemetryShim
+  readonly memory: MemoryFacade
+  readonly sandbox: SandboxSessionBase
+  readonly targetDispatcher: HarnessTargetDispatcher
+  relayChildEvent(event: ExecutionEvent): Promise<void>
+  readonly checkpointStep: HarnessCheckpointStep
+}
+
+interface AgentExecutableBinding<
+  Input extends ModelSchema = ModelSchema,
+  Output extends Schema = Schema,
+> {
+  readonly id: string
+  readonly description: string
+  readonly input: Input
+  readonly output: Output
+  readonly implementationKind: AgentBindingKind
+  readonly definitionIdentity: DefinitionIdentity
+  readonly contractDigest: string
+  invokeValidated(
+    context: AgentToolInvocationContext,
+    input: Infer<Input>,
+  ): Promise<unknown>
+}
+```
+
+`DefinitionIdentity` is the existing package-private identity record; the
+binding never exposes the original definition object as a service locator.
+`contractDigest` is `sha256:` plus lowercase SHA-256 over the UTF-8 canonical
+JSON encoding of this exact tuple:
+
+```ts
+type BindingDigestPreimageV1 = readonly [
+  'harness.binding.v1',
+  modelFacingId: string,
+  implementationKind: AgentBindingKind,
+  definition: readonly [
+    kind: 'tool' | 'built-in-tool' | 'host-tool' | 'mcp-tool' | 'agent',
+    id: string,
+  ],
+  mcpOwner: readonly [kind: 'mcp-server', id: string] | null,
+  remoteMcpName: string | null,
+  normalizedProviderInputJsonSchema: JsonValue,
+]
+```
+
+Non-MCP bindings use `null` for both MCP positions. No tuple position is omitted
+and `undefined` is rejected before hashing. Arbitrary Standard Schema output
+validators have no portable JSON representation and are deliberately excluded;
+the application revision protects executable and non-serializable behavior.
+The canonical JSON encoder recursively sorts object keys by Unicode code point,
+preserves array order, rejects `undefined`, non-finite numbers, bigint, symbols,
+functions, and non-JSON prototypes, and uses ordinary JSON primitive encoding
+before UTF-8 hashing. The digest contains no function source or inspected
+runtime content. H4-004 creates portable,
+built-in, `read-skill`, and MCP bindings. The shape reserves `subagent` for
+H4-006 and `host` for H4-009. An unbound host seam is not executable.
+
+The implementation-kind-to-identity mapping is exact:
+
+| `implementationKind` | `definitionIdentity` | digest `definition` | MCP fields |
+| --- | --- | --- | --- |
+| `portable` | original portable tool identity | `['tool', tool.id]` | both `null` |
+| `built-in` | original built-in tool identity | `['built-in-tool', tool.id]` | both `null` |
+| `read-skill` | owning agent definition identity | `['agent', agent.id]` | both `null` |
+| `mcp` | original MCP tool identity | `['mcp-tool', tool.id]` | owner tuple and remote name required |
+| `subagent` | referenced child agent identity | `['agent', child.id]` | both `null` |
+| `host` | original host-tool identity | `['host-tool', tool.id]` | both `null` |
+
+The generated `read_skill` binding therefore remains per-agent and has no
+synthetic definition or catalog entry. Its binding `id` stays the reserved
+`read_skill` model-facing name, while its identity token and digest definition
+come from the owning agent. Only an MCP binding may use non-null MCP positions;
+every other combination fails internal compilation.
+`AgentToolInvocationContext` is package-private. Binding factories project its
+memory and sandbox handles to a portable tool's declared requirement type. A
+subagent binding uses `targetDispatcher` and relays every child event through
+`relayChildEvent`, which preserves the child correlation already added by
+H4-008. No application handler receives this broad internal shape directly.
+H4-009 creates a run-scoped immutable overlay of host bindings whose closures
+capture that run's fresh authenticated `HostInvocation`; the value never enters
+this context, an instance registry, a checkpoint, or persistence.
 
 H4-005 owns model exposure and the single common tool-execution pipeline. It
 resolves a model-returned local name through the current agent's immutable
 binding map, applies input/output transforms, validates each boundary exactly
 once, evaluates permission and governance, handles approval, invokes the
 prepared binding only after approval, and emits the common telemetry, events,
-timeout, and cancellation outcome. H4-006 supplies host-aware execution through
-the reserved binding seam. No H4-004 initializer or binding is a public service
-locator or direct invocation API. H4-008 calls the Skill and MCP initializers,
-owns cross-initializer rollback and the returned private immutable bundles, and
+timeout, and cancellation outcome. H4-006 supplies subagent bindings through
+the reserved seam and uses `HarnessTargetDispatcher`; H4-009 supplies
+host-aware bindings through the other reserved seam. Neither duplicates input
+validation, decisions, approval, output validation, lifecycle events, timeout,
+or telemetry. No H4-004 initializer or binding is a public service locator or
+direct invocation API. H4-008 calls the Skill and MCP initializers, owns
+cross-initializer rollback and the returned private immutable bundles, and
 closes instance-owned resources.
+
+To keep every intermediate ticket buildable without creating two public
+executors, H4-005 adds the v4 loop and tool pipeline as package-private modules
+beside the still-used v3 session runner. No v4 definition or instance path may
+call that old runner. H4-008 switches `sessions/index.ts` to the v4 loop and
+deletes the old runner, old tool pipeline, and their approval/governance-only
+support in the same change. H4-011 verifies that none remains. This is an
+implementation sequence only; no compatibility symbol, overload, or dual
+runtime is shipped in the v4 package.
+
+H4-005 also owns the contract-only declarations of `HarnessTargetDispatcher`
+and `HarnessCheckpointStep`, because the common binding context must compile
+before later execution tickets. Those declarations contain no local dispatch
+or durable-step implementation. H4-006 supplies the dispatcher implementation;
+H4-007 supplies checkpoint execution and replay. Structural copies in the tool
+package are forbidden.
+
+The agent loop allocates exactly one private `streamId` for each provider
+`textStream` or `objectStream` operation and supplies it through the
+package-private model-call context. Every provisional or guarded output event
+from that provider turn uses the same id. H4-008's session-context model wrapper
+must preserve a supplied id and emit it unchanged on that turn's
+`model.completed`; it may allocate an id only for a direct streaming model call
+whose caller supplied none. The agent loop never creates a second id for the
+same provider turn.
+
+The H4-005 event sink uses a positive type allowlist rather than a broad
+exclusion from the full protocol:
+
+```ts
+type AgentPipelineEventType =
+  | 'agent.started'
+  | 'agent.finished'
+  | 'model.message'
+  | 'output.text.delta'
+  | 'output.object.snapshot'
+  | 'tool.input.available'
+  | 'tool.started'
+  | 'tool.finished'
+  | 'policy.exposure'
+  | 'policy.evaluated'
+  | 'approval.requested'
+  | 'approval.responded'
+
+type AgentPipelineEvent = {
+  [Type in AgentPipelineEventType]: Omit<
+    Extract<ExecutionEvent, { readonly type: Type }>,
+    keyof ExecutionEventCorrelation
+  >
+}[AgentPipelineEventType]
+
+interface AgentEventSink {
+  emit(event: AgentPipelineEvent): Promise<void>
+}
+```
+
+H4-008 adds the executing `runId`, optional parent correlation, event sequence,
+persistence, and bounded delivery. It is the sole owner of `run.started`,
+`run.finished`, `model.completed`, external-wait, fanout, child-task, media,
+embedding, reranking, and overflow events. The session model wrapper calls the
+agent loop with provider run-event emission disabled and emits exactly one
+`model.completed` after each valid non-stream response or valid stream finish.
+H4-005 never emits it. A logical agent emits one `agent.started`; approval
+suspension emits no `agent.finished`; resume emits no second start; eventual
+completion, failure, or cancellation emits one finish. H4-008 persists that
+lifecycle state and enforces the rule across restarts. Every emitted
+`tool.started` has exactly one `tool.finished`; a denied, rejected, or
+recoverable preflight result may emit `tool.finished` without `tool.started`
+because no side effect began.
 
 The provider-neutral host SPI is public and stable. Its generic spelling may
 use internal helper types, but it exposes this information without requiring a
@@ -1670,6 +2104,8 @@ interface HarnessDefinition<
 > {
   readonly kind: 'harness'
   readonly name: string
+  readonly revision?: string
+  readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
   readonly catalog: Catalog
   readonly contracts: Catalog['contracts']
   readonly requirements: Catalog['requirements']
@@ -1765,6 +2201,10 @@ type HarnessHostContextRequest<HostInvocation> = Readonly<{
 interface HarnessHostBindings<HostInvocation, HostContext> {
   readonly hostOwner: HostOwnerToken
   readonly targetDispatcher: HarnessTargetDispatcher
+  readonly projectIdentity:
+    (hostInvocation: HostInvocation) => HarnessIdentity | undefined
+  readonly projectTraceContext:
+    (hostInvocation: HostInvocation) => HarnessTraceContext | undefined
   readonly createHostContext:
     (request: HarnessHostContextRequest<HostInvocation>) =>
       HostContext | Promise<HostContext>
@@ -1804,9 +2244,17 @@ and receive already validated logical input before starting or reopening the
 named session. They do not parse or transform the input again.
 
 `HostInvocation` is supplied only by the host target adapter for each run. It is
-opaque to Harness, absent from public `InvokeOptions`, never inspected,
-serialized, persisted, or exposed to a model, and is handed only to
-`createHostContext`. The returned context exists for one host-tool call and is
+opaque to Harness application logic, absent from public `InvokeOptions`, never
+serialized, persisted, or exposed to a model. Harness passes it only to the two
+host-owned projection functions and `createHostContext`; it never reads its
+properties itself. At hosted entry it invokes both projection functions exactly
+once, normalizes and freezes their returns, binds the identity to the session,
+and enters the root trace through the existing W3C extraction behavior before
+any run event or handler. A projection throw becomes sanitized `InternalError`.
+The projected identity and trace cannot be supplied or overridden by
+`HostedTargetRequest`. Nested dispatch carries the frozen identity and a
+trusted current W3C carrier in `HarnessTargetDispatchRequest.invocation`.
+The returned context exists for one host-tool call and is
 discarded afterward. Hosted instance config omits public `logger` and
 `telemetry`; the host bindings replace those fields, and Harness derives
 `Metrics` from the bound telemetry. Application callers cannot supply or
@@ -1871,10 +2319,34 @@ across processes. It is released only when the root tree completes, interrupts,
 fails, or cancels. It contains no prompt or model content. `ModelAdmission`
 continues to wrap each provider call independently.
 
-`acquire` may reject capacity only with `AgentAdmissionRejectedError`, carrying
-`retriable: boolean`, optional validated positive `retryAfterMs`, and a
-content-free reason code. Any other thrown value is an adapter failure and uses
-the sanitized internal-error contract.
+`acquire` may reject capacity only with `AgentAdmissionRejectedError`. Its code
+is `AGENT_ADMISSION_REJECTED`, category is `admission`, fixed message is `Agent
+admission capacity is exhausted.`, `retriable` is always `true`, and safe
+metadata is exactly `{reason:'capacity_exhausted',retryAfterMs?}`.
+`retryAfterMs`, when present, is a positive safe integer. Invalid construction
+or adapter configuration fails with `HarnessConfigError`; callers cannot add
+another reason or content-bearing metadata. Any other adapter throw normalizes
+to the sanitized `InternalError`. Existing cancellation and inherited deadline
+errors retain their canonical cancellation or timeout identity.
+
+H4-006 adds `admission` to the public `ErrorCategory` union and owns this
+adapter-author-facing constructor:
+
+```ts
+class AgentAdmissionRejectedError extends HarnessError {
+  constructor(options?: Readonly<{ retryAfterMs?: number }>)
+}
+```
+
+H4-011 exports it from the package root. A lease `release` is called exactly
+once after the logical result is prepared and before `run.finished`. Release
+has no cancellation signal. Any release throw becomes a sanitized
+`InternalError` and replaces the pending completed/interrupted/cancelled
+terminal outcome. A durable checkpoint or completed run record remains intact;
+repeating that root invocation retries delivery and release without repeating
+model, tool, or workflow effects. The runtime records a content-free cleanup
+diagnostic. This makes capacity leaks visible without corrupting the saved
+logical result.
 
 ## 10. Invocation, streaming, and approval
 
@@ -1917,6 +2389,20 @@ request; and conformance uses the official UI message stream reader. See the
 The adapter pins a tested AI SDK major and does not claim compatibility with an
 untested protocol version.
 
+The UI adapter keeps one AI SDK step per provider turn. `run.started` emits the
+message `start` and status only; it does not open a step. The first
+`output.text.delta` or `output.object.snapshot` for a new model stream id opens
+`start-step` and that stream's part. If a turn has no assistant output,
+`model.completed` opens its step. The first event belonging to another model
+stream id closes any active text/object part, emits `finish-step` for the prior
+turn after its tool activity, and opens the next `start-step`. Tool and approval
+events after `model.completed` remain inside that completed provider turn until
+the next turn starts or the run terminates. `run.finished` closes active parts,
+closes the active step, and emits the final message finish. Guarded terminal
+output is valid after its `model.completed` event and before `run.finished`;
+the matching stream id keeps it in that same turn. This state machine represents
+`text -> tool -> text` as ordinary AI SDK steps without inventing custom chunks.
+
 `@purista/harness-ai-sdk-ui/v1` exports the versioned boundary:
 
 - `parseHarnessUIMessageRequest(body)` validates the standard AI SDK request
@@ -1937,16 +2423,18 @@ untested protocol version.
 
 The application maps the parsed user message to its agent's logical input; the
 adapter does not guess how a structured domain schema should be populated.
-Approval descriptors carry run id, interrupt id, revision, event id, approval
-ids, and the stable session id required to reopen the same run. Invalid,
-incomplete, stale, duplicated, or mixed-run decisions fail before invocation.
+Approval descriptors carry root run id, executing agent run id, interrupt id,
+revision, event id, approval ids, and the stable session id required to reopen
+the same run. Invalid, incomplete, stale, duplicated, or mixed-run decisions
+fail before invocation.
 
 The v1 event mapping is fixed:
 
 | Harness event | AI SDK UI v1 chunks |
 | --- | --- |
-| `run.started` | `start`, `start-step`, `data-status{phase:'started'}` |
-| `output.text.delta` | one `text-start`, then ordered `text-delta`; `text-end` at terminal |
+| `run.started` | `start`, `data-status{phase:'started'}` |
+| first output or `model.completed` for a model stream id | close the prior turn when present, then `start-step` for this provider turn |
+| `output.text.delta` | one `text-start` per stream id, then ordered `text-delta`; `text-end` when the provider turn or run closes |
 | `output.object.snapshot` | transient `data-output` with stable run/output id |
 | `tool.input.available` | standard dynamic `tool-input-available` |
 | `tool.started` | `data-status{phase:'tool-running'}` |
@@ -1956,7 +2444,7 @@ The v1 event mapping is fixed:
 | `approval.responded` | standard `tool-approval-response` |
 | `output.file` | standard `file` chunk with URL and media type |
 | `output.progress` | `data-status{phase:'media-progress'}` |
-| completed `run.finished` | completed status, `finish-step`, `finish{finishReason:'stop'}` |
+| completed `run.finished` | close active parts, completed status, `finish-step` when open, `finish{finishReason:'stop'}` |
 | interrupted `run.finished` | interrupted status, approval chunks when applicable, `finish-step`, typed finish reason |
 | failed or cancelled `run.finished` | `data-status{phase:'failed'|'cancelled'}`, close active parts, `finish-step`, typed error/cancel finish reason |
 
@@ -1979,6 +2467,493 @@ invocation reopened by the consumer. Each approval request also carries its
 executing `agentRunId`, `agentId`, and `parentInvocationId`. Durable storage
 maps that root interrupt to the exact child checkpoint. The consumer resumes
 the original root target and never needs to address the child directly.
+
+The public approval request is exact:
+
+```ts
+interface ToolApprovalRequest {
+  readonly approvalId: string
+  readonly runId: string
+  readonly agentRunId: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
+  readonly agentId: string
+  readonly workflowId?: string
+  readonly invocationId: string
+  readonly step: number
+  readonly toolId: string
+  readonly callId: string
+  readonly input: JsonValue
+  readonly demands: readonly DecisionEvidence[]
+}
+```
+
+The decision engine derives each approval id from the ordered tuple
+`[rootRunId,agentRunId,invocationId,'approval',step,toolId,callId,orderedDemandDecisionIds]`.
+Operational approval events use the executing agent run as their common event
+`runId`; the interrupt descriptor and request retain the root id for the public
+resume operation.
+
+H4-005 preflights the complete provider tool-call batch in call order before
+any handler starts. The transformed wire arguments and once-parsed effective
+input are distinct immutable values. Its resumable per-agent turn state uses
+only data, never closures or definition objects:
+
+```ts
+type PreparedToolCheckpointEntryV1 =
+  | Readonly<{
+      state: 'recoverable'
+      call: ToolCallSpec
+      argumentsStage: 'provider' | 'transformed'
+      error: SerializedError
+    }>
+  | Readonly<{
+      state: 'denied'
+      call: ToolCallSpec
+      input: JsonValue
+      error: SerializedError
+    }>
+  | Readonly<{
+      state: 'ready'
+      call: ToolCallSpec
+      input: JsonValue
+      bindingId: string
+      bindingContractDigest: string
+      approvalId?: string
+    }>
+  | Readonly<{
+      state: 'completed'
+      call: ToolCallSpec
+      input: JsonValue
+      bindingId: string
+      bindingContractDigest: string
+      toolStarted: true
+      outcome:
+        | Readonly<{ status: 'completed'; output: JsonValue }>
+        | Readonly<{ status: 'failed'; error: SerializedError }>
+      modelMessage: Extract<ModelMessage, { role: 'tool' }>
+    }>
+  | Readonly<{
+      state: 'suspended-child'
+      call: ToolCallSpec
+      input: JsonValue
+      bindingId: string
+      bindingContractDigest: string
+      toolStarted: true
+      childInvocationId: string
+      childRunId: string
+    }>
+
+interface SuspendedAgentTurnStateV1 {
+  readonly rootRunId: string
+  readonly agentRunId: string
+  readonly sessionId: string
+  readonly agentId: string
+  readonly workflowId?: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
+  readonly invocationId: string
+  readonly step: number
+  readonly modelAlias: string
+  readonly input: JsonValue
+  readonly messages: readonly ModelMessage[]
+  readonly providerContinuation?: ProviderContinuation
+  readonly entries: readonly PreparedToolCheckpointEntryV1[]
+  readonly agentStarted: true
+}
+
+type SuspensionFrameV1 =
+  | Readonly<{
+      kind: 'agent'
+      runId: string
+      invocationId: string
+      state: SuspendedAgentTurnStateV1
+    }>
+  | Readonly<{
+      kind: 'workflow'
+      runId: string
+      workflowId: string
+      invocationId: string
+      input: JsonValue
+      activeCallIds: readonly string[]
+    }>
+  | Readonly<{
+      kind: 'host-tool'
+      runId: string
+      agentId: string
+      invocationId: string
+      toolId: string
+      callId: string
+      input: JsonValue
+      bindingId: string
+      bindingContractDigest: string
+      toolStarted: true
+      activeNestedCallIds: readonly string[]
+    }>
+
+interface SuspensionNodeV1 {
+  readonly frame: SuspensionFrameV1
+  readonly children: readonly SuspensionNodeV1[]
+}
+
+interface HarnessInterruptionCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly rootRunId: string
+  readonly sessionId: string
+  readonly rootTarget: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+  readonly deploymentRevision: string
+  readonly compiledGraphDigest: string
+  readonly sessionIdentityDigest: string
+  readonly interrupt: HarnessInterrupt
+  readonly continuation: SuspensionNodeV1
+  readonly nextEventSequence: number
+  readonly startedAgentRunIds: readonly string[]
+}
+```
+
+For `denied`, `ready`, `completed`, and `suspended-child`, stored
+`call.arguments` is the post-`beforeTool` JSON wire value used in the assistant
+tool-call continuation. A `recoverable` entry rejected before binding or rails
+stores the canonical JSON provider arguments exactly as received and sets
+`argumentsStage:'provider'`; one that reached `beforeTool` stores the transformed
+wire arguments and sets `argumentsStage:'transformed'`. Original pre-rail
+arguments are never retained after a transform succeeds. `input` is the one schema-parsed value
+shared by policy, approval, and the handler. `messages` is the exact canonical
+transcript through that assistant tool-call turn after recursively removing
+every `providerContinuation` property; the separate field is its only persisted
+representation. Intermediate assistant text or object content from a tool turn
+is excluded from canonical history. The provider-neutral assistant tool-call
+envelope and completed tool-result messages remain, because they are required
+to continue the loop. The optional opaque provider continuation is sensitive
+checkpoint-only state required by providers that
+cannot continue a tool turn from canonical messages alone. It is excluded from
+transcript history, events, logs, inspection, errors, and public outcomes, and
+is deleted with the terminal checkpoint. This narrow persistence exception
+prevents re-running the model and approving a different call after a process
+restart. Storage deployment controls apply to it like other persisted prompt
+state.
+
+`completed.modelMessage` is exactly the provider-neutral tool-result subtype
+`{role:'tool',toolCallId:string,content:string}`. The checkpoint validator walks
+every message and completed entry recursively and rejects a
+`providerContinuation` property anywhere except
+`SuspendedAgentTurnStateV1.providerContinuation`.
+
+The continuation is an ordered tree because one bounded parallel batch may
+have more than one interrupted descendant. Each root-to-leaf path is the exact
+suspension stack for that descendant. Children retain provider call order for
+agent tools and declared invocation order for workflow or host calls. Shared
+parent state appears once. Completed sibling entries retain their validated
+model-visible outcome and are never invoked or emitted again. A
+`suspended-child` entry records that `tool.started` already occurred, so resume
+does not emit it twice. Multiple leaf approval requests are collected into the
+one root interrupt and require one complete decision set.
+
+H4-005 owns agent-frame creation and prepared-entry state transitions. H4-006
+owns child links and subagent resume routing. H4-007 owns workflow re-entry
+through saved `context.step` and child-call results. H4-009 owns host-tool
+re-entry through `checkpointStep` and `nestedTargets.run`; unmanaged host or
+workflow side effects remain application-owned. H4-008 owns the root tree,
+strict schema/version validation, storage, event sequence, lifecycle set, and
+terminal deletion.
+
+On resume, H4-008 validates root, session, interrupt, revision, event, and the
+complete decision set. It reopens the exact root target and continuation tree,
+requires the same deployment revision and compiled graph digest, and compares
+the session record's normalized identity digest. Every binding resolves only in
+its owning agent's private immutable binding map and must match the stored
+contract digest.
+An in-process resume also requires the same hidden definition identity token.
+A mismatch fails closed as stale continuation. No resume reruns
+`beforeTool`, input parsing, permission, governance, audit, or
+`approval.requested`. One `approval.responded` is emitted for each accepted
+boolean decision. Approved and ungated ready entries execute; rejected entries
+become recoverable approval tool errors without `tool.started`. A leaf child is
+resumed first. Each suspended parent agent then completes the existing tool
+occurrence with output validation, `afterTool`, and one `tool.finished` before
+continuing its model loop. Workflow and host frames re-enter their handlers and
+obtain completed or resumed nested calls from the checkpoint APIs. Execution
+uses the fixed boundary order:
+
+```text
+beforeTool -> input parse once -> permission/governance/audit -> approval
+-> tool.started -> invokeValidated -> output parse once -> afterTool
+-> tool.finished
+```
+
+The three checkpoint digests use the same canonical encoder and lowercase
+`sha256:` rendering. Their preimages are exact and version tagged.
+
+```ts
+type GraphDefinitionDigestV1 =
+  | readonly [
+      kind: 'tool' | 'built-in-tool' | 'host-tool' | 'skill'
+        | 'mcp-server' | 'agent' | 'workflow' | 'model-alias',
+      id: string,
+    ]
+  | readonly ['mcp-tool', ownerServerId: string, localToolId: string]
+
+type GraphToolReferenceDigestV1 =
+  | readonly [kind: 'tool' | 'built-in-tool' | 'host-tool', id: string]
+  | readonly ['mcp-tool', ownerServerId: string, localToolId: string]
+
+type GraphEdgeDigestV1 =
+  | readonly ['agent-model', agentId: string, modelAlias: string]
+  | readonly [
+      'agent-tool',
+      agentId: string,
+      modelFacingId: string,
+      target: GraphToolReferenceDigestV1,
+    ]
+  | readonly ['agent-skill', agentId: string, skillId: string]
+  | readonly [
+      'agent-subagent',
+      agentId: string,
+      modelFacingName: string,
+      childAgentId: string,
+    ]
+  | readonly [
+      'agent-memory-embedding-model',
+      agentId: string,
+      modelAlias: string,
+    ]
+  | readonly [
+      'agent-memory-summary-model',
+      agentId: string,
+      modelAlias: string,
+    ]
+  | readonly [
+      'workflow-agent',
+      workflowId: string,
+      localKey: string,
+      agentId: string,
+    ]
+  | readonly [
+      'workflow-model',
+      workflowId: string,
+      localKey: string,
+      modelAlias: string,
+    ]
+  | readonly [
+      'mcp-tool-owner',
+      ownerServerId: string,
+      localToolId: string,
+    ]
+
+type SandboxPolicyDigestV1 =
+  | readonly ['inherit']
+  | readonly ['private']
+  | readonly ['group', id: string]
+
+type PermissionPolicyDigestV1 = readonly [
+  mode: 'allow' | 'require_approval' | 'deny',
+  allowPatterns: readonly string[] | null,
+  denyPatterns: readonly string[] | null,
+]
+
+type AgentPermissionsDigestV1 = readonly [
+  bash: PermissionPolicyDigestV1 | null,
+  write: PermissionPolicyDigestV1 | null,
+  edit: PermissionPolicyDigestV1 | null,
+]
+
+type NativeGovernanceRuleDigestV1 = readonly [
+  id: string,
+  toolKeys: readonly string[] | null,
+  effect: GovernanceEffect,
+  reasonCode: string | null,
+  hasPredicate: boolean,
+]
+
+type GovernancePolicyDigestV1 =
+  | readonly [
+      'native',
+      id: string,
+      version: string | null,
+      rules: readonly NativeGovernanceRuleDigestV1[],
+    ]
+  | readonly [
+      'external',
+      id: string,
+      version: string | null,
+      engine: string | null,
+      declaredEffects: readonly GovernanceEffect[],
+    ]
+
+type GovernanceExposureRuleDigestV1 = readonly [
+  id: string,
+  toolKeys: readonly string[] | null,
+  effect: GovernanceExposureEffect,
+  hasPredicate: boolean,
+]
+
+type GovernanceManifestDigestV1 = readonly [
+  enabled: boolean,
+  mode: GovernanceMode,
+  defaultEffect: 'allow' | 'deny',
+  policies: readonly GovernancePolicyDigestV1[],
+  exposure: readonly [
+    id: string | null,
+    version: string | null,
+    defaultEffect: GovernanceExposureEffect,
+    rules: readonly GovernanceExposureRuleDigestV1[],
+  ] | null,
+  hasAuditSink: boolean,
+]
+
+type GuardrailManifestDigestV1 = readonly [
+  phases: readonly DecisionPhase[],
+  tools: readonly string[],
+  models: readonly (readonly [
+    alias: string,
+    capabilities: readonly ModelCapability[],
+  ])[],
+  memory: readonly MemoryCapability[],
+  sandbox: readonly SandboxCapabilityId[],
+  skillRuntimes: readonly SkillRuntimeId[],
+  durable: boolean,
+  workspace: boolean,
+  artifacts: boolean,
+]
+
+type AgentTargetPolicyDigestV1 = readonly [
+  'agent',
+  id: string,
+  model: string,
+  loop: readonly [
+    maxSteps: number | null,
+    maxToolCalls: number | null,
+    maxSubagentCalls: number | null,
+    maxParallelSubagents: number | null,
+    maxDepth: number | null,
+  ],
+  memory: readonly [
+    capabilities: readonly MemoryCapability[],
+    embeddingModel: string | null,
+    summary: readonly [
+      model: string,
+      everyTurns: number | null,
+      sourceTurns: number | null,
+    ] | null,
+  ] | null,
+  sandbox: SandboxPolicyDigestV1 | null,
+  workspace: boolean,
+  durable: boolean,
+  permissions: AgentPermissionsDigestV1 | null,
+  governance: GovernanceManifestDigestV1 | null,
+  guardrails: GuardrailManifestDigestV1 | null,
+]
+
+type WorkflowTargetPolicyDigestV1 = readonly [
+  'workflow',
+  id: string,
+  maxDepth: number | null,
+  sandbox: SandboxPolicyDigestV1 | null,
+  workspace: boolean,
+  durable: boolean,
+]
+
+type ContextProjectionDigestV1 = readonly [
+  'tool-result-pruner',
+  maxBytes: number,
+  headBytes: number,
+  tailBytes: number,
+  resolvedMarker: string,
+]
+
+type HistoryRetentionDigestV1 = readonly [
+  maxTurns: number | null,
+  maxBytes: number | null,
+]
+
+type RuntimeRequirementsDigestV1 = readonly [
+  models: readonly (readonly [
+    alias: string,
+    capabilities: readonly ModelCapability[],
+  ])[],
+  mcpServers: readonly string[],
+  skillRuntimes: readonly SkillRuntimeId[],
+  durableStorage: boolean,
+  memoryCapabilities: readonly MemoryCapability[],
+  memoryModelAliases: readonly string[],
+  sandboxCapabilities: readonly SandboxCapabilityId[],
+  workspace: boolean,
+  artifacts: boolean,
+  hostTools: readonly string[],
+]
+
+type GraphDigestPreimageV1 = readonly [
+  'harness.graph.v1',
+  harnessName: string,
+  defaults: readonly [
+    maxSteps: number,
+    maxToolCalls: number,
+    maxSubagentCalls: number,
+    maxParallelSubagents: number,
+    maxDepth: number,
+    runTimeoutMs: number,
+    modelTimeoutMs: number,
+    toolTimeoutMs: number,
+    skillTimeoutMs: number,
+    decisionTimeoutMs: number,
+    maxParallelToolCalls: number,
+    historyWindow: number | null,
+    contextProjection: ContextProjectionDigestV1 | null,
+    historyRetention: HistoryRetentionDigestV1 | null,
+  ],
+  requirements: RuntimeRequirementsDigestV1,
+  definitions: readonly GraphDefinitionDigestV1[],
+  edges: readonly GraphEdgeDigestV1[],
+  targetPolicies: readonly (
+    | AgentTargetPolicyDigestV1
+    | WorkflowTargetPolicyDigestV1
+  )[],
+  bindings: readonly (readonly [
+    agentId: string,
+    modelFacingId: string,
+    bindingContractDigest: string,
+  ])[],
+]
+
+type SessionIdentityDigestPreimageV1 = readonly [
+  'harness.session-identity.v1',
+  tenantId: string | null,
+  principalId: string | null,
+]
+```
+
+`requirements` is exactly `RuntimeRequirementsDigestV1`. Every set-like array
+is deduplicated and bytewise lexicographically sorted; model rows sort by alias.
+A context projection with no `toolResultPruner` normalizes to `null`; otherwise
+its marker is resolved to the existing default before encoding. History
+retention encodes each absent bound as `null`.
+
+`definitions` sorts by canonical tuple bytes. MCP tools include their owner id,
+so equal local ids on different servers remain distinct. `edges` contains every
+selected explicit tool, Skill, MCP owner/tool, model, subagent, and workflow
+target reference using only the relation-discriminated `GraphEdgeDigestV1`;
+there is no independent or optional local-key field. Guardrail references and
+generated agent bindings are represented in their exact target/binding
+manifests. Edges sort by canonical tuple bytes. `bindings` sorts by agent id then
+model-facing id.
+
+`targetPolicies` uses only `AgentTargetPolicyDigestV1` and
+`WorkflowTargetPolicyDigestV1`, sorted by kind then id. Omitted policies use the
+shown `null` or `false` values; resolved governance defaults are encoded rather
+than omitted. Tool-key selectors, external declared effects, phase names,
+capabilities, and runtimes are set-like and bytewise lexicographically sorted.
+Permission pattern arrays, native policies/rules, external policies, and
+exposure rules preserve declaration order because it may affect decisions and
+evidence. `hasPredicate` and `hasAuditSink` record executable-boundary presence;
+their function bodies remain covered by `deploymentRevision`. Every absent
+optional tuple value is `null`, never omitted.
+
+`compiledGraphDigest` hashes `GraphDigestPreimageV1`. It excludes functions,
+arbitrary Standard Schema validators, prompts, secrets, providers, and live
+adapters; `deploymentRevision` covers those application-controlled semantics.
+`sessionIdentityDigest` hashes `SessionIdentityDigestPreimageV1` after
+`normalizeHarnessIdentity`; an absent identity hashes the two `null` values.
+H4-008 rejects a mismatch before any handler or model call.
 
 ## 11. PURISTA integration
 

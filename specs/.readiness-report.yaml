@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:3983ad73eab7e615cb595087575c14c6e54ad2ba5a4239ea04a79a6acb13abe8"
+      scope_digest: "sha256:8881b56e017da77b8110671bc6997fb645c8aa0e3ab1750c1f814678b05270a4"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -440,6 +440,8 @@ follow_up_waves:
         - specs/30-guardrails.md
         - specs/38-guardrail-authoring/03-contracts/callbacks.md
         - specs/40-declarative-registration-and-guardrails-binding.md
+        - specs/37-decision-boundaries/03-contracts/decisions.md
+        - specs/37-decision-boundaries/03-contracts/provider-continuation.md
         - specs/42-composable-definitions-and-catalogs.md
         - specs/README.md
         - ../purista/specs/20-agents/88-harness-first-service-integration.md
@@ -474,6 +476,9 @@ follow_up_waves:
       - review: "independent tools, Skills, and MCP implementation-readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after exact built-in capabilities, private executable-binding ownership, deterministic protected two-tier Skill disclosure, bounded immutable Skill snapshots, explicit read-only mount/runtime contracts, current Agent Skills frontmatter, exact content-free Skill errors, one-bundle-per-server MCP lifecycle, and H4-005 common-pipeline ownership were made testable."
+      - review: "independent agent-loop, governance, registry, resume, and digest implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after agent governance was bound to the complete model-facing tool map, approval durability and revisions became statically decidable, trusted host identity/trace projection was explicit, nested continuation trees and provider-turn stream ids were closed, cross-process digest preimages were fully typed, staged executor ownership was aligned, and generated read_skill bindings were assigned to their owning agent identity."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:

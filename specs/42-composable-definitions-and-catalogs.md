@@ -448,7 +448,7 @@ Aggregate `run` rejects for failed or cancelled execution and returns
 `RunOutcome` only for completed or interrupted execution.
 
 The v4 inventory removes `skill.started` and `skill.finished`. Skills are inert
-mounted guidance, not executable calls; a script deliberately wrapped as a
+guidance packages, not executable calls; a script deliberately wrapped as a
 typed tool is observed through the ordinary tool events.
 
 ## 3. Tools and MCP
@@ -477,8 +477,9 @@ Without `requires`, no memory or sandbox execution handle is present.
 Harness exports immutable built-in tool references through `builtInTools`:
 `bash`, `read`, `write`, `edit`, `glob`, `grep`, and `list`. Agents select them
 in the ordinary `tools` array. Each contributes its exact sandbox capabilities;
-for example `bash` contributes `sandbox.exec`, while write/edit contribute file
-mutation capabilities. Agent permissions constrain selected tools but never
+`bash` contributes `sandbox.exec`, `grep` contributes `sandbox.text_search`,
+and `read`, `write`, `edit`, `glob`, and `list` contribute `sandbox.fs`.
+Agent permissions constrain selected tools but never
 select a tool or grant its underlying sandbox capability. A Skill runtime
 requirement never adds a built-in tool automatically.
 
@@ -555,8 +556,11 @@ const answerQuestion = defineAgent('answerQuestion', {
 
 The local object key is the typed model-facing tool id. `remoteName` is the
 exact upstream MCP tool name. Runtime discovery verifies that every declared
-tool exists. Declared and discovered input schemas are projected to the
-supported JSON Schema subset, remove only annotation keys `title`,
+tool exists exactly once. Undeclared remote tools are ignored and never enter
+the catalog, an agent's model-facing tool map, or any callable registry. This
+lets an upstream server add unrelated tools without changing the explicitly
+selected local surface. Declared and discovered input schemas are projected to
+the supported JSON Schema subset, remove only annotation keys `title`,
 `description`, `$comment`, and `examples`, recursively sort object keys and
 `required` arrays, and then require exact equality. Unsupported keywords,
 missing schemas, or unequal schemas fail instance creation. MCP results are
@@ -593,9 +597,45 @@ API and must never auto-expose newly discovered tools. HTTP and stdio calls use
 the same tool policy, approval, Guardrail, validation, telemetry, cancellation,
 and output pipeline as native tools.
 
-The Harness instance owns the HTTP clients and stdio processes created from
-these bindings and closes them once. The stdio sandbox follows its existing
-ownership marker.
+One runtime bundle is initialized per declared server, in deterministic server-id
+order. A bundle contains one client and transport; a stdio bundle contains one
+process even when the server exposes several selected tools. Instance creation
+connects, lists, and validates every declared server before it resolves. A
+server initializer closes everything it created if that server fails. If a
+later server fails, already initialized bundles close in reverse creation
+order.
+
+H4-008 creates one private Harness-instance ULID and passes the Harness name,
+that instance id, the initialization signal, and resolved `toolTimeoutMs` to
+the MCP initializer. The same timeout bounds initialization connect/list
+operations; normal calls remain bounded by the common tool pipeline. A stdio
+binding uses the existing session scope with this synthetic instance-owned
+identity:
+
+```ts
+const owner = {
+  namespace: `${harnessName}.mcp`,
+  id: mcpServer.id,
+  instanceId: harnessInstanceId,
+}
+
+const scope = {
+  owner,
+  partition: { kind: 'shared' },
+  lifetime: 'session',
+}
+```
+
+The initializer calls `registerOwner` in `create` mode, opens the scope in
+`create` mode, verifies the returned session is spawn-capable, and only then
+starts the MCP process. This infrastructure owner has no principal or tenant
+identity. Closing a stdio bundle first performs its single idempotent protocol
+close, which closes the client and its owned transport/process. It then closes
+the sandbox attachment and finally terminates the synthetic scope with
+`reason: 'session_closed'`. Every close step and the complete bundle close are
+idempotent. The supplied sandbox adapter itself is borrowed and is never
+closed. H4-008 owns the initialized bundles and closes each bundle once during
+instance shutdown.
 
 Each selected MCP tool carries private type metadata for the exact owning
 `McpServerDefinition`, including its complete typed tool map, as well as the
@@ -623,17 +663,81 @@ Skill requires a runtime the instance cannot provide.
 The initial closed runtime-id union is `'node' | 'python' | 'shell'`. The public
 `Sandbox` port has optional data-only
 `readonly runtimes?: readonly SkillRuntimeId[]` metadata; omission means that
-the adapter declares no Skill runtimes. When the compiled graph requires at
-least one Skill runtime, the graph-level sandbox binding type requires the
-`runtimes` property and instance validation requires it to contain every
-required runtime id. Runtime metadata never grants process execution,
-filesystem, environment, or network permission. `defineSkill` validates the id
-grammar synchronously; instance compilation loads `SKILL.md` and verifies that
-its declared `name` matches the definition id before `getInstance()` resolves.
+the adapter declares no Skill runtimes. Runtime metadata is explicit and is
+never inferred from `PATH`, the Harness Node.js process, an executable
+allowlist, or another host property. `LocalDirectorySandboxOptions` and
+`FakeSandboxOptions` therefore accept an optional
+`runtimes: readonly SkillRuntimeId[]`; omission produces a frozen empty array,
+and supplied values are validated, copied, lexicographically sorted, and
+frozen; duplicates are rejected. A nonempty local or fake runtime list is valid
+only for an exec-capable adapter configuration. `inMemorySandbox()` reports no runtimes.
+`bashSandbox()` reports `['shell']`, plus `python` when its own `python: true`
+configuration guarantees that runtime; it never infers `node`.
+
+The sandbox capability vocabulary includes `sandbox.readonly_mount`.
+`SandboxSessionFor<C>` exposes `mountReadOnly` only when that literal
+capability is present. A Skill with omitted or empty `runtimes` is
+guidance-only: it is available through the scoped reader below and is not
+mounted. A Skill with at least one runtime contributes its exact logical
+runtime ids plus `sandbox.fs` and `sandbox.readonly_mount`. The graph-level
+sandbox binding then requires `runtimes`, and instance validation requires all
+three parts of that compiled requirement. A Guardrail-only `skillRuntimes`
+requirement contributes its runtime ids but does not contribute the mount
+capabilities because there is no Skill package to mount.
+
+Runtime metadata and a read-only mount never grant process execution,
+filesystem mutation, environment, or network permission. An adapter may
+declare `sandbox.readonly_mount` only when `write`, `remove`, later mounts, and
+sandbox-executed processes cannot mutate the mounted tree. Runtime-bearing
+Skills are mounted at `/skills/<skill-id>` through `mountReadOnly` before the
+first provider call. Files receive no inferred executable bit; an allowed
+runtime command interprets a script. An exec-enabled local sandbox must not
+declare `sandbox.readonly_mount` unless it enforces immutability against child
+processes rather than relying only on host file modes.
+
+`defineSkill` validates the id grammar synchronously. Instance initialization
+accepts only a `file:` directory URL, loads an immutable byte snapshot, loads
+`SKILL.md`, and validates its YAML frontmatter before `getInstance()` resolves.
+The accepted frontmatter follows the current
+[Agent Skills specification](https://agentskills.io/specification) field set:
+
+- required `name`: 1-64 lowercase ASCII letters, digits, or hyphens, without a
+  leading, trailing, or consecutive hyphen, and equal to both the definition
+  id and Skill directory basename;
+- required `description`: a nonempty string of at most 1,024 characters;
+- optional `license`: a nonempty license name or reference to a bundled license
+  file;
+- optional `compatibility`: a nonempty string of at most 500 characters;
+- optional `metadata`: a mapping from string keys to string values; and
+- optional experimental `allowed-tools`: a nonempty space-separated string.
+
+Unknown frontmatter fields fail initialization. `allowed-tools` is retained as
+Skill content only. It does not select a tool, modify agent permissions, skip
+governance or approval, or grant any capability.
+
+The loader uses `lstat` and rejects a symlink or non-file/non-directory entry,
+including a symlink supplied as the Skill root. Paths may contain at most 512
+UTF-8 bytes and must be relative POSIX paths with no empty, `.`, `..`,
+backslash, absolute, or control-character segment. One Skill may contain at
+most 5,000 entries and 100 MiB of file data. `SKILL.md` must be valid UTF-8 and
+at most 256 KiB. The loader checks cancellation between filesystem operations,
+does not retain file bodies in errors or telemetry, and reads each file only
+into the immutable snapshot used by both mounting and the reader.
+
+Loader and mount failures use `SkillManifestError` with one of these stable,
+content-free reasons: `invalid_skill_url`, `directory_missing`,
+`missing_skill_md`, `invalid_frontmatter`, `missing_description`,
+`invalid_name`, `name_mismatch`, `unsafe_skill_entry`, `invalid_skill_path`,
+`invalid_skill_encoding`, `skill_file_too_large`, `scan_limit_reached`, or
+`readonly_mount_unsupported`. Metadata may identify the Skill id, configured
+directory, and relative path, but never includes file content. The clean-break
+implementation removes former discovery, shadowing, trust, and registry error
+reasons that no longer describe a v4 operation.
 
 Skill definitions do not enumerate scripts and do not declare script input or
 output schemas, hashes, review state, or per-script policies. `SKILL.md`
-documents script paths and CLI use. Scripts are mounted inert and read-only.
+documents script paths and CLI use. Scripts in a runtime-bearing Skill are
+mounted inert and read-only.
 Declaring a Skill or runtime does not grant process execution, environment,
 filesystem write, or network access. Those capabilities remain explicit agent
 permissions enforced by the sandbox and decision pipeline.
@@ -642,9 +746,54 @@ When an application needs a stable typed script interface, it wraps the script
 in a native or host-aware tool. Tool schemas then validate the supported
 boundary; arbitrary CLI use does not pretend to have a structured contract.
 
-The standard loop receives a Harness-owned skill-scoped reader that can read
-only the selected mounted Skill directories. Selecting a Skill does not require
-or imply the broad built-in filesystem `read` tool.
+The standard loop receives one Harness-owned model tool named `read_skill` when
+the agent selects at least one Skill. The underscore is reserved by the Harness
+and cannot collide with lower-camel portable, built-in, MCP-local, or subagent
+names. It is not a public definition, is not added to the catalog, and cannot
+be selected directly. Its per-agent input and output schemas are exact:
+
+```ts
+type ReadSkillInput = {
+  skill: SelectedSkillId
+  path?: string // default: 'SKILL.md'
+}
+
+type ReadSkillOutput = {
+  skill: SelectedSkillId
+  path: string
+  content: string
+}
+```
+
+`skill` is an enum of that agent's selected Skill ids. `path` follows the
+loader path rules above and resolves only against the immutable snapshot. The
+reader performs no filesystem access. It returns only valid UTF-8 files of at
+most 256 KiB; binary or larger resources remain mountable but are not returned
+to the model. Selecting a Skill adds `tool_use` to the agent's model
+requirements but does not add the broad built-in filesystem `read` tool.
+
+Before the first provider call, H4-005 gives the model a protected discovery
+block for the Skills selected by that agent. The block is a Harness-owned
+system instruction placed after the application's `instructions` and before
+conversation history and the current user input. It serializes a JSON array of
+`{ name, description }` values sorted lexicographically by Skill id. These
+values are untrusted discovery metadata rather than instructions. The block
+tells the model to select only a listed Skill when it is relevant, activate it
+by calling `read_skill` with that Skill name and `path: 'SKILL.md'`, and use
+`read_skill` again for relative text files referenced by `SKILL.md`. It also
+states that Skill content and `allowed-tools` cannot expand the agent's tools,
+permissions, sandbox capabilities, or other authority. An agent with no Skills
+receives neither this block nor `read_skill`. This deterministic protected
+block is the first disclosure tier; reading `SKILL.md` and its referenced text
+files is the second tier. Skill file bodies are never placed in the initial
+prompt.
+
+`read_skill` receives a synthesized default agent permission of `allow`, while
+runtime governance and Guardrails may still deny or require approval. It uses
+the same exposure, transform, input validation, policy, approval, execution,
+output validation, telemetry, event, timeout, and cancellation pipeline as
+native, built-in, MCP, and host-aware tools. There is no public direct-call
+path that bypasses this pipeline.
 
 ## 5. Agents are configurable model loops
 
@@ -684,7 +833,7 @@ The definition-time fields are closed and have these requirement effects:
 | `prompt` | pure `(input) => UserModelMessage | readonly UserModelMessage[]` | content kinds validated below |
 | `inputCapabilities` | readonly `vision_input | audio_input | file_input` ids | selected model capabilities |
 | `tools` | readonly branded tool references | tool and adapter requirements |
-| `skills` | readonly Skill references | Skill runtimes and scoped reader |
+| `skills` | readonly Skill references | `tool_use` and scoped reader; runtime-bearing Skills add runtimes, `sandbox.fs`, and `sandbox.readonly_mount` |
 | `guardrails` | `AgentGuardrailsBinding<Requirements>` | its exact declared requirements |
 | `permissions` | existing `AgentPermissions` | restriction only; `require_approval` adds durable storage |
 | `subagents` | typed agent map | graph closure and delegation tools |
@@ -1154,8 +1303,8 @@ definition directly. The name uses the id grammar in section 2. It has
 methods, and `.use(catalog)`. There is no terminal `.define()` or `.build()`.
 
 Required model aliases and capabilities are compiled from agent behavior,
-tools, Guardrails, workflow model declarations, and memory. Tool use adds
-`tool_use`; a text agent adds `text` and
+tools, Skills, Guardrails, workflow model declarations, and memory. A selected
+tool, subagent, or Skill adds `tool_use`; a text agent adds `text` and
 `text_stream`; a structured agent adds `object` and `object_stream`. Authors do
 not repeat those capabilities on the Harness.
 
@@ -1217,7 +1366,9 @@ Requirement derivation follows this order:
 - agent output mode and selected tools contribute model capabilities;
 - agent `memory` contributes memory capabilities and embedding/summary aliases;
 - built-in tools, portable-tool `requires`, Guardrails, and executable runtime
-  needs contribute sandbox capabilities; Skills contribute logical runtimes;
+  needs contribute sandbox capabilities; Skills contribute logical runtimes,
+  and each runtime-bearing Skill additionally contributes `sandbox.fs` and
+  `sandbox.readonly_mount`;
 - agent/workflow `durable: true`, approvals, and durable child tasks require
   durable storage;
 - definition `workspace: true` requires a workspace binding;
@@ -1488,6 +1639,26 @@ and implements startup rollback plus idempotent shutdown. Executable assembly
 never closes borrowed admissions, logger, telemetry, or host dependencies. It
 closes clients, processes, and internal adapters the Harness creates; supplied
 providers and adapters follow their existing explicit ownership contracts.
+
+H4-004 owns immutable Skill loading, MCP server initialization, built-in tool
+definitions, and package-private executable bindings for portable, built-in,
+`read_skill`, and MCP tools. A binding exposes its model-facing id,
+description, input/output schemas, implementation kind, hidden original
+definition identity, and an `invokeValidated` operation. It performs only the
+validated implementation or transport call and emits no portable tool
+lifecycle event. The binding shape reserves the host-aware implementation kind
+for the integrator without making a standalone host tool callable.
+
+H4-005 owns model exposure and the single common tool-execution pipeline. It
+resolves a model-returned local name through the current agent's immutable
+binding map, applies input/output transforms, validates each boundary exactly
+once, evaluates permission and governance, handles approval, invokes the
+prepared binding only after approval, and emits the common telemetry, events,
+timeout, and cancellation outcome. H4-006 supplies host-aware execution through
+the reserved binding seam. No H4-004 initializer or binding is a public service
+locator or direct invocation API. H4-008 calls the Skill and MCP initializers,
+owns cross-initializer rollback and the returned private immutable bundles, and
+closes instance-owned resources.
 
 The provider-neutral host SPI is public and stable. Its generic spelling may
 use internal helper types, but it exposes this information without requiring a

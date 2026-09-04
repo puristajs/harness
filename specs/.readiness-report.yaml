@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:cc1cd59db936d5110deed234e9547db2ef7f5cc74c46c7415f68b159b94be30a"
+      scope_digest: "sha256:3983ad73eab7e615cb595087575c14c6e54ad2ba5a4239ea04a79a6acb13abe8"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -471,6 +471,9 @@ follow_up_waves:
       - review: "independent exact runtime-binding readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after exact conditional configuration, pure deterministic validation, provider and MCP capability checks, Skill-runtime metadata, stable error precedence, and separated initialization and lifecycle ownership were made implementation-exact."
+      - review: "independent tools, Skills, and MCP implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after exact built-in capabilities, private executable-binding ownership, deterministic protected two-tier Skill disclosure, bounded immutable Skill snapshots, explicit read-only mount/runtime contracts, current Agent Skills frontmatter, exact content-free Skill errors, one-bundle-per-server MCP lifecycle, and H4-005 common-pipeline ownership were made testable."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:
@@ -480,6 +483,14 @@ follow_up_waves:
         manifest: packages/harness/package.json
         version: "@modelcontextprotocol/client ^2.0.0"
         evidence: "Spec 42 separates typed MCP server declarations from exact HTTP or stdio runtime bindings and requires discovered-schema equality before instance creation."
+      agent_skills:
+        captured_at: "2026-09-04"
+        specification_version: "unversioned current specification"
+        frontmatter_fields: "required name and description; optional license, compatibility, metadata, and experimental allowed-tools"
+        evidence: "Spec 42 follows the current official Agent Skills field set, keeps allowed-tools as untrusted content rather than authority, and adds Harness-owned bounded loading and progressive disclosure rules."
+        official_sources:
+          - https://agentskills.io/specification
+          - https://github.com/agentskills/agentskills/blob/main/docs/specification.mdx
       ai_sdk_ui:
         manifest: packages/harness-ai-sdk-ui/package.json
         tested_version: "ai 7.0.90"
@@ -497,7 +508,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        count: 7
+        count: 8
       contradiction_check:
         status: passed
       strong_boundary_type_gate:

@@ -3967,7 +3967,9 @@ the matching stream id keeps it in that same turn. This state machine represents
   JSON, writes `[DONE]` literally, and owns `data:` framing, separators, status,
   and headers;
 - `createHarnessUIMessageStreamResponse(events, options)` returns the standard
-  SSE response and v1 header; and
+  SSE response and v1 headers; caller headers may add ordinary fields but cannot
+  override the official `content-type`, `cache-control`, `connection`,
+  `x-vercel-ai-ui-message-stream`, or `x-accel-buffering` values; and
 - `parseHarnessToolApprovalResume(messages)` remains the focused approval helper.
 
 The exact public adapter inputs are:
@@ -4063,14 +4065,16 @@ is returned as `assistantMessageId`, so the replacement stream restores that
 same message identity.
 
 `parseHarnessToolApprovalResume` accepts the validated readonly message array.
-Only the last assistant message can supply a pending batch. All Harness
-descriptors in that message must be byte-equivalent after validation. Every
-declared approval id occurs exactly once, all parts are in
-`approval-responded`, and no unknown or duplicate decision is accepted. Output
-states never replay an earlier approval. The returned decision order matches
-`approvalIds`; its deterministic event id is derived from the complete
-descriptor and ordered decisions. Approve and reject decisions both remain
-ordinary continuations.
+Only the final message can supply a pending batch, and that message must be an
+assistant message. Within it, only parts after the final `step-start` belong to
+the candidate batch; prior-step tool approvals are completed history and are
+ignored. All Harness descriptors in that final step must be byte-equivalent
+after validation. Every declared approval id occurs exactly once, all candidate
+parts are in `approval-responded`, and no unknown or duplicate decision is
+accepted. Output states never replay an earlier approval. The returned decision
+order matches `approvalIds`; its deterministic event id is derived from the
+complete descriptor and ordered decisions. Approve and reject decisions both
+remain ordinary continuations.
 
 The stream helper requires a `HarnessTargetStream`, not a bare async iterable.
 Its `sessionId` option becomes part of an approval descriptor. The descriptor's
@@ -4085,6 +4089,13 @@ Callback failures are swallowed so operational counting cannot change the
 consumer stream. A stream that ends without one direct-target `run.finished`,
 contains a second terminal event, or contains any event after its terminal
 fails with `TypeError` and never emits `[DONE]`.
+
+Consumer cancellation and adapter failure share one idempotent cleanup path.
+Consumer cancellation forwards its safe string reason when present. A mapping,
+validation, iterator, or protocol failure cancels the target with the fixed
+content-free reason `AI SDK UI stream projection failed`, calls the iterator's
+optional `return()`, and preserves the original error for the UI stream. Cleanup
+failure never replaces that original projection error.
 
 The first direct `run.started` establishes the root target run id and must not
 carry parent correlation. Its matching direct terminal is the single
@@ -4112,7 +4123,7 @@ The v1 event mapping is fixed:
 | `tool.started` | `data-status{phase:'tool-running'}` |
 | successful `tool.finished` | standard dynamic `tool-output-available` |
 | failed `tool.finished` | standard dynamic `tool-output-error` with sanitized text |
-| terminal tool approval interrupt | standard `tool-approval-request` for every approval plus `data-status{phase:'interrupted'}` |
+| terminal tool approval interrupt | for every approval, a standard dynamic `tool-input-available` when that call id was not already projected, then standard `tool-approval-request`; plus `data-status{phase:'interrupted'}` |
 | `approval.responded` | standard `tool-approval-response` |
 | `output.file` | standard `file` chunk with URL and media type |
 | `output.progress` | `data-status{phase:'media-progress'}` |
@@ -4133,6 +4144,14 @@ then emits `finish{finishReason:'other'}` because AI SDK UI Message Stream v1
 has no `cancelled` finish reason. A tool-approval interrupt finishes with
 `tool-calls`; every other interrupt finishes with `other`. These sequences use
 only official AI SDK chunks.
+
+Persisted terminal receipt replay contains only the root `run.started` and
+`run.finished` boundaries. The adapter therefore tracks projected tool call
+ids. Before each terminal approval request, it emits the standard dynamic
+`tool-input-available` from that approval request's `toolId`, `callId`, and
+`input` only when the call id has not already appeared in the stream. This
+makes both live execution and receipt replay valid for the official strict AI
+SDK reader without duplicating a live tool input part.
 
 `agent.started` and `agent.finished` with `parentAgentId` and
 `delegationCallId` map to the three fixed subagent status phases above and copy

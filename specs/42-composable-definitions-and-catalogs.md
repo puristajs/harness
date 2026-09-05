@@ -2645,6 +2645,18 @@ lifecycle state and enforces the rule across restarts. Every emitted
 recoverable preflight result may emit `tool.finished` without `tool.started`
 because no side effect began.
 
+H4-008 also replaces the stale object-only
+`AgentAfterModelInterceptorContext.response` declaration with the
+`AgentModelResponse` union defined in the approval cursor contract and updates
+its TSDoc: the hook runs after the corresponding sanitized `model.completed`
+event and before output validation or tool dispatch. The request remains
+`AgentModelRequest`, whose `schema` field becomes optional and is present
+exactly for object/object-stream operations. It is exposed as that contract's
+recursively frozen effective projection. Live and resumed turns share the same
+request, response, and continuation reattachment helpers. H4-008 owns this
+breaking public type and TSDoc correction in `defineHarness.ts` plus both-mode
+live/resume parity tests in `agent-loop.test.ts`.
+
 The provider-neutral host SPI is public and stable. Its generic spelling may
 use internal helper types, but it exposes this information without requiring a
 host to inspect compiler state:
@@ -3299,6 +3311,68 @@ interface SuspendedAgentTurnStateV1 {
   readonly agentStarted: true
 }
 
+type AcceptedModelTurnOperationV1 =
+  | 'text'
+  | 'object'
+  | 'textStream'
+  | 'objectStream'
+
+interface PersistedAgentModelRequestV1 {
+  readonly messages: readonly ModelMessage[]
+  readonly tools: readonly ModelToolSpec[]
+  readonly schema?: JsonValue
+  readonly call?: ModelCallOptions
+}
+
+type PersistedAgentModelResponseV1 =
+  | Readonly<{
+      content: string
+      toolCalls: readonly ToolCallSpec[]
+      usage: TokenUsage
+      finishReason: FinishReason
+      outcome?: ModelOutcome
+    }>
+  | Readonly<{
+      object: JsonValue
+      toolCalls: readonly ToolCallSpec[]
+      usage: TokenUsage
+      finishReason: FinishReason
+      outcome?: ModelOutcome
+    }>
+
+type AgentModelResponse =
+  | Readonly<PersistedAgentModelResponseV1 & {
+      readonly providerContinuation?: ProviderContinuation
+    }>
+
+interface AcceptedModelTurnCursorV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'accepted_model_turn'
+  readonly phase: 'after_model' | 'continue_turn'
+  readonly rootRunId: string
+  readonly agentRunId: string
+  readonly sessionId: string
+  readonly agentId: string
+  readonly workflowId?: string
+  readonly parentRunId?: string
+  readonly parentInvocationId?: string
+  readonly invocationId: string
+  readonly step: number
+  readonly modelAlias: string
+  readonly input: JsonValue
+  readonly mode: 'run' | 'stream'
+  readonly operation: AcceptedModelTurnOperationV1
+  readonly streamId?: string
+  readonly request: PersistedAgentModelRequestV1
+  readonly response: PersistedAgentModelResponseV1
+  readonly providerContinuation?: ProviderContinuation
+  readonly agentStarted: true
+}
+
+type AgentContinuationStateV1 =
+  | SuspendedAgentTurnStateV1
+  | AcceptedModelTurnCursorV1
+
 interface WorkflowAgentCallBudgetStateV1 {
   readonly schemaVersion: 1
   readonly usedCalls: number
@@ -3309,7 +3383,7 @@ type SuspensionFrameV1 =
       kind: 'agent'
       runId: string
       invocationId: string
-      state: SuspendedAgentTurnStateV1
+      state: AgentContinuationStateV1
     }>
   | Readonly<{
       kind: 'workflow'
@@ -3436,11 +3510,107 @@ resuming checkpoint is replaced after every completed tool or child transition,
 so replay observes completed entries and never repeats an effect. It may retain
 `SuspendedAgentTurnStateV1.providerContinuation` only until the first subsequent
 provider request using that continuation returns one validated response or
-valid stream finish. The runtime then atomically replaces it with
-`HarnessPostApprovalCheckpointV1`, whose validator recursively forbids every
-`providerContinuation` property and whose continuation represents execution
-immediately after that accepted provider response. A later interruption
-atomically replaces the step with the new pending checkpoint. Root terminal
+valid stream finish. Before `afterModel`, final-output rails, tool-batch
+preparation, or another effect, the runtime atomically replaces it with
+`HarnessPostApprovalCheckpointV1`. The resumed leaf agent frame then contains
+one `AcceptedModelTurnCursorV1`; the consumed continuation is absent from its
+request and every other field. The cursor's optional `providerContinuation` is
+only the newly returned continuation from that accepted response.
+
+The cursor is a strict normalized model-turn snapshot. `operation` is exactly
+`text` for aggregate text, `object` for aggregate structured output,
+`textStream` for streamed text, and `objectStream` for streamed structured
+output. `mode`, `operation`, and the agent contract must agree. `streamId` is
+required exactly for `textStream` and `objectStream` and absent otherwise. The
+request is the exact sanitized effective provider-neutral `AgentModelRequest`
+after `beforeModel`: all and only `messages`, `tools`, optional `schema`, and
+optional `call` are retained. Harness
+recursively clones and freezes that projection. Every value, including
+`call.providerOptions`, must be JSON; otherwise the resumed request fails with
+`ValidationError{where:'model_request',issues:{reason:'non_json_model_call_options'}}`
+before provider I/O. The persisted messages
+deliberately strip the consumed `providerContinuation`; Harness attaches that
+old continuation only to the private provider request constructed from the
+resuming agent state. As a clean-break correction, public
+`AgentModelRequest.schema` becomes optional. It is absent exactly for `text`
+and `textStream`, and required exactly for `object` and `objectStream`; the
+cursor validator correlates that presence with `operation`. Tools and any
+schema are the exact effective post-exposure, post-`beforeModel` projections,
+not recomputed definitions.
+
+The public `AgentAfterModelInterceptorContext.response` changes from the stale
+object-only type to `AgentModelResponse`. Its text member contains `content`;
+its structured member contains `object`; both contain the frozen ordered
+`toolCalls`, `usage`, `finishReason`, optional normalized `outcome`, and optional
+new `providerContinuation`. They never contain `raw`, the opposite mode's
+content field, or another property. `PersistedAgentModelResponseV1` is exactly
+that sanitized immutable union with `providerContinuation` removed. The
+cursor's separate optional continuation is reattached when constructing the
+`AgentModelResponse` passed to `afterModel`. Live and resumed paths use the same
+projection and reattachment functions, so the callback sees byte-equivalent
+request and response values. The consumed old continuation is never visible;
+only the new response continuation is visible when present. Text operations
+select the content member, and object operations select the object member. The
+new continuation passes the provider-continuation validator against
+`response.toolCalls` before cursor commit. The complete correlation tuple is
+`[rootRunId,agentRunId,sessionId,agentId,workflowId,parentRunId,
+parentInvocationId,invocationId,step,modelAlias,mode,operation,streamId]`; every
+identifier and optional-parent relationship must match its frame and root
+checkpoint.
+
+The cursor is private checkpoint state. Its request, response, output, tool
+arguments, schemas, and opaque continuation are never copied into inspection,
+events, logs, errors, telemetry attributes, or storage conflict metadata.
+Storage deployment controls treat it as persisted prompt/application content.
+
+`phase:'after_model'` means the accepted response is durable and `afterModel`
+has not run. Let `E` be the `HarnessPostApprovalCheckpointV1.nextEventSequence`
+that encloses the cursor. The exact resumed-turn order is:
+
+```text
+replace checkpoint with after_model cursor at nextEventSequence E
+-> append and deliver deterministic model.completed at sequence E
+-> invoke afterModel with the cursor projections
+-> replace checkpoint with continue_turn cursor at nextEventSequence E + 1
+```
+
+The `model.completed.eventId` uses the canonical Harness event tuple with this
+same run id, sequence, and type. Its operation, model alias, optional stream id,
+usage, and finish reason are derived only from the cursor. Append is exact-
+duplicate idempotent. Live delivery uses the already assigned event and never
+allocates or advances another sequence. The `after_model` checkpoint retains
+`E` until `afterModel` succeeds. Therefore a restart after cursor commit but
+before the `continue_turn` replacement idempotently appends or reads the same
+persisted event and delivers that event to the new resume stream before running
+`afterModel`; it does not create a second logical event. Only the fenced
+`continue_turn` replacement advances `nextEventSequence` to `E + 1`. A restart
+from `continue_turn` emits neither `model.completed` nor `afterModel` again and
+continues by preparing the stored ordered tool calls, or by applying the normal
+final-output path when the list is empty.
+
+A crash before the initial `after_model` cursor replacement may repeat
+`beforeModel`, the external provider request, and any provisional non-persisted
+stream chunks already delivered, because no local transaction can atomically
+commit a remote response. Once that cursor replacement commits, that provider
+turn and its provisional chunks never execute again. A crash after
+`model.completed` append or delivery but before the `continue_turn` replacement
+may redeliver the same deterministic event on the new resume stream and may
+repeat `afterModel`; no second event is appended. Once the `continue_turn`
+replacement commits, `afterModel` is protected from replay. Stateful
+Guardrail callbacks must be idempotent for their stable occurrence during the
+remaining callback-to-checkpoint crash window. No tool preparation or tool
+effect begins before the `continue_turn` replacement, and every later tool or
+child effect remains protected by the existing fenced prepared-entry
+transitions. Harness does not claim a distributed transaction with external
+providers, stream consumers, or application callbacks.
+
+The cursor is consumed only into a terminal `finalizeRun`, a new pending
+interruption checkpoint, or a fenced post-approval continuation containing the
+completed prepared entries required for the next model turn. If the stored
+response creates another approval interruption, its new continuation moves
+from the cursor into that new pending agent state; it is never copied or
+chained. A later interruption atomically replaces the step with the new pending
+checkpoint. Root terminal
 commit calls spec 32 `finalizeRun` with the exact sorted
 `TerminalApprovalReceiptV1` for the consumed interrupt; the same transaction
 writes that receipt into the terminal `RunRecord`, appends the matching
@@ -3464,7 +3634,8 @@ wire arguments and sets `argumentsStage:'transformed'`. Original pre-rail
 arguments are never retained after a transform succeeds. `input` is the one schema-parsed value
 shared by policy, approval, and the handler. `messages` is the exact canonical
 transcript through that assistant tool-call turn after recursively removing
-every `providerContinuation` property; the separate field is its only persisted
+every `providerContinuation` property; the separate field on the active
+`SuspendedAgentTurnStateV1` or `AcceptedModelTurnCursorV1` is its only persisted
 representation. Intermediate assistant text or object content from a tool turn
 is excluded from canonical history. The provider-neutral assistant tool-call
 envelope and completed tool-result messages remain, because they are required
@@ -3479,9 +3650,11 @@ state.
 
 `completed.modelMessage` is exactly the provider-neutral tool-result subtype
 `{role:'tool',toolCallId:string,content:string}`. The checkpoint validator walks
-every message and completed entry recursively and rejects a
-`providerContinuation` property anywhere except
-`SuspendedAgentTurnStateV1.providerContinuation`.
+every message, accepted request/response, and completed entry recursively and
+rejects a `providerContinuation` property anywhere except the active
+`SuspendedAgentTurnStateV1.providerContinuation` in pending/resuming execution,
+or `AcceptedModelTurnCursorV1.providerContinuation` in a post-approval
+checkpoint. Those alternatives are mutually exclusive for one leaf.
 
 The continuation is an ordered tree because one bounded parallel batch may
 have more than one interrupted descendant. Each root-to-leaf path is the exact
@@ -3493,7 +3666,34 @@ model-visible outcome and are never invoked or emitted again. A
 does not emit it twice. Multiple leaf approval requests are collected into the
 one root interrupt and require one complete decision set.
 
-H4-005 owns agent-frame creation and prepared-entry state transitions. H4-006
+The package-private `resumePreparedAgentToolBatch` is the sole resumed-batch
+entrypoint. It receives the original ordered `PreparedToolCheckpointEntryV1[]`
+and the complete normalized decisions. It never calls `prepareAgentToolBatch`,
+`beforeTool`, tool-input parsing, permission, governance, audit, or
+`approval.requested` again. It resolves each executable binding in the owning
+agent's private map and verifies both `bindingId` and
+`bindingContractDigest`. Approved and previously ungated `ready` entries
+execute through the common pipeline; rejected entries become the defined
+recoverable approval result without `tool.started`. `completed`, `denied`, and
+`recoverable` siblings reuse their stored result and emit no event or effect.
+The returned model-visible tool-message tail is rebuilt once in original
+provider-call order and replaces the current batch tail; stored completed
+sibling messages are not appended a second time.
+
+For a `suspended-child`, H4-008 first resumes its leaf through the shared strict
+target-stream consumer. The common pipeline then resumes after
+`invokeValidated`: it performs the binding's required output validation,
+`afterTool`, exactly one `tool.finished`, and the normal entry observer. It does
+not invoke the binding or emit another `tool.started`. The original provider
+batch length, including completed, denied, recoverable, ready, and
+`suspended-child` entries, consumes the agent's tool-call budget exactly once;
+the original entries whose binding kind is subagent consume the subagent-call
+budget exactly once. Resume never derives either charge only from entries that
+still require execution.
+
+H4-005 owns suspended agent-frame creation and prepared-entry state
+transitions. H4-008 owns `AcceptedModelTurnCursorV1`, its fenced phase changes,
+and the resumed-batch completion seam above. H4-006
 owns child links and subagent resume routing. H4-007 owns workflow re-entry
 through saved `context.step` and child-call results. H4-009 owns host-tool
 re-entry through `checkpointStep` and `nestedTargets.run`; unmanaged host or
@@ -3544,7 +3744,9 @@ handler, model, event, or effect. The original transformed input is restored
 from the continuation. This prevents a non-idempotent transforming schema from
 changing resume identity or running twice. No resume reruns
 `beforeTool`, input parsing, the root input schema, permission, governance, audit, or
-`approval.requested`. One `approval.responded` is emitted for each accepted
+`approval.requested`. A post-approval cursor also prevents a committed accepted
+model turn from calling the provider or `beforeModel` again and resumes at its
+stored phase. One `approval.responded` is emitted for each accepted
 boolean decision. Approved and ungated ready entries execute; rejected entries
 become recoverable approval tool errors without `tool.started`. A leaf child is
 resumed first. Each suspended parent agent then completes the existing tool
@@ -4106,8 +4308,19 @@ without another append, broadcast, id, or sequence allocation;
 one agent start and one eventual finish across process restart; one
 `model.completed` carrying the loop-supplied stream id; strict approval
 validation precedence, equal-event coalescing, changed-event conflict, fenced
-checkpoint progression, ProviderContinuation scrubbing, and atomic terminal
-checkpoint deletion; a strict terminal approval receipt that replays the same
+checkpoint progression, and atomic terminal checkpoint deletion; one resumed
+provider request or stream that commits a strict correlated
+`AcceptedModelTurnCursorV1` before `afterModel`, removes the consumed
+ProviderContinuation, retains only a newly returned validated continuation,
+and never repeats that provider turn after cursor commit; an exact cursor-CAS,
+deterministic `model.completed`, `afterModel`, continue-CAS order with one event
+sequence advance; restart from `after_model` with idempotent event replay and
+the documented callback window, and restart from `continue_turn` without
+repeating the provider, event, or Guardrail; exact
+whole-batch tool/subagent budget accounting; completed sibling transcript
+deduplication; and suspended-child completion through output validation,
+`afterTool`, and one `tool.finished` without another invocation or
+`tool.started`; a strict terminal approval receipt that replays the same
 event/decisions after restart, rejects changed same-event decisions, and marks
 a new event stale; a second sequential interruption whose pending checkpoint
 replays exactly its immediately consumed prior event and treats older events as

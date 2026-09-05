@@ -82,6 +82,18 @@ status; terminal tasks remain readable through the configured HarnessStorage.
 H4-007 owns task execution, handles, and task records. H4-008 owns binding this
 session facade and coordinating instance/session shutdown with those records.
 
+`session.childTasks.get(id)` validates the candidate `child_task` `RunRecord`
+and returns `undefined` when it is absent or belongs to another session. A
+resident task returns its existing frozen live handle. A terminal record returns
+the frozen reconstructed terminal handle defined below. A valid non-resident
+running record returns a frozen recovery handle: `status()` returns the frozen
+content-free running `ChildTaskStatus`, while `result()` and `cancel()` each
+reject a locally constructed `ChildTaskStateError` with exact metadata
+`{reason:'recovery_required',task_id:record.id,workflow_id:metadata.workflowId,
+agent_id:record.target}`. Those rejections have no transported cause or stored
+message. Constructing or calling the recovery handle performs no task admission,
+dispatch, cancellation, event emission, or record mutation.
+
 The initial input is the first serialized turn. Each accepted `send(input)` is
 appended to one FIFO promise chain, reserves one workflow agent call, waits in
 the shared task-turn capacity queue, and resolves with that turn's typed output.

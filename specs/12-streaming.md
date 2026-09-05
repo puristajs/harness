@@ -24,6 +24,39 @@ interface PersistedRunEvent {
   readonly type: HarnessExecutionEventType
   readonly payload: JsonValue
 }
+
+type PersistedEventParentCorrelation =
+  | Readonly<{
+      readonly parentRunId?: never
+      readonly parentInvocationId?: never
+    }>
+  | Readonly<{
+      readonly parentRunId: string
+      readonly parentInvocationId: string
+    }>
+
+type PersistedRunFinishedPayload = PersistedEventParentCorrelation & (
+  | Readonly<{ readonly outcome: Readonly<{ readonly status: 'completed' }> }>
+  | Readonly<{ readonly outcome: Readonly<{ readonly status: 'interrupted' }> }>
+  | Readonly<{
+      readonly outcome: Readonly<{
+        readonly status: 'failed' | 'cancelled'
+        readonly error: SerializedError
+      }>
+    }>
+)
+
+type PersistedFinalRunFinishedPayload = Exclude<
+  PersistedRunFinishedPayload,
+  PersistedEventParentCorrelation &
+    Readonly<{ readonly outcome: Readonly<{ readonly status: 'interrupted' }> }>
+>
+
+type PersistedFinalRunEvent = Omit<PersistedRunEvent, 'type' | 'payload'> &
+  Readonly<{
+    readonly type: 'run.finished'
+    readonly payload: PersistedFinalRunFinishedPayload
+  }>
 ```
 
 `id` equals the portable event's `eventId`; the other envelope fields equal the
@@ -31,6 +64,15 @@ corresponding portable event fields. `payload` is the privacy-safe projection
 after removing `eventId`, `sequence`, `runId`, `at`, and `type`. The canonical
 `SerializedError` from spec 15 is used wherever an error is exposed in an event,
 run record, or checkpoint.
+
+Every `PersistedRunFinishedPayload` object and nested object is strict and
+rejects unknown keys. The parent fields are both absent for a root event and
+both present with their exact portable values for a relayed nested event. The
+payload never contains `runId`, `output`, `interrupt`, or other application
+content. Successful output remains only on the authoritative terminal
+`RunRecord`; a failed or cancelled payload retains only its canonical sanitized
+`SerializedError`. `PersistedFinalRunEvent` excludes the non-terminal
+`interrupted` projection and is the exact event accepted by `finalizeRun`.
 
 `at` is ISO 8601 UTC. `callId` is `tc_<ulid>` for tool calls and `sk_<ulid>` for skill calls; the same id appears in `started` and `finished`. `delegationCallId` is `delegate_<ulid>` for workflow-local child-agent calls and appears on the matching `agent.started` / `agent.finished` pair.
 
@@ -82,10 +124,14 @@ does not append it again, deliver it to other live subscribers, increment the
 checkpoint's `nextEventSequence`, or allocate another event id. New resume
 events then begin at the checkpoint's existing `nextEventSequence`; intermediate
 events from the prior attempt are not replayed. If terminal-receipt validation
-selects an already committed outcome, the iterator yields the stored original
-`run.started` followed by the stored terminal `run.finished` and ends, with no
-write or live emission. A missing, duplicate, malformed, or non-sequence-one
-persisted start fails before lease acquisition or effects with
+selects an already committed outcome, Harness strictly validates the terminal
+`RunRecord` and both persisted event envelopes. It reconstructs the portable
+`run.started`, then reconstructs the portable `run.finished` from the terminal
+event's identity, sequence, timestamp, and parent correlation plus the
+authoritative record's output or error. It yields those two reconstructed events
+and ends, with no write or live emission. A persisted payload is never cast or
+returned as an `ExecutionEvent`. A missing, duplicate, malformed, or
+non-sequence-one persisted start fails before lease acquisition or effects with
 `StateError{op:'listEvents',reason:'event_sequence_conflict'}`.
 
 ## Ordering guarantees

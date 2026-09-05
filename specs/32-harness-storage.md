@@ -238,7 +238,7 @@ interface FinalizeRunRequest {
   readonly leaseId: string
   readonly workerId: string
   readonly patch: FinalizeRunPatch
-  readonly terminalEvent: PersistedRunEvent
+  readonly terminalEvent: PersistedFinalRunEvent
   readonly checkpointDisposition: 'delete-all'
 }
 
@@ -403,11 +403,22 @@ without exposing checkpoint data.
 transaction it verifies the active lease, writes the terminal run patch,
 validates and appends the matching terminal `run.finished` event, deletes every
 checkpoint owned by that run, removes the lease, and commits. `terminalEvent`
-must use the same run id and status/output/error as `patch`, the next unused
-sequence, and the deterministic event id from spec 42. It is strict and
-privacy-safe. A mismatch is
+uses spec 12's exact strict `PersistedFinalRunEvent`. Its envelope must use the
+request run id, `patch.finishedAt`, the next unused sequence, and the
+deterministic event id from spec 42. A `succeeded` patch maps to the exact
+content-free payload `{outcome:{status:'completed'}}`; its output is forbidden
+from the event payload and is stored only as the authoritative terminal
+`RunRecord.output`. A `failed` or `cancelled` patch maps to the same status and a
+canonically equal sanitized `SerializedError`. Parent correlation is either
+absent or the exact paired correlation defined by spec 12. Every other payload
+key, including `runId`, `output`, or `interrupt`, is forbidden. A mismatch is
 `StateError{op:'finalizeRun',reason:'event_conflict'}` and changes nothing.
-An exact retry against the already stored terminal record succeeds; a different
+The atomic record/event commit is the coherence boundary: success coherence
+comes from writing the patch output once with its matching content-free status
+event, while failure and cancellation additionally compare the canonical error.
+An exact retry against the already stored terminal record compares the complete
+patch, including output or error, then independently compares the stored event
+with this privacy-safe projection. It succeeds without mutation; a different
 terminal patch or receipt is
 `StateError{op:'finalizeRun',reason:'run_conflict'}`; an exact retry includes the
 same terminal event and succeeds without appending it twice. A failed

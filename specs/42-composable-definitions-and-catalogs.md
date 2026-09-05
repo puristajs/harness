@@ -446,7 +446,13 @@ id when the source operation has no stream id. For `output.file`, `id` equals
 `artifact.id`. For `output.progress`, `id` is a stable Harness operation id
 shared by all updates for that generation. Both partial and final object
 snapshots use the same shape; the terminal validated output remains on the
-completed `run.finished` outcome. `approval.responded.approved` is true only
+completed live/public `run.finished` outcome. Its spec 12 persisted projection
+is the strict content-free `PersistedRunFinishedPayload`: output and interrupt
+content are absent, while failed and cancelled outcomes retain only their
+canonical sanitized `SerializedError`. Terminal replay reconstructs the public
+event from the validated persisted envelope and authoritative terminal
+`RunRecord`; it never casts a persisted payload to `ExecutionEvent`.
+`approval.responded.approved` is true only
 for the former `approved` outcome and false only for the former `rejected`
 outcome; cancelled, timed-out, or failed approval processing terminates the run
 and does not emit a response event.
@@ -2720,6 +2726,13 @@ interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
   ): AsyncIterable<ExecutionEvent<HarnessTargetOutput<Target>>>
 }
 
+interface SessionChildTasks {
+  get(id: string): Promise<ChildTaskHandle<JsonValue> | undefined>
+  list(
+    options?: Readonly<{ limit?: number; before?: string }>,
+  ): Promise<readonly ChildTaskStatus[]>
+}
+
 interface HarnessSession<Contracts extends HarnessContracts> {
   readonly id: string
   readonly agents: Readonly<{
@@ -2755,6 +2768,22 @@ interface HarnessInstance<Contracts extends HarnessContracts> {
 `{identity?: HarnessIdentity; sandboxOwner?: SandboxOwner}` from spec 36
 `CTR-SOWN-POLICY`; H4-008 reuses that exported type and schema rather than
 declaring another session-options representation.
+
+`SessionChildTasks` is owner-only. Its `get(id)` strictly validates the candidate
+`child_task` `RunRecord` and returns `undefined` for an absent or foreign-session
+record. It returns the existing frozen handle for a resident task and the frozen
+reconstructed handle for a terminal task. For a valid non-resident running
+record it returns a frozen recovery handle whose `status()` returns the validated
+frozen content-free running snapshot. `result()` and `cancel()` each reject a
+locally constructed `ChildTaskStateError` with exact metadata
+`{reason:'recovery_required',task_id,workflow_id,agent_id}` and no transported
+cause or stored message. The recovery handle grants no task admission,
+dispatch, cancellation, event, or mutation authority.
+
+`ChildTaskHandle<JsonValue>` and `ChildTaskStatus` in this interface are the
+canonical child-task types defined in section 7 and implemented in
+`definitions/types.ts`; the session surface does not declare or use another
+handle, status, or descriptor representation.
 
 `InvokeOptions` has exactly the keys above. In particular it has no
 `hostContext`, target selector, model override, tool list, registry, provider,
@@ -4298,6 +4327,12 @@ H4-008 specifically proves: exact definition-keyed instance/session/invoker
 inference and negative unknown-key/config cases; aggregate/stream terminal
 parity; positive contiguous event sequences, deterministic ids, exact append
 retry, and conflict/gap rejection; terminal events that survive live overflow;
+exact strict content-free `PersistedRunFinishedPayload` projections for
+completed, interrupted, failed, and cancelled outcomes; no persisted terminal
+output or interrupt content; `PersistedFinalRunEvent` status/error mapping and
+atomic finalization coherence without a duplicate output; terminal replay that
+reconstructs the typed public event from its validated envelope and terminal
+`RunRecord` without another append or an unsafe payload cast;
 strict `CreateRunRequest` for agent, workflow, and child-task records;
 storage-authored revision-one running state; recursively frozen authoritative
 returns; exact creation retry after later state changes; deterministic
@@ -4340,7 +4375,10 @@ workflow calls, generated durable defaults, and approval-recovery lease
 acquire/interrupt/reacquire/finalize behavior; the spec 33
 `inMemoryMemoryEngine()` default with no sandbox-memory path; concurrent
 idempotent close and identity-deduplicated ownership; session release/destroy
-and child-task cancellation; and graph
+and child-task cancellation; owner-only `SessionChildTasks` lookup for resident,
+terminal persisted, foreign-session, and non-resident running records, including
+the frozen non-resident recovery handle's content-free status and exact local
+`recovery_required` failures without task effects; and graph
 digest stability plus independent sensitivity to both workflow overrides and
 both resolved workflow defaults. Compiler tests prove the immutable recursive
 permission/governance-only approval inventory for agent and workflow roots,

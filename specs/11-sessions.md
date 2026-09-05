@@ -18,10 +18,15 @@ shape. The v4 instance closes through `HarnessInstance.close()`; the removed
 - A fixed `id` property.
 - An `agents` map: one exact `HarnessTargetInvoker` per declared agent id.
 - A `workflows` map: one exact `HarnessTargetInvoker` per declared workflow id.
-- A `childTasks` owner-only map. `get(id)` returns a live task handle or a
-  terminal persisted handle only when its `RunRecord` belongs to this session;
-  `list()` returns content-free child-task snapshots. A non-resident running
-  task is observable but cannot be cancelled or awaited without a task-worker
+- A `childTasks` owner-only map. `get(id)` returns a frozen live task handle, a
+  frozen terminal persisted handle, or a frozen recovery handle only when its
+  strictly validated `RunRecord` belongs to this session; `list()` returns
+  content-free child-task snapshots. For a non-resident running task, the
+  recovery handle's `status()` returns its validated frozen content-free
+  running snapshot. Its `result()` and `cancel()` each reject a locally
+  constructed `ChildTaskStateError` with exact metadata
+  `{reason:'recovery_required',task_id,workflow_id,agent_id}`. The handle never
+  adopts, awaits, cancels, or otherwise controls that task without a task-worker
   adapter.
 - `memory` and `history` handles for direct out-of-run access.
 - A `getRunSummary(runId)` method.

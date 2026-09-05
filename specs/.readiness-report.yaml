@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:83a6e7cd0e4318629bf2f428d67097c7c24e2df69afd8851757508a79caee417"
+      scope_digest: "sha256:64f3a5b7838485d406d8266f7482c5c665c86364b7857f4b76c3c7a7fd03470a"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -496,6 +496,9 @@ follow_up_waves:
       - review: "independent hosted runtime and durable host-tool implementation-readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after hosted configuration, immutable owner and target identity, root-scoped binding overlays, exact RunCheckpoint projections, stable host occurrence ids, terminal replay, continuation frames, validation precedence, and shared runtime ownership were made deterministic."
+      - review: "independent hosted nested-call continuation identity review"
+        status: passed_after_contract_repair
+        evidence: "PASS after the host frame retained the exact nested target, wire input, run, invocation, and session tuple and resume was required to recompute every derived identity before child dispatch or another effect."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:

@@ -1217,11 +1217,35 @@ interface HarnessTargetDispatchStream<O> extends AsyncIterable<ExecutionEvent<O>
   cancel(reason?: string): Promise<void>
 }
 
+interface HarnessTargetRouteReceiptV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'harness_target_route'
+  readonly target: Readonly<{
+    kind: 'agent' | 'workflow'
+    id: string
+  }>
+  readonly bindingDigest: string
+}
+
+type PersistedHarnessTargetDispatchRequest = Readonly<{
+  route: HarnessTargetRouteReceiptV1
+  input: JsonValue
+  resume: ToolApprovalResume
+  invocation: HarnessTargetDispatchRequest<
+    AnyHarnessTargetContract
+  >['invocation']
+}>
+
 interface HarnessTargetDispatcher {
-  assertTarget(target: AnyHarnessTargetContract): void
+  assertTarget(
+    target: AnyHarnessTargetContract,
+  ): HarnessTargetRouteReceiptV1
   open<Target extends AnyHarnessTargetContract>(
     request: HarnessTargetDispatchRequest<Target>,
   ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  openPersisted(
+    request: PersistedHarnessTargetDispatchRequest,
+  ): Promise<HarnessTargetDispatchStream<JsonValue>>
 }
 ```
 
@@ -1242,14 +1266,48 @@ an unknown or structurally copied contract before dispatch and never resolves
 solely by `(kind, id)`. Route values are opaque to Harness; PURISTA stores the
 service/version/target address in its dispatcher table.
 
-`assertTarget` performs that exact hidden-identity membership check without
+`assertTarget` performs that exact hidden-identity membership check and returns
+the canonical deeply frozen receipt already owned by that binding-table entry. It does so without
 opening a stream, resolving an address, allocating an id, or producing any
 other effect. It uses the same immutable table and canonical unknown-target
 error as `open`; `open` still repeats the check at its own boundary. Durable
 callers invoke `assertTarget` before checkpoint lookup so replay cannot return
 saved output for an undeclared capability.
 
-`open` is the single nested-target primitive. The caller consumes the stream to
+`bindingDigest` is `sha256:` plus lowercase hexadecimal SHA-256 over
+`['harness.target-route-binding.v1',dispatcherNamespace,
+routeBindingRevision,target.kind,target.id]`. The namespace and revision are
+dispatcher-construction values and never enter a Harness context or inspection.
+The local dispatcher uses namespace `harness.local` and the Harness deployment
+revision plus compiled graph digest as its route revision. The PURISTA
+dispatcher uses namespace `purista.eventbridge` and a host-private canonical
+revision of the complete EventBridge address, exported target contract, and
+mounted Harness revision. Only the digest enters the receipt. A route revision
+changes whenever its address, transported contract, or routing behavior
+changes. Receipt digests are unique within one immutable table; duplicate
+receipts or distinct identities colliding on one logical route fail at
+dispatcher construction.
+
+`openPersisted` accepts only the complete closed receipt, original wire input,
+the exact `ToolApprovalResume` for the interrupted child run, and
+runtime-authored invocation metadata. It first requires closed-field equality
+with one receipt in the current immutable binding table, equivalently equal
+canonical JSON bytes, before validating or applying the resume, resolving a
+route, or producing another effect. The resume `runId` must equal the
+runtime-authored child run and its remaining correlation is validated by the
+receiving target's ordinary durable-resume boundary. A PURISTA dispatcher
+projects the request to the addressed receiver's hosted invocation with
+`invokeOptions:{sessionId:request.invocation.sessionId,resume:request.resume}`;
+the receiver then performs its normal input, run, checkpoint, graph, identity,
+event, and decision validation. A local dispatcher supplies the same resume to
+the local receiving target. `openPersisted` never falls back to `(kind,id)`,
+enumerates routes, or exposes the route address. A receipt is inert JSON and is
+never exposed to a model, agent, workflow, tool, inspection, or ordinary
+Harness instance.
+
+`open` is the sole fresh nested-target primitive. `openPersisted` is the sole
+persisted nested-target resume primitive. Neither method is exposed through an
+application context or registry. The caller consumes the resulting stream to
 its undroppable terminal outcome and relays child events with their child run
 id and parent invocation id. A child gets isolated conversation history and a
 fresh child session derived from the parent session; ancestry remains metadata.
@@ -2569,9 +2627,19 @@ interface AgentExecutableBinding<
 
 declare const harnessChildTargetInterruptionBrand: unique symbol
 
+interface ChildApprovalResumeDescriptorV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'child_approval_resume'
+  readonly runId: string
+  readonly interruptId: string
+  readonly revision: string
+  readonly approvalIds: readonly string[]
+}
+
 interface HarnessChildTargetInterruption {
   readonly [harnessChildTargetInterruptionBrand]: true
   readonly childInvocationId: string
+  readonly resumeDescriptor: ChildApprovalResumeDescriptorV1
   readonly outcome: Extract<
     RunOutcome<never>,
     { readonly status: 'interrupted' }
@@ -3321,6 +3389,19 @@ class HostNestedTargetReplayConflictError extends HarnessError {
   }>
 }
 
+class HarnessTargetRouteReceiptMismatchError extends HarnessError {
+  readonly code: 'HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH'
+  readonly category: 'validation'
+  readonly retriable: false
+  readonly message:
+    'Persisted target route does not match the current dispatcher binding.'
+  readonly meta: Readonly<{
+    reason: 'route_receipt_mismatch'
+    target_kind: 'agent' | 'workflow'
+    target_id: string
+  }>
+}
+
 type HostNestedTargetStoredOutcomeV1 =
   | Readonly<{ status: 'completed'; output: JsonValue }>
   | Readonly<{ status: 'failed'; error: HostNestedTargetStoredErrorV1 }>
@@ -3344,6 +3425,7 @@ interface HostNestedTargetCheckpointV1 {
     kind: 'agent' | 'workflow'
     id: string
   }>
+  readonly route: HarnessTargetRouteReceiptV1
   readonly input: JsonValue
   readonly outcome: HostNestedTargetStoredOutcomeV1
   readonly lineage: Readonly<{
@@ -3372,16 +3454,22 @@ sequence by exactly one. Host steps use the same projection with their handler
 result as `RunCheckpoint.output`, the root boundary input as
 `RunCheckpoint.input`, and the `host:step:` key. Neither form introduces a new
 storage operation or checkpoint registry.
-Target identity has conflict precedence over input. Reusing the key with
-another target or input throws the exact
-`HostNestedTargetReplayConflictError` above.
+Target identity has conflict precedence over route and input. Reusing the key
+with another target or input throws the exact
+`HostNestedTargetReplayConflictError` above. A current `assertTarget` receipt
+that differs from the persisted receipt throws
+`HarnessTargetRouteReceiptMismatchError` after target comparison and before
+input comparison. A well-formed receipt that has no byte-exact current binding
+also throws that error. Malformed receipt data is an invalid checkpoint. No
+receipt digest or route data appears in an error.
 No input or input hash appears in an error, log, metric, or event.
 
 Before reading an in-memory or persisted call entry, `nestedTargets.run` calls
 the hosted dispatcher's side-effect-free `assertTarget` seam. That validates
 the exact hidden identity against the host's immutable table, including
-completed-graph and explicitly declared remote contracts. It never resolves
-`(kind,id)` to gain a capability. This validation also runs on replay, so an
+completed-graph and explicitly declared remote contracts, and returns its
+canonical route receipt. It never resolves `(kind,id)` to gain a capability.
+This validation also runs on handler replay, so an
 unknown or structurally copied target cannot obtain a saved result without
 dispatch.
 
@@ -3435,6 +3523,7 @@ interface SuspendedHostToolFrameV1 {
   readonly activeNestedCall: Readonly<{
     callId: string
     target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+    route: HarnessTargetRouteReceiptV1
     input: JsonValue
     childRunId: string
     childInvocationId: string
@@ -3448,12 +3537,33 @@ or workflow continuation. Resume validates exact binding identity and digest,
 requires the frame's child run/invocation and target to match that continuation,
 recomputes `hostToolInvocationId`, `childInvocationId`, and `childSessionId`
 from their canonical tuples above and requires exact equality,
-resumes the child first, commits its host-call checkpoint using the frame's
+requires the route receipt target to equal the frame target, then calls
+`openPersisted` with the child `ToolApprovalResume` derived by the rule below so the dispatcher
+requires the exact current binding before the receiving target validates and
+resumes the interrupted child. Harness commits the host-call checkpoint using the frame's
 original nested wire input, and re-enters the
 same host binding through a fresh trusted invocation overlay. The common tool
 pipeline then validates the actual host-handler output, runs `afterTool`, and
 emits exactly one `tool.finished` without another `tool.started`. Cancellation
 propagates to the child and follows the same re-entry/replay rules.
+
+For every resumed child edge, Harness validates the strict
+`ChildApprovalResumeDescriptorV1` and selects from the already normalized root
+decisions exactly the descriptor's sorted `approvalIds`. Across the pending
+continuation's leaf descriptors those id lists must be disjoint and their union
+must equal the aggregated root interrupt's approval-request ids. A missing
+decision, duplicate/overlapping id, descriptor id outside that root set, or
+union mismatch is `ApprovalResumeError{reason:'invalid_checkpoint'}` before
+dispatch. The child resume is exactly
+`{type:'tool-approval',runId:descriptor.runId,interruptId:descriptor.interruptId,
+revision:descriptor.revision,eventId,decisions}`, where `eventId` is
+`event_` plus lowercase hexadecimal SHA-256 over the canonical JSON tuple
+`['harness.child-resume-event.v1',rootResume.eventId,descriptor.runId,
+descriptor.interruptId]`. The receiving child then performs its ordinary
+complete-set and checkpoint checks before effects. This rule applies equally
+to local subagent, workflow-child, and host-nested target edges, so two
+interrupted leaves receive disjoint exact decision subsets and deterministic
+child event ids.
 
 Hosted instantiation is also pure and deterministic until all configuration
 has passed. It stops at the first failure in this order:
@@ -3932,6 +4042,7 @@ type SuspensionFrameV1 =
 
 interface SuspensionNodeV1 {
   readonly frame: SuspensionFrameV1
+  readonly resumeDescriptor?: ChildApprovalResumeDescriptorV1
   readonly children: readonly SuspensionNodeV1[]
 }
 
@@ -3963,6 +4074,19 @@ to the execution protocol rather than the storage adapter. Every workflow
 frame stores the accepted H4-007 `WorkflowAgentCallBudgetStateV1` returned by
 that workflow runtime. H4-008 restores that state into H4-007; it does not
 derive `usedCalls` from children, events, or completed checkpoints.
+
+The root continuation node and every host-tool frame omit `resumeDescriptor`.
+Every non-root agent or workflow node has exactly one descriptor on the edge
+from its immediate parent. The descriptor is created only from that child's
+validated interrupted terminal: `runId` is the child outcome run id,
+`interruptId` and `revision` are the child interrupt values, and `approvalIds`
+is the code-point-sorted unique list of that interrupt's request approval ids.
+The descriptor is content-free, strict, versioned, deeply frozen, and rejects
+unknown keys. Its run id must equal the child frame and persisted run; its
+approval ids must equal the approval requests in that child's pending
+checkpoint. A host frame's `activeNestedCall.childRunId` must also equal its
+child node descriptor run id. No parent reconstructs these fields from the
+aggregated root interruption.
 
 `priorResumeReceipt` is absent on the first interruption. If resuming the
 current pending checkpoint produces another interruption, its
@@ -4803,6 +4927,7 @@ The stream projection additionally adds
 | progressive execution | `ExecutionEvent<Output>` | EventBridge stream frame, AI SDK UI v1 chunk, persisted audit event | provider-native SSE as the portable contract |
 | approval | `ToolApprovalInterrupt` and `ToolApprovalResume` | AI SDK approval parts and descriptor | generic thrown error or UI-only approval state |
 | child dispatch | `HarnessTargetDispatchRequest` and terminal `RunOutcome` | local dispatcher stream, PURISTA EventBridge stream | direct JavaScript child invocation |
+| persisted child route | dispatcher-owned `HarnessTargetRouteReceiptV1` | host continuation and host nested-target checkpoint | address serialization, `(kind,id)` lookup, public registry, or service locator |
 | runtime need | `RuntimeRequirements` | exact `HarnessInstanceConfig`, PURISTA `ai` config, inspection | hand-maintained duplicate capability lists |
 | background delivery | host queue receipt | PURISTA enqueue client and worker call | transparent queueing inside `run` or `stream` |
 | hosted runtime configuration | `HostedHarnessInstanceConfig` | validated shared runtime bindings plus host-owned bindings | a second hosted runtime or caller-supplied logger/telemetry |
@@ -4839,6 +4964,9 @@ validation, event, timeout, cancellation, and telemetry pipeline; conservative
 durable-storage and revision requirements for every host-aware graph; exact
 host-call and host-step checkpoint keys, schemas, replay, equal-call
 coalescing, target-before-input conflicts, terminal failure/cancellation replay,
+route-receipt equality and mismatch rejection, remote-target restart dispatch,
+strict child-resume descriptor validation, deterministic child event ids,
+exact decision partitioning across two interrupted leaves,
 and rejection of distinct concurrent nested calls; agent-to-host-to-agent and
 agent-to-host-to-workflow interruption trees that resume leaf first, re-enter
 the host handler with a fresh overlay, repeat no managed effect, emit no second

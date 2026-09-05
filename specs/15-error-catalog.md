@@ -249,6 +249,45 @@ tokens, raw headers, or attachments.
 - forbidden meta: transported code, category, message or metadata; input,
   output, canonical JSON, prompts, credentials, and provider payloads.
 
+### `HostNestedTargetError`
+- code: `HOST_NESTED_TARGET_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: a target invoked by a host tool returns a validated `failed` terminal.
+  The transported error remains an untrusted private cause and is never
+  reconstructed as its remote class.
+- message: fixed `Host nested target failed.`
+- meta: exactly `{reason:'target_failed',agent_id:string,tool_id:string,tool_call_id:string,call_id:string,target_kind:'agent'|'workflow',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, route receipt or digest, prompts, credentials, and
+  provider payloads.
+
+### `HostNestedTargetReplayConflictError`
+- code: `HOST_NESTED_TARGET_REPLAY_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: one host-tool invocation reuses a `callId` with another target or
+  canonical JSON wire input. Equal concurrent tuples coalesce and do not throw
+  this error.
+- message: fixed `Host nested call id conflicts with an existing logical target call.`
+- meta: exactly `{reason:'target_mismatch'|'input_mismatch',agent_id:string,tool_id:string,tool_call_id:string,call_id:string,expected_target_kind:'agent'|'workflow',expected_target_id:string,received_target_kind:'agent'|'workflow',received_target_id:string}`.
+- when target and input both differ, target mismatch has precedence. A current
+  route-receipt mismatch is evaluated after target and before input and uses
+  `HarnessTargetRouteReceiptMismatchError`.
+- forbidden meta: input, output, canonical JSON, route receipt or digest,
+  prompts, credentials, and provider payloads.
+
+### `HarnessTargetRouteReceiptMismatchError`
+- code: `HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH`
+- category: `validation`
+- retriable: `false`
+- when: a well-formed persisted target-route receipt has no byte-exact match in
+  the current immutable dispatcher binding table.
+- message: fixed `Persisted target route does not match the current dispatcher binding.`
+- meta: exactly `{reason:'route_receipt_mismatch',target_kind:'agent'|'workflow',target_id:string}`.
+- forbidden meta: route receipt, route address, binding or contract digest,
+  input, output, canonical JSON, prompts, credentials, and provider payloads.
+
 ### `ChildTaskConflictError`
 - code: `CHILD_TASK_CONFLICT`
 - category: `validation`

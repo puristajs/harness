@@ -7,5 +7,4 @@ export interface HarnessModelCallContext {
 	readonly workflowId?: string
 	readonly modelAlias: string
 	readonly streamId?: string
-	readonly emitRunEvents: false
 }

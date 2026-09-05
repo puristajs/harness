@@ -1,6 +1,6 @@
-import { agentGuardrailsBinding } from '../harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../harness/agent-requirements.js'
-import type { AgentGuardrailsBinding } from '../harness/defineHarness.js'
+import type { AgentGuardrailsBinding } from '../agents/guardrails.js'
 import type { MemoryCapability } from '../ports/memory/types.js'
 import type { ModelCapability } from '../ports/model-provider.js'
 import type {

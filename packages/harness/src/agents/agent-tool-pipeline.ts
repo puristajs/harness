@@ -7,8 +7,9 @@ import { decisionResultSchema } from '../decisions/schemas.js'
 import type { DecisionEvidence, DecisionOccurrence } from '../decisions/types.js'
 import { AgentLoopBudgetError, DecisionBlockedError, DecisionEvaluationError, HarnessTargetRouteReceiptMismatchError, OperationCancelledError, PermissionDeniedError, PolicyDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import { OperationTimeoutError } from '../errors/index.js'
-import type { AgentExecutionInterceptor, AgentExecutionInterceptorContext, AgentPermissions, BuilderState, ConversationHistory } from '../harness/defineHarness.js'
-import { agentGuardrailsBinding } from '../harness/defineHarness.js'
+import type { AgentExecutionInterceptor, AgentExecutionInterceptorContext, AgentPermissions } from './guardrails.js'
+import { agentGuardrailsBinding } from './guardrails.js'
+import type { ConversationHistory } from '../runtime/session-contracts.js'
 import { enforceToolGovernance } from '../governance/index.js'
 import { isJsonValue, type JsonValue } from '../models/json.js'
 import type { ToolCallSpec, ModelMessage } from '../ports/model-provider.js'
@@ -499,7 +500,7 @@ function interceptorContext<Extra extends object>(
 	interceptor: AgentExecutionInterceptor,
 	decision: Readonly<{ signal: AbortSignal; deadline: number }>,
 	extra: Extra,
-): AgentExecutionInterceptorContext<BuilderState, JsonValue> & Extra {
+): AgentExecutionInterceptorContext<JsonValue> & Extra {
 	return {
 		agentInput: options.agentInput,
 		interceptorId: interceptor.id,

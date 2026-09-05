@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { verifyPackageBoundaries, verifyPublicHarnessImports } from './package-boundaries.mjs'
 import { createRequire } from 'node:module'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { join, relative, resolve as resolvePath } from 'node:path'
 
 const ts = createRequire(import.meta.url)('typescript')
+const repositoryRoot = resolvePath(import.meta.dirname, '..')
 
 const categories = ['dependencies', 'peerDependencies', 'devDependencies', 'optionalDependencies']
 const detectors = ['@purista/harness-guardrails-local-ner', '@purista/harness-guardrails-native-privacy', '@purista/harness-guardrails-presidio']
@@ -76,3 +79,38 @@ test('adapter imports and re-exports use only published Core entrypoints', () =>
   assert.deepEqual(verifyPublicHarnessImports(ts, '/workspace/ai-harness/packages/harness/src/agents/index.ts', "import { runDecisionOperation } from '../decisions/index.js'"), [])
   assert.deepEqual(verifyPublicHarnessImports(ts, '/workspace/ai-harness/examples/living-wiki-jaeger/src/backend/app.ts', "import { defineHarness } from '../../../../packages/harness/src/index.js'"), [])
 })
+
+test('Harness v4 source and package output contain no removed v3 compilation closure', () => {
+  const removedModules = [
+    'packages/harness/src/harness/defineHarness.ts',
+    'packages/harness/src/harness/tool-definition.ts',
+    'packages/harness/src/agents/index.ts',
+    'packages/harness/src/agents/tool-execution.ts',
+    'packages/harness/src/sessions/index.ts',
+    'packages/harness/src/sessions/sandboxBindings.ts',
+    'packages/harness/src/tools/mcp/http.ts',
+    'packages/harness/src/tools/mcp/runner.ts',
+    'packages/harness/src/tools/mcp/stdio.ts',
+  ]
+  for (const path of removedModules) assert.equal(existsSync(join(repositoryRoot, path)), false, path)
+
+  const forbiddenImport = /(?:harness\/defineHarness|agents\/(?:index|tool-execution)|sessions\/index)\.js/
+  for (const path of sourceFiles(join(repositoryRoot, 'packages/harness/src'))) {
+    assert.doesNotMatch(readFileSync(path, 'utf8'), forbiddenImport, relative(repositoryRoot, path))
+  }
+
+  const dist = join(repositoryRoot, 'packages/harness/dist')
+  if (existsSync(dist)) {
+    for (const path of sourceFiles(dist)) {
+      const relativePath = relative(dist, path).replaceAll('\\', '/')
+      assert.doesNotMatch(relativePath, /^(?:harness\/defineHarness|agents\/(?:index|tool-execution)|sessions\/index|tools\/mcp\/(?:http|runner|stdio))\./)
+    }
+  }
+})
+
+function sourceFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const path = join(directory, entry.name)
+    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|js|d\.ts)$/.test(entry.name) ? [path] : []
+  })
+}

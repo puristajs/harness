@@ -1,20 +1,34 @@
-import type { ExecutionEvent, HarnessTargetStream } from '../src/index.js'
+import type {
+  AgentAdmission,
+  AgentAdmissionLease,
+  AgentAdmissionRequest,
+  ExecutionEvent,
+  HarnessExecutionEventType,
+  HarnessTargetStream,
+  McpBinding,
+  McpServerOptions,
+  ModelRuntimeBinding,
+} from '../src/index.js'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import * as mainEntry from '../src/index.js'
 import * as testingEntry from '../src/testing/index.js'
 
 /**
- * Locked value-export surface of `@purista/harness` per specs/13-public-api.md.
+ * Locked value-export surface of `@purista/harness` for the v4 clean break.
  * Type-only exports are enforced by the explicit export lists in
  * `src/index.ts` / `src/testing/index.ts` (the compiler fails on drift).
  */
 const EXPECTED_MAIN_EXPORTS = [
   'AgentLoopBudgetError',
+  'AgentAdmissionRejectedError',
   'AgentNotFoundError',
   'BaseModelProvider',
   'DecisionBlockedError',
   'DecisionEvaluationError',
+  'ApprovalResumeError',
+  'ChildTaskConflictError',
+  'ChildTaskStateError',
   'DelegationPolicyError',
   'DurableRunLeaseError',
   'DurableStepError',
@@ -22,6 +36,9 @@ const EXPECTED_MAIN_EXPORTS = [
   'ExternalWaitError',
   'HARNESS_VERSION',
   'HarnessConfigError',
+  'HarnessTargetRouteReceiptMismatchError',
+  'HostNestedTargetError',
+  'HostNestedTargetReplayConflictError',
   'HarnessError',
   'InMemoryHarnessStorage',
   'InMemoryDurableWorkspace',
@@ -54,6 +71,9 @@ const EXPECTED_MAIN_EXPORTS = [
   'ToolNotFoundError',
   'ValidationError',
   'WorkflowNotFoundError',
+  'WorkflowAgentCallBudgetError',
+  'WorkflowCallReplayConflictError',
+  'WorkflowChildTargetError',
   'WorkspaceCleanupError',
   'WorkspaceError',
   'WorkspaceQuotaExceededError',
@@ -61,6 +81,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'agentExecutionRequirementsSchema',
   'agentGuardrailsBinding',
   'bashSandbox',
+  'builtInTools',
   'compileSafeRegex',
   'createTelemetryShim',
   'createDecisionEvidence',
@@ -71,11 +92,17 @@ const EXPECTED_MAIN_EXPORTS = [
   'decisionResultSchema',
   'decisionSourceSchema',
   'defineHarness',
-  'defineHarnessModule',
+  'defineAgent',
+  'defineCatalog',
+  'defineMcpServer',
+  'defineSkill',
+  'defineTool',
+  'defineWorkflow',
   'discoverSkills',
   'createDeterministicEvaluationScorer',
   'finalizeStreamToolCalls',
   'governanceDecisionSchema',
+  'harnessExecutionEventTypesV1',
   'providerContinuationItemSchema',
   'providerContinuationSchema',
   'inMemoryHarnessStorage',
@@ -124,7 +151,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'withSandboxTelemetry',
 ]
 
-/** Locked value-export surface of `@purista/harness/testing` per specs/13-public-api.md. */
+/** Locked v4 value-export surface of `@purista/harness/testing`. */
 const EXPECTED_TESTING_EXPORTS = [
   'FakeLogger',
   'FakeMemoryEngine',
@@ -158,11 +185,40 @@ const EXPECTED_TESTING_EXPORTS = [
   'harnessStorageContract',
 ]
 
-describe('public API export surface (specs/13-public-api.md)', () => {
+describe('v4 public API export surface', () => {
 	it('publishes the canonical cancellable target event stream from the root', () => {
 		expectTypeOf<HarnessTargetStream<string>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
 		expectTypeOf<HarnessTargetStream<string>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()
 	})
+
+  it('publishes v4 runtime binding, admission, and event inventory types', () => {
+    expectTypeOf<AgentAdmission['acquire']>().toBeFunction()
+    expectTypeOf<AgentAdmissionRequest['signal']>().toEqualTypeOf<AbortSignal>()
+    expectTypeOf<AgentAdmissionLease['release']>().toBeFunction()
+    expectTypeOf<ModelRuntimeBinding>().toHaveProperty('provider')
+    expectTypeOf<McpBinding['transport']>().toEqualTypeOf<'http' | 'stdio'>()
+    expectTypeOf<McpServerOptions<{ lookup: {
+      remoteName: string
+      description: string
+      input: import('../src/index.js').ModelSchema
+      output: import('../src/index.js').Schema
+    } }>>().toHaveProperty('tools')
+    expectTypeOf<HarnessExecutionEventType>().toEqualTypeOf<(typeof mainEntry.harnessExecutionEventTypesV1)[number]>()
+  })
+
+  it('publishes the v4 runtime error constructors from the package root', () => {
+    expect([
+      mainEntry.ApprovalResumeError,
+      mainEntry.WorkflowCallReplayConflictError,
+      mainEntry.WorkflowAgentCallBudgetError,
+      mainEntry.WorkflowChildTargetError,
+      mainEntry.HostNestedTargetError,
+      mainEntry.HostNestedTargetReplayConflictError,
+      mainEntry.HarnessTargetRouteReceiptMismatchError,
+      mainEntry.ChildTaskConflictError,
+      mainEntry.ChildTaskStateError,
+    ].every(value => typeof value === 'function')).toBe(true)
+  })
 
   it('main entry exports exactly the locked value list', () => {
     expect(Object.keys(mainEntry).sort()).toEqual([...EXPECTED_MAIN_EXPORTS].sort())

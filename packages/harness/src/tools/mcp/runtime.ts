@@ -7,7 +7,7 @@ import { McpProtocolError, OperationCancelledError, OperationTimeoutError, Sandb
 import { abortError, withAbortSignal } from '../../runtime/abort.js'
 import { projectModelSchema } from '../../schema/json-schema.js'
 import { bindMcpTool, type ExecutableToolBinding } from '../bindings.js'
-import { withMcpTimeout } from './runner.js'
+import { withMcpTimeout } from './timeout.js'
 import { assertMcpJsonSchema } from './schema.js'
 
 export interface McpRuntimeToolDescription {

@@ -1,15 +1,49 @@
 import type { JsonValue } from '../models/json.js'
 import type { Infer, ModelSchema, Schema } from '../schema/index.js'
 import type { DecisionExecutionContext } from '../decisions/types.js'
-import type { GovernanceAuditSink, GovernanceDecision, GovernanceEffect, GovernanceExposureEffect, GovernanceMode } from '../harness/defineHarness.js'
+import type { DecisionEvidence } from '../decisions/types.js'
+import type { z } from 'zod'
+import type { governanceConfigSchema, governanceDecisionSchema } from '../decisions/schemas.js'
 import type { AnyAgentDefinition, AnyToolDefinition, AgentSubagentMap, SkillDefinition } from '../definitions/types.js'
 
+/** Governance mode for policy evaluation. */
+export type GovernanceMode = NonNullable<z.infer<typeof governanceConfigSchema>['mode']>
+/** Strict decision returned by governance policies. */
+export type GovernanceDecision = z.infer<typeof governanceDecisionSchema>
+/** Effects supported by the governance evaluator. */
+export type GovernanceEffect = GovernanceDecision['effect']
+/** Policy decision for model-facing tool exposure. */
+export type GovernanceExposureEffect = NonNullable<NonNullable<z.infer<typeof governanceConfigSchema>['exposure']>['defaultEffect']>
+
+/** Content-free audit record emitted after governance validation. */
+export interface GovernanceAuditRecord {
+	readonly evidence: DecisionEvidence
+	readonly toolId: string
+	readonly callId: string
+	readonly invocationId: string
+	readonly agentId: string
+	readonly runId: string
+	readonly sessionId: string
+	readonly workflowId?: string
+	readonly step: number
+	readonly effect: GovernanceEffect
+	readonly enforced: boolean
+}
+
+/** Optional audit sink for policy decisions. */
+export interface GovernanceAuditSink {
+	record(record: GovernanceAuditRecord, execution: DecisionExecutionContext): Promise<void>
+}
+
+/** Minimal model-facing tool contract used to infer governance input types. */
 export type GovernanceToolDefinition = Readonly<{ id: string; input: ModelSchema; output: Schema }>
+/** Exact id-keyed tool map evaluated by governance policies. */
 export type GovernanceToolMap = Readonly<Record<string, GovernanceToolDefinition>>
 type ToolId<Tools extends GovernanceToolMap> = keyof Tools & string
 type ToolInput<Tools extends GovernanceToolMap, Id extends ToolId<Tools>> = Infer<Tools[Id]['input']>
 
-export type GovernanceContext<Tools extends GovernanceToolMap, Id extends ToolId<Tools> = ToolId<Tools>> =
+/** Trusted execution context and typed input for one governed tool call. */
+export type GovernanceContext<Tools extends GovernanceToolMap = GovernanceToolMap, Id extends ToolId<Tools> = ToolId<Tools>> =
 	Id extends ToolId<Tools> ? Readonly<{
 		toolId: Id
 		input: ToolInput<Tools, Id>
@@ -25,7 +59,8 @@ export type GovernanceContext<Tools extends GovernanceToolMap, Id extends ToolId
 		deadline: number
 	}> : never
 
-export interface GovernancePolicyEvaluator<Tools extends GovernanceToolMap> {
+/** Adapter contract for a policy evaluator. */
+export interface GovernancePolicyEvaluator<Tools extends GovernanceToolMap = GovernanceToolMap> {
 	readonly id: string
 	readonly version?: string
 	readonly engine?: string
@@ -34,6 +69,7 @@ export interface GovernancePolicyEvaluator<Tools extends GovernanceToolMap> {
 		Promise<GovernanceDecision | readonly GovernanceDecision[] | undefined>
 }
 
+/** One native policy rule narrowed to a selected set of tool ids. */
 export interface NativePolicyRuleForTool<Tools extends GovernanceToolMap, Id extends ToolId<Tools>> {
 	readonly id: string
 	readonly description?: string
@@ -43,7 +79,9 @@ export interface NativePolicyRuleForTool<Tools extends GovernanceToolMap, Id ext
 	readonly reasonCode?: GovernanceDecision['reasonCode']
 }
 
+/** Native policy rule for any tool in a governance map. */
 export type NativePolicyRule<Tools extends GovernanceToolMap> = NativePolicyRuleForTool<Tools, ToolId<Tools>>
+/** Ordered native policy definition evaluated inside the Harness. */
 export interface NativePolicyDefinition<Tools extends GovernanceToolMap> {
 	readonly kind: 'native'
 	readonly id: string
@@ -53,6 +91,7 @@ export interface NativePolicyDefinition<Tools extends GovernanceToolMap> {
 	readonly rules: readonly NativePolicyRule<Tools>[]
 }
 
+/** Trusted context used to decide whether a tool is exposed to a model. */
 export interface GovernanceToolExposureContext<Tools extends GovernanceToolMap, Id extends ToolId<Tools>> extends DecisionExecutionContext {
 	readonly toolId: Id
 	readonly agentId: string
@@ -62,6 +101,7 @@ export interface GovernanceToolExposureContext<Tools extends GovernanceToolMap, 
 	readonly step: number
 	readonly metadata: Readonly<Record<string, JsonValue>>
 }
+/** One tool-exposure rule narrowed to selected tool ids. */
 export interface GovernanceToolExposureRule<Tools extends GovernanceToolMap, Id extends ToolId<Tools> = ToolId<Tools>> {
 	readonly id: string
 	readonly description?: string
@@ -69,6 +109,7 @@ export interface GovernanceToolExposureRule<Tools extends GovernanceToolMap, Id 
 	readonly tools?: readonly Id[]
 	readonly when?: (context: GovernanceToolExposureContext<Tools, Id>) => boolean | Promise<boolean>
 }
+/** Policy controlling which tools are visible in each model request. */
 export interface GovernanceToolExposurePolicy<Tools extends GovernanceToolMap> {
 	readonly id?: string
 	readonly version?: string
@@ -76,7 +117,8 @@ export interface GovernanceToolExposurePolicy<Tools extends GovernanceToolMap> {
 	readonly rules?: readonly GovernanceToolExposureRule<Tools>[]
 }
 
-export interface GovernanceConfig<Tools extends GovernanceToolMap> {
+/** Complete governance configuration for an agent definition. */
+export interface GovernanceConfig<Tools extends GovernanceToolMap = GovernanceToolMap> {
 	readonly enabled?: boolean
 	readonly mode?: GovernanceMode
 	readonly defaultEffect?: 'allow' | 'deny'
@@ -95,6 +137,7 @@ export type AgentGovernanceAuthoringConfig<Tools extends GovernanceToolMap> =
 		policies?: readonly (NativePolicyAuthoringDefinition<Tools> | GovernancePolicyEvaluator<Tools>)[]
 	}>
 
+/** Typed helpers passed to callback-style governance authoring. */
 export interface GovernanceDefinitionHelpers<Tools extends GovernanceToolMap> {
 	rule<const Ids extends readonly ToolId<Tools>[]>(definition: NativePolicyRuleForTool<Tools, NoInfer<Ids[number]>> & { tools: Ids }): NativePolicyRule<Tools>
 	rule(definition: NativePolicyRuleForTool<Tools, ToolId<Tools>> & { tools?: undefined }): NativePolicyRule<Tools>
@@ -117,12 +160,14 @@ type SubagentTools<Subagents extends AgentSubagentMap> = Readonly<{ [Name in key
 	output: ReferencedAgent<Subagents[Name]>['output']
 }> }>
 
+/** Model-facing tool map inferred from explicit tools, skills, and subagents. */
 export type AgentModelToolMap<Tools, Skills, Subagents> = Readonly<
 	ExplicitToolMap<Tools extends readonly AnyToolDefinition[] ? Tools : readonly []>
 	& SkillTool<Skills extends readonly SkillDefinition[] ? Skills : readonly []>
 	& SubagentTools<Subagents extends AgentSubagentMap ? Subagents : Readonly<Record<never, never>>>
 >
 
+/** Inline or callback-style governance input accepted by `defineAgent`. */
 export type AgentGovernanceInput<Tools, Skills, Subagents> =
 	| AgentGovernanceAuthoringConfig<AgentModelToolMap<Tools, Skills, Subagents>>
 	| ((helpers: GovernanceDefinitionHelpers<AgentModelToolMap<Tools, Skills, Subagents>>) => AgentGovernanceAuthoringConfig<AgentModelToolMap<Tools, Skills, Subagents>>)

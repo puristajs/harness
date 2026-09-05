@@ -4,7 +4,7 @@ import { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow }
 import { defineCatalog } from '../src/definitions/catalog.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import type { ToolRequirements } from '../src/definitions/index.js'
-import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
 import type { AgentModelResponse, HarnessTargetStream } from '../src/index.js'
 

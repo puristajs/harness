@@ -10,7 +10,7 @@ import { executePreparedAgentToolBatch, prepareAgentToolBatch, resumePreparedAge
 import { createAgentExecutableBinding } from '../src/tools/bindings.js'
 import { createHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 import { defineTool } from '../src/definitions/tool.js'
-import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import { getDefinitionIdentity } from '../src/definitions/identity.js'
 import { freezeAcceptedModelTurnCursor, freezeSuspendedAgentTurnState } from '../src/approvals/prepared-tool-checkpoint.js'
 import { createModelRegistry } from '../src/models/registry.js'

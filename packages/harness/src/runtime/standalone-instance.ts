@@ -8,7 +8,10 @@ import type { AgentEventSink, AgentPipelineEvent, ExecutionEvent, HarnessTargetS
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { AnyAgentDefinition, AnyWorkflowDefinition, BuiltInToolDefinition, ToolDefinition } from '../definitions/types.js'
 import { ApprovalResumeError, HarnessConfigError, InternalError, OperationCancelledError, OperationTimeoutError, SandboxPermissionDeniedError, SandboxStateLostError, SessionBusyError, StateError, ValidationError, serializeError } from '../errors/index.js'
-import { agentGuardrailsBinding, type ContentCaptureMode, type ConversationHistory, type HarnessInterrupt, type RunOutcome, type RunSummary, type SessionChildTasks, type TelemetryOptions } from '../harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../agents/guardrails.js'
+import type { ContentCaptureMode, TelemetryOptions } from '../telemetry/index.js'
+import type { HarnessInterrupt, RunOutcome } from './outcomes.js'
+import type { ConversationHistory, RunSummary, SessionChildTasks } from './session-contracts.js'
 import { normalizeHarnessIdentity } from '../identity/index.js'
 import { JsonLogger, type Logger } from '../logger/index.js'
 import { inMemoryMemoryEngine } from '../memory/in-memory.js'
@@ -26,6 +29,17 @@ import { loadSkillSnapshots, createReadSkillBinding, type LoadedSkillSnapshot } 
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import type { DurableRunLease, HostNestedTargetCheckpointV1, RunCheckpoint, WorkflowChildCallCheckpointV1 } from '../storage/execution.js'
 import type { AcquireRunRequest, AppliedApprovalDecisionV1, ApprovalResumeReceiptV1, HarnessStorage } from '../storage/types.js'
+import {
+	asExternalWaitResolved,
+	assertExternalWaitSnapshotRequest,
+	ExternalWaitError,
+	ExternalWaitPendingError,
+	validateExternalWaitRegistration,
+	validateExternalWaitRequest,
+	validateExternalWaitSnapshot,
+	type ExternalWaitRequest,
+	type ExternalWaitResolved,
+} from '../storage/external-wait.js'
 import { createMetrics, createTelemetryShim, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telemetry/trace-context.js'
 import { ulid } from '../ulid/index.js'
@@ -134,11 +148,33 @@ export interface InvokeOptions {
 	readonly durable?: DurableInvokeOptions
 }
 
+
+/**
+ * Typed aggregate and streaming invocation surface for one compiled target.
+ *
+ * @example
+ * ```ts
+ * const outcome = await session.agents.support.run({ question: 'Help' })
+ * const stream = session.agents.support.stream({ question: 'Help' })
+ * ```
+ */
 export interface HarnessTargetInvoker<Target extends AnyTargetContract> {
+	/** Runs the target and resolves with its aggregate outcome. */
 	run(input: TargetInput<Target>, options?: InvokeOptions): Promise<RunOutcome<TargetOutput<Target>>>
+	/** Starts the target and returns its cancellable event stream. */
 	stream(input: TargetInput<Target>, options?: InvokeOptions): HarnessTargetStream<TargetOutput<Target>>
 }
 
+/**
+ * Session-scoped target invokers, history, memory, and persisted run inspection.
+ * Release a borrowed session when finished, or destroy it to remove persisted state.
+ *
+ * @example
+ * ```ts
+ * const session = await instance.getSession('conversation-1')
+ * const recent = await session.history.list({ limit: 20 })
+ * ```
+ */
 export interface HarnessSession<Contracts extends HarnessContracts> {
 	readonly id: string
 	readonly agents: Readonly<{ [Id in keyof Contracts['agents']]: HarnessTargetInvoker<Contracts['agents'][Id]> }>
@@ -153,12 +189,33 @@ export interface HarnessSession<Contracts extends HarnessContracts> {
 	destroy(): Promise<void>
 }
 
+/**
+ * Session creation options projected from the Harness runtime requirements.
+ * A `sandboxOwner` is accepted only when the compiled graph requires a sandbox.
+ *
+ * @example
+ * ```ts
+ * const options: HarnessSessionOptions<typeof definition.requirements> = {}
+ * ```
+ */
 export type HarnessSessionOptions<Requirements extends RuntimeRequirements> = Requirements['sandbox']['required'] extends true
 	? SessionOptions
 	: Readonly<Omit<SessionOptions, 'sandboxOwner'> & { sandboxOwner?: never }>
 
+/**
+ * Bound executable Harness instance.
+ *
+ * @example
+ * ```ts
+ * const session = await instance.getSession('conversation-1')
+ * try { await session.agents.support.run(input) } finally { await session.release() }
+ * await instance.close()
+ * ```
+ */
 export interface HarnessInstance<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements = RuntimeRequirements> {
+	/** Gets or creates a session with the supplied stable id. */
 	getSession(id: string, options?: HarnessSessionOptions<Requirements>): Promise<HarnessSession<Contracts>>
+	/** Releases all instance-owned resources. */
 	close(): Promise<void>
 }
 
@@ -507,6 +564,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				startedAt: existing?.startedAt ?? new Date().toISOString(), input: persistedInput,
 				...(invokeOptions.metadata === undefined ? {} : { metadata: invokeOptions.metadata }) })
 			: requireResumeRun(existing, resume, invocation.sessionId, definition, persistedInput)
+		const resumingExternalWait = resume === undefined && run.status === 'waiting'
 		if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
 			if (resume !== undefined) validateTerminalResume(run, resume, options, graphDigest, session.record, definition)
 			const storedEvents = await storage.listEvents(runId)
@@ -595,7 +653,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				}
 			}
 		}
-		let sequence = pendingCheckpoint === undefined ? 0 : pendingCheckpoint.value.nextEventSequence - 1
+		const priorEvents = resumingExternalWait ? await storage.listEvents(runId) : undefined
+		let sequence = pendingCheckpoint === undefined
+			? Math.max(0, ...(priorEvents?.map(event => event.sequence) ?? []))
+			: pendingCheckpoint.value.nextEventSequence - 1
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
 		const persistAndQueue = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
@@ -823,9 +884,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			if (replay !== undefined) await workspaceAttempt!.committed(replay)
 			resumeCheckpointSequence = nextSequence
 		}
-		if (pendingCheckpoint === undefined) await emit({ type: 'run.started', at: new Date().toISOString() })
+		if (pendingCheckpoint === undefined && !resumingExternalWait) await emit({ type: 'run.started', at: new Date().toISOString() })
 		else {
-			const started = (await storage.listEvents(runId)).find(event => event.sequence === 1)
+			const started = (priorEvents ?? await storage.listEvents(runId)).find(event => event.sequence === 1)
 			if (!started) throw new ApprovalResumeError('invalid_checkpoint')
 			queue.push(restoreStartedEvent(started))
 		}
@@ -1107,7 +1168,12 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					: async (_id: string, handler: () => Promise<JsonValue>) => handler()
 				const context = Object.freeze({ input: workflowInput, agents: runtime.agents, models: runtime.models, childTasks: runtime.childTasks,
 					fanOut: runtime.fanOut, signal, runId, sessionId: invocation.sessionId, metadata: invokeOptions.metadata ?? Object.freeze({}),
-					logger, telemetry, metrics, memory: memoryFacade, step: checkpointStep })
+					logger, telemetry, metrics, memory: memoryFacade, step: checkpointStep,
+					...(definition.durable === true ? { externalWait: createExternalWaitFacade({ storage,
+						durable: lease !== undefined && invokeOptions.durable !== undefined,
+						telemetry, harnessName: options.name, sessionId: invocation.sessionId, runId, workflowId: definition.id,
+						emit: persistAndQueue }) } : {}),
+				})
 				const raw = await definition.handler(context)
 				const validated = await validateSchema(definition.output, raw, { where: 'workflow_output', message: 'Workflow output validation failed.' })
 				if (!isJsonValue(validated)) throw new ValidationError('Workflow output validation failed.', { where: 'workflow_output', issues: { reason: 'non_json_workflow_output' } })
@@ -1131,7 +1197,15 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			await workspaceAttempt?.settle('succeeded')
 			await updateSessionRunCount(session)
 		} catch (error) {
-			if (error instanceof ToolApprovalPendingError) {
+			if (error instanceof ExternalWaitPendingError) {
+				if (lease) await lease.release()
+				await storage.finishRun(runId, { status: 'waiting' })
+				await workspaceAttempt?.suspend()
+				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({
+					status: 'interrupted' as const, runId, interrupt: externalWaitInterrupt(error),
+				}) })
+				await updateSessionRunCount(session)
+			} else if (error instanceof ToolApprovalPendingError) {
 				if (lease && error.preparedState) {
 					const pendingValue = JSON.parse(canonicalJson(Object.freeze({ schemaVersion: 1, rootRunId: runId, sessionId: invocation.sessionId,
 						rootTarget: Object.freeze({ kind: definition.kind, id: definition.id }), deploymentRevision: options.revision!,
@@ -3075,6 +3149,64 @@ function codePointCompare(left: string, right: string): number {
 	const b = Array.from(right, char => char.codePointAt(0)!)
 	for (let index = 0; index < Math.min(a.length, b.length); index += 1) if (a[index] !== b[index]) return a[index]! - b[index]!
 	return a.length - b.length
+}
+
+function createExternalWaitFacade(args: Readonly<{
+	storage: HarnessStorage
+	durable: boolean
+	telemetry: TelemetryShim
+	harnessName: string
+	sessionId: string
+	runId: string
+	workflowId: string
+	emit: (event: UncorrelatedExecutionEvent) => Promise<void>
+}>): Readonly<{ wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> }> {
+	return Object.freeze({ wait: async (request: ExternalWaitRequest) => {
+		if (!args.durable) throw new ExternalWaitError('External waits require a durable workflow invocation.', 'durable_required')
+		const validatedRequest = validateExternalWaitRequest(request)
+		return args.telemetry.span('harness.external_wait.wait', {
+			'harness.name': args.harnessName,
+			'harness.session.id': args.sessionId,
+			'harness.run.id': args.runId,
+			'harness.workflow.id': args.workflowId,
+			'harness.external_wait.kind': validatedRequest.kind,
+			'harness.external_wait.schema_version': validatedRequest.schemaVersion,
+			'harness.external_wait.definition_version': validatedRequest.definitionVersion,
+			'harness.external_wait.deadline_expired': Date.parse(validatedRequest.deadline) <= Date.now(),
+		}, async () => {
+			const registration = validateExternalWaitRegistration(await args.storage.registerWait({
+				...validatedRequest, runId: args.runId, sessionId: args.sessionId,
+			}))
+			assertExternalWaitSnapshotRequest(registration.snapshot, validatedRequest)
+			const readback = await args.storage.getWait(validatedRequest.waitId)
+			if (readback === undefined) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+			const snapshot = validateExternalWaitSnapshot(readback)
+			assertExternalWaitSnapshotRequest(snapshot, validatedRequest)
+			if (registration.created) await args.emit({ type: 'external_wait.requested', at: new Date().toISOString(),
+				waitId: validatedRequest.waitId, kind: validatedRequest.kind, schemaVersion: validatedRequest.schemaVersion,
+				definitionVersion: validatedRequest.definitionVersion, deadline: validatedRequest.deadline })
+			if (snapshot.status === 'waiting') {
+				await args.emit({ type: 'external_wait.waiting', at: new Date().toISOString(), waitId: snapshot.waitId,
+					kind: snapshot.kind, deadline: snapshot.deadline })
+				throw new ExternalWaitPendingError(snapshot, args.runId)
+			}
+			const resolved = asExternalWaitResolved(snapshot)
+			if (resolved === undefined) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
+			await args.emit({ type: 'external_wait.resolved', at: new Date().toISOString(), waitId: resolved.waitId,
+				kind: resolved.kind, outcome: resolved.status, deadline: resolved.deadline })
+			args.telemetry.recordCounter('harness.external_wait.resolved', 1, {
+				'harness.name': args.harnessName, 'harness.workflow.id': args.workflowId,
+				'harness.external_wait.kind': resolved.kind, 'harness.external_wait.outcome': resolved.status,
+			})
+			return resolved
+		})
+	} })
+}
+
+function externalWaitInterrupt(error: ExternalWaitPendingError): Extract<HarnessInterrupt, { type: 'external-wait' }> {
+	return Object.freeze({ type: 'external-wait', id: error.snapshot.waitId, revision: error.snapshot.createdAt,
+		kind: error.snapshot.kind, schemaVersion: error.snapshot.schemaVersion,
+		definitionVersion: error.snapshot.definitionVersion, deadline: error.snapshot.deadline })
 }
 
 /** @internal Validates and snapshots invocation options before execution. */

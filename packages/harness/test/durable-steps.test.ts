@@ -1,25 +1,39 @@
+import { createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { DurableStepError, OperationCancelledError, inMemoryHarnessStorage } from '../src/index.js'
+import { DurableStepError, InMemoryHarnessStorage, OperationCancelledError } from '../src/index.js'
+import { canonicalJson } from '../src/runtime/canonical-json.js'
 import { createDurableWorkflowContext } from '../src/runtime/steps.js'
 
+async function acquire(
+  runtime: InMemoryHarnessStorage,
+  runId: string,
+  sessionId: string,
+  workerId: string,
+  mode: 'initial' | 'resume',
+) {
+  const run = await runtime.getRun(runId)
+  if (!run || !['running', 'waiting', 'interrupted'].includes(run.status)) throw new Error('expected active durable run')
+  const checkpoint = mode === 'resume' ? await runtime.loadCheckpoint(runId) : undefined
+  const stepId = checkpoint?.stepId ?? 'initial'
+  const sequence = checkpoint?.sequence ?? null
+  const expected = { revision: run.revision, status: run.status as 'running' | 'waiting' | 'interrupted', checkpoint: { stepId, sequence } }
+  const acquisitionId = `acq_${createHash('sha256').update(canonicalJson([
+    'harness-run-acquisition-v1', mode, runId, sessionId, workerId, run.revision, run.status, stepId, sequence, null,
+  ])).digest('hex')}`
+  return runtime.acquireRun({ mode, runId, sessionId, workerId, acquisitionId, expected })
+}
+
 async function createContext(options: Parameters<typeof createDurableWorkflowContext>[2] = {}) {
-  const runtime = inMemoryHarnessStorage()
+  const runtime = new InMemoryHarnessStorage()
   await runtime.createRun({
     id: 'run-step',
     sessionId: 'session-step',
     kind: 'workflow',
     target: 'initial',
     startedAt: new Date().toISOString(),
-    status: 'running',
     input: { prompt: 'hello' },
   })
-  const lease = await runtime.acquireRun({
-    runId: 'run-step',
-    sessionId: 'session-step',
-    workerId: 'worker-step',
-    stepId: 'initial',
-    input: { prompt: 'hello' },
-  })
+  const lease = await acquire(runtime, 'run-step', 'session-step', 'worker-step', 'initial')
   return { runtime, lease, ctx: createDurableWorkflowContext(runtime, lease, options) }
 }
 
@@ -51,7 +65,7 @@ it('rejects non-serializable durable step output deterministically', async () =>
 })
 
 it('replays committed steps on resume without re-running side effects', async () => {
-  const runtime = inMemoryHarnessStorage()
+  const runtime = new InMemoryHarnessStorage()
   const start = {
     runId: 'run-replay',
     sessionId: 'session-replay',
@@ -65,12 +79,11 @@ it('replays committed steps on resume without re-running side effects', async ()
     kind: 'workflow',
     target: start.stepId,
     startedAt: new Date().toISOString(),
-    status: 'running',
     input: start.input,
   })
 
   // First attempt: run two steps, then "crash" (release the lease) after committing.
-  const lease1 = await runtime.acquireRun(start)
+  const lease1 = await acquire(runtime, start.runId, start.sessionId, start.workerId, 'initial')
   const ctx1 = createDurableWorkflowContext(runtime, lease1)
   let sideEffects = 0
   await ctx1.step('a', async () => {
@@ -85,7 +98,7 @@ it('replays committed steps on resume without re-running side effects', async ()
   await lease1.release()
 
   // Resume: a and b must replay from committed output; their fns must NOT run again.
-  const lease2 = await runtime.acquireRun(start)
+  const lease2 = await acquire(runtime, start.runId, start.sessionId, start.workerId, 'resume')
   expect(lease2.resumed).toBe(true)
   const ctx2 = createDurableWorkflowContext(runtime, lease2)
   const a = await ctx2.step('a', async () => {

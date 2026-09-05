@@ -3,7 +3,7 @@ import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import type { HarnessStorage } from '../storage/types.js'
 import type { DurableRunLease, RunCheckpoint } from '../storage/execution.js'
 import { abortError } from './abort.js'
-import type { RunOutcome } from '../harness/defineHarness.js'
+import type { RunOutcome } from './outcomes.js'
 import type { SuspendedAgentTurnStateV1 } from '../approvals/prepared-tool-checkpoint.js'
 import { ToolApprovalPendingError, type ToolApprovalInterrupt } from '../approvals/index.js'
 

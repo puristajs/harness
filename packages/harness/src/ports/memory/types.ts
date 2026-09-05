@@ -1,5 +1,5 @@
 import type { Logger } from '../../logger/index.js'
-import type { ContentCaptureMode } from '../../harness/defineHarness.js'
+import type { ContentCaptureMode } from '../../telemetry/index.js'
 import type { HarnessIdentity } from '../../identity/index.js'
 import type { JsonValue } from '../../models/json.js'
 import type { Metrics, TelemetryShim } from '../../telemetry/index.js'

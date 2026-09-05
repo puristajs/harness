@@ -3,7 +3,7 @@ import type { JsonValue } from '../models/json.js'
 import type { TokenUsage } from '../ports/model-provider.js'
 import type { FeedbackRecord, FeedbackTarget } from '../ports/feedback.js'
 import type { TelemetryShim } from '../telemetry/index.js'
-import type { TelemetryOptions } from '../harness/defineHarness.js'
+import type { TelemetryOptions } from '../telemetry/index.js'
 
 export interface EvaluationCase<I = unknown, Assessment = unknown> {
   readonly id: string

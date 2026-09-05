@@ -7,11 +7,11 @@ const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 const workspaceRoot = fileURLToPath(new URL('../../', import.meta.url))
 const defaultRoot = existsSync(join(workspaceRoot, 'ai-harness')) ? workspaceRoot : repositoryRoot
 export const publicBoundaryOwners = [
-  { path: 'ai-harness/packages/harness/src/harness/defineHarness.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
-  { path: 'ai-harness/packages/harness/src/agents/index.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
-  { path: 'ai-harness/packages/harness/src/agents/tool-execution.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
+  { path: 'ai-harness/packages/harness/src/definitions/agent.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
+  { path: 'ai-harness/packages/harness/src/definitions/tool.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
+  { path: 'ai-harness/packages/harness/src/definitions/workflow.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
+  { path: 'ai-harness/packages/harness/src/agents/agent-tool-pipeline.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness/src/workflows/index.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
-  { path: 'ai-harness/packages/harness/src/sessions/index.ts', rules: ['legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness-guardrails/src/action.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness-guardrails/src/rails.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'compatibility-path', 'placeholder-conformance'] },
   { path: 'ai-harness/packages/harness-guardrails/src/sensitive-data.ts', rules: ['legacy-zod-generic', 'legacy-zod-infer', 'direct-user-schema-parser', 'runtime-zod-json-schema', 'validator-json-cast', 'compatibility-path', 'placeholder-conformance'] },

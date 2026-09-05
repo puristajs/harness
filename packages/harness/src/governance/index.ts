@@ -11,23 +11,12 @@ import {
   PermissionDeniedError,
   PolicyDeniedError,
 } from '../errors/index.js'
-import { isSelectedGovernanceTool } from '../harness/defineHarness.js'
-import type {
-  AgentPermissions,
-  GovernanceConfig,
-  GovernanceContext,
-  GovernanceEffect,
-  GovernanceExposureEffect,
-  GovernancePolicyEvaluator,
-  PermissionMode,
-  PermissionPolicy,
-  RunEvent,
-} from '../harness/defineHarness.js'
+import type { AgentPermissions, PermissionMode, PermissionPolicy } from '../agents/guardrails.js'
 import type { JsonValue } from '../models/json.js'
 import { governancePolicyResultSchema, permissionPolicySchema } from '../decisions/schemas.js'
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import type { AgentEventSink } from '../definitions/execution-events.js'
-import type { GovernanceConfig as V4GovernanceConfig } from './types.js'
+import type { GovernanceConfig, GovernanceContext, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator } from './types.js'
 
 type Invocation = {
   readonly agentId: string
@@ -45,8 +34,7 @@ type Invocation = {
   readonly telemetry?: TelemetryShim
   readonly deadline?: number
   readonly metadata: Readonly<Record<string, JsonValue>>
-  readonly emitEvent?: (event: RunEvent) => Promise<void>
-  readonly eventSink?: AgentEventSink
+  readonly eventSink: AgentEventSink
 }
 
 type ToolInvocation = Invocation & {
@@ -54,7 +42,7 @@ type ToolInvocation = Invocation & {
   readonly callId: string
   readonly input: JsonValue
   readonly permissions?: AgentPermissions
-  readonly governance?: GovernanceConfig | V4GovernanceConfig<any>
+  readonly governance?: GovernanceConfig
 }
 
 type Evaluated = { readonly effect: GovernanceEffect; readonly evidence: DecisionEvidence; readonly engine: string }
@@ -209,7 +197,7 @@ export async function enforceToolGovernance(
 
 /** Applies fail-closed tool exposure rules before one model step. */
 export async function applyToolExposure(
-  invocation: Invocation & { readonly governance?: GovernanceConfig | V4GovernanceConfig<any>; readonly tools: readonly { name: string }[] },
+  invocation: Invocation & { readonly governance?: GovernanceConfig; readonly tools: readonly { name: string }[] },
 ): Promise<string[]> {
   const governance = invocation.governance
   const exposure = governance?.exposure
@@ -636,31 +624,17 @@ async function safeTerminalEvent(
   approvalId: string,
   outcome: 'approved' | 'rejected',
 ): Promise<void> {
-  if (invocation.eventSink) {
-    await invocation.eventSink.emit({
+  await invocation.eventSink.emit({
       type: 'approval.responded', agentId: invocation.agentId, invocationId: invocation.invocationId,
       toolId: invocation.toolId, callId: invocation.callId, step: invocation.step, approvalId,
       approved: outcome === 'approved',
-    })
-    return
-  }
-  await invocation.emitEvent?.({
-    type: 'approval.finished',
-    runId: invocation.runId,
-    agentId: invocation.agentId,
-    invocationId: invocation.invocationId,
-    toolId: invocation.toolId,
-    callId: invocation.callId,
-    step: invocation.step,
-    approvalId,
-    outcome,
   })
 }
 
 async function emitAgentEvent(invocation: Invocation, event: Parameters<AgentEventSink['emit']>[0]): Promise<void> {
-  if (invocation.eventSink) {
-    await invocation.eventSink.emit(event)
-    return
-  }
-  await invocation.emitEvent?.({ ...event, runId: invocation.runId } as RunEvent)
+  await invocation.eventSink.emit(event)
+}
+
+function isSelectedGovernanceTool(toolId: string, tools: readonly string[] | undefined): boolean {
+  return tools === undefined || tools.includes(toolId)
 }

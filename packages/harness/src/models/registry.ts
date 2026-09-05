@@ -70,16 +70,6 @@ export interface ModelInvokeContext {
   workflowId?: string
   /** Agent id when the model call belongs to an agent run. */
   agentId?: string
-  /**
-   * Mirrors this call's supported result events into the enclosing session
-   * diagnostic `RunEvent` observation stream. Defaults to `false`.
-   *
-   * `textStream(...)` and `objectStream(...)` emit consumed stream chunks;
-   * `object(...)`, `embed(...)`, and `rerank(...)` emit their respective
-   * completion events. The surrounding session supplies the run identity, so
-   * callers can opt in without constructing or emitting events themselves.
-   */
-  emitRunEvents?: boolean
   /** Stable base key used when publishing generated artifacts. */
   artifactIdempotencyKey?: string
 }

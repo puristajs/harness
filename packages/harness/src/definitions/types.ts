@@ -14,7 +14,7 @@ import type {
 import type { SandboxPolicy } from '../sandbox/ownership.js'
 import type { Infer, InferIn, ModelSchema, Schema } from '../schema/index.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
-import type { AgentGuardrailsBinding, AgentPermissions } from '../harness/defineHarness.js'
+import type { AgentGuardrailsBinding, AgentPermissions } from '../agents/guardrails.js'
 import type { AgentGovernanceInput, GovernanceConfig } from '../governance/types.js'
 import type { DurableStepOptions } from '../runtime/steps.js'
 import type { ExternalWaitRequest, ExternalWaitResolved } from '../storage/external-wait.js'

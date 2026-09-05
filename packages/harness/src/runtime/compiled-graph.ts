@@ -1,5 +1,5 @@
 import { HarnessConfigError } from '../errors/index.js'
-import { agentGuardrailsBinding } from '../harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../agents/guardrails.js'
 import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
 import {
 	getDefinitionIdentity,

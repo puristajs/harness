@@ -1,6 +1,6 @@
 import type { Logger } from '../logger/index.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
-import type { ContentCaptureMode } from '../harness/defineHarness.js'
+import type { ContentCaptureMode } from '../telemetry/index.js'
 
 /** Harness-level context inherited by adapters registered with the harness. */
 export interface HarnessAdapterContext {

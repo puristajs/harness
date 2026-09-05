@@ -18,8 +18,7 @@ import { createHarnessChildTargetInterruption, isHarnessChildTargetInterruption,
 import type { HarnessStorage } from '../storage/types.js'
 import type { SandboxPolicy } from '../sandbox/ownership.js'
 import type { WorkflowChildCallCheckpointV1, WorkflowChildCallStoredOutcomeV1 } from '../storage/execution.js'
-import { validateSchema } from '../schema/validation.js'
-import type { ModelSchema, Schema } from '../schema/index.js'
+import type { ModelSchema } from '../schema/index.js'
 
 type CallOperation = 'agent_run' | 'child_task_start'
 type CallTuple = Readonly<{ operation: CallOperation; targetId: string; input: JsonValue; inputCanonical: string; idempotencyKey: string | null; optionsCanonical: string }>
@@ -736,20 +735,3 @@ function validTimestamp(value: unknown): value is string {
 function opaqueId(kind: string, values: readonly JsonValue[]): string { return `${kind}_${digest([`harness.child-${kind}.v1`, ...values])}` }
 function digest(value: unknown): string { return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex') }
 function isPlainRecord(value: unknown): value is Record<string, unknown> { if (value === null || typeof value !== 'object' || Array.isArray(value)) return false; const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null }
-
-// Retained v3 validation entry point until H4-008 removes the old session assembly.
-export async function runWorkflow<S extends import('../harness/defineHarness.js').BuilderState>(args: {
-	workflowId: string
-	workflow: import('../harness/defineHarness.js').WorkflowDefinition<S, any, any>
-	input: unknown
-	ctx: Omit<import('../harness/defineHarness.js').WorkflowContext<S, unknown, unknown>, 'input'>
-	opts?: import('../harness/defineHarness.js').InvokeOptions
-}): Promise<unknown> {
-	if (args.ctx.signal.aborted) throw new OperationCancelledError('Workflow execution was cancelled.', { scope: 'workflow' })
-	const inputSchema = args.workflow.input ?? (await import('zod')).z.string()
-	const parsed = await validateWorkflowSchema(inputSchema, args.input, 'workflow_input', args.ctx.signal)
-	const output = await withAbortSignal(args.ctx.signal, 'workflow', 'Workflow execution was cancelled.', () => args.workflow.handler({ ...args.ctx, input: parsed }))
-	const outputSchema = args.workflow.output ?? (await import('zod')).z.string()
-	return validateWorkflowSchema(outputSchema, output, 'workflow_output', args.ctx.signal)
-}
-function validateWorkflowSchema(schema: Schema<any, any>, candidate: unknown, where: 'workflow_input' | 'workflow_output', signal: AbortSignal): Promise<JsonValue> { return validateSchema(schema, candidate, { where, message: where === 'workflow_input' ? 'Workflow input validation failed.' : 'Workflow output validation failed.', assertNotAborted: () => { if (signal.aborted) throw abortError(signal, 'workflow', 'Workflow execution was cancelled.') } }) }

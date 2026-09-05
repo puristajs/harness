@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { HarnessConfigError } from '../errors/index.js'
 import { agentPermissionsSchema } from '../decisions/schemas.js'
-import { agentGuardrailsBinding, type AgentGuardrailsBinding, type AgentPermissions } from '../harness/defineHarness.js'
+import { agentGuardrailsBinding, type AgentGuardrailsBinding, type AgentPermissions } from '../agents/guardrails.js'
 import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
 import type { Infer, JsonSchemaBoundary, ModelSchema } from '../schema/index.js'
 import {

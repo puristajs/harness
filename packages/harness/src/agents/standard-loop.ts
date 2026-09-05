@@ -8,7 +8,7 @@ import type { AgentPipelineEvent, AgentEventSink } from '../definitions/executio
 import { validateAgentPromptResult } from '../definitions/agent.js'
 import type { AnyAgentDefinition } from '../definitions/types.js'
 import { AgentLoopBudgetError, DecisionBlockedError, OperationTimeoutError, ValidationError, serializeError } from '../errors/index.js'
-import { agentGuardrailsBinding, type AgentExecutionInterceptor, type AgentExecutionInterceptorContext, type AgentModelResponse, type BuilderState } from '../harness/defineHarness.js'
+import { agentGuardrailsBinding, type AgentExecutionInterceptor, type AgentExecutionInterceptorContext, type AgentModelResponse } from './guardrails.js'
 import { isJsonValue, type JsonValue } from '../models/json.js'
 import { resolveModelHandleCallOptions, type ModelHandle } from '../models/registry.js'
 import { finishReasonSchema, tokenUsageSchema } from '../ports/model-provider.js'
@@ -535,7 +535,7 @@ function freezeCallForCursor(call: ToolCallSpec): ToolCallSpec {
 	return Object.freeze({ id: call.id, name: call.name, arguments: cloneJson(call.arguments) })
 }
 function modelToolSpecs(bindings: Readonly<Record<string, AgentExecutableBinding>>, hasSkills: boolean): ModelToolSpec[] { return Object.values(bindings).filter(binding => binding.id !== 'read_skill' || hasSkills).map(binding => ({ name: binding.id, description: binding.description, parameters: projectModelSchema(binding.input, 'tool_input', binding.id) })) }
-function callContext(options: ExecuteStandardAgentOptions, _step: number, streamId?: string): HarnessModelCallContext { return { harnessName: options.invocation.harnessName, sessionId: options.invocation.sessionId, runId: options.invocation.runId, agentId: options.agent.id, modelAlias: options.modelAlias, emitRunEvents: false, ...(streamId === undefined ? {} : { streamId }) } }
+function callContext(options: ExecuteStandardAgentOptions, _step: number, streamId?: string): HarnessModelCallContext { return { harnessName: options.invocation.harnessName, sessionId: options.invocation.sessionId, runId: options.invocation.runId, agentId: options.agent.id, modelAlias: options.modelAlias, ...(streamId === undefined ? {} : { streamId }) } }
 function malformedStream(): ValidationError { return new ValidationError('Model stream must contain exactly one terminal finish.', { where: 'model_response', issues: { reason: 'invalid_stream_finish' } }) }
 function malformedResponse(): ValidationError { return new ValidationError('Model response is malformed.', { where: 'model_response', issues: { reason: 'invalid_model_response' } }) }
 async function emitTerminalOutput(options: ExecuteStandardAgentOptions, id: string | undefined, output: JsonValue): Promise<void> { const streamId = id ?? randomUUID(); if (typeof output === 'string' && options.agent.contract.updates === 'text-delta') await options.sink.emit({ type: 'output.text.delta', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, delta: output }); else await options.sink.emit({ type: 'output.object.snapshot', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, value: output }) }
@@ -547,7 +547,7 @@ function hookContext<Extra extends object>(
 	step: number,
 	decision: Readonly<{ signal: AbortSignal; deadline: number }>,
 	extra: Extra,
-): AgentExecutionInterceptorContext<BuilderState, JsonValue> & Extra {
+): AgentExecutionInterceptorContext<JsonValue> & Extra {
 	return {
 		agentInput: input,
 		interceptorId: interceptor.id,

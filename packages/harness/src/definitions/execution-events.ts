@@ -1,11 +1,14 @@
 import type { DecisionEvidence } from '../decisions/types.js'
-import type { ChildTaskContextPolicy, ChildTaskMode, GovernanceEffect, GovernanceExposureEffect, HarnessInterrupt, RunOutcome } from '../harness/defineHarness.js'
+import type { ChildTaskContextPolicy, ChildTaskMode } from './types.js'
+import type { GovernanceEffect, GovernanceExposureEffect } from '../governance/types.js'
+import type { HarnessInterrupt, RunOutcome } from '../runtime/outcomes.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message, SerializedError } from '../models/state.js'
 import type { ArtifactReference } from '../ports/artifact-store.js'
 import type { FinishReason, TokenUsage } from '../ports/model-provider.js'
 import type { ExternalWaitOutcome } from '../storage/external-wait.js'
 
+/** Ordered inventory of every event discriminator emitted by Harness v4. */
 export const harnessExecutionEventTypesV1 = Object.freeze([
 	'run.started', 'run.finished', 'agent.started', 'agent.finished', 'model.message', 'model.completed',
 	'model.embedding.completed', 'model.rerank.completed', 'output.text.delta', 'output.object.snapshot',
@@ -14,7 +17,16 @@ export const harnessExecutionEventTypesV1 = Object.freeze([
 	'external_wait.requested', 'external_wait.waiting', 'external_wait.resolved', 'fanout.started',
 	'fanout.finished', 'child_task.started', 'child_task.settled', 'stream.overflow',
 ] as const)
+/** Event discriminator accepted by the Harness v4 execution protocol. */
 export type HarnessExecutionEventType = typeof harnessExecutionEventTypesV1[number]
+/**
+ * Identity and nesting fields shared by every execution event.
+ *
+ * @example
+ * ```ts
+ * const isRootEvent = (event: ExecutionEventCorrelation) => event.parentRunId === undefined
+ * ```
+ */
 export type ExecutionEventCorrelation = Readonly<{
 	readonly eventId: string
 	readonly sequence: number
@@ -55,6 +67,17 @@ type EventBody<Output, Interrupt> =
 	| Readonly<{ type: 'child_task.settled'; taskId: string; at: string; parentRunId: string; workflowId: string; agentId: string; status: 'succeeded' | 'failed' | 'cancelled'; error?: SerializedError }>
 	| Readonly<{ type: 'stream.overflow'; at: string; dropped: number }>
 
+/**
+ * One provider-neutral event emitted during a Harness target invocation.
+ * Narrow on `type` before accessing the event-specific payload.
+ *
+ * @example
+ * ```ts
+ * for await (const event of stream) {
+ *   if (event.type === 'output.text.delta') process.stdout.write(event.delta)
+ * }
+ * ```
+ */
 export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> = ExecutionEventCorrelation & EventBody<Output, Interrupt>
 
 /**

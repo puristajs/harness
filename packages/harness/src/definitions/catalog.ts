@@ -145,6 +145,12 @@ export type CatalogViewForRoots<
 /**
  * Packages immutable definitions in exact readonly id-keyed maps.
  * Dependencies are collected recursively by hidden identity.
+ *
+ * @example
+ * ```ts
+ * const catalog = defineCatalog('support', { agents: [supportAgent] })
+ * const harness = defineHarness({ name: 'app' }).use(catalog)
+ * ```
  */
 export function defineCatalog<
 	const Id extends string,

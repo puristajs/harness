@@ -1,13 +1,9 @@
 import { expect, it } from 'vitest'
 import {
-  InMemoryHarnessStorage,
-  ModelError,
-  defineHarness,
   projectToolResults,
   validateContextProjection,
 } from '../src/index.js'
-import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import type { ModelMessage, ObjectRequest, ObjectResponse } from '../src/index.js'
+import type { ModelMessage } from '../src/index.js'
 
 it('prunes oversized UTF-8 tool results deterministically without breaking the tool-call id', () => {
   const messages: ModelMessage[] = [{ role: 'tool', toolCallId: 'call-1', content: 'é'.repeat(80) }]
@@ -44,61 +40,4 @@ it('does not treat tool-controlled marker text as an existing projection', () =>
   const [projected] = projectToolResults([original], policy)
   expect(projected).not.toBe(original)
   expect(Buffer.byteLength(projected?.content ?? '', 'utf8')).toBeLessThanOrEqual(policy.toolResultPruner.maxBytes)
-})
-
-class ContextLengthProvider extends FakeModelProvider {
-  private failed = false
-
-  override async object<T extends import('../src/index.js').JsonValue = import('../src/index.js').JsonValue>(
-    request: ObjectRequest<T>,
-  ): Promise<ObjectResponse<T>> {
-    if (!this.failed) {
-      this.failed = true
-      this.requests.push(request)
-      throw new ModelError('Context window exceeded.', {
-        provider: 'test',
-        model: 'test',
-        method: 'object',
-        reason: 'context_length_exceeded',
-      })
-    }
-    return await super.object(request)
-  }
-}
-
-it('retries exactly once with a transient projected request after a context-length failure', async () => {
-  const provider = new ContextLengthProvider()
-  const storage = new InMemoryHarnessStorage()
-  provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-  const harness = defineHarness()
-    .storage(storage)
-    .defaults({ contextProjection: { toolResultPruner: { maxBytes: 96, headBytes: 12, tailBytes: 12 } } })
-    .models({ fast: { provider, model: 'fake', capabilities: ['object'] } })
-    .agent('answer', { model: 'fast', instructions: 'Answer.', builtinTools: false })
-    .build()
-  const session = await harness.getSession('projection')
-  await session.replaceHistory([
-    {
-      role: 'assistant',
-      content: '',
-      toolCalls: [{ id: 'call-1', name: 'previous_lookup', arguments: {} }],
-    },
-    {
-      role: 'tool',
-      content: '',
-      toolResults: [{ toolCallId: 'call-1', output: { text: 'é'.repeat(80) } }],
-    },
-  ])
-
-  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'done' })
-  expect(provider.requests).toHaveLength(2)
-  const firstTool = provider.requests[0]?.messages.find((message) => message.role === 'tool')
-  const retryTool = provider.requests[1]?.messages.find((message) => message.role === 'tool')
-  expect(firstTool?.content).not.toContain('UTF-8 bytes omitted')
-  expect(retryTool?.content).toContain('UTF-8 bytes omitted')
-  expect((await session.history.list()).find((message) => message.role === 'tool')?.toolResults?.[0]?.output).toEqual({
-    text: 'é'.repeat(80),
-  })
-  const run = (await storage.listRuns('projection'))[0]!
-  expect(await session.getRunSummary(run.id)).toMatchObject({ modelCalls: 1 })
 })

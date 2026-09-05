@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { HarnessConfigError } from '../src/errors/index.js'
-import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import {
 	defineAgent,
 	defineMcpServer,

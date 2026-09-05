@@ -1,5 +1,5 @@
 import { HarnessConfigError } from '../errors/index.js'
-import type { TelemetryOptions } from '../harness/defineHarness.js'
+import type { TelemetryOptions } from '../telemetry/index.js'
 import type { Logger } from '../logger/index.js'
 import { validateContextProjection } from '../context-projection.js'
 import { validateModelRetrySetting } from '../models/retry-policy.js'
@@ -107,6 +107,17 @@ export type HarnessRuntimeBindingFields<
 			}>
 		>
 
+/**
+ * Exact runtime bindings required by a compiled Harness definition.
+ * Required providers and adapters are inferred from `definition.requirements`.
+ *
+ * @example
+ * ```ts
+ * const config: HarnessInstanceConfig<typeof definition.requirements> = {
+ *   model: { provider, model: 'gpt-5' },
+ * }
+ * ```
+ */
 export type HarnessInstanceConfig<
 	Requirements extends RuntimeRequirements,
 	ConfiguredGroups extends readonly string[] = readonly [],

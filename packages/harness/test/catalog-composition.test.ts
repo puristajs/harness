@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { createHash } from 'node:crypto'
 
 import { HarnessConfigError, OperationCancelledError } from '../src/errors/index.js'
-import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import { defineAgent } from '../src/definitions/agent.js'
 import { defineCatalog } from '../src/definitions/catalog.js'
 import { defineHarness } from '../src/definitions/harness.js'
@@ -642,7 +642,7 @@ describe('catalog composition and graph compilation', () => {
 		await instance.close()
 	})
 
-	it('restarts from a durable accepted-model cursor without repeating the provider turn', async () => {
+	it('rejects a forged post-approval cursor that no longer owns its decision set', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueObject({ object: '', toolCalls: [{ id: 'cursor-call', name: 'bash', arguments: 'input' }],
@@ -694,11 +694,13 @@ describe('catalog composition and graph compilation', () => {
 		const resume = { type: 'tool-approval', runId: run.id, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'cursor-resume-event', decisions } as const
 
-		await expect(session.agents.cursorRestart.run('start', { resume })).resolves.toEqual({ status: 'completed', runId: run.id, output: 'from durable cursor' })
+		await expect(session.agents.cursorRestart.run('start', { resume })).rejects.toMatchObject({
+			code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' },
+		})
 		expect(provider.requests).toHaveLength(1)
-		expect(afterModel).toBe(2)
+		expect(afterModel).toBe(1)
 		expect((await storage.listEvents(run.id)).filter(event => event.type === 'model.completed')).toHaveLength(2)
-		expect(await storage.loadCheckpoint(run.id, 'harness:interrupt:v1')).toBeUndefined()
+		expect(await storage.loadCheckpoint(run.id, 'harness:interrupt:v1')).toBeDefined()
 		await session.destroy()
 		await instance.close()
 	})

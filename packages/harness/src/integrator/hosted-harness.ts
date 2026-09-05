@@ -33,7 +33,7 @@ import {
 	createTrustedHostedInvocationEnvironment, instantiateHarnessRuntime,
 	normalizeInvokeOptions, normalizeToolApprovalResume, type InvokeOptions,
 } from '../runtime/standalone-instance.js'
-import type { RunOutcome } from '../harness/defineHarness.js'
+import type { RunOutcome } from '../runtime/outcomes.js'
 import type { RuntimeRequirements } from '../runtime/runtime-requirements.js'
 import type { CompiledDefinitionGraph } from '../runtime/compiled-graph.js'
 import {

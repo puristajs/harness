@@ -9,10 +9,20 @@ export {
   HarnessConfigError,
   ValidationError,
   ModelAdmissionRejectedError,
+  AgentAdmissionRejectedError,
   PermissionDeniedError,
   PolicyDeniedError,
   DecisionBlockedError,
   DecisionEvaluationError,
+  ApprovalResumeError,
+  WorkflowCallReplayConflictError,
+  WorkflowAgentCallBudgetError,
+  WorkflowChildTargetError,
+  HostNestedTargetError,
+  HostNestedTargetReplayConflictError,
+  HarnessTargetRouteReceiptMismatchError,
+  ChildTaskConflictError,
+  ChildTaskStateError,
   SandboxError,
   SandboxNoExecutorError,
   SandboxPermissionDeniedError,
@@ -130,6 +140,7 @@ export type {
   ModelAdmissionOperation,
   ModelAdmissionRequest,
 } from './ports/model-admission.js'
+export type { AgentAdmission, AgentAdmissionLease, AgentAdmissionRequest } from './ports/agent-admission.js'
 
 // Shared model adapter helpers (consumed by first-party provider packages)
 export {
@@ -150,9 +161,6 @@ export type {
   AdapterCapabilities,
   AdapterCapability,
   AdapterInspection,
-  HarnessInspection,
-  HarnessModuleContribution,
-  HarnessModuleInspection,
 } from './ports/capabilities.js'
 export type { HarnessAdapterContext, HarnessContextConfigurable } from './ports/harness-context.js'
 
@@ -163,7 +171,13 @@ export { isJsonValue } from './models/json.js'
 export type { JsonValue } from './models/json.js'
 export type { Infer, InferIn, ModelSchema, Schema } from './schema/index.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
-export type { ExecutionEvent, ExecutionEventCorrelation, HarnessTargetStream } from './definitions/execution-events.js'
+export { harnessExecutionEventTypesV1 } from './definitions/execution-events.js'
+export type {
+  ExecutionEvent,
+  ExecutionEventCorrelation,
+  HarnessExecutionEventType,
+  HarnessTargetStream,
+} from './definitions/execution-events.js'
 export type {
   ToolApprovalDecision,
   ToolApprovalInterrupt,
@@ -442,16 +456,16 @@ export type {
   EvaluationTrial,
 } from './eval/index.js'
 
-// Builder, harness, session, and handler context types
-export { agentGuardrailsBinding, defineHarness, defineHarnessModule } from './harness/defineHarness.js'
+// Composable v4 definitions and runtime
+export { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow } from './definitions/index.js'
+export { defineCatalog } from './definitions/catalog.js'
+export { defineHarness } from './definitions/harness.js'
+export { agentGuardrailsBinding } from './agents/guardrails.js'
+export { builtInTools } from './tools/index.js'
 export { agentExecutionRequirementsSchema } from './harness/agent-requirements.js'
 export type { AgentExecutionRequirements } from './harness/agent-requirements.js'
 export type {
-  AgentContext,
-  AgentContextMinimal,
   AgentGuardrailsBinding,
-  AgentDefinition,
-  AgentDefinitionCommon,
   AgentAfterModelInterceptorContext,
   AgentAfterToolInterceptorContext,
   AgentBeforeInputInterceptorContext,
@@ -465,18 +479,22 @@ export type {
   AgentExecutionInterceptorContext,
   AgentModelRequest,
   AgentModelResponse,
-  AgentInput,
-  AgentInvoker,
-  AgentOutput,
   AgentPermissions,
-  AgentPrepareStep,
-  AgentPrepareStepContext,
-  AgentPrepareStepResult,
-  AgentStopWhen,
-  AgentStopWhenContext,
-  AgentsConfig,
-  BuilderState,
-  BuiltinToolName,
+  PermissionMode,
+  PermissionPolicy,
+} from './agents/guardrails.js'
+export type {
+  AgentDefinition,
+  AgentInputCapability,
+  AgentLoopOptions,
+  AgentMemoryPolicy,
+  AgentOptions,
+  AgentPrompt,
+  AgentSubagentMap,
+  AgentSubagentReference,
+  AnyAgentDefinition,
+  AnyToolDefinition,
+  BuiltInToolDefinition,
   ChildTaskContextPolicy,
   ChildTaskDescriptor,
   ChildTaskHandle,
@@ -485,12 +503,51 @@ export type {
   ChildTaskStatus,
   ContinuableChildTaskHandle,
   ContinuableChildTaskStartOptions,
-  ContentCaptureMode,
-  ConversationHistory,
-  DelegationDefaults,
-  DiscoveredSkills,
-  DiscoverSkillsOptions,
-  DurableInvokeOptions,
+  DefinitionInference,
+  HarnessExecutionMode,
+  HarnessInterruptKind,
+  HarnessOutputUpdateKind,
+  HarnessTargetContract,
+  HarnessTargetKind,
+  HostToolDefinition,
+  McpServerDefinition,
+  McpServerOptions,
+  McpToolDefinition,
+  McpToolOptions,
+  ModelAliasId,
+  SandboxCapabilityId,
+  SkillDefinition,
+  SkillOptions,
+  SkillRuntimeId,
+  ToolDefinition,
+  ToolHandlerContext,
+  ToolHandlerContextBase,
+  ToolMemoryFacade,
+  ToolOptions,
+  ToolRequirements,
+  ToolSandboxFacade,
+  UserModelMessage,
+  WorkflowAgentMap,
+  WorkflowChildTasks,
+  WorkflowContext,
+  WorkflowDefinition,
+  WorkflowModelMap,
+  WorkflowModelRequirement,
+  WorkflowOptions,
+} from './definitions/index.js'
+export type {
+  CatalogOptions,
+  HarnessCatalogDefinition,
+  HarnessCatalogView,
+  HarnessContracts,
+  HarnessInfer,
+  HarnessTargetInferMap,
+} from './definitions/catalog.js'
+export type { HarnessDefinition, HarnessInspection, HarnessOptions, HarnessTargetInspection } from './definitions/harness.js'
+export type {
+  AgentGovernanceAuthoringConfig,
+  AgentGovernanceInput,
+  AgentModelToolMap,
   GovernanceAuditRecord,
   GovernanceAuditSink,
   GovernanceConfig,
@@ -500,77 +557,38 @@ export type {
   GovernanceEffect,
   GovernanceExposureEffect,
   GovernanceMode,
-  GovernancePolicyDefinition,
   GovernancePolicyEvaluator,
+  GovernanceToolDefinition,
   GovernanceToolExposureContext,
   GovernanceToolExposurePolicy,
   GovernanceToolExposureRule,
-  GovernanceToolExposureRuleForTool,
-  GovernanceToolId,
-  Harness,
-  HarnessBuilder,
-  HarnessContributionCatalog,
-  HarnessDefinition,
-  HarnessDefaults,
-  HarnessEntryContract,
-  HarnessTargetContract,
-  HarnessTargetContracts,
-  HarnessInstanceConfig,
-  HarnessHostToolBindings,
-  HarnessInterrupt,
-  HarnessModule,
-  HarnessModuleBuilder,
-  HarnessOptions,
-  InferTypes,
-  InvokeOptions,
-  McpAuth,
-  McpHttpToolDefinition,
-  McpPluginProvenance,
-  McpStdioToolDefinition,
-  ModelHandles,
-  ModelRequirement,
-  ModelRuntimeBinding,
-  ModelTypesConfig,
-  ModelsConfig,
+  GovernanceToolMap,
   NativePolicyDefinition,
   NativePolicyRule,
   NativePolicyRuleForTool,
-  PermissionMode,
-  PermissionPolicy,
-  OutputUpdateMode,
+  ResolvedAgentGovernance,
+} from './governance/types.js'
+export type { BuiltinToolName } from './tools/index.js'
+export type { ContentCaptureMode, TelemetryFlavor, TelemetryOptions } from './telemetry/index.js'
+export type { HarnessInterrupt, RunOutcome } from './runtime/outcomes.js'
+export type { ConversationHistory, RunSummary, SessionChildTasks } from './runtime/session-contracts.js'
+export type {
+  DurableInvokeOptions,
+  HarnessInstance,
+  HarnessSession,
+  HarnessSessionOptions,
+  HarnessTargetInvoker,
+  InvokeOptions,
+} from './runtime/standalone-instance.js'
+export type { HarnessInstanceConfig, McpBinding, ModelRuntimeBinding } from './runtime/instance-config.js'
+export type { HarnessExecutionDefaults, ResolvedHarnessExecutionDefaults } from './runtime/execution-defaults.js'
+export type { RuntimeRequirements, RuntimeRequirementsFor } from './runtime/runtime-requirements.js'
+export type {
+  DiscoveredSkills,
+  DiscoveredSkillSource,
+  DiscoverSkillsOptions,
   ResolvedSkill,
-  RunEvent,
-  RunOutcome,
-  RunSummary,
-  HarnessRuntimeModels,
-  SerializedError,
-  Session,
-  SessionChildTasks,
-  SkillDefinition,
   SkillDiagnostic,
   SkillFrontmatter,
-  SkillsConfig,
   SkillValidationMode,
-  TelemetryFlavor,
-  TelemetryOptions,
-  ToolDefinition,
-  AuthoredToolDefinition,
-  AuthoredToolsConfig,
-  HostToolBinding,
-  HostToolDefinition,
-  HostToolHandlerContext,
-  ToolHandlerContext,
-  ToolInput,
-  ToolsConfig,
-  TsToolDefinition,
-  WorkflowAgentInvokeOptions,
-  WorkflowChildTasks,
-  WorkflowContext,
-  WorkflowDefinition,
-  WorkflowDelegationPolicy,
-  WorkflowFanOutOptions,
-  WorkflowInput,
-  WorkflowInvoker,
-  WorkflowOutput,
-  WorkflowsConfig,
-} from './harness/defineHarness.js'
+} from './skills/index.js'

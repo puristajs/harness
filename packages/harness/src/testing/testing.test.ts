@@ -18,7 +18,7 @@ import type {
   TokenUsage,
 } from '../ports/model-provider.js'
 import type { JsonValue } from '../models/json.js'
-import type { RunEvent } from '../harness/defineHarness.js'
+import type { ExecutionEvent } from '../definitions/execution-events.js'
 
 import { FakeLogger } from './fakeLogger.js'
 import { FakeSandbox } from './fakeSandbox.js'
@@ -185,8 +185,8 @@ describe('FakeModelProvider strict fixtures', () => {
 
 describe('FakeSandbox executor', () => {
   it('advertises capabilities matching the executor flag', () => {
-    expect(new FakeSandbox().capabilities).toEqual(['sandbox.fs', 'sandbox.text_search', 'sandbox.exec'])
-    expect(new FakeSandbox({ executor: 'unavailable' }).capabilities).toEqual(['sandbox.fs', 'sandbox.text_search'])
+    expect(new FakeSandbox().capabilities).toEqual(['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.readonly_mount'])
+    expect(new FakeSandbox({ executor: 'unavailable' }).capabilities).toEqual(['sandbox.fs', 'sandbox.text_search', 'sandbox.readonly_mount'])
   })
 
   it('default exec echoes deterministically and fails unknown commands', async () => {
@@ -212,9 +212,9 @@ describe('FakeSandbox executor', () => {
 
 describe('recordEvents', () => {
   it('collects every event from an async iterable', async () => {
-    async function* events(): AsyncIterable<RunEvent> {
-      yield { type: 'run.started', runId: 'r1' } as unknown as RunEvent
-      yield { type: 'run.finished', runId: 'r1' } as unknown as RunEvent
+    async function* events(): AsyncIterable<ExecutionEvent> {
+      yield { type: 'run.started', eventId: 'e1', sequence: 0, runId: 'r1', at: '2026-01-01T00:00:00.000Z' }
+      yield { type: 'run.finished', eventId: 'e2', sequence: 1, runId: 'r1', at: '2026-01-01T00:00:01.000Z', outcome: { status: 'completed', runId: 'r1', output: 'ok' } }
     }
     const collected = await recordEvents(events())
     expect(collected).toHaveLength(2)

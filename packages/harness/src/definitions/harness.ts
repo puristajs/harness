@@ -155,7 +155,15 @@ export function getHarnessRuntimeBlueprint(value: unknown): HarnessRuntimeBluepr
 	return (value as { readonly [harnessRuntimeBlueprint]?: HarnessRuntimeBlueprint })[harnessRuntimeBlueprint]
 }
 
-/** Starts one immutable Harness definition without a terminal build step. */
+/**
+ * Starts one immutable Harness definition without a terminal build step.
+ *
+ * @example
+ * ```ts
+ * const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
+ * const instance = await definition.getInstance({ model: { provider, model: 'gpt-5' } })
+ * ```
+ */
 export function defineHarness<const Name extends string>(options: HarnessOptions<Name>): HarnessDefinition<EmptyCatalogView, Name> {
 	if (typeof options !== 'object' || options === null || Array.isArray(options)) throw invalidHarnessOptions()
 	assertKnownFields(options, ['name', 'revision', 'defaults'], 'harness', typeof options.name === 'string' ? options.name : '')

@@ -2,12 +2,14 @@ import { z } from 'zod'
 import { HarnessConfigError, SandboxNoExecutorError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message } from '../models/state.js'
-import type { BuiltinToolName } from '../harness/defineHarness.js'
 import type { ModelToolSpec } from '../ports/model-provider.js'
 import { isExecCapableSession, isTextSearchCapableSession, validateSandboxTextSearchRequest, type SandboxSessionBase } from '../sandbox/index.js'
 import { ulid } from '../ulid/index.js'
 import { createDefinitionIdentity, freezeDefinition } from '../definitions/identity.js'
 import type { BuiltInToolDefinition, SandboxCapabilityId } from '../definitions/types.js'
+
+/** Canonical built-in tool ids. */
+export type BuiltinToolName = 'bash' | 'read' | 'write' | 'edit' | 'glob' | 'grep' | 'list'
 
 /** Canonical built-in tool names. Custom tool ids and skill ids must not collide with these. */
 export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'list']

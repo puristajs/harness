@@ -43,6 +43,14 @@ import type {
 } from '../ports/memory.js'
 import { validateMemoryEngine } from '../ports/memory.js'
 import type { DurableWorkspacePolicy, DurableWorkspace } from '../ports/workspace.js'
+import type {
+	ChildTaskContextPolicy as CanonicalChildTaskContextPolicy,
+	ChildTaskDescriptor as CanonicalChildTaskDescriptor,
+	ChildTaskHandle as CanonicalChildTaskHandle,
+	ChildTaskMode as CanonicalChildTaskMode,
+	ChildTaskStatus as CanonicalChildTaskStatus,
+	ContinuableChildTaskHandle as CanonicalContinuableChildTaskHandle,
+} from '../definitions/types.js'
 import { validateDurableWorkspace } from '../ports/workspace.js'
 import type { ExternalWaitOutcome, ExternalWaitRequest, ExternalWaitResolved } from '../storage/external-wait.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
@@ -784,11 +792,30 @@ export interface AgentModelRequest {
 	messages: readonly ModelMessage[]
 	/** Model-visible tools for this loop iteration. */
 	tools: readonly ModelToolSpec[]
-	/** JSON Schema used to validate the final object response. */
-	schema: JsonValue
-	/** Optional provider-neutral generation options. */
+	/** JSON Schema for object/object-stream operations; absent for text operations. */
+	schema?: JsonValue
+	/** Frozen effective provider-neutral options after alias defaults and call overrides. */
 	call?: ModelCallOptions
 }
+
+/** Sanitized provider-neutral response exposed to post-model interceptors. */
+export type AgentModelResponse =
+	| Readonly<{
+		content: string
+		toolCalls: readonly ToolCallSpec[]
+		usage: import('../ports/model-provider.js').TokenUsage
+		finishReason: import('../ports/model-provider.js').FinishReason
+		outcome?: import('../ports/model-provider.js').ModelOutcome
+		providerContinuation?: import('../decisions/types.js').ProviderContinuation
+	}>
+	| Readonly<{
+		object: JsonValue
+		toolCalls: readonly ToolCallSpec[]
+		usage: import('../ports/model-provider.js').TokenUsage
+		finishReason: import('../ports/model-provider.js').FinishReason
+		outcome?: import('../ports/model-provider.js').ModelOutcome
+		providerContinuation?: import('../decisions/types.js').ProviderContinuation
+	}>
 
 /** Content-free context common to every default-loop interceptor hook. */
 export interface AgentExecutionInterceptorContext<S extends BuilderState, I>
@@ -847,11 +874,11 @@ export interface AgentBeforeModelInterceptorContext<S extends BuilderState, I>
 	request: AgentModelRequest
 }
 
-/** Model gate invoked immediately after a provider response and before run events, output validation, or tool dispatch. */
+/** Model gate invoked after the sanitized `model.completed` event and before output validation or tool dispatch. */
 export interface AgentAfterModelInterceptorContext<S extends BuilderState, I>
 	extends AgentExecutionInterceptorContext<S, I> {
 	request: AgentModelRequest
-	response: ObjectResponse<JsonValue>
+	response: AgentModelResponse
 }
 
 /** Tool gate invoked before permission/governance evaluation and before the tool side effect. */
@@ -1200,54 +1227,26 @@ export interface WorkflowFanOutOptions {
 }
 
 /** Content policy for workflow-owned child tasks. Only isolated execution ships in core. */
-export type ChildTaskContextPolicy = 'isolated'
+export type ChildTaskContextPolicy = CanonicalChildTaskContextPolicy
 
 /** Lifecycle shape for a workflow-owned child task. */
-export type ChildTaskMode = 'one_shot' | 'continuable'
+export type ChildTaskMode = CanonicalChildTaskMode
 
 /** Immutable, non-content task descriptor persisted with the task run. */
-export interface ChildTaskDescriptor {
-	readonly id: string
-	readonly parentRunId: string
-	readonly sessionId: string
-	readonly workflowId: string
-	readonly agentId: string
-	readonly modelAlias?: string
-	readonly contextPolicy: ChildTaskContextPolicy
-	readonly mode: ChildTaskMode
-	readonly createdAt: string
-}
+export type ChildTaskDescriptor = CanonicalChildTaskDescriptor
 
 /** Snapshot available to a task handle and session owner. */
-export interface ChildTaskStatus {
-	readonly descriptor: ChildTaskDescriptor
-	readonly status: 'running' | 'succeeded' | 'failed' | 'cancelled'
-	readonly finishedAt?: string
-	readonly error?: SerializedError
-}
+export type ChildTaskStatus = CanonicalChildTaskStatus
 
 /** Opaque workflow-owned handle for a single child-agent task. */
-export interface ChildTaskHandle<O> {
-	readonly id: string
-	/** Resolves with the child output or rejects with its original failure. */
-	result(): Promise<O>
-	/** Returns a content-free lifecycle snapshot. */
-	status(): Promise<ChildTaskStatus>
-	/** Idempotently requests cancellation and waits for terminal settlement. */
-	cancel(reason?: string): Promise<void>
-}
+export type ChildTaskHandle<O> = CanonicalChildTaskHandle<O>
 
 /**
  * A task whose isolated conversation and sandbox remain live between explicit
  * turns. Continuable tasks are in-process handles: they intentionally do not
  * claim cross-process recovery until a durable task-worker adapter exists.
  */
-export interface ContinuableChildTaskHandle<I, O> extends ChildTaskHandle<O> {
-	/** Queues one isolated follow-up turn after any active turn settles. */
-	send(input: I): Promise<O>
-	/** Ends the task successfully after its final queued turn has settled. */
-	close(): Promise<O | undefined>
-}
+export type ContinuableChildTaskHandle<I, O> = CanonicalContinuableChildTaskHandle<I, O>
 
 /** Start options for a workflow-owned child task. */
 export type ChildTaskStartOptions<S extends BuilderState, K extends keyof NonNullable<S['agents']>> = {

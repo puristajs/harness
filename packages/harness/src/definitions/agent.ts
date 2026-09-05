@@ -27,6 +27,7 @@ import type {
 	UserModelMessage,
 } from './types.js'
 import type { MemoryCapability } from '../ports/memory/types.js'
+import type { SandboxPolicy } from '../sandbox/ownership.js'
 import type { AgentGovernanceInput, GovernanceConfig, GovernanceDefinitionHelpers, GovernanceToolMap, ResolvedAgentGovernance } from '../governance/types.js'
 
 const defaultStringInput = z.string()
@@ -92,9 +93,10 @@ export function defineAgent<
 	const Governance extends AgentGovernanceInput<Tools, Skills, Subagents> | undefined = AgentGovernanceInput<Tools, Skills, Subagents> | undefined,
 	const Workspace extends true | undefined = undefined,
 	const Durable extends true | undefined = undefined,
+	const Sandbox extends SandboxPolicy | undefined = undefined,
 >(
 	id: Id,
-	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Governance, Workspace, Durable>
+	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Governance, Workspace, Durable, Sandbox>
 		& ([Input] extends [ModelSchema] ? Readonly<{ input: JsonSchemaBoundary<Extract<Input, ModelSchema>> }> : unknown)
 		& ([Output] extends [ModelSchema] ? Readonly<{ output: JsonSchemaBoundary<Extract<Output, ModelSchema>> }> : unknown),
 ): AgentDefinition<
@@ -108,7 +110,7 @@ export function defineAgent<
 	Capabilities,
 	ResolvedUpdates<Output>,
 	ResolvedPrompt<Input, Capabilities>,
-	Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable
+	Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 > {
 	assertDefinitionId(id, 'agent.id')
 	assertKnownFields(options, agentFields, 'agent', id)
@@ -185,7 +187,7 @@ export function defineAgent<
 	}
 	return freezeDefinition(value, identity) as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
-		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable
+		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 	>
 }
 
@@ -395,12 +397,12 @@ function snapshotPermissions(permissions: AgentPermissions | undefined, id: stri
 	return Object.freeze(snapshot) as AgentPermissions
 }
 
-function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
+function snapshotSandboxPolicy(policy: AgentOptions<any, any, any, any, any, any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
 	if (policy === undefined || policy === 'inherit' || policy === 'private') return policy
 	if (!isPlainObject(policy)) throw invalidSandbox(id)
 	assertKnownFields(policy, ['group'], 'agent.sandbox', id)
-	if (typeof policy.group !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(policy.group)) throw invalidSandbox(id)
-	return Object.freeze({ group: policy.group })
+	if (typeof policy['group'] !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(policy['group'])) throw invalidSandbox(id)
+	return Object.freeze({ group: policy['group'] })
 }
 
 function invalidSandbox(id: string): HarnessConfigError {

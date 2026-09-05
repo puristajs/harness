@@ -1,21 +1,37 @@
 import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 
-import { BaseModelProvider, defineHarness, inMemorySandbox, InMemoryHarnessStorage, ModelError } from '../src/index.js'
+import { BaseModelProvider, InMemoryHarnessStorage, ModelError } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/index.js'
 import type { JsonValue, ObjectRequest, ObjectStreamChunk, TextRequest, TextStreamChunk } from '../src/index.js'
+import { defineAgent } from '../src/definitions/agent.js'
+import { defineHarness as defineHarnessV4 } from '../src/definitions/harness.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
+
+function persistentStorage(): InMemoryHarnessStorage {
+  const storage = new InMemoryHarnessStorage()
+  const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+  Object.defineProperty(storage, 'capabilities', { value: capabilities })
+  Object.defineProperty(storage, 'info', { value: Object.freeze({ ...storage.info, capabilities }) })
+  return storage
+}
+
+async function waitForTerminalRun(storage: InMemoryHarnessStorage, sessionId: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const run = (await storage.listRuns(sessionId))[0]
+    if (run !== undefined && ['succeeded', 'failed', 'cancelled'].includes(run.status)) return
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+  }
+  throw new Error('Timed out waiting for the test run to settle.')
+}
 
 describe('run event persistence privacy', () => {
   it('redacts output content by default and keeps envelope fields outside payload', async () => {
-    const state = new InMemoryHarnessStorage()
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .storage(state)
-      .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', { input: z.string(), output: z.string(), handler: async (ctx) => `secret:${ctx.input}` })
-      .build()
+    const state = persistentStorage()
+    const workflow = defineWorkflow('wf', { input: z.string(), output: z.string(), durable: true,
+      async handler({ input }) { return `secret:${input}` },
+    })
+    const harness = await defineHarnessV4({ name: 'eventPrivacy', revision: 'v1' }).addWorkflow(workflow).getInstance({ storage: state })
 
     const session = await harness.getSession('s1')
     await session.workflows.wf.run('payload')
@@ -23,7 +39,7 @@ describe('run event persistence privacy', () => {
     const events = await state.listEvents(run.id)
 
     expect(events).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: 'run.finished', payload: { output: '[redacted]' } })]),
+      expect.arrayContaining([expect.objectContaining({ type: 'run.finished', payload: { outcome: { status: 'completed' } } })]),
     )
     expect(JSON.stringify(events)).not.toContain('secret:payload')
     expect(events.some((event) => Object.prototype.hasOwnProperty.call(event.payload as object, 'runId'))).toBe(false)
@@ -31,16 +47,12 @@ describe('run event persistence privacy', () => {
   })
 
   it('keeps persisted event content redacted even when a non-default telemetry content policy is configured', async () => {
-    const state = new InMemoryHarnessStorage()
-    const harness = defineHarness()
-      .telemetry({ contentCaptureMode: 'SPAN_AND_EVENT' })
-      .sandbox(inMemorySandbox())
-      .storage(state)
-      .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', { input: z.string(), output: z.string(), handler: async (ctx) => `secret:${ctx.input}` })
-      .build()
+    const state = persistentStorage()
+    const workflow = defineWorkflow('wf', { input: z.string(), output: z.string(), durable: true,
+      async handler({ input }) { return `secret:${input}` },
+    })
+    const harness = await defineHarnessV4({ name: 'eventPrivacyCapture', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: state, telemetry: { contentCaptureMode: 'SPAN_AND_EVENT' } })
 
     const session = await harness.getSession('s1')
     await session.workflows.wf.run('payload')
@@ -49,7 +61,7 @@ describe('run event persistence privacy', () => {
 
     expect(JSON.stringify(events)).not.toContain('secret:payload')
     expect(events).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: 'run.finished', payload: { output: '[redacted]' } })]),
+      expect.arrayContaining([expect.objectContaining({ type: 'run.finished', payload: { outcome: { status: 'completed' } } })]),
     )
   })
 })
@@ -93,47 +105,45 @@ describe('stream completion accounting', () => {
           ...(ending === 'duplicate' ? [objectFinish] : []),
           ...(ending === 'late' ? [{ kind: 'partial' as const, partial: { late: true } }] : []),
         ])
-        const storage = new InMemoryHarnessStorage()
-        const harness = defineHarness()
-          .sandbox(inMemorySandbox())
-          .storage(storage)
-          .models({ fake: { provider, model: 'fake', capabilities: ['text_stream', 'object_stream'] } })
-          .workflow('wf', {
-            input: z.string(),
-            output: z.string(),
-            handler: async (ctx) => {
-              const request = { messages: [{ role: 'user' as const, content: ctx.input }] }
-              const stream =
-                operation === 'textStream'
-                  ? ctx.models.fake.textStream(request, ctx.signal)
-                  : ctx.models.fake.objectStream({ ...request, schema: { type: 'object' } }, ctx.signal)
-              for await (const _chunk of stream) {
-                if (ending === 'early_return') break
-              }
-              return 'done'
-            },
+        const storage = persistentStorage()
+        const agent = operation === 'textStream'
+          ? defineAgent('streamAccounting', { input: z.string(), instructions: 'Respond.', durable: true,
+            prompt: value => ({ role: 'user', content: value }),
           })
-          .build()
+          : defineAgent('streamAccounting', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+            prompt: value => ({ role: 'user', content: value }),
+          })
+        const harness = await defineHarnessV4({ name: `streamAccounting${operation}`, revision: 'v1' }).addAgent(agent)
+          .getInstance({ storage, model: { provider, model: 'fake' } })
         const session = await harness.getSession('stream-accounting')
         try {
-          const result = session.workflows.wf.run('test', { signal: controller.signal })
-          if (ending === 'throw') await expect(result).rejects.toThrow(failure.message)
-          else if (ending === 'cancel') await expect(result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
-          else if (ending === 'duplicate' || ending === 'late')
-            await expect(result).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-          else await expect(result).resolves.toMatchObject({ status: 'completed', output: 'done' })
+          const live = []
+          const consume = async () => {
+            for await (const event of session.agents.streamAccounting.stream('test', { signal: controller.signal })) {
+              live.push(event)
+              if (ending === 'early_return' && event.type === 'agent.started') return
+            }
+          }
+          await expect(consume()).resolves.toBeUndefined()
+          if (ending === 'early_return') await waitForTerminalRun(storage, 'stream-accounting')
           const run = (await storage.listRuns('stream-accounting'))[0]!
+          if (ending !== 'early_return') {
+            expect(live.at(-1)).toMatchObject({
+              type: 'run.finished',
+              outcome: { status: ending === 'success' ? 'completed' : ending === 'cancel' ? 'cancelled' : 'failed' },
+            })
+          }
           const events = await storage.listEvents(run.id)
           const completed = events.filter((event) => event.type === 'model.completed')
-          expect(completed).toHaveLength(ending === 'success' ? 1 : 0)
+          expect(completed).toHaveLength(ending === 'success' || ending === 'early_return' ? 1 : 0)
           expect(
             events.some((event) => ['model.delta', 'model.object.partial', 'model.object'].includes(event.type)),
           ).toBe(false)
           const summary = await session.getRunSummary(run.id)
-          expect(summary.modelCalls).toBe(ending === 'success' ? 1 : 0)
-          if (ending === 'success') expect(summary.tokenTotals).toEqual(usage)
+          expect(summary.modelCalls).toBe(ending === 'success' || ending === 'early_return' ? 1 : 0)
+          if (ending === 'success' || ending === 'early_return') expect(summary.tokenTotals).toEqual(usage)
         } finally {
-          await harness.shutdown()
+          await harness.close()
         }
       },
     )
@@ -166,42 +176,36 @@ describe('stream completion accounting', () => {
         }
       }
       const provider = new RetryingProvider()
-      const storage = new InMemoryHarnessStorage()
-      const harness = defineHarness()
-        .storage(storage)
-        .models({
-          fake: {
-            provider,
-            model: 'fake',
-            capabilities: ['text_stream', 'object_stream'],
-            retry: { minDelayMs: 0, maxDelayMs: 0 },
-          },
+      const usage = { inputTokens: 1, outputTokens: 2, totalTokens: 3 }
+      fake.enqueueTextStream([
+        { kind: 'delta', text: 'done' },
+        { kind: 'finish', usage, finishReason: 'stop' },
+      ])
+      fake.enqueueObjectStream([
+        { kind: 'partial', partial: { ok: false } },
+        { kind: 'finish', object: { ok: true }, usage, finishReason: 'stop' },
+      ])
+      const storage = persistentStorage()
+      const agent = operation === 'textStream'
+        ? defineAgent('streamRetry', { input: z.string(), instructions: 'Respond.', durable: true,
+          prompt: value => ({ role: 'user', content: value }),
         })
-        .workflow('wf', {
-          input: z.string(),
-          output: z.string(),
-          handler: async (ctx) => {
-            const request = { messages: [{ role: 'user' as const, content: ctx.input }] }
-            const stream =
-              operation === 'textStream'
-                ? ctx.models.fake.textStream(request, ctx.signal)
-                : ctx.models.fake.objectStream({ ...request, schema: { type: 'object' } }, ctx.signal)
-            for await (const _chunk of stream) {
-              /* exhaust successful retry */
-            }
-            return 'done'
-          },
+        : defineAgent('streamRetry', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+          prompt: value => ({ role: 'user', content: value }),
         })
-        .build()
+      const harness = await defineHarnessV4({ name: `streamRetry${operation}`, revision: 'v1' }).addAgent(agent)
+        .getInstance({ storage, model: { provider, model: 'fake', retry: { minDelayMs: 0, maxDelayMs: 0 } } })
       try {
         const session = await harness.getSession('stream-retry')
-        await expect(session.workflows.wf.run('test')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+        const events = []
+        for await (const event of session.agents.streamRetry.stream('test')) events.push(event)
+        expect(events.at(-1)).toMatchObject({ type: 'run.finished', outcome: { status: 'completed' } })
         expect(provider.attempts).toBe(2)
         const run = (await storage.listRuns('stream-retry'))[0]!
         expect((await storage.listEvents(run.id)).filter((event) => event.type === 'model.completed')).toHaveLength(1)
         expect((await session.getRunSummary(run.id)).modelCalls).toBe(1)
       } finally {
-        await harness.shutdown()
+        await harness.close()
       }
     })
   }
@@ -220,12 +224,12 @@ describe('model completion metadata validation', () => {
   const cases: { name: string; metadata: unknown; valid?: boolean; reported?: boolean }[] = [
     {
       name: 'projects reported metadata',
-      metadata: { usage: { ...usage, prompt: privateContent }, finishReason: 'stop', raw: privateContent },
+      metadata: { usage, finishReason: 'stop' },
       valid: true,
       reported: true,
     },
     {
-      name: 'ignores undeclared usage accessors',
+      name: 'rejects undeclared usage accessors without reading them',
       metadata: {
         usage: Object.defineProperty({ ...usage }, 'prompt', {
           enumerable: true,
@@ -235,10 +239,8 @@ describe('model completion metadata validation', () => {
         }),
         finishReason: 'stop',
       },
-      valid: true,
-      reported: true,
     },
-    { name: 'accepts absent metadata', metadata: {}, valid: true },
+    { name: 'uses the required terminal metadata defaults', metadata: {}, valid: true, reported: true },
     { name: 'rejects null usage', metadata: { usage: null } },
     { name: 'rejects incomplete usage', metadata: { usage: { inputTokens: 1, outputTokens: 2 } } },
     ...Object.keys(usage).map((field) => ({
@@ -254,41 +256,43 @@ describe('model completion metadata validation', () => {
     it.each(cases)(`${operation}: $name`, async ({ metadata, valid, reported }) => {
       const provider = new FakeModelProvider()
       // Deliberately bypass the port types to simulate an untrusted custom adapter.
-      const response = Object.assign({ content: 'done', object: { ok: true }, kind: 'finish' }, metadata)
+      const response = Object.assign(operation === 'text'
+        ? { content: 'done', usage, finishReason: 'stop' }
+        : operation === 'object'
+          ? { object: { ok: true }, usage, finishReason: 'stop' }
+          : operation === 'textStream'
+            ? { kind: 'finish', usage, finishReason: 'stop' }
+            : { kind: 'finish', object: { ok: true }, usage, finishReason: 'stop' }, metadata)
       if (operation === 'text') provider.enqueueText(response as never)
       else if (operation === 'object') provider.enqueueObject(response as never)
       else if (operation === 'textStream') provider.enqueueTextStream([response as never])
       else provider.enqueueObjectStream([response as never])
-      const storage = new InMemoryHarnessStorage()
-      const harness = defineHarness()
-        .storage(storage)
-        .models({ fake: { provider, model: 'fake', capabilities: ['text', 'object', 'text_stream', 'object_stream'] } })
-        .workflow('wf', {
-          input: z.string(),
-          output: z.string(),
-          handler: async (ctx) => {
-            const request = { messages: [{ role: 'user' as const, content: ctx.input }] }
-            const objectRequest = { ...request, schema: { type: 'object' } }
-            if (operation === 'text') await ctx.models.fake.text(request, ctx.signal)
-            else if (operation === 'object') await ctx.models.fake.object(objectRequest, ctx.signal)
-            else {
-              const stream =
-                operation === 'textStream'
-                  ? ctx.models.fake.textStream(request, ctx.signal)
-                  : ctx.models.fake.objectStream(objectRequest, ctx.signal)
-              for await (const _chunk of stream) {
-                /* exhaust without content events */
-              }
-            }
-            return 'done'
-          },
+      const storage = persistentStorage()
+      const agent = operation === 'text' || operation === 'textStream'
+        ? defineAgent('metadataAgent', { input: z.string(), instructions: 'Respond.', durable: true,
+          prompt: value => ({ role: 'user', content: value }),
         })
-        .build()
+        : defineAgent('metadataAgent', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+          prompt: value => ({ role: 'user', content: value }),
+        })
+      const harness = await defineHarnessV4({ name: `metadata${operation}`, revision: 'v1' }).addAgent(agent)
+        .getInstance({ storage, model: { provider, model: 'fake' } })
       try {
         const session = await harness.getSession('metadata')
-        const result = session.workflows.wf.run('test')
-        if (valid) await expect(result).resolves.toMatchObject({ status: 'completed', output: 'done' })
-        else await expect(result).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'model_response' } })
+        let terminal
+        if (operation === 'text' || operation === 'object') {
+          try {
+            terminal = await session.agents.metadataAgent.run('test')
+          } catch (error) {
+            if (valid) throw error
+            expect(error).toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'model_response' } })
+          }
+        } else {
+          for await (const event of session.agents.metadataAgent.stream('test')) {
+            if (event.type === 'run.finished') terminal = event.outcome
+          }
+        }
+        expect(terminal?.status).toBe(valid ? 'completed' : operation.endsWith('Stream') ? 'failed' : undefined)
         const run = (await storage.listRuns('metadata'))[0]!
         const events = await storage.listEvents(run.id)
         const completed = events.filter((event) => event.type === 'model.completed')
@@ -296,15 +300,15 @@ describe('model completion metadata validation', () => {
         expect(JSON.stringify({ events, error: run.error })).not.toContain(privateContent)
         if (valid) {
           expect(completed[0]!.payload).toEqual({
-            modelAlias: 'fake',
-            workflowId: 'wf',
+            agentId: 'metadataAgent',
+            modelAlias: 'primary',
             operation,
             ...(operation.endsWith('Stream') ? { streamId: expect.any(String) } : {}),
             ...(reported ? { usage, finishReason: 'stop' } : {}),
           })
         }
       } finally {
-        await harness.shutdown()
+        await harness.close()
       }
     })
   }
@@ -330,81 +334,64 @@ describe('model completion metadata validation', () => {
           },
         })
       provider.enqueueObjectStream([finish as never])
-      const storage = new InMemoryHarnessStorage()
-      const harness = defineHarness()
-        .storage(storage)
-        .models({ fake: { provider, model: 'fake', capabilities: ['object_stream'] } })
-        .workflow('wf', {
-          input: z.string(),
-          output: z.string(),
-          handler: async (ctx) => {
-            for await (const _chunk of ctx.models.fake.objectStream({ messages: [], schema: {} }, ctx.signal)) {
-              /* exhaust */
-            }
-            return 'done'
-          },
-        })
-        .build()
+      const storage = persistentStorage()
+      const agent = defineAgent('invalidObjectAgent', { input: z.string(), output: z.object({ ok: z.boolean() }),
+        durable: true, instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
+      })
+      const harness = await defineHarnessV4({ name: 'invalidObject', revision: 'v1' }).addAgent(agent)
+        .getInstance({ storage, model: { provider, model: 'fake' } })
       try {
         const session = await harness.getSession('invalid-object')
-        await expect(session.workflows.wf.run('test')).rejects.toMatchObject({
-          code: 'VALIDATION_ERROR',
-          meta: { where: 'model_response' },
-        })
+        const events = []
+        for await (const event of session.agents.invalidObjectAgent.stream('test')) events.push(event)
+        expect(events.at(-1)).toMatchObject({ type: 'run.finished', outcome: { status: 'failed', error: {
+          code: 'VALIDATION_ERROR', meta: { where: 'model_response' },
+        } } })
         expect(reads).toBe(0)
         const run = (await storage.listRuns('invalid-object'))[0]!
-        const events = await storage.listEvents(run.id)
-        expect(events.filter((event) => event.type === 'model.completed')).toHaveLength(0)
-        expect(JSON.stringify({ events, error: run.error })).not.toContain(privateContent)
+        const persisted = await storage.listEvents(run.id)
+        expect(persisted.filter((event) => event.type === 'model.completed')).toHaveLength(0)
+        expect(JSON.stringify({ events: persisted, error: run.error })).not.toContain(privateContent)
       } finally {
-        await harness.shutdown()
+        await harness.close()
       }
     },
   )
 })
 
 describe('model stream run events', () => {
-  it('does not emit text deltas for the default final-object agent path', async () => {
+  it('emits only structured snapshots for a structured v4 agent', async () => {
     const provider = new FakeModelProvider()
-    provider.enqueueObject({
-      object: { answer: 'done' },
+    provider.enqueueObjectStream([{
+      kind: 'finish', object: { answer: 'done' },
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
       finishReason: 'stop',
+    }])
+    const agent = defineAgent('answerer', { input: z.string(), output: z.object({ answer: z.string() }),
+      instructions: 'Return a final object.', prompt: value => ({ role: 'user', content: value }),
     })
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider, model: 'fake', capabilities: ['object', 'text_stream'] } })
-      .tools({})
-      .skills({})
-      .agent('answerer', {
-        model: 'fake',
-        input: z.string(),
-        output: z.object({ answer: z.string() }),
-        builtinTools: false,
-        instructions: 'Return a final object.',
-      })
-      .build()
+    const harness = await defineHarnessV4({ name: 'structuredOnly' }).addAgent(agent)
+      .getInstance({ model: { provider, model: 'fake' } })
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.agents.answerer.observe('hello')) events.push(event)
+    for await (const event of session.agents.answerer.stream('hello')) events.push(event)
 
-    expect(events.some((event) => event.type === 'model.delta')).toBe(false)
+    expect(events.some((event) => event.type === 'output.text.delta')).toBe(false)
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'model.completed',
-          modelAlias: 'fake',
-          operation: 'object',
+          modelAlias: 'primary',
+          operation: 'objectStream',
           usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
           finishReason: 'stop',
         }),
-        expect.objectContaining({ type: 'model.object', object: { answer: 'done' } }),
-        expect.objectContaining({ type: 'run.finished', output: { answer: 'done' } }),
+        expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: { answer: 'done' } }) }),
       ]),
     )
     expect(events.filter((event) => event.type === 'model.completed')).toHaveLength(1)
-    expect(events.filter((event) => event.type === 'model.object')).toHaveLength(1)
+    await harness.close()
   })
 
   it('does not emit stream chunks when a workflow consumes textStream internally', async () => {
@@ -414,16 +401,9 @@ describe('model stream run events', () => {
       { kind: 'delta', text: 'lo' },
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' },
     ])
-    const state = new InMemoryHarnessStorage()
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .storage(state)
-      .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', {
-        input: z.string(),
-        output: z.string(),
+    const workflow = defineWorkflow('wf', {
+        input: z.string(), output: z.string(),
+        models: { fake: { alias: 'primary', capabilities: ['text_stream'] } },
         handler: async (ctx) => {
           let text = ''
           for await (const chunk of ctx.models.fake.textStream(
@@ -435,177 +415,74 @@ describe('model stream run events', () => {
           return text
         },
       })
-      .build()
+    const harness = await defineHarnessV4({ name: 'workflowPrivateStream' }).addWorkflow(workflow)
+      .getInstance({ model: { provider, model: 'fake' } })
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
-    const run = (await state.listRuns('s1'))[0]!
-    const persisted = await state.listEvents(run.id)
-
-    expect(events.some((event) => event.type === 'model.delta')).toBe(false)
+    for await (const event of session.workflows.wf.stream('hello')) events.push(event)
+    expect(events.some((event) => event.type === 'output.text.delta')).toBe(false)
     expect(events).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          type: 'model.completed',
-          workflowId: 'wf',
-          modelAlias: 'fake',
-          operation: 'textStream',
-          usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
-          finishReason: 'stop',
-        }),
-        expect.objectContaining({ type: 'run.finished', output: 'hello' }),
+        expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) }),
       ]),
     )
-    expect(JSON.stringify(persisted)).not.toContain('hello')
-    expect(persisted.some((event) => event.type === 'model.delta')).toBe(false)
+    await harness.close()
   })
 
-  it('emits text stream deltas when a workflow opts in for a public textStream call', async () => {
+  it('emits text stream deltas for a v4 streaming agent while persisted content stays private', async () => {
     const provider = new FakeModelProvider()
     provider.enqueueTextStream([
       { kind: 'delta', text: 'hel' },
       { kind: 'delta', text: 'lo' },
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' },
     ])
-    const state = new InMemoryHarnessStorage()
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .storage(state)
-      .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', {
-        input: z.string(),
-        output: z.string(),
-        handler: async (ctx) => {
-          let text = ''
-          for await (const chunk of ctx.models.fake.textStream(
-            { messages: [{ role: 'user', content: ctx.input }] },
-            ctx.signal,
-            { emitRunEvents: true },
-          )) {
-            if (chunk.kind === 'delta') text += chunk.text
-          }
-          return text
-        },
-      })
-      .build()
+    const state = persistentStorage()
+    const agent = defineAgent('streamed', { input: z.string(), durable: true, instructions: 'Respond.',
+      prompt: value => ({ role: 'user', content: value }),
+    })
+    const harness = await defineHarnessV4({ name: 'publicTextStream', revision: 'v1' }).addAgent(agent)
+      .getInstance({ storage: state, model: { provider, model: 'fake' } })
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
+    for await (const event of session.agents.streamed.stream('hello')) events.push(event)
     const run = (await state.listRuns('s1'))[0]!
     const persisted = await state.listEvents(run.id)
 
-    const deltas = events.filter((event) => event.type === 'model.delta')
-    const streamId = deltas[0]?.streamId
+    const deltas = events.filter((event) => event.type === 'output.text.delta')
+    const streamId = deltas[0]?.id
     expect(typeof streamId).toBe('string')
     expect(deltas).toEqual([
-      expect.objectContaining({ type: 'model.delta', workflowId: 'wf', modelAlias: 'fake', streamId, delta: 'hel' }),
-      expect.objectContaining({ type: 'model.delta', workflowId: 'wf', modelAlias: 'fake', streamId, delta: 'lo' }),
+      expect.objectContaining({ type: 'output.text.delta', agentId: 'streamed', modelAlias: 'primary', id: streamId, delta: 'hel' }),
+      expect.objectContaining({ type: 'output.text.delta', agentId: 'streamed', modelAlias: 'primary', id: streamId, delta: 'lo' }),
     ])
-    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'run.finished', output: 'hello' })]))
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) })]))
     expect(JSON.stringify(persisted)).not.toContain('hello')
-    expect(persisted).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'model.delta',
-          payload: { workflowId: 'wf', modelAlias: 'fake', streamId, delta: '[redacted]' },
-        }),
-      ]),
-    )
+    expect(JSON.stringify(persisted)).not.toContain('hel')
+    expect(persisted).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'model.completed', payload: expect.objectContaining({ streamId, agentId: 'streamed' }) }),
+    ]))
+    await harness.close()
   })
 
-  it('emits text stream deltas when a custom handler agent explicitly opts in', async () => {
+  it('keeps structured v4 agent calls and lifecycle events on the native run pipeline', async () => {
     const provider = new FakeModelProvider()
-    provider.enqueueTextStream([
-      { kind: 'delta', text: 'cu' },
-      { kind: 'delta', text: 'stom' },
-      { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' },
-    ])
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
-      .tools({})
-      .skills({})
-      .agent('streamed', {
-        model: 'fake',
-        input: z.string(),
-        output: z.string(),
-        handler: async (ctx) => {
-          let text = ''
-          for await (const chunk of ctx.models.fake.textStream(
-            { messages: [{ role: 'user', content: ctx.input }] },
-            ctx.signal,
-            { emitRunEvents: true },
-          )) {
-            if (chunk.kind === 'delta') text += chunk.text
-          }
-          return text
-        },
-      })
-      .build()
-
-    const session = await harness.getSession('s1')
-    const events = []
-    for await (const event of session.agents.streamed.observe('hello')) events.push(event)
-
-    const deltas = events.filter((event) => event.type === 'model.delta')
-    const streamId = deltas[0]?.streamId
-    expect(typeof streamId).toBe('string')
-    expect(deltas).toEqual([
-      expect.objectContaining({ type: 'model.delta', agentId: 'streamed', modelAlias: 'fake', streamId, delta: 'cu' }),
-      expect.objectContaining({
-        type: 'model.delta',
-        agentId: 'streamed',
-        modelAlias: 'fake',
-        streamId,
-        delta: 'stom',
-      }),
-    ])
-    expect(events).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: 'run.finished', output: 'custom' })]),
-    )
-  })
-
-  it('keeps custom handler object calls and lifecycle events on the native run pipeline', async () => {
-    const provider = new FakeModelProvider()
-    provider.enqueueObject({
-      object: { answer: 'native' },
+    provider.enqueueObjectStream([{
+      kind: 'finish', object: { answer: 'native' },
       usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
       finishReason: 'stop',
+    }])
+    const state = persistentStorage()
+    const agent = defineAgent('custom', { input: z.string(), output: z.object({ answer: z.string() }), durable: true,
+      instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
     })
-    const state = new InMemoryHarnessStorage()
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .storage(state)
-      .models({ fake: { provider, model: 'fake', capabilities: ['object'] } })
-      .tools({})
-      .skills({})
-      .agent('custom', {
-        model: 'fake',
-        input: z.string(),
-        output: z.object({ answer: z.string() }),
-        handler: async (ctx) => {
-          const response = await ctx.models.fake.object(
-            {
-              messages: [{ role: 'user', content: ctx.input }],
-              schema: { type: 'object' },
-            },
-            ctx.signal,
-            // The enclosing session owns run identity even when a handler
-            // supplies an invocation context of its own.
-            { emitRunEvents: true, runId: 'forged-run-id' },
-          )
-          return response.object as { answer: string }
-        },
-      })
-      .build()
+    const harness = await defineHarnessV4({ name: 'structuredLifecycle', revision: 'v1' }).addAgent(agent)
+      .getInstance({ storage: state, model: { provider, model: 'fake' } })
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.agents.custom.observe('hello')) events.push(event)
+    for await (const event of session.agents.custom.stream('hello')) events.push(event)
     const run = (await state.listRuns('s1'))[0]!
     const persisted = await state.listEvents(run.id)
     const summary = await session.getRunSummary(run.id)
@@ -614,6 +491,7 @@ describe('model stream run events', () => {
       'run.started',
       'agent.started',
       'model.completed',
+      'model.message',
       'agent.finished',
       'run.finished',
     ])
@@ -623,8 +501,9 @@ describe('model stream run events', () => {
           type: 'model.completed',
           runId: run.id,
           agentId: 'custom',
-          modelAlias: 'fake',
-          operation: 'object',
+          modelAlias: 'primary',
+          operation: 'objectStream',
+          streamId: expect.any(String),
           usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
           finishReason: 'stop',
         }),
@@ -632,7 +511,6 @@ describe('model stream run events', () => {
           type: 'agent.finished',
           runId: run.id,
           agentId: 'custom',
-          output: { answer: 'native' },
         }),
       ]),
     )
@@ -643,8 +521,9 @@ describe('model stream run events', () => {
           type: 'model.completed',
           payload: {
             agentId: 'custom',
-            modelAlias: 'fake',
-            operation: 'object',
+            modelAlias: 'primary',
+            operation: 'objectStream',
+            streamId: expect.any(String),
             usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
             finishReason: 'stop',
           },
@@ -656,59 +535,10 @@ describe('model stream run events', () => {
       modelCalls: 1,
       tokenTotals: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
     })
+    await harness.close()
   })
 
-  it('assigns separate stream ids for parallel opted-in workflow model streams', async () => {
-    const provider = new FakeModelProvider()
-    provider.enqueueTextStream([
-      { kind: 'delta', text: 'a' },
-      { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' },
-    ])
-    provider.enqueueTextStream([
-      { kind: 'delta', text: 'b' },
-      { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' },
-    ])
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider, model: 'fake', capabilities: ['text_stream'] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', {
-        input: z.string(),
-        output: z.string(),
-        handler: async (ctx) => {
-          const consume = async (label: string): Promise<string> => {
-            let text = ''
-            for await (const chunk of ctx.models.fake.textStream(
-              { messages: [{ role: 'user', content: label }] },
-              ctx.signal,
-              { emitRunEvents: true },
-            )) {
-              if (chunk.kind === 'delta') text += chunk.text
-            }
-            return text
-          }
-          const [left, right] = await Promise.all([consume('left'), consume('right')])
-          return `${left}${right}`
-        },
-      })
-      .build()
-
-    const session = await harness.getSession('s1')
-    const events = []
-    for await (const event of session.workflows.wf.observe('hello')) events.push(event)
-
-    const deltas = events.filter((event) => event.type === 'model.delta')
-    expect(deltas).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'model.delta', workflowId: 'wf', modelAlias: 'fake', delta: 'a' }),
-        expect.objectContaining({ type: 'model.delta', workflowId: 'wf', modelAlias: 'fake', delta: 'b' }),
-      ]),
-    )
-    expect(new Set(deltas.map((event) => event.streamId)).size).toBe(2)
-  })
-
-  it('emits structured stream partials and the final object when a workflow opts in for objectStream events', async () => {
+  it('emits structured stream snapshots and the final v4 agent outcome', async () => {
     const provider = new FakeModelProvider()
     provider.enqueueObjectStream([
       { kind: 'partial', partial: { ok: false } },
@@ -720,73 +550,48 @@ describe('model stream run events', () => {
         finishReason: 'stop',
       },
     ])
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider, model: 'fake', capabilities: ['object_stream'] } })
-      .tools({})
-      .skills({})
-      .workflow('wf', {
-        input: z.string(),
-        output: z.object({ ok: z.boolean() }),
-        handler: async (ctx) => {
-          let output = { ok: false }
-          for await (const chunk of ctx.models.fake.objectStream(
-            {
-              messages: [{ role: 'user', content: ctx.input }],
-              schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
-            },
-            ctx.signal,
-            { emitRunEvents: true },
-          )) {
-            if (chunk.kind === 'finish') output = chunk.object as { ok: boolean }
-          }
-          return output
-        },
-      })
-      .build()
+    const agent = defineAgent('structuredSnapshots', { input: z.string(), output: z.object({ ok: z.boolean() }),
+      instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
+    })
+    const harness = await defineHarnessV4({ name: 'structuredSnapshots' }).addAgent(agent)
+      .getInstance({ model: { provider, model: 'fake' } })
 
     const session = await harness.getSession('s1')
     const events = []
-    for await (const event of session.workflows.wf.observe('check')) events.push(event)
+    for await (const event of session.agents.structuredSnapshots.stream('check')) events.push(event)
 
-    expect(events.filter((event) => event.type === 'model.object.partial')).toEqual([
+    expect(events.filter((event) => event.type === 'output.object.snapshot')).toEqual([
       expect.objectContaining({
-        type: 'model.object.partial',
-        workflowId: 'wf',
-        modelAlias: 'fake',
-        partial: { ok: false },
+        type: 'output.object.snapshot',
+        agentId: 'structuredSnapshots',
+        modelAlias: 'primary',
+        value: { ok: false },
       }),
       expect.objectContaining({
-        type: 'model.object.partial',
-        workflowId: 'wf',
-        modelAlias: 'fake',
-        partial: { ok: true },
+        type: 'output.object.snapshot',
+        agentId: 'structuredSnapshots',
+        modelAlias: 'primary',
+        value: { ok: true },
       }),
     ])
     const streamId = (
-      events.find((event) => event.type === 'model.object.partial') as { streamId?: string } | undefined
-    )?.streamId
+      events.find((event) => event.type === 'output.object.snapshot') as { id?: string } | undefined
+    )?.id
     expect(typeof streamId).toBe('string')
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: 'model.object',
-          workflowId: 'wf',
-          modelAlias: 'fake',
-          streamId,
-          object: { ok: true },
-        }),
-        expect.objectContaining({
           type: 'model.completed',
-          workflowId: 'wf',
-          modelAlias: 'fake',
+          agentId: 'structuredSnapshots',
+          modelAlias: 'primary',
           streamId,
           operation: 'objectStream',
           usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
           finishReason: 'stop',
         }),
-        expect.objectContaining({ type: 'run.finished', output: { ok: true } }),
+        expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: { ok: true } }) }),
       ]),
     )
+    await harness.close()
   })
 })

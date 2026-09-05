@@ -19,7 +19,7 @@ function requirements(overrides: Partial<RuntimeRequirements> = {}): RuntimeRequ
 		models: Object.freeze({}), mcpServers: Object.freeze([]), skillRuntimes: Object.freeze([]),
 		storage: Object.freeze({ durable: false }),
 		memory: Object.freeze({ capabilities: Object.freeze([]), modelAliases: Object.freeze([]) }),
-		sandbox: Object.freeze({ capabilities: Object.freeze([]) }), workspace: false, artifacts: false,
+		sandbox: Object.freeze({ capabilities: Object.freeze([]), requiredGroups: Object.freeze([]), required: false }), workspace: false, artifacts: false,
 		hostTools: Object.freeze([]), ...overrides,
 	})
 }
@@ -49,7 +49,10 @@ describe('exact Harness instance requirements', () => {
 		const guidance = defineSkill('guidance', { directory: new URL('file:///tmp/guidance') })
 		const runtime = defineSkill('runtime', { directory: new URL('file:///tmp/runtime'), runtimes: ['python', 'shell'] as const })
 		const agent = defineAgent('helper', { instructions: 'Use selected guidance.', skills: [guidance], output: z.string() })
-		const required = deriveRuntimeRequirements({ tools: {}, skills: { guidance, runtime }, mcpServers: {}, agents: { helper: agent }, workflows: {} })
+		const required = deriveRuntimeRequirements(
+			{ tools: {}, skills: { guidance, runtime }, mcpServers: {}, agents: { helper: agent }, workflows: {} },
+			Object.freeze({ agents: Object.freeze({ helper: Object.freeze({ reachable: false, agentIds: Object.freeze([]) }) }), workflows: Object.freeze({}) }),
+		)
 		expect(required.skillRuntimes).toEqual(['python', 'shell'])
 		expect(required.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.readonly_mount'])
 		expect(required.models.primary?.capabilities).toContain('tool_use')
@@ -149,7 +152,7 @@ describe('exact Harness instance requirements', () => {
 			mcpServers: Object.freeze(['knowledge']), skillRuntimes: Object.freeze(['python']),
 			storage: Object.freeze({ durable: true }),
 			memory: Object.freeze({ capabilities: Object.freeze(['memory.kv']), modelAliases: Object.freeze([]) }),
-			sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']) }), workspace: true, artifacts: true,
+			sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze([]), required: true }), workspace: true, artifacts: true,
 		})
 		const headers = { authorization: 'secret' }
 		const snapshot = validateHarnessInstanceConfig(required, {
@@ -166,6 +169,46 @@ describe('exact Harness instance requirements', () => {
 		expect(Object.isFrozen(storage)).toBe(false)
 		expect(Object.isFrozen(snapshot.mcp?.knowledge?.headers)).toBe(true)
 		expect(snapshot.mcp?.knowledge?.headers?.authorization).toBe('secret')
+	})
+
+	it('validates and snapshots sandbox ownership policy without cloning authorization', () => {
+		const required = requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze(['banking']), required: true }) })
+		const authorizeOwner = async () => true
+		const groups = ['banking', 'support']
+		const snapshot = validateHarnessInstanceConfig(required, {
+			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']),
+			sandboxBinding: { groups, defaultPolicy: { group: 'banking' }, authorizeOwner },
+		})
+		groups[0] = 'mutated'
+		expect(snapshot.sandboxBinding).toEqual({ groups: ['banking', 'support'], defaultPolicy: { group: 'banking' }, authorizeOwner })
+		expect(snapshot.sandboxBinding?.authorizeOwner).toBe(authorizeOwner)
+		expect(Object.isFrozen(snapshot.sandboxBinding)).toBe(true)
+		expect(Object.isFrozen(snapshot.sandboxBinding?.groups)).toBe(true)
+		expect(Object.isFrozen(snapshot.sandboxBinding?.defaultPolicy)).toBe(true)
+		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { sandboxBinding: {} }))).toBe('unexpected_runtime_binding')
+		expect(errorOf(() => validateHarnessInstanceConfig(required, {
+			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['banking', 'support'], defaultPolicy: { group: 'missing' } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'sandboxBinding' })
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, {
+			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['support', 'support'] },
+		}))).toBe('invalid_runtime_binding')
+		expect(errorOf(() => validateHarnessInstanceConfig(required, {
+			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['support'] },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'sandboxBinding.groups' })
+	})
+
+	it('derives exact sandbox group requirements from definition policies', () => {
+		const grouped = defineAgent('groupedAgent', { instructions: 'Reply.', sandbox: { group: 'banking' } })
+		const requirement = defineHarness({ name: 'groupedHarness' }).addAgent(grouped).requirements.sandbox
+		expect(requirement).toEqual({ capabilities: [], requiredGroups: ['banking'], required: true })
+		expect(Object.isFrozen(requirement.requiredGroups)).toBe(true)
+		const workflow = defineWorkflow('groupedChildren', { input: z.string(), output: z.string(),
+			childTaskSandboxGroups: ['reviewers', 'operators'] as const, async handler({ input }) { return input } })
+		const childRequirement = defineHarness({ name: 'childGroupHarness' }).addWorkflow(workflow).requirements.sandbox
+		expect(childRequirement).toEqual({ capabilities: [], requiredGroups: ['operators', 'reviewers'], required: true })
+		expect(reasonOf(() => validateHarnessInstanceConfig(requirements({ sandbox: childRequirement }), {
+			sandbox: sandboxAdapter(() => {}, []), sandboxBinding: { groups: ['reviewers'] },
+		}))).toBe('invalid_runtime_binding')
 	})
 
 	it('validates MCP transport branches and treats stdio sandbox independently', () => {
@@ -196,10 +239,11 @@ describe('exact Harness instance requirements', () => {
 		expect(reasonOf(() => validateHarnessInstanceConfig(memoryRequired, { memory: memoryAdapter(() => {}) }))).toBe('missing_required_capability')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { memory: memoryAdapter(() => {}) }))).toBe('unexpected_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(requirements({ hostTools: Object.freeze(['invoke']) }), {}))).toBe('standalone_host_tools_unsupported')
-		const runtimeRequired = requirements({ skillRuntimes: Object.freeze(['python']) })
+		const runtimeRequired = requirements({ skillRuntimes: Object.freeze(['python']),
+			sandbox: Object.freeze({ capabilities: Object.freeze([]), requiredGroups: Object.freeze([]), required: true }) })
 		const { runtimes: _runtimes, ...withoutRuntime } = sandboxAdapter(() => {}, [])
 		expect(reasonOf(() => validateHarnessInstanceConfig(runtimeRequired, { sandbox: withoutRuntime }))).toBe('missing_required_capability')
-		const sandboxRequired = requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']) }) })
+		const sandboxRequired = requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze([]), required: true }) })
 		const superset = sandboxAdapter(() => {}, ['sandbox.fs', 'sandbox.exec'])
 		expect(validateHarnessInstanceConfig(sandboxRequired, { sandbox: superset }).sandbox).toBe(superset)
 		for (const method of ['list', 'purge', 'sweep', 'deleteSnapshot'] as const) {
@@ -260,6 +304,7 @@ function storageAdapter(touch: () => void) {
 		getSession: method, upsertSession: method, closeSession: method, appendMessages: method, listMessages: method,
 		clearMessages: method, createRun: method, finishRun: method, getRun: method, listRuns: method,
 		appendEvents: method, listEvents: method, acquireRun: method, loadCheckpoint: method, commitCheckpoint: method,
+		replaceCheckpoint: method, finalizeRun: method,
 		withSessionLock: method, registerWait: method, getWait: method, signalWait: method, cancelWait: method,
 	}
 }

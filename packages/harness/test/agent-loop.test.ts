@@ -5,13 +5,15 @@ import { defineAgent } from '../src/definitions/agent.js'
 import type { AgentPipelineEvent } from '../src/definitions/execution-events.js'
 import { resolveHarnessExecutionDefaults } from '../src/runtime/execution-defaults.js'
 import { executeStandardAgent } from '../src/agents/standard-loop.js'
-import { AgentLoopBudgetError, DecisionBlockedError, DecisionEvaluationError, OperationCancelledError, OperationTimeoutError, ValidationError } from '../src/errors/index.js'
-import { executePreparedAgentToolBatch, prepareAgentToolBatch } from '../src/agents/agent-tool-pipeline.js'
+import { AgentLoopBudgetError, DecisionBlockedError, DecisionEvaluationError, OperationCancelledError, OperationTimeoutError, SandboxPermissionDeniedError, ValidationError } from '../src/errors/index.js'
+import { executePreparedAgentToolBatch, prepareAgentToolBatch, resumePreparedAgentToolBatch } from '../src/agents/agent-tool-pipeline.js'
 import { createAgentExecutableBinding } from '../src/tools/bindings.js'
 import { createHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
 import { getDefinitionIdentity } from '../src/definitions/identity.js'
+import { freezeAcceptedModelTurnCursor, freezeSuspendedAgentTurnState } from '../src/approvals/prepared-tool-checkpoint.js'
+import { createModelRegistry } from '../src/models/registry.js'
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 
@@ -71,6 +73,235 @@ function directInterceptorRuntime() {
 }
 
 describe('v4 standard agent loop', () => {
+	it('applies the effective context projection only to model-visible tool results', async () => {
+		let providerMessages: readonly import('../src/ports/model-provider.js').ModelMessage[] = []
+		const agent = defineAgent('projectedAgent', { instructions: 'Answer.' })
+		const run = baseOptions(agent, { async text(request: { messages: readonly import('../src/ports/model-provider.js').ModelMessage[] }) {
+			providerMessages = request.messages
+			return { content: 'done', usage, finishReason: 'stop' as const }
+		} }, 'run')
+		const original = 'abcdefghijklmnopqrstuvwxyz'.repeat(4)
+		run.options.history.push({ role: 'assistant', content: 'calling' }, { role: 'tool', toolCallId: 'call-1', content: original })
+		;(run.options as typeof run.options & { contextProjection: import('../src/context-projection.js').ContextProjectionPolicy }).contextProjection = {
+			toolResultPruner: { maxBytes: 40, headBytes: 4, tailBytes: 4, marker: '...' },
+		}
+
+		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: 'done' })
+		const projected = providerMessages.find(message => message.role === 'tool')
+		expect(projected?.content).not.toBe(original)
+		expect(Buffer.byteLength(projected?.content ?? '', 'utf8')).toBeLessThanOrEqual(40)
+		expect(run.options.history.at(-1)?.content).toBe(original)
+	})
+
+	it('returns only the current logical conversation turn for persistence', async () => {
+		const agent = defineAgent('conversationProjectionAgent', { instructions: 'Application instructions.' })
+		const run = baseOptions(agent, { async text() { return { content: 'answer', usage, finishReason: 'stop' as const } } }, 'run')
+		run.options.history.push({ role: 'user', content: 'old question' }, { role: 'assistant', content: 'old answer' })
+		;(run.options as any).skills = { reporting: { manifest: { name: 'reporting', description: 'Report facts.' } } }
+
+		const result = await executeStandardAgent(run.options)
+
+		expect(result.conversationMessages).toEqual([
+			{ role: 'user', content: 'hello' },
+			{ role: 'assistant', content: 'answer' },
+		])
+		expect(Object.isFrozen(result.conversationMessages)).toBe(true)
+	})
+
+	it.each(['after_model', 'continue_turn'] as const)('resumes an accepted model cursor at the %s fence without repeating provider I/O', async phase => {
+		let providerCalls = 0
+		let afterModelCalls = 0
+		let modelCompleted = 0
+		const phases: string[] = []
+		const guardrails = { [agentGuardrailsBinding]: { id: 'cursorGuard', afterModel() { afterModelCalls += 1; return { decision: 'allow' as const } } } }
+		const agent = defineAgent('cursorAgent', { instructions: 'Answer.', guardrails: guardrails as never })
+		const run = baseOptions(agent, { async text() { providerCalls += 1; return { content: 'unexpected', usage, finishReason: 'stop' as const } } }, 'run')
+		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase,
+			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
+			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], tools: [] },
+			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
+		;(run.options as any).onModelCompleted = async () => { modelCompleted += 1 }
+		;(run.options as any).resume = { state: cursor, onAcceptedModelTurn: async (state: { phase: string }) => { phases.push(state.phase) } }
+
+		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: 'accepted' })
+		expect(providerCalls).toBe(0)
+		expect(modelCompleted).toBe(phase === 'after_model' ? 1 : 0)
+		expect(afterModelCalls).toBe(phase === 'after_model' ? 1 : 0)
+		expect(phases).toEqual(phase === 'after_model' ? ['continue_turn'] : [])
+	})
+
+	it.each([
+		{ operation: 'text', mode: 'run', structured: false },
+		{ operation: 'object', mode: 'run', structured: true },
+		{ operation: 'textStream', mode: 'stream', structured: false },
+		{ operation: 'objectStream', mode: 'stream', structured: true },
+	] as const)('passes and persists the same effective call for $operation', async ({ operation, mode, structured }) => {
+		let providerCall: unknown
+		let beforeModelCall: unknown
+		let afterModelCall: unknown
+		const guardrails = { [agentGuardrailsBinding]: { id: `effective${operation}Guard`,
+			beforeModel(context: { request: { call?: unknown } }) { beforeModelCall = context.request.call; return { decision: 'allow' as const } },
+			afterModel(context: { request: { call?: unknown } }) { afterModelCall = context.request.call; return { decision: 'allow' as const } },
+		} }
+		const provider = {
+			id: 'effective-call-provider', genAiSystem: 'test',
+			async text(request: { call?: unknown }) { providerCall = request.call; return { content: 'done', usage, finishReason: 'stop' as const } },
+			async object(request: { call?: unknown }) { providerCall = request.call; return { object: { answer: 'done' }, usage, finishReason: 'stop' as const } },
+			textStream(request: { call?: unknown }) { providerCall = request.call; return (async function* () {
+				yield { kind: 'delta' as const, text: 'done' }
+				yield { kind: 'finish' as const, usage, finishReason: 'stop' as const }
+			})() },
+			objectStream(request: { call?: unknown }) { providerCall = request.call; return (async function* () {
+				yield { kind: 'partial' as const, partial: { answer: 'done' } }
+				yield { kind: 'finish' as const, object: { answer: 'done' }, usage, finishReason: 'stop' as const }
+			})() },
+		}
+		const model = createModelRegistry({ primary: { provider, model: 'test-model',
+			capabilities: ['text', 'object', 'text_stream', 'object_stream'] as const,
+			providerOptions: { aliasOnly: true }, defaults: { temperature: 0.2, maxTokens: 64,
+				providerOptions: { defaultOnly: true }, retry: false } } }).primary!
+		const agent = structured
+			? defineAgent(`effective${operation}`, { instructions: 'Answer.', output: z.object({ answer: z.string() }), guardrails: guardrails as never })
+			: defineAgent(`effective${operation}`, { instructions: 'Answer.', guardrails: guardrails as never })
+		const run = baseOptions(agent, model, mode)
+		const accepted: Array<ReturnType<typeof freezeAcceptedModelTurnCursor>> = []
+		const state = freezeSuspendedAgentTurnState({ rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1',
+			agentId: agent.id, invocationId: 'run1', step: 1, modelAlias: 'primary', input: 'hello',
+			messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], entries: [], agentStarted: true })
+		;(run.options as any).resume = { state, onAcceptedModelTurn: async (cursor: ReturnType<typeof freezeAcceptedModelTurnCursor>) => { accepted.push(cursor) } }
+
+		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: structured ? { answer: 'done' } : 'done' })
+		const expectedCall = { temperature: 0.2, maxTokens: 64, retry: false,
+			providerOptions: { aliasOnly: true, defaultOnly: true } }
+		expect(providerCall).toEqual(expectedCall)
+		expect(beforeModelCall).toEqual(expectedCall)
+		expect(afterModelCall).toEqual(expectedCall)
+		expect(accepted[0]?.request.call).toEqual(expectedCall)
+		expect(accepted[1]?.request.call).toEqual(expectedCall)
+		expect(accepted[0]?.request.call).not.toBe(providerCall)
+		expect(Object.isFrozen(providerCall)).toBe(true)
+		expect(Object.isFrozen((providerCall as { providerOptions: object }).providerOptions)).toBe(true)
+		expect(Object.isFrozen(accepted[0]?.request.call)).toBe(true)
+		expect(accepted[0]?.operation).toBe(operation)
+		expect('schema' in accepted[0]!.request).toBe(structured)
+	})
+
+	it('rejects non-JSON effective model call options before provider I/O', async () => {
+		let providerCalls = 0
+		const provider = { id: 'invalid-call-provider', genAiSystem: 'test', async text() {
+			providerCalls += 1
+			return { content: 'unexpected', usage, finishReason: 'stop' as const }
+		} }
+		const model = createModelRegistry({ primary: { provider, model: 'test-model', capabilities: ['text'] as const,
+			defaults: { providerOptions: { invalid: new Date() } } } }).primary!
+		const agent = defineAgent('invalidEffectiveCall', { instructions: 'Answer.' })
+		const run = baseOptions(agent, model, 'run')
+
+		await expect(executeStandardAgent(run.options)).rejects.toMatchObject({
+			code: 'VALIDATION_ERROR', meta: { where: 'model_request', issues: { reason: 'non_json_model_call_options' } },
+		})
+		expect(providerCalls).toBe(0)
+	})
+
+	it('reuses the persisted effective call in the resumed afterModel view without resolving the current alias', async () => {
+		let providerCalls = 0
+		let observedCall: unknown
+		const guardrails = { [agentGuardrailsBinding]: { id: 'persistedCallGuard', afterModel(context: { request: { call?: unknown } }) {
+			observedCall = context.request.call
+			return { decision: 'allow' as const }
+		} } }
+		const agent = defineAgent('persistedCallAgent', { instructions: 'Answer.', guardrails: guardrails as never })
+		const provider = { id: 'changed-alias-provider', genAiSystem: 'test', async text() {
+			providerCalls += 1
+			return { content: 'unexpected', usage, finishReason: 'stop' as const }
+		} }
+		const currentModel = createModelRegistry({ primary: { provider, model: 'changed-model', capabilities: ['text'] as const,
+			defaults: { providerOptions: { invalidIfRecomputed: new Date() } } } }).primary!
+		const run = baseOptions(agent, currentModel, 'run')
+		const persistedCall = { temperature: 0.7, providerOptions: { deployment: 'old' } }
+		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'after_model',
+			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
+			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], tools: [], call: persistedCall },
+			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
+		;(run.options as any).resume = { state: cursor }
+
+		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: 'accepted' })
+		expect(providerCalls).toBe(0)
+		expect(observedCall).toEqual(persistedCall)
+		expect(Object.isFrozen(observedCall)).toBe(true)
+		expect(Object.isFrozen((observedCall as { providerOptions: object }).providerOptions)).toBe(true)
+	})
+
+	it('does not recompute tool exposure when resuming an accepted model cursor', async () => {
+		let exposureCalls = 0
+		let providerCalls = 0
+		const tool = defineTool('cursorVisible', { description: 'Visible tool.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
+		const agent = defineAgent('cursorExposureAgent', { instructions: 'Answer.', tools: [tool], governance: ({ exposureRule }) => ({
+			exposure: { rules: [exposureRule({ id: 'countExposure', tools: [tool.id], effect: 'expose', when: () => {
+				exposureCalls += 1
+				return true
+			} })] },
+		}) })
+		const binding = createAgentExecutableBinding({ id: tool.id, description: tool.description, input: tool.input, output: tool.output,
+			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id],
+			mcpOwner: null, remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'unused' } })
+		const run = baseOptions(agent, { async text() { providerCalls += 1; return { content: 'unexpected', usage, finishReason: 'stop' as const } } }, 'run')
+		;(run.options as any).bindings = { [tool.id]: binding }
+		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'continue_turn',
+			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
+			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }],
+				tools: [{ name: tool.id, description: tool.description!, parameters: { type: 'string' } }] },
+			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
+		;(run.options as any).resume = { state: cursor }
+
+		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: 'accepted' })
+		expect(exposureCalls).toBe(0)
+		expect(providerCalls).toBe(0)
+		expect(run.events.some(event => event.type === 'policy.exposure')).toBe(false)
+	})
+
+	it('rejects malformed accepted-model cursor request and response projections', () => {
+		const valid = { schemaVersion: 1, kind: 'accepted_model_turn', phase: 'after_model', rootRunId: 'run1', agentRunId: 'run1',
+			sessionId: 'session1', agentId: 'cursorAgent', invocationId: 'run1', step: 1, modelAlias: 'primary', input: 'hello',
+			mode: 'run', operation: 'text', request: { messages: [{ role: 'user', content: 'hello' }], tools: [] },
+			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true } as const
+		for (const malformed of [
+			{ ...valid, unknown: true },
+			{ ...valid, request: { ...valid.request, unknown: true } },
+			{ ...valid, request: { ...valid.request, call: { providerOptions: { date: new Date() } } } },
+			{ ...valid, request: { ...valid.request, call: { retry: { unknown: true } } } },
+			{ ...valid, request: { ...valid.request, schema: {} } },
+			{ ...valid, mode: 'stream', operation: 'text' },
+			{ ...valid, mode: 'stream', operation: 'textStream' },
+			{ ...valid, operation: 'object', response: { object: 'accepted', toolCalls: [], usage, finishReason: 'stop' } },
+			{ ...valid, request: { ...valid.request, messages: [{ role: 'assistant', content: '', providerContinuation: { providerId: 'test', items: [] } }] } },
+			{ ...valid, response: { ...valid.response, raw: { secret: true } } },
+			{ ...valid, response: { ...valid.response, object: 'opposite' } },
+			{ ...valid, response: { ...valid.response, toolCalls: [{ id: 'call', name: 'tool', arguments: 'ok', extra: true }] } },
+			{ ...valid, providerContinuation: { providerId: 'test', items: [{ kind: 'tool_call', callId: 'missing-call' }] } },
+		]) expect(() => freezeAcceptedModelTurnCursor(malformed as never)).toThrowError(expect.objectContaining({
+			code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'invalid_prepared_tool_checkpoint' },
+		}))
+	})
+
+	it('rejects accepted-model cursor correlation drift before provider I/O', async () => {
+		let providerCalls = 0
+		const agent = defineAgent('cursorCorrelationAgent', { instructions: 'Answer.' })
+		const run = baseOptions(agent, { async text() { providerCalls += 1; return { content: 'unexpected', usage, finishReason: 'stop' as const } } }, 'run')
+		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'continue_turn',
+			rootRunId: 'different-run', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
+			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			request: { messages: [{ role: 'user', content: 'hello' }], tools: [] },
+			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
+		;(run.options as any).resume = { state: cursor }
+		await expect(executeStandardAgent(run.options)).rejects.toMatchObject({ code: 'VALIDATION_ERROR',
+			meta: { where: 'invoke_options', issues: { reason: 'prepared_agent_context_mismatch' } } })
+		expect(providerCalls).toBe(0)
+	})
+
 	it('uses text for omitted output and object for every explicit output schema', async () => {
 		let textCalls = 0
 		let objectCalls = 0
@@ -628,6 +859,33 @@ describe('v4 standard agent loop', () => {
 		expect(run.events.filter(event => event.type === 'tool.finished')).toHaveLength(0)
 	})
 
+	it('resumes a suspended child through output completion without invoking or starting it twice', async () => {
+		const child = defineAgent('resumeChild', { instructions: 'Answer.' })
+		let invocations = 0
+		let outputValidations = 0
+		const output = z.string().transform(value => { outputValidations += 1; return value.toUpperCase() })
+		const binding = createAgentExecutableBinding({ id: 'resumeDelegate', description: 'Delegate.', input: z.string(), output,
+			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
+			mcpOwner: null, remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { invocations += 1; return 'unused' } })
+		const events: AgentPipelineEvent[] = []
+		const agent = defineAgent('resumeParent', { instructions: 'Delegate.' })
+		const entry = Object.freeze({ state: 'suspended-child' as const, call: Object.freeze({ id: 'resume-call', name: 'resumeDelegate', arguments: 'question' }),
+			input: 'question', bindingId: 'resumeDelegate', bindingContractDigest: binding.contractDigest, toolStarted: true as const,
+			childInvocationId: 'child-invocation', childRunId: 'child-run' })
+		const options = { agent, agentInput: 'question', calls: [entry.call], bindings: { resumeDelegate: binding }, interceptorRuntime: directInterceptorRuntime(),
+			invocation: { runId: 'parent-run', rootRunId: 'parent-run', sessionId: 'session', invocationId: 'parent-run', depth: 0,
+				remainingDepth: 1, metadata: {}, signal: new AbortController().signal } as never,
+			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
+			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
+			maxParallelToolCalls: 1, maxParallelSubagents: 1, resumeSuspendedChild: async () => 'DONE' } as const
+
+		const result = await resumePreparedAgentToolBatch(options, [entry], [])
+		expect(result[0]).toMatchObject({ entry: { state: 'completed', outcome: { status: 'completed', output: 'DONE' } }, message: { content: '"DONE"' } })
+		expect(invocations).toBe(0)
+		expect(outputValidations).toBe(0)
+		expect(events.map(event => event.type)).toEqual(['tool.finished'])
+	})
+
 	it('records recoverable and denied preflight entries without aborting sibling calls', async () => {
 		const bash = defineTool('bash', { description: 'Run.', input: z.object({ command: z.string() }), output: z.string(), async handler() { return 'unused' } })
 		const lookup = defineTool('lookupInvalid', { description: 'Lookup.', input: z.object({ query: z.string() }), output: z.string(), async handler() { return 'unused' } })
@@ -662,6 +920,31 @@ describe('v4 standard agent loop', () => {
 		await expect(executePreparedAgentToolBatch(options, prepared)).resolves.toHaveLength(4)
 		expect(events.filter(event => event.type === 'tool.started')).toHaveLength(0)
 		expect(events.filter(event => event.type === 'tool.finished')).toHaveLength(4)
+	})
+
+	it('awaits a subagent launch fence before tool lifecycle and invocation effects', async () => {
+		const child = defineAgent('revokedChild', { instructions: 'Reply.' })
+		let invoked = 0
+		const binding = createAgentExecutableBinding({ id: 'delegate', description: 'Delegate.', input: child.input, output: child.output,
+			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
+			mcpOwner: null, remoteMcpName: null, outputValidation: 'already-validated-target',
+			async beforeInvoke() { throw new SandboxPermissionDeniedError('owner_not_authorized') },
+			async invokeValidated() { invoked += 1; return 'never' },
+		})
+		const parent = defineAgent('revokedParent', { instructions: 'Delegate.', subagents: { delegate: child } })
+		const events: AgentPipelineEvent[] = []
+		const options = { agent: parent, agentInput: 'question', calls: [{ id: 'call-1', name: 'delegate', arguments: 'input' }],
+			bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { runId: 'run', rootRunId: 'run', sessionId: 's',
+				invocationId: 'run', depth: 0, remainingDepth: 1, metadata: {}, signal: new AbortController().signal } as never,
+			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
+			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
+			maxParallelToolCalls: 1, maxParallelSubagents: 1 } as const
+		const prepared = await prepareAgentToolBatch(options)
+		await expect(executePreparedAgentToolBatch(options, prepared)).rejects.toMatchObject({
+			code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' },
+		})
+		expect(invoked).toBe(0)
+		expect(events.filter(event => event.type === 'tool.started' || event.type === 'tool.finished')).toEqual([])
 	})
 
 	it('treats a resumed approval rejection as a recoverable approval tool error', async () => {

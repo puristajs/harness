@@ -1,4 +1,5 @@
 import type { ToolApprovalDecision, ToolApprovalRequest } from '../approvals/index.js'
+import type { AppliedApprovalDecisionV1 } from '../storage/types.js'
 import type { PreparedToolCheckpointEntryV1 } from '../approvals/prepared-tool-checkpoint.js'
 import { freezePreparedToolCheckpointEntry } from '../approvals/prepared-tool-checkpoint.js'
 import { createDecisionEvidence, runDecisionOperation } from '../decisions/index.js'
@@ -52,6 +53,7 @@ export interface AgentToolPipelineOptions {
 	readonly maxParallelSubagents: number
 	readonly onChildInterruption?: (entry: Extract<PreparedToolCheckpointEntryV1, { readonly state: 'suspended-child' }>) => Promise<void> | void
 	readonly onEntry?: (entry: PreparedToolCheckpointEntryV1) => Promise<void> | void
+	readonly resumeSuspendedChild?: (entry: Extract<PreparedToolCheckpointEntryV1, { readonly state: 'suspended-child' }>) => Promise<JsonValue>
 }
 
 export type StrictAgentHookResult =
@@ -175,6 +177,118 @@ export async function executePreparedAgentToolBatch(
 	return Object.freeze(results)
 }
 
+/**
+ * @internal Restores one persisted prepared batch without repeating preflight.
+ * Stored completed/recoverable/denied entries are replayed as model messages;
+ * only ready entries receive a fresh bounded lifecycle and may execute.
+ */
+export async function resumePreparedAgentToolBatch(
+	options: AgentToolPipelineOptions,
+	entries: readonly PreparedToolCheckpointEntryV1[],
+	decisions: readonly AppliedApprovalDecisionV1[],
+): Promise<readonly Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>[]> {
+	const decisionById = new Map(decisions.map(decision => [decision.approvalId, decision.approved] as const))
+	const replayed = new Map<string, Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>>()
+	const executable: PreparedAgentToolCall[] = []
+	for (const entry of entries) {
+		if (entry.state === 'completed') {
+			replayed.set(entry.call.id, Object.freeze({ entry, message: entry.modelMessage }))
+			continue
+		}
+		if (entry.state === 'recoverable' || entry.state === 'denied') {
+			const message = Object.freeze({ role: 'tool' as const, toolCallId: entry.call.id, content: JSON.stringify({ error: entry.error }) })
+			replayed.set(entry.call.id, Object.freeze({ entry, message }))
+			continue
+		}
+		if (entry.state === 'suspended-child') {
+			if (options.resumeSuspendedChild === undefined) throw new ValidationError('Prepared child continuation requires leaf-first resume.', {
+				where: 'invoke_options', issues: { reason: 'suspended_child_requires_leaf_resume' },
+			})
+			const childOutput = await options.resumeSuspendedChild(entry)
+			const completed = await completeSuspendedAgentTool(options, entry, childOutput)
+			replayed.set(entry.call.id, completed)
+			continue
+		}
+		const binding = options.bindings[entry.bindingId]
+		if (!binding || binding.id !== entry.bindingId || binding.contractDigest !== entry.bindingContractDigest || binding.id !== entry.call.name) {
+			throw new ValidationError('Prepared tool binding is unavailable.', {
+				where: 'invoke_options', issues: { reason: 'prepared_tool_binding_mismatch' },
+			})
+		}
+		if (entry.approvalId !== undefined) {
+			const approved = decisionById.get(entry.approvalId)
+			if (approved === undefined) throw new ValidationError('Prepared approval decision is missing.', {
+				where: 'invoke_options', issues: { reason: 'prepared_approval_decision_missing' },
+			})
+			await options.sink.emit({ type: 'approval.responded', agentId: options.agent.id,
+				invocationId: options.invocation.invocationId, toolId: binding.id, callId: entry.call.id,
+				step: options.step, approvalId: entry.approvalId, approved })
+			if (!approved) {
+				executable.push(recoverable(entry.call, 'transformed', new ToolError(
+					'Tool approval was rejected.', { tool_id: binding.id, tool_kind: 'approval' },
+				)))
+				continue
+			}
+		}
+		const lifecycle = boundedSignal(options.invocation.signal, options.toolTimeoutMs, options.invocation.deadline)
+		executable.push(Object.freeze({ call: entry.call, binding, input: entry.input, entry, lifecycle }))
+	}
+	const executed = await executePreparedAgentToolBatch(options, Object.freeze(executable))
+	for (const result of executed) replayed.set(result.entry.call.id, result)
+	return Object.freeze(entries.map(entry => {
+		const result = replayed.get(entry.call.id)
+		if (!result) throw new TypeError('Prepared tool result is unavailable.')
+		return result
+	}))
+}
+
+/** @internal Completes a started subagent tool occurrence after its leaf resumes. */
+export async function completeSuspendedAgentTool(
+	options: AgentToolPipelineOptions,
+	entry: Extract<PreparedToolCheckpointEntryV1, { readonly state: 'suspended-child' }>,
+	childOutput: JsonValue,
+): Promise<Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>> {
+	const binding = options.bindings[entry.bindingId]
+	if (!binding || binding.implementationKind !== 'subagent' || binding.id !== entry.bindingId
+		|| binding.id !== entry.call.name || binding.contractDigest !== entry.bindingContractDigest) {
+		throw new ValidationError('Prepared child binding is unavailable.', {
+			where: 'invoke_options', issues: { reason: 'prepared_child_binding_mismatch' },
+		})
+	}
+	const lifecycle = boundedSignal(options.invocation.signal, options.toolTimeoutMs, options.invocation.deadline)
+	try {
+		let output: JsonValue = childOutput
+		if (binding.outputValidation === 'required') {
+			const parsed = await withAbortSignal(lifecycle.signal, 'tool', 'Tool output validation was cancelled.', () => validateSchema(
+				binding.output, output, { where: 'tool_output', message: 'Tool output validation failed.', assertNotAborted: () => assertActive(lifecycle.signal) },
+			))
+			if (!isJsonValue(parsed)) throw new ValidationError('Tool output validation failed.', { where: 'tool_output', issues: { reason: 'non_json_tool_output' } })
+			output = parsed
+		}
+		const interceptor = options.agent.guardrails?.[agentGuardrailsBinding] as AgentExecutionInterceptor | undefined
+		if (interceptor?.afterTool) {
+			const result = await runStrictAgentHook({ interceptorId: interceptor.id, phase: 'tool_output',
+				occurrence: occurrence(options, binding.id, entry.call.id), signal: lifecycle.signal,
+				decisionTimeoutMs: options.decisionTimeoutMs, allowTransform: true,
+				...(lifecycle.deadline === undefined ? {} : { deadline: lifecycle.deadline }),
+				invoke: decision => interceptor.afterTool?.(interceptorContext(options, interceptor, decision, {
+					toolId: binding.id, callId: entry.call.id, output: freezeJson(copyJson(output)),
+				})) })
+			if (result?.decision === 'block') throw blocked(options, interceptor, 'tool_output', binding.id, entry.call.id, result.reasonCode)
+			if (result?.decision === 'transform') output = result.value
+		}
+		const message = Object.freeze({ role: 'tool' as const, toolCallId: entry.call.id, content: JSON.stringify(output) })
+		const completed = freezePreparedToolCheckpointEntry({ state: 'completed', call: entry.call, input: entry.input,
+			bindingId: binding.id, bindingContractDigest: binding.contractDigest, toolStarted: true,
+			outcome: Object.freeze({ status: 'completed', output }), modelMessage: message })
+		await withAbortSignal(lifecycle.signal, 'tool', 'Tool lifecycle event emission was cancelled.', () => options.sink.emit({
+			type: 'tool.finished', agentId: options.agent.id, toolId: binding.id, callId: entry.call.id, output,
+		}))
+		await options.onEntry?.(completed)
+		return Object.freeze({ entry: completed, message })
+	} finally { lifecycle.dispose() }
+}
+
 async function prepareOne(options: AgentToolPipelineOptions, providerCall: ToolCallSpec): Promise<PreparedAgentToolCall> {
 	const lifecycle = boundedSignal(options.invocation.signal, options.toolTimeoutMs, options.invocation.deadline)
 	let call = freezeCall(providerCall)
@@ -274,6 +388,8 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 	}
 	const { binding, call, input } = prepared
 	const signal = prepared.lifecycle.signal
+	const invocation = Object.freeze({ ...options.invocation, step: options.step, toolId: binding.id, callId: call.id, signal,
+		...(prepared.lifecycle.deadline === undefined ? {} : { deadline: prepared.lifecycle.deadline }) })
 	let finishAttempted = false
 	const emitFinished = async (event: Extract<AgentPipelineEvent, { readonly type: 'tool.finished' }>): Promise<void> => {
 		if (finishAttempted) throw new TypeError('tool.finished has already been attempted for this tool occurrence.')
@@ -283,15 +399,21 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 	}
 	try {
 		assertActive(signal)
+		if (binding.beforeInvoke !== undefined) {
+			await withAbortSignal(signal, 'tool', 'Tool launch authorization was cancelled.', () => binding.beforeInvoke!(invocation))
+		}
+	} catch (error) {
+		binding.afterInvoke?.(invocation)
+		prepared.lifecycle.dispose()
+		throw error
+	}
+	try {
 		await withAbortSignal(signal, 'tool', 'Tool lifecycle event emission was cancelled.', () => options.sink.emit({
 			type: 'tool.started', agentId: options.agent.id, toolId: binding.id, callId: call.id, input: call.arguments,
 		}))
 		let output: unknown
 		try {
-			output = await withAbortSignal(signal, 'tool', 'Tool execution was cancelled.', () => Reflect.apply(binding.invokeValidated, binding, [
-				Object.freeze({ ...options.invocation, step: options.step, toolId: binding.id, callId: call.id, signal,
-					...(prepared.lifecycle.deadline === undefined ? {} : { deadline: prepared.lifecycle.deadline }) }), input, call.arguments,
-			]))
+			output = await withAbortSignal(signal, 'tool', 'Tool execution was cancelled.', () => binding.invokeValidated(invocation, input, call.arguments))
 			if (binding.outputValidation === 'required') {
 				output = await withAbortSignal(signal, 'tool', 'Tool output validation was cancelled.', () => validateSchema(binding.output, output, { where: 'tool_output', message: 'Tool output validation failed.', assertNotAborted: () => assertActive(signal) }))
 			} else if (!isJsonValue(output)) {
@@ -345,6 +467,7 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 		await options.onEntry?.(entry)
 		return Object.freeze({ entry, message })
 	} finally {
+		binding.afterInvoke?.(invocation)
 		prepared.lifecycle.dispose()
 	}
 }

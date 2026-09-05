@@ -1,6 +1,8 @@
 import { HarnessConfigError } from '../errors/index.js'
 import { compileDefinitionGraph, type DefinitionGraphRoots } from '../runtime/compiled-graph.js'
 import type { RuntimeRequirements, RuntimeRequirementsFor } from '../runtime/runtime-requirements.js'
+import { instantiateStandaloneHarness, type HarnessInstance } from '../runtime/standalone-instance.js'
+import { validateHarnessInstanceConfig, type HarnessInstanceConfig } from '../runtime/instance-config.js'
 import {
 	resolveHarnessExecutionDefaults,
 	type HarnessExecutionDefaults,
@@ -117,6 +119,9 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 	readonly requirements: Catalog['requirements']
 	readonly $infer: HarnessInfer<Catalog['contracts'], Catalog['requirements']>
 	inspect(): HarnessInspection<Catalog['requirements']>
+	getInstance<const AdditionalGroups extends readonly string[] = readonly []>(
+		config: HarnessInstanceConfig<Catalog['requirements'], AdditionalGroups>,
+	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
 	use<Other extends HarnessCatalogView>(catalog: HarnessCatalogDefinition<string, Other>): HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name>
 	addTool<Tool extends AnyNonMcpToolDefinition>(tool: Tool): HarnessDefinition<WithTool<Catalog, Tool>, Name>
 	addSkill<Skill extends SkillDefinition>(skill: Skill): HarnessDefinition<WithSkill<Catalog, Skill>, Name>
@@ -172,6 +177,10 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		requirements: catalog.requirements,
 		$infer: inferPhantom as HarnessInfer<Catalog['contracts'], Catalog['requirements']>,
 		inspect: () => inspectHarness(name, catalog),
+		getInstance: (config: HarnessInstanceConfig<Catalog['requirements'], readonly string[]>) => instantiateStandaloneHarness({
+			name, ...(revision === undefined ? {} : { revision }), defaults, graph,
+			bindings: validateHarnessInstanceConfig(graph.requirements, config),
+		}) as Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>,
 		use: (other: HarnessCatalogDefinition<string, HarnessCatalogView>) => {
 			const identity = getDefinitionIdentity(other)
 			if (identity?.kind !== 'catalog' || !Object.isFrozen(other)) throw foreignCatalog()

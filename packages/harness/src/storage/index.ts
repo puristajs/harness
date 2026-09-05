@@ -3,7 +3,6 @@ export { InMemoryHarnessStorage, inMemoryHarnessStorage } from './in-memory.js'
 export type {
   DurableActiveRunStatus,
   DurableRunLease,
-  DurableRunStart,
   DurableRunStatus,
   DurableTerminalRunStatus,
   RunCheckpoint

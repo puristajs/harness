@@ -944,7 +944,7 @@ async function applyAfterModelInterceptors(
       interceptor.afterModel?.({
         ...interceptorContext(args, interceptor.id, input, step, model, decision),
         request: freezeJson(request),
-        response: freezeJson(response),
+        response: freezeJson({ ...response, toolCalls: response.toolCalls ?? [] }),
       }),
     undefined,
     false,

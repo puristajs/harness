@@ -6,9 +6,15 @@ import { defineHarness } from '../src/definitions/harness.js'
 import type { ToolRequirements } from '../src/definitions/index.js'
 import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
+import type { AgentModelResponse } from '../src/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
+
+const publicTextModelResponse: AgentModelResponse = { content: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+const publicObjectModelResponse: AgentModelResponse = { object: { ok: true }, toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+void publicTextModelResponse
+void publicObjectModelResponse
 
 const input = z.object({ message: z.string() })
 const output = z.object({ answer: z.string() })
@@ -229,6 +235,18 @@ const workflow = defineWorkflow('resolveCase', {
 		return { answer: child.answer + String(embedding.embeddings.length) }
 	},
 })
+const sandboxedChildWorkflow = defineWorkflow('sandboxedChild', {
+	input, output, agents: { classify: structuredAgent }, childTaskSandboxGroups: ['reviewers'] as const,
+	async handler(context) {
+		const task = await context.childTasks.start('classify', context.input, { callId: 'review', sandbox: { group: 'reviewers' } })
+		// @ts-expect-error child-task group overrides use only the workflow-declared vocabulary
+		await context.childTasks.start('classify', context.input, { callId: 'typo', sandbox: { group: 'admins' } })
+		return task.result()
+	},
+})
+const sandboxedChildHarness = defineHarness({ name: 'sandboxedChildHarness' }).addWorkflow(sandboxedChildWorkflow)
+type _ChildSandboxGroup = Expect<Equal<typeof sandboxedChildHarness.$infer.requirements.sandbox.requiredGroups[number], 'reviewers'>>
+void sandboxedChildHarness
 type _WorkflowInput = Expect<Equal<typeof workflow.$infer.input, { message: string }>>
 type _WorkflowOutput = Expect<Equal<typeof workflow.$infer.output, { answer: string }>>
 const workflowUpdates: 'none' = workflow.contract.updates
@@ -367,7 +385,7 @@ const durableRequired: true = featureHarness.$infer.requirements.storage.durable
 const workspaceRequired: true = featureHarness.$infer.requirements.workspace
 const artifactsRequired: true = featureHarness.$infer.requirements.artifacts
 type _GuardMemoryCapability = Expect<Equal<typeof featureHarness.$infer.requirements.memory.capabilities[number], 'memory.text_search'>>
-type _GuardSandboxCapability = Expect<Equal<typeof featureHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.fs'>>
+type _GuardSandboxCapability = Expect<Equal<typeof featureHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.fs' | 'sandbox.workspace_binding'>>
 type _GuardSkillRuntime = Expect<Equal<typeof featureHarness.$infer.requirements.skillRuntimes[number], 'node'>>
 type _GuardModelCapability = Expect<Equal<typeof featureHarness.$infer.requirements.models.guardModel.capabilities[number], 'text'>>
 const emptyRequirementsHarness = defineHarness({ name: 'emptyRequirements' })
@@ -391,6 +409,85 @@ const approvalAgent = defineAgent('approvalAgent', {
 const approvalDurable: true = defineHarness({ name: 'approvalHarness' })
 	.addAgent(approvalAgent).$infer.requirements.storage.durable
 void approvalDurable
+
+const runtimeWorkflow = defineWorkflow('runtimeWorkflow', {
+	input,
+	output,
+	async handler({ input: value }) { return { answer: value.message } },
+})
+const runtimeHarness = defineHarness({ name: 'runtimeHarness' }).addWorkflow(runtimeWorkflow)
+const runtimeInstancePromise = runtimeHarness.getInstance({})
+declare const typedModelProvider: import('../src/ports/model-provider.js').ModelProvider
+declare const typedSandbox: import('../src/sandbox/index.js').Sandbox
+const groupedAgent = defineAgent('groupedRuntimeAgent', { instructions: 'Reply.', sandbox: { group: 'banking' } })
+const groupedRuntimeHarness = defineHarness({ name: 'groupedRuntimeHarness' }).addAgent(groupedAgent)
+type _GraphSandboxGroup = Expect<Equal<typeof groupedRuntimeHarness.$infer.requirements.sandbox.requiredGroups[number], 'banking'>>
+const groupedRuntimeInstance = groupedRuntimeHarness.getInstance({
+	model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox,
+	sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'banking' } },
+})
+const additionalGroupRuntimeInstance = groupedRuntimeHarness.getInstance({
+	model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox,
+	sandboxBinding: { groups: ['banking', 'support'] as const, defaultPolicy: { group: 'support' } },
+})
+// @ts-expect-error every graph-required group must be present in the configured tuple
+groupedRuntimeHarness.getInstance({ model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox, sandboxBinding: { groups: ['support'] as const } })
+// @ts-expect-error default policy cannot widen the configured group tuple
+groupedRuntimeHarness.getInstance({ model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox, sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'typo' } } })
+void groupedRuntimeInstance
+void additionalGroupRuntimeInstance
+type InferredRuntimeInstance = Awaited<ReturnType<typeof directHarness.getInstance>>
+declare const inferredRuntimeInstance: InferredRuntimeInstance
+declare const dynamicTargetId: string
+async function checkRuntimeSurface() {
+	const instance = await runtimeInstancePromise
+	const session = await instance.getSession('typedSession')
+	// @ts-expect-error sandbox-free graphs do not accept caller-supplied sandbox owners
+	await instance.getSession('typedSession', { sandboxOwner: { namespace: 'external', id: 'owner', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' } })
+	const completed = await session.workflows.runtimeWorkflow.run({ message: 'hello' })
+	if (completed.status === 'completed') {
+		const answer: string = completed.output.answer
+		void answer
+	}
+	for await (const event of session.workflows.runtimeWorkflow.stream({ message: 'hello' })) {
+		const sequence: number = event.sequence
+		void sequence
+	}
+	// @ts-expect-error unknown targets are not present on the exact definition-keyed map
+	session.workflows.unknown
+	// @ts-expect-error target inputs are inferred from the selected workflow contract
+	await session.workflows.runtimeWorkflow.run({ message: 1 })
+	// @ts-expect-error host-only context cannot enter standalone invoke options
+	await session.workflows.runtimeWorkflow.run({ message: 'hello' }, { hostContext: {} })
+	// @ts-expect-error target maps are readonly
+	session.workflows.runtimeWorkflow = session.workflows.runtimeWorkflow
+
+	const inferredSession = await inferredRuntimeInstance.getSession('typedAgentSession')
+	const agentCompleted = await inferredSession.agents.classify.run({ message: 'hello' })
+	if (agentCompleted.status === 'completed') {
+		const answer: string = agentCompleted.output.answer
+		void answer
+	}
+	const task = await inferredSession.childTasks.get('task-id')
+	if (task !== undefined) {
+		const status = await task.status()
+		const workflowInvocationId: string = status.descriptor.workflowInvocationId
+		const callId: string = status.descriptor.callId
+		const modelAlias: string = status.descriptor.modelAlias
+		void workflowInvocationId
+		void callId
+		void modelAlias
+	}
+	// @ts-expect-error unknown agents are not present on the exact definition-keyed map
+	inferredSession.agents.unknown
+	// @ts-expect-error standalone sessions have no ambiguous singular agent registry
+	inferredSession.agent
+	// @ts-expect-error standalone sessions have no string lookup service locator
+	inferredSession.getAgent('classify')
+	// @ts-expect-error arbitrary string indexing cannot bypass the exact target map
+	inferredSession.agents[dynamicTargetId]
+}
+void checkRuntimeSurface
 
 // @ts-expect-error catalog composition requires the hidden catalog identity
 defineHarness({ name: 'copiedCatalog' }).use({ ...catalog })

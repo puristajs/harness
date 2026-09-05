@@ -67,6 +67,10 @@ export interface AgentExecutableBinding<Input extends ModelSchema = ModelSchema,
 	readonly definitionIdentity: DefinitionIdentity
 	readonly contractDigest: string
 	readonly outputValidation: 'required' | 'already-validated-target'
+	/** @internal Runtime-owned launch fence run before any tool lifecycle event. */
+	readonly beforeInvoke?: (context: AgentToolInvocationContext) => Promise<void>
+	/** @internal Releases an unused runtime-owned launch fence. */
+	readonly afterInvoke?: (context: AgentToolInvocationContext) => void
 	invokeValidated(context: AgentToolInvocationContext, input: Infer<Input> & JsonValue, wireInput: InferIn<Input> & JsonValue): Promise<unknown>
 }
 
@@ -123,7 +127,10 @@ export function createAgentExecutableBinding<Input extends ModelSchema, Output e
 	return Object.freeze({
 		id: options.id, description: options.description, input: options.input, output: options.output,
 		implementationKind: options.implementationKind, definitionIdentity: options.definitionIdentity,
-		contractDigest, outputValidation, invokeValidated: options.invokeValidated,
+		contractDigest, outputValidation,
+		...(options.beforeInvoke === undefined ? {} : { beforeInvoke: options.beforeInvoke }),
+		...(options.afterInvoke === undefined ? {} : { afterInvoke: options.afterInvoke }),
+		invokeValidated: options.invokeValidated,
 	})
 }
 

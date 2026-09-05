@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  defineHarness,
   DurableRunLeaseError,
   DurableStepError,
   DurableTerminalRunError,
@@ -17,16 +17,36 @@ import {
   SqliteHarnessStorage,
   sqliteHarnessStorage,
 } from '../src/index.js'
-import type { AdapterCapability, JsonValue, Sandbox, SandboxSessionFor } from '../src/index.js'
+import type { AdapterCapability, HarnessStorage, JsonValue, Sandbox, SandboxSessionFor } from '../src/index.js'
+import { canonicalJson } from '../src/runtime/canonical-json.js'
 import { createLocalWorkspaceCoordinator } from '../src/local/local-workspace.js'
 import type { HarnessAdapterContext } from '../src/ports/harness-context.js'
-import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { harnessStorageContract } from '../src/testing/harnessStorageContract.js'
 import { sandboxTextSearchContract } from '../src/testing/sandboxContract.js'
 import { RecordingLogger, RecordingTelemetry } from './telemetryFlowHarness.js'
+import { defineHarness as defineV4Harness } from '../src/definitions/harness.js'
+import { defineAgent } from '../src/definitions/agent.js'
+import { defineTool } from '../src/definitions/tool.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
+import { OperationCancelledError } from '../src/errors/index.js'
+import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'purista-harness-'))
+}
+
+async function acquireRun(storage: HarnessStorage, runId: string, sessionId: string, workerId: string, stepId: string) {
+  const run = await storage.getRun(runId)
+  if (!run) throw new Error('test run is missing')
+  const checkpoint = await storage.loadCheckpoint(runId)
+  const mode = run.revision === 1 && checkpoint === undefined ? 'initial' as const : 'resume' as const
+  const selectedStep = checkpoint?.stepId ?? stepId
+  const expectedStatus = ['running', 'waiting', 'interrupted'].includes(run.status) ? run.status as 'running' | 'waiting' | 'interrupted' : 'interrupted'
+  const request = { mode, runId, sessionId, workerId,
+    expected: { revision: run.revision, status: expectedStatus, checkpoint: { stepId: selectedStep, sequence: checkpoint?.sequence ?? null } } } as const
+  const acquisitionId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', mode, runId,
+    sessionId, workerId, run.revision, expectedStatus, selectedStep, checkpoint?.sequence ?? null, null])).digest('hex')}`
+  return storage.acquireRun({ ...request, acquisitionId })
 }
 
 function durableOwner(sessionId: string) {
@@ -206,15 +226,9 @@ describe('local durable execution', () => {
       kind: 'workflow',
       target: 'review',
       startedAt: new Date().toISOString(),
-      status: 'running',
-    })
-    await first.acquireRun({
-      runId: 'run-a',
-      sessionId: 'session-a',
-      workerId: 'worker-a',
-      stepId: 'review',
       input: null,
     })
+    await acquireRun(first, 'run-a', 'session-a', 'worker-a', 'review')
     await first.registerWait({
       runId: 'run-a',
       sessionId: 'session-a',
@@ -247,23 +261,16 @@ describe('local durable execution', () => {
       kind: 'workflow',
       target: 'step-a',
       startedAt: new Date().toISOString(),
-      status: 'running',
       input: { ok: true },
     })
-    const lease = await storage.acquireRun({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      workerId: 'worker-1',
-      stepId: 'step-a',
-      input: { ok: true },
-    })
+    const lease = await acquireRun(storage, 'run-1', 'session-1', 'worker-1', 'step-a')
     await storage.commitCheckpoint({
       runId: lease.runId,
       sessionId: lease.sessionId,
       workerId: lease.workerId,
       leaseId: lease.leaseId,
       stepId: 'step-a',
-      input: lease.start.input,
+      input: lease.run.input,
       attempt: lease.attempt,
       sequence: 1,
       output: { value: 1 },
@@ -272,13 +279,7 @@ describe('local durable execution', () => {
     await storage.close()
 
     const reopened = sqliteHarnessStorage({ file })
-    const resumed = await reopened.acquireRun({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      workerId: 'worker-1',
-      stepId: 'step-a',
-      input: { ok: true },
-    })
+    const resumed = await acquireRun(reopened, 'run-1', 'session-1', 'worker-1', 'step-a')
     expect(resumed.resumed).toBe(true)
     expect(resumed.checkpoint?.output).toEqual({ value: 1 })
     await reopened.close()
@@ -372,134 +373,308 @@ describe('local durable execution', () => {
     await expect(session.readText('/workspace/note.txt')).resolves.toBe('active-before-failed-restore')
   })
 
-  it('replays durable workflow steps across harness rebuilds with the local bundle', async () => {
+  it('replays a terminal durable workflow across v4 Harness rebuilds with the local storage bundle', async () => {
     const root = await tempRoot()
-    const effects: Record<string, number> = {}
-
-    function build(mode: 'fail' | 'success') {
+    let effects = 0
+    const workflow = defineWorkflow('recover', {
+      input: z.string(), output: z.string(), durable: true,
+      async handler({ input }) { effects += 1; return input },
+    })
+    async function build() {
       const local = localDurableExecution({ root })
-      const model = new FakeModelProvider()
       return {
         local,
-        harness: defineHarness()
-          .storage(local.storage)
-          .sandbox(local.sandbox)
-          .workspace(local.workspace)
-          .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
-          .tools({})
-          .skills({})
-          .agent('noop', { model: 'fast', instructions: 'x', builtinTools: false })
-          .workflow('recover', {
-            input: z.string(),
-            output: z.string(),
-            handler: async (ctx) => {
-              const a = await ctx.step('a', async () => {
-                effects['a'] = (effects['a'] ?? 0) + 1
-                return { a: 1 }
-              })
-              if (mode === 'fail') throw new Error('boom')
-              const b = await ctx.step('b', async () => {
-                effects['b'] = (effects['b'] ?? 0) + 1
-                return { b: 2 }
-              })
-              return JSON.stringify({ ...a, ...b })
-            },
-          })
-          .build(),
+        harness: await defineV4Harness({ name: 'localReplay', revision: 'release-1' }).addWorkflow(workflow)
+          .getInstance({ storage: local.storage }),
       }
     }
 
-    const first = build('fail')
+    const first = await build()
     const firstSession = await first.harness.getSession('session-retry')
-    await expect(firstSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).rejects.toThrow(
-      'boom',
-    )
-    await first.harness.shutdown()
+    await expect(firstSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).resolves.toMatchObject({ status: 'completed', output: 'go' })
+    await first.harness.close()
+    await first.local.close()
 
-    const second = build('success')
+    const second = await build()
     const secondSession = await second.harness.getSession('session-retry')
-    await expect(secondSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).resolves.toMatchObject({ status: 'completed', output: JSON.stringify({ a: 1, b: 2 }) })
-    expect(effects).toEqual({ a: 1, b: 1 })
-    await expect(second.local.storage.loadCheckpoint('run-retry')).resolves.toMatchObject({ stepId: 'b' })
-    await second.harness.shutdown()
+    await expect(secondSession.workflows.recover.run('go', { durable: { runId: 'run-retry' } })).resolves.toMatchObject({ status: 'completed', output: 'go' })
+    expect(effects).toBe(1)
+    await second.harness.close()
+    await second.local.close()
   })
 
-  it('enforces the checkpoint payload quota for durable workflow step output', async () => {
+  it('enforces the workspace checkpoint payload quota through the v4 standalone runtime', async () => {
     const root = await tempRoot()
     const local = localDurableExecution({ root, policy: { quota: { maxCheckpointPayloadBytes: 8 } } })
-    const harness = defineHarness()
-      .storage(local.storage)
-      .sandbox(local.sandbox)
-      .workspace(local.workspace)
-      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .tools({})
-      .skills({})
-      .agent('noop', { model: 'fast', instructions: 'x', builtinTools: false })
-      .workflow('oversized_checkpoint', {
-        input: z.string(),
-        output: z.string(),
-        handler: async (ctx) => await ctx.step('oversized', async () => '1234567'),
-      })
-      .build()
+    const workflow = defineWorkflow('oversizedCheckpoint', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      handler: async ({ step }) => await step('oversized', async () => '1234567'),
+    })
+    const harness = await defineV4Harness({ name: 'checkpointQuota', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
 
     try {
       const session = await harness.getSession('payload-limit-session')
-      await expect(
-        session.workflows.oversized_checkpoint.run('go', { durable: { runId: 'payload-limit-run' } }),
-      ).rejects.toMatchObject({
+      await expect(session.workflows.oversizedCheckpoint.run('go', {
+        durable: { runId: 'payload-limit-run' },
+      })).rejects.toMatchObject({
         code: 'WORKSPACE_QUOTA_EXCEEDED',
         meta: { quota: 'maxCheckpointPayloadBytes', limit: 8, actual: 9 },
       })
     } finally {
-      await harness.shutdown()
+      await harness.close()
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  it('fails a durable checkpoint before copying files while an unjoined child task is active', async () => {
+  it('rejects malformed per-run workspace policy before opening a workspace', async () => {
     const root = await tempRoot()
     const local = localDurableExecution({ root })
-    let child: import('../src/index.js').ChildTaskHandle<string> | undefined
-    const harness = defineHarness()
-      .storage(local.storage)
-      .sandbox(local.sandbox)
-      .workspace(local.workspace)
-      .models({ fast: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .tools({})
-      .skills({})
-      .agent('worker', {
-        model: 'fast',
-        input: z.string(),
-        output: z.string(),
-        builtinTools: false,
-        handler: async (ctx) =>
-          await new Promise<string>((_resolve, reject) => {
-            ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason), { once: true })
-          }),
-      })
-      .workflow('checkpoint', {
-        input: z.string(),
-        output: z.string(),
-        delegation: { agents: ['worker'] },
-        handler: async (ctx) => {
-          child = await ctx.childTasks.start('worker', ctx.input, { idempotencyKey: 'background-worker' })
-          await ctx.step('checkpoint', async () => ({ written: true }))
-          return 'unreachable'
-        },
-      })
-      .build()
-
+    const startWorkspace = vi.spyOn(local.workspace, 'startWorkspace')
+    const workflow = defineWorkflow('workspacePolicy', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      async handler({ input }) { return input },
+    })
+    const harness = await defineV4Harness({ name: 'workspacePolicyHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
     try {
-      const session = await harness.getSession('session-child-checkpoint')
-      await expect(
-        session.workflows.checkpoint.run('work', { durable: { runId: 'run-child-checkpoint' } }),
-      ).rejects.toMatchObject({
-        code: 'SANDBOX_CONFLICT',
-        meta: { reason: 'checkpoint_busy' },
-      })
-      await child?.cancel('test cleanup')
+      const session = await harness.getSession('workspace-policy-session')
+      await expect(session.workflows.workspacePolicy.run('go', {
+        durable: { runId: 'workspace-policy-run', workspacePolicy: { quota: { maxWorkspaceBytes: 0 } } },
+      } as never)).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'invoke_options' } })
+      expect(startWorkspace).not.toHaveBeenCalled()
+      await expect(local.storage.getRun('workspace-policy-run')).resolves.toBeUndefined()
     } finally {
-      await harness.shutdown()
+      await harness.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('starts, checkpoints, and finishes a successful v4 durable workspace in order', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const calls: string[] = []
+    for (const method of ['startWorkspace', 'pauseWorkspace', 'pinCheckpoint', 'finish', 'releaseCheckpoint'] as const) {
+      const original = local.workspace[method].bind(local.workspace) as (...args: never[]) => Promise<unknown>
+      vi.spyOn(local.workspace, method).mockImplementation(async (...args: never[]) => {
+        calls.push(method)
+        return original(...args)
+      })
+    }
+    const workflow = defineWorkflow('workspaceSuccess', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      handler: async ({ step }) => await step('prepare', async () => 'ready'),
+    })
+    const harness = await defineV4Harness({ name: 'workspaceSuccessHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+    try {
+      const session = await harness.getSession('workspace-success-session')
+      await expect(session.workflows.workspaceSuccess.run('go', { durable: { runId: 'workspace-success-run' } }))
+        .resolves.toMatchObject({ status: 'completed', output: 'ready' })
+      expect(calls).toEqual(['startWorkspace', 'pauseWorkspace', 'pinCheckpoint', 'finish', 'releaseCheckpoint'])
+    } finally {
+      await harness.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+		['private', 'private', { kind: 'workflow', harnessName: 'workspaceDefaultPrivate', id: 'workspacePartition' }],
+		['group', { group: 'reviewers' }, { kind: 'group', id: 'reviewers' }],
+	] as const)('uses the runtime %s default policy for a durable workspace partition', async (_case, defaultPolicy, expectedPartition) => {
+		const root = await tempRoot()
+		const local = localDurableExecution({ root })
+		const opened = vi.spyOn(local.sandbox, 'open')
+		const workflow = defineWorkflow('workspacePartition', { input: z.string(), output: z.string(), durable: true, workspace: true,
+			async handler({ input }) { return input } })
+		const instance = await defineV4Harness({ name: defaultPolicy === 'private' ? 'workspaceDefaultPrivate' : 'workspaceDefaultGroup', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
+				sandboxBinding: defaultPolicy === 'private'
+					? { defaultPolicy }
+					: { groups: ['reviewers'] as const, defaultPolicy } } as never)
+		try {
+			const session = await instance.getSession(`workspace-${_case}`)
+			await session.workflows.workspacePartition.run('go', { durable: { runId: `workspace-${_case}-run` } })
+			expect(opened.mock.calls.some(([request]) => request.scope.lifetime === 'run'
+				&& JSON.stringify(request.scope.partition) === JSON.stringify(expectedPartition))).toBe(true)
+		} finally {
+			await instance.close()
+			await local.close()
+			await rm(root, { recursive: true, force: true })
+		}
+  })
+
+  it('resumes a checkpointed v4 agent workspace before an approved effect', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const resumeWorkspace = vi.spyOn(local.workspace, 'resumeWorkspace')
+    const provider = new FakeModelProvider({ strict: true })
+    provider.enqueueObject({ object: '', toolCalls: [{ id: 'call-1', name: 'effect', arguments: 'approved' }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+    provider.enqueueObject({ object: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    let effects = 0
+    const effect = defineTool('effect', { description: 'Apply one approved effect.', input: z.string(), output: z.string(),
+      async handler(_context, value) { effects += 1; return value } })
+    const agent = defineAgent('workspaceApproval', { input: z.string(), output: z.string(), instructions: 'Use the effect.',
+      prompt: value => ({ role: 'user', content: value }), tools: [effect], permissions: { bash: 'allow', write: 'allow', edit: 'allow' },
+      governance: { policies: [{ kind: 'native', id: 'approvalPolicy', rules: [{ id: 'approveEffect', tools: ['effect'], effect: 'require_approval' }] }] },
+      durable: true, workspace: true })
+    const definition = defineV4Harness({ name: 'workspaceApprovalHarness', revision: 'v1' }).addAgent(agent)
+    const first = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
+      model: { provider, model: 'fake' } })
+    const firstSession = await first.getSession('workspace-approval-session')
+    const interrupted = await firstSession.agents.workspaceApproval.run('start', { durable: { runId: 'workspace-approval-run' } })
+    if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
+    expect(effects).toBe(0)
+    await first.close()
+
+    const second = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
+      model: { provider, model: 'fake' } })
+    try {
+      const session = await second.getSession('workspace-approval-session')
+      const request = interrupted.interrupt.requests[0]!
+      await expect(session.agents.workspaceApproval.run('start', { resume: { type: 'tool-approval', runId: interrupted.runId,
+        interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'workspace-resume-event',
+        decisions: [{ approvalId: request.approvalId, approved: true }] } })).resolves.toMatchObject({ status: 'completed', output: 'done' })
+      expect(resumeWorkspace).toHaveBeenCalledTimes(1)
+      expect(effects).toBe(1)
+    } finally {
+      await second.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finishes and aborts a cancelled v4 durable workspace after the run terminal is committed', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const finish = vi.spyOn(local.workspace, 'finish')
+    const abort = vi.spyOn(local.workspace, 'abortWorkspace')
+    let entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const workflow = defineWorkflow('workspaceCancelled', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      async handler({ signal }) {
+        entered()
+        return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      },
+    })
+    const harness = await defineV4Harness({ name: 'workspaceCancelledHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+    try {
+      const session = await harness.getSession('workspace-cancel-session')
+      const controller = new AbortController()
+      const running = session.workflows.workspaceCancelled.run('go', { signal: controller.signal,
+        durable: { runId: 'workspace-cancel-run' } })
+      await started
+      controller.abort()
+      await expect(running).rejects.toBeInstanceOf(OperationCancelledError)
+      expect(finish).toHaveBeenCalledWith(expect.objectContaining({ runId: 'workspace-cancel-run', status: 'cancelled' }))
+      expect(abort).toHaveBeenCalledWith(expect.objectContaining({ runId: 'workspace-cancel-run', reason: 'cancelled' }))
+      await expect(local.storage.getRun('workspace-cancel-run')).resolves.toMatchObject({ status: 'cancelled' })
+    } finally {
+      await harness.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finishes a failed v4 durable workspace only after the failed run is committed', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const calls: string[] = []
+    let workspaceRef: string | undefined
+    const finalizeRun = local.storage.finalizeRun.bind(local.storage)
+    vi.spyOn(local.storage, 'finalizeRun').mockImplementation(async request => {
+      calls.push('finalizeRun')
+      return finalizeRun(request)
+    })
+    const finish = local.workspace.finish.bind(local.workspace)
+    vi.spyOn(local.workspace, 'finish').mockImplementation(async request => {
+      calls.push(`finish:${request.status}`)
+      workspaceRef = request.workspaceRef
+      return finish(request)
+    })
+    const workflow = defineWorkflow('workspaceFailed', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      async handler() { throw new Error('workflow failed') },
+    })
+    const harness = await defineV4Harness({ name: 'workspaceFailedHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+    try {
+      const session = await harness.getSession('workspace-failed-session')
+      await expect(session.workflows.workspaceFailed.run('go', { durable: { runId: 'workspace-failed-run' } }))
+        .rejects.toThrow('workflow failed')
+      expect(calls).toEqual(['finalizeRun', 'finish:failed'])
+      await expect(local.storage.getRun('workspace-failed-run')).resolves.toMatchObject({ status: 'failed' })
+      await expect(local.workspace.inspectWorkspace?.({ workspaceRef }))
+        .resolves.toMatchObject({ state: 'terminal', terminal: { status: 'failed' } })
+    } finally {
+      await harness.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('aborts a started workspace when the run sandbox binding cannot open', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const abort = vi.spyOn(local.workspace, 'abortWorkspace')
+    vi.spyOn(local.sandbox, 'open').mockRejectedValueOnce(new Error('sandbox binding failed'))
+    let effects = 0
+    const workflow = defineWorkflow('workspaceBindingFailure', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      async handler({ input }) { effects += 1; return input },
+    })
+    const harness = await defineV4Harness({ name: 'workspaceBindingFailureHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+    try {
+      const session = await harness.getSession('workspace-binding-failure-session')
+      await expect(session.workflows.workspaceBindingFailure.run('go', { durable: { runId: 'workspace-binding-failure-run' } }))
+        .rejects.toThrow('sandbox binding failed')
+      expect(abort).toHaveBeenCalledWith(expect.objectContaining({ runId: 'workspace-binding-failure-run', reason: 'failed' }))
+      expect(effects).toBe(0)
+      await expect(local.storage.listEvents('workspace-binding-failure-run')).resolves.toEqual([])
+    } finally {
+      await harness.close()
+      await local.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('continues cancellation abort when terminal workspace finish cleanup fails', async () => {
+    const root = await tempRoot()
+    const local = localDurableExecution({ root })
+    const logger = new RecordingLogger()
+    vi.spyOn(local.workspace, 'finish').mockRejectedValueOnce(new Error('finish failed'))
+    const abort = vi.spyOn(local.workspace, 'abortWorkspace')
+    let entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const workflow = defineWorkflow('workspaceCleanupFailure', {
+      input: z.string(), output: z.string(), durable: true, workspace: true,
+      async handler({ signal }) {
+        entered()
+        return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      },
+    })
+    const harness = await defineV4Harness({ name: 'workspaceCleanupFailureHarness', revision: 'v1' }).addWorkflow(workflow)
+      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace, logger })
+    try {
+      const session = await harness.getSession('workspace-cleanup-failure-session')
+      const controller = new AbortController()
+      const running = session.workflows.workspaceCleanupFailure.run('go', { signal: controller.signal,
+        durable: { runId: 'workspace-cleanup-failure-run' } })
+      await started
+      controller.abort()
+      await expect(running).rejects.toBeInstanceOf(OperationCancelledError)
+      expect(abort).toHaveBeenCalledWith(expect.objectContaining({ runId: 'workspace-cleanup-failure-run', reason: 'cancelled' }))
+      expect(logger.entries).toContainEqual(expect.objectContaining({ level: 'warn', msg: 'Terminal workspace cleanup failed.',
+        fields: expect.objectContaining({ failure_count: 1 }) }))
+    } finally {
+      await harness.close()
+      await local.close()
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -518,16 +693,9 @@ describe('local durable execution', () => {
       kind: 'workflow',
       target: 'collect',
       startedAt: new Date().toISOString(),
-      status: 'running',
       input: { prompt: 'private prompt text' },
     })
-    const lease = await local.storage.acquireRun({
-      runId: 'run-otel',
-      sessionId: 'session-otel',
-      workerId: 'worker-otel',
-      stepId: 'collect',
-      input: { prompt: 'private prompt text' },
-    })
+    const lease = await acquireRun(local.storage, 'run-otel', 'session-otel', 'worker-otel', 'collect')
     await local.storage.loadCheckpoint('run-otel')
 
     const handle = await local.workspace.startWorkspace({
@@ -557,13 +725,14 @@ describe('local durable execution', () => {
       workerId: lease.workerId,
       leaseId: lease.leaseId,
       stepId: 'collect',
-      input: lease.start.input,
+      input: lease.run.input,
       attempt: lease.attempt,
       sequence: 1,
       output: { ok: true },
       replay: workspaceCheckpoint,
     })
 
+    await lease.release()
     await local.storage.finishRun('run-otel', { status: 'succeeded', output: { ok: true } })
     await local.workspace.inspectWorkspace?.({ workspaceRef: handle.workspaceRef })
     await local.workspace.cleanupWorkspace({
@@ -694,19 +863,19 @@ describe('SQLite Harness storage durability', () => {
         kind: 'workflow',
         target: 'step-a',
         startedAt: new Date().toISOString(),
-        status: 'running',
         input: { ok: true },
       })
     }
-    return storage.acquireRun({ runId, sessionId, workerId, stepId: 'step-a', input: { ok: true } })
+    return acquireRun(storage, runId, sessionId, workerId, 'step-a')
   }
 
   it('renews the lease for a same-worker retry within the TTL', async () => {
     const runtime = sqliteHarnessStorage({ file: await tempFile() })
     const first = await start(runtime, 'worker-1')
-    const retry = await start(runtime, 'worker-1')
-    expect(retry.attempt).toBe(first.attempt + 1)
-    expect(retry.leaseId).not.toBe(first.leaseId)
+    const retry = await runtime.acquireRun({ mode: 'initial', runId: first.runId, sessionId: first.sessionId,
+      workerId: first.workerId, acquisitionId: first.acquisitionId, expected: first.acquiredFrom })
+    expect(retry.attempt).toBe(first.attempt)
+    expect(retry.leaseId).toBe(first.leaseId)
     await runtime.close()
   })
 
@@ -732,7 +901,7 @@ describe('SQLite Harness storage durability', () => {
       workerId: lease.workerId,
       leaseId: lease.leaseId,
       stepId: 'step-a',
-      input: lease.start.input,
+      input: lease.run.input,
       attempt: lease.attempt,
       sequence: 1,
       output: { value: 1 },
@@ -750,7 +919,7 @@ describe('SQLite Harness storage durability', () => {
         workerId: lease.workerId,
         leaseId: lease.leaseId,
         stepId: 'step-b',
-        input: lease.start.input,
+        input: lease.run.input,
         attempt: lease.attempt,
         sequence: 2,
         output: { value: 2 },
@@ -768,7 +937,7 @@ describe('SQLite Harness storage durability', () => {
       workerId: lease.workerId,
       leaseId: lease.leaseId,
       stepId: 'step-a',
-      input: lease.start.input,
+      input: lease.run.input,
       attempt: lease.attempt,
       sequence: 1,
       output: { value: 1 },
@@ -786,12 +955,14 @@ describe('SQLite Harness storage durability', () => {
     const runtime = sqliteHarnessStorage({ file: await tempFile() })
 
     const succeeded = await start(runtime, 'worker-1', 'run-success', 'session-success')
+    await succeeded.release()
     await runtime.finishRun(succeeded.runId, { status: 'succeeded', output: { ok: true } })
     await expect(start(runtime, 'worker-1', 'run-success', 'session-success')).rejects.toBeInstanceOf(
       DurableTerminalRunError,
     )
 
     const cancelled = await start(runtime, 'worker-1', 'run-cancelled', 'session-cancelled')
+    await cancelled.release()
     await runtime.finishRun(cancelled.runId, {
       status: 'cancelled',
       error: { code: 'OPERATION_CANCELLED', message: 'stop' },
@@ -807,7 +978,7 @@ describe('SQLite Harness storage durability', () => {
       workerId: failed.workerId,
       leaseId: failed.leaseId,
       stepId: 'step-a',
-      input: failed.start.input,
+      input: failed.run.input,
       attempt: failed.attempt,
       sequence: 1,
       output: { value: 1 },
@@ -832,7 +1003,7 @@ describe('SQLite Harness storage durability', () => {
         workerId: lease.workerId,
         leaseId: lease.leaseId,
         stepId: 'step-a',
-        input: lease.start.input,
+        input: lease.run.input,
         attempt: lease.attempt,
         sequence: 1,
         output: cyclic as unknown as JsonValue,
@@ -854,16 +1025,9 @@ describe('SQLite Harness storage durability', () => {
         kind: 'workflow',
         target: 'step-a',
         startedAt: new Date().toISOString(),
-        status: 'running',
         input: { index },
       })
-      const lease = await local.storage.acquireRun({
-        runId,
-        sessionId,
-        workerId: 'worker-1',
-        stepId: 'step-a',
-        input: { index },
-      })
+      const lease = await acquireRun(local.storage, runId, sessionId, 'worker-1', 'step-a')
       for (let sequence = 1; sequence <= 5; sequence += 1) {
         await local.storage.commitCheckpoint({
           runId,
@@ -871,7 +1035,7 @@ describe('SQLite Harness storage durability', () => {
           workerId: lease.workerId,
           leaseId: lease.leaseId,
           stepId: `step-${sequence}`,
-          input: lease.start.input,
+          input: lease.run.input,
           attempt: lease.attempt,
           sequence,
           output: { sequence },
@@ -886,6 +1050,7 @@ describe('SQLite Harness storage durability', () => {
           },
         ])
       }
+      await lease.release()
       await local.storage.finishRun(runId, { status: 'succeeded', output: { done: true } })
     }
     await Promise.all([runFor(1), runFor(2), runFor(3)])

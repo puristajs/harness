@@ -58,24 +58,26 @@ export interface SerializedError {
 
 /** Run record persisted by Harness storage. */
 export interface RunRecord {
-  id: string
-  sessionId: string
-  kind: 'workflow' | 'agent' | 'child_task'
-  target: string
-  startedAt: string
-  finishedAt?: string
-  status: RunStatus
-  input?: JsonValue
-  output?: JsonValue
-  error?: SerializedError
+  readonly id: string
+  readonly sessionId: string
+  readonly kind: 'workflow' | 'agent' | 'child_task'
+  readonly target: string
+  readonly startedAt: string
+  readonly finishedAt?: string
+  readonly status: RunStatus
+  readonly revision: number
+  readonly input: JsonValue
+  readonly output?: JsonValue
+  readonly error?: SerializedError
+  readonly approvalReceipt?: import('../storage/types.js').TerminalApprovalReceiptV1
   /** Current durable attempt. Omitted for ordinary non-durable runs. */
-  attempt?: number
+  readonly attempt?: number
   /** Worker currently associated with a durable attempt. */
-  workerId?: string
+  readonly workerId?: string
   /** First durable step id, retained across attempts. */
-  initialStepId?: string
+  readonly initialStepId?: string
   /** Adapter-neutral durable execution metadata. */
-  metadata?: Record<string, JsonValue>
+  readonly metadata?: Readonly<Record<string, JsonValue>>
 }
 
 /** Exact persisted metadata for one workflow-owned child task. */
@@ -97,9 +99,47 @@ export interface ChildTaskRecordMetadataV1 {
 
 /** Event payload persisted for run replay or audit. */
 export interface PersistedRunEvent {
-  id: string
-  runId: string
-  at: string
-  type: string
-  payload: JsonValue
+  readonly id: string
+  readonly sequence: number
+  readonly runId: string
+  readonly at: string
+  readonly type: import('../definitions/execution-events.js').HarnessExecutionEventType
+  readonly payload: JsonValue
 }
+
+/** Optional parent correlation persisted only as a complete pair. */
+export type PersistedEventParentCorrelation =
+  | Readonly<{
+      readonly parentRunId?: never
+      readonly parentInvocationId?: never
+    }>
+  | Readonly<{
+      readonly parentRunId: string
+      readonly parentInvocationId: string
+    }>
+
+/** Strict privacy-safe payload for a persisted terminal run event. */
+export type PersistedRunFinishedPayload = PersistedEventParentCorrelation & (
+  | Readonly<{ readonly outcome: Readonly<{ readonly status: 'completed' }> }>
+  | Readonly<{ readonly outcome: Readonly<{ readonly status: 'interrupted' }> }>
+  | Readonly<{
+      readonly outcome: Readonly<{
+        readonly status: 'failed' | 'cancelled'
+        readonly error: SerializedError
+      }>
+    }>
+) & JsonValue
+
+/** Terminal payload accepted by atomic run finalization. */
+export type PersistedFinalRunFinishedPayload = Exclude<
+  PersistedRunFinishedPayload,
+  PersistedEventParentCorrelation &
+    Readonly<{ readonly outcome: Readonly<{ readonly status: 'interrupted' }> }>
+>
+
+/** Strict persisted `run.finished` envelope accepted by atomic finalization. */
+export type PersistedFinalRunEvent = Omit<PersistedRunEvent, 'type' | 'payload'> &
+  Readonly<{
+    readonly type: 'run.finished'
+    readonly payload: PersistedFinalRunFinishedPayload
+  }>

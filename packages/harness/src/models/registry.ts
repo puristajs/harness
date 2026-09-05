@@ -50,7 +50,7 @@ import type {
 } from '../ports/model-provider.js'
 import type { ArtifactReference, ArtifactStore } from '../ports/artifact-store.js'
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
-import type { JsonValue } from './json.js'
+import { isJsonValue, type JsonValue } from './json.js'
 import { pumpStreamThroughSpan } from './stream-pump.js'
 import type {
   ModelAdmission,
@@ -198,6 +198,21 @@ export type ModelHandle<A extends { capabilities: readonly ModelCapability[] } =
   (HasCapability<A, 'speech_generation'> extends true ? SpeechModelMethods : {}) &
   (HasCapability<A, 'video_generation'> extends true ? VideoModelMethods : {})
 
+const modelAliasesByHandle = new WeakMap<object, Readonly<ModelAlias>>()
+
+/** @internal Resolves the provider-neutral call options owned by a bound model handle. */
+export function resolveModelHandleCallOptions(
+  handle: ModelHandle,
+  call?: ModelCallOptions,
+): ModelCallOptions | undefined {
+  const alias = modelAliasesByHandle.get(handle as object)
+  const resolved = alias === undefined ? copyCallOptions(call) : mergeCallOptions(alias, call)
+  if (resolved === undefined) return undefined
+  return isJsonValue(resolved)
+    ? deepFreezeJsonCopy(resolved) as ModelCallOptions
+    : Object.freeze(resolved)
+}
+
 /**
  * Creates per-alias model handles that enforce capability gates before provider invocation.
  *
@@ -223,7 +238,7 @@ function createHandle(
   alias: ModelAlias,
   options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission; artifacts?: ArtifactStore },
 ): ModelHandle {
-  return {
+  const handle: ModelHandle = {
     text(req, signal, ctx) {
       ensureCapabilities(aliasKey, alias, 'text', req)
       if (!alias.provider.text) throw methodMissing(aliasKey, 'text')
@@ -383,6 +398,8 @@ function createHandle(
       )
     }
   }
+  modelAliasesByHandle.set(handle as object, alias)
+  return handle
 }
 
 function mediaRequest<T extends ImageRequest | SpeechRequest | VideoRequest>(
@@ -781,8 +798,12 @@ function methodMissing(alias: string, method: string): ModelCapabilityError {
 
 /** Merges alias defaults with per-call overrides. */
 function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['defaults'] | undefined {
+  return mergeCallOptions(alias, call)
+}
+
+function mergeCallOptions(alias: ModelAlias, call?: ModelCallOptions): ModelCallOptions | undefined {
   const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
-  const merged: NonNullable<ModelAlias['defaults']> = {
+  const source: ModelCallOptions = {
     ...(alias.defaults ?? {}),
     ...(call ?? {}),
     ...(retry !== undefined ? { retry } : {}),
@@ -792,6 +813,8 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
       ...(call?.providerOptions ?? {})
     }
   }
+  const merged = copyCallOptions(source)
+  if (merged === undefined) return undefined
   const hasTopLevel =
     merged.temperature !== undefined
     || merged.maxTokens !== undefined
@@ -803,24 +826,24 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
   return hasTopLevel ? merged : undefined
 }
 
-function mergeCallOptions(alias: ModelAlias, call?: ModelCallOptions): ModelCallOptions | undefined {
-  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
-  const merged: ModelCallOptions = {
-    ...(call ?? {}),
-    ...(retry !== undefined ? { retry } : {}),
-    providerOptions: {
-      ...(alias.providerOptions ?? {}),
-      ...(alias.defaults?.providerOptions ?? {}),
-      ...(call?.providerOptions ?? {})
-    }
+function copyCallOptions(value: ModelCallOptions | undefined): ModelCallOptions | undefined {
+  if (value === undefined) return undefined
+  const providerOptions = value.providerOptions
+  return {
+    ...(value.temperature === undefined ? {} : { temperature: value.temperature }),
+    ...(value.maxTokens === undefined ? {} : { maxTokens: value.maxTokens }),
+    ...(value.topP === undefined ? {} : { topP: value.topP }),
+    ...(value.stopSequences === undefined ? {} : { stopSequences: value.stopSequences }),
+    ...(value.parallelToolCalls === undefined ? {} : { parallelToolCalls: value.parallelToolCalls }),
+    ...(value.retry === undefined ? {} : { retry: value.retry }),
+    ...(providerOptions === undefined || Object.keys(providerOptions).length === 0 ? {} : { providerOptions: { ...providerOptions } }),
   }
-  const hasTopLevel =
-    merged.temperature !== undefined
-    || merged.maxTokens !== undefined
-    || merged.topP !== undefined
-    || merged.stopSequences !== undefined
-    || merged.parallelToolCalls !== undefined
-    || merged.retry !== undefined
-    || Object.keys(merged.providerOptions ?? {}).length > 0
-  return hasTopLevel ? merged : undefined
+}
+
+function deepFreezeJsonCopy(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeJsonCopy)) as JsonValue
+  if (value !== null && typeof value === 'object') {
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [key, deepFreezeJsonCopy(child)])))
+  }
+  return value
 }

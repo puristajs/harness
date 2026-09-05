@@ -12,10 +12,11 @@ import type { HarnessTraceContext } from '../telemetry/trace-context.js'
 import { abortError, withAbortSignal } from '../runtime/abort.js'
 import { canonicalJson } from '../runtime/canonical-json.js'
 import type { ResolvedHarnessExecutionDefaults } from '../runtime/execution-defaults.js'
-import { agentCanRequestApproval } from '../runtime/runtime-requirements.js'
+import type { CompiledApprovalInventory } from '../runtime/compiled-graph.js'
 import { consumeHarnessTargetStream } from '../runtime/subagent-execution.js'
 import { createHarnessChildTargetInterruption, isHarnessChildTargetInterruption, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from '../runtime/steps.js'
 import type { HarnessStorage } from '../storage/types.js'
+import type { SandboxPolicy } from '../sandbox/ownership.js'
 import type { WorkflowChildCallCheckpointV1, WorkflowChildCallStoredOutcomeV1 } from '../storage/execution.js'
 import { validateSchema } from '../schema/validation.js'
 import type { ModelSchema, Schema } from '../schema/index.js'
@@ -23,6 +24,8 @@ import type { ModelSchema, Schema } from '../schema/index.js'
 type CallOperation = 'agent_run' | 'child_task_start'
 type CallTuple = Readonly<{ operation: CallOperation; targetId: string; input: JsonValue; inputCanonical: string; idempotencyKey: string | null; optionsCanonical: string }>
 type CallEntry = Readonly<{ tuple: CallTuple; promise: Promise<unknown> }>
+type ChildLaunchRequest = Readonly<{ kind: 'inline' | 'background'; agent: AnyAgentDefinition;
+	childInvocationId: string; childSessionId: string; taskRunId: string; policy?: SandboxPolicy<string> }>
 
 export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefined, Models extends WorkflowModelMap | undefined> {
 	readonly workflow: AnyWorkflowDefinition & Readonly<{ agents?: Agents; models?: Models }>
@@ -43,23 +46,78 @@ export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefi
 	readonly checkpoint?: WorkflowChildCheckpointAccess
 	readonly storage?: HarnessStorage
 	readonly durable?: boolean
-	readonly emit?: (event: ExecutionEvent) => Promise<void>
+	readonly emit?: (event: UncorrelatedExecutionEvent) => Promise<void>
+	readonly relayChildEvent?: (event: ExecutionEvent) => Promise<void>
+	/** @internal Authorization fence and sandbox handoff installed before any child effect. */
+	readonly prepareChildLaunch?: (request: ChildLaunchRequest) => Promise<void>
+	/** @internal Authorization-only acceptance fence used before reserving a continuable turn. */
+	readonly authorizeChildLaunch?: (request: ChildLaunchRequest) => Promise<void>
+	/** @internal Removes a handoff that was not consumed by the dispatcher. */
+	readonly finishChildLaunch?: (childInvocationId: string) => void
+	/** @internal Runs background child cleanup only after its terminal record/event commit. */
+	readonly onChildTaskTerminal?: (childSessionId: string) => Promise<void>
 	readonly now?: () => Date
 	readonly taskRegistry?: Map<string, ChildTaskHandle<JsonValue>>
 	readonly restoredAgentCallBudget?: WorkflowAgentCallBudgetStateV1
+	readonly approval: CompiledApprovalInventory['agents']
 }
 
-type AgentInvokers<Agents extends WorkflowAgentMap | undefined> = WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, undefined>['agents']
-type RuntimeChildTasks<Agents extends WorkflowAgentMap | undefined> = WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, undefined>['childTasks']
+type UncorrelatedExecutionEvent = ExecutionEvent extends infer Event
+	? Event extends ExecutionEvent ? Omit<Event, 'eventId' | 'sequence'> : never
+	: never
+
+type AgentInvokers<Agents extends WorkflowAgentMap | undefined> = WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, readonly [], undefined>['agents']
+type RuntimeChildTasks<Agents extends WorkflowAgentMap | undefined> = WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, readonly string[], undefined>['childTasks']
 
 /** Package-private workflow execution surface assembled into the public handler context by H4-008. */
 export interface WorkflowExecutionRuntime<Agents extends WorkflowAgentMap | undefined, Models extends WorkflowModelMap | undefined> {
 	readonly agents: AgentInvokers<Agents>
-	readonly models: WorkflowContext<ModelSchema, ModelSchema, undefined, Models, undefined>['models']
+	readonly models: WorkflowContext<ModelSchema, ModelSchema, undefined, Models, readonly [], undefined>['models']
 	readonly childTasks: RuntimeChildTasks<Agents>
-	readonly fanOut: WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, undefined>['fanOut']
+	readonly fanOut: WorkflowContext<ModelSchema, ModelSchema, Agents, undefined, readonly [], undefined>['fanOut']
 	/** Package-private state persisted by the H4-008 continuation owner. */
 	agentCallBudgetState(): WorkflowAgentCallBudgetStateV1
+	/** Package-private ordered logical calls still suspended below this workflow frame. */
+	activeCallIds(): readonly string[]
+}
+
+/** @internal Reconstructs the owner-only session view of one persisted child task. */
+export function restoreSessionChildTaskHandle(record: RunRecord, expectedSessionId: string): ChildTaskHandle<JsonValue> | undefined {
+	if (record.kind !== 'child_task' || record.sessionId !== expectedSessionId) return undefined
+	const metadata = record.metadata
+	try {
+		if (!isPlainRecord(metadata) || !exactKeys(metadata, ['schemaVersion', 'kind', 'parentRunId', 'workflowId', 'workflowInvocationId', 'callId',
+			'agentId', 'modelAlias', 'mode', 'context', 'timeoutMs', 'idempotencyKey', 'createdAt'])
+			|| metadata['schemaVersion'] !== 1 || metadata['kind'] !== 'workflow_child_task'
+			|| !nonempty(metadata['parentRunId']) || !nonempty(metadata['workflowId']) || !nonempty(metadata['workflowInvocationId'])
+			|| !nonempty(metadata['agentId']) || !nonempty(metadata['modelAlias']) || metadata['agentId'] !== record.target
+			|| typeof metadata['callId'] !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(metadata['callId'])
+			|| metadata['mode'] !== 'one_shot' && metadata['mode'] !== 'continuable' || metadata['context'] !== 'isolated'
+			|| metadata['timeoutMs'] !== null && (!Number.isSafeInteger(metadata['timeoutMs']) || (metadata['timeoutMs'] as number) <= 0)
+			|| metadata['idempotencyKey'] !== null && (typeof metadata['idempotencyKey'] !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(metadata['idempotencyKey']))
+			|| record.startedAt !== metadata['createdAt'] || !validTimestamp(metadata['createdAt']) || !isJsonValue(record.input)
+			|| !Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error()
+		const base = ['id', 'sessionId', 'kind', 'target', 'startedAt', 'status', 'revision', 'input', 'metadata']
+		if (record.status === 'running') { if (!exactKeys(record, base)) throw new Error() }
+		else if (record.status === 'succeeded') { if (!exactKeys(record, [...base, 'finishedAt', 'output']) || !validTimestamp(record.finishedAt) || !isJsonValue(record.output)) throw new Error() }
+		else if (record.status === 'failed' || record.status === 'cancelled') {
+			if (!exactKeys(record, [...base, 'finishedAt', 'error']) || !validTimestamp(record.finishedAt)
+				|| !validChildStoredError(record.error, record.status, metadata['workflowId'] as string, metadata['callId'], record.id,
+					metadata['agentId'] as string, metadata['timeoutMs'] as number | null)) throw new Error()
+		} else throw new Error()
+		const descriptor = Object.freeze<ChildTaskDescriptor>({ id: record.id, parentRunId: metadata['parentRunId'] as string,
+			sessionId: expectedSessionId, workflowId: metadata['workflowId'] as string, workflowInvocationId: metadata['workflowInvocationId'] as string,
+			callId: metadata['callId'], agentId: metadata['agentId'] as string, modelAlias: metadata['modelAlias'] as string,
+			contextPolicy: 'isolated', mode: metadata['mode'], createdAt: metadata['createdAt'] as string })
+		if (record.status !== 'running') return terminalTaskHandle(descriptor, record)
+		const status = Object.freeze<ChildTaskStatus>({ descriptor, status: 'running' })
+		const unavailable = () => Promise.reject(new ChildTaskStateError({ reason: 'recovery_required', task_id: record.id,
+			workflow_id: descriptor.workflowId, agent_id: descriptor.agentId }))
+		return Object.freeze({ id: record.id, status: async () => status, result: unavailable, cancel: unavailable })
+	} catch (error) {
+		if (error instanceof ChildTaskStateError) throw error
+		throw new ChildTaskStateError({ reason: 'invalid_record', task_id: record.id })
+	}
 }
 
 /** Creates one isolated, replay-aware orchestration state for one logical workflow invocation. */
@@ -72,6 +130,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 	const restoredUsedCalls = validateRestoredBudget(options.restoredAgentCallBudget, maxCalls)
 	const budget = new WorkflowCallAdmission(workflow.id, maxCalls, maxParallel, restoredUsedCalls)
 	const calls = new Map<string, CallEntry>()
+	const activeCalls = new Set<string>()
 	const liveTasks = options.taskRegistry ?? new Map<string, ChildTaskHandle<JsonValue>>()
 	let sequence = 0
 
@@ -91,7 +150,12 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			return existing.promise as Promise<JsonValue>
 		}
 		let admitted = false
+		activeCalls.add(callOptions.callId)
 		const promise = executeDirect(agent, input, callOptions.callId, callOptions.idempotencyKey, signal, () => { admitted = true })
+			.then(value => { activeCalls.delete(callOptions.callId); return value }, error => {
+				if (!isHarnessChildTargetInterruption(error)) activeCalls.delete(callOptions.callId)
+				throw error
+			})
 		const entry = Object.freeze({ tuple, promise })
 		calls.set(callOptions.callId, entry)
 		void promise.catch(() => { if (!admitted && calls.get(callOptions.callId) === entry) calls.delete(callOptions.callId) })
@@ -103,12 +167,15 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		if (replay !== undefined) return replayDirectOutcome(replay.outcome)
 		if (signal.aborted) throw abortError(signal, 'agent', 'Workflow agent call was cancelled.')
 		assertNestedDepth(agent.id, options.depth, options.remainingDepth)
-		const release = budget.acquireDirect(agent.id)
-		admitted()
 		const childInvocationId = opaqueId('invocation', [options.runId, workflow.id, callId, agent.id])
 		const childSessionId = opaqueId('session', [options.sessionId, childInvocationId])
+		await options.prepareChildLaunch?.(Object.freeze({ kind: 'inline', agent, childInvocationId, childSessionId,
+			taskRunId: childInvocationId }))
+		let release: (() => void) | undefined
 		let terminalCommitted = false
 		try {
+			release = budget.acquireDirect(agent.id)
+			admitted()
 			const stream = await withAbortSignal(signal, 'agent', 'Workflow agent call was cancelled.', () => options.targetDispatcher.open({
 				target: agent.contract, input,
 				invocation: Object.freeze({ sessionId: childSessionId, invocationId: childInvocationId,
@@ -135,7 +202,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				throw replayDirectOutcomeError(stored)
 			}
 			throw error
-		} finally { release() }
+		} finally { release?.(); options.finishChildLaunch?.(childInvocationId) }
 	}
 
 	async function loadDirectCheckpoint(callId: string, agentId: string, input: JsonValue, idempotencyKey: string | undefined): Promise<WorkflowChildCallCheckpointV1 | undefined> {
@@ -170,11 +237,11 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		const agent = workflow.agents?.[agentName]
 		if (agent === undefined) throw new AgentNotFoundError('Workflow agent was not found.', { agent_id: agentName })
 		assertWireInput(input)
-		const taskOptions = normalizeTaskOptions(rawOptions)
+		const taskOptions = normalizeTaskOptions(rawOptions, workflow.childTaskSandboxGroups ?? [])
 		if (options.durable && taskOptions.mode === 'continuable') throw invokeOptionsError('durable_continuable_child_task_unsupported')
 		if (options.durable && taskOptions.idempotencyKey === null) throw invokeOptionsError('child_task_idempotency_key_required')
 		const identityOptions: JsonValue = { mode: taskOptions.mode, idempotencyKey: taskOptions.idempotencyKey,
-			timeoutMs: taskOptions.timeoutMs, context: taskOptions.context }
+			timeoutMs: taskOptions.timeoutMs, context: taskOptions.context, sandbox: sandboxPolicyJson(taskOptions.sandbox) }
 		const tuple = makeTuple('child_task_start', agent.id, input, taskOptions.idempotencyKey, identityOptions)
 		const existingCall = calls.get(taskOptions.callId)
 		if (existingCall !== undefined) {
@@ -199,27 +266,41 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		}
 		if (resident !== undefined) return resident
 		if (options.signal.aborted) throw abortError(options.signal, 'workflow', 'Child task was cancelled.')
-		if (agentCanRequestApproval(agent)) throw invokeOptionsError('approval_capable_child_task_unsupported')
+		const approval = options.approval[agent.id]
+		if (approval === undefined) throw new InternalError('Compiled approval inventory is invalid.')
+		if (approval.reachable) throw invokeOptionsError('approval_capable_child_task_unsupported')
 		assertNestedDepth(agent.id, options.depth, options.remainingDepth)
-		const rollbackReservation = budget.reserveTask(agent.id)
 		const createdAt = now().toISOString()
 		const descriptor = Object.freeze<ChildTaskDescriptor>({ id: taskId, parentRunId: options.runId, sessionId: options.sessionId,
 			workflowId: workflow.id, workflowInvocationId: options.invocationId, callId: taskOptions.callId, agentId: agent.id,
 			modelAlias: agent.model, contextPolicy: 'isolated', mode: taskOptions.mode, createdAt })
 		const childSessionId = opaqueId('session', [options.sessionId, taskId])
+		const initialChildInvocationId = opaqueId('invocation', [taskId, taskOptions.callId, 1, agent.id])
+		await options.prepareChildLaunch?.(Object.freeze({ kind: 'background', agent, childInvocationId: initialChildInvocationId,
+			childSessionId, taskRunId: taskId, ...(taskOptions.sandbox === undefined ? {} : { policy: taskOptions.sandbox }) }))
+		let rollbackReservation: () => void
+		try { rollbackReservation = budget.reserveTask(agent.id) }
+		catch (error) { options.finishChildLaunch?.(initialChildInvocationId); throw error }
 		const live = new LiveWorkflowChildTask({ descriptor, childSessionId, agent, initialInput: input, taskOptions, workflowId: workflow.id,
 			...(options.storage === undefined ? {} : { storage: options.storage }), dispatcher: options.targetDispatcher, budget, controller: new AbortController(), parentSignal: options.signal,
 			rootRunId: options.rootRunId, depth: options.depth, remainingDepth: options.remainingDepth,
 			...(options.identity === undefined ? {} : { identity: options.identity }), ...(options.trace === undefined ? {} : { trace: options.trace }),
 			...(options.deadline === undefined ? {} : { deadline: options.deadline }), relay: relayEvent,
+			initialChildInvocationId,
+			...(options.prepareChildLaunch === undefined ? {} : { prepareChildLaunch: options.prepareChildLaunch }),
+			...(options.authorizeChildLaunch === undefined ? {} : { authorizeChildLaunch: options.authorizeChildLaunch }),
+			...(options.finishChildLaunch === undefined ? {} : { finishChildLaunch: options.finishChildLaunch }),
+			...(options.onChildTaskTerminal === undefined ? {} : { onTerminal: options.onChildTaskTerminal }),
 			...(options.emit === undefined ? {} : { emit: options.emit }), now })
 		const handle = live.handle()
 		liveTasks.set(taskId, handle)
 		try {
 			await live.persistStart()
 			if (await live.activateLifecycle()) live.start()
+			else options.finishChildLaunch?.(initialChildInvocationId)
 			return handle
 		} catch (error) {
+			options.finishChildLaunch?.(initialChildInvocationId)
 			if (liveTasks.get(taskId) === handle) liveTasks.delete(taskId)
 			rollbackReservation()
 			await live.rollbackStart()
@@ -242,7 +323,9 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		return terminalTaskHandle(parsed.descriptor, record)
 	}
 
-	async function relayEvent(event: ExecutionEvent): Promise<void> { await options.emit?.(event) }
+	async function relayEvent(event: ExecutionEvent): Promise<void> {
+		if (options.relayChildEvent !== undefined) await options.relayChildEvent(event)
+	}
 	function now(): Date { return options.now?.() ?? new Date() }
 
 	const childTasks = Object.freeze({ start: (agent: string, input: JsonValue, taskOptions: Record<string, unknown>) => startTask(agent, input, taskOptions) })
@@ -272,7 +355,8 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 	}
 
 	return Object.freeze({ agents: Object.freeze(agents) as AgentInvokers<Agents>, models: options.models,
-		childTasks: childTasks as unknown as RuntimeChildTasks<Agents>, fanOut, agentCallBudgetState: () => budget.state() })
+		childTasks: childTasks as unknown as RuntimeChildTasks<Agents>, fanOut, agentCallBudgetState: () => budget.state(),
+		activeCallIds: () => Object.freeze([...activeCalls]) })
 }
 
 class WorkflowCallAdmission {
@@ -305,8 +389,6 @@ class WorkflowCallAdmission {
 	private failure(agentId: string, reason: 'max_calls' | 'max_parallel', limit: number) { return new WorkflowAgentCallBudgetError({ workflow_id: this.workflowId, agent_id: agentId, reason, limit }) }
 }
 
-interface NormalizedTaskOptions { callId: string; mode: 'one_shot' | 'continuable'; idempotencyKey: string | null; timeoutMs: number | null; context: 'isolated' }
-
 class LiveWorkflowChildTask {
 	private statusValue: ChildTaskStatus
 	private readonly resultPromise: Promise<JsonValue>
@@ -318,6 +400,7 @@ class LiveWorkflowChildTask {
 	private terminalCommit?: Promise<void>
 	private terminalRejection: unknown
 	private queue = Promise.resolve()
+	private acceptanceQueue = Promise.resolve()
 	private closePromise?: Promise<JsonValue | undefined>
 	private timeout?: ReturnType<typeof setTimeout>
 	private pendingTurns = 0
@@ -330,7 +413,12 @@ class LiveWorkflowChildTask {
 		descriptor: ChildTaskDescriptor; childSessionId: string; agent: AnyAgentDefinition; initialInput: JsonValue; taskOptions: NormalizedTaskOptions; workflowId: string
 		storage?: HarnessStorage; dispatcher: HarnessTargetDispatcher; budget: WorkflowCallAdmission; controller: AbortController; parentSignal: AbortSignal
 		rootRunId: string; depth: number; remainingDepth: number; identity?: HarnessIdentity; trace?: HarnessTraceContext; deadline?: number
-		relay(event: ExecutionEvent): Promise<void>; emit?: (event: ExecutionEvent) => Promise<void>; now(): Date
+		initialChildInvocationId: string
+		prepareChildLaunch?: WorkflowRuntimeOptions<WorkflowAgentMap, WorkflowModelMap>['prepareChildLaunch']
+		authorizeChildLaunch?: WorkflowRuntimeOptions<WorkflowAgentMap, WorkflowModelMap>['authorizeChildLaunch']
+		finishChildLaunch?: (childInvocationId: string) => void
+		onTerminal?: (childSessionId: string) => Promise<void>
+		relay(event: ExecutionEvent): Promise<void>; emit?: (event: UncorrelatedExecutionEvent) => Promise<void>; now(): Date
 	}) {
 		this.statusValue = Object.freeze({ descriptor: values.descriptor, status: 'running' })
 		this.resultPromise = new Promise((resolve, reject) => { this.resolveResult = resolve; this.rejectResult = reject })
@@ -349,7 +437,7 @@ class LiveWorkflowChildTask {
 			timeoutMs: this.values.taskOptions.timeoutMs, idempotencyKey: this.values.taskOptions.idempotencyKey, createdAt: this.values.descriptor.createdAt }) satisfies ChildTaskRecordMetadataV1 & Record<string, JsonValue>
 		if (this.values.storage !== undefined) {
 			await this.values.storage.createRun({ id: this.values.descriptor.id, sessionId: this.values.descriptor.sessionId, kind: 'child_task', target: this.values.agent.id,
-				startedAt: this.values.descriptor.createdAt, status: 'running', input: this.values.initialInput, metadata })
+				startedAt: this.values.descriptor.createdAt, input: this.values.initialInput, metadata })
 			this.startRecordPersisted = true
 		}
 		try {
@@ -377,17 +465,28 @@ class LiveWorkflowChildTask {
 		await this.values.storage.finishRun(this.values.descriptor.id, { status: 'cancelled', finishedAt: this.values.now().toISOString(), error: childCancelled() }).catch(() => undefined)
 	}
 	public start() {
-		this.queue = this.turn(this.values.initialInput, false)
+		this.turnSequence = 1
+		this.queue = this.turn(this.values.initialInput, this.values.initialChildInvocationId, true)
 			.then(async output => { this.lastOutput = output; if (this.values.taskOptions.mode === 'one_shot') await this.succeed(output) })
 			.catch(async error => { if (this.terminalCommit !== undefined) { await this.terminalCommit.catch(() => undefined); return } await this.fail(error) })
 	}
-	private async turn(input: JsonValue, reserve: boolean): Promise<JsonValue> {
+	private async turn(input: JsonValue, childInvocationId: string, handoffPrepared: boolean, onLaunch?: () => void): Promise<JsonValue> {
 		this.pendingTurns += 1
 		let release: (() => void) | undefined
-		const childInvocationId = opaqueId('invocation', [this.values.descriptor.id, this.values.descriptor.callId, ++this.turnSequence, this.values.agent.id])
 		try {
 			assertNestedDepth(this.values.agent.id, this.values.depth, this.values.remainingDepth)
-			release = await this.values.budget.acquireTaskTurn(this.values.agent.id, this.values.controller.signal, reserve)
+			const request = Object.freeze({ kind: 'background' as const, agent: this.values.agent,
+				childInvocationId, childSessionId: this.values.childSessionId, taskRunId: this.values.descriptor.id,
+				...(this.values.taskOptions.sandbox === undefined ? {} : { policy: this.values.taskOptions.sandbox }) })
+			await this.values.authorizeChildLaunch?.(request)
+			release = await this.values.budget.acquireTaskTurn(this.values.agent.id, this.values.controller.signal, false)
+			if (handoffPrepared) await this.values.authorizeChildLaunch?.(request)
+			else {
+				await this.values.prepareChildLaunch?.(Object.freeze({ kind: 'background', agent: this.values.agent,
+					childInvocationId, childSessionId: this.values.childSessionId, taskRunId: this.values.descriptor.id,
+					...(this.values.taskOptions.sandbox === undefined ? {} : { policy: this.values.taskOptions.sandbox }) }))
+			}
+			onLaunch?.()
 			const stream = await withAbortSignal(this.values.controller.signal, 'agent', 'Child task was cancelled.', () => this.values.dispatcher.open({ target: this.values.agent.contract, input,
 				invocation: Object.freeze({ sessionId: this.values.childSessionId, invocationId: childInvocationId, rootRunId: this.values.rootRunId,
 					parentRunId: this.values.descriptor.id, parentWorkflowId: this.values.workflowId, depth: this.values.depth + 1,
@@ -398,16 +497,36 @@ class LiveWorkflowChildTask {
 			if (consumed.outcome.status === 'cancelled') throw new OperationCancelledError('Child task was cancelled.', { scope: 'child_task' })
 			throw new WorkflowChildTargetError({ reason: 'child_task_failed', workflow_id: this.values.workflowId, call_id: this.values.descriptor.callId,
 				task_id: this.values.descriptor.id, target_kind: 'agent', target_id: this.values.agent.id }, 'error' in consumed.outcome ? consumed.outcome.error : undefined)
-		} finally { release?.(); this.pendingTurns -= 1 }
+		} finally { release?.(); this.values.finishChildLaunch?.(childInvocationId); this.pendingTurns -= 1 }
 	}
 	private send(input: JsonValue): Promise<JsonValue> {
 		assertWireInput(input)
 		if (this.lifecycle !== 'open') return Promise.reject(new ChildTaskStateError({ reason: 'terminal', task_id: this.values.descriptor.id, workflow_id: this.values.workflowId, agent_id: this.values.agent.id }))
 		if (this.closing) return Promise.reject(new ChildTaskStateError({ reason: 'closing', task_id: this.values.descriptor.id, workflow_id: this.values.workflowId, agent_id: this.values.agent.id }))
-		try { this.values.budget.reserveTask(this.values.agent.id) } catch (error) { return Promise.reject(error) }
+		const childInvocationId = opaqueId('invocation', [this.values.descriptor.id, this.values.descriptor.callId, ++this.turnSequence, this.values.agent.id])
+		const request = Object.freeze({ kind: 'background' as const, agent: this.values.agent,
+			childInvocationId, childSessionId: this.values.childSessionId, taskRunId: this.values.descriptor.id,
+			...(this.values.taskOptions.sandbox === undefined ? {} : { policy: this.values.taskOptions.sandbox }) })
+		const accepted = this.acceptanceQueue.then(async () => {
+			await this.values.authorizeChildLaunch?.(request)
+			return this.values.budget.reserveTask(this.values.agent.id)
+		})
+		this.acceptanceQueue = accepted.then(() => undefined, () => undefined)
 		let resolve!: (value: JsonValue) => void; let reject!: (error: unknown) => void
 		const result = new Promise<JsonValue>((ok, fail) => { resolve = ok; reject = fail })
-		this.queue = this.queue.then(async () => { if (this.lifecycle !== 'open') throw this.terminalError(); const output = await this.turn(input, false); this.lastOutput = output; resolve(output) }).catch(async error => { reject(error); if (this.terminalCommit === undefined) await this.fail(error) })
+		this.queue = this.queue.then(async () => {
+			const rollbackReservation = await accepted
+			let launched = false
+			try {
+				if (this.lifecycle !== 'open') throw this.terminalError()
+				const output = await this.turn(input, childInvocationId, false, () => { launched = true })
+				this.lastOutput = output
+				resolve(output)
+			} catch (error) {
+				if (!launched) rollbackReservation()
+				throw error
+			}
+		}).catch(async error => { reject(error); if (this.terminalCommit === undefined) await this.fail(error) })
 		return result
 	}
 	private close(): Promise<JsonValue | undefined> {
@@ -454,6 +573,7 @@ class LiveWorkflowChildTask {
 			} catch (emitError) {
 				if (this.values.storage === undefined) throw emitError
 			}
+			await this.values.onTerminal?.(this.values.childSessionId)
 			this.lifecycle = 'committed'
 			this.terminalRejection = terminalRejection
 			this.statusValue = Object.freeze({ descriptor: this.values.descriptor, status, finishedAt, ...(error === undefined ? {} : { error }) })
@@ -475,20 +595,32 @@ class LiveWorkflowChildTask {
 	private terminalError(): unknown { return this.terminalRejection ?? new ChildTaskStateError({ reason: 'terminal', task_id: this.values.descriptor.id, workflow_id: this.values.workflowId, agent_id: this.values.agent.id }) }
 }
 
-interface NormalizedTaskOptions { callId: string; mode: 'one_shot' | 'continuable'; idempotencyKey: string | null; timeoutMs: number | null; context: 'isolated' }
-function normalizeTaskOptions(value: Record<string, unknown>): NormalizedTaskOptions {
+interface NormalizedTaskOptions { callId: string; mode: 'one_shot' | 'continuable'; idempotencyKey: string | null; timeoutMs: number | null; context: 'isolated'; sandbox?: SandboxPolicy<string> }
+function normalizeTaskOptions(value: Record<string, unknown>, allowedGroups: readonly string[]): NormalizedTaskOptions {
 	if (!isPlainRecord(value)) throw invokeOptionsError('invalid_child_task_context')
 	const keys = Reflect.ownKeys(value)
-	if (keys.some(key => typeof key !== 'string' || !['callId', 'idempotencyKey', 'timeoutMs', 'context', 'mode'].includes(key))) throw invokeOptionsError('invalid_child_task_context')
+	if (keys.some(key => typeof key !== 'string' || !['callId', 'idempotencyKey', 'timeoutMs', 'context', 'mode', 'sandbox'].includes(key))) throw invokeOptionsError('invalid_child_task_context')
 	assertCallId(value['callId'], 'invalid_workflow_call_id')
 	if (value['idempotencyKey'] !== undefined) assertCallId(value['idempotencyKey'], 'invalid_child_task_idempotency_key')
 	if (value['timeoutMs'] !== undefined && (!Number.isSafeInteger(value['timeoutMs']) || (value['timeoutMs'] as number) <= 0)) throw invokeOptionsError('invalid_child_task_timeout')
 	if (value['context'] !== undefined && value['context'] !== 'isolated') throw invokeOptionsError('invalid_child_task_context')
 	if (value['mode'] !== undefined && value['mode'] !== 'one_shot' && value['mode'] !== 'continuable') throw invokeOptionsError('invalid_child_task_context')
 	if (value['mode'] === 'continuable' && value['idempotencyKey'] !== undefined) throw invokeOptionsError('invalid_child_task_context')
+	const sandbox = normalizeChildSandboxPolicy(value['sandbox'], allowedGroups)
 	return Object.freeze({ callId: value['callId'] as string, mode: (value['mode'] ?? 'one_shot') as 'one_shot' | 'continuable',
-		idempotencyKey: value['idempotencyKey'] as string | undefined ?? null, timeoutMs: value['timeoutMs'] as number | undefined ?? null, context: 'isolated' })
+		idempotencyKey: value['idempotencyKey'] as string | undefined ?? null, timeoutMs: value['timeoutMs'] as number | undefined ?? null, context: 'isolated',
+		...(sandbox === undefined ? {} : { sandbox }) })
 }
+function normalizeChildSandboxPolicy(value: unknown, allowedGroups: readonly string[]): SandboxPolicy<string> | undefined {
+	if (value === undefined) return undefined
+	if (value === 'inherit') return 'inherit'
+	if (value === 'private') return 'private'
+	if (!isPlainRecord(value) || !exactKeys(value, ['group']) || typeof value['group'] !== 'string' || !allowedGroups.includes(value['group'])) {
+		throw invokeOptionsError('invalid_child_task_context')
+	}
+	return Object.freeze({ group: value['group'] })
+}
+function sandboxPolicyJson(value: SandboxPolicy<string> | undefined): JsonValue { return value === undefined ? null : typeof value === 'string' ? value : { group: value.group } }
 
 function assertDirectOptions(value: unknown): asserts value is { callId: string; signal?: AbortSignal; idempotencyKey?: string } {
 	if (!isPlainRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !['callId', 'signal', 'idempotencyKey'].includes(key))) throw invokeOptionsError('invalid_workflow_call_id')
@@ -542,7 +674,8 @@ function parseChildTaskRecord(record: RunRecord, agent: AnyAgentDefinition, work
 			|| metadata['parentRunId'] !== parentRunId || metadata['workflowId'] !== workflowId || metadata['agentId'] !== agent.id
 			|| metadata['workflowInvocationId'] !== workflowInvocationId
 			|| metadata['modelAlias'] !== agent.model || !validTimestamp(metadata['createdAt']) || !isJsonValue(record.input)) throw new Error()
-		const base = ['id', 'sessionId', 'kind', 'target', 'startedAt', 'status', 'input', 'metadata']
+		if (!Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error()
+		const base = ['id', 'sessionId', 'kind', 'target', 'startedAt', 'status', 'revision', 'input', 'metadata']
 		if (record.status === 'running') { if (!exactKeys(record, base)) throw new Error() }
 		else if (record.status === 'succeeded') { if (!exactKeys(record, [...base, 'finishedAt', 'output']) || !validTimestamp(record.finishedAt) || !isJsonValue(record.output)) throw new Error() }
 		else if (record.status === 'failed' || record.status === 'cancelled') { if (!exactKeys(record, [...base, 'finishedAt', 'error']) || !validTimestamp(record.finishedAt) || !validChildStoredError(record.error, record.status, workflowId, metadata['callId'], record.id, agent.id, metadata['timeoutMs'])) throw new Error() }

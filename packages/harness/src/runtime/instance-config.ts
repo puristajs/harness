@@ -13,6 +13,7 @@ import type { ModelAlias, ModelCapability, ModelProvider } from '../ports/model-
 import type { DurableWorkspace } from '../ports/workspace.js'
 import { validateDurableWorkspace } from '../ports/workspace.js'
 import type { Sandbox, SpawnCapableSandbox } from '../sandbox/index.js'
+import { sandboxBindingOptionsSchema, type SandboxBindingOptions } from '../sandbox/ownership.js'
 import type { HarnessStorage } from '../storage/types.js'
 import { validateHarnessStorage } from '../storage/types.js'
 import type { SkillRuntimeId } from '../definitions/types.js'
@@ -37,6 +38,9 @@ export type Or<Left extends boolean, Right extends boolean> = true extends Left 
 export type RequiredField<Needed extends boolean, Key extends PropertyKey, Value> = Needed extends true
 	? Readonly<{ [Field in Key]: Value }>
 	: Readonly<{ [Field in Key]?: never }>
+export type OptionalField<Needed extends boolean, Key extends PropertyKey, Value> = Needed extends true
+	? Readonly<{ [Field in Key]?: Value }>
+	: Readonly<{ [Field in Key]?: never }>
 
 type ModelAliases<Requirements extends RuntimeRequirements> = keyof Requirements['models'] & string
 export type ModelFields<Requirements extends RuntimeRequirements> =
@@ -60,7 +64,31 @@ export type SandboxBinding<Requirements extends RuntimeRequirements> = Sandbox
 		: object)
 
 /** Exact runtime configuration projected from a compiled definition graph. */
-export type HarnessInstanceConfig<Requirements extends RuntimeRequirements> =
+type HarnessSandboxBindingOptions<
+	Requirements extends RuntimeRequirements,
+	ConfiguredGroups extends readonly string[],
+> = Exclude<Requirements['sandbox']['requiredGroups'][number], ConfiguredGroups[number]> extends never
+	? Readonly<Omit<SandboxBindingOptions<NoInfer<ConfiguredGroups[number]>>, 'groups'> & (
+		[Requirements['sandbox']['requiredGroups'][number]] extends [never]
+			? { readonly groups?: ConfiguredGroups }
+			: { readonly groups: ConfiguredGroups }
+	)>
+	: never
+
+type SandboxBindingOptionsField<Requirements extends RuntimeRequirements, ConfiguredGroups extends readonly string[]> =
+	[Requirements['sandbox']['requiredGroups'][number]] extends [never]
+		? Readonly<{ sandboxBinding?: HarnessSandboxBindingOptions<Requirements, ConfiguredGroups> }>
+		: Readonly<{ sandboxBinding: HarnessSandboxBindingOptions<Requirements, ConfiguredGroups> }>
+
+type SandboxFields<Requirements extends RuntimeRequirements, ConfiguredGroups extends readonly string[]> =
+	Requirements['sandbox']['required'] extends true
+		? Readonly<{ sandbox: SandboxBinding<Requirements> }> & SandboxBindingOptionsField<Requirements, ConfiguredGroups>
+		: Readonly<{ sandbox?: never; sandboxBinding?: never }>
+
+export type HarnessInstanceConfig<
+	Requirements extends RuntimeRequirements,
+	ConfiguredGroups extends readonly string[] = readonly [],
+> =
 	[Requirements['hostTools'][number]] extends [never]
 		? Readonly<
 			ModelFields<Requirements>
@@ -72,10 +100,7 @@ export type HarnessInstanceConfig<Requirements extends RuntimeRequirements> =
 				HasMembers<Requirements['memory']['capabilities']>,
 				HasMembers<Requirements['memory']['modelAliases']>
 			>, 'memory', MemoryEngine>
-			& RequiredField<Or<
-				HasMembers<Requirements['sandbox']['capabilities']>,
-				HasMembers<Requirements['skillRuntimes']>
-			>, 'sandbox', SandboxBinding<Requirements>>
+			& SandboxFields<Requirements, ConfiguredGroups>
 			& RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
 			& RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
 			& Readonly<{
@@ -94,6 +119,7 @@ export interface ValidatedHarnessInstanceBindings {
 	readonly storage?: HarnessStorage
 	readonly memory?: MemoryEngine
 	readonly sandbox?: Sandbox
+	readonly sandboxBinding?: Readonly<SandboxBindingOptions<string>>
 	readonly workspace?: DurableWorkspace
 	readonly artifacts?: ArtifactStore
 	readonly agentAdmission?: AgentAdmission
@@ -105,7 +131,7 @@ export interface ValidatedHarnessInstanceBindings {
 type PlainRecord = Record<string, unknown>
 const TOP_LEVEL_KEYS = Object.freeze([
 	'admission', 'agentAdmission', 'artifacts', 'logger', 'mcp', 'memory', 'model', 'models',
-	'sandbox', 'storage', 'telemetry', 'workspace',
+	'sandbox', 'sandboxBinding', 'storage', 'telemetry', 'workspace',
 ])
 const MODEL_KEYS = Object.freeze([
 	'contextProjection', 'credentialScope', 'defaults', 'model', 'provider', 'providerOptions', 'retry',
@@ -167,7 +193,7 @@ export function validateHarnessInstanceConfig(
 		['mcp', requirements.mcpServers.length > 0],
 		['storage', requirements.storage.durable],
 		['memory', requirements.memory.capabilities.length > 0 || requirements.memory.modelAliases.length > 0],
-		['sandbox', requirements.sandbox.capabilities.length > 0 || requirements.skillRuntimes.length > 0],
+		['sandbox', requirements.sandbox.required],
 		['workspace', requirements.workspace],
 		['artifacts', requirements.artifacts],
 	] as const
@@ -175,12 +201,16 @@ export function validateHarnessInstanceConfig(
 		if (needed && !own(config, key)) fail('missing_runtime_binding', key)
 		if (!needed && own(config, key)) fail('unexpected_runtime_binding', key)
 	}
+	const needsSandbox = requirements.sandbox.required
+	if (!needsSandbox && own(config, 'sandboxBinding')) fail('unexpected_runtime_binding', 'sandboxBinding')
+	if (requirements.sandbox.requiredGroups.length > 0 && !own(config, 'sandboxBinding')) fail('missing_runtime_binding', 'sandboxBinding')
 
 	const result: Record<string, unknown> = { models: Object.freeze(models) }
 	if (own(config, 'mcp')) result['mcp'] = validateMcp(config['mcp'], requirements.mcpServers)
 	if (own(config, 'storage')) result['storage'] = validateStorage(config['storage'], requirements.storage.durable)
 	if (own(config, 'memory')) result['memory'] = validateMemory(config['memory'], requirements.memory.capabilities)
 	if (own(config, 'sandbox')) result['sandbox'] = validateSandbox(config['sandbox'], requirements.sandbox.capabilities, requirements.skillRuntimes, 'sandbox')
+	if (own(config, 'sandboxBinding')) result['sandboxBinding'] = validateSandboxBinding(config['sandboxBinding'], requirements.sandbox.requiredGroups)
 	if (own(config, 'workspace')) result['workspace'] = validateWorkspace(config['workspace'])
 	if (own(config, 'artifacts')) result['artifacts'] = validateArtifactStore(config['artifacts'])
 	if (own(config, 'agentAdmission')) result['agentAdmission'] = validateAdmission(config['agentAdmission'], 'agentAdmission')
@@ -188,6 +218,25 @@ export function validateHarnessInstanceConfig(
 	if (own(config, 'logger')) result['logger'] = validateLogger(config['logger'])
 	if (own(config, 'telemetry')) result['telemetry'] = validateTelemetry(config['telemetry'])
 	return Object.freeze(result) as unknown as ValidatedHarnessInstanceBindings
+}
+
+function validateSandboxBinding(value: unknown, requiredGroups: readonly string[]): Readonly<SandboxBindingOptions<string>> {
+	if (!isPlainRecord(value)) fail('invalid_runtime_binding', 'sandboxBinding')
+	const additional = value['groups']
+	if (additional !== undefined && (!Array.isArray(additional) || additional.some(group => typeof group !== 'string'))) {
+		fail('invalid_runtime_binding', 'sandboxBinding.groups')
+	}
+	const configuredGroups = additional as readonly string[] | undefined
+	if (requiredGroups.some(group => !configuredGroups?.includes(group))) fail('invalid_runtime_binding', 'sandboxBinding.groups')
+	const parsed = sandboxBindingOptionsSchema.safeParse(value)
+	if (!parsed.success) fail('invalid_runtime_binding', 'sandboxBinding')
+	const data = parsed.data
+	return Object.freeze({
+		...(data.groups === undefined ? {} : { groups: Object.freeze([...data.groups]) }),
+		...(data.defaultPolicy === undefined ? {} : { defaultPolicy: typeof data.defaultPolicy === 'string'
+			? data.defaultPolicy : Object.freeze({ group: data.defaultPolicy.group }) }),
+		...(data.authorizeOwner === undefined ? {} : { authorizeOwner: data.authorizeOwner }),
+	})
 }
 
 function validateModelBinding(value: unknown, capabilities: readonly ModelCapability[], path: string): Readonly<ModelAlias> {

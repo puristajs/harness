@@ -19,6 +19,7 @@ export type ValidationWhere =
   | 'tool_output'
   | 'mcp_input'
   | 'mcp_output'
+  | 'model_request'
   | 'model_response'
   | 'memory_key'
   | 'memory_value'
@@ -472,6 +473,17 @@ export class WorkflowNotFoundError extends HarnessError {
   }
 }
 
+/** A public approval resume does not match the current durable continuation. */
+export class ApprovalResumeError extends HarnessError {
+	public constructor(reason:
+		| 'invalid_resume' | 'run_mismatch' | 'input_mismatch' | 'interrupt_mismatch'
+		| 'revision_mismatch' | 'graph_mismatch' | 'session_identity_mismatch'
+		| 'invalid_checkpoint' | 'event_conflict' | 'decision_set_mismatch' | 'stale_continuation') {
+		super({ code: 'APPROVAL_RESUME_ERROR', category: 'validation', retriable: false,
+			message: 'Tool approval resume is invalid.', meta: { reason } })
+	}
+}
+
 /** One workflow call id was reused for another logical child call. */
 export class WorkflowCallReplayConflictError extends HarnessError {
 	public constructor(meta: {
@@ -570,6 +582,8 @@ export class StateError extends HarnessError {
         | 'appendEvents'
         | 'listEvents'
         | 'acquireRun'
+		| 'replaceCheckpoint'
+		| 'finalizeRun'
         | 'loadCheckpoint'
         | 'commitCheckpoint'
         | 'withSessionLock'

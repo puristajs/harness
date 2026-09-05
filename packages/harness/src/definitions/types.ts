@@ -326,6 +326,7 @@ export type AgentOptions<
 	Governance extends AgentGovernanceInput<Tools, Skills, Subagents> | undefined = undefined,
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
+	Sandbox extends SandboxPolicy | undefined = undefined,
 > = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & {
 	readonly description?: string
 	readonly model?: Model
@@ -339,7 +340,7 @@ export type AgentOptions<
 	readonly subagents?: Subagents
 	readonly loop?: AgentLoopOptions
 	readonly memory?: Memory
-	readonly sandbox?: SandboxPolicy
+	readonly sandbox?: Sandbox
 	readonly workspace?: Workspace
 	readonly durable?: Durable
 }
@@ -366,6 +367,7 @@ export type AgentDefinition<
 	Governance extends GovernanceConfig<any> | undefined = undefined,
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
+	Sandbox extends SandboxPolicy | undefined = undefined,
 > = Readonly<{
 	kind: 'agent'
 	id: Id
@@ -376,7 +378,6 @@ export type AgentDefinition<
 	instructions: string
 	inputCapabilities?: Capabilities
 	loop?: AgentLoopOptions
-	sandbox?: SandboxPolicy
 	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, readonly ['tool-approval']>
 	readonly $infer: DefinitionInference<Input, Output>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
@@ -386,6 +387,7 @@ export type AgentDefinition<
 	& PresentField<'governance', Governance>
 	& PresentField<'workspace', Workspace>
 	& PresentField<'durable', Durable>
+	& PresentField<'sandbox', Sandbox>
 	& DefinitionReference<'agent', Id>
 
 /** One model alias and its exact workflow-visible capabilities. */
@@ -454,19 +456,21 @@ export interface ContinuableChildTaskHandle<Input, Output> extends ChildTaskHand
 	close(): Promise<Output | undefined>
 }
 
-export type ChildTaskStartOptions = Readonly<{
+export type ChildTaskStartOptions<Groups extends readonly string[] = readonly []> = Readonly<{
 	callId: string
 	idempotencyKey?: string
 	timeoutMs?: number
 	context?: 'isolated'
 	mode?: 'one_shot'
+	sandbox?: SandboxPolicy<Groups[number]>
 }>
 
-export type ContinuableChildTaskStartOptions = Readonly<{
+export type ContinuableChildTaskStartOptions<Groups extends readonly string[] = readonly []> = Readonly<{
 	callId: string
 	timeoutMs?: number
 	context?: 'isolated'
 	mode: 'continuable'
+	sandbox?: SandboxPolicy<Groups[number]>
 }>
 
 /** Definition-local workflow agent-call ceilings. */
@@ -475,16 +479,16 @@ export interface WorkflowAgentCallLimits {
 	readonly maxParallel?: number
 }
 
-export interface WorkflowChildTasks<Agents extends WorkflowAgentMap | undefined> {
+export interface WorkflowChildTasks<Agents extends WorkflowAgentMap | undefined, ChildTaskSandboxGroups extends readonly string[] = readonly []> {
 	start<K extends keyof NonNullable<Agents>>(
 		agent: K,
 		input: NonNullable<Agents>[K]['$infer']['input'],
-		options: ContinuableChildTaskStartOptions,
+		options: ContinuableChildTaskStartOptions<ChildTaskSandboxGroups>,
 	): Promise<ContinuableChildTaskHandle<NonNullable<Agents>[K]['$infer']['input'], NonNullable<Agents>[K]['$infer']['output']>>
 	start<K extends keyof NonNullable<Agents>>(
 		agent: K,
 		input: NonNullable<Agents>[K]['$infer']['input'],
-		options: ChildTaskStartOptions,
+		options: ChildTaskStartOptions<ChildTaskSandboxGroups>,
 	): Promise<ChildTaskHandle<NonNullable<Agents>[K]['$infer']['output']>>
 }
 
@@ -498,6 +502,7 @@ export type WorkflowContext<
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined,
 	Models extends WorkflowModelMap | undefined,
+	ChildTaskSandboxGroups extends readonly string[],
 	Durable extends true | undefined,
 > = Readonly<{
 	readonly input: Infer<Input> & JsonValue
@@ -512,7 +517,7 @@ export type WorkflowContext<
 	readonly metadata: Readonly<Record<string, JsonValue>>
 	readonly step: <T extends JsonValue>(stepId: string, handler: () => Promise<T>, options?: DurableStepOptions) => Promise<T>
 	readonly fanOut: <T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: Readonly<{ concurrency?: number }>) => Promise<R[]>
-	readonly childTasks: WorkflowChildTasks<Agents>
+	readonly childTasks: WorkflowChildTasks<Agents, ChildTaskSandboxGroups>
 }> & WorkflowExternalWait<Durable>
 
 /** Closed authoring fields for an application-orchestration workflow. */
@@ -521,8 +526,10 @@ export interface WorkflowOptions<
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined,
 	Models extends WorkflowModelMap | undefined,
+	ChildTaskSandboxGroups extends readonly string[],
 	Workspace extends true | undefined,
 	Durable extends true | undefined,
+	Sandbox extends SandboxPolicy | undefined = undefined,
 > {
 	readonly input: Input
 	readonly output: Output
@@ -530,11 +537,12 @@ export interface WorkflowOptions<
 	readonly agents?: Agents
 	readonly models?: Models
 	readonly agentCalls?: WorkflowAgentCallLimits
-	readonly sandbox?: SandboxPolicy
+	readonly childTaskSandboxGroups?: ChildTaskSandboxGroups
+	readonly sandbox?: Sandbox
 	readonly maxDepth?: number
 	readonly workspace?: Workspace
 	readonly durable?: Durable
-	readonly handler: (context: WorkflowContext<Input, Output, Agents, Models, Durable>) => Promise<InferIn<Output>>
+	readonly handler: (context: WorkflowContext<Input, Output, Agents, Models, ChildTaskSandboxGroups, Durable>) => Promise<InferIn<Output>>
 }
 
 /** Frozen definition of one custom orchestration workflow. */
@@ -544,8 +552,10 @@ export type WorkflowDefinition<
 	Output extends ModelSchema,
 	Agents extends WorkflowAgentMap | undefined = undefined,
 	Models extends WorkflowModelMap | undefined = undefined,
+	ChildTaskSandboxGroups extends readonly string[] = readonly [],
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
+	Sandbox extends SandboxPolicy | undefined = undefined,
 > = Readonly<{
 	kind: 'workflow'
 	id: Id
@@ -553,13 +563,15 @@ export type WorkflowDefinition<
 	input: Input
 	output: Output
 	agentCalls?: WorkflowAgentCallLimits
-	sandbox?: SandboxPolicy
+	childTaskSandboxGroups?: ChildTaskSandboxGroups
 	maxDepth?: number
-	handler: WorkflowOptions<Input, Output, Agents, Models, Workspace, Durable>['handler']
+	handler: WorkflowOptions<Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>['handler']
 	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', readonly ['tool-approval', 'external-wait']>
 	readonly $infer: DefinitionInference<Input, Output>
 }> & PresentField<'agents', Agents> & PresentField<'models', Models>
+	& PresentField<'childTaskSandboxGroups', ChildTaskSandboxGroups extends readonly [] ? undefined : ChildTaskSandboxGroups>
 	& PresentField<'workspace', Workspace> & PresentField<'durable', Durable>
+	& PresentField<'sandbox', Sandbox>
 	& DefinitionReference<'workflow', Id>
 
 /** Identity-bearing workflow shape accepted by catalogs and Harness composition. */
@@ -572,6 +584,7 @@ export type AnyWorkflowDefinition = Readonly<{
 	agents?: WorkflowAgentMap | undefined
 	models?: WorkflowModelMap | undefined
 	agentCalls?: WorkflowAgentCallLimits | undefined
+	childTaskSandboxGroups?: readonly string[] | undefined
 	sandbox?: SandboxPolicy | undefined
 	maxDepth?: number | undefined
 	workspace?: true | undefined

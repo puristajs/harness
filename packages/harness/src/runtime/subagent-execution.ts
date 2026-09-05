@@ -23,11 +23,17 @@ type SubagentBinding<A extends AnyAgentDefinition> = Omit<AgentExecutableBinding
 	invokeValidated(context: AgentToolInvocationContext, input: Infer<A['input']> & JsonValue, wireInput: InferIn<A['input']> & JsonValue): Promise<Infer<A['output']> & JsonValue>
 }>
 
+/** @internal Runtime-owned authorization and sandbox handoff for one subagent launch. */
+export interface SubagentLaunchHooks {
+	prepare(context: AgentToolInvocationContext, agent: AnyAgentDefinition, childInvocationId: string, childSessionId: string): Promise<void>
+	finish(childInvocationId: string): void
+}
+
 /** Creates the sole common-pipeline binding for one model-facing subagent. */
 export function createSubagentBinding<
 	const Name extends string,
 	const Reference extends AgentSubagentReference,
->(name: Name, reference: Reference): SubagentBinding<ReferencedAgent<Reference>> {
+>(name: Name, reference: Reference, hooks?: SubagentLaunchHooks): SubagentBinding<ReferencedAgent<Reference>> {
 	assertDefinitionId(name, 'agent.subagents')
 	const agent: AnyAgentDefinition = isReferenceWrapper(reference) ? reference.agent : reference as AnyAgentDefinition
 	const identity = getDefinitionIdentity(agent)
@@ -37,6 +43,11 @@ export function createSubagentBinding<
 	const override = isReferenceWrapper(reference) ? reference.description : undefined
 	if (override !== undefined) assertNonemptyText(override, 'agent.subagents.description', agent.id)
 	const description = override ?? agent.description ?? `Delegate to the "${agent.id}" agent.`
+	const childIds = (context: AgentToolInvocationContext) => Object.freeze({
+		invocationId: deriveOpaqueId('invocation', [context.runId, 'agent', context.agentId, context.callId, agent.id]),
+		sessionId: deriveOpaqueId('session', [context.sessionId, context.rootRunId,
+			deriveOpaqueId('invocation', [context.runId, 'agent', context.agentId, context.callId, agent.id]), agent.id]),
+	})
 	const binding = createAgentExecutableBinding({
 		id: name,
 		description,
@@ -48,6 +59,13 @@ export function createSubagentBinding<
 		mcpOwner: null,
 		remoteMcpName: null,
 		outputValidation: 'already-validated-target',
+		...(hooks === undefined ? {} : {
+			beforeInvoke: async (context: AgentToolInvocationContext) => {
+				const ids = childIds(context)
+				await hooks.prepare(context, agent, ids.invocationId, ids.sessionId)
+			},
+			afterInvoke: (context: AgentToolInvocationContext) => hooks.finish(childIds(context).invocationId),
+		}),
 		invokeValidated: async (context, _input, wireInput) => executeSubagent(name, agent, context, wireInput),
 	})
 	return binding as SubagentBinding<ReferencedAgent<Reference>>
@@ -163,10 +181,11 @@ function validateChildEvent(
 	if (!isPlainRecord(value) || !isJsonValue(value)) throw malformedTerminal('invalid_event')
 	const type = value['type']
 	const runId = value['runId']
+	if (typeof value['eventId'] !== 'string' || value['eventId'].length === 0
+		|| !Number.isSafeInteger(value['sequence']) || (value['sequence'] as number) < 1) throw malformedTerminal('invalid_event')
 	if (typeof type !== 'string' || !(harnessExecutionEventTypesV1 as readonly string[]).includes(type)) throw malformedTerminal('invalid_event')
 	if (typeof runId !== 'string' || runId.length === 0 || (expectedRunId !== undefined && runId !== expectedRunId)) throw malformedTerminal('invalid_run_correlation')
-	if (value['parentRunId'] !== undefined && value['parentRunId'] !== parentRunId) throw malformedTerminal('invalid_run_correlation')
-	if (value['parentInvocationId'] !== undefined && value['parentInvocationId'] !== childInvocationId) throw malformedTerminal('invalid_run_correlation')
+	if (value['parentRunId'] !== parentRunId || value['parentInvocationId'] !== childInvocationId) throw malformedTerminal('invalid_run_correlation')
 	if (!validEventBody(value, type)) throw malformedTerminal(type === 'run.finished' ? 'invalid_terminal' : 'invalid_event')
 	return value as unknown as ExecutionEvent<JsonValue>
 }
@@ -279,7 +298,7 @@ async function cleanupChildStream(
 }
 
 function closed(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
-	const allowed = new Set(['type', 'runId', 'parentRunId', 'parentInvocationId', ...required, ...optional])
+	const allowed = new Set(['type', 'eventId', 'sequence', 'runId', 'parentRunId', 'parentInvocationId', ...required, ...optional])
 	return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
 		&& Reflect.ownKeys(value).every(key => typeof key === 'string' && allowed.has(key))
 }

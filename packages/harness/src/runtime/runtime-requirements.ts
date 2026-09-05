@@ -15,6 +15,7 @@ import type {
 	SkillRuntimeId,
 } from '../definitions/types.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
+import type { CompiledApprovalInventory } from './compiled-graph.js'
 
 /** Deterministic deployment requirements derived from a completed definition graph. */
 export interface RuntimeRequirements<
@@ -24,6 +25,8 @@ export interface RuntimeRequirements<
 	RequiredMemoryCapability extends MemoryCapability = MemoryCapability,
 	MemoryModelAlias extends string = string,
 	RequiredSandboxCapability extends SandboxCapabilityId = SandboxCapabilityId,
+	SandboxGroup extends string = string,
+	SandboxRequired extends boolean = boolean,
 	HostToolId extends string = string,
 	Durable extends boolean = boolean,
 	Workspace extends boolean = boolean,
@@ -37,7 +40,11 @@ export interface RuntimeRequirements<
 		capabilities: readonly RequiredMemoryCapability[]
 		modelAliases: readonly MemoryModelAlias[]
 	}>
-	readonly sandbox: Readonly<{ capabilities: readonly RequiredSandboxCapability[] }>
+	readonly sandbox: Readonly<{
+		capabilities: readonly RequiredSandboxCapability[]
+		requiredGroups: readonly SandboxGroup[]
+		required: SandboxRequired
+	}>
 	readonly workspace: Workspace
 	readonly artifacts: Artifacts
 	readonly hostTools: readonly HostToolId[]
@@ -157,6 +164,13 @@ type AgentWorkspace<Agent> =
 	| (Agent extends { readonly workspace: true } ? true : never)
 	| ([AgentGuardrailRequirements<Agent>] extends [never] ? never : AgentGuardrailRequirements<Agent> extends { readonly workspace: true } ? true : never)
 type WorkflowWorkspace<Workflow> = Workflow extends { readonly workspace: true } ? true : never
+type SandboxGroupOf<Definition> = Definition extends { readonly sandbox: { readonly group: infer Group extends string } } ? Group : never
+type WorkflowChildSandboxGroups<Definition> = Definition extends { readonly childTaskSandboxGroups: readonly (infer Group extends string)[] } ? Group : never
+type HasExplicitSandboxPolicy<Definition> = Definition extends { readonly sandbox: unknown } ? true : never
+type HasWorkflowChildSandboxGroups<Definition> = Definition extends { readonly childTaskSandboxGroups: readonly [string, ...string[]] } ? true : never
+type WorkspaceSandboxCapability<Agent, Workflow> = IsTrue<AgentWorkspace<Agent> | WorkflowWorkspace<Workflow>> extends true
+	? 'sandbox.workspace_binding'
+	: never
 type GuardrailArtifacts<Agent> = [AgentGuardrailRequirements<Agent>] extends [never]
 	? never
 	: AgentGuardrailRequirements<Agent> extends { readonly artifacts: true } ? true : never
@@ -181,7 +195,16 @@ export type RuntimeRequirementsFor<
 		SkillRuntimes<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'skillRuntimes'>, SkillRuntimeId>,
 		ToolMemoryCapabilities<Values<Tools>> | AgentMemoryCapabilities<Values<Agents>> | Extract<GuardrailArrayMember<Values<Agents>, 'memory'>, MemoryCapability>,
 	AgentMemoryAliases<Values<Agents>>,
-		ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>,
+		ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
+			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>,
+		SandboxGroupOf<Values<Agents> | Values<Workflows>> | WorkflowChildSandboxGroups<Values<Workflows>>,
+		IsTrue<
+			ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>>
+			| Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
+			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>
+			| HasExplicitSandboxPolicy<Values<Agents> | Values<Workflows>>
+			| HasWorkflowChildSandboxGroups<Values<Workflows>>
+		>,
 		HostToolIds<Values<Tools>>,
 		IsTrue<AgentDurability<Values<Agents>> | WorkflowDurability<Values<Workflows>>>,
 		IsTrue<AgentWorkspace<Values<Agents>> | WorkflowWorkspace<Values<Workflows>>>,
@@ -198,16 +221,18 @@ export interface RuntimeRequirementSources {
 }
 
 /** @internal Derives and deeply freezes canonical runtime requirements. */
-export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): RuntimeRequirements {
+export function deriveRuntimeRequirements(sources: RuntimeRequirementSources, approval: CompiledApprovalInventory): RuntimeRequirements {
 	const modelCapabilities = new Map<string, Set<ModelCapability>>()
 	const memoryCapabilities = new Set<MemoryCapability>()
 	const memoryModelAliases = new Set<string>()
 	const sandboxCapabilities = new Set<SandboxCapabilityId>()
 	const skillRuntimes = new Set<SkillRuntimeId>()
 	const hostTools = new Set<string>()
+	const sandboxGroups = new Set<string>()
 	let durable = false
 	let workspace = false
 	let artifactsRequired = false
+	let sandboxRequired = false
 
 	const addModel = (alias: string, capabilities: readonly ModelCapability[]) => {
 		const selected = modelCapabilities.get(alias) ?? new Set<ModelCapability>()
@@ -225,6 +250,7 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 	for (const skill of Object.values(sources.skills)) {
 		for (const runtime of skill.runtimes ?? []) skillRuntimes.add(runtime)
 		if ((skill.runtimes?.length ?? 0) > 0) {
+			sandboxRequired = true
 			sandboxCapabilities.add('sandbox.fs')
 			sandboxCapabilities.add('sandbox.readonly_mount')
 		}
@@ -254,10 +280,12 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 		if (interceptor?.requirements?.durable === true) durable = true
 		if (interceptor?.requirements?.workspace === true) workspace = true
 		if (interceptor?.requirements?.artifacts === true) artifactsRequired = true
-		if (agentCanRequestApproval(agent)) durable = true
+		if (approval.agents[agent.id]?.reachable === true) durable = true
 		if (Object.keys(agent.subagents ?? {}).length > 0) durable = true
 		if (agent.durable === true) durable = true
 		if (agent.workspace === true) workspace = true
+		if (agent.sandbox !== undefined) sandboxRequired = true
+		if (typeof agent.sandbox === 'object') sandboxGroups.add(agent.sandbox.group)
 	}
 	for (const workflow of Object.values(sources.workflows)) {
 		const models = Object.values(workflow.models ?? {}) as readonly Readonly<{
@@ -266,8 +294,15 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 		}>[]
 		for (const model of models) addModel(model.alias, model.capabilities)
 		if (workflow.durable === true) durable = true
+		if (approval.workflows[workflow.id]?.reachable === true) durable = true
 		if (workflow.workspace === true) workspace = true
+		if (workflow.sandbox !== undefined) sandboxRequired = true
+		if (typeof workflow.sandbox === 'object') sandboxGroups.add(workflow.sandbox.group)
+		for (const group of workflow.childTaskSandboxGroups ?? []) sandboxGroups.add(group)
+		if ((workflow.childTaskSandboxGroups?.length ?? 0) > 0) sandboxRequired = true
 	}
+	if (workspace) sandboxCapabilities.add('sandbox.workspace_binding')
+	if (sandboxCapabilities.size > 0 || skillRuntimes.size > 0 || workspace) sandboxRequired = true
 
 	const models: Record<string, Readonly<{ capabilities: readonly ModelCapability[] }>> = {}
 	for (const alias of [...modelCapabilities.keys()].sort()) {
@@ -283,7 +318,7 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 		skillRuntimes: sorted(skillRuntimes),
 		storage: Object.freeze({ durable }),
 		memory: Object.freeze({ capabilities: sorted(memoryCapabilities), modelAliases: sorted(memoryModelAliases) }),
-		sandbox: Object.freeze({ capabilities: sorted(sandboxCapabilities) }),
+		sandbox: Object.freeze({ capabilities: sorted(sandboxCapabilities), requiredGroups: sorted(sandboxGroups), required: sandboxRequired }),
 		workspace,
 		artifacts,
 		hostTools: sorted(hostTools),
@@ -292,27 +327,4 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources): R
 
 function sorted<T extends string>(values: Iterable<T>): readonly T[] {
 	return Object.freeze([...values].sort())
-}
-
-/** @internal Canonical recursive approval reachability check shared by requirements and task preflight. */
-export function agentCanRequestApproval(agent: AnyAgentDefinition, visited = new Set<object>()): boolean {
-	if (visited.has(agent)) return false
-	visited.add(agent)
-	if (hasApprovalPermission(agent)) return true
-	if (agent.governance?.policies?.some(policy => policy.effects.includes('require_approval'))) return true
-	for (const reference of Object.values(agent.subagents ?? {})) {
-		const child = 'kind' in reference ? reference : reference.agent
-		if (agentCanRequestApproval(child, visited)) return true
-	}
-	return false
-}
-
-function hasApprovalPermission(agent: AnyAgentDefinition): boolean {
-	const permissions = agent.permissions
-	if (permissions === undefined) return false
-	const selected = new Set((agent.tools ?? []).map(tool => tool.id))
-	return Object.entries(permissions).some(([toolId, permission]) => selected.has(toolId) && (
-		permission === 'require_approval'
-		|| (typeof permission === 'object' && permission !== null && permission.mode === 'require_approval')
-	))
 }

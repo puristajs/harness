@@ -1,6 +1,6 @@
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
-import type { FinishRunPatch } from '../storage/types.js'
+import type { CreateRunRequest, FinishRunPatch } from '../storage/types.js'
 
 /** Operation names recorded by {@link FakeHarnessStorage}. */
 export type FakeHarnessStorageOp =
@@ -58,7 +58,7 @@ export class FakeHarnessStorage extends InMemoryHarnessStorage {
     return super.replaceMessages(sessionId, messages)
   }
 
-  public override async createRun(record: RunRecord): Promise<void> {
+  public override async createRun(record: CreateRunRequest): Promise<RunRecord> {
     this.ops.push('createRun')
     return super.createRun(record)
   }

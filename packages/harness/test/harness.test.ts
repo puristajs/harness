@@ -26,7 +26,6 @@ import {
   ModelCapabilityError,
   ModelError,
   SessionBusyError,
-  SkillManifestError,
 } from '../src/errors/index.js'
 import type { ObjectRequest } from '../src/ports/model-provider.js'
 import type { ObjectResponse } from '../src/ports/model-provider.js'
@@ -1027,7 +1026,7 @@ it('rejects malformed custom tool ids at the .tools() call', () => {
   ).toThrow(HarnessConfigError)
 })
 
-it('rejects a custom tool id that collides with a built-in tool name', () => {
+it('does not retain the removed v3 SkillManifestError collision check', () => {
   const model = new FakeModelProvider()
   expect(() =>
     defineHarness()
@@ -1037,7 +1036,7 @@ it('rejects a custom tool id that collides with a built-in tool name', () => {
         read: { description: 'x', input: z.object({}), output: z.object({}), handler: async () => ({}) },
       })
       .build(),
-  ).toThrow(SkillManifestError)
+  ).not.toThrow()
 })
 
 it('serializes two same-tick prompts on a fresh session (concurrency race)', async () => {

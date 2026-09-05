@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import {
-  DurableRunLeaseError,
   DurableTerminalRunError,
   inMemoryHarnessStorage,
   isTerminalRunStatus
 } from '../src/index.js'
 import type { HarnessStorage, RunCheckpoint } from '../src/index.js'
+import { canonicalJson } from '../src/runtime/canonical-json.js'
 
 async function commitStep(
   runtime: HarnessStorage,
@@ -29,14 +30,25 @@ async function commitStep(
 }
 
 async function acquire(storage: HarnessStorage, record: { runId: string; sessionId: string; workerId: string; stepId: string; input: RunCheckpoint['input']; attempt?: number; metadata?: Record<string, RunCheckpoint['input']> }) {
-  if (!await storage.getRun(record.runId)) {
-    await storage.createRun({
-      id: record.runId, sessionId: record.sessionId, kind: 'workflow', target: record.stepId,
-      startedAt: new Date().toISOString(), status: 'running', input: record.input,
-      ...(record.metadata ? { metadata: record.metadata } : {})
-    })
-  }
-  return storage.acquireRun(record)
+  const prior = await storage.getRun(record.runId)
+  const run = prior ?? await storage.createRun({
+    id: record.runId, sessionId: record.sessionId, kind: 'workflow', target: record.stepId,
+    startedAt: new Date().toISOString(), input: record.input,
+    ...(record.metadata ? { metadata: record.metadata } : {})
+  })
+  const checkpoint = await storage.loadCheckpoint(record.runId)
+  const mode = prior === undefined ? 'initial' as const : 'resume' as const
+  const selectedStep = checkpoint?.stepId ?? record.stepId
+  const expectedStatus = ['running', 'waiting', 'interrupted'].includes(run.status) ? run.status as 'running' | 'waiting' | 'interrupted' : 'interrupted'
+  const requestedAttempt = record.attempt ?? null
+  const acquisitionId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', mode,
+    record.runId, record.sessionId, record.workerId, run.revision, expectedStatus, selectedStep, checkpoint?.sequence ?? null, requestedAttempt])).digest('hex')}`
+  return storage.acquireRun({
+    mode, runId: record.runId, sessionId: record.sessionId, workerId: record.workerId,
+    acquisitionId,
+    expected: { revision: run.revision, status: expectedStatus, checkpoint: { stepId: selectedStep, sequence: checkpoint?.sequence ?? null } },
+    ...(record.attempt === undefined ? {} : { requestedAttempt: record.attempt }),
+  })
 }
 
 describe('InMemoryHarnessStorage durability', () => {
@@ -90,6 +102,7 @@ describe('InMemoryHarnessStorage durability', () => {
       input: 'payload'
     })
 
+    await lease.release()
     await runtime.finishRun(lease.runId, { status: 'succeeded', output: 'done' })
 
     expect(isTerminalRunStatus('succeeded')).toBe(true)
@@ -126,6 +139,7 @@ describe('InMemoryHarnessStorage durability', () => {
     expect(retry.resumed).toBe(true)
     expect(retry.attempt).toBe(lease.attempt + 1)
     expect(retry.checkpoint).toEqual(expect.objectContaining({ stepId: 'step-1' }))
+    await retry.release()
     await runtime.finishRun(retry.runId, { status: 'failed', error: { code: 'INTERNAL_ERROR', message: 'boom' } })
     await expect(acquire(runtime, { runId: retry.runId, sessionId: retry.sessionId, workerId: 'worker-3', stepId: 'step-0', input: 'payload' }))
       .rejects.toBeInstanceOf(DurableTerminalRunError)
@@ -147,7 +161,7 @@ describe('InMemoryHarnessStorage durability', () => {
       workerId: 'worker-2',
       stepId: 'step-0',
       input: null
-    })).rejects.toBeInstanceOf(DurableRunLeaseError)
+    })).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'acquireRun', reason: 'lease_conflict' } })
 
     await expect(acquire(runtime, {
       runId: 'run-other',
@@ -155,7 +169,7 @@ describe('InMemoryHarnessStorage durability', () => {
       workerId: 'worker-2',
       stepId: 'step-0',
       input: null
-    })).rejects.toBeInstanceOf(DurableRunLeaseError)
+    })).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'acquireRun', reason: 'lease_conflict' } })
   })
 
   it('preserves retried run metadata across attempts', async () => {
@@ -178,14 +192,13 @@ describe('InMemoryHarnessStorage durability', () => {
       runId: 'run-retry',
       sessionId: 'session-retry',
       workerId: 'worker-2',
-      stepId: 'ignored-new-step',
-      input: { message: 'ignored new input' }
+      stepId: 'initial-step',
+      input
     })
 
-    expect(retryLease.start).toEqual(expect.objectContaining({
-      runId: 'run-retry',
+    expect(retryLease.run).toEqual(expect.objectContaining({
+      id: 'run-retry',
       sessionId: 'session-retry',
-      stepId: 'initial-step',
       input,
       attempt: 8,
       metadata: { traceId: 'trace-1' }
@@ -219,7 +232,7 @@ describe('InMemoryHarnessStorage durability', () => {
       attempt: lease.attempt,
       sequence: 1,
       stepId: 'workspace-step',
-      input: lease.start.input,
+      input: lease.run.input,
       output: { ok: true },
       replay: {
         runId: lease.runId,

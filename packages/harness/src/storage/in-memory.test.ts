@@ -4,6 +4,8 @@ import { InMemoryHarnessStorage } from './in-memory.js'
 import { JsonLogger } from '../logger/index.js'
 import { createMetrics } from '../telemetry/index.js'
 import { RecordingTelemetry } from '../testing/recordingTelemetry.js'
+import { createHash } from 'node:crypto'
+import { canonicalJson } from '../runtime/canonical-json.js'
 
 function message(id: string): Message {
   return { id, sessionId: 's1', role: 'user', content: 'hello', timestamp: new Date().toISOString() }
@@ -47,9 +49,15 @@ describe('InMemoryHarnessStorage message operations', () => {
         maxParallelToolCalls: 1
       }
     })
-    await store.createRun({ id: 'run-otel', sessionId: 'session-otel', kind: 'workflow', target: 'test', startedAt: new Date().toISOString(), status: 'running' })
-    const lease = await store.acquireRun({ runId: 'run-otel', sessionId: 'session-otel', workerId: 'worker', stepId: 'start', input: { private: 'must-not-leak' } })
-    await store.commitCheckpoint({ runId: lease.runId, sessionId: lease.sessionId, workerId: lease.workerId, leaseId: lease.leaseId, stepId: 'step', input: lease.start.input, output: { private: 'must-not-leak' }, attempt: lease.attempt, sequence: 1 })
+    const created = await store.createRun({ id: 'run-otel', sessionId: 'session-otel', kind: 'workflow', target: 'test', startedAt: new Date().toISOString(), input: { private: 'must-not-leak' } })
+    const stepId = 'start'
+    const expected = Object.freeze({ revision: created.revision, status: 'running' as const, checkpoint: Object.freeze({ stepId, sequence: null }) })
+    const acquisitionId = `acq_${createHash('sha256').update(canonicalJson([
+      'harness-run-acquisition-v1', 'initial', created.id, created.sessionId, 'worker', created.revision,
+      created.status, stepId, null, null,
+    ])).digest('hex')}`
+    const lease = await store.acquireRun({ mode: 'initial', runId: created.id, sessionId: created.sessionId, workerId: 'worker', acquisitionId, expected })
+    await store.commitCheckpoint({ runId: lease.runId, sessionId: lease.sessionId, workerId: lease.workerId, leaseId: lease.leaseId, stepId: 'step', input: lease.run.input, output: { private: 'must-not-leak' }, attempt: lease.attempt, sequence: 1 })
     await store.registerWait({ runId: lease.runId, sessionId: lease.sessionId, waitId: 'wait-otel', kind: 'approval', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z' })
     await store.signalWait({ waitId: 'wait-otel', eventId: 'event-otel', outcome: 'approved' })
 

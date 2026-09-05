@@ -51,6 +51,13 @@ export interface CompiledDefinitionGraph {
 	readonly agents: Readonly<Record<string, AnyAgentDefinition>>
 	readonly workflows: Readonly<Record<string, AnyWorkflowDefinition>>
 	readonly requirements: RuntimeRequirements
+	readonly approval: CompiledApprovalInventory
+}
+
+/** @internal Compiler-owned approval reachability for executable roots. */
+export interface CompiledApprovalInventory {
+	readonly agents: Readonly<Record<string, Readonly<{ reachable: boolean; agentIds: readonly string[] }>>>
+	readonly workflows: Readonly<Record<string, Readonly<{ reachable: boolean; agentIds: readonly string[] }>>>
 }
 
 /** @internal Default dependency reader for immutable public definitions. */
@@ -112,9 +119,49 @@ export function compileDefinitionGraph(
 	const mcpServers = definitionMap(byToken.values(), ['mcp-server']) as Readonly<Record<string, McpServerDefinition<any, any>>>
 	const agents = definitionMap(byToken.values(), ['agent']) as Readonly<Record<string, AnyAgentDefinition>>
 	const workflows = definitionMap(byToken.values(), ['workflow']) as Readonly<Record<string, AnyWorkflowDefinition>>
-	const requirements = deriveRuntimeRequirements({ tools, skills, mcpServers, agents, workflows })
+	const approval = compileApprovalInventory(agents, workflows)
+	const requirements = deriveRuntimeRequirements({ tools, skills, mcpServers, agents, workflows }, approval)
 
-	return Object.freeze({ tools, skills, mcpServers, agents, workflows, requirements })
+	return Object.freeze({ tools, skills, mcpServers, agents, workflows, requirements, approval })
+}
+
+function compileApprovalInventory(
+	agents: Readonly<Record<string, AnyAgentDefinition>>,
+	workflows: Readonly<Record<string, AnyWorkflowDefinition>>,
+): CompiledApprovalInventory {
+	const memo = new Map<object, readonly string[]>()
+	const reachable = (agent: AnyAgentDefinition): readonly string[] => {
+		const identity = requireIdentity(agent)
+		const known = memo.get(identity.token)
+		if (known !== undefined) return known
+		memo.set(identity.token, Object.freeze([]))
+		const selected = new Set((agent.tools ?? []).map(tool => tool.id))
+		const permission = Object.entries(agent.permissions ?? {}).some(([id, value]) => selected.has(id) && (
+			value === 'require_approval'
+			|| (typeof value === 'object' && value !== null && value.mode === 'require_approval')
+		))
+		const governance = agent.governance?.policies?.some(policy => policy.effects.includes('require_approval')) === true
+		const descendants = Object.values(agent.subagents ?? {}).flatMap(reference => reachable('agent' in reference ? reference.agent : reference))
+		const value = Object.freeze([...new Set([...(permission || governance ? [agent.id] : []), ...descendants])].sort(codePointCompare))
+		memo.set(identity.token, value)
+		return value
+	}
+	const agentRows = Object.freeze(Object.fromEntries(Object.keys(agents).sort(codePointCompare).map(id => {
+		const agentIds = reachable(agents[id]!)
+		return [id, Object.freeze({ reachable: agentIds.length > 0, agentIds })]
+	})))
+	const workflowRows = Object.freeze(Object.fromEntries(Object.keys(workflows).sort(codePointCompare).map(id => {
+		const agentIds = Object.freeze([...new Set(Object.values(workflows[id]!.agents ?? {}).flatMap(reachable))].sort(codePointCompare))
+		return [id, Object.freeze({ reachable: agentIds.length > 0, agentIds })]
+	})))
+	return Object.freeze({ agents: agentRows, workflows: workflowRows })
+}
+
+function codePointCompare(left: string, right: string): number {
+	const a = Array.from(left, value => value.codePointAt(0)!)
+	const b = Array.from(right, value => value.codePointAt(0)!)
+	for (let index = 0; index < Math.min(a.length, b.length); index += 1) if (a[index] !== b[index]) return a[index]! - b[index]!
+	return a.length - b.length
 }
 
 function validateDefinitionCollisions(definitions: Iterable<DefinitionNode>): void {

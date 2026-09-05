@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto'
 import type { Logger } from '../logger/index.js'
 import type { JsonValue } from '../models/json.js'
 import { SandboxConflictError, SandboxStateLostError, serializeError } from '../errors/index.js'
 import type { DurableWorkspacePolicy, DurableWorkspace, WorkspaceHandle } from '../ports/workspace.js'
 import type { HarnessStorage } from '../storage/types.js'
+import { canonicalJson } from './canonical-json.js'
 import { createDurableWorkflowContext, type DurableWorkflowContext } from './steps.js'
 import { telemetryErrorType } from '../telemetry/index.js'
 import type { SandboxOwner, SandboxPartition } from '../sandbox/ownership.js'
@@ -76,14 +78,16 @@ export async function beginDurableWorkflow(args: {
   } = args
   const workerId = durable.workerId ?? args.defaultWorkerId
 
-  const lease = await storage.acquireRun({
-    runId: durable.runId,
-    sessionId,
-    workerId,
-    stepId: durable.stepId ?? workflowId,
-    input,
-    ...(durable.attempt !== undefined ? { attempt: durable.attempt } : {}),
-  })
+  const current = await storage.getRun(durable.runId)
+  if (!current) throw new Error('Durable run must be created before acquisition.')
+  const stepId = durable.stepId ?? workflowId
+  const checkpoint = await storage.loadCheckpoint(durable.runId, stepId)
+  const mode = current.revision === 1 && current.attempt === undefined ? 'initial' as const : 'resume' as const
+  const expected = Object.freeze({ revision: current.revision, status: current.status as 'running' | 'waiting' | 'interrupted', checkpoint: Object.freeze({ stepId, sequence: checkpoint?.sequence ?? null }) })
+  const tuple = ['harness-run-acquisition-v1', mode, durable.runId, sessionId, workerId, expected.revision, expected.status, stepId, expected.checkpoint.sequence, durable.attempt ?? null] as const
+  const acquisitionId = `acq_${createHash('sha256').update(canonicalJson(tuple)).digest('hex')}`
+  const lease = await storage.acquireRun({ mode, runId: durable.runId, sessionId, workerId, acquisitionId, expected,
+    ...(durable.attempt === undefined ? {} : { requestedAttempt: durable.attempt }) })
 
   let handle: WorkspaceHandle | undefined
   if (workspace) {

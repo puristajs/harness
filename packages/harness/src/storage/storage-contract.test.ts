@@ -2,10 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import { harnessStorageContract } from '../testing/harnessStorageContract.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import { sqliteHarnessStorage } from '../storage/sqlite.js'
+import { canonicalJson } from '../runtime/canonical-json.js'
 
 function sandboxBinding(id: string, instanceId: string, identity?: { tenantId?: string; principalId?: string }) {
   return {
@@ -75,12 +77,18 @@ describe('SqliteHarnessStorage', () => {
     const first = sqliteHarnessStorage({ file: join(root, 'state.sqlite'), leaseTtlMs: 10, now: () => clock })
     const second = sqliteHarnessStorage({ file: join(root, 'state.sqlite'), leaseTtlMs: 10, now: () => clock })
     try {
-      await first.createRun({ id: 'crashed', sessionId: 'session', kind: 'workflow', target: 'test', startedAt: new Date(clock).toISOString(), status: 'running' })
-      const initial = await first.acquireRun({ runId: 'crashed', sessionId: 'session', workerId: 'first', stepId: 'start', input: null, attempt: 7 })
+      const created = await first.createRun({ id: 'crashed', sessionId: 'session', kind: 'workflow', target: 'test', startedAt: new Date(clock).toISOString(), input: null })
+      const initialExpected = Object.freeze({ revision: created.revision, status: created.status as 'running', checkpoint: Object.freeze({ stepId: 'start', sequence: null }) })
+      const initialId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', 'initial', created.id, created.sessionId, 'first', created.revision, created.status, 'start', null, 7])).digest('hex')}`
+      const initial = await first.acquireRun({ mode: 'initial', runId: created.id, sessionId: created.sessionId, workerId: 'first', acquisitionId: initialId, expected: initialExpected, requestedAttempt: 7 })
       expect(initial.resumed).toBe(false)
       expect(initial.attempt).toBe(7)
       clock += 11
-      const resumed = await second.acquireRun({ runId: 'crashed', sessionId: 'session', workerId: 'second', stepId: 'start', input: null })
+      const afterExpiry = await second.getRun(created.id)
+      expect(afterExpiry).toBeDefined()
+      const resumeExpected = Object.freeze({ revision: afterExpiry!.revision, status: afterExpiry!.status as 'running', checkpoint: Object.freeze({ stepId: 'start', sequence: null }) })
+      const resumeId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', 'resume', created.id, created.sessionId, 'second', afterExpiry!.revision, afterExpiry!.status, 'start', null, null])).digest('hex')}`
+      const resumed = await second.acquireRun({ mode: 'resume', runId: created.id, sessionId: created.sessionId, workerId: 'second', acquisitionId: resumeId, expected: resumeExpected })
       expect(resumed.resumed).toBe(true)
       expect(resumed.checkpoint).toBeUndefined()
       expect(resumed.attempt).toBe(8)

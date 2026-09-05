@@ -6,25 +6,49 @@ import { AgentLoopBudgetError, OperationCancelledError, OperationTimeoutError, T
 import { createSubagentBinding } from '../src/runtime/subagent-execution.js'
 import { isHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 
-function childStream(events: readonly any[]) { return { cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* events } } }
+function runtimeEvents(events: readonly any[]) {
+	return events.map((event, index) => ({ eventId: `event-${index + 1}`, sequence: index + 1, ...event }))
+}
+function childStream(events: readonly any[], correlation?: { parentRunId: string; parentInvocationId: string }) { return { cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* runtimeEvents(events).map(event => ({ ...event, ...correlation })) } } }
 function trackedStream(events: readonly any[], failAt?: number) {
+	const authored = runtimeEvents(events)
 	let index = 0
 	const cancel = vi.fn(async () => {})
 	const close = vi.fn(async () => ({ done: true as const, value: undefined }))
 	const iterator = {
 		async next() {
 			if (failAt === index) throw new Error('iterator failed')
-			if (index >= events.length) return { done: true as const, value: undefined }
-			return { done: false as const, value: events[index++] }
+			if (index >= authored.length) return { done: true as const, value: undefined }
+			return { done: false as const, value: authored[index++] }
 		},
 		return: close,
 	}
 	return { stream: { cancel, [Symbol.asyncIterator]: () => iterator }, cancel, close }
 }
 function context(open: any, overrides: Record<string, unknown> = {}) {
+	const correlatedOpen = async (request: any) => {
+		const stream = await open(request)
+		return {
+			cancel: (reason?: string) => stream.cancel(reason),
+			[Symbol.asyncIterator]() {
+				const iterator = stream[Symbol.asyncIterator]()
+				return {
+					async next() {
+						const result = await iterator.next()
+						if (result.done) return result
+						const raw = result.value
+					const preserve = raw.__preserveParent === true || Object.hasOwn(raw, 'parentRunId') || Object.hasOwn(raw, 'parentInvocationId')
+					const { __preserveParent: _preserve, ...event } = raw
+						return { done: false as const, value: preserve ? event : { ...event, parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId } }
+					},
+					return: iterator.return?.bind(iterator),
+				}
+			},
+		}
+	}
 	return { harnessName: 'h', sessionId: 'parent-session', runId: 'parent-run', rootRunId: 'root-run', invocationId: 'parent-invocation',
 		agentId: 'parent', depth: 1, remainingDepth: 2, step: 1, toolId: 'analyst', callId: 'call-1', signal: new AbortController().signal,
-		metadata: {}, logger: {}, metrics: {}, telemetry: {}, memory: {}, sandbox: {}, targetDispatcher: { open }, relayChildEvent: vi.fn(async () => {}),
+		metadata: {}, logger: {}, metrics: {}, telemetry: {}, memory: {}, sandbox: {}, targetDispatcher: { open: correlatedOpen }, relayChildEvent: vi.fn(async () => {}),
 		checkpointStep: async (_id: string, work: () => Promise<unknown>) => work(), ...overrides }
 }
 
@@ -35,7 +59,7 @@ describe('subagent execution', () => {
 			{ type: 'agent.started', runId: 'child-run', agentId: child.id, at: '2026-01-01T00:00:00.000Z' },
 			{ type: 'run.finished', runId: 'child-run', at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId: 'child-run', output: { answer: 'safe' } } },
 		]
-		const open = vi.fn(async () => childStream(events))
+		const open = vi.fn(async request => childStream(events, { parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId }))
 		const binding = createSubagentBinding('analyst', child)
 		const identity = Object.freeze({ tenantId: 'tenant', principalId: 'principal' })
 		const trace = Object.freeze({ traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' })
@@ -110,6 +134,7 @@ describe('subagent execution', () => {
 		const controller = new AbortController()
 		const binding = createSubagentBinding('slowDelegate', child)
 		const execution = binding.invokeValidated(context(async () => hanging, { signal: controller.signal }) as never, 'x', 'x').catch(error => error)
+		await Promise.resolve()
 		controller.abort('private reason')
 		await expect(execution).resolves.toMatchObject({ constructor: OperationCancelledError, message: 'Subagent execution was cancelled.', meta: { scope: 'agent' } })
 		expect(cancel).toHaveBeenCalledTimes(1)
@@ -124,6 +149,7 @@ describe('subagent execution', () => {
 		const hanging = { cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
 		const timeout = new OperationTimeoutError('Tool execution timed out.', { scope: 'tool', timeout_ms: 5 })
 		const execution = createSubagentBinding('timedDelegate', child).invokeValidated(context(async () => hanging, { signal: controller.signal }) as never, 'x', 'x').catch(error => error)
+		await Promise.resolve()
 		controller.abort(timeout)
 		await expect(execution).resolves.toBe(timeout)
 		expect(cancel).toHaveBeenCalledTimes(1)
@@ -164,6 +190,20 @@ describe('subagent execution', () => {
 		expect(runtime.relayChildEvent).toHaveBeenCalledTimes(1)
 		expect(tracked.cancel).toHaveBeenCalledTimes(1)
 		expect(tracked.close).toHaveBeenCalledTimes(1)
+	})
+
+	it.each([
+		['both parent fields missing', { __preserveParent: true }],
+		['parent invocation missing', { parentRunId: 'parent-run' }],
+		['wrong parent run', { parentRunId: 'wrong', parentInvocationId: 'wrong' }],
+		['wrong parent invocation', { parentRunId: 'parent-run', parentInvocationId: 'wrong' }],
+	] as const)('rejects %s before relaying', async (_name, parent) => {
+		const child = defineAgent('parentCorrelationChild', { instructions: 'Help.' })
+		const tracked = trackedStream([{ type: 'agent.started', runId: 'r', agentId: child.id, at: 'x', ...parent }])
+		const runtime = context(async () => tracked.stream)
+		await expect(createSubagentBinding('parentCorrelationDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.rejects.toBeInstanceOf(ValidationError)
+		expect(runtime.relayChildEvent).not.toHaveBeenCalled()
 	})
 
 	it('cleans up iterator and relay failures without masking the primary error', async () => {

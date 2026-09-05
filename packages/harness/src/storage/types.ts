@@ -1,6 +1,6 @@
-import type { Message, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
+import type { Message, PersistedFinalRunEvent, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
-import type { DurableRunLease, DurableRunStart, RunCheckpoint } from './execution.js'
+import type { DurableRunLease, RunCheckpoint } from './execution.js'
 import type {
   BoundExternalWaitRequest,
   ExternalWaitRegistration,
@@ -14,6 +14,67 @@ import { HarnessConfigError } from '../errors/catalog.js'
 
 /** Fields allowed when marking a run as finished. */
 export type FinishRunPatch = Pick<RunRecord, 'status'> & Partial<Pick<RunRecord, 'finishedAt' | 'output' | 'error'>>
+
+/** Immutable caller-owned fields used to create one logical run. */
+export interface CreateRunRequest {
+  readonly id: string
+  readonly sessionId: string
+  readonly kind: 'agent' | 'workflow' | 'child_task'
+  readonly target: string
+  readonly startedAt: string
+  readonly input: import('../models/json.js').JsonValue
+  readonly metadata?: Readonly<Record<string, import('../models/json.js').JsonValue>>
+}
+
+export type RunAcquisitionMode = 'initial' | 'resume'
+export interface RunAcquisitionCheckpointExpectation { readonly stepId: string; readonly sequence: number | null }
+export interface RunAcquisitionExpectation {
+  readonly revision: number
+  readonly status: 'running' | 'waiting' | 'interrupted'
+  readonly checkpoint: RunAcquisitionCheckpointExpectation
+}
+export interface AcquireRunRequest {
+  readonly mode: RunAcquisitionMode
+  readonly runId: string
+  readonly sessionId: string
+  readonly workerId: string
+  readonly acquisitionId: string
+  readonly expected: RunAcquisitionExpectation
+  readonly requestedAttempt?: number
+}
+export interface ReplaceCheckpointRequest {
+  readonly runId: string
+  readonly sessionId: string
+  readonly stepId: string
+  readonly expectedSequence: number
+  readonly leaseId: string
+  readonly workerId: string
+  readonly replacement: RunCheckpoint
+}
+export interface AppliedApprovalDecisionV1 { readonly approvalId: string; readonly approved: boolean }
+export interface ApprovalResumeReceiptV1 {
+  readonly schemaVersion: 1
+  readonly interruptId: string
+  readonly resumeEventId: string
+  readonly decisions: readonly AppliedApprovalDecisionV1[]
+  readonly deploymentRevision: string
+  readonly compiledGraphDigest: string
+  readonly sessionIdentityDigest: string
+  readonly rootTarget: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+}
+export type TerminalApprovalReceiptV1 = ApprovalResumeReceiptV1
+export type FinalizeRunPatch =
+  | Readonly<{ status: 'succeeded'; finishedAt: string; output: import('../models/json.js').JsonValue; error?: never; approvalReceipt?: TerminalApprovalReceiptV1 }>
+  | Readonly<{ status: 'failed' | 'cancelled'; finishedAt: string; output?: never; error: import('../models/state.js').SerializedError; approvalReceipt?: TerminalApprovalReceiptV1 }>
+export interface FinalizeRunRequest {
+  readonly runId: string
+  readonly sessionId: string
+  readonly leaseId: string
+  readonly workerId: string
+  readonly patch: FinalizeRunPatch
+  readonly terminalEvent: PersistedFinalRunEvent
+  readonly checkpointDisposition: 'delete-all'
+}
 
 /** Metadata surfaced for one configured Harness storage implementation. */
 export interface HarnessStorageInfo {
@@ -72,7 +133,7 @@ export interface HarnessStorage {
    * callers may observe an absent run concurrently, but no caller may replace
    * the record selected by the creation winner.
    */
-  createRun(record: RunRecord): Promise<void>
+  createRun(request: CreateRunRequest): Promise<RunRecord>
   finishRun(runId: string, patch: FinishRunPatch): Promise<void>
   getRun(runId: string): Promise<RunRecord | undefined>
   listRuns(sessionId: string, opts?: { limit?: number; before?: string }): Promise<RunRecord[]>
@@ -81,7 +142,11 @@ export interface HarnessStorage {
   listEvents(runId: string, opts?: { limit?: number; after?: string }): Promise<PersistedRunEvent[]>
 
   /** Acquires exclusive ownership of an existing durable run attempt. */
-  acquireRun(record: DurableRunStart): Promise<DurableRunLease>
+  acquireRun(request: AcquireRunRequest): Promise<DurableRunLease>
+	/** Atomically replaces one checkpoint under the active lease. */
+	replaceCheckpoint(request: ReplaceCheckpointRequest): Promise<void>
+	/** Atomically terminalizes a leased run, appends its terminal event, and deletes checkpoints. */
+	finalizeRun(request: FinalizeRunRequest): Promise<void>
 	/** Loads the last committed checkpoint, optionally for one exact step id. */
 	loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined>
   /** Commits one deterministic step checkpoint under the active lease. */
@@ -103,7 +168,7 @@ const REQUIRED_STORAGE_METHODS = [
   'appendMessages', 'listMessages', 'clearMessages',
   'createRun', 'finishRun', 'getRun', 'listRuns',
   'appendEvents', 'listEvents',
-  'acquireRun', 'loadCheckpoint', 'commitCheckpoint', 'withSessionLock',
+  'acquireRun', 'replaceCheckpoint', 'finalizeRun', 'loadCheckpoint', 'commitCheckpoint', 'withSessionLock',
   'registerWait', 'getWait', 'signalWait', 'cancelWait'
 ] as const
 

@@ -1,620 +1,850 @@
 import { getEventListeners } from 'node:events'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+
+import { defineAgent } from '../src/definitions/agent.js'
+import type { ChildTaskHandle } from '../src/definitions/types.js'
+import { defineHarness } from '../src/definitions/harness.js'
+import { defineSkill } from '../src/definitions/skill.js'
+import { defineTool } from '../src/definitions/tool.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
+import { OperationCancelledError, SessionBusyError } from '../src/errors/index.js'
 import {
-  InMemoryDurableWorkspace,
-  InMemoryHarnessStorage,
-  OperationCancelledError,
-  SessionBusyError,
-  defineHarness,
-  inMemorySandbox,
-  type DurableWorkspace,
-  type Sandbox,
-  type SandboxBindingOptions,
-  type SandboxOpenOptions,
-  type SandboxOpenResult,
-  type SandboxPolicy,
-  type SandboxScope,
-  type SandboxSession,
-  type SandboxTerminateOptions,
-  type RunOutcome,
-} from '../src/index.js'
-import { runTelemetryFlowHarness } from './telemetryFlowHarness.js'
+	inMemorySandbox,
+	type Sandbox,
+	type SandboxOpenOptions,
+	type SandboxOpenResult,
+	type SandboxScope,
+	type SandboxSession,
+	type SandboxTerminateOptions,
+} from '../src/sandbox/index.js'
+import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
+import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { OtelTelemetryShim } from '../src/telemetry/shim.js'
 
-function completedOutput<T>(outcome: RunOutcome<T>): T {
-  if (outcome.status !== 'completed') throw new Error('Expected the test run to complete.')
-  return outcome.output
-}
-
-function buildBusyHarness() {
-  let markHandlerStarted!: () => void
-  const handlerStarted = new Promise<void>((resolve) => {
-    markHandlerStarted = resolve
-  })
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
-    .tools({})
-    .skills({})
-    .agent('echo', {
-      model: 'fake',
-      input: z.string(),
-      output: z.string(),
-      handler: async (ctx) => ctx.input,
-    })
-    .workflow('hang', {
-      input: z.string(),
-      output: z.string(),
-      handler: async () => {
-        markHandlerStarted()
-        return new Promise<never>(() => undefined)
-      },
-    })
-    .build()
-  return { harness, handlerStarted }
+function persistentStorage(): TrackingHarnessStorage {
+	const storage = new TrackingHarnessStorage()
+	const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+	Object.defineProperties(storage, {
+		capabilities: { value: capabilities },
+		info: { value: Object.freeze({ ...storage.info, capabilities }) },
+	})
+	return storage
 }
 
 class TrackingHarnessStorage extends InMemoryHarnessStorage {
-  public closeSessionCalls = 0
+	public closeSessionCalls = 0
 
-  public override async closeSession(id: string, expectedInstanceId: string): Promise<void> {
-    this.closeSessionCalls += 1
-    await super.closeSession(id, expectedInstanceId)
-  }
-}
-
-class RestartableTrackingHarnessStorage extends TrackingHarnessStorage {
-  // A real durable store keeps session records when an adapter handle closes.
-	public override async close(): Promise<void> {}
+	public override async closeSession(id: string, expectedInstanceId: string): Promise<void> {
+		this.closeSessionCalls += 1
+		await super.closeSession(id, expectedInstanceId)
+	}
 }
 
 class TrackingSandbox implements Sandbox {
-  public readonly capabilities = ['sandbox.fs', 'sandbox.exec'] as const
-  public openCalls = 0
-  public closeCalls = 0
-  public readonly ownerRegistrations: Parameters<Sandbox['registerOwner']>[0][] = []
-  public failNextOwnerRegistration: Error | undefined
-  public readonly openedScopes: SandboxScope[] = []
-  public readonly terminatedScopes: SandboxScope[] = []
-  private readonly delegate = inMemorySandbox()
+	public readonly capabilities = ['sandbox.fs', 'sandbox.exec'] as const
+	public openCalls = 0
+	public closeCalls = 0
+	public readonly ownerRegistrations: Parameters<Sandbox['registerOwner']>[0][] = []
+	public readonly openedScopes: SandboxScope[] = []
+	public readonly terminatedScopes: SandboxScope[] = []
+	public failNextOwnerRegistration: Error | undefined
+	public failNextSessionClose: Error | undefined
+	public failNextTermination: Error | undefined
+	public failConfiguration: Error | undefined
+	private readonly delegate = inMemorySandbox()
 
-  public get administration() {
-    return this.delegate.administration
-  }
+	public get administration() {
+		return this.delegate.administration
+	}
 
-  public async registerOwner(options: Parameters<Sandbox['registerOwner']>[0]): Promise<void> {
-    this.ownerRegistrations.push(options)
-    const failure = this.failNextOwnerRegistration
-    this.failNextOwnerRegistration = undefined
-    if (failure) throw failure
-    await this.delegate.registerOwner(options)
-  }
+	public configureHarnessContext(): void {
+		if (this.failConfiguration !== undefined) throw this.failConfiguration
+	}
 
-  public async open(opts: SandboxOpenOptions): Promise<SandboxOpenResult<readonly ['sandbox.fs', 'sandbox.exec']>> {
-    this.openCalls += 1
-    this.openedScopes.push(opts.scope)
-    const opened = await this.delegate.open(opts)
-    const session = opened.session as SandboxSession
-    return {
-      ...opened,
-      session: new Proxy(session, {
-        get: (target, property) => {
-			if (property === 'close') {
-            return async (): Promise<void> => {
-              this.closeCalls += 1
-					await target.close()
-            }
-          }
-          const value = Reflect.get(target, property, target)
-          return typeof value === 'function' ? value.bind(target) : value
-        },
-      }) as SandboxOpenResult<readonly ['sandbox.fs', 'sandbox.exec']>['session'],
-    }
-  }
+	public async registerOwner(options: Parameters<Sandbox['registerOwner']>[0]): Promise<void> {
+		this.ownerRegistrations.push(options)
+		const failure = this.failNextOwnerRegistration
+		this.failNextOwnerRegistration = undefined
+		if (failure !== undefined) throw failure
+		await this.delegate.registerOwner(options)
+	}
 
-  public async terminate(opts: SandboxTerminateOptions): Promise<void> {
-    this.terminatedScopes.push(opts.scope)
-    await this.delegate.terminate(opts)
-  }
+	public async open(options: SandboxOpenOptions): Promise<SandboxOpenResult<readonly ['sandbox.fs', 'sandbox.exec']>> {
+		this.openCalls += 1
+		this.openedScopes.push(options.scope)
+		const opened = await this.delegate.open(options)
+		const session = opened.session as SandboxSession
+		return {
+			...opened,
+			session: new Proxy(session, {
+				get: (target, property) => {
+					if (property === 'close') return async () => {
+						this.closeCalls += 1
+						const failure = this.failNextSessionClose
+						this.failNextSessionClose = undefined
+						if (failure !== undefined) throw failure
+						await target.close()
+					}
+					const value = Reflect.get(target, property, target)
+					return typeof value === 'function' ? value.bind(target) : value
+				},
+			}) as SandboxOpenResult<readonly ['sandbox.fs', 'sandbox.exec']>['session'],
+		}
+	}
+
+	public async terminate(options: SandboxTerminateOptions): Promise<void> {
+		this.terminatedScopes.push(options.scope)
+		const failure = this.failNextTermination
+		this.failNextTermination = undefined
+		if (failure !== undefined) throw failure
+		await this.delegate.terminate(options)
+	}
 }
 
-function trackAdministrationPurge(
-  adapter: { readonly administration: Sandbox['administration'] },
-  events: string[],
-  label: string,
-  nextResult?: () => Awaited<ReturnType<Sandbox['administration']['purge']>> | undefined,
-): void {
-  const administration = adapter.administration
-  const purge = administration.purge.bind(administration)
-  const tracked = new Proxy(administration, {
-    get: (target, property, receiver) => {
-      if (property === 'purge') {
-        return async (...args: Parameters<Sandbox['administration']['purge']>) => {
-          events.push(label)
-          return nextResult?.() ?? purge(...args)
-        }
-      }
-      const value = Reflect.get(target, property, receiver)
-      return typeof value === 'function' ? value.bind(target) : value
-    },
-  })
-  Object.defineProperty(adapter, 'administration', { configurable: true, value: tracked })
+function lifecycleDefinitions() {
+	const inspect = defineTool('inspect', {
+		description: 'Inspect one value.', input: z.string(), output: z.string(),
+		requires: { sandbox: ['sandbox.fs'] },
+		async handler(_context, input) { return input },
+	})
+	const owner = defineAgent('owner', {
+		instructions: 'Provide a short answer.',
+		tools: [inspect],
+	})
+	const echo = defineWorkflow('echo', {
+		input: z.string(), output: z.string(), durable: true,
+		async handler({ input }) { return input },
+	})
+	return { owner, echo }
 }
 
-function buildReleaseHarness(
-  storage = new TrackingHarnessStorage(),
-  sandbox = new TrackingSandbox(),
-  workerSandbox?: SandboxPolicy,
-  workspace?: DurableWorkspace,
-  sandboxBinding?: SandboxBindingOptions<string>,
+async function buildLifecycleHarness(
+	storage = persistentStorage(),
+	sandbox = new TrackingSandbox(),
 ) {
-  let markChildStarted!: () => void
-  const childStarted = new Promise<void>((resolve) => {
-    markChildStarted = resolve
-  })
-  const builder = defineHarness().storage(storage).sandbox(sandbox, sandboxBinding)
-  const configured = workspace ? builder.workspace(workspace) : builder
-  const harness = configured
-    .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
-    .tools({})
-    .skills({})
-    .agent('echo', {
-      model: 'fake',
-      input: z.string(),
-      output: z.string(),
-      builtinTools: false,
-      handler: async (ctx) => ctx.input,
-    })
-    .agent('worker', {
-      model: 'fake',
-      input: z.string(),
-      output: z.string(),
-      builtinTools: false,
-      ...(workerSandbox === undefined ? {} : { sandbox: workerSandbox }),
-      handler: async (ctx) => {
-        markChildStarted()
-        await new Promise<never>((_resolve, reject) => {
-          ctx.signal.addEventListener(
-            'abort',
-            () => reject(new OperationCancelledError('Child task cancelled.', { scope: 'run' })),
-            { once: true },
-          )
-        })
-        return ctx.input
-      },
-    })
-    .workflow('echo_workflow', {
-      input: z.string(),
-      output: z.string(),
-      handler: async (ctx) => ctx.input,
-    })
-    .workflow('start_child', {
-      input: z.string(),
-      output: z.string(),
-      delegation: { agents: ['worker'] },
-      handler: async (ctx) => (await ctx.childTasks.start('worker', ctx.input)).id,
-    })
-    .build()
-  return { harness, storage, sandbox, childStarted }
+	const { owner, echo } = lifecycleDefinitions()
+	const provider = new FakeModelProvider()
+	const harness = await defineHarness({ name: 'sessionLifecycle', revision: 'v1' })
+		.addAgent(owner).addWorkflow(echo)
+		.getInstance({ storage, sandbox, model: { provider, model: 'fake' } })
+	return { harness, storage, sandbox, provider }
 }
 
-describe('session lifecycle guards', () => {
-  it('registers and acknowledges an implicit owner before any compute allocation', async () => {
-    const { harness, storage, sandbox } = buildReleaseHarness()
+describe('v4 session lifecycle', () => {
+	it('rolls back owned resources when startup fails after resource initialization', async () => {
+		const close = vi.spyOn(InMemoryHarnessStorage.prototype, 'close')
+		const missing = defineSkill('missing-startup-skill', { directory: new URL('./fixtures/does-not-exist/', import.meta.url) })
+		const agent = defineAgent('startupFailure', { instructions: 'Fail while loading the Skill.', skills: [missing] })
+		try {
+			await expect(defineHarness({ name: 'startupRollback' }).addAgent(agent).getInstance({
+				model: { provider: new FakeModelProvider(), model: 'fake' },
+			})).rejects.toBeInstanceOf(Error)
+			expect(close).toHaveBeenCalledTimes(1)
+		} finally {
+			close.mockRestore()
+		}
+	})
 
-    const session = await harness.getSession('s-no-live-owner')
+	it('rolls back when adapter configuration fails and preserves reverse cleanup failure order', async () => {
+		const configureFailure = new Error('sandbox configuration failed')
+		const sandbox = new TrackingSandbox()
+		sandbox.failConfiguration = configureFailure
+		const inspect = defineTool('startupSandbox', { description: 'Require sandbox.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(_context, input) { return input } })
+		const agent = defineAgent('configurationFailure', { instructions: 'Fail during configuration.', tools: [inspect] })
+		const close = vi.spyOn(InMemoryHarnessStorage.prototype, 'close')
+		try {
+			await expect(defineHarness({ name: 'configurationRollback' }).addAgent(agent).getInstance({
+				model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox,
+			})).rejects.toBe(configureFailure)
+			expect(close).toHaveBeenCalledTimes(1)
+		} finally {
+			close.mockRestore()
+		}
 
-    expect(sandbox.ownerRegistrations).toEqual([
-      expect.objectContaining({ mode: 'create', owner: expect.objectContaining({ id: 's-no-live-owner' }) }),
-    ])
-    expect(sandbox.openCalls).toBe(0)
-    await expect(storage.getSession('s-no-live-owner')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ relation: 'owned', registration: 'registered' }),
-      }),
-    )
+		const initializerFailure = defineSkill('aggregate-startup-failure', { directory: new URL('./fixtures/also-missing/', import.meta.url) })
+		const aggregateAgent = defineAgent('aggregateStartupFailure', { instructions: 'Fail while loading.', skills: [initializerFailure] })
+		const cleanupFailure = new Error('owned storage cleanup failed')
+		const failingClose = vi.spyOn(InMemoryHarnessStorage.prototype, 'close').mockRejectedValueOnce(cleanupFailure)
+		try {
+			const rejected = await defineHarness({ name: 'aggregateStartupRollback' }).addAgent(aggregateAgent).getInstance({
+				model: { provider: new FakeModelProvider(), model: 'fake' },
+			}).catch(error => error)
+			expect(rejected).toBeInstanceOf(AggregateError)
+			expect(rejected.message).toBe('Harness initialization failed and rollback cleanup failed.')
+			expect(rejected.errors).toHaveLength(2)
+			expect(rejected.errors[0]).toMatchObject({ code: 'SKILL_MANIFEST_ERROR' })
+			expect(rejected.errors[1]).toBe(cleanupFailure)
+		} finally {
+			failingClose.mockRestore()
+		}
+	})
 
-    await session.release()
-    await session.destroy()
+	it('nests content-free target lifecycle spans and marks failure and cancellation', async () => {
+		type RecordedSpan = { name: string; phase: 'start' | 'end'; attrs: Record<string, unknown>; status?: { code: number; message?: string } }
+		const records: RecordedSpan[] = []
+		const stack: string[] = []
+		const spanSpy = vi.spyOn(OtelTelemetryShim.prototype, 'span').mockImplementation(async (name, attrs, fn) => {
+			const record: RecordedSpan = { name, phase: 'start', attrs: { ...attrs } }
+			records.push(record)
+			stack.push(name)
+			const span = {
+				setAttribute() { return span }, setAttributes(next: Record<string, unknown>) { Object.assign(record.attrs, next); return span },
+				addEvent() { return span }, addLink() { return span }, addLinks() { return span }, updateName() { return span },
+				recordException() {}, setStatus(status: { code: number; message?: string }) { record.status = status; return span },
+				end() {}, isRecording() { return true }, spanContext() { return { traceId: '', spanId: '', traceFlags: 0 } },
+			} as never
+			try { return await fn(span) } finally {
+				expect(stack.pop()).toBe(name)
+				records.push({ name, phase: 'end', attrs: {} })
+			}
+		})
+		const success = defineWorkflow('spanSuccess', { input: z.string(), output: z.string(), async handler({ input }) { return input } })
+		const failure = defineWorkflow('spanFailure', { input: z.string(), output: z.string(), async handler() { throw new Error('private failure text') } })
+		let entered!: () => void
+		const cancellationStarted = new Promise<void>(resolve => { entered = resolve })
+		const cancelled = defineWorkflow('spanCancelled', { input: z.string(), output: z.string(), async handler({ signal }) {
+			entered()
+			return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+		} })
+		const harness = await defineHarness({ name: 'lifecycleSpans' }).addWorkflow(success).addWorkflow(failure).addWorkflow(cancelled).getInstance({})
+		try {
+			const session = await harness.getSession('span-session')
+			await expect(session.workflows.spanSuccess.run('public')).resolves.toMatchObject({ status: 'completed' })
+			await expect(session.workflows.spanFailure.run('private input')).rejects.toThrow('private failure text')
+			const controller = new AbortController()
+			const running = session.workflows.spanCancelled.run('private input', { signal: controller.signal })
+			await cancellationStarted
+			controller.abort()
+			await expect(running).rejects.toBeInstanceOf(OperationCancelledError)
 
-    expect(sandbox.openCalls).toBe(0)
-    expect(storage.closeSessionCalls).toBe(1)
-  })
+			const lifecycle = records.filter(record => record.name === 'harness.session.run' || record.name === 'harness.workflow.run')
+			expect(lifecycle.map(record => `${record.phase}:${record.name}`)).toEqual([
+				'start:harness.session.run', 'start:harness.workflow.run', 'end:harness.workflow.run', 'end:harness.session.run',
+				'start:harness.session.run', 'start:harness.workflow.run', 'end:harness.workflow.run', 'end:harness.session.run',
+				'start:harness.session.run', 'start:harness.workflow.run', 'end:harness.workflow.run', 'end:harness.session.run',
+			])
+			const failedTargets = lifecycle.filter(record => record.phase === 'start' && record.name === 'harness.workflow.run' && record.status?.code === 2)
+			expect(failedTargets).toHaveLength(2)
+			expect(JSON.stringify(lifecycle)).not.toContain('private')
+		} finally {
+			await harness.close()
+			spanSpy.mockRestore()
+		}
+	})
 
-  it('retries a pending implicit-owner registration without allocating compute', async () => {
-    const sandbox = new TrackingSandbox()
-    sandbox.failNextOwnerRegistration = new Error('owner journal temporarily unavailable')
-    const { harness, storage } = buildReleaseHarness(undefined, sandbox)
+	it('registers an implicit owner before allocating sandbox compute', async () => {
+		const { harness, storage, sandbox } = await buildLifecycleHarness()
+		const session = await harness.getSession('owner-before-compute')
 
-    await expect(harness.getSession('s-owner-registration-retry')).rejects.toThrow(
-      'owner journal temporarily unavailable',
-    )
-    await expect(storage.getSession('s-owner-registration-retry')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ registration: 'pending' }),
-      }),
-    )
-    expect(sandbox.openCalls).toBe(0)
+		expect(sandbox.ownerRegistrations).toEqual([
+			expect.objectContaining({ mode: 'create', owner: expect.objectContaining({ id: 'owner-before-compute' }) }),
+		])
+		expect(sandbox.openCalls).toBe(0)
+		await expect(storage.getSession('owner-before-compute')).resolves.toMatchObject({
+			sandboxBinding: { relation: 'owned', registration: 'registered' },
+		})
 
-    const session = await harness.getSession('s-owner-registration-retry')
+		await session.destroy()
+		expect(storage.closeSessionCalls).toBe(1)
+		expect(sandbox.terminatedScopes).toHaveLength(1)
+		await harness.close()
+	})
 
-    expect(sandbox.ownerRegistrations).toHaveLength(2)
-    expect(sandbox.ownerRegistrations).toEqual(expect.arrayContaining([expect.objectContaining({ mode: 'create' })]))
-    expect(sandbox.openCalls).toBe(0)
-    await expect(storage.getSession('s-owner-registration-retry')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ registration: 'registered' }),
-      }),
-    )
-    await session.destroy()
-  })
+	it('rolls back a failed owner registration and permits a clean retry', async () => {
+		const storage = persistentStorage()
+		const sandbox = new TrackingSandbox()
+		sandbox.failNextOwnerRegistration = new Error('owner registration unavailable')
+		const { owner, echo } = lifecycleDefinitions()
+		const harness = await defineHarness({ name: 'registrationRollback', revision: 'v1' })
+			.addAgent(owner).addWorkflow(echo)
+			.getInstance({ storage, sandbox, model: { provider: new FakeModelProvider(), model: 'fake' } })
 
-  it('keeps a registered no-live owner usable after a harness restart', async () => {
-    const storage = new RestartableTrackingHarnessStorage()
-    const sandbox = new TrackingSandbox()
-    const first = buildReleaseHarness(storage, sandbox).harness
-    const session = await first.getSession('s-no-live-restart')
-    await session.release()
-    await first.shutdown()
+		await expect(harness.getSession('registration-retry')).rejects.toThrow('owner registration unavailable')
+		await expect(storage.getSession('registration-retry')).resolves.toBeUndefined()
+		const session = await harness.getSession('registration-retry')
+		expect(sandbox.ownerRegistrations.map(request => request.mode)).toEqual(['create', 'create'])
+		await expect(storage.getSession('registration-retry')).resolves.toMatchObject({
+			sandboxBinding: { registration: 'registered' },
+		})
+		await session.destroy()
+		await harness.close()
+	})
 
-    const restarted = buildReleaseHarness(storage, sandbox).harness
-    const recovered = await restarted.getSession('s-no-live-restart')
+	it('fails borrowed-owner authorization closed before registration or target effects', async () => {
+		const owner = Object.freeze({ namespace: 'external', id: 'shared', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+			identity: Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }) })
+		const storage = persistentStorage()
+		const sandbox = new TrackingSandbox()
+		await sandbox.registerOwner({ owner, mode: 'create' })
+		let calls = 0
+		let decision: 'allow' | 'deny' | 'throw' = 'allow'
+		const inspect = defineTool('borrowedInspect', { description: 'Inspect.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(_context, input) { return input } })
+		const agent = defineAgent('borrowedAgent', { instructions: 'Reply.', tools: [inspect] })
+		const durableMarker = defineWorkflow('durableMarker', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input }) { return input } })
+		const provider = new FakeModelProvider({ strict: true })
+		const harness = await defineHarness({ name: 'borrowedAuthorization', revision: 'v1' }).addAgent(agent).addWorkflow(durableMarker).getInstance({ storage, sandbox,
+			model: { provider, model: 'fake' }, sandboxBinding: { async authorizeOwner() {
+				calls += 1
+				if (decision === 'throw') throw new Error('private authorization diagnostics')
+				return decision === 'allow'
+			} } })
 
-    // An acknowledged owner is attached only when live compute is opened.
-    expect(sandbox.ownerRegistrations).toEqual([expect.objectContaining({ mode: 'create' })])
-    expect(sandbox.openCalls).toBe(0)
-    await recovered.release()
-    await recovered.destroy()
-    expect(sandbox.openCalls).toBe(0)
-    expect(storage.closeSessionCalls).toBe(1)
-  })
+		await expect(harness.getSession('wrong-scope', { identity: { tenantId: 'tenant-b', principalId: 'principal-a' }, sandboxOwner: owner }))
+			.rejects.toMatchObject({ code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'scope_mismatch' } })
+		expect(calls).toBe(0)
+		await expect(storage.getSession('wrong-scope')).resolves.toBeUndefined()
 
-  it('rejects concurrent runs without leaking caller-signal abort listeners', async () => {
-    const { harness, handlerStarted } = buildBusyHarness()
-    const session = await harness.getSession('s-busy-listeners')
-    const firstController = new AbortController()
-    const first = session.workflows.hang
-      .run('x', { signal: firstController.signal })
-      .catch((error: unknown) => error)
-    await handlerStarted
+		decision = 'deny'
+		await expect(harness.getSession('denied', { identity: owner.identity, sandboxOwner: owner }))
+			.rejects.toMatchObject({ code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' } })
+		await expect(storage.getSession('denied')).resolves.toBeUndefined()
 
-    const secondController = new AbortController()
-    await expect(session.workflows.hang.run('y', { signal: secondController.signal })).rejects.toBeInstanceOf(
-      SessionBusyError,
-    )
-    // SessionBusyError is retriable: a rejected attempt must not leave a
-    // run-timeout timer or an abort listener behind on the caller's signal.
-    expect(getEventListeners(secondController.signal, 'abort')).toHaveLength(0)
+		decision = 'throw'
+		await expect(harness.getSession('thrown', { identity: owner.identity, sandboxOwner: owner }))
+			.rejects.toMatchObject({ code: 'SANDBOX_PERMISSION_DENIED', message: 'Sandbox access denied.', meta: { reason: 'owner_not_authorized' } })
+		await expect(storage.getSession('thrown')).resolves.toBeUndefined()
 
-    const agentController = new AbortController()
-    await expect(session.agents.echo.run('y', { signal: agentController.signal })).rejects.toBeInstanceOf(
-      SessionBusyError,
-    )
-    expect(getEventListeners(agentController.signal, 'abort')).toHaveLength(0)
+		decision = 'allow'
+		const session = await harness.getSession('authorized', { identity: owner.identity, sandboxOwner: owner })
+		const afterSession = calls
+		decision = 'deny'
+		await expect(session.agents.borrowedAgent.run('blocked')).rejects.toMatchObject({
+			code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' },
+		})
+		expect(calls).toBeGreaterThan(afterSession)
+		expect(sandbox.openCalls).toBe(0)
+		decision = 'allow'
+		await session.destroy()
+		await harness.close()
+	})
 
-    firstController.abort()
-    await expect(first).resolves.toBeInstanceOf(OperationCancelledError)
-  })
+	it('reauthorizes a borrowed owner for child launch and approval resume without opening unused compute', async () => {
+		const owner = Object.freeze({ namespace: 'external', id: 'shared-reentry', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FB0',
+			identity: Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }) })
+		const storage = persistentStorage()
+		const sandbox = new TrackingSandbox()
+		await sandbox.registerOwner({ owner, mode: 'create' })
+		let authorizations = 0
+		let denyAuthorizationAt = Number.POSITIVE_INFINITY
+		let effects = 0
+		const marker = defineTool('sandboxMarker', { description: 'Require sandbox.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(_context, input) { return input } })
+		const unused = defineAgent('unusedSandboxAgent', { instructions: 'Unused.', tools: [marker] })
+		const effect = defineTool('bash', { description: 'Approved effect.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const reviewer = defineAgent('borrowedReviewer', { instructions: 'Review.', tools: [effect], permissions: { bash: 'require_approval' } })
+		const child = defineAgent('borrowedChild', { instructions: 'Reply.' })
+		const parent = defineWorkflow('borrowedParent', { input: z.string(), output: z.string(), agents: { child },
+			async handler({ input, agents }) { return agents.child.run(input, { callId: 'child-call' }) } })
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: 'bash', arguments: 'approved' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText({ content: 'reviewed', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText({ content: 'child-result', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const harness = await defineHarness({ name: 'borrowedReentry', revision: 'v1' }).addAgent(unused).addAgent(reviewer).addWorkflow(parent)
+			.getInstance({ storage, sandbox, model: { provider, model: 'fake' }, sandboxBinding: { authorizeOwner() {
+				authorizations += 1
+				return authorizations !== denyAuthorizationAt
+			} } })
+		const session = await harness.getSession('borrowed-reentry', { identity: owner.identity, sandboxOwner: owner })
+		const interrupted = await session.agents.borrowedReviewer.run('start')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+		const beforeResume = authorizations
+		await expect(session.agents.borrowedReviewer.run('start', { resume: { type: 'tool-approval', runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'borrowed-resume',
+			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }] } }))
+			.resolves.toMatchObject({ status: 'completed', output: 'reviewed' })
+		expect(authorizations).toBeGreaterThan(beforeResume)
+		const beforeChild = authorizations
+		await expect(session.workflows.borrowedParent.run('child')).resolves.toMatchObject({ status: 'completed', output: 'child-result' })
+		expect(authorizations).toBeGreaterThan(beforeChild)
+		denyAuthorizationAt = authorizations + 2
+		await expect(session.workflows.borrowedParent.run('revoked-child')).rejects.toMatchObject({
+			code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' },
+		})
+		expect(effects).toBe(1)
+		expect(sandbox.openCalls).toBe(0)
+		await session.destroy()
+		await harness.close()
+	})
 
-  it('refuses to destroy a busy session', async () => {
-    const { harness, handlerStarted } = buildBusyHarness()
-    const session = await harness.getSession('s-busy-destroy')
-    const controller = new AbortController()
-    const run = session.workflows.hang.run('x', { signal: controller.signal }).catch((error: unknown) => error)
-    await handlerStarted
+	it('reauthorizes the original borrowed owner before a recursively inherited subagent effect', async () => {
+		const owner = Object.freeze({ namespace: 'external', id: 'recursive-shared', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FB1',
+			identity: Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }) })
+		const sandbox = new TrackingSandbox()
+		await sandbox.registerOwner({ owner, mode: 'create' })
+		let allowed = true
+		let effects = 0
+		const effect = defineTool('recursiveBorrowedEffect', { description: 'Record one effect.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const leaf = defineAgent('recursiveBorrowedLeaf', { instructions: 'Run the effect.', tools: [effect] })
+		const middle = defineAgent('recursiveBorrowedMiddle', { instructions: 'Delegate.', subagents: { leaf } })
+		const workflow = defineWorkflow('recursiveBorrowedFlow', { input: z.string(), output: z.string(), agents: { middle },
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		class RevokingProvider extends FakeModelProvider {
+			public calls = 0
+			public override async text(request: Parameters<FakeModelProvider['text']>[0]) {
+				this.calls += 1
+				const response = await super.text(request)
+				if (response.toolCalls?.some(call => call.name === 'leaf')) allowed = false
+				return response
+			}
+		}
+		const provider = new RevokingProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'blocked' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		const harness = await defineHarness({ name: 'recursiveBorrowed', revision: 'v1', defaults: { maxDepth: 3 } }).addWorkflow(workflow).getInstance({
+			storage: persistentStorage(), model: { provider, model: 'fake' }, sandbox, sandboxBinding: { groups: ['reviewers'] as const,
+				authorizeOwner: () => allowed },
+		})
+		const session = await harness.getSession('recursive-borrowed', { identity: owner.identity, sandboxOwner: owner })
+		await expect(session.workflows.recursiveBorrowedFlow.run('start')).rejects.toMatchObject({
+			code: 'WORKFLOW_CHILD_TARGET_FAILED', cause: { code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' } },
+		})
+		expect(provider.calls).toBe(1)
+		expect(effects).toBe(0)
+		allowed = true
+		await session.destroy()
+		await harness.close()
+	})
 
-    await expect(session.destroy()).rejects.toMatchObject({
-      code: 'SESSION_BUSY',
-      meta: expect.objectContaining({ reason: 'concurrent_run' }),
-    })
-    await expect(session.release()).rejects.toMatchObject({
-      code: 'SESSION_BUSY',
-      meta: expect.objectContaining({ reason: 'concurrent_run' }),
-    })
+	it('locks a session for one root run without leaking rejected caller listeners', async () => {
+		let entered!: () => void
+		const started = new Promise<void>(resolve => { entered = resolve })
+		const hanging = defineWorkflow('hanging', {
+			input: z.string(), output: z.string(),
+			async handler({ input, signal }) {
+				entered()
+				await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+				return input
+			},
+		})
+		const harness = await defineHarness({ name: 'busySession' }).addWorkflow(hanging).getInstance({})
+		const session = await harness.getSession('busy')
+		const firstController = new AbortController()
+		const first = session.workflows.hanging.run('first', { signal: firstController.signal }).catch(error => error)
+		await started
 
-    controller.abort()
-    await expect(run).resolves.toBeInstanceOf(OperationCancelledError)
-    await expect(session.destroy()).resolves.toBeUndefined()
-  })
+		const rejectedController = new AbortController()
+		expect(() => session.workflows.hanging.stream('second', { signal: rejectedController.signal })).toThrow(SessionBusyError)
+		expect(getEventListeners(rejectedController.signal, 'abort')).toHaveLength(0)
+		await expect(session.release()).rejects.toBeInstanceOf(SessionBusyError)
 
-  it('releases live resources without deleting persisted session, history, or runs', async () => {
-    const { harness, storage, sandbox } = buildReleaseHarness()
-    const session = await harness.getSession('s-release')
-    await session.replaceHistory([{ role: 'user', content: 'remember this' }])
-    await expect(session.agents.echo.run('done')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		firstController.abort(new OperationCancelledError('Caller cancelled the run.', { scope: 'run' }))
+		await expect(first).resolves.toBeInstanceOf(OperationCancelledError)
+		await session.destroy()
+		await harness.close()
+	})
 
-    await Promise.all([session.release(), session.release()])
+	it('releases live resources while retaining history, runs, and a reopenable session', async () => {
+		const { harness, storage, sandbox, provider } = await buildLifecycleHarness()
+		const session = await harness.getSession('release-and-reopen')
+		await session.replaceHistory([{ role: 'user', content: 'remember this' }])
+		provider.enqueueText({ content: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		await expect(session.agents.owner.run('first')).resolves.toMatchObject({
+			status: 'completed', output: 'first',
+		})
 
-    expect(sandbox.openCalls).toBe(1)
-    expect(sandbox.closeCalls).toBe(1)
-    expect(storage.closeSessionCalls).toBe(0)
-    await expect(storage.getSession('s-release')).resolves.toEqual(
-      expect.objectContaining({ id: 's-release', runCount: 1 }),
-    )
-    await expect(session.history.list()).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: 'remember this' })]),
-    )
-    await expect(storage.listRuns('s-release')).resolves.toHaveLength(1)
+		await Promise.all([session.release(), session.release()])
+		expect(sandbox.openCalls).toBe(1)
+		expect(sandbox.closeCalls).toBe(1)
+		expect(storage.closeSessionCalls).toBe(0)
+		await expect(storage.getSession('release-and-reopen')).resolves.toMatchObject({ runCount: 1 })
+		await expect(storage.listMessages('release-and-reopen')).resolves.toEqual(expect.arrayContaining([
+			expect.objectContaining({ content: 'remember this' }),
+		]))
+		await expect(storage.listRuns('release-and-reopen')).resolves.toHaveLength(1)
+		expect(() => session.workflows.echo.stream('stale')).toThrowError(expect.objectContaining({
+			code: 'STATE_ERROR', meta: expect.objectContaining({ reason: 'session_released' }),
+		}))
 
-    const reopened = await harness.getSession('s-release')
-    await expect(reopened.agents.echo.run('again')).resolves.toMatchObject({ status: 'completed', output: 'again' })
-    expect(sandbox.openCalls).toBe(2)
-    await reopened.release()
-  })
+		const reopened = await harness.getSession('release-and-reopen')
+		provider.enqueueText({ content: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		await expect(reopened.agents.owner.run('second')).resolves.toMatchObject({
+			status: 'completed', output: 'second',
+		})
+		await expect(storage.getSession('release-and-reopen')).resolves.toMatchObject({ runCount: 2 })
+		await reopened.destroy()
+		await harness.close()
+	})
 
-  it('does not let a stale facade release or destroy a reopened session generation', async () => {
-    const { harness, storage, sandbox } = buildReleaseHarness()
-    const original = await harness.getSession('s-stale-release')
-    await original.release()
+	it('keeps failed cleanup retryable for session release and instance close', async () => {
+		const sandbox = new TrackingSandbox()
+		const { harness, provider } = await buildLifecycleHarness(persistentStorage(), sandbox)
+		const session = await harness.getSession('retry-cleanup')
+		provider.enqueueText({ content: 'opened', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		await session.agents.owner.run('open')
 
-    const reopened = await harness.getSession('s-stale-release')
-    await expect(reopened.agents.echo.run('still active')).resolves.toMatchObject({ status: 'completed', output: 'still active' })
-    await expect(original.agents.echo.run('stale invocation')).rejects.toMatchObject({
-      code: 'STATE_ERROR',
-      meta: { reason: 'session_attachment_closed' },
-    })
-    await expect(original.clearHistory()).rejects.toMatchObject({
-      code: 'STATE_ERROR',
-      meta: { reason: 'session_attachment_closed' },
-    })
-    await original.destroy()
+		sandbox.failNextSessionClose = new Error('first session close failed')
+		await expect(session.release()).rejects.toThrow('first session close failed')
+		await expect(session.release()).resolves.toBeUndefined()
+		expect(sandbox.closeCalls).toBe(2)
 
-    expect(sandbox.closeCalls).toBe(0)
-    await expect(storage.getSession('s-stale-release')).resolves.toEqual(expect.objectContaining({ runCount: 1 }))
-    await expect(reopened.agents.echo.run('still here')).resolves.toMatchObject({ status: 'completed', output: 'still here' })
-    await reopened.release()
-  })
+		const reopened = await harness.getSession('retry-cleanup')
+		provider.enqueueText({ content: 'reopened', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		await reopened.agents.owner.run('open again')
+		sandbox.failNextSessionClose = new Error('first instance close failed')
+		await expect(harness.close()).rejects.toThrow('Harness close failed.')
+		await expect(harness.close()).resolves.toBeUndefined()
+		expect(sandbox.closeCalls).toBe(4)
+	})
 
-  it('allows a released session generation to be destructively destroyed before it is reopened', async () => {
-    const { harness, storage } = buildReleaseHarness()
-    const session = await harness.getSession('s-release-then-destroy')
-    await session.agents.echo.run('remove after release')
+	it('coalesces direct-agent idempotent run and stream delivery independently of observation', async () => {
+		let release!: () => void
+		const gate = new Promise<void>(resolve => { release = resolve })
+		class DeferredProvider extends FakeModelProvider {
+			public calls = 0
+			public override async *textStream() {
+				this.calls += 1
+				await gate
+				yield { kind: 'delta' as const, text: 'once' }
+				yield { kind: 'finish' as const, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' as const }
+			}
+		}
+		const provider = new DeferredProvider({ strict: true })
+		const agent = defineAgent('idempotentAgent', { instructions: 'Reply once.' })
+		const harness = await defineHarness({ name: 'directIdempotency' }).addAgent(agent)
+			.getInstance({ model: { provider, model: 'fake' } })
+		const session = await harness.getSession('direct-idempotency')
 
-    await session.release()
-    await session.destroy()
+		const first = session.agents.idempotentAgent.stream('same', { idempotencyKey: 'delivery:1' })
+		const firstIterator = first[Symbol.asyncIterator]()
+		await expect(firstIterator.next()).resolves.toMatchObject({ done: false, value: { type: 'run.started' } })
+		await firstIterator.return?.()
+		const second = session.agents.idempotentAgent.stream('same', { idempotencyKey: 'delivery:1' })
+		const joined = session.agents.idempotentAgent.run('same', { idempotencyKey: 'delivery:1' })
+		expect(() => session.agents.idempotentAgent.stream('changed', { idempotencyKey: 'delivery:1' }))
+			.toThrowError(expect.objectContaining({ code: 'STATE_ERROR', meta: expect.objectContaining({ reason: 'run_conflict' }) }))
+		release()
+		await expect(joined).resolves.toMatchObject({ status: 'completed', output: 'once' })
+		const secondEvents = []; for await (const event of second) secondEvents.push(event)
+		expect(secondEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
+		expect(provider.calls).toBe(1)
 
-    expect(storage.closeSessionCalls).toBe(1)
-    await expect(storage.getSession('s-release-then-destroy')).resolves.toBeUndefined()
-  })
+		const replay = []; for await (const event of session.agents.idempotentAgent.stream('same', { idempotencyKey: 'delivery:1' })) replay.push(event)
+		expect(replay.map(event => event.type)).toEqual(['run.started', 'run.finished'])
+		expect(provider.calls).toBe(1)
+		await session.destroy()
+		await harness.close()
+	})
 
-  it('disposes owned compute without deleting history, while allowing terminal idempotent replay only', async () => {
-    const { harness, storage } = buildReleaseHarness()
-    const session = await harness.getSession('s-dispose-sandbox')
-    await session.replaceHistory([{ role: 'user', content: 'retain this receipt context' }])
-    await expect(session.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
+	it('does not allocate sandbox compute for an agent without sandbox-using bindings', async () => {
+		const sandbox = new TrackingSandbox()
+		const inspect = defineTool('sandboxRequirement', { description: 'Require sandbox.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(_context, input) { return input } })
+		const sandboxAgent = defineAgent('sandboxConsumer', { instructions: 'Use tools.', tools: [inspect] })
+		const plainAgent = defineAgent('plainAgent', { instructions: 'Reply.' })
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: 'plain', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const harness = await defineHarness({ name: 'targetSandboxLaziness' }).addAgent(sandboxAgent).addAgent(plainAgent)
+			.getInstance({ sandbox, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('plain-agent')
+		await expect(session.agents.plainAgent.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'plain' })
+		expect(sandbox.openCalls).toBe(0)
+		await session.destroy()
+		await harness.close()
+	})
 
-    await session.disposeSandbox()
+	it('shares an explicit child group with its parent owner while keeping the default child task isolated', async () => {
+		const observations: boolean[] = []
+		const writeFile = defineTool('writeSharedFile', { description: 'Write a test file.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { await context.sandbox.write('/shared.txt', input); return input } })
+		const inspectFile = defineTool('inspectSharedFile', { description: 'Inspect a test file.', input: z.string(), output: z.boolean(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); observations.push(exists); return exists } })
+		const writer = defineAgent('groupWriter', { instructions: 'Write once.', tools: [writeFile], sandbox: { group: 'reviewers' } })
+		const reader = defineAgent('childReader', { instructions: 'Inspect once.', tools: [inspectFile] })
+		const workflow = defineWorkflow('childSandboxVisibility', { input: z.string(), output: z.string(), agents: { reader },
+			sandbox: { group: 'reviewers' }, childTaskSandboxGroups: ['reviewers'] as const, async handler({ agents, childTasks, input }) {
+				await agents.reader.run(input, { callId: 'inline' })
+				const shared = await childTasks.start('reader', input, { callId: 'shared', sandbox: { group: 'reviewers' } })
+				await shared.result()
+				const isolated = await childTasks.start('reader', input, { callId: 'isolated' })
+				await isolated.result()
+				return input
+			} })
+		const provider = new FakeModelProvider({ strict: true })
+		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
+			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
+		})
+		provider.enqueueText(response('', [{ id: 'write-1', name: 'writeSharedFile', arguments: 'visible' }]))
+		provider.enqueueText(response('written'))
+		provider.enqueueText(response('', [{ id: 'read-inline', name: 'inspectSharedFile', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('inline'))
+		provider.enqueueText(response('', [{ id: 'read-shared', name: 'inspectSharedFile', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('shared'))
+		provider.enqueueText(response('', [{ id: 'read-isolated', name: 'inspectSharedFile', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('isolated'))
+		const sandbox = new TrackingSandbox()
+		const harness = await defineHarness({ name: 'childSandboxScopes' }).addAgent(writer).addWorkflow(workflow).getInstance({
+			model: { provider, model: 'fake' }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+		})
+		const session = await harness.getSession('sandbox-owner')
+		await expect(session.agents.groupWriter.run('write')).resolves.toMatchObject({ status: 'completed' })
+		sandbox.failNextTermination = new Error('retry isolated child termination')
+		await expect(session.workflows.childSandboxVisibility.run('/shared.txt')).resolves.toMatchObject({ status: 'completed' })
+		expect(observations).toEqual([true, true, false])
+		expect(sandbox.terminatedScopes.filter(scope => scope.lifetime === 'run')).toEqual([
+			expect.objectContaining({ partition: { kind: 'shared' } }),
+		])
+		expect(sandbox.terminatedScopes.some(scope => scope.partition.kind === 'group')).toBe(false)
+		await session.destroy()
+		await harness.close()
+		expect(sandbox.terminatedScopes.filter(scope => scope.lifetime === 'run')).toHaveLength(2)
+	})
 
-    await expect(storage.getSession('s-dispose-sandbox')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ disposed: true }),
-      }),
-    )
-    const reopened = await harness.getSession('s-dispose-sandbox')
-    await expect(reopened.history.list()).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: 'retain this receipt context' })]),
-    )
-    await expect(reopened.agents.echo.run('complete', { idempotencyKey: 'delivery-1' })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
-    const replayedEvents = []
-    for await (const event of reopened.agents.echo.observe('complete', { idempotencyKey: 'delivery-1' })) {
-      replayedEvents.push(event)
-    }
-    expect(replayedEvents).toMatchObject([{ type: 'run.started' }, { type: 'run.finished', output: 'complete' }])
-    await expect(reopened.agents.echo.run('must not recreate')).rejects.toMatchObject({
-      code: 'SANDBOX_STATE_LOST',
-      meta: { reason: 'scope_terminated' },
-    })
-  })
+	it('inherits the exact caller sandbox for subagents while honoring a private child override', async () => {
+		const observations: boolean[] = []
+		const writeFile = defineTool('writeForSubagent', { description: 'Write a test file.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { await context.sandbox.write('/shared.txt', input); return input } })
+		const inspectFile = defineTool('inspectForSubagent', { description: 'Inspect a test file.', input: z.string(), output: z.boolean(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); observations.push(exists); return exists } })
+		const inherited = defineAgent('inheritedSubagent', { instructions: 'Inspect once.', tools: [inspectFile] })
+		const isolated = defineAgent('privateSubagent', { instructions: 'Inspect once.', tools: [inspectFile], sandbox: 'private' })
+		const parent = defineAgent('sandboxParent', { instructions: 'Write, then delegate twice.', tools: [writeFile],
+			subagents: { inherited, isolated }, sandbox: { group: 'reviewers' } })
+		const provider = new FakeModelProvider({ strict: true })
+		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
+			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
+		})
+		provider.enqueueText(response('', [{ id: 'write', name: 'writeForSubagent', arguments: 'visible' }]))
+		provider.enqueueText(response('', [{ id: 'delegate-inherited', name: 'inherited', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('', [{ id: 'inspect-inherited', name: 'inspectForSubagent', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('inherited complete'))
+		provider.enqueueText(response('', [{ id: 'delegate-private', name: 'isolated', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('', [{ id: 'inspect-private', name: 'inspectForSubagent', arguments: '/shared.txt' }]))
+		provider.enqueueText(response('private complete'))
+		provider.enqueueText(response('done'))
+		const sandbox = new TrackingSandbox()
+		const harness = await defineHarness({ name: 'subagentSandboxScopes', revision: 'v1' }).addAgent(parent).getInstance({
+			storage: persistentStorage(), model: { provider, model: 'fake' }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+		})
+		const session = await harness.getSession('subagent-owner')
+		await expect(session.agents.sandboxParent.run('start')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect(observations).toEqual([true, false])
+		await session.destroy()
+		await harness.close()
+	})
 
-  it('purges an owned sandbox before its associated workspace and marks disposal only after both complete', async () => {
-    const events: string[] = []
-    const sandbox = new TrackingSandbox()
-    const workspace = new InMemoryDurableWorkspace()
-    trackAdministrationPurge(sandbox, events, 'sandbox')
-    trackAdministrationPurge(workspace, events, 'workspace')
-    const { harness, storage } = buildReleaseHarness(undefined, sandbox, undefined, workspace)
-    const session = await harness.getSession('s-dispose-workspace')
-    await session.agents.echo.run('allocate')
-    const owner = (await storage.getSession('s-dispose-workspace'))!.sandboxBinding.owner
-    await workspace.startWorkspace({
-      sessionId: 's-dispose-workspace',
-      runId: 'workspace-run',
-      sandboxOwner: owner,
-      sandboxPolicyDigest: 'a'.repeat(64),
-      attempt: 1,
-      idempotencyKey: 'workspace-start',
-    })
+	it('preserves the resolved workflow sandbox recursively through an agent and its subagents', async () => {
+		const observations: boolean[] = []
+		const writeFile = defineTool('writeRecursiveFile', { description: 'Write a test file.', input: z.string(), output: z.string(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { await context.sandbox.write('/nested.txt', input); return input } })
+		const inspectFile = defineTool('inspectRecursiveFile', { description: 'Inspect a test file.', input: z.string(), output: z.boolean(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); observations.push(exists); return exists } })
+		const writer = defineAgent('recursiveWriter', { instructions: 'Write once.', tools: [writeFile], sandbox: { group: 'reviewers' } })
+		const inheritedLeaf = defineAgent('recursiveInheritedLeaf', { instructions: 'Inspect once.', tools: [inspectFile] })
+		const privateLeaf = defineAgent('recursivePrivateLeaf', { instructions: 'Inspect once.', tools: [inspectFile], sandbox: 'private' })
+		const middle = defineAgent('recursiveMiddle', { instructions: 'Delegate twice.', subagents: { inheritedLeaf, privateLeaf } })
+		const workflow = defineWorkflow('recursiveSandboxFlow', { input: z.string(), output: z.string(), agents: { middle },
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { await agents.middle.run(input, { callId: 'middle' }); return input } })
+		const provider = new FakeModelProvider({ strict: true })
+		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
+			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
+		})
+		provider.enqueueText(response('', [{ id: 'write', name: 'writeRecursiveFile', arguments: 'visible' }]))
+		provider.enqueueText(response('written'))
+		provider.enqueueText(response('', [{ id: 'delegate-inherited', name: 'inheritedLeaf', arguments: '/nested.txt' }]))
+		provider.enqueueText(response('', [{ id: 'inspect-inherited', name: 'inspectRecursiveFile', arguments: '/nested.txt' }]))
+		provider.enqueueText(response('inherited complete'))
+		provider.enqueueText(response('', [{ id: 'delegate-private', name: 'privateLeaf', arguments: '/nested.txt' }]))
+		provider.enqueueText(response('', [{ id: 'inspect-private', name: 'inspectRecursiveFile', arguments: '/nested.txt' }]))
+		provider.enqueueText(response('private complete'))
+		provider.enqueueText(response('middle complete'))
+		const sandbox = new TrackingSandbox()
+		const harness = await defineHarness({ name: 'recursiveSandboxScopes', revision: 'v1', defaults: { maxDepth: 3 } }).addAgent(writer).addWorkflow(workflow).getInstance({
+			storage: persistentStorage(), model: { provider, model: 'fake' }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+		})
+		const session = await harness.getSession('recursive-owner')
+		await expect(session.agents.recursiveWriter.run('write')).resolves.toMatchObject({ status: 'completed' })
+		await expect(session.workflows.recursiveSandboxFlow.run('/nested.txt')).resolves.toMatchObject({ status: 'completed' })
+		expect(observations).toEqual([true, false])
+		await session.destroy()
+		await harness.close()
+	})
 
-    await session.disposeSandbox()
+	it('resumes a nested approval with the same borrowed inherited and private sandbox scopes', async () => {
+		const owner = Object.freeze({ namespace: 'external', id: 'approval-scope', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FB2',
+			identity: Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }) })
+		const sandbox = new TrackingSandbox()
+		await sandbox.registerOwner({ owner, mode: 'create' })
+		const sharedScope = Object.freeze({ owner, partition: Object.freeze({ kind: 'group' as const, id: 'reviewers' }), lifetime: 'session' as const })
+		const shared = await sandbox.open({ scope: sharedScope, mode: 'create', identity: owner.identity })
+		await shared.session.write('/approval.txt', 'visible')
+		const privateScope = Object.freeze({ owner, partition: Object.freeze({ kind: 'agent' as const,
+			harnessName: 'nestedApprovalSandbox', id: 'approvalPrivateLeaf' }), lifetime: 'session' as const })
+		await sandbox.open({ scope: privateScope, mode: 'create', identity: owner.identity })
+		const visibility: boolean[] = []
+		let effects = 0
+		let authorizations = 0
+		let authorizationsAtEffect = 0
+		const inspectGroup = defineTool('inspectInheritedGroup', { description: 'Inspect inherited group state.', input: z.string(), output: z.boolean(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); visibility.push(exists); return exists } })
+		const approvedEffect = defineTool('bash', { description: 'Inspect private state after approval.', input: z.string(), output: z.boolean(),
+			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) {
+				authorizationsAtEffect = authorizations
+				effects += 1
+				const exists = await context.sandbox.exists(input)
+				visibility.push(exists)
+				return exists
+			} })
+		const reviewer = defineAgent('approvalPrivateLeaf', { instructions: 'Run the approved inspection.', tools: [approvedEffect],
+			permissions: { bash: 'require_approval' }, sandbox: 'private' })
+		const middle = defineAgent('approvalInheritedMiddle', { instructions: 'Inspect, then delegate.', tools: [inspectGroup], subagents: { reviewer } })
+		const workflow = defineWorkflow('nestedApprovalScope', { input: z.string(), output: z.string(), agents: { middle },
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		const provider = new FakeModelProvider({ strict: true })
+		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
+			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
+		})
+		provider.enqueueText(response('', [{ id: 'inspect-group', name: 'inspectInheritedGroup', arguments: '/approval.txt' }]))
+		provider.enqueueText(response('', [{ id: 'delegate', name: 'reviewer', arguments: '/approval.txt' }]))
+		provider.enqueueText(response('', [{ id: 'approve', name: 'bash', arguments: '/approval.txt' }]))
+		provider.enqueueText(response('leaf complete'))
+		provider.enqueueText(response('middle complete'))
+		const storage = persistentStorage()
+		const harness = await defineHarness({ name: 'nestedApprovalSandbox', revision: 'v1', defaults: { maxDepth: 3 } })
+			.addWorkflow(workflow).getInstance({ storage, sandbox, model: { provider, model: 'fake' },
+				sandboxBinding: { groups: ['reviewers'] as const, authorizeOwner: () => { authorizations += 1; return true } } })
+		const session = await harness.getSession('nested-approval', { identity: owner.identity, sandboxOwner: owner })
+		const interrupted = await session.workflows.nestedApprovalScope.run('/approval.txt')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected nested approval')
+		expect(visibility).toEqual([true])
+		expect(effects).toBe(0)
+		const privateScopesBefore = sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
+		expect(privateScopesBefore).toHaveLength(2)
+		expect(privateScopesBefore.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
+		const beforeResume = authorizations
+		await expect(session.workflows.nestedApprovalScope.run('/approval.txt', { resume: {
+			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+			revision: interrupted.interrupt.revision, eventId: 'nested-borrowed-resume',
+			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }],
+		} })).resolves.toMatchObject({ status: 'completed', output: 'middle complete' })
+		expect(effects).toBe(1)
+		expect(authorizationsAtEffect).toBeGreaterThan(beforeResume)
+		expect(visibility).toEqual([true, false])
+		expect(sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
+			.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
+		await session.destroy()
+		await harness.close()
+	})
 
-    expect(events).toEqual(['sandbox', 'workspace'])
-    await expect(storage.getSession('s-dispose-workspace')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ disposed: true }),
-      }),
-    )
-  })
+	it('streams nested workflow events with exact immediate-parent correlation in execution order', async () => {
+		const leaf = defineAgent('eventLeaf', { instructions: 'Finish.' })
+		const middle = defineAgent('eventMiddle', { instructions: 'Delegate.', subagents: { leaf } })
+		const workflow = defineWorkflow('eventWorkflow', { input: z.string(), output: z.string(), agents: { middle },
+			async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'child' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText({ content: 'leaf complete', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText({ content: 'middle complete', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const harness = await defineHarness({ name: 'nestedEventCorrelation', revision: 'v1', defaults: { maxDepth: 3 } })
+			.addWorkflow(workflow).getInstance({ storage: persistentStorage(), model: { provider, model: 'fake' } })
+		const session = await harness.getSession('nested-events')
+		const events: Array<{ type: string; runId: string; parentRunId?: string; parentInvocationId?: string }> = []
+		for await (const event of session.workflows.eventWorkflow.stream('start')) events.push(event)
+		const rootStarted = events.find(event => event.type === 'run.started' && event.parentRunId === undefined)!
+		const directStarted = events.find(event => event.type === 'run.started' && event.parentRunId === rootStarted.runId)!
+		const descendantStarted = events.find(event => event.type === 'run.started' && event.parentRunId === directStarted.runId)!
+		expect(rootStarted.parentInvocationId).toBeUndefined()
+		expect(directStarted.parentInvocationId).toBe(directStarted.runId)
+		expect(descendantStarted.parentInvocationId).toBe(descendantStarted.runId)
+		const tuples = [rootStarted, directStarted, descendantStarted].map(event => [event.runId, event.parentRunId, event.parentInvocationId])
+		expect(tuples).toEqual([
+			[rootStarted.runId, undefined, undefined],
+			[directStarted.runId, rootStarted.runId, directStarted.runId],
+			[descendantStarted.runId, directStarted.runId, descendantStarted.runId],
+		])
+		const terminalIndex = (runId: string) => events.findIndex(event => event.type === 'run.finished' && event.runId === runId)
+		expect(events.indexOf(rootStarted)).toBeLessThan(events.indexOf(directStarted))
+		expect(events.indexOf(directStarted)).toBeLessThan(events.indexOf(descendantStarted))
+		expect(terminalIndex(descendantStarted.runId)).toBeLessThan(terminalIndex(directStarted.runId))
+		expect(terminalIndex(directStarted.runId)).toBeLessThan(terminalIndex(rootStarted.runId))
+		await session.destroy()
+		await harness.close()
+	})
 
-  it('keeps an owned session retryable when workspace cleanup remains pending', async () => {
-    const events: string[] = []
-    const sandbox = new TrackingSandbox()
-    const workspace = new InMemoryDurableWorkspace()
-    let workspacePending = true
-    trackAdministrationPurge(sandbox, events, 'sandbox')
-    trackAdministrationPurge(workspace, events, 'workspace', () => {
-      if (!workspacePending) return undefined
-      workspacePending = false
-      return { state: 'cleanup_pending', deletedResources: 0, remainingResources: 1, retryAfterMs: 1 }
-    })
-    const { harness, storage } = buildReleaseHarness(undefined, sandbox, undefined, workspace)
-    const session = await harness.getSession('s-dispose-workspace-retry')
-    await session.agents.echo.run('allocate')
-    const owner = (await storage.getSession('s-dispose-workspace-retry'))!.sandboxBinding.owner
-    await workspace.startWorkspace({
-      sessionId: 's-dispose-workspace-retry',
-      runId: 'workspace-run',
-      sandboxOwner: owner,
-      sandboxPolicyDigest: 'a'.repeat(64),
-      attempt: 1,
-      idempotencyKey: 'workspace-start',
-    })
+	it('destroys the active session generation and its persisted state', async () => {
+		const { harness, storage, sandbox, provider } = await buildLifecycleHarness()
+		const session = await harness.getSession('destroyed')
+		await session.replaceHistory([{ role: 'user', content: 'delete me' }])
+		provider.enqueueText({ content: 'delete run', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		await session.agents.owner.run('delete run')
 
-    await expect(session.disposeSandbox()).rejects.toMatchObject({
-      code: 'SANDBOX_ERROR',
-      meta: { reason: 'cleanup_pending' },
-    })
-    await expect(storage.getSession('s-dispose-workspace-retry')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ disposed: false }),
-      }),
-    )
+		await session.destroy()
 
-    await expect(session.disposeSandbox()).resolves.toBeUndefined()
-    expect(events).toEqual(['sandbox', 'workspace', 'sandbox', 'workspace'])
-    await expect(storage.getSession('s-dispose-workspace-retry')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ disposed: true }),
-      }),
-    )
-  })
+		await expect(storage.getSession('destroyed')).resolves.toBeUndefined()
+		await expect(storage.listMessages('destroyed')).resolves.toEqual([])
+		await expect(storage.listRuns('destroyed')).resolves.toEqual([])
+		expect(sandbox.closeCalls).toBe(1)
+		expect(sandbox.terminatedScopes).toHaveLength(1)
+		await harness.close()
+	})
 
-  it('does not begin workspace cleanup until owned sandbox cleanup completes', async () => {
-    const events: string[] = []
-    const sandbox = new TrackingSandbox()
-    const workspace = new InMemoryDurableWorkspace()
-    trackAdministrationPurge(sandbox, events, 'sandbox', () => ({
-      state: 'cleanup_pending',
-      deletedResources: 0,
-      remainingResources: 1,
-      retryAfterMs: 1,
-    }))
-    trackAdministrationPurge(workspace, events, 'workspace')
-    const { harness, storage } = buildReleaseHarness(undefined, sandbox, undefined, workspace)
-    const session = await harness.getSession('s-dispose-sandbox-pending')
-    await session.agents.echo.run('allocate')
+	it('cancels and waits for an active root before closing instance resources', async () => {
+		let entered!: () => void
+		const started = new Promise<void>(resolve => { entered = resolve })
+		let finishCleanup!: () => void
+		const cleanup = new Promise<void>(resolve => { finishCleanup = resolve })
+		const workflow = defineWorkflow('closing', {
+			input: z.string(), output: z.string(),
+			async handler({ signal }) {
+				entered()
+				await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+				await cleanup
+				throw new OperationCancelledError('Run was cancelled.', { scope: 'run' })
+			},
+		})
+		const harness = await defineHarness({ name: 'closeWaits' }).addWorkflow(workflow).getInstance({})
+		const session = await harness.getSession('closing')
+		const running = session.workflows.closing.run('wait')
+		await started
+		let closed = false
+		const closing = harness.close().then(() => { closed = true })
+		await Promise.resolve()
+		expect(closed).toBe(false)
 
-    await expect(session.disposeSandbox()).rejects.toMatchObject({
-      code: 'SANDBOX_ERROR',
-      meta: { reason: 'cleanup_pending' },
-    })
+		finishCleanup()
+		await expect(running).rejects.toBeInstanceOf(OperationCancelledError)
+		await expect(closing).resolves.toBeUndefined()
+		expect(closed).toBe(true)
+	})
 
-    expect(events).toEqual(['sandbox'])
-    await expect(storage.getSession('s-dispose-sandbox-pending')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ disposed: false }),
-      }),
-    )
-  })
+	it('cancels a resident child task before releasing its owner session', async () => {
+		let markStarted!: () => void
+		const started = new Promise<void>(resolve => { markStarted = resolve })
+		class BlockingProvider extends FakeModelProvider {
+			public override async text(): Promise<never> {
+				markStarted()
+				return new Promise<never>(() => undefined)
+			}
+		}
+		const worker = defineAgent('worker', {
+			input: z.string(), instructions: 'Wait.', prompt: value => ({ role: 'user', content: value }),
+		})
+		let task: ChildTaskHandle<string> | undefined
+		const launch = defineWorkflow('launch', {
+			input: z.string(), output: z.string(), agents: { worker }, durable: true,
+			async handler({ childTasks, input }) {
+				task = await childTasks.start('worker', input, { callId: 'background', idempotencyKey: 'background' })
+				void task.result().catch(() => undefined)
+				return task.id
+			},
+		})
+		const storage = persistentStorage()
+		const harness = await defineHarness({ name: 'releaseChild', revision: 'v1' }).addWorkflow(launch)
+			.getInstance({ storage, model: { provider: new BlockingProvider(), model: 'fake' } })
+		const session = await harness.getSession('release-child')
+		await session.workflows.launch.run('work')
+		await started
 
-  it('does not purge borrowed sandbox or workspace owners', async () => {
-    const events: string[] = []
-    const sandbox = new TrackingSandbox()
-    const workspace = new InMemoryDurableWorkspace()
-    trackAdministrationPurge(sandbox, events, 'sandbox')
-    trackAdministrationPurge(workspace, events, 'workspace')
-    const owner = { namespace: 'external', id: 'borrowed-owner', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }
-    await sandbox.registerOwner({ owner, mode: 'create' })
-    const { harness, storage } = buildReleaseHarness(undefined, sandbox, undefined, workspace, {
-      authorizeOwner: () => true,
-    })
-    const session = await harness.getSession('s-dispose-borrowed', { sandboxOwner: owner })
-    await session.agents.echo.run('attach')
-    await workspace.startWorkspace({
-      sessionId: 's-dispose-borrowed',
-      runId: 'workspace-run',
-      sandboxOwner: owner,
-      sandboxPolicyDigest: 'a'.repeat(64),
-      attempt: 1,
-      idempotencyKey: 'workspace-start',
-    })
+		await session.release()
 
-    await session.disposeSandbox()
-
-    expect(events).toEqual([])
-    await expect(storage.getSession('s-dispose-borrowed')).resolves.toEqual(
-      expect.objectContaining({
-        sandboxBinding: expect.objectContaining({ relation: 'borrowed', disposed: false }),
-      }),
-    )
-  })
-
-  it('replays a terminal workflow receipt after ephemeral compute is disposed', async () => {
-    const { harness, sandbox } = buildReleaseHarness()
-    const session = await harness.getSession('s-workflow-dispose-replay')
-    await expect(
-      session.workflows.echo_workflow.run('complete', { idempotencyKey: 'workflow-delivery-1' }),
-    ).resolves.toMatchObject({ status: 'completed', output: 'complete' })
-    const opensBeforeDispose = sandbox.openCalls
-
-    await session.disposeSandbox()
-
-    const reopened = await harness.getSession('s-workflow-dispose-replay')
-    await expect(
-      reopened.workflows.echo_workflow.run('complete', { idempotencyKey: 'workflow-delivery-1' }),
-    ).resolves.toMatchObject({ status: 'completed', output: 'complete' })
-    expect(sandbox.openCalls).toBe(opensBeforeDispose)
-    await expect(
-      reopened.workflows.echo_workflow.run('different', { idempotencyKey: 'workflow-delivery-1' }),
-    ).rejects.toMatchObject({
-      code: 'SANDBOX_STATE_LOST',
-      meta: { reason: 'scope_terminated' },
-    })
-  })
-
-  it('keeps destroy destructive for the active session generation', async () => {
-    const { harness, storage, sandbox } = buildReleaseHarness()
-    const session = await harness.getSession('s-destructive-destroy')
-    await session.replaceHistory([{ role: 'user', content: 'remove me' }])
-    await session.agents.echo.run('remove run')
-
-    await session.destroy()
-
-    expect(sandbox.closeCalls).toBe(1)
-    expect(storage.closeSessionCalls).toBe(1)
-    await expect(storage.getSession('s-destructive-destroy')).resolves.toBeUndefined()
-    await expect(storage.listMessages('s-destructive-destroy')).resolves.toEqual([])
-    await expect(storage.listRuns('s-destructive-destroy')).resolves.toEqual([])
-  })
-
-  it('cancels resident child tasks before releasing their owner session', async () => {
-    const { harness, childStarted, sandbox } = buildReleaseHarness()
-    const session = await harness.getSession('s-release-child')
-    const taskId = completedOutput(await session.workflows.start_child.run('work'))
-    await childStarted
-
-    await session.release()
-
-    await expect(session.childTasks.get(taskId)).resolves.toMatchObject({ id: taskId })
-    await expect((await session.childTasks.get(taskId))?.status()).resolves.toMatchObject({ status: 'cancelled' })
-    // The owner sandbox and the task's isolated sandbox are both released.
-    expect(sandbox.closeCalls).toBe(2)
-    expect(sandbox.terminatedScopes).toEqual([
-      expect.objectContaining({ lifetime: 'run', runId: taskId, partition: { kind: 'shared' } }),
-    ])
-  })
-
-  it('releases an explicitly inherited child attachment without terminating its parent partition', async () => {
-    const { harness, childStarted, sandbox } = buildReleaseHarness(undefined, undefined, 'inherit')
-    const session = await harness.getSession('s-release-child-inherit')
-    const taskId = completedOutput(await session.workflows.start_child.run('work'))
-    await childStarted
-
-    await session.release()
-
-    expect(sandbox.openedScopes).toEqual([
-      expect.objectContaining({ lifetime: 'session', partition: { kind: 'shared' } }),
-      expect.objectContaining({ lifetime: 'session', partition: { kind: 'shared' } }),
-    ])
-    expect(sandbox.terminatedScopes).toEqual([])
-    await expect((await session.childTasks.get(taskId))?.status()).resolves.toMatchObject({ status: 'cancelled' })
-  })
-
-  it('emits the activated-skill count on agent spans', async () => {
-    const { session, telemetry } = await runTelemetryFlowHarness()
-    await session.workflows.wf.run('policy question')
-    const agentSpan = telemetry.spans.find((span) => span.name.startsWith('invoke_agent'))
-    expect(agentSpan).toBeDefined()
-    // No skill was mounted/read in this flow; the attribute must still exist.
-    expect(agentSpan?.attrs['harness.agent.skills_activated']).toBe(0)
-  })
+		await expect(task?.status()).resolves.toMatchObject({ status: 'cancelled' })
+		await harness.close()
+	})
 })

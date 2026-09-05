@@ -109,6 +109,7 @@ import {
 } from '@opentelemetry/semantic-conventions/incubating'
 import { metadataSpanAttrs } from '../telemetry/span-attrs.js'
 import { abortError } from '../runtime/abort.js'
+import { canonicalJson } from '../runtime/canonical-json.js'
 import { createMcpRunnerRegistry } from '../tools/mcp/runner.js'
 import { validateContextProjection } from '../context-projection.js'
 import { retainCompleteTurns } from './history-retention.js'
@@ -1261,9 +1262,13 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     return opening
   }
 
-  async function appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
+  async function appendEvents(
+    runId: string,
+    events: Array<Pick<PersistedRunEvent, 'id' | 'runId' | 'at' | 'payload'> & { type: RunEvent['type'] }>,
+  ): Promise<void> {
     try {
-      await definition.storage.appendEvents(runId, events)
+      // Staged v3 executor remains physically isolated until H4-011 removes it.
+      await definition.storage.appendEvents(runId, events as unknown as PersistedRunEvent[])
     } catch (error) {
       telemetry.recordCounter('harness.events.persist_errors', 1, { harness: definition.name })
       definition.logger.error('Failed to persist run events.', {
@@ -2160,24 +2165,32 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         ...(boundSession.identity ? { identity: boundSession.identity } : {}),
         metadata: opts?.metadata ?? {},
       })
-      const runRecord: RunRecord = {
+      const runRecord = {
         id: runId,
         sessionId,
         kind: 'agent',
         target: agentId,
         startedAt,
-        status: 'running',
         input: input as JsonValue,
-      }
+      } as const
       await definition.storage.createRun(runRecord)
       runCreated = true
       if (approvalResume) {
+        const created = await definition.storage.getRun(runId)
+        if (!created) throw new InternalError('Created approval run is unavailable.')
+        const stepId = approvalDecisionStepId(approvalResume.interruptId)
+        const checkpoint = await definition.storage.loadCheckpoint(runId, stepId)
+        const expected = Object.freeze({
+          revision: created.revision,
+          status: created.status as 'running' | 'waiting' | 'interrupted',
+          checkpoint: Object.freeze({ stepId, sequence: checkpoint?.sequence ?? null }),
+        })
+        const acquisitionId = `acq_${createHash('sha256').update(canonicalJson([
+          'harness-run-acquisition-v1', 'initial', runId, sessionId, durableWorkerId,
+          expected.revision, expected.status, stepId, expected.checkpoint.sequence, null,
+        ])).digest('hex')}`
         approvalLease = await definition.storage.acquireRun({
-          runId,
-          sessionId,
-          workerId: durableWorkerId,
-          stepId: approvalDecisionStepId(approvalResume.interruptId),
-          input: input as JsonValue,
+          mode: 'initial', runId, sessionId, workerId: durableWorkerId, acquisitionId, expected,
         })
         const priorSequence = (approvalLease.checkpoints ?? []).reduce(
           (max, checkpoint) => Math.max(max, checkpoint.sequence),
@@ -2508,15 +2521,14 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
     const durableSandboxPolicyDigest = durableSandboxScope
       ? digestDurableSandboxPolicy(definition, workflowId)
       : undefined
-    const runRecord: RunRecord = {
+    const runRecord = {
       id: runId,
       sessionId,
       kind: 'workflow',
       target: workflowId,
       startedAt,
-      status: 'running',
       input: input as JsonValue,
-    }
+    } as const
 
     const emit = async (event: RunEvent): Promise<void> => {
       const eventAt = 'at' in event ? event.at : now()
@@ -3370,24 +3382,24 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
           ? createRunSignal(parentAndTask.signal, args.options.timeoutMs, parentAndTask.deadline)
           : parentAndTask
       const createdAt = now()
-      const descriptor: ChildTaskDescriptor = Object.freeze({
+      // Staged v3 descriptor shape remains physically isolated until H4-011 removes this runner.
+      const descriptor = Object.freeze({
         id: taskId,
         parentRunId: args.parentRunId,
         sessionId: args.sessionId,
         workflowId: args.workflowId,
         agentId: args.agentId,
-        ...(modelAlias ? { modelAlias } : {}),
+		...(modelAlias ? { modelAlias } : {}),
         contextPolicy: 'isolated',
         mode: args.options?.mode ?? 'one_shot',
         createdAt,
-      })
+      }) as unknown as ChildTaskDescriptor
       await definition.storage.createRun({
         id: taskId,
         sessionId: args.sessionId,
         kind: 'child_task',
         target: args.agentId,
         startedAt: createdAt,
-        status: 'running',
         input: args.agentInput as JsonValue,
       })
 
@@ -3933,6 +3945,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
       typeof payload['agentId'] === 'string' &&
       typeof payload['modelAlias'] === 'string'
     ) {
+      // Staged v3 descriptor shape remains physically isolated until H4-011 removes this runner.
       return Object.freeze({
         id: taskId,
         parentRunId: payload['parentRunId'],
@@ -3943,7 +3956,7 @@ export function createSessionHarness<S extends BuilderState>(definition: Harness
         contextPolicy: 'isolated',
         mode: payload['mode'] === 'continuable' ? 'continuable' : 'one_shot',
         createdAt: record.startedAt,
-      })
+      }) as unknown as ChildTaskDescriptor
     }
     throw new ValidationError('Stored child-task descriptor is invalid.', {
       where: 'invoke_options',

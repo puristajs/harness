@@ -15,7 +15,13 @@ export const harnessExecutionEventTypesV1 = Object.freeze([
 	'fanout.finished', 'child_task.started', 'child_task.settled', 'stream.overflow',
 ] as const)
 export type HarnessExecutionEventType = typeof harnessExecutionEventTypesV1[number]
-export type ExecutionEventCorrelation = Readonly<{ runId: string; parentRunId?: string; parentInvocationId?: string }>
+export type ExecutionEventCorrelation = Readonly<{
+	readonly eventId: string
+	readonly sequence: number
+	readonly runId: string
+	readonly parentRunId?: string
+	readonly parentInvocationId?: string
+}>
 type ExecutionTerminalOutcome<Output, Interrupt> = RunOutcome<Output, Interrupt>
 	| Readonly<{ status: 'failed'; runId: string; error: SerializedError }>
 	| Readonly<{ status: 'cancelled'; runId: string; error: SerializedError }>

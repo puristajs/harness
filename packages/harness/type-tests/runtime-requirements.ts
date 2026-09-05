@@ -47,7 +47,9 @@ type Requirements<
 	Durable extends boolean = false,
 	Workspace extends boolean = false,
 	Artifacts extends boolean = false,
-> = RuntimeRequirements<Models, Mcp, Runtime, Memory, never, SandboxCapability, HostTool, Durable, Workspace, Artifacts>
+	SandboxGroup extends string = never,
+	SandboxRequired extends boolean = [SandboxCapability | Runtime] extends [never] ? false : true,
+> = RuntimeRequirements<Models, Mcp, Runtime, Memory, never, SandboxCapability, SandboxGroup, SandboxRequired, HostTool, Durable, Workspace, Artifacts>
 
 declare const provider: ModelProvider
 declare const sandbox: Sandbox<readonly ['sandbox.fs', 'sandbox.spawn']> & {

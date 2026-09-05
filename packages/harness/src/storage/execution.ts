@@ -1,6 +1,7 @@
 import type { JsonValue } from '../models/json.js'
-import type { RunStatus } from '../models/state.js'
+import type { RunRecord, RunStatus } from '../models/state.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
+import type { RunAcquisitionExpectation } from './types.js'
 
 /** Non-terminal run states that can be acquired again. */
 export type DurableActiveRunStatus = 'running' | 'waiting' | 'interrupted'
@@ -11,28 +12,19 @@ export type DurableTerminalRunStatus = Exclude<RunStatus, DurableActiveRunStatus
 /** Complete durable run lifecycle. */
 export type DurableRunStatus = DurableActiveRunStatus | DurableTerminalRunStatus
 
-/** Stable identity and immutable input for a recoverable run attempt. */
-export interface DurableRunStart {
-  readonly runId: string
-  readonly sessionId: string
-  readonly workerId: string
-  readonly stepId: string
-  readonly input: JsonValue
-  readonly attempt?: number
-  readonly metadata?: Record<string, JsonValue>
-}
-
 /** Exclusive storage lease for one recoverable run. */
 export interface DurableRunLease {
   readonly runId: string
   readonly sessionId: string
   readonly workerId: string
+  readonly acquisitionId: string
   readonly leaseId: string
   readonly attempt: number
   readonly resumed: boolean
-  readonly start: DurableRunStart & { readonly attempt: number }
+  readonly acquiredFrom: RunAcquisitionExpectation
+  readonly run: RunRecord
   readonly checkpoint?: RunCheckpoint
-  readonly checkpoints?: readonly RunCheckpoint[]
+  readonly checkpoints: readonly RunCheckpoint[]
   release(): Promise<void>
 }
 

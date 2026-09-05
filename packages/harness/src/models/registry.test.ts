@@ -4,7 +4,7 @@ import { HarnessConfigError, ModelCapabilityError } from '../errors/index.js'
 import type { ArtifactPublishRequest } from '../ports/artifact-store.js'
 import type { ImageRequest, ModelProvider, TextRequest, TextResponse, VideoRequest } from '../ports/model-provider.js'
 import type { ModelAdmissionRequest } from '../ports/model-admission.js'
-import { createModelRegistry } from './registry.js'
+import { createModelRegistry, resolveModelHandleCallOptions } from './registry.js'
 
 class FakeProvider implements ModelProvider {
   public readonly id = 'fake'
@@ -67,6 +67,51 @@ describe('createModelRegistry', () => {
     )
 
     expect(result.content).toBe('model-x')
+  })
+
+  it('resolves one immutable effective call with alias and request precedence', () => {
+    const registry = createModelRegistry({
+      a: {
+        provider: new FakeProvider(),
+        model: 'model-x',
+        capabilities: ['text'],
+        retry: { maxAttempts: 2, retryOn: { network: true } },
+        providerOptions: { source: 'alias', aliasOnly: true },
+        defaults: {
+          temperature: 0.2,
+          maxTokens: 100,
+          topP: 0.8,
+          stopSequences: ['default'],
+          parallelToolCalls: false,
+          providerOptions: { source: 'defaults', defaultOnly: true },
+        },
+      },
+    })
+
+    const call = resolveModelHandleCallOptions(registry.a!, {
+      temperature: 0.4,
+      stopSequences: ['request'],
+      retry: false,
+      providerOptions: { source: 'request', requestOnly: true },
+    })
+
+    expect(call).toEqual({
+      temperature: 0.4,
+      maxTokens: 100,
+      topP: 0.8,
+      stopSequences: ['request'],
+      parallelToolCalls: false,
+      retry: false,
+      providerOptions: {
+        source: 'request',
+        aliasOnly: true,
+        defaultOnly: true,
+        requestOnly: true,
+      },
+    })
+    expect(Object.isFrozen(call)).toBe(true)
+    expect(Object.isFrozen(call?.stopSequences)).toBe(true)
+    expect(Object.isFrozen(call?.providerOptions)).toBe(true)
   })
 
   it('preserves parallelToolCalls defaults without other generation options', async () => {

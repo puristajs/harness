@@ -179,7 +179,7 @@ export function createDurableWorkflowContext(
         leaseId: lease.leaseId,
         workerId: lease.workerId,
         stepId,
-        input: lease.start.input,
+        input: lease.run.input,
         attempt: lease.attempt,
         sequence,
         output,

@@ -10,7 +10,8 @@ import type { RunCheckpoint } from '../src/storage/execution.js'
 import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
 
 function stream(events: readonly ExecutionEvent[]): HarnessTargetDispatchStream<any> {
-	return { async *[Symbol.asyncIterator]() { yield* events }, async cancel() {} }
+	const authored = events.map((event, index) => ({ eventId: `event-${index + 1}`, sequence: index + 1, ...event })) as ExecutionEvent[]
+	return { async *[Symbol.asyncIterator]() { yield* authored }, async cancel() {} }
 }
 
 function completed(parentRunId: string, childInvocationId: string, output: unknown, runId = 'child-run'): HarnessTargetDispatchStream<any> {

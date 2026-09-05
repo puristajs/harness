@@ -417,11 +417,11 @@ follow_up_waves:
     status: approved
     human_approval:
       status: approved
-      approved_at: "2026-09-04"
+      approved_at: "2026-09-05"
       approver: "repo owner (active interactive Codex task)"
-      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
+      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval while the contracts were independently reviewed and repaired."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:6192ad0fb9ff16af51011cd5034718032be052fb6a52d189cc05f9cb1e133789"
+      scope_digest: "sha256:dcad4d926e05f6368ce1ee7c1c0b88fc82f0d8e9e3c720a8a81758e69c875a07"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -450,7 +450,9 @@ follow_up_waves:
         - specs/29-agent-plugins.md
         - specs/30-guardrails.md
         - specs/38-guardrail-authoring/03-contracts/callbacks.md
+        - specs/38-guardrail-authoring/03-contracts/actions-and-binding.md
         - specs/40-declarative-registration-and-guardrails-binding.md
+        - specs/41-opa-policy-adapter.md
         - specs/37-decision-boundaries/03-contracts/decisions.md
         - specs/37-decision-boundaries/03-contracts/provider-continuation.md
         - specs/42-composable-definitions-and-catalogs.md
@@ -502,8 +504,14 @@ follow_up_waves:
       - review: "independent H4-009 hosted runtime implementation review"
         status: passed_after_runtime_repair
         evidence: "PASS after max-depth enforcement, trusted trace propagation on resume, global checkpoint sequencing, exact direct-run identity, strict in-flight call tuple validation, complete descendant stream lifecycles, and unconditional hosted-environment cleanup were verified."
+      - review: "independent v4 addon and catalog feasibility review"
+        status: passed_after_contract_repair
+        evidence: "PASS after Agent Plugin exported types, deterministic immutable digest snapshots, total diagnostics/errors, Core-owned MCP redirect safety, OPA trace reuse and error/transport bounds, exact Guardrail dependency projection, and explicit sandbox runtime metadata were made implementation-feasible. The review found defineCatalog sufficient and rejected separate public runtime registries."
+      - review: "independent v4 addon semantic readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after deterministic plugin path/order/precedence and diagnostics, exact header and timer bounds, content-free OPA construction/runtime errors, content-bound Agent Plugins schemas and pinned OPA conformance artifact, representation ownership, and atomic release staging were closed. No implementation behavior remains to be invented."
     dependency_and_ui_protocol_evidence:
-      captured_at: "2026-09-04"
+      captured_at: "2026-09-05"
       standard_schema:
         manifest: packages/harness/package.json
         version: "@standard-schema/spec 1.1.0"
@@ -519,6 +527,31 @@ follow_up_waves:
         official_sources:
           - https://agentskills.io/specification
           - https://github.com/agentskills/agentskills/blob/main/docs/specification.mdx
+      agent_plugins:
+        specification_version: "1.0.0"
+        reviewed_at: "2026-09-05"
+        bundled_schema_artifacts:
+          - path: packages/harness-agent-plugins/schemas/1.0.0/plugin.schema.json
+            sha256: fd74dfcbccea4a5b8768d9bc87b9da27449213ca5d464ace724ca48ec4bc074b
+          - path: packages/harness-agent-plugins/schemas/1.0.0/mcp.schema.json
+            sha256: 9b9863a18c18c2a4c53772e6099b13ae3c2e7eab1bd5330e9b98dca59af71e5f
+        evidence: "Spec 29 projects only explicitly selected local Skill and Streamable HTTP MCP data from a trusted, digest-pinned immutable snapshot; it executes no plugin code, does not claim stdio support, and tests the bundled reviewed schemas without network access."
+        official_sources:
+          - https://agent-plugins.org/specification
+      opa:
+        interface: "OPA Data API v1"
+        reviewed_at: "2026-09-05"
+        tested_release: "OPA 1.17.0"
+        image: "docker.io/openpolicyagent/opa@sha256:3c6e9e4d433b6e94df424c3385134312a95042aa991cdfc8e01944115675fb9d"
+        evidence: "Spec 41 uses the documented POST /v1/data/{path} input/result envelope, bounds all HTTP input/output, and keeps Rego deployment and decision-log policy application-owned. A separate hermetic real-OPA conformance job verifies the pinned image version, loopback health, repository policy fixture, allow/deny/undefined decisions, and cleanup; deterministic package tests use FakeOpaDataApi."
+        official_sources:
+          - https://www.openpolicyagent.org/docs/rest-api#execute-a-simple-query
+      trace_context:
+        specification: "W3C Trace Context Level 2"
+        reviewed_at: "2026-09-05"
+        evidence: "Core owns and exports the one trace-carrier normalizer; first-party addons reuse it rather than freezing a second version/flag parser."
+        official_sources:
+          - https://www.w3.org/TR/trace-context-2/
       ai_sdk_ui:
         manifest: packages/harness-ai-sdk-ui/package.json
         tested_version: "ai 7.0.90"
@@ -536,7 +569,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        count: 10
+        count: 15
       contradiction_check:
         status: passed
       strong_boundary_type_gate:

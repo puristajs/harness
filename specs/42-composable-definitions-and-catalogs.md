@@ -619,6 +619,12 @@ It selects `http` or `stdio` and supplies URL,
 authenticated headers, and connection options for HTTP, or command, arguments,
 minimal environment, and a spawn-capable sandbox for stdio. Agents select exact
 MCP tool references.
+Core's Streamable HTTP transport disables redirect following for every MCP
+request (`RequestInit.redirect: 'error'`, or an equivalent transport guarantee
+that performs no request to the redirect target). A 3xx response therefore
+fails content-free without contacting another origin or forwarding configured
+headers. This is a Core transport invariant rather than an addon-specific
+binding option, so all HTTP `McpBinding` users receive the same protection.
 `SpawnCapableSandbox` is the exported capability-narrowed Sandbox adapter type
 whose declared capabilities include `sandbox.spawn`; instance validation checks
 that capability again before opening a session.
@@ -626,6 +632,9 @@ Dynamic discovery may be exposed only through a deliberately untyped advanced
 API and must never auto-expose newly discovered tools. HTTP and stdio calls use
 the same tool policy, approval, Guardrail, validation, telemetry, cancellation,
 and output pipeline as native tools.
+Transport tests use a two-origin fixture and prove a redirect fails, the second
+origin receives no request, and no configured header appears in an error,
+event, log, metric, or span.
 
 One runtime bundle is initialized per declared server, in deterministic server-id
 order. A bundle contains one client and transport; a stdio bundle contains one
@@ -704,6 +713,39 @@ only for an exec-capable adapter configuration. `inMemorySandbox()` reports no r
 `bashSandbox()` reports `['shell']`, plus `python` when its own `python: true`
 configuration guarantees that runtime; it never infers `node`.
 
+First-party Docker and Kubernetes sandbox composition options follow the same
+explicit metadata rule. `DockerSandboxOptions`,
+`KubernetesSandboxRuntimeOptions`, and the public low-level
+`KubernetesSandboxAdapterOptions` each accept optional
+`runtimes: readonly SkillRuntimeId[]`. `DockerSandbox` and
+`KubernetesSandboxAdapter` expose a mandatory frozen
+`readonly runtimes: readonly SkillRuntimeId[]`; the `dockerSandbox()` return
+type and both `KubernetesSandboxRuntime.sandbox` result variants preserve that
+property rather than widen it back to optional `Sandbox` metadata. Omission
+produces a frozen empty tuple. Values are validated against the closed
+runtime-id union, copied, bytewise lexicographically sorted, and rejected when
+duplicated. The image name, image contents, container `PATH`, and cluster or
+engine configuration never infer a runtime. In this release these adapters do
+not implement or advertise `sandbox.readonly_mount`. Their runtime metadata can
+satisfy a third-party interceptor's declarative `skillRuntimes` requirement,
+but a runtime-bearing
+Skill also requires `sandbox.fs` and `sandbox.readonly_mount` and therefore
+continues to fail instance validation with either adapter. Immutable Skill
+mounting for containers is a separate adapter capability and cannot be claimed
+until guest processes and later mounts are unable to mutate the mounted tree.
+
+Runtime option validation happens synchronously before a Docker client,
+Kubernetes driver, filesystem mutation, container, pod, volume, or telemetry
+operation. Docker keeps its existing content-free
+`HarnessConfigError{reason:'invalid_configuration'}`; Kubernetes keeps its
+existing content-free configuration error and reports `path:'options.runtimes'`
+with `reason:'invalid_option'` for a non-array, unknown id, or duplicate.
+Tests cover omission, empty and unsorted valid tuples, every runtime id,
+duplicates, unknown values through JavaScript, caller-array mutation, the exact
+mandatory frozen adapter property, and both success and failure of instance
+preflight. They also prove neither adapter gains `sandbox.readonly_mount` and a
+runtime-bearing Skill still fails before any sandbox session opens.
+
 The sandbox capability vocabulary includes `sandbox.readonly_mount`.
 `SandboxSessionFor<C>` exposes `mountReadOnly` only when that literal
 capability is present. A Skill with omitted or empty `runtimes` is
@@ -711,9 +753,12 @@ guidance-only: it is available through the scoped reader below and is not
 mounted. A Skill with at least one runtime contributes its exact logical
 runtime ids plus `sandbox.fs` and `sandbox.readonly_mount`. The graph-level
 sandbox binding then requires `runtimes`, and instance validation requires all
-three parts of that compiled requirement. A Guardrail-only `skillRuntimes`
+three parts of that compiled requirement. An interceptor-only `skillRuntimes`
 requirement contributes its runtime ids but does not contribute the mount
-capabilities because there is no Skill package to mount.
+capabilities because there is no Skill package to mount. Such an interceptor
+owns its executable dependency and receives no sandbox or runtime handle from
+the declaration; it only causes instance creation to fail when the selected
+sandbox does not advertise the requested logical runtime.
 
 Runtime metadata and a read-only mount never grant process execution,
 filesystem mutation, environment, or network permission. An adapter may
@@ -937,13 +982,21 @@ type AgentGovernanceInput<Tools, Skills, Subagents> =
         AgentModelToolMap<Tools, Skills, Subagents>
       >) => GovernanceConfig<AgentModelToolMap<Tools, Skills, Subagents>>)
 
+type GovernanceToolDefinition = Readonly<{
+  id: string
+  input: ModelSchema
+  output: Schema
+}>
+
+type GovernanceToolMap = Readonly<Record<string, GovernanceToolDefinition>>
+
 interface GovernancePolicyEvaluator<
-  ToolMap extends Readonly<Record<string, AnyToolDefinition>>,
+  ToolMap extends GovernanceToolMap,
 > {
   readonly id: string
   readonly version?: string
   readonly engine?: string
-  readonly effects: readonly GovernanceEffect[]
+  readonly effects: readonly [GovernanceEffect, ...GovernanceEffect[]]
   evaluate(
     context: GovernanceContext<ToolMap>,
   ):
@@ -975,8 +1028,20 @@ at compile time and runtime configuration validation. Runtime
 remains correlated to that binding's schema. These keys configure a frozen
 policy; they do not expose a runtime registry or dynamic lookup path.
 
-Every external `GovernancePolicyEvaluator` declares a nonempty frozen
-`effects: readonly GovernanceEffect[]` capability list. Native policies derive
+`GovernanceContext` also carries an optional, content-free
+`readonly traceparent?: string`. Core reads it from the active telemetry context
+while already inside the `harness.policy.evaluate` span and omits the field when
+no valid trace context exists. This is per-evaluation data: an external policy
+may forward it to its transport, but receives no logger, metrics,
+`TelemetryShim`, `HarnessAdapterContext`, provider registry, or mutable
+configuration hook. `GovernancePolicyEvaluator` has no
+`configureHarnessContext` method and no separate runtime policy binding. This
+keeps one frozen evaluator safe to reuse concurrently across Harness instances
+without retaining the first instance's telemetry state.
+
+Every external `GovernancePolicyEvaluator` declares a nonempty, duplicate-free,
+frozen `effects: readonly [GovernanceEffect, ...GovernanceEffect[]]` capability
+tuple. Native policies derive
 that list from their configured rule effects. Returning an effect absent from
 the evaluator's declaration is `DecisionEvaluationError{failureKind:
 'invalid_result'}`. The requirement compiler sets
@@ -990,19 +1055,38 @@ and revision requirements decidable entirely from the frozen graph.
 The Core-owned Guardrail requirement declaration is exact and does not grant a
 capability or inject a runtime handle:
 
+This subsection supersedes the public action-token generic and attachment
+requirement equations in spec 38 `CTR-GA-ACTIONS` and `CTR-GA-BINDING` for v4.
+Spec 38 continues to own phase values, schema/transform semantics, evaluation
+ordering, failure behavior, and privacy. Its older phase-only token and
+tools/models-only illustrative requirement shape must not be implemented beside
+the exact v4 types below.
+
 ```ts
-interface AgentExecutionRequirements {
-  readonly tools?: readonly string[]
-  readonly models?: readonly Readonly<{
+interface AgentExecutionRequirements<
+  Tools extends readonly string[] = readonly string[],
+  Models extends readonly Readonly<{
     alias: ModelAliasId
     capabilities: readonly ModelCapability[]
-  }>[]
-  readonly memory?: readonly MemoryCapability[]
-  readonly sandbox?: readonly SandboxCapabilityId[]
-  readonly skillRuntimes?: readonly SkillRuntimeId[]
-  readonly durable?: true
-  readonly workspace?: true
-  readonly artifacts?: true
+  }>[] = readonly Readonly<{
+    alias: ModelAliasId
+    capabilities: readonly ModelCapability[]
+  }>[],
+  Memory extends readonly MemoryCapability[] = readonly MemoryCapability[],
+  Sandbox extends readonly SandboxCapabilityId[] = readonly SandboxCapabilityId[],
+  SkillRuntimes extends readonly SkillRuntimeId[] = readonly SkillRuntimeId[],
+  Durable extends true | undefined = true | undefined,
+  Workspace extends true | undefined = true | undefined,
+  Artifacts extends true | undefined = true | undefined,
+> {
+  readonly tools?: Tools
+  readonly models?: Models
+  readonly memory?: Memory
+  readonly sandbox?: Sandbox
+  readonly skillRuntimes?: SkillRuntimes
+  readonly durable?: Durable
+  readonly workspace?: Workspace
+  readonly artifacts?: Artifacts
 }
 
 interface AgentExecutionInterceptor<
@@ -1028,6 +1112,180 @@ aliases use the lower-camel grammar. Guardrail `tools` must already be selected 
 concrete binding and `defineAgent` preserve the requirements type so static and
 runtime `RuntimeRequirements` contain the same contributions. Optional
 Guardrails packages must return this exact generic binding rather than erase it.
+
+The first-party Guardrails addon derives this generic from the actions selected
+by the attached agent phases; callers do not repeat it in a second `requires`
+object. Its opaque action token preserves these const-inferred sets in hidden
+type metadata:
+
+```ts
+interface GuardrailAction<
+  Phase extends GuardrailPhase = GuardrailPhase,
+  Tools extends readonly string[] = readonly [],
+  Models extends readonly ModelAliasId[] = readonly [],
+> {
+  readonly phase: Phase
+  readonly [guardrailActionBrand]: Readonly<{
+    tools: Tools
+    models: Models
+  }>
+}
+
+type AnyGuardrailAction = GuardrailAction<
+  GuardrailPhase,
+  readonly string[],
+  readonly ModelAliasId[]
+>
+
+type GuardrailActions = Readonly<Record<string, AnyGuardrailAction>>
+
+type AttachedGuardrailPhase = Exclude<GuardrailPhase, 'retrieval'>
+
+type ConfiguredFlowId<Config, Phase extends AttachedGuardrailPhase> =
+  Config extends { readonly rails?: infer Rails }
+    ? Phase extends keyof NonNullable<Rails>
+      ? NonNullable<NonNullable<Rails>[Phase]> extends {
+          readonly flows: readonly (infer Id extends string)[]
+        }
+        ? Id
+        : never
+      : never
+    : never
+
+type AttachedFlowId<Config> = {
+  [Phase in AttachedGuardrailPhase]: ConfiguredFlowId<Config, Phase>
+}[AttachedGuardrailPhase]
+
+type AttachedAction<
+  Actions extends GuardrailActions,
+  Config,
+> = Actions[Extract<AttachedFlowId<Config>, keyof Actions>]
+
+type AttachedToolId<Actions extends GuardrailActions, Config> =
+  AttachedAction<Actions, Config> extends GuardrailAction<
+    infer _Phase,
+    infer Tools,
+    infer _Models
+  >
+    ? Tools[number]
+    : never
+
+type AttachedModelAlias<Actions extends GuardrailActions, Config> =
+  AttachedAction<Actions, Config> extends GuardrailAction<
+    infer _Phase,
+    infer _Tools,
+    infer Models
+  >
+    ? Models[number]
+    : never
+
+type RequiredGuardrailModel<Alias extends ModelAliasId> = Alias extends Alias
+  ? Readonly<{ alias: Alias; capabilities: readonly ['object'] }>
+  : never
+
+type GuardrailBindingRequirements<
+  Actions extends GuardrailActions,
+  Config,
+  ToolId extends string = AttachedToolId<Actions, Config>,
+  ModelAlias extends ModelAliasId = AttachedModelAlias<Actions, Config>,
+> = [ToolId | ModelAlias] extends [never]
+  ? undefined
+  : AgentExecutionRequirements<
+      readonly ToolId[],
+      readonly RequiredGuardrailModel<ModelAlias>[],
+      readonly [],
+      readonly [],
+      readonly [],
+      undefined,
+      undefined,
+      undefined
+    >
+```
+
+`AnyGuardrailAction` is the heterogeneous constraint used by action maps; the
+empty tuple defaults are never used as that constraint. This keeps specialized
+literal tuples assignable without erasing them. `GuardrailBindingRequirements`
+is the single public type equation used by the facade, factory return, Core
+binding, and Harness compiler. The runtime compiler walks the same configured
+flow ids and must produce the same normalized values.
+
+The public option and return signatures are:
+
+```ts
+interface DefineGuardrailsOptions<
+  Actions extends GuardrailActions,
+  Config extends GuardrailsConfigFor<Actions>,
+> {
+  readonly actions: Actions
+  readonly config: Config
+  // Existing observability and timeout fields are unchanged.
+}
+
+class Guardrails<
+  Actions extends GuardrailActions,
+  Config extends GuardrailsConfigFor<Actions>,
+> implements AgentGuardrailsBinding<
+  GuardrailBindingRequirements<Actions, Config>
+> {
+  readonly [agentGuardrailsBinding]: AgentExecutionInterceptor<
+    GuardrailBindingRequirements<Actions, Config>
+  >
+  // Existing retrieval method remains unchanged.
+}
+
+function defineGuardrails<
+  const Actions extends GuardrailActions,
+  const Config extends GuardrailsConfigFor<NoInfer<Actions>>,
+>(options: DefineGuardrailsOptions<Actions, Config>): Guardrails<Actions, Config>
+```
+
+All six existing schema/transform overloads of `defineGuardrailAction` add const
+`Tools` and `Models` parameters and return
+`GuardrailAction<Phase, NormalizedTools, NormalizedModels>`. Omitted selectors
+normalize to `readonly []`; a tool phase requires a nonempty tools tuple, while
+other phases reject it; an optional models field preserves its nonempty tuple.
+The overloads retain the schema, `mayTransform`, callback, and `NoInfer` rules
+from spec 38. `modelCheckRail` const-infers its model alias and returns
+`GuardrailAction<Phase, readonly [], readonly [Model]>`.
+`sensitiveDataToolRail` const-infers its tools tuple and returns
+`GuardrailAction<Phase, Tools, readonly []>`. Other first-party action factories
+must preserve any selector tuple they accept and cannot return an erased
+`GuardrailAction<Phase>`.
+
+For `tool_input` and `tool_output`, `tools` remains the nonempty selector and
+also contributes those exact selected-agent tool ids. Other phases reject a
+`tools` field. Optional `models` is nonempty when present, and each alias
+contributes the `object` capability. Duplicate or invalid tool ids and invalid
+model aliases fail synchronously. Each supplied action list is copied and
+frozen without accepting duplicates; requirement aggregation across several
+selected actions deduplicates and bytewise lexicographically sorts the combined
+sets.
+
+`defineGuardrails` const-infers both the action map and configuration. Its
+`AgentGuardrailsBinding` requirement type is the union of tool ids and model
+aliases from actions named by configured `input`,
+`output`, `tool_input`, and `tool_output` flows. Actions absent from those
+flows and retrieval-only flows contribute nothing to an attached agent. The
+runtime compiler walks the same selected flows and produces the identical
+normalized sets. `modelCheckRail` preserves its literal model alias, and any
+tool-selecting helper preserves its literal tool tuple; helpers cannot widen
+these requirements to `string`. Guardrail execution uses the Core
+`AgentExecutionInterceptorContext` and `ModelHandle` projections directly and
+contains no removed builder-state generic or copied model-handle contract.
+
+Selector validation and requirement compilation perform no model, detector,
+tool, sandbox, storage, or telemetry operation. Invalid or duplicate action
+selectors and malformed action tokens retain spec 38's content-free
+`GuardrailsConfigError` reasons. A selected requirement absent from the
+completed agent tool/model graph retains Core's
+`HarnessConfigError{reason:'invalid_agent'}` under that agent's Guardrail
+requirements path. Tests cover every attached phase individually; mixed
+phases; repeated tools/models across actions; deterministic deduplication and
+sorting; unselected and retrieval-only actions; empty and combined
+requirements; `modelCheckRail`; `sensitiveDataToolRail`; erased JavaScript
+inputs; exact factory/facade/binding inference; and equality between the public
+conditional type expectation and compiled `RuntimeRequirements`. Every failure
+is asserted before instance resource initialization or callback execution.
 
 The memory policy is exact:
 
@@ -1179,6 +1437,12 @@ provider-neutral identity shape already owned by Harness.
 `HarnessTraceContext` is the existing W3C carrier normalized to the frozen
 shape `{traceparent:string,tracestate?:string}` using the existing validation
 and `INVALID_TRACE_CONTEXT` behavior.
+Core exports both `HarnessTraceContext` and
+`normalizeHarnessTraceContext(value: HarnessTraceContext)` from the main entry
+point. This function is the single trace-carrier validator used by Core and
+first-party addons; an addon must not maintain a narrower regular expression or
+reject a traceparent that Core accepts. It returns a frozen copy or throws the
+existing content-free `HarnessConfigError` for an invalid carrier.
 `HarnessTargetDispatcher` is a trusted runtime/integrator SPI, not application
 ingress. At the root boundary Harness applies `normalizeHarnessIdentity`,
 copies and freezes the result, and binds it to the session exactly once. Every
@@ -2044,12 +2308,25 @@ type HarnessCatalogDefinition<
 
 `AnyNonMcpToolDefinition` is the closed union of portable, built-in, and
 integrator-owned host tool definitions available in that build. It never includes
-`McpToolDefinition`. `$infer` is a compile-time phantom; its runtime value is a
+MCP tools. Core exports this named union from the main entry point because it is
+the public bound of `CatalogOptions` and `HarnessCatalogView`; consumers do not
+construct it directly.
+`$infer` is a compile-time phantom; its runtime value is a
 single frozen empty object and is not an alternate metadata tree.
 This catalog is the public definition registry; separate tool, Skill, and agent
 registry factories would duplicate the same composition and are not added.
 Catalogs contain no providers, credentials, running clients, mutable adapters,
 or lifecycle ownership.
+
+The five catalog categories are closed. Guardrail actions, complete Guardrails
+bindings, governance evaluators, permissions, subagent aliases, and prompts are
+agent-owned configuration and travel with the referenced agent definition;
+they do not gain parallel registries. Models, queues, storage, sandbox,
+workspace, MCP transport bindings, telemetry, and admission are runtime
+bindings supplied to `getInstance`, not catalog entries. A reusable application
+exports those definition or configuration values from ordinary modules and
+imports them where needed. This preserves reuse without creating a dynamic
+capability lookup API.
 
 `defineHarness(...).use(catalog)` composes catalogs. Direct `.addTool`,
 `.addSkill`, `.addMcpServer`, `.addAgent`, and `.addWorkflow` methods support
@@ -5254,6 +5531,10 @@ The stream projection additionally adds
 | host invocation context | opaque `HostInvocation` projected into one call-scoped handler closure | identity, trace context, and `HostContext` | checkpoint, session, registry, log, model, or inspection storage |
 | host nested target result | `RunCheckpoint.output` containing `HostNestedTargetCheckpointV1` | replayed `nestedTargets.run` result under the root lease | reuse of `WorkflowChildCallCheckpoint`, another storage API, or direct child output as host-tool output |
 | host ownership | factory-authentic `HostOwnerToken` in hidden definition metadata | exact identity comparison at hosted instantiation | id/digest inference, public metadata, serialization, or persistence |
+| Agent Plugin package | addon-owned immutable byte snapshot and canonical package digest | explicitly selected branded Skill/MCP definitions, exact HTTP bindings, separate frozen provenance | executable plugin module, mutable registry, addon fields on Core definitions, or parsing bytes different from the digested snapshot |
+| Guardrail action dependency | hidden tool/model tuples on an authentic `GuardrailAction` | `GuardrailBindingRequirements`, then normalized `RuntimeRequirements` | caller-maintained `requires` copy or phase-only requirement erasure |
+| OPA Data API decision | bounded validated OPA response envelope | schema-validated result, application mapping, then Core `GovernanceDecision` | treating the OPA envelope or `decision_id` as Harness decision evidence |
+| sandbox runtime support | frozen `runtimes` on the configured sandbox adapter | instance preflight against compiled Skill/interceptor runtime ids | inferred runtimes, a second runtime registry, or declaring read-only mount without enforcement |
 
 Mappings are one-way boundary adapters and preserve stable ids, schema meaning,
 lineage, and terminal status. Provider request/response values, EventBridge
@@ -5271,6 +5552,15 @@ durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+Addon and adapter implementation tickets align source, tests, examples, and
+public exports while every workspace package manifest, peer range,
+`HARNESS_VERSION`, and lockfile remains at the currently aligned 3.0.0 release.
+H4-016 performs the single atomic clean-break flip of all public Harness and
+first-party addon packages to 4.0.0, updates every internal and peer range and
+the lockfile together, then runs packed-install and published-shape checks. No
+earlier ticket publishes an independently versioned v4 addon or mixed-major
+workspace.
 
 H4-009 specifically proves: exact hosted config inference, including forbidden
 logger, telemetry, and caller trace fields; factory-authentic owner matching,
@@ -5428,3 +5718,12 @@ removed patterns.
     documentation and negative audit fixtures.
 11. All maintained packages, examples, generated projects, docs, tutorials,
     Skills, audits, and full repository verification commands pass.
+12. A first-party Guardrails binding preserves the exact tool and model
+    requirements of its selected attached flows in both TypeScript and
+    the compiled graph; unselected and retrieval-only actions contribute none.
+13. External governance evaluators receive at most the active per-evaluation
+    `traceparent`, remain immutable and safe to share between Harness instances,
+    and cannot configure or retain a Harness adapter context.
+14. Docker and Kubernetes sandbox runtime metadata is explicit, validated, and
+    frozen. Neither adapter satisfies a runtime-bearing Skill until it truly
+    implements and advertises `sandbox.readonly_mount`.

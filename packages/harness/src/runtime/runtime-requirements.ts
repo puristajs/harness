@@ -151,6 +151,9 @@ type GovernancePolicyEffects<Agent> = Agent extends { readonly governance: { rea
 		: Policy extends { readonly effects: readonly (infer Effect)[] } ? Effect : never
 	: never
 type AgentGovernanceApproval<Agent> = Extract<GovernancePolicyEffects<Agent>, 'require_approval'> extends never ? never : true
+type AgentHostTool<Agent> = Agent extends { readonly tools: readonly (infer Tool)[] }
+	? Tool extends HostToolDefinition<any, any, any, any> ? true : never
+	: never
 type AgentDurability<Agent> =
 	| (Agent extends { readonly durable: true } ? true : never)
 	| (Agent extends { readonly subagents: infer Subagents extends Readonly<Record<string, unknown>> }
@@ -159,6 +162,7 @@ type AgentDurability<Agent> =
 	| ([AgentGuardrailRequirements<Agent>] extends [never] ? never : AgentGuardrailRequirements<Agent> extends { readonly durable: true } ? true : never)
 	| AgentApproval<Agent>
 	| AgentGovernanceApproval<Agent>
+	| AgentHostTool<Agent>
 type WorkflowDurability<Workflow> = Workflow extends { readonly durable: true } ? true : never
 type AgentWorkspace<Agent> =
 	| (Agent extends { readonly workspace: true } ? true : never)
@@ -242,7 +246,7 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources, ap
 
 	for (const tool of Object.values(sources.tools)) {
 		const identity = getDefinitionIdentity(tool)
-		if (identity?.kind === 'host-tool') hostTools.add(tool.id)
+		if (identity?.kind === 'host-tool') { hostTools.add(tool.id); durable = true }
 		const requires = 'requires' in tool ? tool.requires : undefined
 		for (const capability of requires?.memory ?? []) memoryCapabilities.add(capability)
 		for (const capability of requires?.sandbox ?? []) sandboxCapabilities.add(capability)

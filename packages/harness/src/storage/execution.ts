@@ -73,6 +73,30 @@ export interface WorkflowChildCallCheckpointV1 {
   }>
 }
 
+/** Exact stored terminal for one host-owned nested target call. */
+export type HostNestedTargetStoredOutcomeV1 =
+	| Readonly<{ status: 'completed'; output: JsonValue }>
+	| Readonly<{ status: 'failed'; error: import('../errors/catalog.js').HostNestedTargetStoredErrorV1 }>
+	| Readonly<{ status: 'cancelled'; error: Readonly<{
+		code: 'OPERATION_CANCELLED'; message: 'Host nested target call was cancelled.'; category: 'cancelled'; retriable: false
+		meta: Readonly<{ scope: 'agent' | 'workflow' }>
+	}> }>
+
+/** Namespaced host nested-call replay value stored in RunCheckpoint.output. */
+export interface HostNestedTargetCheckpointV1 {
+	readonly schemaVersion: 1
+	readonly kind: 'host_nested_target'
+	readonly toolCallId: string
+	readonly callId: string
+	readonly target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+	readonly route: import('../ports/target-dispatcher.js').HarnessTargetRouteReceiptV1
+	readonly input: JsonValue
+	readonly outcome: HostNestedTargetStoredOutcomeV1
+	readonly lineage: Readonly<{
+		rootRunId: string; agentRunId: string; hostToolInvocationId: string; childRunId: string; childInvocationId: string
+	}>
+}
+
 /** Raised when code attempts to resume a terminal run. */
 export class DurableTerminalRunError extends Error {
   public constructor(runId: string, status: DurableTerminalRunStatus) {

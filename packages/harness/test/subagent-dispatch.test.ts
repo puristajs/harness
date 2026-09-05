@@ -32,13 +32,24 @@ function context(open: any, overrides: Record<string, unknown> = {}) {
 			cancel: (reason?: string) => stream.cancel(reason),
 			[Symbol.asyncIterator]() {
 				const iterator = stream[Symbol.asyncIterator]()
+				let authoredDirectRunId: string | undefined
 				return {
 					async next() {
 						const result = await iterator.next()
 						if (result.done) return result
 						const raw = result.value
+						authoredDirectRunId ??= raw.runId
 					const preserve = raw.__preserveParent === true || Object.hasOwn(raw, 'parentRunId') || Object.hasOwn(raw, 'parentInvocationId')
-					const { __preserveParent: _preserve, ...event } = raw
+					const preserveRunId = raw.__preserveRunId === true
+					const { __preserveParent: _preserve, __preserveRunId: _preserveRunId, ...authoredEvent } = raw
+					const directRunId = preserveRunId ? authoredDirectRunId : request.invocation.invocationId
+					const event = preserveRunId ? authoredEvent : {
+						...authoredEvent,
+						runId: authoredEvent.runId === authoredDirectRunId ? directRunId : authoredEvent.runId,
+						...(authoredEvent.parentRunId === authoredDirectRunId ? { parentRunId: directRunId } : {}),
+						...(authoredEvent.outcome?.runId === authoredDirectRunId
+							? { outcome: { ...authoredEvent.outcome, runId: directRunId } } : {}),
+					}
 						return { done: false as const, value: preserve ? event : { ...event, parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId } }
 					},
 					return: iterator.return?.bind(iterator),
@@ -81,6 +92,75 @@ describe('subagent execution', () => {
 		const otherCall = context(open, { callId: 'call-2' })
 		await binding.invokeValidated(otherCall as never, { value: 'parsed' }, { value: 'wire' })
 		expect(open.mock.calls[2]![0].invocation.invocationId).not.toBe(request.invocation.invocationId)
+	})
+
+	it('relays nested run terminals while consuming only the direct child terminal as its outcome', async () => {
+		const child = defineAgent('workflowLikeChild', { instructions: 'Coordinate nested work.' })
+		const events = [
+			{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+			{ type: 'run.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', at: 'x',
+				parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+			{ type: 'run.finished', eventId: 'nested-2', sequence: 2, runId: 'nested-run', at: 'x',
+				parentRunId: 'child-run', parentInvocationId: 'nested-invocation',
+				outcome: { status: 'completed', runId: 'nested-run', output: 'nested-result' } },
+			{ type: 'run.finished', eventId: 'root-2', sequence: 2, runId: 'child-run', at: 'x',
+				outcome: { status: 'completed', runId: 'child-run', output: 'root-result' } },
+		]
+		const runtime = context(async () => childStream(events))
+		await expect(createSubagentBinding('workflowLikeDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.resolves.toBe('root-result')
+		expect(runtime.relayChildEvent.mock.calls.map(([event]) => event.type)).toEqual([
+			'agent.started', 'run.started', 'run.finished', 'run.finished',
+		])
+		expect(runtime.relayChildEvent.mock.calls[0]![0].runId).toMatch(/^invocation_/)
+		expect(runtime.relayChildEvent.mock.calls[3]![0].runId).toBe(runtime.relayChildEvent.mock.calls[0]![0].runId)
+		expect(runtime.relayChildEvent.mock.calls[1]![0].runId).toBe('nested-run')
+	})
+
+	it('enforces descendant start, parent lifetime, and monotonic per-run sequences', async () => {
+		const child = defineAgent('strictNestedChild', { instructions: 'Coordinate nested work.' })
+		const cases = [
+			[
+				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+				{ type: 'agent.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', agentId: child.id, at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+			],
+			[
+				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+				{ type: 'run.started', eventId: 'nested-1', sequence: 2, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+			],
+			[
+				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+				{ type: 'agent.finished', eventId: 'root-duplicate', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+			],
+			[
+				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+				{ type: 'run.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+				{ type: 'run.finished', eventId: 'nested-2', sequence: 2, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation', outcome: { status: 'completed', runId: 'nested-run', output: 'done' } },
+				{ type: 'run.started', eventId: 'grandchild-1', sequence: 1, runId: 'grandchild-run', at: 'x', parentRunId: 'nested-run', parentInvocationId: 'grandchild-invocation' },
+			],
+			[
+				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+				{ type: 'run.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+				{ type: 'run.finished', eventId: 'root-2', sequence: 2, runId: 'child-run', at: 'x', outcome: { status: 'completed', runId: 'child-run', output: 'unsafe' } },
+			],
+		] as const
+		for (const events of cases) {
+			const tracked = trackedStream(events)
+			const runtime = context(async () => tracked.stream)
+			await expect(createSubagentBinding('strictNestedDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+				.rejects.toBeInstanceOf(ValidationError)
+			expect(tracked.cancel).toHaveBeenCalledTimes(1)
+			expect(tracked.close).toHaveBeenCalledTimes(1)
+		}
+
+		const validGap = context(async () => childStream([
+			{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
+			{ type: 'run.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation' },
+			{ type: 'run.finished', eventId: 'nested-7', sequence: 7, runId: 'nested-run', at: 'x', parentRunId: 'child-run', parentInvocationId: 'nested-invocation', outcome: { status: 'completed', runId: 'nested-run', output: 'done' } },
+			{ type: 'run.finished', eventId: 'root-2', sequence: 2, runId: 'child-run', at: 'x', outcome: { status: 'completed', runId: 'child-run', output: 'root-result' } },
+		]))
+		await expect(createSubagentBinding('validGapDelegate', child).invokeValidated(validGap as never, 'x', 'x'))
+			.resolves.toBe('root-result')
 	})
 
 	it('uses override, child, and exact fallback descriptions', () => {
@@ -188,6 +268,18 @@ describe('subagent execution', () => {
 		const runtime = context(async () => tracked.stream)
 		await expect(createSubagentBinding('correlationDelegate', child).invokeValidated(runtime as never, 'x', 'x')).rejects.toBeInstanceOf(ValidationError)
 		expect(runtime.relayChildEvent).toHaveBeenCalledTimes(1)
+		expect(tracked.cancel).toHaveBeenCalledTimes(1)
+		expect(tracked.close).toHaveBeenCalledTimes(1)
+	})
+
+	it('rejects a dispatcher that substitutes the runtime-authored direct run id', async () => {
+		const child = defineAgent('substitutedRunChild', { instructions: 'Help.' })
+		const tracked = trackedStream([{ type: 'run.finished', runId: 'substituted-run', __preserveRunId: true, at: 'x',
+			outcome: { status: 'completed', runId: 'substituted-run', output: 'unsafe' } }])
+		const runtime = context(async () => tracked.stream)
+		await expect(createSubagentBinding('substitutedRunDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.rejects.toBeInstanceOf(ValidationError)
+		expect(runtime.relayChildEvent).not.toHaveBeenCalled()
 		expect(tracked.cancel).toHaveBeenCalledTimes(1)
 		expect(tracked.close).toHaveBeenCalledTimes(1)
 	})

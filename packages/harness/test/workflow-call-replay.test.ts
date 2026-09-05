@@ -14,7 +14,7 @@ function stream(events: readonly ExecutionEvent[]): HarnessTargetDispatchStream<
 	return { async *[Symbol.asyncIterator]() { yield* authored }, async cancel() {} }
 }
 
-function completed(parentRunId: string, childInvocationId: string, output: unknown, runId = 'child-run'): HarnessTargetDispatchStream<any> {
+function completed(parentRunId: string, childInvocationId: string, output: unknown, runId = childInvocationId): HarnessTargetDispatchStream<any> {
 	return stream([{ type: 'run.finished', runId, parentRunId, parentInvocationId: childInvocationId, at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId, output } } as ExecutionEvent])
 }
 
@@ -145,8 +145,10 @@ describe('v4 workflow direct-call replay', () => {
 		resolveFirst(); await pending
 		await expect(value.agents.worker.run({ a: '3' }, { callId: 'three' })).resolves.toBe('ok')
 		await expect(value.agents.worker.run({ a: '4' }, { callId: 'four' })).rejects.toMatchObject({ code: 'WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED', meta: { reason: 'max_calls', limit: 2 } })
-		const interrupted = runtime(async request => stream([{ type: 'run.finished', runId: 'child', parentRunId: request.invocation.parentRunId,
-			parentInvocationId: request.invocation.invocationId, at: 'now', outcome: { status: 'interrupted', runId: 'child', interrupt: { type: 'external-wait', id: 'wait', revision: 'r1', kind: 'review', schemaVersion: '1', definitionVersion: '1', deadline: 'later' } } }]) as any)
+			const interrupted = runtime(async request => stream([{ type: 'run.finished', runId: request.invocation.invocationId,
+				parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId, at: 'now',
+				outcome: { status: 'interrupted', runId: request.invocation.invocationId,
+					interrupt: { type: 'tool-approval', id: 'approval', revision: 'r1', requests: [] } } }]) as any)
 		await interrupted.agents.worker.run({ a: '1' }, { callId: 'interrupt' }).catch(error => expect(isHarnessChildTargetInterruption(error)).toBe(true))
 		expect(interrupted.agentCallBudgetState()).toEqual({ schemaVersion: 1, usedCalls: 1 })
 	})
@@ -166,9 +168,10 @@ describe('v4 workflow direct-call replay', () => {
 			const checkpoint = { async load() { return stored }, async commit(stepId: string, output: any, metadata: any) { stored = { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: 1, output, metadata } } }
 			const open: HarnessTargetDispatcher['open'] = async request => {
 				opened += 1
-				return stream([{ type: 'run.finished', runId: 'child', parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId,
-					at: 'now', outcome: status === 'failed' ? { status, runId: 'child', error: { code: 'REMOTE_SECRET', message: 'do not trust' } }
-						: { status, runId: 'child', error: { code: 'REMOTE_CANCEL', message: 'do not trust' } } } as ExecutionEvent]) as any
+				return stream([{ type: 'run.finished', runId: request.invocation.invocationId, parentRunId: request.invocation.parentRunId,
+					parentInvocationId: request.invocation.invocationId, at: 'now',
+					outcome: status === 'failed' ? { status, runId: request.invocation.invocationId, error: { code: 'REMOTE_SECRET', message: 'do not trust' } }
+						: { status, runId: request.invocation.invocationId, error: { code: 'REMOTE_CANCEL', message: 'do not trust' } } } as ExecutionEvent]) as any
 			}
 			const first = runtime(open, checkpoint).agents.worker.run({ a: '1' }, { callId: `terminal-${status}` })
 			await expect(first).rejects.toMatchObject({ code: status === 'failed' ? 'WORKFLOW_CHILD_TARGET_FAILED' : 'OPERATION_CANCELLED' })

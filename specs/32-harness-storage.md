@@ -393,7 +393,8 @@ digest. Its `rootTarget` must equal the record's `(kind,target)`.
 `replaceCheckpoint` requires the active unexpired lease and the exact existing
 `(runId,sessionId,stepId,expectedSequence)`. The replacement keeps that run,
 session, step, lease, worker, attempt, and root input and uses
-`sequence === expectedSequence + 1`. It atomically removes the old value and
+`sequence > expectedSequence`; the runtime supplies the next global checkpoint
+sequence for the run. It atomically removes the old value and
 installs the replacement. Retrying the already installed byte-equivalent
 replacement succeeds. Any other observed checkpoint, sequence, owner, or
 replacement is `StateError{op:'replaceCheckpoint',reason:'checkpoint_conflict'}`

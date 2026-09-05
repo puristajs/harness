@@ -17,19 +17,19 @@ import { createModelRegistry, type ModelHandle } from '../models/registry.js'
 import type { Message, PersistedFinalRunEvent, PersistedRunEvent, RunRecord, SessionRecord } from '../models/state.js'
 import { createMemoryFacade, createSessionMemory, type MemoryEngine, type SessionMemory } from '../ports/memory.js'
 import type { ModelMessage } from '../ports/model-provider.js'
-import type { HarnessTargetDispatchStream } from '../ports/target-dispatcher.js'
+import type { HarnessTargetDispatcher, HarnessTargetDispatchStream } from '../ports/target-dispatcher.js'
 import { inMemorySandbox, type Sandbox, type SandboxScope, type SandboxSessionBase } from '../sandbox/index.js'
 import { sessionOptionsSchema, type SessionOptions } from '../sandbox/ownership.js'
 import { retainCompleteTurns } from '../sessions/history-retention.js'
 import { validateSchema } from '../schema/validation.js'
 import { loadSkillSnapshots, createReadSkillBinding, type LoadedSkillSnapshot } from '../skills/index.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
-import type { DurableRunLease, RunCheckpoint, WorkflowChildCallCheckpointV1 } from '../storage/execution.js'
+import type { DurableRunLease, HostNestedTargetCheckpointV1, RunCheckpoint, WorkflowChildCallCheckpointV1 } from '../storage/execution.js'
 import type { AcquireRunRequest, AppliedApprovalDecisionV1, ApprovalResumeReceiptV1, HarnessStorage } from '../storage/types.js'
 import { createMetrics, createTelemetryShim, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telemetry/trace-context.js'
 import { ulid } from '../ulid/index.js'
-import { bindBuiltInTool, bindPortableTool, type AgentExecutableBinding } from '../tools/bindings.js'
+import { bindBuiltInTool, bindHostTool, bindPortableTool, type AgentExecutableBinding } from '../tools/bindings.js'
 import { invokePreparedBuiltinTool, prepareBuiltinTool } from '../tools/index.js'
 import { initializeMcpRuntimeBundles, type McpRuntimeBundle } from '../tools/mcp/runtime.js'
 import { createWorkflowExecutionRuntime, restoreSessionChildTaskHandle, type WorkflowExecutionRuntime } from '../workflows/index.js'
@@ -43,7 +43,9 @@ import type { RuntimeRequirements } from './runtime-requirements.js'
 import { createLocalTargetDispatcher, type LocalTargetBinding, type LocalTargetExecutionRequest } from './local-target-dispatcher.js'
 import { canonicalJson } from './canonical-json.js'
 import { createSubagentBinding, consumeHarnessTargetStream } from './subagent-execution.js'
-import { createDurableWorkflowContext, createHarnessChildTargetInterruption, isHarnessChildTargetInterruption, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from './steps.js'
+import { attachHarnessChildTargetHostFrame, createDurableWorkflowContext, createHarnessChildTargetInterruption,
+	harnessChildTargetInterrupt, harnessChildTargetInterruptions, isHarnessChildTargetInterruptionControl,
+	type ChildApprovalResumeDescriptorV1, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from './steps.js'
 import { withAgentAdmission } from './agent-admission.js'
 import { abortError } from './abort.js'
 
@@ -77,11 +79,11 @@ type SuspensionFrameValue =
 	| Readonly<{ kind: 'agent'; runId: string; invocationId: string; state: AgentContinuationStateV1 }>
 	| Readonly<{ kind: 'workflow'; runId: string; workflowId: string; invocationId: string; input: JsonValue;
 		activeCallIds: readonly string[]; agentCallBudget: WorkflowAgentCallBudgetStateV1 }>
-	| Readonly<{ kind: 'host-tool'; runId: string; agentId: string; invocationId: string; toolId: string; callId: string;
-		input: JsonValue; bindingId: string; bindingContractDigest: string; toolStarted: true; activeNestedCallIds: readonly string[] }>
+	| import('./steps.js').SuspendedHostToolFrameV1
 
 interface SuspensionNodeValue {
 	readonly frame: SuspensionFrameValue
+	readonly resumeDescriptor?: ChildApprovalResumeDescriptorV1
 	readonly children: readonly SuspensionNodeValue[]
 }
 
@@ -166,6 +168,45 @@ export interface InstantiateStandaloneHarnessOptions {
 	readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
 	readonly graph: CompiledDefinitionGraph
 	readonly bindings: ValidatedHarnessInstanceBindings
+	/** @internal Enables host definitions only for the integrator-owned runtime path. */
+	readonly hosted?: boolean
+	/** @internal Borrowed hosted observability bindings. */
+	readonly hostLogger?: Logger
+	/** @internal Borrowed hosted telemetry binding. */
+	readonly hostTelemetry?: TelemetryShim
+}
+
+const trustedHostedInvocationBrand = Symbol('@purista/harness/trusted-hosted-invocation')
+
+/** @internal Fresh immutable environment for one hosted root invocation. */
+export interface TrustedHostedInvocationEnvironment {
+	readonly [trustedHostedInvocationBrand]: true
+	readonly identity?: import('../identity/index.js').HarnessIdentity
+	readonly traceContext?: HarnessTraceContext
+	readonly targetDispatcher: HarnessTargetDispatcher
+	readonly hostToolBindings: ReadonlyMap<object, AgentExecutableBinding>
+}
+
+/** @internal Creates the only runtime-accepted hosted environment. */
+export function createTrustedHostedInvocationEnvironment(
+	value: Omit<TrustedHostedInvocationEnvironment, typeof trustedHostedInvocationBrand>,
+): TrustedHostedInvocationEnvironment {
+	return Object.freeze({ ...value, [trustedHostedInvocationBrand]: true as const })
+}
+
+/** @internal Shared kernel returned only to standalone and hosted adapters. */
+export interface HarnessRuntimeKernel<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements> {
+	readonly instance: HarnessInstance<Contracts, Requirements>
+	runTrusted(target: AnyTargetContract, input: JsonValue, options: InvokeOptions & { readonly sessionId: string }, environment: TrustedHostedInvocationEnvironment): Promise<RunOutcome<JsonValue>>
+	streamTrusted(target: AnyTargetContract, input: JsonValue, options: InvokeOptions & { readonly sessionId: string }, environment: TrustedHostedInvocationEnvironment): Promise<HarnessTargetDispatchStream<JsonValue>>
+	streamDispatchedTrusted(
+		target: AnyTargetContract,
+		input: JsonValue,
+		wireInput: JsonValue,
+		invocation: import('../ports/target-dispatcher.js').HarnessNestedTargetDispatchInvocation,
+		resume: ToolApprovalResume | undefined,
+		environment: TrustedHostedInvocationEnvironment,
+	): Promise<HarnessTargetDispatchStream<JsonValue>>
 }
 
 interface SessionRuntime {
@@ -234,9 +275,16 @@ const UNAVAILABLE_SANDBOX_SESSION: SandboxSessionBase = Object.freeze({
 export async function instantiateStandaloneHarness<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements = RuntimeRequirements>(
 	options: InstantiateStandaloneHarnessOptions,
 ): Promise<HarnessInstance<Contracts, Requirements>> {
+	return (await instantiateHarnessRuntime<Contracts, Requirements>(options)).instance
+}
+
+/** @internal Assembles the single execution owner used by standalone and hosted adapters. */
+export async function instantiateHarnessRuntime<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements = RuntimeRequirements>(
+	options: InstantiateStandaloneHarnessOptions,
+): Promise<HarnessRuntimeKernel<Contracts, Requirements>> {
 	const instanceId = ulid()
-	const logger = options.bindings.logger ?? new JsonLogger()
-	const telemetry = withStandaloneTelemetryFlavor(createTelemetryShim(), options.bindings.telemetry)
+	const logger = options.hostLogger ?? options.bindings.logger ?? new JsonLogger()
+	const telemetry = options.hostTelemetry ?? withStandaloneTelemetryFlavor(createTelemetryShim(), options.bindings.telemetry)
 	const contentCaptureMode = resolveContentCaptureMode(options.bindings.telemetry)
 	const metrics = createMetrics(telemetry, { 'harness.name': options.name })
 	const storage = options.bindings.storage ?? new InMemoryHarnessStorage()
@@ -267,6 +315,7 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 	const rootSettled = new Map<string, () => void>()
 	const rootFailures = new Map<string, unknown>()
 	const rootChildEventRelays = new Map<string, (event: ExecutionEvent<JsonValue>) => Promise<void>>()
+	const rootHostedEnvironments = new Map<string, TrustedHostedInvocationEnvironment>()
 	const childSandboxPolicies = new Map<string, ChildSandboxHandoff>()
 	const effectiveSandboxScopes = new Map<string, EffectiveSandboxLaunchSource>()
 	const directAgentRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
@@ -337,6 +386,10 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 					const binding = mcpTools.find(([token]) => token === identity.token)?.[1]
 					if (!binding) throw new InternalError('Compiled MCP tool binding is unavailable.')
 					result[tool.id] = binding
+				} else if (identity.kind === 'host-tool' && options.hosted === true) {
+					result[tool.id] = bindHostTool(tool as import('../definitions/types.js').HostToolDefinition, async () => {
+						throw new InternalError('Hosted tool binding is unavailable for this root invocation.')
+					})
 				} else throw new InternalError('Standalone Harness cannot bind a host tool.')
 			}
 			for (const [name, reference] of Object.entries(agent.subagents ?? {})) result[name] = createSubagentBinding(name, reference, {
@@ -356,13 +409,18 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 
 		const localAgentBindings = Object.freeze(Object.values(options.graph.agents).map((agent): LocalTargetBinding => Object.freeze({
 			definition: agent,
-			execute: (request: LocalTargetExecutionRequest<AnyAgentDefinition>) => openTarget(agent, request.input, request.invocation),
+			execute: (request: LocalTargetExecutionRequest<AnyAgentDefinition>) => openTarget(agent,
+				request.delivery === 'fresh' ? request.input : request.wireInput, request.invocation,
+				request.delivery === 'resume' ? request.resume : undefined, request.wireInput),
 		})))
 		const localWorkflowBindings = Object.freeze(Object.values(options.graph.workflows).map((workflow): LocalTargetBinding => Object.freeze({
 			definition: workflow,
-			execute: (request: LocalTargetExecutionRequest<AnyWorkflowDefinition>) => openTarget(workflow, request.input, request.invocation),
+			execute: (request: LocalTargetExecutionRequest<AnyWorkflowDefinition>) => openTarget(workflow,
+				request.delivery === 'fresh' ? request.input : request.wireInput, request.invocation,
+				request.delivery === 'resume' ? request.resume : undefined, request.wireInput),
 		})))
 		dispatcher = createLocalTargetDispatcher({ defaultMaxDepth: options.defaults.maxDepth,
+			routeBindingRevision: canonicalJson(['harness.local-route-revision.v1', options.revision ?? '', graphDigest]),
 			bindings: Object.freeze([...localAgentBindings, ...localWorkflowBindings]) })
 	} catch (error) {
 		const failures = [normalizeInternal(error)]
@@ -377,9 +435,15 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 	function openTarget(
 		definition: AnyAgentDefinition | AnyWorkflowDefinition,
 		input: JsonValue,
-		invocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchRequest<AnyTargetContract>['invocation'],
+		invocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchInvocation,
+		resume?: ToolApprovalResume,
+		wireInput: JsonValue = input,
 	): Promise<HarnessTargetDispatchStream<JsonValue>> {
 		const runId = invocation.invocationId
+		rootInputs.set(runId, wireInput)
+		if (resume !== undefined) {
+			rootOptions.set(runId, Object.freeze({ resume }))
+		}
 		if (!rootModes.has(runId)) rootModes.set(runId, 'run')
 		const controller = linkedController(invocation.signal, invocation.deadline)
 		const queue = new EventQueue<JsonValue>(() => controller.abort(new OperationCancelledError('Run was cancelled.', { scope: definition.kind })))
@@ -408,18 +472,23 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
 			})
-			.finally(() => controller.dispose())
+				.finally(() => {
+					rootHostedEnvironments.delete(invocation.invocationId)
+					controller.dispose()
+				})
 		return Promise.resolve(queue)
 	}
 
 	async function executeTarget(
 		definition: AnyAgentDefinition | AnyWorkflowDefinition,
 		input: JsonValue,
-		invocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchRequest<AnyTargetContract>['invocation'],
+		invocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchInvocation,
 		runId: string,
 		signal: AbortSignal,
 		queue: EventQueue<JsonValue>,
 	): Promise<void> {
+		const hostedEnvironment = rootHostedEnvironments.get(invocation.invocationId)
+		const executionDispatcher = hostedEnvironment?.targetDispatcher ?? dispatcher
 		const childSandboxHandoff = childSandboxPolicies.get(invocation.invocationId)
 		if (childSandboxHandoff !== undefined) childSandboxPolicies.delete(invocation.invocationId)
 		if (childSandboxHandoff !== undefined) await authorizeSessionOwner(childSandboxHandoff.source.authorizationRecord)
@@ -475,7 +544,8 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 		const approvalReachable = definition.kind === 'agent'
 			? options.graph.approval.agents[definition.id]?.reachable === true
 			: options.graph.approval.workflows[definition.id]?.reachable === true
-			const leaseBacked = definition.durable === true || definition.workspace === true || approvalReachable
+			const leaseBacked = options.graph.requirements.hostTools.length > 0
+				|| definition.durable === true || definition.workspace === true || approvalReachable
 			if (definition.durable === true && session.record.sandboxBinding.relation === 'borrowed') {
 				throw new HarnessConfigError('Durable invocations cannot use a borrowed sandbox owner.', {
 					reason: 'invalid_runtime_binding', path: 'session.sandboxOwner', id: definition.id,
@@ -562,71 +632,160 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 			}
 			queue.push(event)
 		}
-		const resumeAgentNode = async (node: SuspensionNodeValue, expectedRunId: string): Promise<JsonValue> => {
-			if (node.frame.kind !== 'agent' || node.frame.runId !== expectedRunId) throw new ApprovalResumeError('invalid_checkpoint')
-			const child = options.graph.agents[node.frame.state.agentId]
-			const childRun = await storage.getRun(expectedRunId)
-			if (!child || !childRun) throw new ApprovalResumeError('invalid_checkpoint')
-			const childResume = Object.freeze({ type: 'tool-approval' as const, runId: expectedRunId,
-				interruptId: resume!.interruptId, revision: resume!.revision, eventId: resume!.eventId,
-				decisions: resume!.decisions })
-			rootInputs.set(expectedRunId, childRun.input)
-			rootOptions.set(expectedRunId, Object.freeze({ resume: childResume }))
-			rootModes.set(expectedRunId, 'run')
+		const validateHostedContinuation = async (
+			root: SuspensionNodeValue,
+			rootInvocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchInvocation,
+			environment: TrustedHostedInvocationEnvironment | undefined,
+		): Promise<void> => {
+			const visit = async (parent: SuspensionNodeValue): Promise<void> => {
+				for (const child of parent.children) {
+					if (child.frame.kind === 'host-tool') {
+						if (environment === undefined || parent.frame.kind !== 'agent' || !('entries' in parent.frame.state)) {
+							throw new ApprovalResumeError('invalid_checkpoint')
+						}
+						const frame = child.frame
+						const parentState = parent.frame.state
+						const entry = parentState.entries.find((candidate): candidate is Extract<PreparedToolCheckpointEntryV1, { state: 'suspended-child' }> => (
+							candidate.state === 'suspended-child' && candidate.call.id === frame.callId
+						))
+						const agent = options.graph.agents[parentState.agentId]
+						const tool = agent?.tools?.find(candidate => candidate.id === frame.toolId)
+						const toolIdentity = tool === undefined ? undefined : getDefinitionIdentity(tool)
+						const binding = toolIdentity?.kind === 'host-tool'
+							? environment.hostToolBindings.get(toolIdentity.token) : undefined
+						const active = frame.activeNestedCall
+						const nested = child.children[0]
+						const expectedHostToolInvocationId = `invocation_${digest(['harness.host-tool-invocation.v1',
+							parentState.rootRunId, parent.frame.runId, parent.frame.invocationId, frame.toolId, frame.callId])}`
+						const expectedChildInvocationId = `invocation_${digest(['harness.host-child-invocation.v1',
+							expectedHostToolInvocationId, active.callId, active.target.kind, active.target.id])}`
+						const expectedChildSessionId = `session_${digest(['harness.host-child-session.v1', parentState.sessionId,
+							parentState.rootRunId, expectedChildInvocationId, active.target.kind, active.target.id])}`
+						const nestedTargetId = nested?.frame.kind === 'agent' ? nested.frame.state.agentId
+							: nested?.frame.kind === 'workflow' ? nested.frame.workflowId : undefined
+						const childRun = await storage.getRun(active.childRunId)
+						if (frame.runId !== parent.frame.runId || frame.agentId !== parentState.agentId
+							|| frame.invocationId !== parent.frame.invocationId || frame.hostToolInvocationId !== expectedHostToolInvocationId
+							|| entry === undefined || entry.bindingId !== frame.bindingId || entry.bindingContractDigest !== frame.bindingContractDigest
+							|| entry.bindingId !== frame.toolId || entry.childRunId !== active.childRunId
+							|| entry.childInvocationId !== active.childInvocationId
+							|| canonicalJson(frame.input) !== canonicalJson(entry.call.arguments)
+							|| binding?.implementationKind !== 'host' || binding.id !== frame.bindingId
+							|| binding.contractDigest !== frame.bindingContractDigest
+							|| active.childInvocationId !== expectedChildInvocationId || active.childSessionId !== expectedChildSessionId
+							|| active.route.target.kind !== active.target.kind || active.route.target.id !== active.target.id
+							|| child.children.length !== 1 || nested === undefined
+							|| (nested.frame.kind !== 'agent' && nested.frame.kind !== 'workflow')
+							|| nested.frame.kind !== active.target.kind || nestedTargetId !== active.target.id
+							|| nested.frame.runId !== active.childRunId || nested.frame.invocationId !== active.childInvocationId
+							|| (nested.frame.kind === 'agent' && (nested.frame.state.sessionId !== active.childSessionId
+								|| nested.frame.state.rootRunId !== rootInvocation.rootRunId))
+							|| nested.resumeDescriptor?.runId !== active.childRunId
+							|| nested.resumeDescriptor?.interruptId !== active.childInterruptId
+							|| nested.resumeDescriptor?.revision !== active.childInterruptRevision
+							|| childRun?.sessionId !== active.childSessionId || childRun.kind !== active.target.kind
+							|| childRun.target !== active.target.id || canonicalJson(childRun.input) !== canonicalJson(active.input)) {
+							throw new ApprovalResumeError('invalid_checkpoint')
+						}
+						continue
+					}
+					await visit(child)
+				}
+			}
+			await visit(root)
+		}
+		const resumeTargetNode = async (node: SuspensionNodeValue, expectedRunId: string): Promise<JsonValue> => {
+			if ((node.frame.kind !== 'agent' && node.frame.kind !== 'workflow') || node.frame.runId !== expectedRunId) {
+				throw new ApprovalResumeError('invalid_checkpoint')
+			}
+			const childResume = childApprovalResume(node.resumeDescriptor, resume, approvalReceipt?.decisions)
 			const parentNode = findSuspensionParent(resumedContinuation, node.frame.invocationId)
-			if (parentNode === undefined || parentNode.frame.kind === 'host-tool') throw new ApprovalResumeError('invalid_checkpoint')
+			if (parentNode === undefined) throw new ApprovalResumeError('invalid_checkpoint')
+			const childRun = parentNode.frame.kind === 'host-tool' ? undefined : await storage.getRun(expectedRunId)
+			if (parentNode.frame.kind !== 'host-tool' && childRun === undefined) throw new ApprovalResumeError('invalid_checkpoint')
+			const child = parentNode.frame.kind === 'host-tool' ? undefined : node.frame.kind === 'agent'
+				? options.graph.agents[node.frame.state.agentId]
+				: options.graph.workflows[node.frame.workflowId]
+			if (parentNode.frame.kind !== 'host-tool' && child === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 			const parentDefinition = parentNode.frame.kind === 'agent'
 				? options.graph.agents[parentNode.frame.state.agentId]
-				: options.graph.workflows[parentNode.frame.workflowId]
+				: parentNode.frame.kind === 'workflow'
+					? options.graph.workflows[parentNode.frame.workflowId]
+					: options.graph.agents[parentNode.frame.agentId]
 			if (parentDefinition === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 			if (resumedContinuation === undefined) throw new ApprovalResumeError('invalid_checkpoint')
-			const resumeParentSandboxSource = resolveResumeSandboxSource(resumedContinuation, parentNode.frame.invocationId,
-				effectiveSandboxScopes.get(invocation.invocationId))
+			const resumeParentSandboxSource = parentNode.frame.kind === 'host-tool' ? undefined
+				: resolveResumeSandboxSource(resumedContinuation, parentNode.frame.invocationId,
+					effectiveSandboxScopes.get(invocation.invocationId))
 			const childController = linkedController(signal, invocation.deadline)
-			const childInvocation = Object.freeze({ sessionId: node.frame.state.sessionId,
-				invocationId: node.frame.invocationId, rootRunId: node.frame.state.rootRunId, parentRunId: parentNode.frame.runId,
-				...(parentNode.frame.kind === 'agent' ? { parentAgentId: parentNode.frame.state.agentId } : { parentWorkflowId: parentNode.frame.workflowId }),
+			const childSessionId = parentNode.frame.kind === 'host-tool' ? parentNode.frame.activeNestedCall.childSessionId
+				: node.frame.kind === 'agent' ? node.frame.state.sessionId : childRun!.sessionId
+			const childInvocation = Object.freeze({ sessionId: childSessionId,
+				invocationId: node.frame.invocationId, rootRunId: invocation.rootRunId, parentRunId: parentNode.frame.runId,
+				...(parentNode.frame.kind === 'workflow'
+					? { parentWorkflowId: parentNode.frame.workflowId }
+					: { parentAgentId: parentNode.frame.kind === 'agent' ? parentNode.frame.state.agentId : parentNode.frame.agentId }),
 				depth: (invocation.depth ?? 0) + 1,
-				remainingDepth: Math.max(0, (invocation.remainingDepth ?? options.defaults.maxDepth) - 1),
-				...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
-				...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), signal: childController.signal })
-			await prepareChildSandboxLaunch(parentDefinition, invocation.sessionId, parentNode.frame.runId, {
-				kind: parentNode.frame.kind === 'workflow' ? 'inline' : 'subagent', agent: child, childInvocationId: node.frame.invocationId,
-				childSessionId: node.frame.state.sessionId, taskRunId: expectedRunId,
-			}, resumeParentSandboxSource)
+					remainingDepth: Math.max(0, (invocation.remainingDepth ?? options.defaults.maxDepth) - 1),
+					...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
+					...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
+					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), signal: childController.signal })
+			if (parentNode.frame.kind !== 'host-tool') {
+				if (child?.kind === 'agent') await prepareChildSandboxLaunch(parentDefinition, invocation.sessionId, parentNode.frame.runId, {
+					kind: parentNode.frame.kind === 'workflow' ? 'inline' : 'subagent', agent: child,
+					childInvocationId: node.frame.invocationId, childSessionId, taskRunId: expectedRunId,
+				}, resumeParentSandboxSource)
+				rootInputs.set(expectedRunId, childRun!.input)
+				rootOptions.set(expectedRunId, Object.freeze({ resume: childResume }))
+				rootModes.set(expectedRunId, 'run')
+			}
 			try {
-				const stream = await openTarget(child, childRun.input, childInvocation)
+				const stream = parentNode.frame.kind === 'host-tool'
+					? await executionDispatcher.openPersisted({ route: parentNode.frame.activeNestedCall.route,
+						wireInput: parentNode.frame.activeNestedCall.input, resume: childResume, invocation: childInvocation })
+					: await openTarget(child!, childRun!.input, childInvocation)
 				const consumed = await consumeHarnessTargetStream({ stream, signal, parentRunId: parentNode.frame.runId,
 					childInvocationId: node.frame.invocationId, relay: relayChildEvent })
 				if (consumed.outcome.status === 'completed') return consumed.outcome.output
-				if (consumed.outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(node.frame.invocationId, consumed.outcome)
-				if (consumed.outcome.status === 'cancelled') throw new OperationCancelledError('Subagent execution was cancelled.', { scope: 'agent' }, consumed.outcome.error)
+				if (consumed.outcome.status === 'interrupted') {
+					const interruption = createHarnessChildTargetInterruption(node.frame.invocationId, consumed.outcome)
+					if (parentNode.frame.kind === 'host-tool') {
+						throw attachHarnessChildTargetHostFrame(interruption, Object.freeze({ ...parentNode.frame,
+							activeNestedCall: Object.freeze({ ...parentNode.frame.activeNestedCall,
+								childRunId: consumed.outcome.runId, childInterruptId: consumed.outcome.interrupt.id,
+								childInterruptRevision: consumed.outcome.interrupt.revision }),
+						}))
+					}
+					throw interruption
+				}
+				if (consumed.outcome.status === 'cancelled') throw new OperationCancelledError('Subagent execution was cancelled.', {
+					scope: parentNode.frame.kind === 'host-tool' ? parentNode.frame.activeNestedCall.target.kind : childRun!.kind,
+				}, consumed.outcome.error)
 				throw new InternalError('Subagent execution failed.', undefined, consumed.outcome.error)
 			} finally { childSandboxPolicies.delete(node.frame.invocationId); childController.dispose() }
 		}
-		const resumeSuspendedChild = async (entry: Extract<PreparedToolCheckpointEntryV1, { state: 'suspended-child' }>): Promise<JsonValue> => {
-			const node = findSuspensionNode(resumedContinuation, entry.childInvocationId)
-			if (node === undefined) throw new ApprovalResumeError('invalid_checkpoint')
-			return resumeAgentNode(node, entry.childRunId)
-		}
 		let approvalReceipt: ApprovalResumeReceiptV1 | undefined
 		let resumedAgentState: AgentContinuationStateV1 | undefined
-		let resumedWorkflowFrame: Extract<SuspensionFrameValue, { kind: 'workflow' }> | undefined
-		let resumedContinuation: SuspensionNodeValue | undefined
-		let resumeCheckpointSequence = pendingCheckpoint?.checkpoint.sequence
-		let resumeReplacement = Promise.resolve()
+			let resumedWorkflowFrame: Extract<SuspensionFrameValue, { kind: 'workflow' }> | undefined
+			let resumedContinuation: SuspensionNodeValue | undefined
+			let resumeCheckpointSequence = pendingCheckpoint?.checkpoint.sequence
+			let checkpointSequence = Math.max(0, ...(lease?.checkpoints.map(checkpoint => checkpoint.sequence) ?? []))
+			const nextCheckpointSequence = () => { checkpointSequence += 1; return checkpointSequence }
+			let resumeReplacement = Promise.resolve()
 		let workspaceAttempt: ActiveWorkspaceAttempt | undefined
 		if (pendingCheckpoint !== undefined && resume !== undefined && lease !== undefined) {
 			approvalReceipt = approvalReceiptFor(resume, pendingCheckpoint.value, options, session.record, definition)
 			if (definition.kind === 'agent') resumedAgentState = requireRootAgentFrame(pendingCheckpoint.value, definition)
 			else resumedWorkflowFrame = requireRootWorkflowFrame(pendingCheckpoint.value, definition)
 			resumedContinuation = pendingCheckpoint.value.continuation
-			if (isPendingInterruptionValue(pendingCheckpoint.value)) {
-				const replacement = resumingCheckpoint(pendingCheckpoint.value, approvalReceipt)
-				await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1',
-					expectedSequence: pendingCheckpoint.checkpoint.sequence, leaseId: lease.leaseId, workerId: lease.workerId,
-					replacement: checkpointReplacement(pendingCheckpoint.checkpoint, pendingCheckpoint.checkpoint.sequence + 1, replacement, lease) })
-				resumeCheckpointSequence = pendingCheckpoint.checkpoint.sequence + 1
+			await validateHostedContinuation(resumedContinuation, invocation, hostedEnvironment)
+				if (isPendingInterruptionValue(pendingCheckpoint.value)) {
+					const replacement = resumingCheckpoint(pendingCheckpoint.value, approvalReceipt)
+						const replacementSequence = nextCheckpointSequence()
+					await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1',
+						expectedSequence: pendingCheckpoint.checkpoint.sequence, leaseId: lease.leaseId, workerId: lease.workerId,
+						replacement: checkpointReplacement(pendingCheckpoint.checkpoint, replacementSequence, replacement, lease) })
+					resumeCheckpointSequence = replacementSequence
 			}
 		}
 		try {
@@ -649,7 +808,7 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 		}, async sessionSpan => {
 		const installInterruptionCheckpoint = async (value: JsonValue) => {
 			if (lease === undefined) return
-			const nextSequence = (resumeCheckpointSequence ?? 0) + 1
+			const nextSequence = nextCheckpointSequence()
 			const replay = await workspaceAttempt?.pause('harness:interrupt:v1', nextSequence, value, 'manual_pause')
 			if (resumeCheckpointSequence === undefined) {
 				await storage.commitCheckpoint({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId,
@@ -696,10 +855,120 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 				const contextProjection = invokeOptions.contextProjection
 					?? options.bindings.models[definition.model]?.contextProjection
 					?? options.defaults.contextProjection
+				const baseBindings = agentBindings.find(([token]) => token === identity.token)?.[1] ?? {}
+				const selectedBindings = hostedEnvironment === undefined
+					? baseBindings
+					: mergeHostedBindings(definition, baseBindings, hostedEnvironment)
+				let checkpointLease = lease
+				const createAgentCheckpointContext = (activeLease: DurableRunLease) => createDurableWorkflowContext(storage, activeLease, { signal,
+					nextSequence: nextCheckpointSequence,
+						checkpointMetadata: stepId => stepId.startsWith('host:call:')
+							? Object.freeze({ checkpointKind: 'host_nested_target', schemaVersion: 1 })
+							: stepId.startsWith('host:step:')
+								? Object.freeze({ checkpointKind: 'host_step', schemaVersion: 1 })
+								: undefined,
+						...(workspaceAttempt === undefined ? {} : {
+							onStepCommit: (commit) => workspaceAttempt!.pause(commit.stepId, commit.sequence, commit.output),
+							onStepCommitted: (checkpoint) => checkpoint.replay === undefined
+								? Promise.resolve() : workspaceAttempt!.committed(checkpoint.replay),
+						}),
+					})
+				let agentCheckpointContext = checkpointLease === undefined ? undefined : createAgentCheckpointContext(checkpointLease)
+				const agentCheckpointStep: import('./steps.js').HarnessCheckpointStep = <T extends JsonValue>(
+					stepId: string, handler: () => Promise<T>, stepOptions?: import('./steps.js').DurableStepOptions,
+				): Promise<T> => agentCheckpointContext === undefined ? handler() : agentCheckpointContext.step(stepId, handler, stepOptions)
+				const agentToolContext = Object.freeze({ harnessName: options.name, sessionId: invocation.sessionId, runId,
+					rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
+					...(parentInvocationId === undefined ? {} : { parentInvocationId }),
+					invocationId: invocation.invocationId, agentId: definition.id, depth: invocation.depth,
+					remainingDepth: invocation.remainingDepth, ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
+					...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
+					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
+					...(invokeOptions.idempotencyKey === undefined ? {} : { idempotencyKey: invokeOptions.idempotencyKey }), signal,
+					metadata: invokeOptions.metadata ?? Object.freeze({}), logger, metrics, telemetry, memory: memoryFacade,
+					sandbox: sessionSandbox, targetDispatcher: executionDispatcher, relayChildEvent, checkpointStep: agentCheckpointStep })
+				const resumeSuspendedChild = async (
+					entry: Extract<PreparedToolCheckpointEntryV1, { state: 'suspended-child' }>,
+					): Promise<JsonValue> => {
+						const node = findSuspensionNode(resumedContinuation, entry.childInvocationId)
+					if (node === undefined) throw new ApprovalResumeError('invalid_checkpoint')
+					const parentNode = findSuspensionParent(resumedContinuation, node.frame.invocationId)
+					if (parentNode === undefined) throw new ApprovalResumeError('invalid_checkpoint')
+					if (parentNode.frame.kind !== 'host-tool') return resumeTargetNode(node, entry.childRunId)
+					if (checkpointLease === undefined || parentNode.frame.runId !== runId
+						|| parentNode.frame.agentId !== definition.id || parentNode.frame.invocationId !== invocation.invocationId
+						|| parentNode.frame.toolId !== entry.bindingId || parentNode.frame.callId !== entry.call.id
+						|| canonicalJson(parentNode.frame.input) !== canonicalJson(entry.call.arguments)) {
+						throw new ApprovalResumeError('invalid_checkpoint')
+					}
+					const binding = selectedBindings[entry.bindingId]
+					if (binding?.implementationKind !== 'host' || binding.id !== parentNode.frame.bindingId
+						|| binding.contractDigest !== parentNode.frame.bindingContractDigest) throw new ApprovalResumeError('invalid_checkpoint')
+					const activeCall = parentNode.frame.activeNestedCall
+					const nodePath = resumedContinuation === undefined ? undefined
+						: findSuspensionPath(resumedContinuation, node.frame.invocationId)
+					const hostAgentNode = nodePath?.at(-3)
+					if (hostAgentNode?.frame.kind !== 'agent') throw new ApprovalResumeError('invalid_checkpoint')
+					if (activeCall.childRunId !== entry.childRunId || activeCall.childInvocationId !== entry.childInvocationId
+						|| node.frame.runId !== activeCall.childRunId || node.frame.invocationId !== activeCall.childInvocationId
+						|| node.resumeDescriptor?.runId !== activeCall.childRunId
+						|| node.resumeDescriptor?.interruptId !== activeCall.childInterruptId
+						|| node.resumeDescriptor?.revision !== activeCall.childInterruptRevision
+						|| activeCall.route.target.kind !== activeCall.target.kind || activeCall.route.target.id !== activeCall.target.id) {
+						throw new ApprovalResumeError('invalid_checkpoint')
+					}
+					const expectedHostToolInvocationId = `invocation_${digest(['harness.host-tool-invocation.v1',
+						hostAgentNode.frame.state.rootRunId, parentNode.frame.runId, parentNode.frame.invocationId,
+						parentNode.frame.toolId, parentNode.frame.callId])}`
+					const expectedChildInvocationId = `invocation_${digest(['harness.host-child-invocation.v1',
+						expectedHostToolInvocationId, activeCall.callId, activeCall.target.kind, activeCall.target.id])}`
+					const expectedChildSessionId = `session_${digest(['harness.host-child-session.v1', hostAgentNode.frame.state.sessionId,
+						hostAgentNode.frame.state.rootRunId, expectedChildInvocationId, activeCall.target.kind, activeCall.target.id])}`
+					if (parentNode.frame.hostToolInvocationId !== expectedHostToolInvocationId
+						|| activeCall.childInvocationId !== expectedChildInvocationId
+						|| activeCall.childSessionId !== expectedChildSessionId) throw new ApprovalResumeError('invalid_checkpoint')
+					if (node.frame.kind !== 'agent' && node.frame.kind !== 'workflow') {
+						throw new ApprovalResumeError('invalid_checkpoint')
+					}
+					const childTargetId = node.frame.kind === 'agent' ? node.frame.state.agentId : node.frame.workflowId
+					if (node.frame.kind !== activeCall.target.kind || childTargetId !== activeCall.target.id
+						|| (node.frame.kind === 'agent' && node.frame.state.sessionId !== activeCall.childSessionId)) {
+						throw new ApprovalResumeError('invalid_checkpoint')
+					}
+					const childOutput = await resumeTargetNode(node, entry.childRunId)
+					const nestedCallId = activeCall.callId
+					const stored: HostNestedTargetCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'host_nested_target',
+						toolCallId: parentNode.frame.callId, callId: nestedCallId,
+						target: activeCall.target, route: activeCall.route, input: activeCall.input,
+						outcome: Object.freeze({ status: 'completed', output: childOutput }),
+						lineage: Object.freeze({ rootRunId: invocation.rootRunId, agentRunId: runId,
+							hostToolInvocationId: parentNode.frame.hostToolInvocationId, childRunId: activeCall.childRunId,
+							childInvocationId: activeCall.childInvocationId }) })
+					const stepId = `host:call:${digest(['harness.host-call-key.v1', parentNode.frame.hostToolInvocationId, nestedCallId])}`
+					const sequence = nextCheckpointSequence()
+					const replay = await workspaceAttempt?.pause(stepId, sequence, stored as unknown as JsonValue)
+					const checkpoint: RunCheckpoint = Object.freeze({ runId: checkpointLease.runId, sessionId: checkpointLease.sessionId,
+						leaseId: checkpointLease.leaseId, workerId: checkpointLease.workerId, stepId, input: checkpointLease.run.input,
+						attempt: checkpointLease.attempt, sequence, output: stored as unknown as JsonValue,
+						metadata: Object.freeze({ checkpointKind: 'host_nested_target', schemaVersion: 1 }),
+						...(replay === undefined ? {} : { replay }) })
+					await storage.commitCheckpoint(checkpoint)
+					if (replay !== undefined) await workspaceAttempt?.committed(replay)
+					checkpointLease = Object.freeze({ ...checkpointLease,
+						checkpoints: Object.freeze([...checkpointLease.checkpoints, checkpoint]) })
+					agentCheckpointContext = createAgentCheckpointContext(checkpointLease)
+					const hostOutput = await binding.invokeValidated(Object.freeze({ ...agentToolContext,
+						step: resumedAgentState !== undefined && !('kind' in resumedAgentState) ? resumedAgentState.step : 0,
+						toolId: binding.id, callId: entry.call.id }), entry.input, parentNode.frame.input)
+					if (!isJsonValue(hostOutput)) throw new ValidationError('Tool output validation failed.', {
+						where: 'tool_output', issues: { reason: 'non_json_tool_output' },
+					})
+					return hostOutput
+				}
 				const execute = () => executeStandardAgent({
 					agent: definition, mode: rootModes.get(runId) ?? 'stream', input, inputValidation: 'already-validated-target', history: history.map(toModelMessage),
 					model: requireModel(definition.model), modelAlias: definition.model,
-					bindings: agentBindings.find(([token]) => token === identity.token)?.[1] ?? {}, skills: selectedSkills, defaults: options.defaults,
+					bindings: selectedBindings, skills: selectedSkills, defaults: options.defaults,
 					...(contextProjection === undefined ? {} : { contextProjection }),
 					invocation: Object.freeze({ harnessName: options.name, sessionId: invocation.sessionId, runId,
 						rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
@@ -709,16 +978,7 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 					interceptorRuntime: Object.freeze({ history: Object.freeze({ list: (listOptions?: { limit?: number; before?: string }) => storage.listMessages(invocation.sessionId, listOptions) }),
 						models: modelRegistry, memory: memoryFacade, metrics, logger, telemetry }),
 					onModelCompleted: event => emit(Object.freeze({ type: 'model.completed' as const, ...event })),
-					toolContext: Object.freeze({ harnessName: options.name, sessionId: invocation.sessionId, runId,
-						rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
-						...(parentInvocationId === undefined ? {} : { parentInvocationId }),
-						invocationId: invocation.invocationId, agentId: definition.id, depth: invocation.depth,
-						remainingDepth: invocation.remainingDepth, ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
-						...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
-							...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
-							...(invokeOptions.idempotencyKey === undefined ? {} : { idempotencyKey: invokeOptions.idempotencyKey }), signal,
-						metadata: invokeOptions.metadata ?? Object.freeze({}), logger, metrics, telemetry, memory: memoryFacade, sandbox: sessionSandbox,
-						targetDispatcher: dispatcher, relayChildEvent, checkpointStep: async (_id, handler) => handler() }),
+					toolContext: agentToolContext,
 					sink,
 					...(resumedAgentState === undefined || approvalReceipt === undefined || lease === undefined ? {} : {
 						resume: Object.freeze({ state: resumedAgentState, decisions: approvalReceipt.decisions,
@@ -731,10 +991,11 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 									resumedContinuation = replaceAgentNodeState(resumedContinuation!, state.invocationId, resumedAgentState)
 									const expectedSequence = resumeCheckpointSequence!
 									const value = resumingCheckpoint(pendingCheckpoint!.value, approvalReceipt!, resumedContinuation!)
+									const replacementSequence = nextCheckpointSequence()
 									await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1',
 										expectedSequence, leaseId: lease!.leaseId, workerId: lease!.workerId,
-										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, expectedSequence + 1, value, lease!) })
-									resumeCheckpointSequence = expectedSequence + 1
+										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, replacementSequence, value, lease!) })
+									resumeCheckpointSequence = replacementSequence
 								})
 								return resumeReplacement
 							},
@@ -744,10 +1005,11 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 									resumedContinuation = replaceAgentNodeState(resumedContinuation!, cursor.invocationId, cursor)
 									const expectedSequence = resumeCheckpointSequence!
 									const value = postApprovalCheckpoint(pendingCheckpoint!.value, approvalReceipt!, resumedContinuation!, sequence + 1)
+									const replacementSequence = nextCheckpointSequence()
 									await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1',
 										expectedSequence, leaseId: lease!.leaseId, workerId: lease!.workerId,
-										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, expectedSequence + 1, value, lease!) })
-									resumeCheckpointSequence = expectedSequence + 1
+										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, replacementSequence, value, lease!) })
+									resumeCheckpointSequence = replacementSequence
 								})
 								return resumeReplacement
 							},
@@ -757,10 +1019,11 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 									resumedContinuation = replaceAgentNodeState(resumedContinuation!, state.invocationId, state)
 									const expectedSequence = resumeCheckpointSequence!
 									const value = postApprovalCheckpoint(pendingCheckpoint!.value, approvalReceipt!, resumedContinuation!, sequence + 1)
+									const replacementSequence = nextCheckpointSequence()
 									await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1',
 										expectedSequence, leaseId: lease!.leaseId, workerId: lease!.workerId,
-										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, expectedSequence + 1, value, lease!) })
-									resumeCheckpointSequence = expectedSequence + 1
+										replacement: checkpointReplacement(pendingCheckpoint!.checkpoint, replacementSequence, value, lease!) })
+									resumeCheckpointSequence = replacementSequence
 								})
 								return resumeReplacement
 							},
@@ -778,14 +1041,12 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 						toPersistedMessage(message, invocation.sessionId, runId, index, run.startedAt)))
 			} else {
 				if (lease === undefined && (definition.durable === true || approvalReachable)) throw new InternalError('Workflow recovery lease is unavailable.')
-				let childCheckpointSequence = Math.max(0, ...(lease?.checkpoints.map(checkpoint => checkpoint.sequence) ?? []))
 				const workflowCheckpoint: WorkflowChildCheckpointAccess | undefined = lease === undefined ? undefined : Object.freeze({
 					rootInput: persistedInput,
 					load: (stepId: string) => storage.loadCheckpoint(runId, stepId),
 					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_child_call'; schemaVersion: 1 }>) => {
-						childCheckpointSequence += 1
 						await storage.commitCheckpoint({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
-							stepId, input: persistedInput, attempt: lease.attempt, sequence: childCheckpointSequence, output: checkpointOutput, metadata })
+							stepId, input: persistedInput, attempt: lease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
 					},
 				})
 				if (resumedWorkflowFrame !== undefined) {
@@ -798,11 +1059,11 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 						if (childNode.frame.kind !== 'agent') throw new ApprovalResumeError('invalid_checkpoint')
 						const childRun = await storage.getRun(childNode.frame.runId)
 						if (childRun === undefined) throw new ApprovalResumeError('invalid_checkpoint')
-						const childOutput = await resumeAgentNode(childNode, childNode.frame.runId)
+						const childOutput = await resumeTargetNode(childNode, childNode.frame.runId)
 						const callId = resumedWorkflowFrame.activeCallIds[index]!
 						const stored: WorkflowChildCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_child_call', callId,
 							target: Object.freeze({ kind: 'agent', id: childNode.frame.state.agentId }), input: childRun.input,
-							outcome: Object.freeze({ status: 'completed', output: childOutput }), lineage: Object.freeze({ rootRunId: runId,
+							outcome: Object.freeze({ status: 'completed', output: childOutput }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
 								workflowRunId: runId, workflowInvocationId: resumedWorkflowFrame.invocationId, childRunId: childNode.frame.runId,
 								childInvocationId: childNode.frame.invocationId }) })
 						await workflowCheckpoint.commit(`workflow:call:${callId}`, stored as unknown as JsonValue,
@@ -811,12 +1072,13 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 					resumedContinuation = Object.freeze({ frame: resumedWorkflowFrame, children: Object.freeze([]) })
 					const expectedSequence = resumeCheckpointSequence!
 					const value = resumingCheckpoint(pendingCheckpoint.value, approvalReceipt, resumedContinuation)
+					const replacementSequence = nextCheckpointSequence()
 					await storage.replaceCheckpoint({ runId, sessionId: invocation.sessionId, stepId: 'harness:interrupt:v1', expectedSequence,
 						leaseId: lease.leaseId, workerId: lease.workerId,
-						replacement: checkpointReplacement(pendingCheckpoint.checkpoint, expectedSequence + 1, value, lease) })
-					resumeCheckpointSequence = expectedSequence + 1
+						replacement: checkpointReplacement(pendingCheckpoint.checkpoint, replacementSequence, value, lease) })
+					resumeCheckpointSequence = replacementSequence
 				}
-				const runtime = createWorkflowExecutionRuntime({ workflow: definition, models: workflowModels(definition), targetDispatcher: dispatcher,
+				const runtime = createWorkflowExecutionRuntime({ workflow: definition, models: workflowModels(definition), targetDispatcher: executionDispatcher,
 					signal, lifecycleSignal: instanceController.signal, sessionId: invocation.sessionId, runId, rootRunId: invocation.rootRunId,
 					invocationId: invocation.invocationId, depth: invocation.depth, remainingDepth: invocation.remainingDepth,
 					defaults: options.defaults,
@@ -835,7 +1097,7 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 				const workflowInput = resumedWorkflowFrame?.input ?? input
 				activeWorkflowInput = workflowInput
 				const checkpointStep = definition.durable === true && lease !== undefined
-					? createDurableWorkflowContext(storage, lease, { signal,
+					? createDurableWorkflowContext(storage, lease, { signal, nextSequence: nextCheckpointSequence,
 						...(workspaceAttempt === undefined ? {} : {
 							onStepCommit: (commit) => workspaceAttempt!.pause(commit.stepId, commit.sequence, commit.output),
 							onStepCommitted: (checkpoint) => checkpoint.replay === undefined
@@ -884,27 +1146,54 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 				else await storage.finishRun(runId, { status: 'interrupted' })
 				await workspaceAttempt?.suspend()
 				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({ status: 'interrupted' as const, runId, interrupt: error.interrupt }) })
-			} else if (isHarnessChildTargetInterruption(error)) {
-				if (lease && (error.preparedState || activeWorkflowRuntime)) {
-					const childCheckpoint = await storage.loadCheckpoint(error.outcome.runId, 'harness:interrupt:v1')
-					if (!childCheckpoint || !isPendingInterruptionValue(childCheckpoint.output)) throw new ApprovalResumeError('invalid_checkpoint')
-					const parentFrame: SuspensionFrameValue = error.preparedState
-						? Object.freeze({ kind: 'agent', runId, invocationId: invocation.invocationId, state: error.preparedState })
+			} else if (isHarnessChildTargetInterruptionControl(error)) {
+				const leafInterruptions = harnessChildTargetInterruptions(error)
+				const rootInterrupt = harnessChildTargetInterrupt(error)
+				if (lease && (leafInterruptions[0]?.preparedState || activeWorkflowRuntime)) {
+					const childContinuations: SuspensionNodeValue[] = []
+					const startedAgentRunIds = new Set<string>([runId])
+					const descendantApprovalIds: string[] = []
+					for (const leaf of leafInterruptions) {
+						const childCheckpoint = await storage.loadCheckpoint(leaf.outcome.runId, 'harness:interrupt:v1')
+						if (!childCheckpoint || !isPendingInterruptionValue(childCheckpoint.output)) throw new ApprovalResumeError('invalid_checkpoint')
+						const childApprovalIds = childCheckpoint.output.interrupt.requests.map(request => request.approvalId).sort(codePointCompare)
+						if (leaf.resumeDescriptor.runId !== leaf.outcome.runId
+							|| leaf.resumeDescriptor.interruptId !== childCheckpoint.output.interrupt.id
+							|| leaf.resumeDescriptor.revision !== childCheckpoint.output.interrupt.revision
+							|| canonicalJson(leaf.resumeDescriptor.approvalIds as unknown as JsonValue) !== canonicalJson(childApprovalIds)) {
+							throw new ApprovalResumeError('invalid_checkpoint')
+						}
+						descendantApprovalIds.push(...childApprovalIds)
+						for (const started of childCheckpoint.output.startedAgentRunIds) startedAgentRunIds.add(started)
+						const resumedChildRoot = Object.freeze({ ...childCheckpoint.output.continuation,
+							resumeDescriptor: leaf.resumeDescriptor })
+						childContinuations.push(leaf.hostFrame === undefined
+							? resumedChildRoot
+							: Object.freeze({ frame: leaf.hostFrame, children: Object.freeze([resumedChildRoot]) }))
+					}
+					const rootApprovalIds = rootInterrupt.requests.map(request => request.approvalId).sort(codePointCompare)
+					if (new Set(descendantApprovalIds).size !== descendantApprovalIds.length
+						|| canonicalJson(rootApprovalIds) !== canonicalJson(descendantApprovalIds.sort(codePointCompare))) {
+						throw new ApprovalResumeError('invalid_checkpoint')
+					}
+					const preparedState = leafInterruptions[0]?.preparedState
+					const parentFrame: SuspensionFrameValue = preparedState
+						? Object.freeze({ kind: 'agent', runId, invocationId: invocation.invocationId, state: preparedState })
 						: Object.freeze({ kind: 'workflow', runId, workflowId: definition.id, invocationId: invocation.invocationId, input: activeWorkflowInput,
 							activeCallIds: activeWorkflowRuntime!.activeCallIds(), agentCallBudget: activeWorkflowRuntime!.agentCallBudgetState() })
 					const pendingValue = JSON.parse(canonicalJson(Object.freeze({ schemaVersion: 1, rootRunId: runId, sessionId: invocation.sessionId,
 						rootTarget: Object.freeze({ kind: definition.kind, id: definition.id }), deploymentRevision: options.revision!,
 						compiledGraphDigest: graphDigest, sessionIdentityDigest: identityDigest(session.record.identity),
-						interrupt: childCheckpoint.output.interrupt,
-						continuation: Object.freeze({ frame: parentFrame, children: Object.freeze([childCheckpoint.output.continuation]) }),
+						interrupt: rootInterrupt,
+						continuation: Object.freeze({ frame: parentFrame, children: Object.freeze(childContinuations) }),
 						...(approvalReceipt === undefined ? {} : { priorResumeReceipt: approvalReceipt }),
-						nextEventSequence: sequence + 2, startedAgentRunIds: Object.freeze([runId, ...childCheckpoint.output.startedAgentRunIds]) }))) as JsonValue
+						nextEventSequence: sequence + 2, startedAgentRunIds: Object.freeze([...startedAgentRunIds]) }))) as JsonValue
 					await installInterruptionCheckpoint(pendingValue)
 				}
 				if (lease) await lease.release()
 				else await storage.finishRun(runId, { status: 'interrupted' })
 				await workspaceAttempt?.suspend()
-				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({ status: 'interrupted' as const, runId, interrupt: error.outcome.interrupt }) })
+				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({ status: 'interrupted' as const, runId, interrupt: rootInterrupt }) })
 			} else {
 				const terminalError = signal.aborted && !(error instanceof OperationCancelledError) && !(error instanceof OperationTimeoutError)
 					? abortError(signal, definition.kind, 'Harness target execution was cancelled.')
@@ -937,7 +1226,10 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 		})
 		} finally {
 			queue.end()
-			if (invocation.depth === 0) rootChildEventRelays.delete(runId)
+				rootHostedEnvironments.delete(invocation.invocationId)
+				if (invocation.depth === 0) {
+					rootChildEventRelays.delete(runId)
+				}
 			effectiveSandboxScopes.delete(invocation.invocationId)
 			rootInputs.delete(runId)
 			rootOptions.delete(runId)
@@ -1344,7 +1636,11 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 		return Object.freeze(publicSession) as HarnessSession<Contracts>
 	}
 
-	function createInvoker(state: SessionRuntime, definition: AnyAgentDefinition | AnyWorkflowDefinition): HarnessTargetInvoker<AnyTargetContract> {
+	function createInvoker(
+		state: SessionRuntime,
+		definition: AnyAgentDefinition | AnyWorkflowDefinition,
+		hostedEnvironment?: TrustedHostedInvocationEnvironment,
+	): HarnessTargetInvoker<AnyTargetContract> {
 		const start = (mode: 'run' | 'stream', input: JsonValue, invokeOptions: InvokeOptions = {}) => {
 			if (closed || state.released || state.releasing) throw new StateError('Harness invocation is unavailable.', { op: 'getRun', reason: closed ? 'instance_closed' : 'session_released' })
 			const normalizedInvokeOptions = normalizeInvokeOptions(invokeOptions)
@@ -1369,12 +1665,13 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 			rootInputs.set(runId, JSON.parse(canonicalJson(input)) as JsonValue)
 			rootOptions.set(runId, normalizedInvokeOptions)
 			rootModes.set(runId, mode)
+			if (hostedEnvironment !== undefined) rootHostedEnvironments.set(runId, hostedEnvironment)
 			const controller = linkedController([
 				...(normalizedInvokeOptions.signal === undefined ? [] : [normalizedInvokeOptions.signal]),
 				state.controller.signal, instanceController.signal,
 			],
 				normalizedInvokeOptions.timeoutMs === 0 ? undefined : Date.now() + (normalizedInvokeOptions.timeoutMs ?? options.defaults.runTimeoutMs))
-			const trace = invocationTrace(normalizedInvokeOptions, logger)
+			const trace = hostedEnvironment?.traceContext ?? invocationTrace(normalizedInvokeOptions, logger)
 			let settleRoot!: () => void
 			const settled = new Promise<void>(resolve => { settleRoot = resolve })
 			rootSettled.set(runId, () => {
@@ -1384,19 +1681,21 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 				settleRoot()
 			})
 			state.activeRoots.set(runId, Object.freeze({ controller, settled }))
+			const invocationIdentity = normalizeHarnessIdentity(state.record.identity)
 			const invocation = Object.freeze({ sessionId: state.record.id, invocationId: runId, rootRunId: runId, parentRunId: runId,
 					depth: 0, remainingDepth: options.defaults.maxDepth,
-					...(state.record.identity === undefined ? {} : { identity: state.record.identity }),
+					...(invocationIdentity === undefined ? {} : { identity: invocationIdentity }),
 					...(trace === undefined ? {} : { trace }),
 					...(controller.deadline === undefined ? {} : { deadline: controller.deadline }),
 					...(normalizedInvokeOptions.idempotencyKey === undefined ? {} : { idempotencyKey: normalizedInvokeOptions.idempotencyKey }), signal: controller.signal })
-			const opened = normalizedInvokeOptions.resume === undefined
-				? dispatcher.open({ target: definition.contract, input, invocation })
+			const opened = normalizedInvokeOptions.resume === undefined && hostedEnvironment === undefined
+				? dispatcher.openRoot({ target: definition.contract, input, invocation })
 				: openTarget(definition, input, invocation)
 			return lazyDispatchStream(opened.catch(error => {
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
+				rootHostedEnvironments.delete(runId)
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
 				throw error
@@ -1584,7 +1883,58 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 		}
 	}
 
-	return Object.freeze({ getSession, close }) as HarnessInstance<Contracts, Requirements>
+	const instance = Object.freeze({ getSession, close }) as HarnessInstance<Contracts, Requirements>
+	const definitionForTarget = (target: AnyTargetContract): AnyAgentDefinition | AnyWorkflowDefinition => {
+		const identity = getDefinitionIdentity(target)
+		const definition = identity === undefined ? undefined
+			: [...Object.values(options.graph.agents), ...Object.values(options.graph.workflows)]
+				.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate.contract === target)
+		if (definition === undefined) throw new ValidationError('Hosted target is not part of this Harness graph.', {
+			where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
+		})
+		return definition
+	}
+	const startTrusted = async (
+		mode: 'run' | 'stream', target: AnyTargetContract, input: JsonValue,
+		invokeOptions: InvokeOptions & { readonly sessionId: string }, environment: TrustedHostedInvocationEnvironment,
+	): Promise<RunOutcome<JsonValue> | HarnessTargetDispatchStream<JsonValue>> => {
+		if (environment[trustedHostedInvocationBrand] !== true) throw new InternalError('Hosted invocation environment is invalid.')
+		const definition = definitionForTarget(target)
+		const { sessionId, ...optionsWithoutSession } = invokeOptions
+		const state = await ensureSession(sessionId, environment.identity === undefined ? {} : { identity: environment.identity })
+		const invoker = createInvoker(state, definition, environment)
+		return mode === 'run' ? invoker.run(input, optionsWithoutSession)
+			: invoker.stream(input, optionsWithoutSession) as unknown as HarnessTargetDispatchStream<JsonValue>
+	}
+	const streamDispatchedTrusted = async (
+		target: AnyTargetContract,
+		input: JsonValue,
+		wireInput: JsonValue,
+		invocation: import('../ports/target-dispatcher.js').HarnessNestedTargetDispatchInvocation,
+		resume: ToolApprovalResume | undefined,
+		environment: TrustedHostedInvocationEnvironment,
+	): Promise<HarnessTargetDispatchStream<JsonValue>> => {
+		if (environment[trustedHostedInvocationBrand] !== true) throw new InternalError('Hosted invocation environment is invalid.')
+		const definition = definitionForTarget(target)
+		await ensureSession(invocation.sessionId, environment.identity === undefined ? {} : { identity: environment.identity })
+		rootHostedEnvironments.set(invocation.invocationId, environment)
+		try {
+			return await openTarget(definition, input, invocation, resume, wireInput)
+		} catch (error) {
+			rootHostedEnvironments.delete(invocation.invocationId)
+			throw error
+		}
+	}
+	return Object.freeze({
+		instance,
+		runTrusted: (target: AnyTargetContract, input: JsonValue, invokeOptions: InvokeOptions & { readonly sessionId: string }, environment: TrustedHostedInvocationEnvironment) => (
+			startTrusted('run', target, input, invokeOptions, environment) as Promise<RunOutcome<JsonValue>>
+		),
+		streamTrusted: (target: AnyTargetContract, input: JsonValue, invokeOptions: InvokeOptions & { readonly sessionId: string }, environment: TrustedHostedInvocationEnvironment) => (
+			startTrusted('stream', target, input, invokeOptions, environment) as Promise<HarnessTargetDispatchStream<JsonValue>>
+		),
+		streamDispatchedTrusted,
+	})
 
 	function requireModel(alias: string): ModelHandle {
 		const model = modelRegistry[alias]
@@ -1593,6 +1943,23 @@ export async function instantiateStandaloneHarness<Contracts extends HarnessCont
 	}
 	function workflowModels(workflow: AnyWorkflowDefinition): Record<string, ModelHandle> {
 		return Object.fromEntries(Object.entries(workflow.models ?? {}).map(([name, requirement]) => [name, requireModel(requirement.alias)]))
+	}
+	function mergeHostedBindings(
+		agent: AnyAgentDefinition,
+		base: Readonly<Record<string, AgentExecutableBinding>>,
+		environment: TrustedHostedInvocationEnvironment,
+	): Readonly<Record<string, AgentExecutableBinding>> {
+		const result: Record<string, AgentExecutableBinding> = { ...base }
+		for (const tool of agent.tools ?? []) {
+			const identity = getDefinitionIdentity(tool)
+			if (identity?.kind !== 'host-tool') continue
+			const binding = environment.hostToolBindings.get(identity.token)
+			if (binding === undefined || binding.definitionIdentity.token !== identity.token) {
+				throw new InternalError('Hosted tool binding is unavailable for this root invocation.')
+			}
+			result[tool.id] = binding
+		}
+		return Object.freeze(result)
 	}
 }
 
@@ -1957,7 +2324,8 @@ function compiledGraphDigest(
 			sortedSet(requirements.mcpServers), sortedSet(requirements.skillRuntimes), requirements.storage.durable,
 			sortedSet(requirements.memory.capabilities), sortedSet(requirements.memory.modelAliases), sortedSet(requirements.sandbox.capabilities),
 			sortedSet(requirements.sandbox.requiredGroups), requirements.sandbox.required,
-			requirements.workspace, requirements.artifacts, sortedSet(requirements.hostTools)], definitions, edges, [...targetPolicies], bindings])}`
+			requirements.workspace, requirements.artifacts, sortedSet(requirements.hostTools),
+			requirements.hostTools.length === 0 ? null : 'host-nested-target-checkpoint.v1'], definitions, edges, [...targetPolicies], bindings])}`
 }
 
 /** @internal Exact target-policy component of GraphDigestPreimageV1. */
@@ -2296,6 +2664,25 @@ function normalizeResumeDecisions(resume: ToolApprovalResume): readonly AppliedA
 	return Object.freeze(decisions.sort((left, right) => codePointCompare(left.approvalId, right.approvalId)))
 }
 
+function childApprovalResume(
+	descriptor: ChildApprovalResumeDescriptorV1 | undefined,
+	rootResume: ToolApprovalResume | undefined,
+	rootDecisions: readonly AppliedApprovalDecisionV1[] | undefined,
+): ToolApprovalResume {
+	if (descriptor === undefined || rootResume === undefined || rootDecisions === undefined
+		|| !validChildApprovalResumeDescriptor(descriptor)) throw new ApprovalResumeError('invalid_checkpoint')
+	const requested = new Set(descriptor.approvalIds)
+	const decisions = rootDecisions.filter(decision => requested.has(decision.approvalId))
+	if (decisions.length !== descriptor.approvalIds.length
+		|| decisions.some((decision, index) => decision.approvalId !== descriptor.approvalIds[index])) {
+		throw new ApprovalResumeError('invalid_checkpoint')
+	}
+	return Object.freeze({ type: 'tool-approval', runId: descriptor.runId, interruptId: descriptor.interruptId,
+		revision: descriptor.revision,
+		eventId: `event_${digest(['harness.child-resume-event.v1', rootResume.eventId, descriptor.runId, descriptor.interruptId])}`,
+		decisions })
+}
+
 function approvalReceiptFor(
 	resume: ToolApprovalResume,
 	checkpoint: ApprovalCheckpointValue,
@@ -2358,7 +2745,8 @@ function postApprovalCheckpoint(
 function replaceAgentNodeState(node: SuspensionNodeValue, invocationId: string, state: AgentContinuationStateV1): SuspensionNodeValue {
 	if (node.frame.invocationId === invocationId) {
 		if (node.frame.kind !== 'agent') throw new ApprovalResumeError('invalid_checkpoint')
-		return Object.freeze({ frame: Object.freeze({ ...node.frame, state }), children: node.children })
+		return Object.freeze({ frame: Object.freeze({ ...node.frame, state }),
+			...(node.resumeDescriptor === undefined ? {} : { resumeDescriptor: node.resumeDescriptor }), children: node.children })
 	}
 	let changed = false
 	const children = node.children.map(child => {
@@ -2366,7 +2754,8 @@ function replaceAgentNodeState(node: SuspensionNodeValue, invocationId: string, 
 		if (next !== child) changed = true
 		return next
 	})
-	return changed ? Object.freeze({ frame: node.frame, children: Object.freeze(children) }) : node
+	return changed ? Object.freeze({ frame: node.frame,
+		...(node.resumeDescriptor === undefined ? {} : { resumeDescriptor: node.resumeDescriptor }), children: Object.freeze(children) }) : node
 }
 
 function findSuspensionNode(node: SuspensionNodeValue | undefined, invocationId: string): SuspensionNodeValue | undefined {
@@ -2511,7 +2900,10 @@ function isPendingInterruptionValue(value: unknown): value is PendingInterruptio
 	if (!isPlainRecord(interrupt) || !hasOnlyStringKeys(interrupt, ['type', 'id', 'revision', 'requests']) || interrupt['type'] !== 'tool-approval'
 		|| !validIdentifier(interrupt['id']) || typeof interrupt['revision'] !== 'string' || !Array.isArray(interrupt['requests'])
 		|| !(interrupt['requests'] as unknown[]).every(isApprovalRequest)) return false
-	return isSuspensionNode(continuation)
+	if (!isSuspensionNode(continuation)) return false
+	const owned = continuationApprovalIds(continuation)
+	const requested = (interrupt['requests'] as Array<{ approvalId: string }>).map(request => request.approvalId).sort(codePointCompare)
+	return owned !== undefined && canonicalJson(owned) === canonicalJson(requested)
 }
 
 function isApprovalCheckpointValue(value: unknown): value is ApprovalCheckpointValue {
@@ -2529,18 +2921,37 @@ function isActiveApprovalCheckpointValue(value: unknown): value is ActiveApprova
 		|| !Number.isSafeInteger(value['nextEventSequence']) || (value['nextEventSequence'] as number) < 2
 		|| !Array.isArray(value['startedAgentRunIds']) || !(value['startedAgentRunIds'] as unknown[]).every(validIdentifier)
 		|| !Array.isArray(value['decisions']) || !(value['decisions'] as unknown[]).every(isAppliedApprovalDecision)) return false
-	return isSuspensionNode(value['continuation'])
+	if (!isSuspensionNode(value['continuation'])) return false
+	const owned = continuationApprovalIds(value['continuation'])
+	const decided = (value['decisions'] as AppliedApprovalDecisionV1[]).map(decision => decision.approvalId)
+	return owned !== undefined && canonicalJson(owned) === canonicalJson(decided)
 }
 
 function isSuspensionNode(value: unknown): value is SuspensionNodeValue {
-	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['frame', 'children']) || !Array.isArray(value['children'])
+	return validSuspensionNode(value, true)
+}
+
+function validSuspensionNode(value: unknown, root: boolean): value is SuspensionNodeValue {
+	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['frame', 'resumeDescriptor', 'children']) || !Array.isArray(value['children'])
 		|| !isPlainRecord(value['frame'])) return false
 	const frame = value['frame']
 	if (!validSuspensionFrame(frame)) return false
-	return value['children'].every(isSuspensionNode)
+	const descriptor = value['resumeDescriptor']
+	if (root || frame['kind'] === 'host-tool') {
+		if (descriptor !== undefined) return false
+	} else if (!validChildApprovalResumeDescriptor(descriptor) || descriptor.runId !== frame['runId']) return false
+	if (frame['kind'] === 'host-tool') {
+		if (value['children'].length !== 1) return false
+		const child = value['children'][0]
+		if (!isPlainRecord(child) || !validChildApprovalResumeDescriptor(child['resumeDescriptor'])
+			|| child['resumeDescriptor'].runId !== frame.activeNestedCall.childRunId
+			|| child['resumeDescriptor'].interruptId !== frame.activeNestedCall.childInterruptId
+			|| child['resumeDescriptor'].revision !== frame.activeNestedCall.childInterruptRevision) return false
+	}
+	return value['children'].every(child => validSuspensionNode(child, false))
 }
 
-function validSuspensionFrame(frame: Record<string, unknown>): frame is SuspensionFrameValue {
+function validSuspensionFrame(frame: Record<string, unknown>): frame is Record<string, unknown> & SuspensionFrameValue {
 	if (!validIdentifier(frame['runId']) || !validIdentifier(frame['invocationId'])) return false
 	if (frame['kind'] === 'agent') {
 		if (!hasOnlyStringKeys(frame, ['kind', 'runId', 'invocationId', 'state']) || !isJsonValue(frame['state'])) return false
@@ -2557,13 +2968,61 @@ function validSuspensionFrame(frame: Record<string, unknown>): frame is Suspensi
 			&& validWorkflowAgentCallBudget(frame['agentCallBudget'])
 	}
 	if (frame['kind'] === 'host-tool') {
-		return hasOnlyStringKeys(frame, ['kind', 'runId', 'agentId', 'invocationId', 'toolId', 'callId', 'input', 'bindingId',
-			'bindingContractDigest', 'toolStarted', 'activeNestedCallIds'])
-			&& validIdentifier(frame['agentId']) && validIdentifier(frame['toolId']) && validIdentifier(frame['callId'])
+		const activeCall = frame['activeNestedCall']
+		return hasOnlyStringKeys(frame, ['kind', 'runId', 'agentId', 'invocationId', 'hostToolInvocationId', 'toolId', 'callId', 'input', 'bindingId',
+			'bindingContractDigest', 'toolStarted', 'activeNestedCall'])
+			&& validIdentifier(frame['agentId']) && validIdentifier(frame['hostToolInvocationId'])
+			&& validIdentifier(frame['toolId']) && validIdentifier(frame['callId'])
 			&& isJsonValue(frame['input']) && validIdentifier(frame['bindingId']) && typeof frame['bindingContractDigest'] === 'string'
-			&& frame['bindingContractDigest'].length > 0 && frame['toolStarted'] === true && validIdentifierList(frame['activeNestedCallIds'])
+			&& frame['bindingContractDigest'].length > 0 && frame['toolStarted'] === true
+			&& isPlainRecord(activeCall) && hasOnlyStringKeys(activeCall, ['callId', 'target', 'route', 'input', 'childRunId', 'childInvocationId', 'childSessionId',
+				'childInterruptId', 'childInterruptRevision'])
+			&& validIdentifier(activeCall['callId']) && isPlainRecord(activeCall['target'])
+			&& hasOnlyStringKeys(activeCall['target'], ['kind', 'id'])
+			&& ['agent', 'workflow'].includes(String(activeCall['target']['kind'])) && validIdentifier(activeCall['target']['id'])
+			&& validTargetRouteReceipt(activeCall['route'], activeCall['target'] as { kind: 'agent' | 'workflow'; id: string })
+			&& isJsonValue(activeCall['input']) && validIdentifier(activeCall['childRunId'])
+			&& validIdentifier(activeCall['childInvocationId']) && validIdentifier(activeCall['childSessionId'])
+			&& validIdentifier(activeCall['childInterruptId']) && typeof activeCall['childInterruptRevision'] === 'string'
+			&& activeCall['childInterruptRevision'].length > 0
 	}
 	return false
+}
+
+function validChildApprovalResumeDescriptor(value: unknown): value is ChildApprovalResumeDescriptorV1 {
+	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['schemaVersion', 'kind', 'runId', 'interruptId', 'revision', 'approvalIds'])
+		|| value['schemaVersion'] !== 1 || value['kind'] !== 'child_approval_resume'
+		|| !validIdentifier(value['runId']) || !validIdentifier(value['interruptId']) || typeof value['revision'] !== 'string'
+		|| !Array.isArray(value['approvalIds'])
+		|| !(value['approvalIds'] as unknown[]).every(validIdentifier)) return false
+	const ids = value['approvalIds'] as string[]
+	return new Set(ids).size === ids.length && ids.every((id, index) => index === 0 || codePointCompare(ids[index - 1]!, id) < 0)
+}
+
+function validTargetRouteReceipt(value: unknown, target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>): boolean {
+	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['schemaVersion', 'kind', 'target', 'bindingDigest'])
+		|| value['schemaVersion'] !== 1 || value['kind'] !== 'harness_target_route'
+		|| typeof value['bindingDigest'] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value['bindingDigest'])) return false
+	const receiptTarget = value['target']
+	return isPlainRecord(receiptTarget) && hasOnlyStringKeys(receiptTarget, ['kind', 'id'])
+		&& receiptTarget['kind'] === target.kind && receiptTarget['id'] === target.id
+}
+
+function continuationApprovalIds(node: SuspensionNodeValue): readonly string[] | undefined {
+	const owned: string[] = []
+	if (node.frame.kind === 'agent' && !('kind' in node.frame.state)) {
+		for (const entry of node.frame.state.entries) if (entry.state === 'ready' && entry.approvalId !== undefined) owned.push(entry.approvalId)
+	}
+	for (const child of node.children) {
+		const childIds = continuationApprovalIds(child)
+		if (childIds === undefined) return undefined
+		owned.push(...childIds)
+	}
+	const sorted = owned.sort(codePointCompare)
+	if (new Set(sorted).size !== sorted.length) return undefined
+	if (node.resumeDescriptor !== undefined
+		&& canonicalJson(node.resumeDescriptor.approvalIds as unknown as JsonValue) !== canonicalJson(sorted)) return undefined
+	return Object.freeze(sorted)
 }
 
 function validIdentifierList(value: unknown): value is readonly string[] {
@@ -2608,7 +3067,8 @@ function codePointCompare(left: string, right: string): number {
 	return a.length - b.length
 }
 
-function normalizeInvokeOptions(value: InvokeOptions): InvokeOptions {
+/** @internal Validates and snapshots invocation options before execution. */
+export function normalizeInvokeOptions(value: InvokeOptions): InvokeOptions {
 	if (!hasPlainPrototype(value)) throw invalidInvokeOptions()
 	const allowed = ['signal', 'timeoutMs', 'historyWindow', 'idempotencyKey', 'contextProjection', 'traceparent', 'tracestate', 'metadata', 'resume', 'durable'] as const
 	if (!Reflect.ownKeys(value).every(key => typeof key === 'string' && (allowed as readonly string[]).includes(key))) throw invalidInvokeOptions()
@@ -2621,7 +3081,7 @@ function normalizeInvokeOptions(value: InvokeOptions): InvokeOptions {
 	if (value.tracestate !== undefined && typeof value.tracestate !== 'string') throw invalidInvokeOptions()
 	const contextProjection = value.contextProjection === undefined ? undefined : snapshotContextProjection(value.contextProjection)
 	const metadata = value.metadata === undefined ? undefined : snapshotJsonRecord(value.metadata)
-	const resume = value.resume === undefined ? undefined : snapshotApprovalResume(value.resume)
+	const resume = value.resume === undefined ? undefined : normalizeToolApprovalResume(value.resume)
 	const durable = value.durable === undefined ? undefined : snapshotDurableInvokeOptions(value.durable)
 	return Object.freeze({
 		...(value.signal === undefined ? {} : { signal: value.signal }),
@@ -2702,7 +3162,8 @@ function snapshotJsonRecord(value: Readonly<Record<string, unknown>>): Readonly<
 	return Object.freeze(copy)
 }
 
-function snapshotApprovalResume(value: ToolApprovalResume): ToolApprovalResume {
+/** @internal Strictly validates and freezes a consumer approval resume envelope. */
+export function normalizeToolApprovalResume(value: unknown): ToolApprovalResume {
 	assertApprovalResume(value)
 	return Object.freeze({ type: 'tool-approval', runId: value.runId, interruptId: value.interruptId, revision: value.revision,
 		eventId: value.eventId, decisions: Object.freeze(value.decisions.map(decision => Object.freeze({ approvalId: decision.approvalId,
@@ -2732,13 +3193,16 @@ function hasPlainPrototype(value: unknown): boolean {
 function assertApprovalResume(value: unknown): asserts value is ToolApprovalResume {
 	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['type', 'runId', 'interruptId', 'revision', 'eventId', 'decisions'])
 		|| value['type'] !== 'tool-approval' || !validIdentifier(value['runId']) || !validIdentifier(value['interruptId'])
-		|| typeof value['revision'] !== 'string' || !validIdentifier(value['eventId']) || !Array.isArray(value['decisions'])) {
+		|| !validIdentifier(value['revision']) || !validIdentifier(value['eventId']) || !Array.isArray(value['decisions'])) {
 		throw new ApprovalResumeError('invalid_resume')
 	}
+	const seen = new Set<string>()
 	for (const decision of value['decisions']) {
 		if (!isPlainRecord(decision) || !hasOnlyStringKeys(decision, ['approvalId', 'approved', 'reason'])
 			|| !validIdentifier(decision['approvalId']) || typeof decision['approved'] !== 'boolean'
+			|| seen.has(decision['approvalId'])
 			|| (decision['reason'] !== undefined && typeof decision['reason'] !== 'string')) throw new ApprovalResumeError('invalid_resume')
+		seen.add(decision['approvalId'])
 	}
 }
 

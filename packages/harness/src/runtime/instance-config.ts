@@ -85,12 +85,10 @@ type SandboxFields<Requirements extends RuntimeRequirements, ConfiguredGroups ex
 		? Readonly<{ sandbox: SandboxBinding<Requirements> }> & SandboxBindingOptionsField<Requirements, ConfiguredGroups>
 		: Readonly<{ sandbox?: never; sandboxBinding?: never }>
 
-export type HarnessInstanceConfig<
+export type HarnessRuntimeBindingFields<
 	Requirements extends RuntimeRequirements,
 	ConfiguredGroups extends readonly string[] = readonly [],
-> =
-	[Requirements['hostTools'][number]] extends [never]
-		? Readonly<
+> = Readonly<
 			ModelFields<Requirements>
 			& RequiredField<HasMembers<Requirements['mcpServers']>, 'mcp', Readonly<{
 				[ServerId in Requirements['mcpServers'][number]]: McpBinding
@@ -106,11 +104,18 @@ export type HarnessInstanceConfig<
 			& Readonly<{
 				agentAdmission?: AgentAdmission
 				admission?: ModelAdmission
-				logger?: Logger
-				telemetry?: TelemetryOptions
 			}>
 		>
-		: never
+
+export type HarnessInstanceConfig<
+	Requirements extends RuntimeRequirements,
+	ConfiguredGroups extends readonly string[] = readonly [],
+> = [Requirements['hostTools'][number]] extends [never]
+	? Readonly<HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & {
+		readonly logger?: Logger
+		readonly telemetry?: TelemetryOptions
+	}>
+	: never
 
 /** @internal Frozen, normalized runtime bindings ready for later instance assembly. */
 export interface ValidatedHarnessInstanceBindings {
@@ -157,10 +162,26 @@ export function validateHarnessInstanceConfig(
 	requirements: RuntimeRequirements,
 	value: unknown,
 ): ValidatedHarnessInstanceBindings {
-	if (requirements.hostTools.length > 0) fail('standalone_host_tools_unsupported', 'hostTools')
+	return validateRuntimeConfig(requirements, value, false)
+}
+
+/** @internal Validates hosted application bindings before host-owned fields are injected. */
+export function validateHostedHarnessInstanceConfig(
+	requirements: RuntimeRequirements,
+	value: unknown,
+): ValidatedHarnessInstanceBindings {
+	return validateRuntimeConfig(requirements, value, true)
+}
+
+function validateRuntimeConfig(
+	requirements: RuntimeRequirements,
+	value: unknown,
+	hosted: boolean,
+): ValidatedHarnessInstanceBindings {
+	if (!hosted && requirements.hostTools.length > 0) fail('standalone_host_tools_unsupported', 'hostTools')
 	if (!isPlainRecord(value)) fail('invalid_instance_config', 'config')
 	const config = value
-	unknownKey(config, TOP_LEVEL_KEYS, '')
+	unknownKey(config, hosted ? TOP_LEVEL_KEYS.filter(key => key !== 'logger' && key !== 'telemetry') : TOP_LEVEL_KEYS, '')
 
 	const aliases = Object.keys(requirements.models).sort()
 	const hasModel = own(config, 'model')

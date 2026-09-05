@@ -5,7 +5,7 @@ import { freezePreparedToolCheckpointEntry } from '../approvals/prepared-tool-ch
 import { createDecisionEvidence, runDecisionOperation } from '../decisions/index.js'
 import { decisionResultSchema } from '../decisions/schemas.js'
 import type { DecisionEvidence, DecisionOccurrence } from '../decisions/types.js'
-import { AgentLoopBudgetError, DecisionBlockedError, DecisionEvaluationError, OperationCancelledError, PermissionDeniedError, PolicyDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
+import { AgentLoopBudgetError, DecisionBlockedError, DecisionEvaluationError, HarnessTargetRouteReceiptMismatchError, OperationCancelledError, PermissionDeniedError, PolicyDeniedError, ToolError, ToolNotFoundError, ValidationError, serializeError } from '../errors/index.js'
 import { OperationTimeoutError } from '../errors/index.js'
 import type { AgentExecutionInterceptor, AgentExecutionInterceptorContext, AgentPermissions, BuilderState, ConversationHistory } from '../harness/defineHarness.js'
 import { agentGuardrailsBinding } from '../harness/defineHarness.js'
@@ -17,7 +17,7 @@ import { validateSchema } from '../schema/validation.js'
 import type { AnyAgentDefinition } from '../definitions/types.js'
 import type { AgentEventSink, AgentPipelineEvent } from '../definitions/execution-events.js'
 import type { AgentExecutableBinding, AgentToolInvocationContext } from '../tools/bindings.js'
-import { isHarnessChildTargetInterruption } from '../runtime/steps.js'
+import { createHarnessChildTargetInterruptionGroup, isHarnessChildTargetInterruption } from '../runtime/steps.js'
 import type { ModelHandle } from '../models/registry.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { Logger } from '../logger/index.js'
@@ -172,7 +172,14 @@ export async function executePreparedAgentToolBatch(
 		const settled = await Promise.allSettled(slice.map(item => executeOne(options, item)))
 		for (const result of settled) if (result.status === 'fulfilled') results.push(result.value)
 		const firstFailure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
-		if (firstFailure) throw firstFailure.reason
+		if (firstFailure) {
+			const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			const childInterruptions = failures.flatMap(result => isHarnessChildTargetInterruption(result.reason) ? [result.reason] : [])
+			if (childInterruptions.length === failures.length && childInterruptions.length > 1) {
+				throw createHarnessChildTargetInterruptionGroup(childInterruptions)
+			}
+			throw firstFailure.reason
+		}
 	}
 	return Object.freeze(results)
 }
@@ -204,7 +211,18 @@ export async function resumePreparedAgentToolBatch(
 			if (options.resumeSuspendedChild === undefined) throw new ValidationError('Prepared child continuation requires leaf-first resume.', {
 				where: 'invoke_options', issues: { reason: 'suspended_child_requires_leaf_resume' },
 			})
-			const childOutput = await options.resumeSuspendedChild(entry)
+			let childOutput: JsonValue
+			try {
+				childOutput = await options.resumeSuspendedChild(entry)
+			} catch (error) {
+				if (isTerminalLifecycleError(error)) {
+					try {
+						await options.sink.emit({ type: 'tool.finished', agentId: options.agent.id,
+							toolId: entry.bindingId, callId: entry.call.id, error: serializeError(error) })
+					} catch { /* preserve the terminal lifecycle identity */ }
+				}
+				throw error
+			}
 			const completed = await completeSuspendedAgentTool(options, entry, childOutput)
 			replayed.set(entry.call.id, completed)
 			continue
@@ -249,7 +267,7 @@ export async function completeSuspendedAgentTool(
 	childOutput: JsonValue,
 ): Promise<Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>> {
 	const binding = options.bindings[entry.bindingId]
-	if (!binding || binding.implementationKind !== 'subagent' || binding.id !== entry.bindingId
+	if (!binding || (binding.implementationKind !== 'subagent' && binding.implementationKind !== 'host') || binding.id !== entry.bindingId
 		|| binding.id !== entry.call.name || binding.contractDigest !== entry.bindingContractDigest) {
 		throw new ValidationError('Prepared child binding is unavailable.', {
 			where: 'invoke_options', issues: { reason: 'prepared_child_binding_mismatch' },
@@ -265,14 +283,18 @@ export async function completeSuspendedAgentTool(
 			if (!isJsonValue(parsed)) throw new ValidationError('Tool output validation failed.', { where: 'tool_output', issues: { reason: 'non_json_tool_output' } })
 			output = parsed
 		}
+		if (!isJsonValue(output)) throw new ValidationError('Tool output validation failed.', {
+			where: 'tool_output', issues: { reason: 'non_json_tool_output' },
+		})
 		const interceptor = options.agent.guardrails?.[agentGuardrailsBinding] as AgentExecutionInterceptor | undefined
 		if (interceptor?.afterTool) {
+			const outputSnapshot = freezeJson(copyJson(output))
 			const result = await runStrictAgentHook({ interceptorId: interceptor.id, phase: 'tool_output',
 				occurrence: occurrence(options, binding.id, entry.call.id), signal: lifecycle.signal,
 				decisionTimeoutMs: options.decisionTimeoutMs, allowTransform: true,
 				...(lifecycle.deadline === undefined ? {} : { deadline: lifecycle.deadline }),
 				invoke: decision => interceptor.afterTool?.(interceptorContext(options, interceptor, decision, {
-					toolId: binding.id, callId: entry.call.id, output: freezeJson(copyJson(output)),
+					toolId: binding.id, callId: entry.call.id, output: outputSnapshot,
 				})) })
 			if (result?.decision === 'block') throw blocked(options, interceptor, 'tool_output', binding.id, entry.call.id, result.reasonCode)
 			if (result?.decision === 'transform') output = result.value
@@ -595,7 +617,8 @@ function denied(call: ToolCallSpec, input: JsonValue, error: unknown): PreparedA
 	return Object.freeze({ call, entry: freezePreparedToolCheckpointEntry({ state: 'denied', call, input, error: serialized }) as Extract<PreparedToolCheckpointEntryV1, { state: 'denied' }> })
 }
 
-function isTerminalLifecycleError(error: unknown): error is OperationCancelledError | OperationTimeoutError | DecisionBlockedError | DecisionEvaluationError {
+function isTerminalLifecycleError(error: unknown): error is OperationCancelledError | OperationTimeoutError | DecisionBlockedError | DecisionEvaluationError | HarnessTargetRouteReceiptMismatchError {
 	return error instanceof OperationCancelledError || error instanceof OperationTimeoutError
 		|| error instanceof DecisionBlockedError || error instanceof DecisionEvaluationError
+		|| error instanceof HarnessTargetRouteReceiptMismatchError
 }

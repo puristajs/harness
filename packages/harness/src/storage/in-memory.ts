@@ -663,7 +663,7 @@ function normalizeReplaceCheckpointRequest(value: ReplaceCheckpointRequest): Rep
     || value.replacement.runId !== value.runId || value.replacement.sessionId !== value.sessionId
     || value.replacement.stepId !== value.stepId || value.replacement.leaseId !== value.leaseId
     || value.replacement.workerId !== value.workerId || !positive(value.replacement.attempt)
-    || value.replacement.sequence !== value.expectedSequence + 1
+    || value.replacement.sequence <= value.expectedSequence
     || (value.replacement.output === undefined && Object.prototype.hasOwnProperty.call(value.replacement, 'output'))
     || (value.replacement.replay === undefined && Object.prototype.hasOwnProperty.call(value.replacement, 'replay'))
     || (value.replacement.metadata === undefined && Object.prototype.hasOwnProperty.call(value.replacement, 'metadata'))

@@ -412,7 +412,7 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
       })
       const replacement = Object.freeze({
         runId: created.id, sessionId: created.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
-        stepId: 'approval', input: created.input, attempt: lease.attempt, sequence: 2,
+		stepId: 'approval', input: created.input, attempt: lease.attempt, sequence: 4,
         output: { phase: 'resumed' },
       })
       const request: ReplaceCheckpointRequest = Object.freeze({

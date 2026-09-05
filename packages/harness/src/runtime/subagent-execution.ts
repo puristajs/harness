@@ -126,7 +126,13 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 }>): Promise<ConsumedHarnessTarget<Output>> {
 	const { stream, signal, parentRunId, childInvocationId, relay } = options
 	let terminal: Extract<ExecutionEvent<Output>, { readonly type: 'run.finished' }> | undefined
-	let childRunId: string | undefined
+	const childRunId = childInvocationId
+	const runs = new Map<string, Readonly<{
+		parentRunId: string
+		parentInvocationId: string
+		terminal: boolean
+		lastSequence: number
+	}>>()
 	let iterator: AsyncIterator<ExecutionEvent<Output>>
 	try {
 		iterator = stream[Symbol.asyncIterator]()
@@ -139,7 +145,9 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 			const next = await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => iterator.next())
 			if (next === null || typeof next !== 'object') throw malformedTerminal('invalid_event')
 			if (next.done) {
-				if (terminal === undefined) throw malformedTerminal('missing_terminal')
+				if (terminal === undefined || [...runs.values()].some(run => !run.terminal)) {
+					throw malformedTerminal('missing_terminal')
+				}
 				await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(terminal!))
 				break
 			}
@@ -147,9 +155,27 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 				const reason = isPlainRecord(next.value) && next.value['type'] === 'run.finished' ? 'duplicate_terminal' : 'event_after_terminal'
 				throw malformedTerminal(reason)
 			}
-			const event = validateChildEvent(next.value, childRunId, parentRunId, childInvocationId) as ExecutionEvent<Output>
-			childRunId ??= event.runId
-			if (event.type === 'run.finished') {
+			const event = validateTargetEvent(next.value) as ExecutionEvent<Output>
+			const direct = event.runId === childRunId
+			const expectedParentRunId = direct ? parentRunId : event.parentRunId
+			const expectedParentInvocationId = direct ? childInvocationId : event.parentInvocationId
+			const parent = direct || typeof expectedParentRunId !== 'string' ? undefined : runs.get(expectedParentRunId)
+			if (typeof expectedParentRunId !== 'string' || typeof expectedParentInvocationId !== 'string'
+				|| (!direct && (parent === undefined || parent.terminal))) throw malformedTerminal('invalid_run_correlation')
+			const previous = runs.get(event.runId)
+			if (previous !== undefined && (previous.parentRunId !== expectedParentRunId
+				|| previous.parentInvocationId !== expectedParentInvocationId
+				|| previous.terminal || event.sequence <= previous.lastSequence)) {
+				throw malformedTerminal(previous.terminal ? 'event_after_terminal' : 'invalid_run_correlation')
+			}
+			if (previous === undefined
+				&& (event.parentRunId !== expectedParentRunId || event.parentInvocationId !== expectedParentInvocationId
+					|| (!direct && (event.type !== 'run.started' || event.sequence !== 1)))) {
+				throw malformedTerminal('invalid_run_correlation')
+			}
+			runs.set(event.runId, Object.freeze({ parentRunId: expectedParentRunId,
+				parentInvocationId: expectedParentInvocationId, terminal: event.type === 'run.finished', lastSequence: event.sequence }))
+			if (event.type === 'run.finished' && direct) {
 				terminal = event
 				continue
 			}
@@ -159,7 +185,7 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 		await cleanupChildStream(stream, iterator)
 		throw error
 	}
-	if (terminal === undefined || childRunId === undefined) throw malformedTerminal('missing_terminal')
+	if (terminal === undefined) throw malformedTerminal('missing_terminal')
 	return Object.freeze({ outcome: terminal.outcome, lineage: Object.freeze({ parentRunId, childRunId, childInvocationId }) })
 }
 
@@ -172,20 +198,14 @@ function deriveOpaqueId(kind: 'invocation' | 'session', values: readonly string[
 	return `${kind}_${digest}`
 }
 
-function validateChildEvent(
-	value: unknown,
-	expectedRunId: string | undefined,
-	parentRunId: string,
-	childInvocationId: string,
-): ExecutionEvent<JsonValue> {
+function validateTargetEvent(value: unknown): ExecutionEvent<JsonValue> {
 	if (!isPlainRecord(value) || !isJsonValue(value)) throw malformedTerminal('invalid_event')
 	const type = value['type']
 	const runId = value['runId']
 	if (typeof value['eventId'] !== 'string' || value['eventId'].length === 0
 		|| !Number.isSafeInteger(value['sequence']) || (value['sequence'] as number) < 1) throw malformedTerminal('invalid_event')
 	if (typeof type !== 'string' || !(harnessExecutionEventTypesV1 as readonly string[]).includes(type)) throw malformedTerminal('invalid_event')
-	if (typeof runId !== 'string' || runId.length === 0 || (expectedRunId !== undefined && runId !== expectedRunId)) throw malformedTerminal('invalid_run_correlation')
-	if (value['parentRunId'] !== parentRunId || value['parentInvocationId'] !== childInvocationId) throw malformedTerminal('invalid_run_correlation')
+	if (typeof runId !== 'string' || runId.length === 0) throw malformedTerminal('invalid_run_correlation')
 	if (!validEventBody(value, type)) throw malformedTerminal(type === 'run.finished' ? 'invalid_terminal' : 'invalid_event')
 	return value as unknown as ExecutionEvent<JsonValue>
 }

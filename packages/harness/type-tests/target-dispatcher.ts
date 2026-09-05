@@ -6,13 +6,21 @@ import { createSubagentBinding } from '../src/runtime/subagent-execution.js'
 
 const child = defineAgent('child', { instructions: 'Help.', input: z.object({ id: z.string() }), output: z.object({ answer: z.string() }), prompt: value => ({ role: 'user', content: value.id }) })
 const request: HarnessTargetDispatchRequest<typeof child.contract> = {
-	target: child.contract, input: { id: '1' }, invocation: { sessionId: 's', invocationId: 'i', rootRunId: 'r', parentRunId: 'p', depth: 1, remainingDepth: 0, signal: new AbortController().signal },
+	target: child.contract, input: { id: '1' }, invocation: { sessionId: 's', invocationId: 'i', rootRunId: 'r', parentRunId: 'p', parentAgentId: 'parent-agent', depth: 1, remainingDepth: 0, signal: new AbortController().signal },
 }
 const exactInput: string = request.input.id
 void exactInput
 // @ts-expect-error exact target input is enforced
 const badRequest: HarnessTargetDispatchRequest<typeof child.contract> = { ...request, input: { id: 1 } }
 void badRequest
+
+// @ts-expect-error public target dispatch always represents a nested agent or workflow call
+const missingParentTarget: HarnessTargetDispatchRequest<typeof child.contract> = { ...request, invocation: { sessionId: 's', invocationId: 'i', rootRunId: 'r', parentRunId: 'p', depth: 1, remainingDepth: 0, signal: new AbortController().signal } }
+void missingParentTarget
+
+// @ts-expect-error nested dispatch ancestry identifies exactly one parent target
+const conflictingParentTarget: HarnessTargetDispatchRequest<typeof child.contract> = { ...request, invocation: { ...request.invocation, parentAgentId: 'parent-agent', parentWorkflowId: 'parent-workflow' } }
+void conflictingParentTarget
 
 // @ts-expect-error only remaining depth crosses; local loop budgets are not transport fields
 request.invocation.maxSteps = 3

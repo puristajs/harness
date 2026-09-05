@@ -17,6 +17,10 @@
     "./adapter": {
       "types": "./dist/adapter/index.d.ts",
       "import": "./dist/adapter/index.js"
+    },
+    "./integrator": {
+      "types": "./dist/integrator/index.d.ts",
+      "import": "./dist/integrator/index.js"
     }
   },
   "files": [

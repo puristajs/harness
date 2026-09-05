@@ -19,7 +19,7 @@ import { validateSchema } from '../schema/validation.js'
 import type { ResolvedHarnessExecutionDefaults } from '../runtime/execution-defaults.js'
 import type { HarnessModelCallContext } from '../runtime/model-call-context.js'
 import type { AgentExecutableBinding, AgentToolInvocationContext } from '../tools/bindings.js'
-import { attachHarnessChildTargetInterruptionState, isHarnessChildTargetInterruption } from '../runtime/steps.js'
+import { attachHarnessChildTargetInterruptionState, isHarnessChildTargetInterruptionControl } from '../runtime/steps.js'
 import { applyToolExposure } from '../governance/index.js'
 import { executePreparedAgentToolBatch, prepareAgentToolBatch, resumePreparedAgentToolBatch, runStrictAgentHook } from './agent-tool-pipeline.js'
 import type { AgentInterceptorRuntimeProjection } from './agent-tool-pipeline.js'
@@ -158,7 +158,13 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 				...(pendingResume.resumeSuspendedChild === undefined ? {} : { resumeSuspendedChild: pendingResume.resumeSuspendedChild }),
 			} as const
 			installProviderContinuation(messages, state.providerContinuation)
-			const results = await resumePreparedAgentToolBatch(pipelineOptions, state.entries, pendingResume.decisions ?? [])
+			let results: Awaited<ReturnType<typeof resumePreparedAgentToolBatch>>
+			try {
+				results = await resumePreparedAgentToolBatch(pipelineOptions, state.entries, pendingResume.decisions ?? [])
+			} catch (error) {
+				if (isHarnessChildTargetInterruptionControl(error)) attachHarnessChildTargetInterruptionState(error, state)
+				throw error
+			}
 			messages.push(...results.map(result => result.message))
 			toolCallsUsed += state.entries.length
 			subagentCallsUsed += state.entries.filter(entry => 'bindingId' in entry && options.bindings[entry.bindingId]?.implementationKind === 'subagent').length
@@ -325,7 +331,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 				onChildInterruption: entry => { suspendedChild = entry },
 			}, prepared)
 		} catch (error) {
-			if (isHarnessChildTargetInterruption(error) && suspendedChild !== undefined) {
+			if (isHarnessChildTargetInterruptionControl(error) && suspendedChild !== undefined) {
 				const completedMessages = [...checkpointEntries.values()].flatMap(entry => entry.state === 'completed' ? [entry.modelMessage] : [])
 				const state = freezeSuspendedAgentTurnState({
 					rootRunId: options.invocation.rootRunId, agentRunId: options.invocation.runId,
@@ -350,7 +356,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 		agent_id: options.agent.id, reason: 'max_steps', limit: limits.maxSteps,
 	})
 	} catch (error) {
-		if (error instanceof ToolApprovalPendingError || isHarnessChildTargetInterruption(error)) throw error
+		if (error instanceof ToolApprovalPendingError || isHarnessChildTargetInterruptionControl(error)) throw error
 		await options.sink.emit({ type: 'agent.finished', agentId: options.agent.id, at: new Date().toISOString(), modelAlias: options.modelAlias,
 			error: serializeError(error), ...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) })
 		throw error

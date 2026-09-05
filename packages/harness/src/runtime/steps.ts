@@ -5,15 +5,65 @@ import type { DurableRunLease, RunCheckpoint } from '../storage/execution.js'
 import { abortError } from './abort.js'
 import type { RunOutcome } from '../harness/defineHarness.js'
 import type { SuspendedAgentTurnStateV1 } from '../approvals/prepared-tool-checkpoint.js'
+import { ToolApprovalPendingError, type ToolApprovalInterrupt } from '../approvals/index.js'
 
 const harnessChildTargetInterruptionBrand: unique symbol = Symbol('harness.child-target-interruption')
+const harnessChildTargetInterruptionGroupBrand: unique symbol = Symbol('harness.child-target-interruption-group')
 const harnessChildTargetInterruptionState: unique symbol = Symbol('harness.child-target-interruption-state')
 export interface HarnessChildTargetInterruption {
 	readonly [harnessChildTargetInterruptionBrand]: true
-	readonly [harnessChildTargetInterruptionState]: { preparedState?: SuspendedAgentTurnStateV1 }
+	readonly [harnessChildTargetInterruptionState]: { preparedState?: SuspendedAgentTurnStateV1; hostFrame?: SuspendedHostToolFrameV1 }
 	readonly childInvocationId: string
+	readonly resumeDescriptor: ChildApprovalResumeDescriptorV1
 	readonly outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>
 	readonly preparedState: SuspendedAgentTurnStateV1 | undefined
+	readonly hostFrame: SuspendedHostToolFrameV1 | undefined
+}
+
+/** @internal One parent batch containing multiple independently resumable child leaves. */
+export interface HarnessChildTargetInterruptionGroup {
+	readonly [harnessChildTargetInterruptionGroupBrand]: true
+	readonly interruptions: readonly HarnessChildTargetInterruption[]
+	readonly interrupt: HarnessChildTargetInterruption['outcome']['interrupt']
+}
+
+/** @internal Control value propagated by either one interrupted child or a sibling group. */
+export type HarnessChildTargetInterruptionControl = HarnessChildTargetInterruption | HarnessChildTargetInterruptionGroup
+
+/** @internal Content-free data required to resume one exact interrupted child. */
+export interface ChildApprovalResumeDescriptorV1 {
+	readonly schemaVersion: 1
+	readonly kind: 'child_approval_resume'
+	readonly runId: string
+	readonly interruptId: string
+	readonly revision: string
+	readonly approvalIds: readonly string[]
+}
+
+/** @internal Exact persisted parent frame for an interrupted host nested call. */
+export interface SuspendedHostToolFrameV1 {
+	readonly kind: 'host-tool'
+	readonly runId: string
+	readonly agentId: string
+	readonly invocationId: string
+	readonly hostToolInvocationId: string
+	readonly toolId: string
+	readonly callId: string
+	readonly input: JsonValue
+	readonly bindingId: string
+	readonly bindingContractDigest: string
+	readonly toolStarted: true
+	readonly activeNestedCall: Readonly<{
+		readonly callId: string
+		readonly target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+		readonly route: import('../ports/target-dispatcher.js').HarnessTargetRouteReceiptV1
+		readonly input: JsonValue
+		readonly childRunId: string
+		readonly childInvocationId: string
+		readonly childSessionId: string
+		readonly childInterruptId: string
+		readonly childInterruptRevision: string
+	}>
 }
 
 /** @internal Creates the only trusted child-interruption control value. */
@@ -22,17 +72,52 @@ export function createHarnessChildTargetInterruption(
 	outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>,
 ): HarnessChildTargetInterruption {
 	if (childInvocationId.length === 0) throw new TypeError('Child invocation id is required.')
-	const state: { preparedState?: SuspendedAgentTurnStateV1 } = {}
+	if (outcome.interrupt.type !== 'tool-approval') throw new TypeError('Child interruption is not approval-resumable.')
+	const approvalIds = [...outcome.interrupt.requests.map(request => request.approvalId)].sort(codePointCompare)
+	if (new Set(approvalIds).size !== approvalIds.length) throw new TypeError('Child approval interruption is invalid.')
+	const resumeDescriptor = Object.freeze({ schemaVersion: 1 as const, kind: 'child_approval_resume' as const,
+		runId: outcome.runId, interruptId: outcome.interrupt.id, revision: outcome.interrupt.revision,
+		approvalIds: Object.freeze(approvalIds) })
+	const state: { preparedState?: SuspendedAgentTurnStateV1; hostFrame?: SuspendedHostToolFrameV1 } = {}
 	return Object.freeze({ [harnessChildTargetInterruptionBrand]: true as const, [harnessChildTargetInterruptionState]: state,
-		childInvocationId, outcome, get preparedState() { return state.preparedState } })
+		childInvocationId, resumeDescriptor, outcome, get preparedState() { return state.preparedState }, get hostFrame() { return state.hostFrame } })
+}
+
+/** @internal Combines concurrently interrupted siblings without losing their individual resume descriptors. */
+export function createHarnessChildTargetInterruptionGroup(
+	interruptions: readonly HarnessChildTargetInterruption[],
+): HarnessChildTargetInterruptionGroup {
+	if (interruptions.length < 2) throw new TypeError('At least two child interruptions are required.')
+	const childInvocationIds = interruptions.map(interruption => interruption.childInvocationId)
+	if (new Set(childInvocationIds).size !== childInvocationIds.length) throw new TypeError('Child interruptions must be distinct.')
+	const requests = interruptions.flatMap(interruption => {
+		if (interruption.outcome.interrupt.type !== 'tool-approval') throw new TypeError('Child interruption is not approval-resumable.')
+		return interruption.outcome.interrupt.requests
+	})
+	const approvalIds = requests.map(request => request.approvalId)
+	if (new Set(approvalIds).size !== approvalIds.length) throw new TypeError('Child approval interruption ownership overlaps.')
+	const interrupt = new ToolApprovalPendingError(requests, Object.freeze([])).interrupt
+	return Object.freeze({ [harnessChildTargetInterruptionGroupBrand]: true as const,
+		interruptions: Object.freeze([...interruptions]), interrupt })
+}
+
+/** @internal Attaches the host parent frame without changing the interruption identity. */
+export function attachHarnessChildTargetHostFrame(
+	interruption: HarnessChildTargetInterruption,
+	frame: SuspendedHostToolFrameV1,
+): HarnessChildTargetInterruption {
+	interruption[harnessChildTargetInterruptionState].hostFrame = frame
+	return interruption
 }
 
 /** @internal Attaches the parent frame without changing the branded control identity. */
 export function attachHarnessChildTargetInterruptionState(
-	interruption: HarnessChildTargetInterruption,
+	interruption: HarnessChildTargetInterruptionControl,
 	state: SuspendedAgentTurnStateV1,
-): HarnessChildTargetInterruption {
-	interruption[harnessChildTargetInterruptionState].preparedState = state
+): HarnessChildTargetInterruptionControl {
+	for (const leaf of harnessChildTargetInterruptions(interruption)) {
+		leaf[harnessChildTargetInterruptionState].preparedState = state
+	}
 	return interruption
 }
 
@@ -40,6 +125,35 @@ export function attachHarnessChildTargetInterruptionState(
 export function isHarnessChildTargetInterruption(value: unknown): value is HarnessChildTargetInterruption {
 	return typeof value === 'object' && value !== null
 		&& (value as Partial<HarnessChildTargetInterruption>)[harnessChildTargetInterruptionBrand] === true
+}
+
+/** @internal Recognizes either form of child-interruption control. */
+export function isHarnessChildTargetInterruptionControl(value: unknown): value is HarnessChildTargetInterruptionControl {
+	return isHarnessChildTargetInterruption(value) || typeof value === 'object' && value !== null
+		&& (value as Partial<HarnessChildTargetInterruptionGroup>)[harnessChildTargetInterruptionGroupBrand] === true
+}
+
+/** @internal Returns the ordered leaf controls owned by a child interruption. */
+export function harnessChildTargetInterruptions(
+	value: HarnessChildTargetInterruptionControl,
+): readonly HarnessChildTargetInterruption[] {
+	return isHarnessChildTargetInterruption(value) ? Object.freeze([value]) : value.interruptions
+}
+
+/** @internal Returns the public root interrupt represented by one or more child leaves. */
+export function harnessChildTargetInterrupt(
+	value: HarnessChildTargetInterruptionControl,
+): ToolApprovalInterrupt {
+	const interrupt = isHarnessChildTargetInterruption(value) ? value.outcome.interrupt : value.interrupt
+	if (interrupt.type !== 'tool-approval') throw new TypeError('Child interruption is not approval-resumable.')
+	return interrupt
+}
+
+function codePointCompare(left: string, right: string): number {
+	const a = Array.from(left, char => char.codePointAt(0)!)
+	const b = Array.from(right, char => char.codePointAt(0)!)
+	for (let index = 0; index < Math.min(a.length, b.length); index++) if (a[index] !== b[index]) return a[index]! - b[index]!
+	return a.length - b.length
 }
 
 /** Contract-only checkpoint function supplied by the durable execution owner. */
@@ -83,6 +197,10 @@ export interface DurableWorkflowContextOptions {
   readonly onStepCommit?: (commit: DurableStepCommit) => Promise<DurableReplayCheckpoint | undefined>
   /** Runs only after the corresponding storage checkpoint is durably committed. */
   readonly onStepCommitted?: (checkpoint: RunCheckpoint) => Promise<void>
+	/** @internal Optional metadata projection for runtime-owned step namespaces. */
+	readonly checkpointMetadata?: (stepId: string) => Readonly<Record<string, JsonValue>> | undefined
+	/** @internal Shared run-scoped allocator when multiple checkpoint namespaces coexist. */
+	readonly nextSequence?: () => number
 }
 
 /** Retry policy for a single explicit workflow step. */
@@ -167,12 +285,13 @@ export function createDurableWorkflowContext(
 
       const output = await runStepWithRetry(fn, stepOptions.retry, options.signal)
       assertJsonSerializable(output, stepId)
-      sequence += 1
+	  sequence = options.nextSequence?.() ?? sequence + 1
       // Workspace state is written before the storage checkpoint, and the
       // returned reference is linked on that checkpoint.
       const replayCheckpoint = options.onStepCommit
         ? await options.onStepCommit({ stepId, sequence, attempt: lease.attempt, output })
         : undefined
+	  const metadata = options.checkpointMetadata?.(stepId)
       const checkpoint: RunCheckpoint = {
         runId: lease.runId,
         sessionId: lease.sessionId,
@@ -184,6 +303,7 @@ export function createDurableWorkflowContext(
         sequence,
         output,
         ...(replayCheckpoint ? { replay: replayCheckpoint } : {}),
+		...(metadata === undefined ? {} : { metadata }),
       }
       await storage.commitCheckpoint(checkpoint)
       await options.onStepCommitted?.(checkpoint)

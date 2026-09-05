@@ -187,13 +187,21 @@ export function bindMcpTool<Input extends ModelSchema, Output extends Schema>(
 		invokeValidated: (context, value) => invoke(context, definition.remoteName, value) })
 }
 
-/** @internal Reserves a host-aware binding without a standalone call path. */
-export function bindHostToolSeam(definition: HostToolDefinition): Omit<AgentExecutableBinding, 'invokeValidated'> {
+/** @internal Creates one run-scoped host-aware binding through the canonical finalizer. */
+export function bindHostTool(
+	definition: HostToolDefinition<any, any, any, any>,
+	invoke: (context: AgentToolInvocationContext, input: JsonValue, wireInput: JsonValue) => Promise<unknown>,
+): AgentExecutableBinding {
 	const identity = requireIdentity(definition, 'host-tool')
-	const binding = createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
+	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
 		implementationKind: 'host', definitionIdentity: identity, digestDefinition: ['host-tool', definition.id],
 		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
-		invokeValidated: async () => { throw new TypeError('Host tool is not bound.') } })
+		invokeValidated: invoke })
+}
+
+/** @internal Reserves a host-aware binding without a standalone call path. */
+export function bindHostToolSeam(definition: HostToolDefinition<any, any, any, any>): Omit<AgentExecutableBinding, 'invokeValidated'> {
+	const binding = bindHostTool(definition, async () => { throw new TypeError('Host tool is not bound.') })
 	const { invokeValidated: _removed, ...seam } = binding
 	return Object.freeze(seam)
 }

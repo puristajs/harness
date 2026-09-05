@@ -1380,9 +1380,12 @@ interrupt id, revision, and event id. Once the child completes, its validated
 output becomes the delegation-tool result and the suspended parent loop
 continues. A child interrupt never becomes a tool error.
 
-The generated subagent binding consumes exactly one `run.finished` event from
-the child stream after relaying every child event in order. A missing or
-duplicate terminal event is `ValidationError{where:'model_response'}`. Terminal
+The generated subagent binding consumes exactly one direct-child `run.finished`
+event from the child stream after relaying every child event in order. A target
+stream may also contain correlated descendant `run.finished` events; those are
+relayed as lifecycle data and never replace the direct child's outcome. A
+missing or duplicate direct-child terminal event is
+`ValidationError{where:'model_response'}`. Terminal
 outcomes project as follows:
 
 - `completed` returns the already validated child output as the tool result;
@@ -1835,9 +1838,11 @@ function consumeHarnessTargetStream<Output>(options: Readonly<{
 }>): Promise<ConsumedHarnessTarget<Output>>
 ```
 
-It validates correlation and event shapes, requires exactly one terminal,
-rejects events after terminal, relays every valid event in order including the
-terminal exactly once, cleans up iterator and stream on failure or cancellation,
+It validates correlation and event shapes, requires exactly one terminal for
+the directly dispatched target, accepts correlated descendant runs with their
+own terminals, rejects an event after the terminal of its own run, relays every
+valid event in order including each terminal exactly once, cleans up iterator
+and stream on failure or cancellation,
 and returns the already target-validated terminal plus lineage without applying
 a caller-specific error mapping. Subagents and workflows both use it. A second
 terminal consumer or copied validation switch is forbidden. The model-facing
@@ -3980,7 +3985,7 @@ The v1 event mapping is fixed:
 Subagent lifecycle uses the existing status data part with child correlation;
 it never masquerades as a model tool. An event that the pinned adapter does not
 understand is ignored and counted by content-free adapter telemetry. A missing
-or duplicate terminal event is a protocol error. RAG citations remain part of
+or duplicate direct-target terminal event is a protocol error. RAG citations remain part of
 the standard retrieval tool output `{ sources: [{ title, url, excerpt? }] }`;
 the reference UI renders that tool output with AI Elements `Sources`. The
 adapter does not invent a custom citation protocol or claim standard

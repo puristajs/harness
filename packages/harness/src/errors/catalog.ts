@@ -520,6 +520,51 @@ export class WorkflowChildTargetError extends HarnessError {
 	}
 }
 
+export interface HostNestedTargetStoredErrorV1 {
+	readonly code: 'HOST_NESTED_TARGET_FAILED'
+	readonly message: 'Host nested target failed.'
+	readonly category: 'internal'
+	readonly retriable: false
+	readonly meta: Readonly<{
+		reason: 'target_failed'; agent_id: string; tool_id: string; tool_call_id: string; call_id: string
+		target_kind: 'agent' | 'workflow'; target_id: string
+	}>
+}
+
+/** A target invoked by one host tool returned a failed terminal. */
+export class HostNestedTargetError extends HarnessError {
+	public constructor(meta: HostNestedTargetStoredErrorV1['meta'], cause?: unknown) {
+		super({ code: 'HOST_NESTED_TARGET_FAILED', category: 'internal', retriable: false,
+			message: 'Host nested target failed.', meta, cause })
+	}
+}
+
+/** A host nested call id was reused with another target or input. */
+export class HostNestedTargetReplayConflictError extends HarnessError {
+	public constructor(meta: {
+		reason: 'target_mismatch' | 'input_mismatch'; agent_id: string; tool_id: string; tool_call_id: string; call_id: string
+		expected_target_kind: 'agent' | 'workflow'; expected_target_id: string
+		received_target_kind: 'agent' | 'workflow'; received_target_id: string
+	}) {
+		super({ code: 'HOST_NESTED_TARGET_REPLAY_CONFLICT', category: 'validation', retriable: false,
+			message: 'Host nested call id conflicts with an existing logical target call.', meta })
+	}
+}
+
+/** A persisted target route no longer matches the dispatcher's immutable binding. */
+export class HarnessTargetRouteReceiptMismatchError extends HarnessError {
+	public constructor(meta: {
+		reason: 'route_receipt_mismatch'
+		target_kind: 'agent' | 'workflow'
+		target_id: string
+	}) {
+		super({
+			code: 'HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH', category: 'validation', retriable: false,
+			message: 'Persisted target route does not match the current dispatcher binding.', meta,
+		})
+	}
+}
+
 /** A durable task id was reused with another stable start tuple. */
 export class ChildTaskConflictError extends HarnessError {
 	public constructor(meta: { reason: 'idempotency_key_reused'; workflow_id: string; parent_run_id: string; task_id: string; agent_id: string; call_id: string }) {

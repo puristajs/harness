@@ -11,6 +11,7 @@ import { defineTool } from '../src/definitions/tool.js'
 import { z } from 'zod'
 import { resolveHarnessExecutionDefaults } from '../src/runtime/execution-defaults.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
+import { createHostOwnerToken, defineHostTool } from '../src/integrator/index.js'
 
 const emptyRequirements = requirements()
 
@@ -45,6 +46,24 @@ function errorOf(run: () => unknown): HarnessConfigError {
 }
 
 describe('exact Harness instance requirements', () => {
+	it('derives the exact deterministic host tool inventory', () => {
+		const owner = createHostOwnerToken<object>()
+		const first = defineHostTool(owner, 'zetaHost', { description: 'Zeta.', input: z.string(), output: z.string(),
+			async handler(_context, input) { return input } })
+		const second = defineHostTool(owner, 'alphaHost', { description: 'Alpha.', input: z.string(), output: z.string(),
+			async handler(_context, input) { return input } })
+		const agent = defineAgent('hostRequirementsAgent', { instructions: 'Use host tools.', tools: [first, second] })
+		const required = defineHarness({ name: 'hostRequirements', revision: 'v1' }).addAgent(agent).requirements
+		expect(required.hostTools).toEqual(['alphaHost', 'zetaHost'])
+		expect(required.storage.durable).toBe(true)
+		expect(Object.isFrozen(required.hostTools)).toBe(true)
+		expect(() => defineHarness({ name: 'unversionedHostRequirements' }).addAgent(agent)).toThrowError(expect.objectContaining({
+			meta: expect.objectContaining({ reason: 'missing_harness_revision' }),
+		}))
+		const portable = defineAgent('portableRequirementsAgent', { instructions: 'No host tools.' })
+		const withoutHost = defineHarness({ name: 'portableRequirements' }).addAgent(portable).requirements
+		expect(withoutHost.hostTools).toEqual([])
+	})
 	it('derives guidance and runtime Skill requirements without granting execution', () => {
 		const guidance = defineSkill('guidance', { directory: new URL('file:///tmp/guidance') })
 		const runtime = defineSkill('runtime', { directory: new URL('file:///tmp/runtime'), runtimes: ['python', 'shell'] as const })

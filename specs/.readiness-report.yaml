@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:64f3a5b7838485d406d8266f7482c5c665c86364b7857f4b76c3c7a7fd03470a"
+      scope_digest: "sha256:f75e165d333b7a376751caa2ab0737a80fc74a140d7d26e3a76130edf674c54c"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -457,7 +457,7 @@ follow_up_waves:
         - specs/README.md
         - ../purista/specs/20-agents/88-harness-first-service-integration.md
     summary:
-      updated_at: "2026-09-04"
+      updated_at: "2026-09-05"
       purpose: "Approve the Harness v4 composition model and its PURISTA host boundary: standalone immutable tool, Skill, MCP server, agent, workflow, catalog, and Harness definitions; exact inferred runtime requirements; typed local and hosted target dispatch; standard streaming and approval behavior; and address-first PURISTA mounting."
       implementation_status: ready
     precedence: "Spec 42 supersedes conflicting Harness construction, registration, module, agent, workflow, tool, Skill, runtime-instantiation, and host-binding APIs. PURISTA spec 88 is the authoritative companion projection of the same contracts into ServiceBuilder, EventBridge, Hono, CLI, export metadata, and testing."
@@ -499,6 +499,9 @@ follow_up_waves:
       - review: "independent hosted nested-call continuation identity review"
         status: passed_after_contract_repair
         evidence: "PASS after the host frame retained the exact nested target, wire input, run, invocation, and session tuple and resume was required to recompute every derived identity before child dispatch or another effect."
+      - review: "independent H4-009 hosted runtime implementation review"
+        status: passed_after_runtime_repair
+        evidence: "PASS after max-depth enforcement, trusted trace propagation on resume, global checkpoint sequencing, exact direct-run identity, strict in-flight call tuple validation, complete descendant stream lifecycles, and unconditional hosted-environment cleanup were verified."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:

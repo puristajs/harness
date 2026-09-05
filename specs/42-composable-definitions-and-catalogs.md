@@ -1218,6 +1218,7 @@ interface HarnessTargetDispatchStream<O> extends AsyncIterable<ExecutionEvent<O>
 }
 
 interface HarnessTargetDispatcher {
+  assertTarget(target: AnyHarnessTargetContract): void
   open<Target extends AnyHarnessTargetContract>(
     request: HarnessTargetDispatchRequest<Target>,
   ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
@@ -1240,6 +1241,13 @@ and explicitly declared remote contracts to host-private routes. `open` rejects
 an unknown or structurally copied contract before dispatch and never resolves
 solely by `(kind, id)`. Route values are opaque to Harness; PURISTA stores the
 service/version/target address in its dispatcher table.
+
+`assertTarget` performs that exact hidden-identity membership check without
+opening a stream, resolving an address, allocating an id, or producing any
+other effect. It uses the same immutable table and canonical unknown-target
+error as `open`; `open` still repeats the check at its own boundary. Durable
+callers invoke `assertTarget` before checkpoint lookup so replay cannot return
+saved output for an undeclared capability.
 
 `open` is the single nested-target primitive. The caller consumes the stream to
 its undroppable terminal outcome and relays child events with their child run
@@ -1842,8 +1850,11 @@ closed validators.
 `revision` is an application-controlled deployment revision using the bounded
 configuration-reference rule. It is required exactly when the compiled
 `RuntimeRequirements.storage.durable` value is `true`. Definitions that enable
-approvals, external waits, durable targets, or another resumable interrupt must
-therefore contribute that durable-storage requirement during graph compilation.
+approvals, external waits, durable targets, host-aware tools, or another
+resumable interrupt must therefore contribute that durable-storage requirement
+during graph compilation. Every host-aware tool receives checkpoint and nested
+target helpers, so its presence conservatively makes the graph durable without
+another authoring flag.
 A graph whose durable-storage requirement is `false` may omit it. The compiler
 validates this invariant after every immutable `add*` and `use` operation, and
 every returned Harness definition preserves the supplied revision. A deployment
@@ -2141,12 +2152,21 @@ Requirement derivation follows this order:
   a workflow's child-task sandbox-group declaration contributes each literal
   group it permits its handler to select;
 - agent/workflow `durable: true`, permission/governance approvals, Guardrail
-  `requirements.durable:true`, and durable child tasks require durable storage;
+  `requirements.durable:true`, durable child tasks, and any host-aware tool
+  require durable storage;
 - definition `workspace: true` requires a workspace binding;
 - workflow `models` declares embeddings, reranking, image, speech, and video;
 - image, speech, and video generation requires an artifact store; and
 - `AgentAdmission` and provider `ModelAdmission` are optional deployment
   controls and are never inferred as required.
+
+Canonical runtime-requirement serialization includes the sorted host-tool ids
+and the literal marker `host-nested-target-checkpoint.v1` whenever that list is
+nonempty. The marker records the fixed durability policy; the owner token,
+opaque invocation, handler context, dispatcher, logger, telemetry, and concrete
+runtime bindings never enter a graph or requirement digest. Every target in a
+host-aware graph uses lease-backed execution because a host tool can occur
+through any reachable agent or workflow path.
 
 Default-loop agents produce text or structured output. Embeddings, reranking,
 image, speech, and video generation belong in workflows through their declared
@@ -2245,44 +2265,43 @@ type SandboxFields<
       & SandboxBindingOptionsField<Requirements, ConfiguredGroups>
     : Readonly<{ sandbox?: never; sandboxBinding?: never }>
 
+type HarnessRuntimeBindingFields<
+  Requirements extends RuntimeRequirements,
+  const ConfiguredGroups extends readonly string[] = readonly [],
+> = ModelFields<Requirements>
+  & RequiredField<
+    HasMembers<Requirements['mcpServers']>,
+    'mcp',
+    Readonly<{
+      [ServerId in Requirements['mcpServers'][number]]: McpBinding
+    }>
+  >
+  & RequiredField<Requirements['storage']['durable'], 'storage', HarnessStorage>
+  & RequiredField<
+    Or<
+      HasMembers<Requirements['memory']['capabilities']>,
+      HasMembers<Requirements['memory']['modelAliases']>
+    >,
+    'memory',
+    MemoryEngine
+  >
+  & SandboxFields<Requirements, ConfiguredGroups>
+  & RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
+  & RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
+  & Readonly<{
+    agentAdmission?: AgentAdmission
+    admission?: ModelAdmission
+  }>
+
 type HarnessInstanceConfig<
   Requirements extends RuntimeRequirements,
-  ConfiguredGroups extends readonly string[] = readonly [],
-> =
-  [Requirements['hostTools'][number]] extends [never]
-    ? Readonly<
-        ModelFields<Requirements>
-        & RequiredField<
-          HasMembers<Requirements['mcpServers']>,
-          'mcp',
-          Readonly<{
-            [ServerId in Requirements['mcpServers'][number]]: McpBinding
-          }>
-        >
-        & RequiredField<
-          Requirements['storage']['durable'],
-          'storage',
-          HarnessStorage
-        >
-        & RequiredField<
-          Or<
-            HasMembers<Requirements['memory']['capabilities']>,
-            HasMembers<Requirements['memory']['modelAliases']>
-          >,
-          'memory',
-          MemoryEngine
-        >
-        & SandboxFields<Requirements, ConfiguredGroups>
-        & RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
-        & RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
-        & Readonly<{
-          agentAdmission?: AgentAdmission
-          admission?: ModelAdmission
-          logger?: Logger
-          telemetry?: TelemetryOptions
-        }>
-      >
-    : never
+  const ConfiguredGroups extends readonly string[] = readonly [],
+> = [Requirements['hostTools'][number]] extends [never]
+  ? Readonly<HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & {
+      logger?: Logger
+      telemetry?: TelemetryOptions
+    }>
+  : never
 ```
 
 The model cases are exact:
@@ -2851,7 +2870,7 @@ interface SessionChildTasks {
   ): Promise<readonly ChildTaskStatus[]>
 }
 
-interface HarnessSession<Contracts extends HarnessContracts> {
+interface HarnessSession<Contracts extends HarnessContracts<any, any>> {
   readonly id: string
   readonly agents: Readonly<{
     [Id in keyof Contracts['agents']]:
@@ -2882,7 +2901,7 @@ type SessionOptionsFor<Requirements extends RuntimeRequirements> =
       }>
 
 interface HarnessInstance<
-  Contracts extends HarnessContracts,
+  Contracts extends HarnessContracts<any, any>,
   Requirements extends RuntimeRequirements,
 > {
   getSession(
@@ -3019,7 +3038,12 @@ normative host boundary:
 
 ```ts
 declare const hostOwnerBrand: unique symbol
-type HostOwnerToken = Readonly<{ [hostOwnerBrand]: true }>
+type HostOwnerToken<HostContext = unknown> = Readonly<{
+  [hostOwnerBrand]: (context: HostContext) => HostContext
+}>
+
+declare function createHostOwnerToken<HostContext>():
+  HostOwnerToken<HostContext>
 
 interface HarnessNestedTargetInvoker {
   run<Target extends AnyHarnessTargetContract>(
@@ -3045,6 +3069,7 @@ type HarnessHostContextRequest<HostInvocation> = Readonly<{
   runId: string
   rootRunId: string
   invocationId: string
+  hostToolInvocationId: string
   parentRunId?: string
   depth: number
   remainingDepth: number
@@ -3055,7 +3080,7 @@ type HarnessHostContextRequest<HostInvocation> = Readonly<{
 }>
 
 interface HarnessHostBindings<HostInvocation, HostContext> {
-  readonly hostOwner: HostOwnerToken
+  readonly hostOwner: HostOwnerToken<HostContext>
   readonly targetDispatcher: HarnessTargetDispatcher
   readonly projectIdentity:
     (hostInvocation: HostInvocation) => HarnessIdentity | undefined
@@ -3068,18 +3093,40 @@ interface HarnessHostBindings<HostInvocation, HostContext> {
   readonly telemetry: TelemetryShim
 }
 
-type HostedTargetOf<Contracts extends HarnessContracts> =
+type HostedTargetOf<Contracts extends HarnessContracts<any, any>> =
   | Contracts['agents'][keyof Contracts['agents']]
   | Contracts['workflows'][keyof Contracts['workflows']]
 
-type HostedTargetRequest<Target, HostInvocation> = Readonly<{
-    target: Target
-    input: HarnessValidatedTargetInput<Target>
-    invokeOptions: InvokeOptions & Readonly<{ sessionId: string }>
-    hostInvocation: HostInvocation
-  }>
+type HostedHarnessInstanceConfig<
+  Requirements extends RuntimeRequirements,
+  const ConfiguredGroups extends readonly string[] = readonly [],
+> = Readonly<HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & {
+  logger?: never
+  telemetry?: never
+}>
 
-interface HostedHarnessInstance<Contracts extends HarnessContracts, HostInvocation> {
+type HostedInvokeOptions = Readonly<
+  Omit<InvokeOptions, 'traceparent' | 'tracestate'> & {
+    sessionId: string
+    traceparent?: never
+    tracestate?: never
+  }
+>
+
+type HostedTargetRequest<
+  Target extends AnyHarnessTargetContract,
+  HostInvocation,
+> = Readonly<{
+  target: Target
+  input: HarnessValidatedTargetInput<Target>
+  invokeOptions: HostedInvokeOptions
+  hostInvocation: HostInvocation
+}>
+
+interface HostedHarnessInstance<
+  Contracts extends HarnessContracts<any, any>,
+  HostInvocation,
+> {
   runHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
   ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
@@ -3088,16 +3135,94 @@ interface HostedHarnessInstance<Contracts extends HarnessContracts, HostInvocati
   ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
   close(): Promise<void>
 }
+
+declare function instantiateHostedHarness<
+  Catalog extends HarnessCatalogView<any, any, any, any, any, any>,
+  HostInvocation,
+  HostContext,
+  const ConfiguredGroups extends readonly string[] = readonly [],
+>(
+  definition: HarnessDefinition<Catalog>,
+  config: HostedHarnessInstanceConfig<
+    Catalog['requirements'],
+    ConfiguredGroups
+  >,
+  hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
+): Promise<HostedHarnessInstance<Catalog['contracts'], HostInvocation>>
 ```
+
+Hosted execution extends the same private runtime kernel used by standalone
+execution. The Harness definition retains its compiled graph in package-private
+metadata; hosted instantiation consumes that exact graph and never recompiles a
+public catalog projection. The private extension is semantically equivalent to:
+
+```ts
+declare const trustedHostedInvocationBrand: unique symbol
+
+interface TrustedHostedInvocationEnvironment {
+  readonly [trustedHostedInvocationBrand]: true
+  readonly identity?: HarnessIdentity
+  readonly traceContext?: HarnessTraceContext
+  readonly targetDispatcher: HarnessTargetDispatcher
+  readonly hostToolBindings: ReadonlyMap<object, AgentExecutableBinding>
+}
+
+interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
+  runTrusted<Target extends HostedTargetOf<Contracts>>(
+    target: Target,
+    input: HarnessValidatedTargetInput<Target>,
+    options: HostedInvokeOptions,
+    environment: TrustedHostedInvocationEnvironment,
+  ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
+  streamTrusted<Target extends HostedTargetOf<Contracts>>(
+    target: Target,
+    input: HarnessValidatedTargetInput<Target>,
+    options: HostedInvokeOptions,
+    environment: TrustedHostedInvocationEnvironment,
+  ): HarnessTargetDispatchStream<HarnessTargetOutput<Target>>
+}
+```
+
+This SPI is package-private and is not exported from the package root or the
+integrator entrypoint. Each hosted call creates one fresh deeply frozen
+environment. Its host binding overlay is keyed by hidden definition-identity
+tokens and structurally shares all non-host bindings. Only each overlay
+binding's lexical handler closure captures the current `HostInvocation` and
+`createHostContext`; there is no string lookup or public, global, session, or
+mutable registry. The runtime retains the overlay only until the root call
+settles or interrupts and removes it on startup failure, cancellation, close,
+or terminal completion. Resume supplies a fresh host invocation, repeats the
+trusted projection, and constructs a fresh overlay; a prior host object is
+never revived.
+
+Hosted mode supplies the host dispatcher for workflow agent calls, subagents,
+and host nested targets. The root hosted target enters the shared runtime
+directly after exact contract-identity validation. Ordinary `getInstance`
+cannot construct the private environment and continues to reject a graph with
+host tools. Host dispatchers, logger, telemetry, context-factory dependencies,
+and opaque invocation values are borrowed and are never closed by Harness.
 
 `@purista/harness/integrator` exports `createHostOwnerToken`,
 `defineHostTool(hostOwner, id, definition)`, and the hosted types above. The
 same opaque owner token is attached to every host tool from one host builder
-and supplied in `HarnessHostBindings`; compilation rejects any mismatch before
-runtime creation. `runHosted` and `streamHosted` are the only integrator entry
+and supplied in `HarnessHostBindings`. Only `createHostOwnerToken` can create a
+factory-authentic token, and `defineHostTool` stores that exact object plus a
+hidden definition-identity token in package-private metadata. Hosted
+instantiation compares exact token identity for every host tool before runtime
+resource initialization. A forged token, structurally copied host tool,
+different owner, or mixed-owner graph fails closed. Neither token participates
+in inspection, serialization, persistence, or a digest. `runHosted` and
+`streamHosted` are the only integrator entry
 points that accept `HostInvocation`. They verify the target contract identity
 and receive already validated logical input before starting or reopening the
 named session. They do not parse or transform the input again.
+
+This is a deliberate hosted-boundary exception to the standalone wire-input
+contract. The host adapter owns wire parsing and transformation; its validated
+logical value becomes the canonical Harness root input used for session,
+checkpoint, replay, and conflict comparison. Harness validates only that the
+value is JSON data at hosted entry and never invokes the root input schema on
+that value a second time.
 
 `HostInvocation` is supplied only by the host target adapter for each run. It is
 opaque to Harness application logic, absent from public `InvokeOptions`, never
@@ -3116,10 +3241,26 @@ discarded afterward. Hosted instance config omits public `logger` and
 `Metrics` from the bound telemetry. Application callers cannot supply or
 override host-only keys.
 
+For a host tool selected by one agent turn, `tool.callId` is the provider's
+stable tool-call id and `invocationId` is the owning agent invocation id.
+Harness derives the occurrence id once as `invocation_` plus lowercase SHA-256
+of the canonical JSON tuple
+`['harness.host-tool-invocation.v1',rootRunId,runId,invocationId,tool.id,tool.callId]`.
+That value is exposed as `hostToolInvocationId`, stored in the host frame and
+nested-call lineage, and reused unchanged on resume.
+
+For a nested call, `childInvocationId` is `invocation_` plus lowercase SHA-256
+of `canonicalJson(['harness.host-child-invocation.v1',hostToolInvocationId,
+callId,target.kind,target.id])`. Its session id is `session_` plus lowercase
+SHA-256 of `canonicalJson(['harness.host-child-session.v1',sessionId,rootRunId,
+childInvocationId,target.kind,target.id])`. Dispatch, in-process coalescing,
+checkpoint lineage, and resume use those exact ids, so a crash before terminal
+checkpoint commit cannot create a different logical child.
+
 `nestedTargets.run` is scoped to the current parent run and is the only route by
 which a host context may construct agent/workflow invokers. Its `callId` is
 required and stable within the host-tool invocation. Harness checkpoints the
-tuple `(toolCallId, callId, target kind/id, canonically validated input)`,
+tuple `(hostToolInvocationId, callId, target kind/id, canonical JSON wire input)`,
 replays a completed result, resumes an interrupted child, and fails closed if
 the id is reused with another target or input. A child interruption travels as
 a library-private branded control signal that Harness catches at the tool
@@ -3133,6 +3274,226 @@ runtime.
 `checkpointStep` is the same validation, retry, persistence, replay, and error
 contract as `WorkflowContext.step`. The host context factory exposes that exact
 function as its typed `step`; it does not implement a second checkpoint store.
+
+The persisted host nested-call representation is exact:
+
+```ts
+interface HostNestedTargetStoredErrorV1 {
+  readonly code: 'HOST_NESTED_TARGET_FAILED'
+  readonly message: 'Host nested target failed.'
+  readonly category: 'internal'
+  readonly retriable: false
+  readonly meta: Readonly<{
+    reason: 'target_failed'
+    agent_id: string
+    tool_id: string
+    tool_call_id: string
+    call_id: string
+    target_kind: 'agent' | 'workflow'
+    target_id: string
+  }>
+}
+
+class HostNestedTargetError extends HarnessError {
+  readonly code: 'HOST_NESTED_TARGET_FAILED'
+  readonly category: 'internal'
+  readonly retriable: false
+  readonly message: 'Host nested target failed.'
+  readonly meta: HostNestedTargetStoredErrorV1['meta']
+}
+
+class HostNestedTargetReplayConflictError extends HarnessError {
+  readonly code: 'HOST_NESTED_TARGET_REPLAY_CONFLICT'
+  readonly category: 'validation'
+  readonly retriable: false
+  readonly message:
+    'Host nested call id conflicts with an existing logical target call.'
+  readonly meta: Readonly<{
+    reason: 'target_mismatch' | 'input_mismatch'
+    agent_id: string
+    tool_id: string
+    tool_call_id: string
+    call_id: string
+    expected_target_kind: 'agent' | 'workflow'
+    expected_target_id: string
+    received_target_kind: 'agent' | 'workflow'
+    received_target_id: string
+  }>
+}
+
+type HostNestedTargetStoredOutcomeV1 =
+  | Readonly<{ status: 'completed'; output: JsonValue }>
+  | Readonly<{ status: 'failed'; error: HostNestedTargetStoredErrorV1 }>
+  | Readonly<{
+      status: 'cancelled'
+      error: Readonly<{
+        code: 'OPERATION_CANCELLED'
+        message: 'Host nested target call was cancelled.'
+        category: 'cancelled'
+        retriable: false
+        meta: Readonly<{ scope: 'agent' | 'workflow' }>
+      }>
+    }>
+
+interface HostNestedTargetCheckpointV1 {
+  readonly schemaVersion: 1
+  readonly kind: 'host_nested_target'
+  readonly toolCallId: string
+  readonly callId: string
+  readonly target: Readonly<{
+    kind: 'agent' | 'workflow'
+    id: string
+  }>
+  readonly input: JsonValue
+  readonly outcome: HostNestedTargetStoredOutcomeV1
+  readonly lineage: Readonly<{
+    rootRunId: string
+    agentRunId: string
+    hostToolInvocationId: string
+    childRunId: string
+    childInvocationId: string
+  }>
+}
+```
+
+The call checkpoint key is
+`host:call:<sha256(canonicalJson(['harness.host-call-key.v1',hostToolInvocationId,callId]))>`
+and its storage metadata is exactly
+`{checkpointKind:'host_nested_target',schemaVersion:1}`. `callId` uses the
+durable-step id grammar. The stored input is the caller's canonical JSON wire
+value before the receiving target validates or transforms it.
+`HostNestedTargetCheckpointV1` is stored as `RunCheckpoint.output` at the key
+above. `RunCheckpoint.input` remains the canonical boundary input of the root
+Harness invocation; the nested wire value exists only in the host record's
+`input`. The enclosing checkpoint remains the sole owner of run, session,
+lease, worker, attempt, sequence, and commit-time fields. Each create or
+replacement occurs under the active root lease and advances that checkpoint's
+sequence by exactly one. Host steps use the same projection with their handler
+result as `RunCheckpoint.output`, the root boundary input as
+`RunCheckpoint.input`, and the `host:step:` key. Neither form introduces a new
+storage operation or checkpoint registry.
+Target identity has conflict precedence over input. Reusing the key with
+another target or input throws the exact
+`HostNestedTargetReplayConflictError` above.
+No input or input hash appears in an error, log, metric, or event.
+
+Before reading an in-memory or persisted call entry, `nestedTargets.run` calls
+the hosted dispatcher's side-effect-free `assertTarget` seam. That validates
+the exact hidden identity against the host's immutable table, including
+completed-graph and explicitly declared remote contracts. It never resolves
+`(kind,id)` to gain a capability. This validation also runs on replay, so an
+unknown or structurally copied target cannot obtain a saved result without
+dispatch.
+
+Completed, failed, and cancelled outcomes replay without dispatch. Concurrent
+calls with the identical key, target, and input share one in-flight promise,
+including its rejection. In v4 one host-tool occurrence may have at most one
+distinct active nested target. A second overlapping distinct call rejects
+before dispatch with
+`ValidationError('Host tool can run only one nested target at a time.',
+{where:'invoke_options',issues:{reason:'concurrent_host_nested_target'}})`.
+Fan-out belongs in a workflow. An interrupted child has no terminal call
+checkpoint; the continuation is authoritative. After child resume, Harness
+commits the terminal call checkpoint and re-enters the host handler, whose
+repeated `nestedTargets.run` observes the stored result. The handler's own
+return value remains the host tool output; the child output is never substituted
+for it.
+
+A completed child commits its validated output before returning it. A failed
+child commits the fixed `HostNestedTargetStoredErrorV1`, then throws the
+reconstructed `HostNestedTargetError`; a cancelled child commits the fixed
+cancelled outcome, then throws the reconstructed `OperationCancelledError`.
+The handler may catch either error and continue. Re-entry and later equal calls
+reconstruct the same canonical class from the validated stored outcome without
+dispatch. Malformed or unavailable stored records remain storage or internal
+failures and are never reported as caller replay conflicts.
+
+`checkpointStep` uses
+`host:step:<sha256(canonicalJson(['harness.host-step-key.v1',hostToolInvocationId,stepId]))>`
+and otherwise has the exact `WorkflowContext.step` contract. Managed steps and
+nested target calls therefore replay safely. An unmanaged effect before an
+interruption may run again and remains application-owned.
+
+A host interruption extends the existing strict continuation with this exact
+frame:
+
+```ts
+interface SuspendedHostToolFrameV1 {
+  readonly kind: 'host-tool'
+  readonly runId: string
+  readonly agentId: string
+  readonly invocationId: string
+  readonly hostToolInvocationId: string
+  readonly toolId: string
+  readonly callId: string
+  readonly input: JsonValue
+  readonly bindingId: string
+  readonly bindingContractDigest: string
+  readonly toolStarted: true
+  readonly activeNestedCallIds: readonly [string]
+}
+```
+
+The root-to-leaf path is ordered agent frame, host-tool frame, then child agent
+or workflow continuation. Resume validates exact binding identity and digest,
+resumes the child first, commits its host-call checkpoint, and re-enters the
+same host binding through a fresh trusted invocation overlay. The common tool
+pipeline then validates the actual host-handler output, runs `afterTool`, and
+emits exactly one `tool.finished` without another `tool.started`. Cancellation
+propagates to the child and follows the same re-entry/replay rules.
+
+Hosted instantiation is also pure and deterministic until all configuration
+has passed. It stops at the first failure in this order:
+
+1. require an exact package-owned Harness definition and its compiled graph;
+2. require `hostBindings` to be a non-array object;
+3. reject its lexicographically first unknown key;
+4. require and validate `hostOwner`, `targetDispatcher`, `projectIdentity`,
+   `projectTraceContext`, `createHostContext`, `logger`, then `telemetry`;
+5. require a factory-authentic host-owner token;
+6. compare that token with host tools in lexicographic tool-id order;
+7. validate hosted runtime config with standalone steps 2 through 8, followed
+   by admissions, while allowing host-tool requirements and treating `logger`
+   and `telemetry` as unknown hosted config keys; and
+8. initialize shared Harness resources in the normal transactional order.
+
+Host-binding failures are `HarnessConfigError`. A missing field uses
+`{reason:'missing_host_binding',path}`, an unknown key uses
+`{reason:'unexpected_host_binding',path}`, and a malformed field or forged
+token uses `{reason:'invalid_host_binding',path}`. Exact owner mismatch uses the
+`host_owner_mismatch` error below. Hosted runtime-config failures retain the
+ordinary instance-config reasons and paths. No initializer, adapter, projector,
+storage operation, or dispatcher runs before this validation completes.
+
+Hosted entry validation is stable and stops at the first failure:
+
+1. require an open instance;
+2. validate request shape and exact hidden target identity;
+3. validate the already transformed logical input as JSON data;
+4. reject host-owned `traceparent`, then `tracestate`, when present through an
+   erased type;
+5. honor a pre-aborted signal;
+6. project and normalize identity;
+7. project and normalize trace context;
+8. compare session identity;
+9. open or reacquire the checkpoint/lease; and
+10. execute or dispatch.
+
+An unknown or copied target is
+`ValidationError('Hosted target is not part of this Harness graph.',
+{where:'invoke_options',issues:{reason:'unknown_hosted_target'}})`. A caller
+trace field is
+`ValidationError('Hosted invocation cannot supply host-owned trace context.',
+{where:'invoke_options',issues:{reason:'host_owned_trace_context',field}})`.
+Projection throws are sanitized as `InternalError` with fixed messages
+`Hosted identity projection failed.` or
+`Hosted trace-context projection failed.`. Invalid projection returns use the
+existing canonical identity or trace normalization errors. Owner mismatch is a
+`HarnessConfigError` with message
+`Host tool owner does not match the hosted Harness owner.` and exact metadata
+`{reason:'host_owner_mismatch',path:'hostBindings.hostOwner',id}` for the
+lexicographically first mismatched tool. Pre-abort invokes no projector,
+storage, or dispatcher; projection failure invokes no storage or dispatcher.
 
 There are no generic host lifecycle callbacks in this release. Harness owns
 and closes clients, processes, and internal adapters it creates. It borrows and
@@ -3554,19 +3915,7 @@ type SuspensionFrameV1 =
       activeCallIds: readonly string[]
       agentCallBudget: WorkflowAgentCallBudgetStateV1
     }>
-  | Readonly<{
-      kind: 'host-tool'
-      runId: string
-      agentId: string
-      invocationId: string
-      toolId: string
-      callId: string
-      input: JsonValue
-      bindingId: string
-      bindingContractDigest: string
-      toolStarted: true
-      activeNestedCallIds: readonly string[]
-    }>
+  | SuspendedHostToolFrameV1
 
 interface SuspensionNodeV1 {
   readonly frame: SuspensionFrameV1
@@ -4155,6 +4504,7 @@ type RuntimeRequirementsDigestV1 = readonly [
   workspace: boolean,
   artifacts: boolean,
   hostTools: readonly string[],
+  hostCheckpointSchema: 'host-nested-target-checkpoint.v1' | null,
 ]
 
 type GraphDigestPreimageV1 = readonly [
@@ -4442,6 +4792,10 @@ The stream projection additionally adds
 | child dispatch | `HarnessTargetDispatchRequest` and terminal `RunOutcome` | local dispatcher stream, PURISTA EventBridge stream | direct JavaScript child invocation |
 | runtime need | `RuntimeRequirements` | exact `HarnessInstanceConfig`, PURISTA `ai` config, inspection | hand-maintained duplicate capability lists |
 | background delivery | host queue receipt | PURISTA enqueue client and worker call | transparent queueing inside `run` or `stream` |
+| hosted runtime configuration | `HostedHarnessInstanceConfig` | validated shared runtime bindings plus host-owned bindings | a second hosted runtime or caller-supplied logger/telemetry |
+| host invocation context | opaque `HostInvocation` projected into one call-scoped handler closure | identity, trace context, and `HostContext` | checkpoint, session, registry, log, model, or inspection storage |
+| host nested target result | `RunCheckpoint.output` containing `HostNestedTargetCheckpointV1` | replayed `nestedTargets.run` result under the root lease | reuse of `WorkflowChildCallCheckpoint`, another storage API, or direct child output as host-tool output |
+| host ownership | factory-authentic `HostOwnerToken` in hidden definition metadata | exact identity comparison at hosted instantiation | id/digest inference, public metadata, serialization, or persistence |
 
 Mappings are one-way boundary adapters and preserve stable ids, schema meaning,
 lineage, and terminal status. Provider request/response values, EventBridge
@@ -4459,6 +4813,24 @@ durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+H4-009 specifically proves: exact hosted config inference, including forbidden
+logger, telemetry, and caller trace fields; factory-authentic owner matching,
+mixed-owner rejection before resource initialization, copied-target rejection,
+and no host invocation persistence or registry exposure; identity and trace
+projection exactly once per entry and again with the fresh invocation on
+resume, with deterministic validation order and sanitized projector failures;
+root, workflow, subagent, and host nested target dispatch through the host
+dispatcher while portable and host tools share the common policy, approval,
+validation, event, timeout, cancellation, and telemetry pipeline; conservative
+durable-storage and revision requirements for every host-aware graph; exact
+host-call and host-step checkpoint keys, schemas, replay, equal-call
+coalescing, target-before-input conflicts, terminal failure/cancellation replay,
+and rejection of distinct concurrent nested calls; agent-to-host-to-agent and
+agent-to-host-to-workflow interruption trees that resume leaf first, re-enter
+the host handler with a fresh overlay, repeat no managed effect, emit no second
+`tool.started`, and use the re-entered handler return as the tool output; and
+transactional startup/close behavior that never closes borrowed host resources.
 
 H4-003 specifically proves the spec 36 `ACC-SOWN-POLICY` boundary introduced by
 the v4 compiler and instance-config projection: graph agent/workflow policies

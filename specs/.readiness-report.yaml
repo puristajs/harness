@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation after the contract review."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:20f0db72c76fb8b1f720ea171803cccd81817ab803fcb1361165971679de52fe"
+      scope_digest: "sha256:83a6e7cd0e4318629bf2f428d67097c7c24e2df69afd8851757508a79caee417"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -493,6 +493,9 @@ follow_up_waves:
       - review: "independent workflow orchestration and child-task implementation-readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after workflow-local call budgets and graph digest ownership, exact fulfilled/failed/cancelled replay, stable durable comparison, lifetime timeout and terminal races, approval-capable task prohibition, fanOut no-budget behavior, strict persisted projections, and one shared caller-neutral target-stream consumer were made deterministic."
+      - review: "independent hosted runtime and durable host-tool implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after hosted configuration, immutable owner and target identity, root-scoped binding overlays, exact RunCheckpoint projections, stable host occurrence ids, terminal replay, continuation frames, validation precedence, and shared runtime ownership were made deterministic."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-04"
       standard_schema:
@@ -527,7 +530,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        count: 9
+        count: 10
       contradiction_check:
         status: passed
       strong_boundary_type_gate:

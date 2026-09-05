@@ -2945,6 +2945,11 @@ interface InvokeOptions {
   readonly durable?: DurableInvokeOptions
 }
 
+interface HarnessTargetStream<Output>
+  extends AsyncIterable<ExecutionEvent<Output>> {
+  cancel(reason?: string): Promise<void>
+}
+
 interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
   run(
     input: HarnessTargetInput<Target>,
@@ -2953,7 +2958,7 @@ interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
   stream(
     input: HarnessTargetInput<Target>,
     options?: InvokeOptions,
-  ): AsyncIterable<ExecutionEvent<HarnessTargetOutput<Target>>>
+  ): HarnessTargetStream<HarnessTargetOutput<Target>>
 }
 
 interface SessionChildTasks {
@@ -3004,6 +3009,15 @@ interface HarnessInstance<
   close(): Promise<void>
 }
 ```
+
+`HarnessTargetStream.cancel(reason?)` is the public execution-cancellation
+operation shared by standalone and hosted target streams. It is idempotent,
+requests cancellation of the target rather than merely stopping local
+observation, and resolves after that cancellation request has been accepted.
+Calling the async iterator's optional `return()` only stops that iterator and
+does not cancel execution. Adapters that own a browser or transport stream call
+`cancel()` when their consumer disconnects. `HarnessTargetDispatchStream`
+extends this public contract with no additional members.
 
 `SessionOptionsFor` projects the existing closed sandbox-ownership contract
 from spec 36 `CTR-SOWN-POLICY`. Identity remains available for every session.
@@ -3901,9 +3915,10 @@ errors, and terminal outcomes retain stable correlation.
 
 Every `ExecutionEvent` carries the event's `runId` and optional common
 correlation fields `parentRunId` and `parentInvocationId`. Harness emits those
-fields before a dispatcher or host observes the event; adapters preserve them
-and do not invent enrichment. Child events therefore remain correlated across
-process boundaries.
+fields before a dispatcher or host observes the event. Adapter projections that
+publish child lifecycle correlation copy the fields when present and never
+invent enrichment. Child events therefore remain correlated across process
+boundaries.
 
 Approval-resume streams use the exact persisted-start replay contract from
 spec 12: the original sequence-one `run.started` is the first iterator item but
@@ -3953,7 +3968,130 @@ the matching stream id keeps it in that same turn. This state machine represents
   and headers;
 - `createHarnessUIMessageStreamResponse(events, options)` returns the standard
   SSE response and v1 header; and
-- `parseHarnessToolApprovalResume(message)` remains the focused approval helper.
+- `parseHarnessToolApprovalResume(messages)` remains the focused approval helper.
+
+The exact public adapter inputs are:
+
+```ts
+interface HarnessUIApprovalDescriptor {
+  readonly protocol: 'purista-harness/tool-approval'
+  readonly version: 1
+  readonly rootRunId: string
+  readonly agentRunId: string
+  readonly sessionId: string
+  readonly interruptId: string
+  readonly revision: string
+  readonly eventId: string
+  readonly approvalIds: readonly string[]
+}
+
+type HarnessUIStatus =
+  | Readonly<{ phase: 'started'; runId: string }>
+  | Readonly<{
+      phase: 'tool-running'
+      runId: string
+      agentId: string
+      toolId: string
+      callId: string
+    }>
+  | Readonly<{
+      phase: 'subagent-started' | 'subagent-completed'
+      runId: string
+      agentId: string
+      parentAgentId: string
+      delegationCallId: string
+      delegationDepth: number
+      parentRunId?: string
+      parentInvocationId?: string
+      error?: never
+    }>
+  | Readonly<{
+      phase: 'subagent-failed'
+      runId: string
+      agentId: string
+      parentAgentId: string
+      delegationCallId: string
+      delegationDepth: number
+      parentRunId?: string
+      parentInvocationId?: string
+      error: SerializedError
+    }>
+  | Readonly<{
+      phase: 'media-progress'
+      runId: string
+      operation: 'video'
+      state: 'queued' | 'running'
+      progress?: number
+    }>
+  | Readonly<{ phase: 'completed'; runId: string }>
+  | Readonly<{
+      phase: 'interrupted'
+      runId: string
+      interrupt: HarnessInterrupt
+    }>
+  | Readonly<{ phase: 'failed' | 'cancelled'; runId: string; error: SerializedError }>
+
+interface HarnessUIMessageStreamOptions {
+  readonly sessionId: string
+  readonly messageId?: string
+  readonly onIgnoredEvent?: (type: string) => void
+}
+
+interface ParsedHarnessUIMessageRequest {
+  readonly sessionId: string
+  readonly messages: readonly HarnessUIMessage[]
+  readonly lastUserMessage: HarnessUIMessage
+  readonly assistantMessageId?: string
+  readonly resume?: ToolApprovalResume
+}
+```
+
+`parseHarnessUIMessageRequest` is asynchronous because it uses the pinned AI
+SDK's official `validateUIMessages` function. It accepts the standard
+`DefaultChatTransport` body, permits application-specific extra body fields,
+and requires non-empty `id`, a messages array, one of the standard
+`submit-message` or `regenerate-message` triggers, and an optional non-empty
+`messageId`; `regenerate-message` requires that `messageId`. The transport `id`
+is the stable Harness session id. The result
+contains the last user message. On an approval continuation, `messageId` must
+identify the last assistant message, its descriptor session id must equal the
+transport id, and `assistantMessageId` is that assistant id. For an ordinary
+new turn `assistantMessageId` is absent, so the response can use the Harness run
+id as the new assistant message id. For `regenerate-message`, the non-empty
+request `messageId` identifies the assistant message removed by the client and
+is returned as `assistantMessageId`, so the replacement stream restores that
+same message identity.
+
+`parseHarnessToolApprovalResume` accepts the validated readonly message array.
+Only the last assistant message can supply a pending batch. All Harness
+descriptors in that message must be byte-equivalent after validation. Every
+declared approval id occurs exactly once, all parts are in
+`approval-responded`, and no unknown or duplicate decision is accepted. Output
+states never replay an earlier approval. The returned decision order matches
+`approvalIds`; its deterministic event id is derived from the complete
+descriptor and ordered decisions. Approve and reject decisions both remain
+ordinary continuations.
+
+The stream helper requires a `HarnessTargetStream`, not a bare async iterable.
+Its `sessionId` option becomes part of an approval descriptor. The descriptor's
+`rootRunId` and `agentRunId` come from the interruption requests, while
+`eventId` is the terminal `run.finished` event that delivered the interrupt.
+Every request in the batch must agree on root run, executing agent run, and
+interrupt correlation. The terminal event run id must equal `rootRunId`.
+Malformed correlations fail before any approval chunks are written.
+
+`onIgnoredEvent`, when supplied, receives only the ignored event type string.
+Callback failures are swallowed so operational counting cannot change the
+consumer stream. A stream that ends without one direct-target `run.finished`,
+contains a second terminal event, or contains any event after its terminal
+fails with `TypeError` and never emits `[DONE]`.
+
+The first direct `run.started` establishes the root target run id and must not
+carry parent correlation. Its matching direct terminal is the single
+`run.finished` whose `runId` equals that root id. A nested `run.finished` has a
+different run id, does not finish the UI stream, and is reported through
+`onIgnoredEvent`. A second root start, a duplicate direct terminal, or any event
+after the direct terminal is a protocol error.
 
 The application maps the parsed user message to its agent's logical input; the
 adapter does not guess how a structured domain schema should be populated.
@@ -3981,6 +4119,28 @@ The v1 event mapping is fixed:
 | completed `run.finished` | close active parts, completed status, `finish-step` when open, `finish{finishReason:'stop'}` |
 | interrupted `run.finished` | interrupted status, approval chunks when applicable, `finish-step`, typed finish reason |
 | failed or cancelled `run.finished` | `data-status{phase:'failed'|'cancelled'}`, close active parts, `finish-step`, typed error/cancel finish reason |
+
+Output `id` is the provider-turn stream id used to correlate text/object output
+with `model.completed.streamId`. A `model.completed` without `streamId` binds
+to the active turn when one exists; when no turn is active its event id is the
+synthetic turn id. `model.completed` marks but never closes its turn.
+
+For a failed terminal, the adapter emits the sanitized failed status and
+standard `error`, closes the active step when present, then emits
+`finish{finishReason:'error'}`. For cancellation it emits the sanitized
+cancelled status and standard `abort`, closes the active step when present,
+then emits `finish{finishReason:'other'}` because AI SDK UI Message Stream v1
+has no `cancelled` finish reason. A tool-approval interrupt finishes with
+`tool-calls`; every other interrupt finishes with `other`. These sequences use
+only official AI SDK chunks.
+
+`agent.started` and `agent.finished` with `parentAgentId` and
+`delegationCallId` map to the three fixed subagent status phases above and copy
+their optional common `parentRunId` and `parentInvocationId`. A child finish
+with an error maps to `subagent-failed` with the required sanitized error;
+otherwise it maps to `subagent-completed`. Other unprojected lifecycle, policy, embedding, rerank,
+fanout, child-task, wait, overflow, and future event kinds use
+`onIgnoredEvent` and do not create a custom UI protocol.
 
 Subagent lifecycle uses the existing status data part with child correlation;
 it never masquerades as a model tool. An event that the pinned adapter does not

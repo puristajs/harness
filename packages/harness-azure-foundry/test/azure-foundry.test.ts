@@ -1,5 +1,6 @@
+import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelError, type ObjectStreamChunk } from '@purista/harness'
 import { azureFoundry } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
@@ -23,6 +24,25 @@ function client(handler: (path: string, options: any) => Promise<any>) {
       post: (options: any) => handler(path, options),
     }),
   }
+}
+
+type StreamingChatRequest = Readonly<{
+  path: '/chat/completions'
+  stream: true
+  includeUsage: true
+}>
+
+function validateStreamingChatRequest(path: string, options: unknown): StreamingChatRequest {
+  if (path !== '/chat/completions') throw new TypeError(`Unexpected streaming path: ${path}`)
+  const body = readField(options, 'body')
+  if (readField(body, 'stream') !== true) throw new TypeError('Expected a streaming chat request.')
+  const streamOptions = readField(body, 'stream_options')
+  if (readField(streamOptions, 'include_usage') !== true) throw new TypeError('Expected streaming usage.')
+  return Object.freeze({ path, stream: true, includeUsage: true })
+}
+
+function readField(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined
 }
 
 describe('azureFoundry provider factory', () => {
@@ -367,6 +387,47 @@ describe('azureFoundry provider factory', () => {
     const finish = received.at(-1)
     expect(finish.kind).toBe('finish')
     expect(finish.outcome.providerFinishReason).toBeUndefined()
+  })
+
+  it('streams structured object snapshots and terminal usage from SSE', async () => {
+    const requests: StreamingChatRequest[] = []
+    const provider = azureFoundry({
+      client: client(async (path, options) => {
+        requests.push(validateStreamingChatRequest(path, options))
+        return {
+          status: '200',
+          body: Readable.from([
+            Buffer.from('data: {"choices":[{"delta":{"content":"{\\"answer\\":"}}]}\n\n'),
+            Buffer.from('data: {"choices":[{"delta":{"content":"\\"azure\\"}"},"finish_reason":"stop"}]}\n\n'),
+            Buffer.from('data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n'),
+            Buffer.from('data: [DONE]\n\n'),
+          ]),
+        }
+      }),
+    })
+
+    const chunks: ObjectStreamChunk<{ answer: string }>[] = []
+    for await (const chunk of provider.objectStream!<{ answer: string }>({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
+      signal: mockSignal(),
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks).toEqual([
+      { kind: 'partial', partial: { _partial: '{"answer":' } },
+      { kind: 'partial', partial: { answer: 'azure' } },
+      {
+        kind: 'finish',
+        object: { answer: 'azure' },
+        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        finishReason: 'stop',
+        outcome: { finishReason: 'stop', providerFinishReason: 'stop' },
+      },
+    ])
+    expect(requests).toEqual([{ path: '/chat/completions', stream: true, includeUsage: true }])
   })
 
   it('preserves HTTP status so 429 is classified as a retriable rate-limit error', async () => {

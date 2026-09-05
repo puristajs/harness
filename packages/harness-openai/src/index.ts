@@ -81,36 +81,24 @@ export interface OpenAiFactoryOptions extends ClientOptions {
  *
  * @example
  * ```ts
- * import { z } from 'zod'
- * import { defineHarness } from '@purista/harness'
+ * import { defineAgent, defineHarness } from '@purista/harness'
  * import { openai } from '@purista/harness-openai'
  *
- * const harness = defineHarness()
- *   .models({
- *     assistant: {
- *       provider: openai({ apiKey: process.env.OPENAI_API_KEY }),
- *       model: 'gpt-4.1-mini',
- *       capabilities: ['object']
- *     }
- *   })
- *   .agents({
- *     assistant: {
- *       model: 'assistant',
- *       instructions: 'Answer in one sentence.'
- *     }
- *   })
- *   .workflows({
- *     summarize: {
- *       input: z.string(),
- *       output: z.string(),
- *       delegation: { agents: ['assistant'] },
- *       handler: (ctx) => ctx.agents.assistant(ctx.input)
- *     }
- *   })
- *   .build()
+ * const assistant = defineAgent('assistant', {
+ *   instructions: 'Answer in one sentence.'
+ * })
+ * const definition = defineHarness({ name: 'openaiDemo' }).addAgent(assistant)
+ * const instance = await definition.getInstance({
+ *   model: {
+ *     provider: openai({ apiKey: process.env.OPENAI_API_KEY }),
+ *     model: 'gpt-4.1-mini'
+ *   }
+ * })
  *
- * const session = await harness.getSession('demo')
- * const response = await session.workflows.summarize.run('Summarize this issue.')
+ * const session = await instance.getSession('demo')
+ * const response = await session.agents.assistant.run('Summarize this issue.')
+ * await session.release()
+ * await instance.close()
  * ```
  */
 export function openai(options: OpenAiFactoryOptions = {}): ModelProvider {

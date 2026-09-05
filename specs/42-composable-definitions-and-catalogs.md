@@ -1191,18 +1191,11 @@ must match the identity already bound to the stored session before reading or
 executing a continuation.
 
 ```ts
-type HarnessTargetDispatchRequest<
-  Target extends AnyHarnessTargetContract,
-> = Readonly<{
-  target: Target
-  input: HarnessTargetInput<Target>
-  invocation: Readonly<{
+type HarnessTargetDispatchInvocationBase = Readonly<{
     sessionId: string
     invocationId: string
     rootRunId: string
     parentRunId: string
-    parentAgentId?: string
-    parentWorkflowId?: string
     depth: number
     remainingDepth: number
     identity?: HarnessIdentity
@@ -1211,6 +1204,30 @@ type HarnessTargetDispatchRequest<
     idempotencyKey?: string
     signal: AbortSignal
   }>
+
+type HarnessNestedTargetDispatchInvocation = Readonly<
+  HarnessTargetDispatchInvocationBase & (
+    | Readonly<{ parentAgentId: string; parentWorkflowId?: never }>
+    | Readonly<{ parentAgentId?: never; parentWorkflowId: string }>
+  )
+>
+
+type HarnessTargetDispatchInvocation =
+  | HarnessNestedTargetDispatchInvocation
+  | HarnessRootTargetDispatchInvocation
+
+type HarnessRootTargetDispatchInvocation =
+  Readonly<HarnessTargetDispatchInvocationBase & {
+      parentAgentId?: never
+      parentWorkflowId?: never
+    }>
+
+type HarnessTargetDispatchRequest<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<{
+  target: Target
+  input: HarnessTargetInput<Target>
+  invocation: HarnessNestedTargetDispatchInvocation
 }>
 
 interface HarnessTargetDispatchStream<O> extends AsyncIterable<ExecutionEvent<O>> {
@@ -1229,11 +1246,9 @@ interface HarnessTargetRouteReceiptV1 {
 
 type PersistedHarnessTargetDispatchRequest = Readonly<{
   route: HarnessTargetRouteReceiptV1
-  input: JsonValue
+  wireInput: JsonValue
   resume: ToolApprovalResume
-  invocation: HarnessTargetDispatchRequest<
-    AnyHarnessTargetContract
-  >['invocation']
+  invocation: HarnessNestedTargetDispatchInvocation
 }>
 
 interface HarnessTargetDispatcher {
@@ -1254,6 +1269,9 @@ Public invokers and `HarnessTargetDispatcher` accept
 transport boundary and does not validate or transform the value. Its receiving
 target validates exactly once into `HarnessValidatedTargetInput<Target>` before
 execution. The standalone local dispatcher is itself that receiving boundary.
+A package-private `openRoot` seam on the local dispatcher accepts only
+`HarnessRootTargetDispatchInvocation` for standalone root schema validation;
+it is absent from `HarnessTargetDispatcher` and every integrator export.
 A PURISTA EventBridge receiver validates the raw transported value before it
 enters the hosted Harness. Output is validated by the executing target before
 it crosses the dispatcher boundary.
@@ -1296,11 +1314,13 @@ canonical JSON bytes, before validating or applying the resume, resolving a
 route, or producing another effect. The resume `runId` must equal the
 runtime-authored child run and its remaining correlation is validated by the
 receiving target's ordinary durable-resume boundary. A PURISTA dispatcher
-projects the request to the addressed receiver's hosted invocation with
-`invokeOptions:{sessionId:request.invocation.sessionId,resume:request.resume}`;
-the receiver then performs its normal input, run, checkpoint, graph, identity,
-event, and decision validation. A local dispatcher supplies the same resume to
-the local receiving target. `openPersisted` never falls back to `(kind,id)`,
+projects the request to the addressed receiver's `streamDispatched` resume
+delivery with the original `wireInput`, exact runtime-authored invocation,
+and child resume. It does not run the target schema or input transform again.
+The receiver then performs its normal raw-input, run, checkpoint, graph,
+identity, event, and decision validation and restores the validated logical
+input from its continuation. A local dispatcher supplies the same wire input
+and resume to the local receiving target. `openPersisted` never falls back to `(kind,id)`,
 enumerates routes, or exposes the route address. A receipt is inert JSON and is
 never exposed to a model, agent, workflow, tool, inspection, or ordinary
 Harness instance.
@@ -3191,6 +3211,39 @@ type HostedTargetRequest<
   hostInvocation: HostInvocation
 }>
 
+type StripHostOwnedInvocation<T> = T extends unknown ? Readonly<
+  Omit<T, 'identity' | 'trace'> & {
+    identity?: never
+    trace?: never
+  }
+> : never
+
+type HostedDispatchInvocation =
+  StripHostOwnedInvocation<HarnessNestedTargetDispatchInvocation>
+
+type HostedDispatchedTargetRequest<
+  Target extends AnyHarnessTargetContract,
+  HostInvocation,
+> =
+  | Readonly<{
+      delivery: 'fresh'
+      target: Target
+      wireInput: HarnessTargetInput<Target>
+      input: HarnessValidatedTargetInput<Target>
+      invocation: HostedDispatchInvocation
+      resume?: never
+      hostInvocation: HostInvocation
+    }>
+  | Readonly<{
+      delivery: 'resume'
+      target: Target
+      wireInput: HarnessTargetInput<Target>
+      input?: never
+      invocation: HostedDispatchInvocation
+      resume: ToolApprovalResume
+      hostInvocation: HostInvocation
+    }>
+
 interface HostedHarnessInstance<
   Contracts extends HarnessContracts<any, any>,
   HostInvocation,
@@ -3200,6 +3253,9 @@ interface HostedHarnessInstance<
   ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
   streamHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
+  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  streamDispatched<Target extends HostedTargetOf<Contracts>>(
+    request: HostedDispatchedTargetRequest<Target, HostInvocation>,
   ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
   close(): Promise<void>
 }
@@ -3247,7 +3303,15 @@ interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
     input: HarnessValidatedTargetInput<Target>,
     options: HostedInvokeOptions,
     environment: TrustedHostedInvocationEnvironment,
-  ): HarnessTargetDispatchStream<HarnessTargetOutput<Target>>
+  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  streamDispatchedTrusted<Target extends HostedTargetOf<Contracts>>(
+    target: Target,
+    input: HarnessValidatedTargetInput<Target> | HarnessTargetInput<Target>,
+    wireInput: HarnessTargetInput<Target>,
+    invocation: HostedDispatchInvocation,
+    resume: ToolApprovalResume | undefined,
+    environment: TrustedHostedInvocationEnvironment,
+  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
 }
 ```
 
@@ -3279,18 +3343,64 @@ hidden definition-identity token in package-private metadata. Hosted
 instantiation compares exact token identity for every host tool before runtime
 resource initialization. A forged token, structurally copied host tool,
 different owner, or mixed-owner graph fails closed. Neither token participates
-in inspection, serialization, persistence, or a digest. `runHosted` and
-`streamHosted` are the only integrator entry
-points that accept `HostInvocation`. They verify the target contract identity
-and receive already validated logical input before starting or reopening the
-named session. They do not parse or transform the input again.
+in inspection, serialization, persistence, or a digest. `runHosted`,
+`streamHosted`, and `streamDispatched` are the only integrator entry points
+that accept `HostInvocation`. They verify the target contract identity
+before starting or reopening the named session. `runHosted` and `streamHosted`
+receive an already validated logical input. `streamDispatched` receives the
+closed fresh/resume union below. Harness does not parse or transform either
+hosted input shape again.
+
+`runHosted` and `streamHosted` start or resume an application-facing root and
+therefore derive its root invocation identity through the ordinary hosted
+invoke options. `streamDispatched` is the receiving half of the trusted
+`HarnessTargetDispatcher` SPI. It is used only after a host adapter has decoded
+an addressed EventBridge delivery and reconstructed the runtime-authored
+dispatch envelope. A `fresh` delivery contains the original JSON `wireInput`
+and the adapter's once-validated and transformed logical `input`. A `resume`
+delivery contains the original `wireInput` and exact approval resume but no
+logical input: the Harness compares the wire value with the child run and
+checkpoint before restoring the logical input from its continuation. The
+adapter must not invoke the target schema or transform for a resume delivery.
+It preserves the exact `sessionId`, `invocationId`, `rootRunId`, `parentRunId`,
+optional parent target id, `depth`, remaining delegation depth, absolute
+deadline, idempotency key, and cancellation semantics. An `AbortSignal` object
+never crosses EventBridge. The PURISTA dispatcher maps `stream.cancel` and
+parent abort to one idempotent transport cancellation operation. The receiving
+adapter creates a receiver-local signal linked to that operation, EventBridge
+delivery cancellation or disconnect, and the inherited absolute deadline; it
+passes only that local signal to `streamDispatched` and calls the returned
+Harness stream's `cancel` at most once when the host delivery is cancelled.
+The receiving runtime uses `invocationId` as the child run
+id and caps `remainingDepth` by the receiving target's configured maximum.
+When `resume` is present, its `runId` must equal that exact `invocationId`.
+Consequently a fresh process persists the same child invocation correlation
+that the caller stored in its continuation and can reopen that child through
+`openPersisted` after restart.
+
+Identity and trace are intentionally absent from `HostedDispatchInvocation`.
+The receiving host projects both exactly once from the authenticated
+`HostInvocation`, normalizes them, and inserts those trusted values into the
+private runtime invocation. A caller cannot transport or override either field
+through `streamDispatched`. The PURISTA sender must map the outgoing normalized
+identity to authenticated EventBridge sender principal and tenant fields and
+must propagate the outgoing current W3C carrier through EventBridge trace
+metadata. The receiving adapter must construct `HostInvocation` from those
+authenticated fields, and `projectIdentity` and `projectTraceContext` must
+reproduce those exact normalized values. A missing or unequal authenticated
+mapping is rejected by the PURISTA adapter before `streamDispatched`; it never
+creates a new child session identity. Harness never accepts caller-controlled
+identity or trace fields here.
 
 This is a deliberate hosted-boundary exception to the standalone wire-input
-contract. The host adapter owns wire parsing and transformation; its validated
-logical value becomes the canonical Harness root input used for session,
-checkpoint, replay, and conflict comparison. Harness validates only that the
-value is JSON data at hosted entry and never invokes the root input schema on
-that value a second time.
+contract. For `runHosted` and `streamHosted`, the host adapter owns wire parsing
+and transformation; its validated logical value is the application-facing
+root input used for session, checkpoint, replay, and conflict comparison. For
+a fresh `streamDispatched` delivery, Harness executes the validated logical
+`input` but persists and compares the original `wireInput`, matching standalone
+child dispatch. A resume delivery accepts only that same wire value and
+restores logical continuation state. Harness validates only that the supplied
+values are JSON data and never invokes the root input schema again.
 
 `HostInvocation` is supplied only by the host target adapter for each run. It is
 opaque to Harness application logic, absent from public `InvokeOptions`, never
@@ -3462,6 +3572,9 @@ that differs from the persisted receipt throws
 input comparison. A well-formed receipt that has no byte-exact current binding
 also throws that error. Malformed receipt data is an invalid checkpoint. No
 receipt digest or route data appears in an error.
+`HarnessTargetRouteReceiptMismatchError` is a terminal lifecycle failure for
+the resumed root. The tool pipeline emits the sanitized `tool.finished` error
+and rethrows it; it never returns the route failure to a model as tool output.
 No input or input hash appears in an error, log, metric, or event.
 
 Before reading an in-memory or persisted call entry, `nestedTargets.run` calls
@@ -3528,6 +3641,8 @@ interface SuspendedHostToolFrameV1 {
     childRunId: string
     childInvocationId: string
     childSessionId: string
+    childInterruptId: string
+    childInterruptRevision: string
   }>
 }
 ```
@@ -3535,6 +3650,8 @@ interface SuspendedHostToolFrameV1 {
 The root-to-leaf path is ordered agent frame, host-tool frame, then child agent
 or workflow continuation. Resume validates exact binding identity and digest,
 requires the frame's child run/invocation and target to match that continuation,
+requires its child interrupt id and revision to match the child's resume
+descriptor,
 recomputes `hostToolInvocationId`, `childInvocationId`, and `childSessionId`
 from their canonical tuples above and requires exact equality,
 requires the route receipt target to equal the frame target, then calls
@@ -3550,11 +3667,14 @@ propagates to the child and follows the same re-entry/replay rules.
 For every resumed child edge, Harness validates the strict
 `ChildApprovalResumeDescriptorV1` and selects from the already normalized root
 decisions exactly the descriptor's sorted `approvalIds`. Across the pending
-continuation's leaf descriptors those id lists must be disjoint and their union
-must equal the aggregated root interrupt's approval-request ids. A missing
-decision, duplicate/overlapping id, descriptor id outside that root set, or
-union mismatch is `ApprovalResumeError{reason:'invalid_checkpoint'}` before
-dispatch. The child resume is exactly
+continuation's sibling leaf descriptors those id lists must be disjoint. Their
+union is the descendant-owned subset of the aggregated root interrupt's
+approval-request ids; approvals owned by a suspended current frame remain
+outside that subset. Every root approval request must have exactly one owner,
+either its suspended frame or one descendant leaf. A missing decision,
+duplicate/overlapping id, descriptor id outside the root set, or ownership
+partition mismatch is `ApprovalResumeError{reason:'invalid_checkpoint'}`
+before dispatch. The child resume is exactly
 `{type:'tool-approval',runId:descriptor.runId,interruptId:descriptor.interruptId,
 revision:descriptor.revision,eventId,decisions}`, where `eventId` is
 `event_` plus lowercase hexadecimal SHA-256 over the canonical JSON tuple
@@ -3601,6 +3721,22 @@ Hosted entry validation is stable and stops at the first failure:
 8. compare session identity;
 9. open or reacquire the checkpoint/lease; and
 10. execute or dispatch.
+
+`streamDispatched` uses the same order, except step 3 validates the exact
+fresh/resume delivery union and the appropriate wire/logical input, step 4
+rejects `identity` and then `trace` on the dispatch invocation, and step 5
+validates its exact XOR ancestry and invocation shape. A resume delivery runs
+the canonical strict `ToolApprovalResume` snapshot parser, including exact
+keys, identifier grammar, unique decision ids, and boolean decisions, then
+requires `resume.runId === invocationId`,
+and the pre-abort check follows those content-free structural checks. It does
+not accept `invokeOptions`. Unknown request or invocation fields, including
+`identity` or `trace`, fail as
+`ValidationError('Hosted dispatch request is invalid.',
+{where:'invoke_options',issues:{reason:'invalid_hosted_dispatch_request',field?}})`.
+Invalid delivery, ancestry, depth, deadline, signal, or resume correlation uses
+`invalid_hosted_dispatch_request` and runs no projector, storage operation, or
+dispatcher.
 
 An unknown or copied target is
 `ValidationError('Hosted target is not part of this Harness graph.',

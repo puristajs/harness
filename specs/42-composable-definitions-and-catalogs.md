@@ -3413,6 +3413,8 @@ failures and are never reported as caller replay conflicts.
 and otherwise has the exact `WorkflowContext.step` contract. Managed steps and
 nested target calls therefore replay safely. An unmanaged effect before an
 interruption may run again and remains application-owned.
+Host-step checkpoint metadata is exactly
+`{checkpointKind:'host_step',schemaVersion:1}`.
 
 A host interruption extends the existing strict continuation with this exact
 frame:
@@ -3430,13 +3432,24 @@ interface SuspendedHostToolFrameV1 {
   readonly bindingId: string
   readonly bindingContractDigest: string
   readonly toolStarted: true
-  readonly activeNestedCallIds: readonly [string]
+  readonly activeNestedCall: Readonly<{
+    callId: string
+    target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+    input: JsonValue
+    childRunId: string
+    childInvocationId: string
+    childSessionId: string
+  }>
 }
 ```
 
 The root-to-leaf path is ordered agent frame, host-tool frame, then child agent
 or workflow continuation. Resume validates exact binding identity and digest,
-resumes the child first, commits its host-call checkpoint, and re-enters the
+requires the frame's child run/invocation and target to match that continuation,
+recomputes `hostToolInvocationId`, `childInvocationId`, and `childSessionId`
+from their canonical tuples above and requires exact equality,
+resumes the child first, commits its host-call checkpoint using the frame's
+original nested wire input, and re-enters the
 same host binding through a fresh trusted invocation overlay. The common tool
 pipeline then validates the actual host-handler output, runs `afterTool`, and
 emits exactly one `tool.finished` without another `tool.started`. Cancellation
@@ -4830,6 +4843,9 @@ and rejection of distinct concurrent nested calls; agent-to-host-to-agent and
 agent-to-host-to-workflow interruption trees that resume leaf first, re-enter
 the host handler with a fresh overlay, repeat no managed effect, emit no second
 `tool.started`, and use the re-entered handler return as the tool output; and
+tampered host occurrence, child invocation, child session, run, target, or
+nested-call relationships that reject before child dispatch or another effect;
+and
 transactional startup/close behavior that never closes borrowed host resources.
 
 H4-003 specifically proves the spec 36 `ACC-SOWN-POLICY` boundary introduced by

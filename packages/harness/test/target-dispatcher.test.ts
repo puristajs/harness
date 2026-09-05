@@ -13,6 +13,24 @@ function stream(events: readonly any[]) {
 }
 
 describe('local target dispatcher', () => {
+	it('returns the executor stream unchanged so cancellation reaches the target', async () => {
+		const child = defineAgent('cancellableChild', { instructions: 'Answer.' })
+		const cancel = vi.fn(async (_reason?: string) => {})
+		const targetStream = { cancel, async *[Symbol.asyncIterator]() {} }
+		const dispatcher = createLocalTargetDispatcher({
+			defaultMaxDepth: 1,
+			routeBindingRevision: 'deploy-1:graph-a',
+			bindings: [{ definition: child, execute: async () => targetStream }],
+		})
+		const opened = await dispatcher.open({ target: child.contract, input: 'hello', invocation: {
+			sessionId: 'session', invocationId: 'child-run', rootRunId: 'root', parentRunId: 'parent',
+			parentAgentId: 'parent-agent', depth: 1, remainingDepth: 0, signal: new AbortController().signal,
+		} })
+		await opened.cancel('transport disconnected')
+		expect(opened).toBe(targetStream)
+		expect(cancel).toHaveBeenCalledWith('transport disconnected')
+	})
+
 	it('routes by exact hidden contract identity, validates once, and clamps remaining depth', async () => {
 		let validations = 0
 		const input = z.string().transform(value => { validations += 1; return { value } })

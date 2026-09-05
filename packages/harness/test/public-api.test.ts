@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import type { ExecutionEvent, HarnessTargetStream } from '../src/index.js'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import * as mainEntry from '../src/index.js'
 import * as testingEntry from '../src/testing/index.js'
@@ -158,6 +159,11 @@ const EXPECTED_TESTING_EXPORTS = [
 ]
 
 describe('public API export surface (specs/13-public-api.md)', () => {
+	it('publishes the canonical cancellable target event stream from the root', () => {
+		expectTypeOf<HarnessTargetStream<string>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
+		expectTypeOf<HarnessTargetStream<string>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()
+	})
+
   it('main entry exports exactly the locked value list', () => {
     expect(Object.keys(mainEntry).sort()).toEqual([...EXPECTED_MAIN_EXPORTS].sort())
   })

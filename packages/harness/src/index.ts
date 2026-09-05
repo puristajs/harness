@@ -163,6 +163,7 @@ export { isJsonValue } from './models/json.js'
 export type { JsonValue } from './models/json.js'
 export type { Infer, InferIn, ModelSchema, Schema } from './schema/index.js'
 export type { Message, PersistedRunEvent, RunRecord, RunStatus, SessionRecord } from './models/state.js'
+export type { ExecutionEvent, ExecutionEventCorrelation, HarnessTargetStream } from './definitions/execution-events.js'
 export type {
   ToolApprovalDecision,
   ToolApprovalInterrupt,
@@ -490,7 +491,6 @@ export type {
   DiscoveredSkills,
   DiscoverSkillsOptions,
   DurableInvokeOptions,
-  ExecutionEvent,
   GovernanceAuditRecord,
   GovernanceAuditSink,
   GovernanceConfig,

@@ -4,7 +4,7 @@ import { ToolApprovalPendingError, type ToolApprovalInterrupt, type ToolApproval
 import { freezeAcceptedModelTurnCursor, freezeSuspendedAgentTurnState } from '../approvals/prepared-tool-checkpoint.js'
 import type { AgentContinuationStateV1, PreparedToolCheckpointEntryV1, SuspendedAgentTurnStateV1 } from '../approvals/prepared-tool-checkpoint.js'
 import { executeStandardAgent } from '../agents/standard-loop.js'
-import type { AgentEventSink, AgentPipelineEvent, ExecutionEvent } from '../definitions/execution-events.js'
+import type { AgentEventSink, AgentPipelineEvent, ExecutionEvent, HarnessTargetStream } from '../definitions/execution-events.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { AnyAgentDefinition, AnyWorkflowDefinition, BuiltInToolDefinition, ToolDefinition } from '../definitions/types.js'
 import { ApprovalResumeError, HarnessConfigError, InternalError, OperationCancelledError, OperationTimeoutError, SandboxPermissionDeniedError, SandboxStateLostError, SessionBusyError, StateError, ValidationError, serializeError } from '../errors/index.js'
@@ -136,7 +136,7 @@ export interface InvokeOptions {
 
 export interface HarnessTargetInvoker<Target extends AnyTargetContract> {
 	run(input: TargetInput<Target>, options?: InvokeOptions): Promise<RunOutcome<TargetOutput<Target>>>
-	stream(input: TargetInput<Target>, options?: InvokeOptions): AsyncIterable<ExecutionEvent<TargetOutput<Target>>>
+	stream(input: TargetInput<Target>, options?: InvokeOptions): HarnessTargetStream<TargetOutput<Target>>
 }
 
 export interface HarnessSession<Contracts extends HarnessContracts> {
@@ -446,7 +446,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		}
 		if (!rootModes.has(runId)) rootModes.set(runId, 'run')
 		const controller = linkedController(invocation.signal, invocation.deadline)
-		const queue = new EventQueue<JsonValue>(() => controller.abort(new OperationCancelledError('Run was cancelled.', { scope: definition.kind })))
+		const queue = new EventQueue<JsonValue>(reason => controller.abort(new OperationCancelledError('Run was cancelled.', { scope: definition.kind }, reason)))
 		const execute = () => executeTarget(definition, input, invocation, runId, controller.signal, queue)
 		void (invocation.trace !== undefined && telemetry.withTraceContext !== undefined
 			? telemetry.withTraceContext(invocation.trace, execute)
@@ -1971,7 +1971,7 @@ class EventQueue<Output extends JsonValue> implements HarnessTargetDispatchStrea
 	private rejectIterator = false
 	private terminal?: Extract<ExecutionEvent<Output>, { type: 'run.finished' }>
 	public failure: unknown
-	public constructor(private readonly cancelRun: () => void) {}
+	public constructor(private readonly cancelRun: (reason?: string) => void) {}
 	public push(value: ExecutionEvent<Output>) { if (!this.done) { if (value.type === 'run.finished') this.terminal = value; this.values.push(value); this.wake() } }
 	public get terminalEvent(): Extract<ExecutionEvent<Output>, { type: 'run.finished' }> | undefined {
 		return this.terminal
@@ -1990,7 +1990,7 @@ class EventQueue<Output extends JsonValue> implements HarnessTargetDispatchStrea
 	public end() { this.done = true; this.wake() }
 	public setFailure(error: unknown) { this.failure = error }
 	public fail(error: unknown) { this.failure = error; this.rejectIterator = true; this.done = true; this.wake() }
-	public async cancel(): Promise<void> { this.cancelRun() }
+	public async cancel(reason?: string): Promise<void> { this.cancelRun(reason) }
 	public async *[Symbol.asyncIterator](): AsyncIterator<ExecutionEvent<Output>> {
 		while (!this.done || this.values.length > 0) {
 			if (this.values.length === 0) await new Promise<void>(resolve => this.waiters.push(resolve))
@@ -2005,8 +2005,18 @@ function lazyDispatchStream<Output extends JsonValue>(
 	pending: Promise<HarnessTargetDispatchStream<Output>>,
 	controller: ReturnType<typeof linkedController>,
 ): HarnessTargetDispatchStream<Output> {
+	let cancellation: Promise<void> | undefined
 	return Object.freeze({
-		async cancel(reason?: string) { const stream = await pending; await stream.cancel(reason); controller.dispose() },
+		cancel(reason?: string) {
+			if (cancellation !== undefined) return cancellation
+			controller.abort(new OperationCancelledError('Run was cancelled.', { scope: 'run' }, reason))
+			cancellation = (async () => {
+				try { const stream = await pending; await stream.cancel(reason) }
+				catch (error) { if (!(error instanceof OperationCancelledError)) throw error }
+				finally { controller.dispose() }
+			})()
+			return cancellation
+		},
 		async *[Symbol.asyncIterator]() { const stream = await pending; try { yield* stream } finally { controller.dispose() } },
 	})
 }

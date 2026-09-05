@@ -56,6 +56,18 @@ type EventBody<Output, Interrupt> =
 	| Readonly<{ type: 'stream.overflow'; at: string; dropped: number }>
 
 export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> = ExecutionEventCorrelation & EventBody<Output, Interrupt>
+
+/**
+ * Ordered target execution events plus explicit execution cancellation.
+ *
+ * Returning from an iterator stops local observation only. Call {@link cancel}
+ * when the target itself must be cancelled, such as when a transport client
+ * disconnects.
+ */
+export interface HarnessTargetStream<Output> extends AsyncIterable<ExecutionEvent<Output>> {
+	/** Request target cancellation and resolve once the request is accepted. */
+	cancel(reason?: string): Promise<void>
+}
 export type AgentPipelineEventType = Extract<EventBody<JsonValue, HarnessInterrupt>['type'],
 	'agent.started' | 'agent.finished' | 'model.message' | 'output.text.delta' | 'output.object.snapshot' |
 	'tool.input.available' | 'tool.started' | 'tool.finished' | 'policy.exposure' | 'policy.evaluated' |

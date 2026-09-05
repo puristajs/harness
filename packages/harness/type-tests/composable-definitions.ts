@@ -6,7 +6,7 @@ import { defineHarness } from '../src/definitions/harness.js'
 import type { ToolRequirements } from '../src/definitions/index.js'
 import { agentGuardrailsBinding } from '../src/harness/defineHarness.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
-import type { AgentModelResponse } from '../src/index.js'
+import type { AgentModelResponse, HarnessTargetStream } from '../src/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
@@ -453,6 +453,9 @@ async function checkRuntimeSurface() {
 		const sequence: number = event.sequence
 		void sequence
 	}
+	const targetStream = session.workflows.runtimeWorkflow.stream({ message: 'hello' })
+	await targetStream.cancel('typed transport disconnect')
+	type _CanonicalTargetStream = Expect<typeof targetStream extends HarnessTargetStream<{ answer: string }> ? true : false>
 	// @ts-expect-error unknown targets are not present on the exact definition-keyed map
 	session.workflows.unknown
 	// @ts-expect-error target inputs are inferred from the selected workflow contract

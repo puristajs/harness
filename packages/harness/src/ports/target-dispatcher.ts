@@ -1,6 +1,6 @@
 import type { HarnessIdentity } from '../identity/index.js'
 import type { ToolApprovalResume } from '../approvals/index.js'
-import type { ExecutionEvent } from '../definitions/execution-events.js'
+import type { HarnessTargetStream } from '../definitions/execution-events.js'
 import type {
 	HarnessInterruptKind,
 	HarnessOutputUpdateKind,
@@ -59,9 +59,7 @@ export type HarnessTargetDispatchRequest<Target extends AnyHarnessTargetContract
 	invocation: HarnessNestedTargetDispatchInvocation
 }>
 
-export interface HarnessTargetDispatchStream<Output> extends AsyncIterable<ExecutionEvent<Output>> {
-	cancel(reason?: string): Promise<void>
-}
+export interface HarnessTargetDispatchStream<Output> extends HarnessTargetStream<Output> {}
 
 /** Stable inert receipt for one exact target route owned by a dispatcher. */
 export interface HarnessTargetRouteReceiptV1 {

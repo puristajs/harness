@@ -138,6 +138,15 @@ export type AgentGovernanceAuthoringConfig<Tools extends GovernanceToolMap> =
 		policies?: readonly (NativePolicyAuthoringDefinition<Tools> | GovernancePolicyEvaluator<Tools>)[]
 	}>
 
+declare const governanceAdapterToolMap: unique symbol
+
+/** Callable policy adapter with an opaque, type-only carrier for exact tool-map inference. */
+type GovernanceAdapterHelper<Tools extends GovernanceToolMap> = Readonly<{
+	[governanceAdapterToolMap]?: Tools
+}> & {
+	<const Definition extends GovernancePolicyEvaluator<Tools>>(definition: Definition): Definition
+}
+
 /** Typed helpers passed to callback-style governance authoring. */
 export interface GovernanceDefinitionHelpers<Tools extends GovernanceToolMap> {
 	rule<const Ids extends readonly ToolId<Tools>[]>(definition: NativePolicyRuleForTool<Tools, NoInfer<Ids[number]>> & { tools: Ids }): NativePolicyRule<Tools>
@@ -147,7 +156,7 @@ export interface GovernanceDefinitionHelpers<Tools extends GovernanceToolMap> {
 	native<const Definition extends Omit<NativePolicyDefinition<Tools>, 'kind' | 'effects'>>(definition: Definition): Definition & {
 		readonly kind: 'native'
 	}
-	adapter<const Definition extends GovernancePolicyEvaluator<Tools>>(definition: Definition): Definition
+	readonly adapter: GovernanceAdapterHelper<Tools>
 }
 
 type ExplicitToolMap<Tools extends readonly AnyToolDefinition[]> = Readonly<{ [Tool in Tools[number] as Tool['id']]: Tool }>

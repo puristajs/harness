@@ -43,7 +43,7 @@ const owners = {
 const removedResultFields = new Set(['message', 'reason', 'metadata', 'tags', 'riskLevel', 'decisionId', 'policyId', 'policyVersion'])
 const unsafeEvidenceFields = new Set(['message', 'reason', 'metadata', 'input', 'output', 'effect', 'enforced', 'failureKind'])
 const unsafeAuditFields = new Set([...removedResultFields, 'input', 'output'])
-const privateModules = ['decisions/identity.ts', 'governance/index.ts', 'agents/tool-execution.ts']
+const privateModules = ['decisions/identity.ts', 'governance/index.ts', 'agents/agent-tool-pipeline.ts']
 const retiredGuardrailIdentifiers = new Set([
   'loadGuardrailsConfig', 'parseGuardrailsConfig', 'ParsedGuardrailsConfig',
   'NeMoConfig', 'NeMoRailConfig', 'NeMoSensitiveDataConfig',
@@ -137,7 +137,7 @@ export function checkDecisionSource(ts, path, content) {
   const findings = []
   const report = (node, rule, symbol) => findings.push({ path, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1, rule, symbol })
   const governed = normalized.startsWith(core + 'decisions/') || normalized.startsWith(core + 'governance/') || normalized.startsWith(addon)
-  const ownerScope = governed || normalized === core + 'agents/index.ts' || normalized === core + 'agents/tool-execution.ts'
+  const ownerScope = governed || normalized === core + 'agents/index.ts' || normalized === core + 'agents/agent-tool-pipeline.ts'
   const decisionTimer = (governed || normalized === core + 'agents/index.ts') && normalized !== owners.runDecisionOperation
   const review = normalized.startsWith('ai-harness/examples/durable-human-review/src/')
   const declarationName = node => (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isClassDeclaration(node) || ts.isMethodDeclaration(node)) ? node.name?.getText(source) : undefined
@@ -208,7 +208,7 @@ export async function verifyDecisionModules(ts, root) {
   const findings = []
   const modules = [
     ...['schemas', 'types', 'identity', 'evidence', 'execution', 'index', 'decisions.test'].map(name => core + `decisions/${name}.ts`),
-    core + 'governance/index.ts', core + 'agents/tool-execution.ts', core + 'index.ts',
+    core + 'governance/index.ts', core + 'agents/agent-tool-pipeline.ts', core + 'index.ts',
   ]
   for (const path of modules) if (!existsSync(layout.absolute(path))) findings.push({ path, line: 1, rule: 'missing-module', symbol: path })
   const entry = core + 'index.ts'

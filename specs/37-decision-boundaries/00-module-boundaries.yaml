@@ -35,7 +35,7 @@ modules:
       - "review_store"
   - module_id: "tool_execution"
     owner: "tool_execution"
-    public_entrypoint: "packages/harness/src/agents/tool-execution.ts"
+    public_entrypoint: "packages/harness/src/agents/agent-tool-pipeline.ts"
     owned_concepts:
       - "prepared_invocation"
       - "batch_lifecycle"

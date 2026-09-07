@@ -22,7 +22,7 @@ test('decision callback timers cannot be reimplemented but unrelated lifecycle t
   }
   for (const [file, code] of [
     [core + 'decisions/execution.ts', 'setTimeout(callback, 100); Promise.race([action(), deadline])'],
-    [core + 'agents/tool-execution.ts', 'setTimeout(() => controller.abort(), timeoutMs)'],
+    [core + 'agents/agent-tool-pipeline.ts', 'setTimeout(() => controller.abort(), timeoutMs)'],
     [core + 'models/registry.ts', 'setTimeout(retry, delay)'],
     [rails, 'const signal = new AbortController().signal'],
     [core + 'governance/index.ts', "createHash('sha256').update(approvalTuple)"]
@@ -94,7 +94,7 @@ async function decisionModules(workspace, prefix = 'ai-harness/') {
   const source = prefix + 'packages/harness/src/'
   for (const name of ['schemas', 'types', 'identity', 'evidence', 'execution', 'index', 'decisions.test']) await put(source + `decisions/${name}.ts`, '', workspace)
   await put(source + 'governance/index.ts', '', workspace)
-  await put(source + 'agents/tool-execution.ts', '', workspace)
+  await put(source + 'agents/agent-tool-pipeline.ts', '', workspace)
   await put(source + 'decisions/index.ts', "export { createDecisionEvidence } from './evidence.js'; export { runDecisionOperation } from './execution.js'; export type { DecisionEvidence } from './types.js'", workspace)
   await put(source + 'index.ts', "export { createDecisionEvidence, runDecisionOperation } from './decisions/index.js'; export type { DecisionEvidence } from './decisions/index.js'; export { isJsonValue } from './models/json.js'; export { DecisionBlockedError, DecisionEvaluationError } from './errors/index.js'", workspace)
 }

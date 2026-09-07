@@ -1,4 +1,4 @@
-import type { Sandbox } from '@purista/harness'
+import type { Sandbox, SkillRuntimeId } from '@purista/harness'
 import { DockerSandbox, CAPABILITIES } from './lifecycle.js'
 import type { DockerSandboxOptions } from './options.js'
 import { dockerTransport } from './transport.js'
@@ -14,10 +14,14 @@ export type { DockerSandboxOptions, DockerSandboxResources } from './options.js'
  *
  * @example
  * ```ts
- * const sandbox = dockerSandbox({ root: '/var/lib/app/sandboxes', image: pinnedImage })
- * const harness = defineHarness().sandbox(sandbox).build()
+ * const sandbox = dockerSandbox({
+ *   root: '/var/lib/app/sandboxes', image: pinnedImage, runtimes: ['python'],
+ * })
+ * const instance = await definition.getInstance({ model, sandbox })
  * ```
  */
-export function dockerSandbox(options: DockerSandboxOptions): Sandbox<typeof CAPABILITIES> {
+export function dockerSandbox(options: DockerSandboxOptions): Sandbox<typeof CAPABILITIES> & Readonly<{
+  runtimes: readonly SkillRuntimeId[]
+}> {
   return new DockerSandbox(options, dockerTransport)
 }

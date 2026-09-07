@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from 'node:path'
-import { HarnessConfigError, SandboxError, type SandboxAdministrationOptions } from '@purista/harness'
+import { HarnessConfigError, SandboxError, type SandboxAdministrationOptions, type SkillRuntimeId } from '@purista/harness'
+import { normalizeSkillRuntimes } from '@purista/harness/adapter'
 import { z } from 'zod'
 
 const positiveInteger = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
@@ -13,6 +14,7 @@ const resourcesSchema = z.strictObject({
 const optionsSchema = z.strictObject({
   root: z.string().min(1).refine(isAbsolute).refine(value => !value.includes('\0')).describe('Absolute private metadata directory; never mounted into the guest.'),
   image: z.string().regex(/^(?:[^\s\0]+@)?sha256:[a-f0-9]{64}$/).describe('Already-present image pinned by repository digest or immutable sha256 image ID.'),
+  runtimes: z.unknown().optional(),
   context: z.string().trim().min(1).refine(value => !value.includes('\0')).optional().describe('Local Docker context; defaults to the active context resolved once.'),
   user: z.string().regex(/^[1-9]\d*:[1-9]\d*$/).refine(value => value.split(':').every(part => Number.isSafeInteger(Number(part)) && Number(part) <= 4_294_967_294)).default('1000:1000').describe('Non-root numeric UID:GID; defaults to 1000:1000.'),
   network: z.enum(['none', 'bridge']).default('none').describe('Guest networking; disabled by default.'),
@@ -45,6 +47,8 @@ export interface DockerSandboxOptions extends z.input<typeof optionsSchema> {
   readonly root: string
   /** Already-present `repository@sha256:...` or local `sha256:...` image ID. */
   readonly image: string
+  /** Logical executable runtimes guaranteed by the configured image. */
+  readonly runtimes?: readonly SkillRuntimeId[]
   /** Local Docker context. Omitted selects the active context once, before mutation. */
   readonly context?: string
   /** Numeric non-root UID:GID. Defaults to `1000:1000`. */
@@ -56,12 +60,22 @@ export interface DockerSandboxOptions extends z.input<typeof optionsSchema> {
   /** Bounded private owner/catalog limits. Docker volume byte quotas are not portable. */
   readonly administration?: SandboxAdministrationOptions
 }
-export type ResolvedOptions = z.output<typeof optionsSchema>
+export type ResolvedOptions = Omit<z.output<typeof optionsSchema>, 'runtimes'> & Readonly<{
+  runtimes: readonly SkillRuntimeId[]
+}>
 
 export function resolveOptions(input: DockerSandboxOptions): ResolvedOptions {
-  const result = optionsSchema.safeParse(input)
+  let result: ReturnType<typeof optionsSchema.safeParse>
+  try { result = optionsSchema.safeParse(input) }
+  catch { throw configurationFailure('invalid_configuration', 'Docker sandbox configuration is invalid. Use an absolute metadata root, digest-pinned image, and positive resource limits.') }
   if (!result.success) throw configurationFailure('invalid_configuration', 'Docker sandbox configuration is invalid. Use an absolute metadata root, digest-pinned image, and positive resource limits.')
-  return { ...result.data, root: resolve(result.data.root) }
+  let runtimes: readonly SkillRuntimeId[]
+  try {
+    if (result.data.runtimes === null) throw new Error()
+    runtimes = normalizeSkillRuntimes(result.data.runtimes as readonly SkillRuntimeId[] | undefined, true, 'options.runtimes')
+  }
+  catch { throw configurationFailure('invalid_configuration', 'Docker sandbox configuration is invalid.') }
+  return { ...result.data, root: resolve(result.data.root), runtimes }
 }
 
 export function failure(reason: string, message = 'Docker sandbox operation failed.'): SandboxError {

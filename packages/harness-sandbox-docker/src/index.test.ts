@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { inspect } from 'node:util'
-import { afterEach, describe, expect, expectTypeOf, it } from 'vitest'
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import {
   HarnessConfigError,
   InMemoryHarnessStorage,
@@ -11,12 +11,18 @@ import {
   SandboxError,
   SandboxStateLostError,
   ValidationError,
+  agentGuardrailsBinding,
+  defineAgent,
   defineHarness,
+  defineSkill,
+  defineTool,
   inMemoryHarnessStorage,
   type HarnessAdapterContext,
   type SandboxScope,
+  type SkillRuntimeId,
+  type AgentGuardrailsBinding,
 } from '@purista/harness'
-import { RecordingTelemetry, sandboxContract, sandboxTextSearchContract } from '@purista/harness/testing'
+import { FakeModelProvider, RecordingTelemetry, sandboxContract, sandboxTextSearchContract } from '@purista/harness/testing'
 import { z } from 'zod'
 import { dockerSandbox, type DockerSandboxOptions } from './index.js'
 import { DockerSandbox } from './lifecycle.js'
@@ -39,6 +45,16 @@ const clients: DockerSandbox[] = []
 const scopes = new Map<DockerSandbox, SandboxScope[]>()
 
 class RestartableHarnessStorage extends InMemoryHarnessStorage {
+  public constructor() {
+    super()
+    const capabilities = Object.freeze([...this.capabilities, 'storage.persistent'])
+    Object.defineProperty(this, 'capabilities', {
+      value: capabilities,
+    })
+    Object.defineProperty(this, 'info', {
+      value: Object.freeze({ ...this.info, capabilities }),
+    })
+  }
   // Match durable storage adapters, whose close releases a handle but retains
   // the journaled session record used by the next Harness process.
   public override async close(): Promise<void> {}
@@ -63,18 +79,27 @@ async function open(adapter: DockerSandbox, chosen: SandboxScope = scope) {
 }
 
 function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessStorage()) {
-  return defineHarness()
-    .storage(storage)
-    .sandbox(adapter)
-    .models({ fake: { provider: { id: 'fake', genAiSystem: 'fake' }, model: 'fake', capabilities: [] } })
-    .tools({})
-    .skills({})
-    .agent('noop', {
-      input: z.string(),
-      output: z.string(),
-      handler: async (ctx) => ctx.input,
-    })
-    .build()
+  const noopTool = defineTool('noopTool', {
+    description: 'Returns its input.', input: z.string(), output: z.string(),
+    requires: { sandbox: ['sandbox.fs'] }, handler: async ({ input }) => input,
+  })
+  const noopAgent = defineAgent('noopAgent', {
+    instructions: 'Call noopTool once.', tools: [noopTool], durable: true,
+  })
+  return defineHarness({ name: 'dockerNoLiveSession', revision: '1' }).addAgent(noopAgent).getInstance({
+    model: { provider: new FakeModelProvider(), model: 'fake' }, storage, sandbox: adapter,
+  })
+}
+
+function runtimeGuardrails(runtimes: readonly SkillRuntimeId[]): AgentGuardrailsBinding<{
+  readonly skillRuntimes: readonly SkillRuntimeId[]
+}> {
+  return {
+    [agentGuardrailsBinding]: {
+      id: 'runtimeGuard', requirements: { skillRuntimes: runtimes },
+      beforeInput: () => ({ decision: 'allow' }),
+    },
+  }
 }
 afterEach(async () => {
   for (const adapter of clients.splice(0))
@@ -88,7 +113,7 @@ describe('Docker sandbox public configuration', () => {
   it('supports no-live get, release, and close across a restart without Docker allocation', async () => {
     const { root, transport, adapter } = await fixture()
     const storage = new RestartableHarnessStorage()
-    const first = noLiveSessionHarness(adapter, storage)
+    const first = await noLiveSessionHarness(adapter, storage)
 
     const session = await first.getSession('docker-no-live-owner')
     await expect(storage.getSession('docker-no-live-owner')).resolves.toEqual(
@@ -97,11 +122,11 @@ describe('Docker sandbox public configuration', () => {
       }),
     )
     await session.release()
-    await first.shutdown()
+    await first.close()
 
     const resumedAdapter = new DockerSandbox({ root, image }, transport)
     clients.push(resumedAdapter)
-    const resumed = noLiveSessionHarness(resumedAdapter, storage)
+    const resumed = await noLiveSessionHarness(resumedAdapter, storage)
     const recovered = await resumed.getSession('docker-no-live-owner')
     await recovered.release()
     await recovered.destroy()
@@ -128,6 +153,105 @@ describe('Docker sandbox public configuration', () => {
     expectTypeOf(dockerSandbox({ root: '/private/data', image }).capabilities).toEqualTypeOf<
       readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | undefined
     >()
+  })
+
+  it('publishes only explicit sorted frozen Skill runtime metadata', () => {
+    const omitted = dockerSandbox({ root: '/private/data', image })
+    const empty = dockerSandbox({ root: '/private/data', image, runtimes: [] })
+    const supplied: SkillRuntimeId[] = ['shell', 'node', 'python']
+    const configured = dockerSandbox({ root: '/private/data', image, runtimes: supplied })
+    supplied.splice(0, supplied.length, 'shell')
+
+    expect(omitted.runtimes).toEqual([])
+    expect(empty.runtimes).toEqual([])
+    expect(configured.runtimes).toEqual(['node', 'python', 'shell'])
+    expect(Object.isFrozen(omitted.runtimes)).toBe(true)
+    expect(Object.isFrozen(configured.runtimes)).toBe(true)
+    expect(configured.capabilities).not.toContain('sandbox.readonly_mount')
+    expectTypeOf(configured.runtimes).toEqualTypeOf<readonly SkillRuntimeId[]>()
+  })
+
+  it('rejects invalid Skill runtime metadata before any Docker effect', () => {
+    const throwingRuntime = Object.defineProperty([], '0', {
+      enumerable: true, get() { throw new Error('private runtime element') },
+    })
+    Object.defineProperty(throwingRuntime, 'length', { value: 1 })
+    for (const runtimes of [['node', 'node'], ['ruby'], Array(1), throwingRuntime, 'node', null]) {
+      const transport = new ScriptedDocker()
+      let error: unknown
+      try { new DockerSandbox({ root: '/private/data', image, runtimes } as never, transport) }
+      catch (failure) { error = failure }
+      expect(error).toMatchObject({ meta: { reason: 'invalid_configuration' } })
+      expect(JSON.stringify(error)).not.toContain('private runtime element')
+      expect(transport.calls).toEqual([])
+    }
+    expect(dockerSandbox({ root: '/private/data', image: `python-node-shell@sha256:${'a'.repeat(64)}` }).runtimes).toEqual([])
+  })
+
+  it('snapshots each explicit runtime element exactly once', () => {
+    let reads = 0
+    const runtimes = Object.defineProperty([], '0', {
+      enumerable: true, get() { reads += 1; return reads === 1 ? 'node' : 'ruby' },
+    })
+    Object.defineProperty(runtimes, 'length', { value: 1 })
+    const adapter = dockerSandbox({ root: '/private/data', image, runtimes } as never)
+    expect(adapter.runtimes).toEqual(['node'])
+    expect(reads).toBe(1)
+  })
+
+  it('uses explicit runtimes during Core instance preflight without opening a sandbox', async () => {
+    const agent = defineAgent('runtimeGuardAgent', {
+      instructions: 'Return a short answer.', guardrails: runtimeGuardrails(['python']),
+    })
+    const definition = defineHarness({ name: 'dockerRuntimeGuard' }).addAgent(agent)
+    const matching = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
+    const matchingOpen = vi.spyOn(matching, 'open')
+    const instance = await definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: matching,
+    })
+    expect(matchingOpen).not.toHaveBeenCalled()
+    await instance.close()
+
+    const missing = dockerSandbox({ root: '/private/data', image, runtimes: [] })
+    const missingOpen = vi.spyOn(missing, 'open')
+    expect(() => definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: missing,
+    })).toThrowError(expect.objectContaining({
+      meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
+    }))
+    expect(missingOpen).not.toHaveBeenCalled()
+  })
+
+  it('does not claim read-only Skill mounting for a runtime-bearing Skill', async () => {
+    const skill = defineSkill('runtime-skill', {
+      directory: new URL('./fixtures/runtime-skill/', import.meta.url), runtimes: ['python'],
+    })
+    const agent = defineAgent('runtimeSkillAgent', {
+      instructions: 'Use the supplied Skill.', skills: [skill],
+    })
+    const definition = defineHarness({ name: 'dockerRuntimeSkill' }).addAgent(agent)
+    const adapter = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
+    const open = vi.spyOn(adapter, 'open')
+    expect(() => definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: adapter,
+    } as never)).toThrowError(expect.objectContaining({
+      meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
+    }))
+    expect(open).not.toHaveBeenCalled()
+    expect(adapter.capabilities).not.toContain('sandbox.readonly_mount')
+  })
+
+  it('normalizes hostile runtime access to a content-free configuration error', () => {
+    const options = Object.defineProperty({ root: '/private/data', image }, 'runtimes', {
+      enumerable: true, get() { throw new Error('private runtime getter') },
+    })
+    let error: unknown
+    try { dockerSandbox(options) } catch (failure) { error = failure }
+    expect(error).toEqual(expect.objectContaining({
+      message: 'Docker sandbox configuration is invalid. Use an absolute metadata root, digest-pinned image, and positive resource limits.',
+      meta: { reason: 'invalid_configuration' },
+    }))
+    expect(JSON.stringify(error)).not.toContain('private runtime getter')
   })
 
   it('rejects unsupported restore, invalid scope, and pre-cancelled open without CLI mutation', async () => {

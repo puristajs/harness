@@ -1,6 +1,7 @@
 import path from 'node:path'
 
 import {
+  HarnessConfigError,
   OperationCancelledError,
   SandboxError,
   SandboxPermissionDeniedError,
@@ -24,9 +25,11 @@ import {
   type SandboxTerminateOptions,
   type SandboxTextSearchRequest,
   type SandboxTextSearchResult,
+  type SkillRuntimeId,
   withSandboxTelemetry,
 } from '@purista/harness'
 import {
+  normalizeSkillRuntimes,
   sandboxScopeKey,
   validateSandboxOpenOptions,
   validateSandboxTerminateOptions,
@@ -70,6 +73,8 @@ export interface KubernetesSandboxAdapterOptions {
   readonly coordinator?: KubernetesWorkspaceCoordinator
   /** Reviewed non-root sandbox image. */
   readonly image: string
+  /** Logical executable runtimes guaranteed by the configured image. */
+  readonly runtimes?: readonly SkillRuntimeId[]
   /** Container selected for exec operations. */
   readonly containerName: string
   /** Tokenless service account assigned to generated Pods. */
@@ -99,6 +104,7 @@ type KubernetesCapabilities = readonly AdapterCapability[]
 /** Kubernetes implementation of the provider-neutral Harness `Sandbox` port. */
 export class KubernetesSandboxAdapter implements Sandbox<KubernetesCapabilities> {
   public readonly capabilities: KubernetesCapabilities
+  public readonly runtimes: readonly SkillRuntimeId[]
   public readonly telemetryAdapterId = 'kubernetes'
   public readonly administration: KubernetesSandboxAdministration
   private logger: HarnessAdapterContext['logger'] | undefined
@@ -106,6 +112,16 @@ export class KubernetesSandboxAdapter implements Sandbox<KubernetesCapabilities>
 
   /** Creates the low-level sandbox adapter; most applications use `kubernetesSandboxRuntime()`. */
   public constructor(private readonly options: KubernetesSandboxAdapterOptions) {
+    try {
+      const runtimes = Object.hasOwn(options, 'runtimes') ? options.runtimes : undefined
+      if (runtimes === null) throw new Error()
+      this.runtimes = normalizeSkillRuntimes(runtimes, true, 'options.runtimes')
+    }
+    catch {
+      throw new HarnessConfigError('Kubernetes sandbox runtime configuration is invalid.', {
+        reason: 'invalid_option', path: 'options.runtimes',
+      })
+    }
     this.capabilities = options.coordinator
       ? KUBERNETES_WORKSPACE_SANDBOX_CAPABILITIES
       : KUBERNETES_SANDBOX_CAPABILITIES

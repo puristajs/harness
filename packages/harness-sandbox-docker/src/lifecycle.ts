@@ -5,6 +5,7 @@ import {
   type HarnessAdapterContext, type Sandbox, type SandboxOpenOptions,
   type SandboxOpenResult, type SandboxTerminateOptions, type SandboxAdministration,
   type SandboxOwnerRegistrationOptions, type HarnessIdentity,
+  type SkillRuntimeId,
 } from '@purista/harness'
 import { resolveOptions, failure, configurationFailure, type DockerSandboxOptions, type ResolvedOptions } from './options.js'
 import { Records, hash, scopeKey, stateLost, type LifecycleRecord, type Ownership } from './records.js'
@@ -22,6 +23,7 @@ const VOLUME_FORMAT = `{{.Name}}\t{{index .Labels "${LABEL}"}}`
 /** Private implementation; tests inject a scripted CLI transport, never a public escape hatch. */
 export class DockerSandbox implements Sandbox<typeof CAPABILITIES> {
   public readonly capabilities = CAPABILITIES
+  public readonly runtimes: readonly SkillRuntimeId[]
   public readonly telemetryAdapterId = 'docker'
   public timeoutMs = DEFAULT_TIMEOUT_MS
   private readonly options: ResolvedOptions
@@ -36,6 +38,7 @@ export class DockerSandbox implements Sandbox<typeof CAPABILITIES> {
 
   public constructor(options: DockerSandboxOptions, private readonly transport: DockerTransport) {
     this.options = resolveOptions(options)
+    this.runtimes = this.options.runtimes
     this.records = new Records(this.options.root)
     this.journal = new DockerOwnershipJournal(this.records, this.options.administration)
     this.dockerAdministration = new DockerAdministration(this.journal, {

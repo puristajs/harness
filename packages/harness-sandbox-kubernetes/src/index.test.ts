@@ -1,6 +1,13 @@
 import {
+  HarnessConfigError,
   SandboxStateLostError,
+  agentGuardrailsBinding,
+  defineAgent,
+  defineHarness,
+  defineSkill,
+  type AgentGuardrailsBinding,
   type SandboxScope,
+  type SkillRuntimeId,
 } from '@purista/harness'
 import {
   durableWorkspaceContract,
@@ -8,10 +15,12 @@ import {
   sandboxMultiClientContract,
   sandboxTextSearchContract,
   RecordingTelemetry,
+  FakeModelProvider,
 } from '@purista/harness/testing'
 import type { HarnessAdapterContext } from '@purista/harness'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { kubernetesSandboxRuntime } from './runtime.js'
+import { KubernetesSandboxAdapter } from './sandbox.js'
 import { InMemoryKubernetesSandboxDriver } from './test-driver.js'
 
 function runtime(
@@ -26,6 +35,17 @@ function runtime(
     driver,
     workspace,
   })
+}
+
+function runtimeGuardrails(runtimes: readonly SkillRuntimeId[]): AgentGuardrailsBinding<{
+  readonly skillRuntimes: readonly SkillRuntimeId[]
+}> {
+  return {
+    [agentGuardrailsBinding]: {
+      id: 'runtimeGuard', requirements: { skillRuntimes: runtimes },
+      beforeInput: () => ({ decision: 'allow' }),
+    },
+  }
 }
 
 sandboxContract(() => runtime().sandbox, { executor: 'available' })
@@ -77,6 +97,156 @@ describe('kubernetesSandboxRuntime', () => {
   it('rejects unknown or invalid options before constructing a client', () => {
     expect(() => kubernetesSandboxRuntime({ namespace: '', image: 'sandbox:test' })).toThrow()
     expect(() => kubernetesSandboxRuntime({ namespace: 'test', image: 'sandbox:test', unexpected: true } as never)).toThrow()
+  })
+
+  it('publishes only explicit sorted frozen Skill runtime metadata', () => {
+    const omitted = kubernetesSandboxRuntime({ namespace: 'test', image: 'python-node-shell:latest', driver: new InMemoryKubernetesSandboxDriver() })
+    const empty = kubernetesSandboxRuntime({ namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: [] })
+    const supplied: SkillRuntimeId[] = ['shell', 'node', 'python']
+    const configured = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: supplied,
+    })
+    supplied.splice(0, supplied.length, 'shell')
+
+    expect(omitted.sandbox.runtimes).toEqual([])
+    expect(empty.sandbox.runtimes).toEqual([])
+    expect(configured.sandbox.runtimes).toEqual(['node', 'python', 'shell'])
+    expect(Object.isFrozen(omitted.sandbox.runtimes)).toBe(true)
+    expect(Object.isFrozen(configured.sandbox.runtimes)).toBe(true)
+    expect(configured.sandbox.capabilities).not.toContain('sandbox.readonly_mount')
+    expectTypeOf(configured.sandbox.runtimes).toEqualTypeOf<readonly SkillRuntimeId[]>()
+
+    const durable = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: ['shell'], workspace: true,
+    })
+    expectTypeOf(omitted.sandbox.runtimes).toEqualTypeOf<readonly SkillRuntimeId[]>()
+    expectTypeOf(durable.sandbox.runtimes).toEqualTypeOf<readonly SkillRuntimeId[]>()
+    expect(durable.sandbox.runtimes).toEqual(['shell'])
+  })
+
+  it('rejects invalid Skill runtime metadata before any Kubernetes effect', () => {
+    const throwingRuntime = Object.defineProperty([], '0', {
+      enumerable: true, get() { throw new Error('private runtime element') },
+    })
+    Object.defineProperty(throwingRuntime, 'length', { value: 1 })
+    for (const runtimes of [['node', 'node'], ['ruby'], Array(1), throwingRuntime, 'node', null]) {
+      const driver = new InMemoryKubernetesSandboxDriver()
+      let error: unknown
+      try { kubernetesSandboxRuntime({ namespace: 'test', image: 'sandbox:test', driver, runtimes } as never) }
+      catch (failure) { error = failure }
+      expect(error).toEqual(expect.objectContaining({
+        message: 'Kubernetes sandbox runtime configuration is invalid.',
+        meta: { reason: 'invalid_option', path: 'options.runtimes' },
+      }))
+      expect(error).toBeInstanceOf(HarnessConfigError)
+      expect(JSON.stringify(error)).not.toContain('private runtime element')
+      expect(driver.closeCalls).toBe(0)
+    }
+  })
+
+  it('snapshots each explicit runtime element exactly once', () => {
+    let reads = 0
+    const runtimes = Object.defineProperty([], '0', {
+      enumerable: true, get() { reads += 1; return reads === 1 ? 'node' : 'ruby' },
+    })
+    Object.defineProperty(runtimes, 'length', { value: 1 })
+    const execution = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes,
+    } as never)
+    expect(execution.sandbox.runtimes).toEqual(['node'])
+    expect(reads).toBe(1)
+  })
+
+  it('validates runtime metadata on the low-level adapter boundary', () => {
+    const driver = new InMemoryKubernetesSandboxDriver()
+    const options = {
+      driver, runtimeId: 'low-level', image: 'sandbox:test', containerName: 'workspace', imagePullPolicy: 'Never' as const,
+      volumeSize: '1Gi', podReadyTimeoutMs: 1_000, defaultCommandTimeoutMs: 1_000,
+      cpuLimit: '1', memoryLimit: '1Gi', ephemeralStorageLimit: '1Gi',
+    }
+    const adapter = new KubernetesSandboxAdapter({ ...options, runtimes: ['python'] })
+    expect(adapter.runtimes).toEqual(['python'])
+    expect(Object.isFrozen(adapter.runtimes)).toBe(true)
+    expectTypeOf(adapter.runtimes).toEqualTypeOf<readonly SkillRuntimeId[]>()
+    expect(() => new KubernetesSandboxAdapter({ ...options, runtimes: ['python', 'python'] } as never)).toThrowError(
+      expect.objectContaining({ meta: { reason: 'invalid_option', path: 'options.runtimes' } }),
+    )
+    expect(() => new KubernetesSandboxAdapter({ ...options, runtimes: Array(1) } as never)).toThrowError(
+      expect.objectContaining({ meta: { reason: 'invalid_option', path: 'options.runtimes' } }),
+    )
+    const hostile = Object.defineProperty({ ...options }, 'runtimes', {
+      enumerable: true, get() { throw new Error('private low-level getter') },
+    })
+    let error: unknown
+    try { new KubernetesSandboxAdapter(hostile) } catch (failure) { error = failure }
+    expect(error).toEqual(expect.objectContaining({
+      message: 'Kubernetes sandbox runtime configuration is invalid.',
+      meta: { reason: 'invalid_option', path: 'options.runtimes' },
+    }))
+    expect(JSON.stringify(error)).not.toContain('private low-level getter')
+  })
+
+  it('uses explicit runtimes during Core instance preflight without opening a sandbox', async () => {
+    const agent = defineAgent('runtimeGuardAgent', {
+      instructions: 'Return a short answer.', guardrails: runtimeGuardrails(['python']),
+    })
+    const definition = defineHarness({ name: 'kubernetesRuntimeGuard' }).addAgent(agent)
+    const matching = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: ['python'],
+    })
+    const matchingOpen = vi.spyOn(matching.sandbox, 'open')
+    const instance = await definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: matching.sandbox,
+    })
+    expect(matchingOpen).not.toHaveBeenCalled()
+    await instance.close()
+
+    const missing = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: [],
+    })
+    const missingOpen = vi.spyOn(missing.sandbox, 'open')
+    expect(() => definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: missing.sandbox,
+    })).toThrowError(expect.objectContaining({
+      meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
+    }))
+    expect(missingOpen).not.toHaveBeenCalled()
+  })
+
+  it('does not claim read-only Skill mounting for a runtime-bearing Skill', async () => {
+    const skill = defineSkill('runtime-skill', {
+      directory: new URL('./fixtures/runtime-skill/', import.meta.url), runtimes: ['python'],
+    })
+    const agent = defineAgent('runtimeSkillAgent', {
+      instructions: 'Use the supplied Skill.', skills: [skill],
+    })
+    const definition = defineHarness({ name: 'kubernetesRuntimeSkill' }).addAgent(agent)
+    const execution = kubernetesSandboxRuntime({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(), runtimes: ['python'],
+    })
+    const open = vi.spyOn(execution.sandbox, 'open')
+    expect(() => definition.getInstance({
+      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: execution.sandbox,
+    } as never)).toThrowError(expect.objectContaining({
+      meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
+    }))
+    expect(open).not.toHaveBeenCalled()
+    expect(execution.sandbox.capabilities).not.toContain('sandbox.readonly_mount')
+  })
+
+  it('normalizes hostile runtime access to a content-free configuration error', () => {
+    const options = Object.defineProperty({
+      namespace: 'test', image: 'sandbox:test', driver: new InMemoryKubernetesSandboxDriver(),
+    }, 'runtimes', {
+      enumerable: true, get() { throw new Error('private runtime getter') },
+    })
+    let error: unknown
+    try { kubernetesSandboxRuntime(options) } catch (failure) { error = failure }
+    expect(error).toEqual(expect.objectContaining({
+      message: 'Kubernetes sandbox runtime configuration is invalid.',
+      meta: { reason: 'invalid_option', path: 'options.runtimes' },
+    }))
+    expect(JSON.stringify(error)).not.toContain('private runtime getter')
   })
 
   it('isolates runtimes with matching logical owner and run identifiers in one namespace', async () => {

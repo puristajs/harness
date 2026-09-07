@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defineHarness, inMemorySandbox, SandboxStateLostError, type SandboxScope } from '@purista/harness'
+import { defineAgent, defineHarness, inMemorySandbox, SandboxStateLostError, type SandboxScope } from '@purista/harness'
+import { FakeModelProvider } from '@purista/harness/testing'
 import { dockerSandbox } from '@purista/harness-sandbox-docker'
 import * as dockerExports from '@purista/harness-sandbox-docker'
 
@@ -28,10 +29,20 @@ await assert.rejects(sandbox.open({ scope, mode: 'attach' }), SandboxStateLostEr
 // Constructing the optional adapter needs no engine, Framework, or model call.
 const docker = dockerSandbox({
   root: join(dirname(fileURLToPath(import.meta.url)), 'private-state'),
-  image: `sha256:${'a'.repeat(64)}`
+  image: `sha256:${'a'.repeat(64)}`,
+  runtimes: ['shell'],
 })
-await docker.registerOwner({ owner: scope.owner, mode: 'create' })
-defineHarness({ name: 'packed-consumer' }).sandbox(docker)
+const sandboxProbe = defineAgent('sandboxProbe', {
+  instructions: 'Exercise the packed sandbox declaration boundary.',
+  sandbox: 'private',
+})
+const packedHarness = defineHarness({ name: 'packedConsumer' }).addAgent(sandboxProbe)
+const packedInstance = await packedHarness.getInstance({
+  model: { provider: new FakeModelProvider(), model: 'fake' },
+  sandbox: docker,
+})
+await packedInstance.close()
+assert.deepEqual(docker.runtimes, ['shell'])
 assert.deepEqual(Object.keys(dockerExports), ['dockerSandbox'])
 assert.throws(() => import.meta.resolve('@purista/core'), { code: 'ERR_MODULE_NOT_FOUND' })
 assert.throws(() => import.meta.resolve('@purista/harness-sandbox-docker/dist/lifecycle.js'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' })

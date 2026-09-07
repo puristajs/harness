@@ -1,5 +1,6 @@
 import type { KubeConfig } from '@kubernetes/client-node'
-import { HarnessConfigError, type DurableWorkspace, type Sandbox } from '@purista/harness'
+import { HarnessConfigError, type DurableWorkspace, type Sandbox, type SkillRuntimeId } from '@purista/harness'
+import { normalizeSkillRuntimes } from '@purista/harness/adapter'
 import { createOfficialKubernetesSandboxDriver, type KubernetesSandboxDriver } from './driver.js'
 import { KubernetesSandboxAdapter } from './sandbox.js'
 import { KubernetesDurableWorkspace } from './workspace.js'
@@ -18,6 +19,8 @@ export interface KubernetesSandboxRuntimeOptions {
   readonly namespace: string
   /** Non-root image containing Node.js and grep. */
   readonly image: string
+  /** Logical executable runtimes guaranteed by the configured image. */
+  readonly runtimes?: readonly SkillRuntimeId[]
   /** Stable label used to isolate multiple Harness runtimes in one namespace. @defaultValue purista-harness */
   readonly runtimeId?: string
   /** Container name used by Kubernetes exec. @defaultValue workspace */
@@ -56,8 +59,8 @@ export interface KubernetesSandboxRuntimeOptions {
 
 /** Resources returned by `kubernetesSandboxRuntime()` when workspaces are optional or disabled. */
 export interface KubernetesSandboxRuntime {
-  /** Sandbox adapter registered with `defineHarness().sandbox(...)`. */
-  readonly sandbox: Sandbox
+  /** Sandbox adapter passed to `definition.getInstance({ sandbox })`. */
+  readonly sandbox: Sandbox & Readonly<{ runtimes: readonly SkillRuntimeId[] }>
   /** Durable workspace when `workspace` was enabled. */
   readonly workspace?: DurableWorkspace
   /** Closes client-owned runtime resources without deleting logical sandbox state. */
@@ -80,6 +83,7 @@ export interface KubernetesSandboxRuntimeWithWorkspace extends KubernetesSandbox
  * const execution = kubernetesSandboxRuntime({
  *   namespace: 'purista-sandboxes',
  *   image: 'registry.example/sandbox@sha256:...',
+ *   runtimes: ['node', 'python'],
  *   runtimeId: 'support-v1',
  *   workspace: true,
  * })
@@ -116,6 +120,7 @@ export function kubernetesSandboxRuntime(options: KubernetesSandboxRuntimeOption
     runtimeId: resolved.runtimeId,
     ...(workspace ? { coordinator: workspace } : {}),
     image: resolved.image,
+    runtimes: resolved.runtimes,
     containerName: resolved.containerName,
     ...(resolved.serviceAccountName ? { serviceAccountName: resolved.serviceAccountName } : {}),
     ...(resolved.runtimeClassName ? { runtimeClassName: resolved.runtimeClassName } : {}),
@@ -141,6 +146,7 @@ export function kubernetesSandboxRuntime(options: KubernetesSandboxRuntimeOption
 
 const optionKeys = new Set<keyof KubernetesSandboxRuntimeOptions>([
   'namespace', 'image', 'runtimeId', 'containerName', 'serviceAccountName', 'runtimeClassName',
+  'runtimes',
   'imagePullPolicy', 'volumeSize', 'storageClassName', 'podReadyTimeoutMs',
   'defaultCommandTimeoutMs', 'cpuLimit', 'memoryLimit', 'ephemeralStorageLimit',
   'maxFileBytes', 'maxOutputBytes', 'workspace', 'kubeConfig', 'driver',
@@ -152,6 +158,7 @@ function validateOptions(options: KubernetesSandboxRuntimeOptions) {
   }
   const namespace = requiredString(options.namespace, 'options.namespace')
   const image = requiredString(options.image, 'options.image')
+  const runtimes = runtimeMetadata(options)
   const runtimeId = optionalString(options.runtimeId, 'options.runtimeId') ?? 'purista-harness'
   const containerName = optionalString(options.containerName, 'options.containerName') ?? 'workspace'
   const serviceAccountName = optionalString(options.serviceAccountName, 'options.serviceAccountName')
@@ -171,6 +178,7 @@ function validateOptions(options: KubernetesSandboxRuntimeOptions) {
   return {
     namespace,
     image,
+    runtimes,
     runtimeId,
     containerName,
     serviceAccountName,
@@ -186,6 +194,15 @@ function validateOptions(options: KubernetesSandboxRuntimeOptions) {
     maxFileBytes: positiveInteger(options.maxFileBytes ?? 10 * 1024 * 1024, 'options.maxFileBytes'),
     maxOutputBytes: positiveInteger(options.maxOutputBytes ?? 1024 * 1024, 'options.maxOutputBytes'),
   }
+}
+
+function runtimeMetadata(options: KubernetesSandboxRuntimeOptions): readonly SkillRuntimeId[] {
+  try {
+    const value = Object.hasOwn(options, 'runtimes') ? options.runtimes : undefined
+    if (value === null) throw new Error()
+    return normalizeSkillRuntimes(value as readonly SkillRuntimeId[] | undefined, true, 'options.runtimes')
+  }
+  catch { return invalid('options.runtimes', 'invalid_option') }
 }
 
 function requiredString(value: unknown, path: string): string {

@@ -43,7 +43,7 @@ instantiate or depend on an MCP client.
 
 This addon's implementation ticket changes source, tests, examples, and public
 exports while package versions, Harness dependency ranges, and the workspace
-lockfile remain on the aligned 3.0.0 release. Spec 42 H4-016 performs the one
+lockfile remain on the aligned 3.0.0 release. Spec 42 H4-020 performs the one
 atomic 4.0.0 version/range/lockfile flip for Core and every first-party addon.
 This package is not published as an independent v4 artifact before that gate.
 

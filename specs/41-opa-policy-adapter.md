@@ -44,7 +44,7 @@ have different execution and credential models.
   schema, JSON, cancellation, and timeout contracts.
 - This addon's implementation ticket changes source, tests, examples, and
   exports while package versions, Harness ranges, and the lockfile remain at
-  the aligned 3.0.0 release. Spec 42 H4-016 performs the single atomic 4.0.0
+  the aligned 3.0.0 release. Spec 42 H4-020 performs the single atomic 4.0.0
   flip across Core and all first-party addons; this package is not published
   independently before that gate.
 
@@ -640,7 +640,7 @@ Acceptance requires all of the following:
 
 ## Release gates
 
-As part of the atomic H4-016 release, the package is releasable only when its main and testing exports match this
+As part of the atomic H4-020 release, the package is releasable only when its main and testing exports match this
 specification, package-boundary audits pass, package build/typecheck/tests and
 coverage pass, the consumer example passes, generated API pages resolve, the
 full Handbook build/link/knowledge/skill audits pass, and the canonical skill

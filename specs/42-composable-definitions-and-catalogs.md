@@ -5556,7 +5556,7 @@ package-boundary checks, and clean-removal scans.
 Addon and adapter implementation tickets align source, tests, examples, and
 public exports while every workspace package manifest, peer range,
 `HARNESS_VERSION`, and lockfile remains at the currently aligned 3.0.0 release.
-H4-016 performs the single atomic clean-break flip of all public Harness and
+H4-020 performs the single atomic clean-break flip of all public Harness and
 first-party addon packages to 4.0.0, updates every internal and peer range and
 the lockfile together, then runs packed-install and published-shape checks. No
 earlier ticket publishes an independently versioned v4 addon or mixed-major

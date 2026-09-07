@@ -417,11 +417,11 @@ follow_up_waves:
     status: approved
     human_approval:
       status: approved
-      approved_at: "2026-09-05"
+      approved_at: "2026-09-07"
       approver: "repo owner (active interactive Codex task)"
-      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval while the contracts were independently reviewed and repaired."
+      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval; the current active goal explicitly reaffirms end-to-end implementation and source-of-truth cleanup. This revision repairs only stale release-ticket identifiers."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:dcad4d926e05f6368ce1ee7c1c0b88fc82f0d8e9e3c720a8a81758e69c875a07"
+      scope_digest: "sha256:da3cf2d3841facaafbb7732539ba71a9aae363e549a34c0e547129c4ee7b666d"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:

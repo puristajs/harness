@@ -3779,6 +3779,16 @@ interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
   ): HarnessTargetStream<Target>
 }
 
+declare function toHarnessTargetStream<
+  Target extends AnyHarnessTargetContract,
+>(
+  target: Target,
+  stream: HarnessTargetDispatchStream<
+    Target['$infer']['output'],
+    Target['$infer']['interrupt']
+  >,
+): HarnessTargetStream<Target>
+
 interface SessionChildTasks {
   get(id: string): Promise<ChildTaskHandle<JsonValue> | undefined>
   list(
@@ -3856,9 +3866,11 @@ Calling the async iterator's optional `return()` only stops that iterator and
 does not cancel execution. Adapters that own a browser or transport stream call
 `cancel()` when their consumer disconnects. `HarnessTargetDispatchStream`
 has the same iterable, terminal-result, and cancellation semantics over its
-generic output and interrupt types. A public root adapter narrows its event
-iterable to `HarnessTargetExecutionEvent<Target>`; it forwards the dispatch
-stream's `result` and `cancel` without translating terminal status.
+generic output and interrupt types. The package-private
+`toHarnessTargetStream` is the only root adapter: it validates and narrows the
+iterable to `HarnessTargetExecutionEvent<Target>` and forwards the dispatch
+stream's `result` and `cancel` without translating terminal status. It
+creates no second execution, consumer, buffer, or promise.
 
 `SessionOptionsFor` projects the existing closed sandbox-ownership contract
 from spec 36 `CTR-SOWN-POLICY`. Identity remains available for every session.
@@ -4115,9 +4127,7 @@ interface HostedHarnessInstance<
   ): Promise<HarnessTargetRunOutcome<Target>>
   streamHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
-  ): Promise<HarnessTargetDispatchStream<
-    Target['$infer']['output'], Target['$infer']['interrupt']
-  >>
+  ): Promise<HarnessTargetStream<Target>>
   streamDispatched<Target extends HostedTargetOf<Contracts>>(
     request: HostedDispatchedTargetRequest<Target, HostInvocation>,
   ): Promise<HarnessTargetDispatchStream<
@@ -4174,9 +4184,7 @@ interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
     input: HarnessValidatedTargetInput<Target>,
     options: HostedInvokeOptions,
     environment: TrustedHostedInvocationEnvironment,
-  ): Promise<HarnessTargetDispatchStream<
-    Target['$infer']['output'], Target['$infer']['interrupt']
-  >>
+  ): Promise<HarnessTargetStream<Target>>
   streamDispatchedTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
     input: HarnessValidatedTargetInput<Target> | HarnessTargetInput<Target>,

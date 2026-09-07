@@ -17,8 +17,8 @@ export interface AgentAdmissionRuntimeOptions {
 export interface InMemoryAgentAdmissionOptions {
 	/** Maximum concurrently admitted root execution trees. */
 	readonly maxConcurrent: number
-	/** Maximum waiting root execution trees; defaults to zero for immediate rejection. */
-	readonly maxQueue?: number
+	/** Maximum waiting root execution trees; defaults to four times `maxConcurrent`. */
+	readonly maxQueued?: number
 	/** Stable retry hint used when the bounded queue is full. */
 	readonly retryAfterMs?: number
 }
@@ -36,13 +36,18 @@ type Waiter = Readonly<{
  */
 export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): AgentAdmission {
 	if (options === null || typeof options !== 'object' || !Number.isSafeInteger(options.maxConcurrent) || options.maxConcurrent <= 0
-		|| (options.maxQueue !== undefined && (!Number.isSafeInteger(options.maxQueue) || options.maxQueue < 0))
+		|| (options.maxQueued !== undefined && (!Number.isSafeInteger(options.maxQueued) || options.maxQueued < 0))
 		|| (options.retryAfterMs !== undefined && (!Number.isSafeInteger(options.retryAfterMs) || options.retryAfterMs <= 0))) {
 		throw new HarnessConfigError('In-memory agent admission options are invalid.', {
 			reason: 'invalid_agent_admission_options', path: 'agentAdmission',
 		})
 	}
-	const maxQueue = options.maxQueue ?? 0
+	const maxQueued = options.maxQueued ?? defaultMaxQueued(options.maxConcurrent)
+	if (!Number.isSafeInteger(maxQueued)) {
+		throw new HarnessConfigError('In-memory agent admission options are invalid.', {
+			reason: 'invalid_agent_admission_options', path: 'agentAdmission',
+		})
+	}
 	const retryAfterMs = options.retryAfterMs ?? 1_000
 	const roots = new Map<string, number>()
 	const waiters: Waiter[] = []
@@ -76,7 +81,7 @@ export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): 
 		const existing = roots.get(request.rootRunId)
 		if (existing !== undefined) { roots.set(request.rootRunId, existing + 1); return leaseFor(request.rootRunId) }
 		if (roots.size < options.maxConcurrent) { roots.set(request.rootRunId, 1); return leaseFor(request.rootRunId) }
-		if (waiters.length >= maxQueue) throw new AgentAdmissionRejectedError({ retryAfterMs })
+		if (waiters.length >= maxQueued) throw new AgentAdmissionRejectedError({ retryAfterMs })
 		return new Promise<AgentAdmissionLease>((resolve, reject) => {
 			let timer: ReturnType<typeof setTimeout> | undefined
 			const abort = () => finish(abortError(request.signal, 'agent', 'Agent admission was cancelled.'))
@@ -92,6 +97,10 @@ export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): 
 			waiters.push(waiter)
 		})
 	} })
+}
+
+function defaultMaxQueued(maxConcurrent: number): number {
+	return maxConcurrent * 4
 }
 
 /** Runs one complete agent loop inside an optional root-tree admission lease. */

@@ -2,6 +2,7 @@ import type {
   AgentAdmission,
   AgentAdmissionLease,
   AgentAdmissionRequest,
+  InMemoryAgentAdmissionOptions,
   ExecutionEvent,
   HarnessExecutionEventType,
   HarnessTargetStream,
@@ -106,6 +107,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'providerContinuationItemSchema',
   'providerContinuationSchema',
   'inMemoryHarnessStorage',
+  'inMemoryAgentAdmission',
   'inMemoryDurableWorkspace',
   'inMemorySandbox',
   'isJsonValue',
@@ -209,6 +211,11 @@ describe('v4 public API export surface', () => {
     expectTypeOf<AgentAdmission['acquire']>().toBeFunction()
     expectTypeOf<AgentAdmissionRequest['signal']>().toEqualTypeOf<AbortSignal>()
     expectTypeOf<AgentAdmissionLease['release']>().toBeFunction()
+    expectTypeOf<InMemoryAgentAdmissionOptions>().toEqualTypeOf<{
+      readonly maxConcurrent: number
+      readonly maxQueued?: number
+      readonly retryAfterMs?: number
+    }>()
     expectTypeOf<ModelRuntimeBinding>().toHaveProperty('provider')
     expectTypeOf<McpBinding['transport']>().toEqualTypeOf<'http' | 'stdio'>()
     expectTypeOf<McpServerOptions<{ lookup: {

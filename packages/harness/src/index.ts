@@ -142,7 +142,13 @@ export type {
   ModelAdmissionOperation,
   ModelAdmissionRequest,
 } from './ports/model-admission.js'
-export type { AgentAdmission, AgentAdmissionLease, AgentAdmissionRequest } from './ports/agent-admission.js'
+export { inMemoryAgentAdmission } from './ports/agent-admission.js'
+export type {
+  AgentAdmission,
+  AgentAdmissionLease,
+  AgentAdmissionRequest,
+  InMemoryAgentAdmissionOptions,
+} from './ports/agent-admission.js'
 
 // Shared model adapter helpers (consumed by first-party provider packages)
 export {

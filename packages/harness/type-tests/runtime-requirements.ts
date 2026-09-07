@@ -1,5 +1,6 @@
 import type { RuntimeRequirements } from '../src/runtime/runtime-requirements.js'
 import type { RuntimeRequirementsFor } from '../src/runtime/runtime-requirements.js'
+import type { InMemoryAgentAdmissionOptions } from '../src/index.js'
 import type {
 	HarnessInstanceConfig,
 	McpBinding,
@@ -15,6 +16,12 @@ import { builtInTools } from '../src/tools/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
 type Expect<T extends true> = T
+type _inMemoryAgentAdmissionOptionsExact = Expect<Equal<InMemoryAgentAdmissionOptions, {
+	readonly maxConcurrent: number
+	readonly maxQueued?: number
+	readonly retryAfterMs?: number
+}>>
+type _noLegacyQueueOption = Expect<Equal<Extract<keyof InMemoryAgentAdmissionOptions, `max${'Queue'}`>, never>>
 type SkillRequirements = RuntimeRequirementsFor<{}, {
 	guide: SkillDefinition<'guide', readonly []>
 	runtime: SkillDefinition<'runtime', readonly ['python']>

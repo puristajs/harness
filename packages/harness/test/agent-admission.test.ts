@@ -7,7 +7,7 @@ const request = (signal = new AbortController().signal) => ({ agentId: 'agent', 
 
 describe('agent admission', () => {
 	it('provides bounded FIFO root-run admission with cancellation, reentrancy, and exactly-once release', async () => {
-		const admission = inMemoryAgentAdmission({ maxConcurrent: 1, maxQueue: 1, retryAfterMs: 25 })
+		const admission = inMemoryAgentAdmission({ maxConcurrent: 1, maxQueued: 1, retryAfterMs: 25 })
 		const first = await admission.acquire(request())
 		const reentrant = await admission.acquire({ ...request(), depth: 1 })
 		const controller = new AbortController()
@@ -26,7 +26,7 @@ describe('agent admission', () => {
 
 	it('admits queued roots in FIFO order and removes deadline-expired waiters', async () => {
 		vi.useFakeTimers()
-		const admission = inMemoryAgentAdmission({ maxConcurrent: 1, maxQueue: 3 })
+		const admission = inMemoryAgentAdmission({ maxConcurrent: 1, maxQueued: 3 })
 		const first = await admission.acquire(request())
 		const order: string[] = []
 		const second = admission.acquire({ ...request(), rootRunId: 'second' }).then(lease => { order.push('second'); return lease })
@@ -43,6 +43,30 @@ describe('agent admission', () => {
 		expect(order).toEqual(['second', 'third'])
 		thirdLease.release()
 		vi.useRealTimers()
+	})
+
+	it('uses a bounded maxConcurrent-times-four queue when maxQueued is omitted', async () => {
+		const admission = inMemoryAgentAdmission({ maxConcurrent: 1 })
+		const first = await admission.acquire(request())
+		const queued = ['one', 'two', 'three', 'four'].map(rootRunId => admission.acquire({ ...request(), rootRunId }))
+		const overflow = await admission.acquire({ ...request(), rootRunId: 'overflow' }).catch(error => error)
+		expect(overflow).toMatchObject({ constructor: AgentAdmissionRejectedError, retryAfterMs: 1_000 })
+		first.release()
+		for (const pending of queued) (await pending).release()
+	})
+
+	it('rejects waiting roots when maxQueued is explicitly zero', async () => {
+		const admission = inMemoryAgentAdmission({ maxConcurrent: 1, maxQueued: 0 })
+		const first = await admission.acquire(request())
+		await expect(admission.acquire({ ...request(), rootRunId: 'waiting' })).rejects.toBeInstanceOf(AgentAdmissionRejectedError)
+		first.release()
+	})
+
+	it('rejects invalid and overflowed queue configuration deterministically', () => {
+		for (const maxQueued of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() => inMemoryAgentAdmission({ maxConcurrent: 1, maxQueued })).toThrow(HarnessConfigError)
+		}
+		expect(() => inMemoryAgentAdmission({ maxConcurrent: Number.MAX_SAFE_INTEGER })).toThrow(HarnessConfigError)
 	})
 	it('defines the exact retryable capacity error and validates retry hints', () => {
 		expect(new AgentAdmissionRejectedError({ retryAfterMs: 100 })).toMatchObject({ code: 'AGENT_ADMISSION_REJECTED', category: 'admission', retriable: true, message: 'Agent admission capacity is exhausted.', meta: { reason: 'capacity_exhausted', retryAfterMs: 100 } })

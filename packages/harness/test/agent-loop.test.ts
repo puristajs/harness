@@ -24,7 +24,7 @@ function baseOptions(agent: ReturnType<typeof defineAgent>, model: object, mode:
 	const history: import('../src/ports/model-provider.js').ModelMessage[] = []
 	const invocation = {
 		harnessName: 'testHarness', sessionId: 'session1', runId: 'run1', rootRunId: 'run1',
-		invocationId: 'run1', agentId: agent.id, signal: new AbortController().signal,
+		invocationId: 'run1', agentId: agent.id, caller: Object.freeze({ kind: 'agent' as const, agentId: agent.id }), signal: new AbortController().signal,
 		metadata: Object.freeze({}),
 	}
 	const models = Object.freeze({ primary: model as never })
@@ -302,7 +302,7 @@ describe('v4 standard agent loop', () => {
 		expect(providerCalls).toBe(0)
 	})
 
-	it('uses text for omitted output and object for every explicit output schema', async () => {
+	it('uses text for omitted and explicit string output schemas', async () => {
 		let textCalls = 0
 		let objectCalls = 0
 		const model = {
@@ -317,8 +317,8 @@ describe('v4 standard agent loop', () => {
 		const textRun = baseOptions(textAgent, model, 'run')
 		const objectRun = baseOptions(structuredStringAgent, model, 'run')
 		await expect(executeStandardAgent(textRun.options)).resolves.toMatchObject({ output: 'plain' })
-		await expect(executeStandardAgent(objectRun.options)).resolves.toMatchObject({ output: 'structured' })
-		expect({ textCalls, objectCalls }).toEqual({ textCalls: 1, objectCalls: 1 })
+		await expect(executeStandardAgent(objectRun.options)).resolves.toMatchObject({ output: 'plain' })
+		expect({ textCalls, objectCalls }).toEqual({ textCalls: 2, objectCalls: 0 })
 	})
 
 	it('uses the real text stream, one id per turn, and returns only terminal-step content', async () => {
@@ -809,7 +809,7 @@ describe('v4 standard agent loop', () => {
 		const agent = defineAgent('parent', { instructions: 'Delegate.' })
 		let suspended: unknown
 		const options = { agent, calls: [{ id: 'call-1', name: 'delegate', arguments: 'question' }], bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(),
-			invocation: { runId: 'parent-run', rootRunId: 'parent-run', sessionId: 's1', invocationId: 'parent-run', metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'parent-run', rootRunId: 'parent-run', sessionId: 's1', invocationId: 'parent-run', metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, agentInput: 'question', toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
 			maxParallelToolCalls: 1, maxParallelSubagents: 1,
@@ -831,7 +831,7 @@ describe('v4 standard agent loop', () => {
 		const events: AgentPipelineEvent[] = []
 		const agent = defineAgent(`observerParent${observer}`, { instructions: 'Delegate.' })
 		const options = { agent, agentInput: 'question', calls: [{ id: 'observer-call', name: 'delegateObserver', arguments: 'question' }],
-			bindings: { delegateObserver: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { runId: 'observer-parent', rootRunId: 'observer-parent', sessionId: 'observer-session',
+			bindings: { delegateObserver: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'observer-parent', rootRunId: 'observer-parent', sessionId: 'observer-session',
 				invocationId: 'observer-parent', metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
@@ -873,7 +873,7 @@ describe('v4 standard agent loop', () => {
 			input: 'question', bindingId: 'resumeDelegate', bindingContractDigest: binding.contractDigest, toolStarted: true as const,
 			childInvocationId: 'child-invocation', childRunId: 'child-run' })
 		const options = { agent, agentInput: 'question', calls: [entry.call], bindings: { resumeDelegate: binding }, interceptorRuntime: directInterceptorRuntime(),
-			invocation: { runId: 'parent-run', rootRunId: 'parent-run', sessionId: 'session', invocationId: 'parent-run', depth: 0,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'parent-run', rootRunId: 'parent-run', sessionId: 'session', invocationId: 'parent-run', depth: 0,
 				remainingDepth: 1, metadata: {}, signal: new AbortController().signal } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
@@ -905,7 +905,7 @@ describe('v4 standard agent loop', () => {
 			{ id: 'invalid-call', name: lookup.id, arguments: { query: 'raw' } },
 			{ id: 'provider-invalid-call', name: 'bash', arguments: { command: 42 } },
 			{ id: 'denied-call', name: 'bash', arguments: { command: 'echo denied' } },
-		], bindings: { bash: binding, [lookup.id]: lookupBinding }, interceptorRuntime: directInterceptorRuntime(), invocation: { runId: 'run', rootRunId: 'run', sessionId: 's', invocationId: 'run', depth: 0,
+		], bindings: { bash: binding, [lookup.id]: lookupBinding }, interceptorRuntime: directInterceptorRuntime(), invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'run', rootRunId: 'run', sessionId: 's', invocationId: 'run', depth: 0,
 			remainingDepth: 1, metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
 			remainingToolCalls: 4, remainingSubagentCalls: 1, maxToolCalls: 4, maxSubagentCalls: 1,
@@ -934,7 +934,7 @@ describe('v4 standard agent loop', () => {
 		const parent = defineAgent('revokedParent', { instructions: 'Delegate.', subagents: { delegate: child } })
 		const events: AgentPipelineEvent[] = []
 		const options = { agent: parent, agentInput: 'question', calls: [{ id: 'call-1', name: 'delegate', arguments: 'input' }],
-			bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { runId: 'run', rootRunId: 'run', sessionId: 's',
+			bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { caller: { kind: 'agent' as const, agentId: parent.id }, runId: 'run', rootRunId: 'run', sessionId: 's',
 				invocationId: 'run', depth: 0, remainingDepth: 1, metadata: {}, signal: new AbortController().signal } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { events.push(event) } },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
@@ -963,7 +963,7 @@ describe('v4 standard agent loop', () => {
 			preparedState: expect.objectContaining({ entries: [expect.objectContaining({ state: 'ready', approvalId: expect.any(String) })] }) })
 		const approvalEvents: AgentPipelineEvent[] = []
 		const options = { agent, agentInput: 'question', calls: [{ id: 'review-call', name: tool.id, arguments: 'input' }], bindings: { [tool.id]: binding }, interceptorRuntime: directInterceptorRuntime(),
-			invocation: { runId: 'review-run', rootRunId: 'review-run', sessionId: 'review-session', invocationId: 'review-run', depth: 0,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'review-run', rootRunId: 'review-run', sessionId: 'review-session', invocationId: 'review-run', depth: 0,
 				remainingDepth: 1, metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async event => { approvalEvents.push(event) } },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
@@ -994,7 +994,7 @@ describe('v4 standard agent loop', () => {
 		} }
 		const agent = defineAgent('deadlineAgent', { instructions: 'Use.', tools: [tool], guardrails: guardrails as never })
 		const options = { agent, agentInput: 'question', calls: [{ id: 'deadline-call', name: tool.id, arguments: 'input' }], bindings: { [tool.id]: binding }, interceptorRuntime: directInterceptorRuntime(),
-			invocation: { runId: 'deadline-run', rootRunId: 'deadline-run', sessionId: 'deadline-session', invocationId: 'deadline-run', depth: 0,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'deadline-run', rootRunId: 'deadline-run', sessionId: 'deadline-session', invocationId: 'deadline-run', depth: 0,
 				remainingDepth: 1, deadline: Date.now() + 500, metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 50, decisionTimeoutMs: 1000, sink: { emit: async () => {} },
 			remainingToolCalls: 1, remainingSubagentCalls: 1, maxToolCalls: 1, maxSubagentCalls: 1,
@@ -1013,7 +1013,7 @@ describe('v4 standard agent loop', () => {
 		const agent = defineAgent('eventAgent', { instructions: 'Use.', tools: [tool] })
 		const makeOptions = (emit: (event: AgentPipelineEvent) => Promise<void>) => ({ agent, agentInput: 'question', interceptorRuntime: directInterceptorRuntime(),
 			calls: [{ id: 'event-call', name: tool.id, arguments: 'input' }], bindings: { [tool.id]: binding },
-			invocation: { runId: 'event-run', rootRunId: 'event-run', sessionId: 'event-session', invocationId: 'event-run', depth: 0,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'event-run', rootRunId: 'event-run', sessionId: 'event-session', invocationId: 'event-run', depth: 0,
 				remainingDepth: 1, metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 20, decisionTimeoutMs: 1000, sink: { emit }, remainingToolCalls: 1, remainingSubagentCalls: 1,
 			maxToolCalls: 1, maxSubagentCalls: 1, maxParallelToolCalls: 1, maxParallelSubagents: 1 } as const)
@@ -1059,7 +1059,7 @@ describe('v4 standard agent loop', () => {
 	it('reports exact loop budgets and preserves per-tool timeout identity with event pairing', async () => {
 		const agent = defineAgent('budgetAgent', { instructions: 'Bounded.' })
 		const budgetBase = { agent, agentInput: 'question', calls: [{ id: 'one', name: 'unknown', arguments: null }], bindings: {}, interceptorRuntime: directInterceptorRuntime(),
-			invocation: { runId: 'run', rootRunId: 'run', sessionId: 's', invocationId: 'run', depth: 0, remainingDepth: 0,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'run', rootRunId: 'run', sessionId: 's', invocationId: 'run', depth: 0, remainingDepth: 0,
 				metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
 			step: 1, toolTimeoutMs: 1000, decisionTimeoutMs: 1000, sink: { emit: async () => {} },
 			maxToolCalls: 1, maxSubagentCalls: 1, maxParallelToolCalls: 1, maxParallelSubagents: 1 } as const
@@ -1071,7 +1071,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { return 'ok' } })
 		const childBatch = { ...budgetBase, calls: [{ id: 'child-call', name: 'delegateBudget', arguments: 'x' }], bindings: { delegateBudget: childBinding }, remainingToolCalls: 1 }
-		await expect(prepareAgentToolBatch({ ...childBatch, remainingSubagentCalls: 0, invocation: { ...budgetBase.invocation, remainingDepth: 1 } })).rejects.toMatchObject({
+		await expect(prepareAgentToolBatch({ ...childBatch, remainingSubagentCalls: 0, invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, ...budgetBase.invocation, remainingDepth: 1 } })).rejects.toMatchObject({
 			constructor: AgentLoopBudgetError, meta: { reason: 'max_subagent_calls', limit: 1 },
 		})
 		await expect(prepareAgentToolBatch({ ...childBatch, remainingSubagentCalls: 1 })).rejects.toMatchObject({
@@ -1085,7 +1085,7 @@ describe('v4 standard agent loop', () => {
 			remoteMcpName: null, outputValidation: 'required', invokeValidated: () => new Promise(() => {}) })
 		const events: AgentPipelineEvent[] = []
 		const options = { ...budgetBase, calls: [{ id: 'slow-call', name: 'slow', arguments: 'x' }], bindings: { slow: binding },
-			invocation: { ...budgetBase.invocation, remainingDepth: 1 }, toolTimeoutMs: 5, remainingToolCalls: 1, remainingSubagentCalls: 1,
+			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, ...budgetBase.invocation, remainingDepth: 1 }, toolTimeoutMs: 5, remainingToolCalls: 1, remainingSubagentCalls: 1,
 			sink: { emit: async event => { events.push(event) } } } as const
 		const prepared = await prepareAgentToolBatch(options)
 		const execution = executePreparedAgentToolBatch(options, prepared).catch(error => error)

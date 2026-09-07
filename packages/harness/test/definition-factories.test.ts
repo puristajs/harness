@@ -107,7 +107,7 @@ describe('composable definition factories', () => {
 			input: inputSchema, output: outputSchema, async handler({ input }) { return { answer: input.message } },
 		})
 		const durableWorkflow = defineWorkflow('durableInterruptWorkflow', {
-			input: inputSchema, output: outputSchema, durable: true, agents: { parent }, async handler({ input }) { return { answer: input.message } },
+			input: inputSchema, output: outputSchema, durable: true, agents: [parent], async handler({ input }) { return { answer: input.message } },
 		})
 
 		expect(approvedChild.contract.interrupts).toEqual(['tool-approval'])
@@ -367,8 +367,8 @@ describe('composable definition factories', () => {
 	it('preserves workflow schemas and exact declared allowlists', () => {
 		const agent = defineAgent('assistant', { instructions: 'Help.' })
 		const workflow = defineWorkflow('resolveCase', {
-			input: inputSchema, output: outputSchema, agents: { assistant: agent },
-			models: { embeddings: { alias: 'embeddings', capabilities: ['embeddings'] } },
+			input: inputSchema, output: outputSchema, agents: [agent],
+			models: { embeddings: { capabilities: ['embeddings'] } },
 			async handler({ input }) { return { answer: input.message } },
 		})
 
@@ -378,7 +378,7 @@ describe('composable definition factories', () => {
 			kind: 'workflow', id: 'resolveCase', executionModes: ['run', 'stream'],
 			updates: 'none', interrupts: [],
 		})
-		expect(workflow.agents.assistant).toBe(agent)
+		expect(workflow.agents).toEqual([agent])
 		expect(Object.isFrozen(workflow.agents)).toBe(true)
 		expect(Object.isFrozen(workflow.models)).toBe(true)
 		expect(Object.isFrozen(workflow.models.embeddings.capabilities)).toBe(true)
@@ -388,14 +388,14 @@ describe('composable definition factories', () => {
 		const model = { alias: 'embeddings', capabilities: ['embeddings'] as ['embeddings'] }
 		const sandbox = { group: 'analysis' }
 		const workflow = defineWorkflow('snapshotWorkflow', {
-			input: inputSchema, output: outputSchema, models: { embeddings: model }, sandbox,
+			input: inputSchema, output: outputSchema, models: { vector: model }, sandbox,
 			async handler({ input }) { return { answer: input.message } },
 		})
 
 		model.alias = 'changed'
 		model.capabilities[0] = 'rerank'
 		sandbox.group = 'changed'
-		expect(workflow.models.embeddings).toEqual({ alias: 'embeddings', capabilities: ['embeddings'] })
+		expect(workflow.models.vector).toEqual({ alias: 'embeddings', capabilities: ['embeddings'] })
 		expect(workflow.sandbox).toEqual({ group: 'analysis' })
 		expect(Object.isFrozen(workflow.sandbox)).toBe(true)
 	})
@@ -405,7 +405,7 @@ describe('composable definition factories', () => {
 		{ alias: 'embeddings', capabilities: 'embeddings' as never },
 		{ alias: 'embeddings', capabilities: ['unknown' as never] },
 		{ alias: 'BadAlias', capabilities: ['embeddings'] as const },
-		{ alias: undefined as never, capabilities: ['embeddings'] as const },
+		{ alias: 'embeddings', capabilities: ['embeddings'] as const },
 	])('rejects invalid workflow model capabilities %#', model => {
 		expect(() => defineWorkflow('invalidWorkflowModel', {
 			input: inputSchema, output: outputSchema, models: { embeddings: model },

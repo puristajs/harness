@@ -44,27 +44,48 @@ export interface RunCheckpoint {
   readonly committedAt?: string
 }
 
-/** Exact stored terminal for one replay-safe direct workflow agent call. */
-export type WorkflowChildCallStoredOutcomeV1 =
+/** Operations supported by the replay-safe direct workflow-call boundary. */
+export type WorkflowManagedCallOperation =
+	| 'agent_run'
+	| 'tool_run'
+	| 'model_text'
+	| 'model_text_stream'
+	| 'model_object'
+	| 'model_object_stream'
+	| 'model_embed'
+	| 'model_rerank'
+	| 'model_image'
+	| 'model_speech'
+	| 'model_video'
+	| 'model_video_stream'
+
+/** Content-free error persisted for one failed or cancelled managed workflow call. */
+export type WorkflowCallStoredErrorV1 =
+	| Readonly<{
+		code: 'WORKFLOW_MANAGED_CALL_FAILED'; message: 'Workflow managed call failed.'; category: 'internal'; retriable: false
+		meta: Readonly<{ reason: 'operation_failed'; workflow_id: string; call_id: string; operation: WorkflowManagedCallOperation; target_kind: 'agent' | 'tool' | 'model'; target_id: string }>
+	}>
+	| Readonly<{
+		code: 'OPERATION_CANCELLED'; message: 'Workflow managed call was cancelled.'; category: 'cancelled'; retriable: false
+		meta: Readonly<{ scope: 'agent' | 'tool' | 'model' }>
+	}>
+
+/** Exact stored terminal for one replay-safe direct workflow call. */
+export type WorkflowCallStoredOutcomeV1 =
   | Readonly<{ status: 'completed'; output: JsonValue }>
-  | Readonly<{ status: 'failed'; error: Readonly<{
-      code: 'WORKFLOW_CHILD_TARGET_FAILED'; message: 'Workflow child target failed.'; category: 'internal'; retriable: false
-      meta: Readonly<{ reason: 'agent_call_failed'; workflow_id: string; call_id: string; target_kind: 'agent'; target_id: string }>
-    }> }>
-  | Readonly<{ status: 'cancelled'; error: Readonly<{
-      code: 'OPERATION_CANCELLED'; message: 'Workflow agent call was cancelled.'; category: 'cancelled'; retriable: false
-      meta: Readonly<{ scope: 'agent' }>
-    }> }>
+  | Readonly<{ status: 'failed'; error: Extract<WorkflowCallStoredErrorV1, { code: 'WORKFLOW_MANAGED_CALL_FAILED' }> }>
+  | Readonly<{ status: 'cancelled'; error: Extract<WorkflowCallStoredErrorV1, { code: 'OPERATION_CANCELLED' }> }>
 
 /** Namespaced replay value stored in RunCheckpoint.output. */
-export interface WorkflowChildCallCheckpointV1 {
+export interface WorkflowCallCheckpointV1 {
   readonly schemaVersion: 1
-  readonly kind: 'workflow_child_call'
+  readonly kind: 'workflow_call'
   readonly callId: string
-  readonly target: Readonly<{ kind: 'agent'; id: string }>
+	readonly operation: WorkflowManagedCallOperation
+  readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
   readonly input: JsonValue
-  readonly outcome: WorkflowChildCallStoredOutcomeV1
-  readonly lineage: Readonly<{
+	readonly outcome: WorkflowCallStoredOutcomeV1
+  readonly lineage?: Readonly<{
     rootRunId: string
     workflowRunId: string
     workflowInvocationId: string

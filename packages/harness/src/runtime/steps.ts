@@ -165,7 +165,7 @@ export interface HarnessCheckpointStep {
 export interface WorkflowChildCheckpointAccess {
 	readonly rootInput: JsonValue
 	load(stepId: string): Promise<RunCheckpoint | undefined>
-	commit(stepId: string, output: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_child_call'; schemaVersion: 1 }>): Promise<void>
+	commit(stepId: string, output: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call'; schemaVersion: 1 }>): Promise<void>
 }
 
 /** @internal Persistable cumulative workflow agent-call budget owned by H4-008 continuation state. */

@@ -300,7 +300,7 @@ describe('model completion metadata validation', () => {
         expect(JSON.stringify({ events, error: run.error })).not.toContain(privateContent)
         if (valid) {
           expect(completed[0]!.payload).toEqual({
-            agentId: 'metadataAgent',
+            caller: { kind: 'agent', agentId: 'metadataAgent' },
             modelAlias: 'primary',
             operation,
             ...(operation.endsWith('Stream') ? { streamId: expect.any(String) } : {}),
@@ -394,7 +394,7 @@ describe('model stream run events', () => {
     await harness.close()
   })
 
-  it('does not emit stream chunks when a workflow consumes textStream internally', async () => {
+  it('emits workflow-scoped model output while keeping root output private until completion', async () => {
     const provider = new FakeModelProvider()
     provider.enqueueTextStream([
       { kind: 'delta', text: 'hel' },
@@ -408,7 +408,7 @@ describe('model stream run events', () => {
           let text = ''
           for await (const chunk of ctx.models.fake.textStream(
             { messages: [{ role: 'user', content: ctx.input }] },
-            ctx.signal,
+            { callId: 'private-stream' },
           )) {
             if (chunk.kind === 'delta') text += chunk.text
           }
@@ -424,6 +424,8 @@ describe('model stream run events', () => {
     expect(events.some((event) => event.type === 'output.text.delta')).toBe(false)
     expect(events).toEqual(
       expect.arrayContaining([
+		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'primary', callId: 'private-stream', delta: 'hel' }),
+		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'primary', callId: 'private-stream', delta: 'lo' }),
         expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) }),
       ]),
     )
@@ -454,14 +456,14 @@ describe('model stream run events', () => {
     const streamId = deltas[0]?.id
     expect(typeof streamId).toBe('string')
     expect(deltas).toEqual([
-      expect.objectContaining({ type: 'output.text.delta', agentId: 'streamed', modelAlias: 'primary', id: streamId, delta: 'hel' }),
-      expect.objectContaining({ type: 'output.text.delta', agentId: 'streamed', modelAlias: 'primary', id: streamId, delta: 'lo' }),
+      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'primary', id: streamId, delta: 'hel' }),
+      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'primary', id: streamId, delta: 'lo' }),
     ])
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) })]))
     expect(JSON.stringify(persisted)).not.toContain('hello')
     expect(JSON.stringify(persisted)).not.toContain('hel')
     expect(persisted).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'model.completed', payload: expect.objectContaining({ streamId, agentId: 'streamed' }) }),
+      expect.objectContaining({ type: 'model.completed', payload: expect.objectContaining({ streamId, caller: { kind: 'agent', agentId: 'streamed' } }) }),
     ]))
     await harness.close()
   })
@@ -500,7 +502,7 @@ describe('model stream run events', () => {
         expect.objectContaining({
           type: 'model.completed',
           runId: run.id,
-          agentId: 'custom',
+          caller: { kind: 'agent', agentId: 'custom' },
           modelAlias: 'primary',
           operation: 'objectStream',
           streamId: expect.any(String),
@@ -520,7 +522,7 @@ describe('model stream run events', () => {
         expect.objectContaining({
           type: 'model.completed',
           payload: {
-            agentId: 'custom',
+            caller: { kind: 'agent', agentId: 'custom' },
             modelAlias: 'primary',
             operation: 'objectStream',
             streamId: expect.any(String),
@@ -563,13 +565,13 @@ describe('model stream run events', () => {
     expect(events.filter((event) => event.type === 'output.object.snapshot')).toEqual([
       expect.objectContaining({
         type: 'output.object.snapshot',
-        agentId: 'structuredSnapshots',
+        caller: { kind: 'agent', agentId: 'structuredSnapshots' },
         modelAlias: 'primary',
         value: { ok: false },
       }),
       expect.objectContaining({
         type: 'output.object.snapshot',
-        agentId: 'structuredSnapshots',
+        caller: { kind: 'agent', agentId: 'structuredSnapshots' },
         modelAlias: 'primary',
         value: { ok: true },
       }),
@@ -582,7 +584,7 @@ describe('model stream run events', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'model.completed',
-          agentId: 'structuredSnapshots',
+		  caller: { kind: 'agent', agentId: 'structuredSnapshots' },
           modelAlias: 'primary',
           streamId,
           operation: 'objectStream',

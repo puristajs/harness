@@ -226,28 +226,28 @@ function validEventBody(value: Record<string, unknown>, type: string): boolean {
 			&& string('agentId') && string('at') && optionalString('workflowId') && optionalString('parentAgentId') && optionalString('delegationCallId')
 			&& (value['delegationDepth'] === undefined || integer('delegationDepth')) && optionalString('modelAlias')
 			&& (value['output'] === undefined || isJsonValue(value['output'])) && (value['error'] === undefined || isSerializedError(value['error']))
-		case 'model.message': return closed(value, ['agentId', 'message']) && string('agentId') && isPersistedMessage(value['message'])
-		case 'model.completed': return closed(value, ['modelAlias', 'operation'], ['agentId', 'workflowId', 'streamId', 'usage', 'finishReason'])
+		case 'model.message': return closed(value, ['caller', 'message']) && validCaller(value['caller'], 'agent') && isPersistedMessage(value['message'])
+		case 'model.completed': return closed(value, ['caller', 'modelAlias', 'operation'], ['callId', 'streamId', 'usage', 'finishReason'])
 			&& string('modelAlias') && ['text', 'object', 'textStream', 'objectStream'].includes(value['operation'] as string)
-			&& optionalString('agentId') && optionalString('workflowId') && optionalString('streamId')
+			&& validModelCorrelation(value) && optionalString('streamId')
 			&& (value['usage'] === undefined || isTokenUsage(value['usage']))
 			&& (value['finishReason'] === undefined || finishReasonSchema.safeParse(value['finishReason']).success)
-		case 'model.embedding.completed': return closed(value, ['count'], ['agentId', 'dimensions', 'usage']) && integer('count') && optionalString('agentId')
+		case 'model.embedding.completed': return closed(value, ['caller', 'modelAlias', 'count'], ['callId', 'dimensions', 'usage']) && integer('count') && string('modelAlias') && validModelCorrelation(value)
 			&& (value['dimensions'] === undefined || integer('dimensions')) && (value['usage'] === undefined || isTokenUsage(value['usage']))
-		case 'model.rerank.completed': return closed(value, ['count'], ['agentId', 'topN', 'usage']) && integer('count') && optionalString('agentId')
+		case 'model.rerank.completed': return closed(value, ['caller', 'modelAlias', 'count'], ['callId', 'topN', 'usage']) && integer('count') && string('modelAlias') && validModelCorrelation(value)
 			&& (value['topN'] === undefined || integer('topN')) && (value['usage'] === undefined || isTokenUsage(value['usage']))
-		case 'output.text.delta': return closed(value, ['id', 'delta'], ['agentId', 'workflowId', 'modelAlias']) && string('id') && string('delta')
-			&& optionalString('agentId') && optionalString('workflowId') && optionalString('modelAlias')
-		case 'output.object.snapshot': return closed(value, ['id', 'value'], ['agentId', 'workflowId', 'modelAlias']) && string('id') && json('value')
-			&& optionalString('agentId') && optionalString('workflowId') && optionalString('modelAlias')
-		case 'output.file': return closed(value, ['id', 'modelAlias', 'operation', 'artifact'], ['agentId', 'workflowId']) && string('id') && string('modelAlias')
-			&& ['image', 'speech', 'video'].includes(value['operation'] as string) && optionalString('agentId') && optionalString('workflowId') && isArtifactReference(value['artifact'])
-		case 'output.progress': return closed(value, ['id', 'modelAlias', 'operation', 'state'], ['agentId', 'workflowId', 'progress']) && string('id') && string('modelAlias')
-			&& value['operation'] === 'video' && ['queued', 'running'].includes(value['state'] as string) && optionalString('agentId') && optionalString('workflowId')
+		case 'model.output.text.delta': return closed(value, ['caller', 'callId', 'id', 'modelAlias', 'delta']) && validCaller(value['caller'], 'workflow') && string('callId') && string('id') && string('modelAlias') && string('delta')
+		case 'model.output.object.snapshot': return closed(value, ['caller', 'callId', 'id', 'modelAlias', 'value']) && validCaller(value['caller'], 'workflow') && string('callId') && string('id') && string('modelAlias') && json('value')
+		case 'output.text.delta': return closed(value, ['caller', 'id', 'delta'], ['callId', 'modelAlias']) && validCaller(value['caller'], 'agent') && optionalString('callId') && string('id') && string('delta') && optionalString('modelAlias')
+		case 'output.object.snapshot': return closed(value, ['caller', 'id', 'value'], ['callId', 'modelAlias']) && validCaller(value['caller'], 'agent') && optionalString('callId') && string('id') && json('value') && optionalString('modelAlias')
+		case 'output.file': return closed(value, ['caller', 'id', 'modelAlias', 'operation', 'artifact'], ['callId']) && string('id') && string('modelAlias')
+			&& ['image', 'speech', 'video'].includes(value['operation'] as string) && validModelCorrelation(value) && isArtifactReference(value['artifact'])
+		case 'output.progress': return closed(value, ['caller', 'id', 'modelAlias', 'operation', 'state'], ['callId', 'progress']) && string('id') && string('modelAlias')
+			&& value['operation'] === 'video' && ['queued', 'running'].includes(value['state'] as string) && validModelCorrelation(value)
 			&& (value['progress'] === undefined || finite('progress'))
 		case 'tool.input.available':
-		case 'tool.started': return closed(value, ['agentId', 'toolId', 'callId', 'input']) && string('agentId') && string('toolId') && string('callId') && json('input')
-		case 'tool.finished': return closed(value, ['agentId', 'toolId', 'callId'], ['output', 'error']) && string('agentId') && string('toolId') && string('callId')
+		case 'tool.started': return closed(value, ['caller', 'toolId', 'callId', 'input']) && validCaller(value['caller']) && string('toolId') && string('callId') && json('input')
+		case 'tool.finished': return closed(value, ['caller', 'toolId', 'callId'], ['output', 'error']) && validCaller(value['caller']) && string('toolId') && string('callId')
 			&& (value['output'] === undefined || isJsonValue(value['output'])) && (value['error'] === undefined || isSerializedError(value['error']))
 		case 'policy.exposure': return closed(value, ['agentId', 'invocationId', 'toolId', 'step', 'evidence', 'effect', 'enforced'])
 			&& string('agentId') && string('invocationId') && string('toolId') && integer('step') && decisionEvidenceSchema.safeParse(value['evidence']).success
@@ -277,6 +277,20 @@ function validEventBody(value: Record<string, unknown>, type: string): boolean {
 		case 'stream.overflow': return closed(value, ['at', 'dropped']) && string('at') && integer('dropped')
 		default: return false
 	}
+}
+
+function validCaller(value: unknown, expected?: 'agent' | 'workflow'): boolean {
+	if (!isPlainRecord(value)) return false
+	if (value['kind'] === 'agent') return expected !== 'workflow' && exact(value, value['workflowId'] === undefined ? ['kind', 'agentId'] : ['kind', 'agentId', 'workflowId'])
+		&& typeof value['agentId'] === 'string' && value['agentId'].length > 0 && (value['workflowId'] === undefined || typeof value['workflowId'] === 'string')
+	if (value['kind'] === 'workflow') return expected !== 'agent' && exact(value, ['kind', 'workflowId'])
+		&& typeof value['workflowId'] === 'string' && value['workflowId'].length > 0
+	return false
+}
+function validModelCorrelation(value: Record<string, unknown>): boolean {
+	return validCaller(value['caller']) && (isPlainRecord(value['caller']) && value['caller']['kind'] === 'workflow'
+		? typeof value['callId'] === 'string' && value['callId'].length > 0
+		: value['callId'] === undefined || typeof value['callId'] === 'string')
 }
 
 function validTerminalOutcome(value: unknown, runId: string): boolean {

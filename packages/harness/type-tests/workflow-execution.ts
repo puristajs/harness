@@ -9,7 +9,7 @@ const worker = defineAgent('worker', {
 })
 
 defineWorkflow('ephemeral', {
-	input: z.string(), output: z.string(), agents: { worker },
+	input: z.string(), output: z.string(), agents: [worker],
 	async handler(context) {
 		// @ts-expect-error externalWait exists only on a literally durable workflow
 		context.externalWait

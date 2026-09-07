@@ -23,6 +23,7 @@ import type { ModelHandle } from '../models/registry.js'
 import type { MemoryFacade } from '../ports/memory.js'
 import type { Logger } from '../logger/index.js'
 import type { Metrics, TelemetryShim } from '../telemetry/index.js'
+import { projectHarnessExecutionCaller } from '../runtime/execution-caller.js'
 
 /** @internal Resources exposed only to interceptor hooks, never tool bindings. */
 export interface AgentInterceptorRuntimeProjection {
@@ -55,6 +56,12 @@ export interface AgentToolPipelineOptions {
 	readonly onChildInterruption?: (entry: Extract<PreparedToolCheckpointEntryV1, { readonly state: 'suspended-child' }>) => Promise<void> | void
 	readonly onEntry?: (entry: PreparedToolCheckpointEntryV1) => Promise<void> | void
 	readonly resumeSuspendedChild?: (entry: Extract<PreparedToolCheckpointEntryV1, { readonly state: 'suspended-child' }>) => Promise<JsonValue>
+}
+
+function agentToolCaller(options: AgentToolPipelineOptions): Extract<import('../definitions/types.js').HarnessExecutionCaller, { kind: 'agent' }> {
+	const caller = projectHarnessExecutionCaller(options.invocation.caller)
+	if (caller.kind !== 'agent') throw new ValidationError('Agent tool caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } })
+	return caller
 }
 
 export type StrictAgentHookResult =
@@ -132,6 +139,7 @@ export type PreparedAgentToolCall = Readonly<{
 
 /** Preflights a complete provider batch in call order before any tool effect starts. */
 export async function prepareAgentToolBatch(options: AgentToolPipelineOptions): Promise<readonly PreparedAgentToolCall[]> {
+	agentToolCaller(options)
 	if (options.calls.length > options.remainingToolCalls) throw new AgentLoopBudgetError('Agent tool-call budget exceeded.', {
 		agent_id: options.agent.id, reason: 'max_tool_calls', limit: options.maxToolCalls,
 	})
@@ -157,6 +165,7 @@ export async function executePreparedAgentToolBatch(
 	options: AgentToolPipelineOptions,
 	prepared: readonly PreparedAgentToolCall[],
 ): Promise<readonly Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>[]> {
+	agentToolCaller(options)
 	const results: Array<Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>> = []
 	let offset = 0
 	while (offset < prepared.length) {
@@ -195,6 +204,7 @@ export async function resumePreparedAgentToolBatch(
 	entries: readonly PreparedToolCheckpointEntryV1[],
 	decisions: readonly AppliedApprovalDecisionV1[],
 ): Promise<readonly Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>[]> {
+	agentToolCaller(options)
 	const decisionById = new Map(decisions.map(decision => [decision.approvalId, decision.approved] as const))
 	const replayed = new Map<string, Readonly<{ entry: PreparedToolCheckpointEntryV1; message: Extract<ModelMessage, { role: 'tool' }> }>>()
 	const executable: PreparedAgentToolCall[] = []
@@ -218,7 +228,7 @@ export async function resumePreparedAgentToolBatch(
 			} catch (error) {
 				if (isTerminalLifecycleError(error)) {
 					try {
-						await options.sink.emit({ type: 'tool.finished', agentId: options.agent.id,
+						await options.sink.emit({ type: 'tool.finished', caller: agentToolCaller(options),
 							toolId: entry.bindingId, callId: entry.call.id, error: serializeError(error) })
 					} catch { /* preserve the terminal lifecycle identity */ }
 				}
@@ -305,7 +315,7 @@ export async function completeSuspendedAgentTool(
 			bindingId: binding.id, bindingContractDigest: binding.contractDigest, toolStarted: true,
 			outcome: Object.freeze({ status: 'completed', output }), modelMessage: message })
 		await withAbortSignal(lifecycle.signal, 'tool', 'Tool lifecycle event emission was cancelled.', () => options.sink.emit({
-			type: 'tool.finished', agentId: options.agent.id, toolId: binding.id, callId: entry.call.id, output,
+			type: 'tool.finished', caller: agentToolCaller(options), toolId: binding.id, callId: entry.call.id, output,
 		}))
 		await options.onEntry?.(completed)
 		return Object.freeze({ entry: completed, message })
@@ -360,7 +370,7 @@ async function prepareOne(options: AgentToolPipelineOptions, providerCall: ToolC
 	}
 	try {
 		await withAbortSignal(lifecycle.signal, 'tool', 'Tool preflight was cancelled.', () => options.sink.emit({
-			type: 'tool.input.available', agentId: options.agent.id, toolId: binding.id, callId: call.id, input,
+			type: 'tool.input.available', caller: agentToolCaller(options), toolId: binding.id, callId: call.id, input,
 		}))
 	} catch (error) {
 		lifecycle.dispose()
@@ -405,7 +415,7 @@ async function prepareOne(options: AgentToolPipelineOptions, providerCall: ToolC
 async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedAgentToolCall) {
 	if (!('binding' in prepared)) {
 		const serialized = prepared.entry.error
-		await options.sink.emit({ type: 'tool.finished', agentId: options.agent.id, toolId: prepared.call.name, callId: prepared.call.id, error: serialized })
+		await options.sink.emit({ type: 'tool.finished', caller: agentToolCaller(options), toolId: prepared.call.name, callId: prepared.call.id, error: serialized })
 		await options.onEntry?.(prepared.entry)
 		return Object.freeze({ entry: prepared.entry, message: Object.freeze({ role: 'tool' as const, toolCallId: prepared.call.id, content: JSON.stringify({ error: serialized }) }) })
 	}
@@ -432,7 +442,7 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 	}
 	try {
 		await withAbortSignal(signal, 'tool', 'Tool lifecycle event emission was cancelled.', () => options.sink.emit({
-			type: 'tool.started', agentId: options.agent.id, toolId: binding.id, callId: call.id, input: call.arguments,
+			type: 'tool.started', caller: agentToolCaller(options), toolId: binding.id, callId: call.id, input: call.arguments,
 		}))
 		let output: unknown
 		try {
@@ -469,13 +479,13 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 			}
 			if (isTerminalLifecycleError(error)) {
 				try {
-					await emitFinished({ type: 'tool.finished', agentId: options.agent.id, toolId: binding.id, callId: call.id, error: serializeError(error) })
+					await emitFinished({ type: 'tool.finished', caller: agentToolCaller(options), toolId: binding.id, callId: call.id, error: serializeError(error) })
 				} catch { /* preserve the terminal lifecycle or decision identity */ }
 				throw error
 			}
 			const normalized = error instanceof Error && ('code' in error) ? error : new ToolError('Tool execution failed.', { tool_id: binding.id, tool_kind: binding.implementationKind }, error)
 			const serialized = serializeError(normalized)
-			await emitFinished({ type: 'tool.finished', agentId: options.agent.id, toolId: binding.id, callId: call.id, error: serialized })
+			await emitFinished({ type: 'tool.finished', caller: agentToolCaller(options), toolId: binding.id, callId: call.id, error: serialized })
 			const message = Object.freeze({ role: 'tool' as const, toolCallId: call.id, content: JSON.stringify({ error: serialized }) })
 			const entry = freezePreparedToolCheckpointEntry({ state: 'completed', call, input, bindingId: binding.id,
 				bindingContractDigest: binding.contractDigest, toolStarted: true, outcome: Object.freeze({ status: 'failed', error: serialized }), modelMessage: message })
@@ -486,7 +496,7 @@ async function executeOne(options: AgentToolPipelineOptions, prepared: PreparedA
 		const message = Object.freeze({ role: 'tool' as const, toolCallId: call.id, content: JSON.stringify(parsed) })
 		const entry = freezePreparedToolCheckpointEntry({ state: 'completed', call, input, bindingId: binding.id,
 			bindingContractDigest: binding.contractDigest, toolStarted: true, outcome: Object.freeze({ status: 'completed', output: parsed }), modelMessage: message })
-		await emitFinished({ type: 'tool.finished', agentId: options.agent.id, toolId: binding.id, callId: call.id, output: parsed })
+		await emitFinished({ type: 'tool.finished', caller: agentToolCaller(options), toolId: binding.id, callId: call.id, output: parsed })
 		await options.onEntry?.(entry)
 		return Object.freeze({ entry, message })
 	} finally {

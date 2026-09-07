@@ -533,9 +533,9 @@ describe('local durable execution', () => {
     const local = localDurableExecution({ root })
     const resumeWorkspace = vi.spyOn(local.workspace, 'resumeWorkspace')
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueObject({ object: '', toolCalls: [{ id: 'call-1', name: 'effect', arguments: 'approved' }],
+    provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'effect', arguments: 'approved' }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-    provider.enqueueObject({ object: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    provider.enqueueText({ content: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     let effects = 0
     const effect = defineTool('effect', { description: 'Apply one approved effect.', input: z.string(), output: z.string(),
       async handler(_context, value) { effects += 1; return value } })

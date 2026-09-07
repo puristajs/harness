@@ -80,7 +80,8 @@ export const readDefinitionDependencies: DefinitionDependencyReader = definition
 		}
 	}
 	if (identity?.kind === 'workflow') {
-		return { dependencies: Object.values((definition as AnyWorkflowDefinition).agents ?? {}) }
+		const workflow = definition as AnyWorkflowDefinition
+		return { dependencies: [...(workflow.agents ?? []), ...(workflow.tools ?? [])] }
 	}
 	return { dependencies: [] }
 }
@@ -173,7 +174,7 @@ function compileApprovalInventory(
 		return [id, Object.freeze({ reachable: agentIds.length > 0, agentIds })]
 	})))
 	const workflowRows = Object.freeze(Object.fromEntries(Object.keys(workflows).sort(codePointCompare).map(id => {
-		const agentIds = Object.freeze([...new Set(Object.values(workflows[id]!.agents ?? {}).flatMap(reachable))].sort(codePointCompare))
+		const agentIds = Object.freeze([...new Set((workflows[id]!.agents ?? []).flatMap(reachable))].sort(codePointCompare))
 		return [id, Object.freeze({ reachable: agentIds.length > 0, agentIds })]
 	})))
 	return Object.freeze({ agents: agentRows, workflows: workflowRows })

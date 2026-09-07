@@ -2,6 +2,7 @@ import { HarnessError } from './harness-error.js'
 import { decisionEvidenceSchema, decisionFailureKindSchema, policyDenialReasonSchema } from '../decisions/schemas.js'
 import { z } from 'zod'
 import type { DecisionEvidence, DecisionFailureKind } from '../decisions/types.js'
+import type { WorkflowManagedCallOperation } from '../storage/execution.js'
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
@@ -488,21 +489,21 @@ export class ApprovalResumeError extends HarnessError {
 	}
 }
 
-/** One workflow call id was reused for another logical child call. */
+/** One workflow call id was reused for another logical managed call. */
 export class WorkflowCallReplayConflictError extends HarnessError {
 	public constructor(meta: {
 		reason: 'operation_mismatch' | 'target_mismatch' | 'input_mismatch' | 'idempotency_key_mismatch' | 'options_mismatch'
 		workflow_id: string
 		call_id: string
-		expected_operation: 'agent_run' | 'child_task_start'
-		received_operation: 'agent_run' | 'child_task_start'
-		expected_target_kind: 'agent'
+		expected_operation: WorkflowManagedCallOperation | 'child_task_start'
+		received_operation: WorkflowManagedCallOperation | 'child_task_start'
+		expected_target_kind: 'agent' | 'tool' | 'model'
 		expected_target_id: string
-		received_target_kind: 'agent'
+		received_target_kind: 'agent' | 'tool' | 'model'
 		received_target_id: string
 	}) {
 		super({ code: 'WORKFLOW_CALL_REPLAY_CONFLICT', category: 'validation', retriable: false,
-			message: 'Workflow call id conflicts with an existing logical child call.', meta })
+			message: 'Workflow call id conflicts with an existing logical managed call.', meta })
 	}
 }
 
@@ -514,13 +515,32 @@ export class WorkflowAgentCallBudgetError extends HarnessError {
 	}
 }
 
-/** An agent target selected by workflow orchestration returned a failed terminal. */
-export class WorkflowChildTargetError extends HarnessError {
-	public constructor(meta:
-		| { reason: 'agent_call_failed'; workflow_id: string; call_id: string; target_kind: 'agent'; target_id: string }
-		| { reason: 'child_task_failed'; workflow_id: string; call_id: string; task_id: string; target_kind: 'agent'; target_id: string }, cause?: unknown) {
-		super({ code: 'WORKFLOW_CHILD_TARGET_FAILED', category: 'internal', retriable: false,
-			message: 'Workflow child target failed.', meta, cause })
+/**
+ * A direct agent, tool, or model operation selected by workflow orchestration failed.
+ *
+ * Metadata contains only stable definition and call identity; provider, tool,
+ * and user content remain in the private cause chain.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await workflow.run(input)
+ * } catch (error) {
+ *   if (error instanceof WorkflowManagedCallError) console.error(error.meta.call_id)
+ * }
+ * ```
+ */
+export class WorkflowManagedCallError extends HarnessError {
+	public constructor(meta: {
+		reason: 'operation_failed'
+		workflow_id: string
+		call_id: string
+		operation: WorkflowManagedCallOperation
+		target_kind: 'agent' | 'tool' | 'model'
+		target_id: string
+	}, cause?: unknown) {
+		super({ code: 'WORKFLOW_MANAGED_CALL_FAILED', category: 'internal', retriable: false,
+			message: 'Workflow managed call failed.', meta, cause })
 	}
 }
 

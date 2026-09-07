@@ -26,6 +26,7 @@ import type { AgentInterceptorRuntimeProjection } from './agent-tool-pipeline.js
 import type { AppliedApprovalDecisionV1 } from '../storage/types.js'
 import { withAbortSignal } from '../runtime/abort.js'
 import { projectToolResults, type ContextProjectionPolicy } from '../context-projection.js'
+import { projectHarnessExecutionCaller } from '../runtime/execution-caller.js'
 
 export interface StandardAgentInvocation {
 	readonly harnessName: string
@@ -60,7 +61,7 @@ export interface ExecuteStandardAgentOptions {
 	readonly invocation: StandardAgentInvocation
 	readonly sink: AgentEventSink
 	/** @internal Root coordinator owns correlation, persistence and delivery. */
-	readonly onModelCompleted?: (event: Readonly<{ agentId: string; workflowId?: string; modelAlias: string; operation: AcceptedModelTurnCursorV1['operation']; streamId?: string; usage: TokenUsage; finishReason: FinishReason }>) => Promise<void> | void
+	readonly onModelCompleted?: (event: Readonly<{ caller: Extract<import('../definitions/types.js').HarnessExecutionCaller, { kind: 'agent' }>; modelAlias: string; operation: AcceptedModelTurnCursorV1['operation']; streamId?: string; usage: TokenUsage; finishReason: FinishReason }>) => Promise<void> | void
 	readonly interceptorRuntime: AgentInterceptorRuntimeProjection
 	readonly toolContext: Omit<AgentToolInvocationContext, 'step' | 'toolId' | 'callId' | 'signal'>
 	/** @internal Validated durable continuation restored by the root runtime. */
@@ -84,6 +85,7 @@ export type StandardAgentExecutionResult = Readonly<{
 
 /** @internal Runs one v4 configurable agent as the standard bounded model loop. */
 export async function executeStandardAgent(options: ExecuteStandardAgentOptions): Promise<StandardAgentExecutionResult> {
+	agentCaller(options)
 	const resumed = options.resume
 	let input: JsonValue
 	if (resumed === undefined && options.inputValidation !== 'already-validated-target') {
@@ -230,9 +232,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 		}
 		}
 		const shouldRunAfterModel = cursorForTurn === undefined || cursorForTurn.phase === 'after_model'
-		if (shouldRunAfterModel) await options.onModelCompleted?.(Object.freeze({ agentId: options.agent.id,
-			...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
-			modelAlias: options.modelAlias, operation: agentOperation(options),
+		if (shouldRunAfterModel) await options.onModelCompleted?.(Object.freeze({ caller: agentCaller(options), modelAlias: options.modelAlias, operation: agentOperation(options),
 			...(turn.streamId === undefined ? {} : { streamId: turn.streamId }), usage: turn.usage, finishReason: turn.finishReason }))
 		if (shouldRunAfterModel && interceptor?.afterModel) {
 			const request = snapshotModelRequest(snapshotMessages(requestMessages), modelTools, effectiveSchema, effectiveCall)
@@ -385,7 +385,7 @@ async function runModelTurn(options: ExecuteStandardAgentOptions, messages: Mode
 		for await (const rawChunk of abortableStream(stream, signal)) {
 			const chunk = parseTextStreamChunk(rawChunk, calls)
 			if (finished) throw malformedStream()
-			if (chunk.kind === 'delta') { text += chunk.text; if (!bufferOutput) await options.sink.emit({ type: 'output.text.delta', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, delta: chunk.text }) }
+			if (chunk.kind === 'delta') { text += chunk.text; if (!bufferOutput) await options.sink.emit({ type: 'output.text.delta', id: streamId, caller: agentCaller(options), modelAlias: options.modelAlias, delta: chunk.text }) }
 			else if (chunk.kind === 'tool_call') calls.push(chunk.call)
 			else { finish = chunk; finished = true }
 		}
@@ -397,8 +397,8 @@ async function runModelTurn(options: ExecuteStandardAgentOptions, messages: Mode
 	for await (const rawChunk of abortableStream(stream, signal)) {
 		const chunk = parseObjectStreamChunk(rawChunk, calls)
 		if (finished) throw malformedStream()
-		if (chunk.kind === 'partial') { snapshot = cloneJson(chunk.partial); if (!bufferOutput) await options.sink.emit({ type: 'output.object.snapshot', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, value: snapshot }) }
-		else if (chunk.kind === 'delta') { snapshot = applyObjectDelta(snapshot, chunk.path, chunk.value); if (!bufferOutput) await options.sink.emit({ type: 'output.object.snapshot', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, value: cloneJson(snapshot) }) }
+		if (chunk.kind === 'partial') { snapshot = cloneJson(chunk.partial); if (!bufferOutput) await options.sink.emit({ type: 'output.object.snapshot', id: streamId, caller: agentCaller(options), modelAlias: options.modelAlias, value: snapshot }) }
+		else if (chunk.kind === 'delta') { snapshot = applyObjectDelta(snapshot, chunk.path, chunk.value); if (!bufferOutput) await options.sink.emit({ type: 'output.object.snapshot', id: streamId, caller: agentCaller(options), modelAlias: options.modelAlias, value: cloneJson(snapshot) }) }
 		else if (chunk.kind === 'tool_call') calls.push(chunk.call)
 		else if (chunk.kind === 'finish') { finish = chunk; finished = true }
 	}
@@ -535,11 +535,12 @@ function freezeCallForCursor(call: ToolCallSpec): ToolCallSpec {
 	return Object.freeze({ id: call.id, name: call.name, arguments: cloneJson(call.arguments) })
 }
 function modelToolSpecs(bindings: Readonly<Record<string, AgentExecutableBinding>>, hasSkills: boolean): ModelToolSpec[] { return Object.values(bindings).filter(binding => binding.id !== 'read_skill' || hasSkills).map(binding => ({ name: binding.id, description: binding.description, parameters: projectModelSchema(binding.input, 'tool_input', binding.id) })) }
-function callContext(options: ExecuteStandardAgentOptions, _step: number, streamId?: string): HarnessModelCallContext { return { harnessName: options.invocation.harnessName, sessionId: options.invocation.sessionId, runId: options.invocation.runId, agentId: options.agent.id, modelAlias: options.modelAlias, ...(streamId === undefined ? {} : { streamId }) } }
+function agentCaller(options: ExecuteStandardAgentOptions): Extract<import('../definitions/types.js').HarnessExecutionCaller, { kind: 'agent' }> { const caller = projectHarnessExecutionCaller({ kind: 'agent', agentId: options.agent.id, ...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) }); if (caller.kind !== 'agent') throw new ValidationError('Agent caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } }); return caller }
+function callContext(options: ExecuteStandardAgentOptions, _step: number, streamId?: string): HarnessModelCallContext { return { caller: agentCaller(options), harnessName: options.invocation.harnessName, sessionId: options.invocation.sessionId, runId: options.invocation.runId, modelAlias: options.modelAlias, ...(streamId === undefined ? {} : { streamId }) } }
 function malformedStream(): ValidationError { return new ValidationError('Model stream must contain exactly one terminal finish.', { where: 'model_response', issues: { reason: 'invalid_stream_finish' } }) }
 function malformedResponse(): ValidationError { return new ValidationError('Model response is malformed.', { where: 'model_response', issues: { reason: 'invalid_model_response' } }) }
-async function emitTerminalOutput(options: ExecuteStandardAgentOptions, id: string | undefined, output: JsonValue): Promise<void> { const streamId = id ?? randomUUID(); if (typeof output === 'string' && options.agent.contract.updates === 'text-delta') await options.sink.emit({ type: 'output.text.delta', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, delta: output }); else await options.sink.emit({ type: 'output.object.snapshot', id: streamId, agentId: options.agent.id, modelAlias: options.modelAlias, value: output }) }
-async function emitMessage(options: ExecuteStandardAgentOptions, message: ModelMessage): Promise<void> { await options.sink.emit({ type: 'model.message', agentId: options.agent.id, message: { id: randomUUID(), sessionId: options.invocation.sessionId, runId: options.invocation.runId, role: message.role, content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content), ...(message.role === 'assistant' && message.toolCalls ? { toolCalls: message.toolCalls.map(call => ({ ...call })) } : {}), timestamp: new Date().toISOString() } }) }
+async function emitTerminalOutput(options: ExecuteStandardAgentOptions, id: string | undefined, output: JsonValue): Promise<void> { const streamId = id ?? randomUUID(); if (typeof output === 'string' && options.agent.contract.updates === 'text-delta') await options.sink.emit({ type: 'output.text.delta', id: streamId, caller: agentCaller(options), modelAlias: options.modelAlias, delta: output }); else await options.sink.emit({ type: 'output.object.snapshot', id: streamId, caller: agentCaller(options), modelAlias: options.modelAlias, value: output }) }
+async function emitMessage(options: ExecuteStandardAgentOptions, message: ModelMessage): Promise<void> { await options.sink.emit({ type: 'model.message', caller: agentCaller(options), message: { id: randomUUID(), sessionId: options.invocation.sessionId, runId: options.invocation.runId, role: message.role, content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content), ...(message.role === 'assistant' && message.toolCalls ? { toolCalls: message.toolCalls.map(call => ({ ...call })) } : {}), timestamp: new Date().toISOString() } }) }
 function hookContext<Extra extends object>(
 	options: ExecuteStandardAgentOptions,
 	interceptor: AgentExecutionInterceptor,

@@ -9,6 +9,10 @@ import type {
   McpBinding,
   McpServerOptions,
   ModelRuntimeBinding,
+	WorkflowCallCheckpointV1,
+	WorkflowCallStoredErrorV1,
+	WorkflowCallStoredOutcomeV1,
+	WorkflowManagedCallOperation,
 } from '../src/index.js'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
@@ -74,7 +78,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'WorkflowNotFoundError',
   'WorkflowAgentCallBudgetError',
   'WorkflowCallReplayConflictError',
-  'WorkflowChildTargetError',
+  'WorkflowManagedCallError',
   'WorkspaceCleanupError',
   'WorkspaceError',
   'WorkspaceQuotaExceededError',
@@ -217,6 +221,15 @@ describe('v4 public API export surface', () => {
       readonly retryAfterMs?: number
     }>()
     expectTypeOf<ModelRuntimeBinding>().toHaveProperty('provider')
+		expectTypeOf<WorkflowManagedCallOperation>().toEqualTypeOf<
+			'agent_run' | 'tool_run' | 'model_text' | 'model_text_stream' | 'model_object' | 'model_object_stream'
+			| 'model_embed' | 'model_rerank' | 'model_image' | 'model_speech' | 'model_video' | 'model_video_stream'
+		>()
+		expectTypeOf<WorkflowCallCheckpointV1['outcome']>().toEqualTypeOf<WorkflowCallStoredOutcomeV1>()
+		expectTypeOf<Extract<WorkflowCallStoredErrorV1, { code: 'WORKFLOW_MANAGED_CALL_FAILED' }>['meta']>().toEqualTypeOf<Readonly<{
+			reason: 'operation_failed'; workflow_id: string; call_id: string; operation: WorkflowManagedCallOperation
+			target_kind: 'agent' | 'tool' | 'model'; target_id: string
+		}>>()
     expectTypeOf<McpBinding['transport']>().toEqualTypeOf<'http' | 'stdio'>()
     expectTypeOf<McpServerOptions<{ lookup: {
       remoteName: string
@@ -232,13 +245,18 @@ describe('v4 public API export surface', () => {
       mainEntry.ApprovalResumeError,
       mainEntry.WorkflowCallReplayConflictError,
       mainEntry.WorkflowAgentCallBudgetError,
-      mainEntry.WorkflowChildTargetError,
+      mainEntry.WorkflowManagedCallError,
       mainEntry.HostNestedTargetError,
       mainEntry.HostNestedTargetReplayConflictError,
       mainEntry.HarnessTargetRouteReceiptMismatchError,
       mainEntry.ChildTaskConflictError,
       mainEntry.ChildTaskStateError,
     ].every(value => typeof value === 'function')).toBe(true)
+		const managed = new mainEntry.WorkflowManagedCallError({ reason: 'operation_failed', workflow_id: 'flow', call_id: 'call',
+			operation: 'tool_run', target_kind: 'tool', target_id: 'lookup' }, new Error('private'))
+		expect(managed).toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED', message: 'Workflow managed call failed.', category: 'internal', retriable: false,
+			meta: { reason: 'operation_failed', workflow_id: 'flow', call_id: 'call', operation: 'tool_run', target_kind: 'tool', target_id: 'lookup' } })
+		expect(Object.keys(managed.meta)).toEqual(['reason', 'workflow_id', 'call_id', 'operation', 'target_kind', 'target_id'])
   })
 
   it('main entry exports exactly the locked value list', () => {

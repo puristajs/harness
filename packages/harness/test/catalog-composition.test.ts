@@ -59,8 +59,8 @@ function fixture() {
 		workspace: true, durable: true,
 	})
 	const resolve = defineWorkflow('resolve', {
-		input, output, agents: { assistant },
-		models: { image: { alias: 'image', capabilities: ['image_generation'] } },
+		input, output, agents: [assistant],
+		models: { image: { capabilities: ['image_generation'] } },
 		async handler({ input: value }) { return { answer: value.message } },
 	})
 	return { lookup, policy, knowledge, helper, assistant, resolve }
@@ -75,7 +75,7 @@ describe('catalog composition and graph compilation', () => {
 
 	it('keeps child-task sandbox groups out of the workflow target-policy digest tuple', () => {
 		const worker = defineAgent('digestWorker', { instructions: 'Work.' })
-		const workflow = defineWorkflow('digestWorkflow', { input: z.string(), output: z.string(), agents: { worker },
+		const workflow = defineWorkflow('digestWorkflow', { input: z.string(), output: z.string(), agents: [worker],
 			childTaskSandboxGroups: ['reviewers'] as const, sandbox: { group: 'workflow-scope' }, durable: true,
 			async handler({ input }) { return input } })
 		const rows = compiledGraphTargetPolicyPreimage(compileDefinitionGraph({ workflows: [workflow] }))
@@ -200,7 +200,7 @@ describe('catalog composition and graph compilation', () => {
 			instructions: 'Ask.', tools: [bash], permissions: { bash: 'require_approval' },
 		})
 		const parent = defineAgent('parentApproval', { instructions: 'Delegate.', subagents: { child: approval } })
-		const workflow = defineWorkflow('approvalRoot', { input: z.string(), output: z.string(), agents: { parent }, async handler() { return 'done' } })
+		const workflow = defineWorkflow('approvalRoot', { input: z.string(), output: z.string(), agents: [parent], async handler() { return 'done' } })
 		const compiled = compileDefinitionGraph({ workflows: [workflow] })
 		expect(compiled.approval.agents.parentApproval).toEqual({ reachable: true, agentIds: ['approval'] })
 		expect(compiled.approval.workflows.approvalRoot).toEqual({ reachable: true, agentIds: ['approval'] })
@@ -483,7 +483,7 @@ describe('catalog composition and graph compilation', () => {
 		const sandboxAgent = defineAgent('sandboxAgent', { input: z.string(), output: z.string(),
 			instructions: 'Keep the sandbox available.', tools: [sandboxProbe], prompt: message => ({ role: 'user', content: message }),
 		})
-		const echo = defineWorkflow('lazyEcho', { input, output, agents: { sandboxAgent }, durable: true,
+		const echo = defineWorkflow('lazyEcho', { input, output, agents: [sandboxAgent], durable: true,
 			async handler(context) { return { answer: await context.agents.sandboxAgent.run(context.input.message, { callId: 'sandbox-agent' }) } },
 		})
 		const definition = defineHarness({ name: 'lazySessionHarness', revision: 'v1' }).addWorkflow(echo)
@@ -834,12 +834,12 @@ describe('catalog composition and graph compilation', () => {
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflow('approvalWorkflow', {
 			input: z.string().transform(value => { inputParses += 1; return value }), output: z.string(), durable: true,
-			agents: { reviewer }, agentCalls: { maxCalls: 1, maxParallel: 1 },
+			agents: [reviewer], agentCalls: { maxCalls: 1, maxParallel: 1 },
 			async handler({ agents }) {
 				handlerEntries += 1
-				const result = await agents.reviewer.run('review', { callId: 'review-call' })
+				const result = await agents.workflowReviewer.run('review', { callId: 'review-call' })
 				let budgetRestored = false
-				try { await agents.reviewer.run('must-not-dispatch', { callId: 'second-call' }) }
+				try { await agents.workflowReviewer.run('must-not-dispatch', { callId: 'second-call' }) }
 				catch (error) { budgetRestored = error !== null && typeof error === 'object' && 'code' in error && error.code === 'WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED' }
 				return `${result}:${budgetRestored ? 'budget-restored' : 'budget-reset'}`
 			},

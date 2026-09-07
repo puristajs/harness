@@ -36,7 +36,7 @@ describe('local target dispatcher', () => {
 		const input = z.string().transform(value => { validations += 1; return { value } })
 		let outputValidations = 0
 		const output = z.string().transform(value => { outputValidations += 1; return { answer: value } })
-		const child = defineAgent('child', { instructions: 'Answer.', input, output, prompt: value => ({ role: 'user', content: value.value }), loop: { maxDepth: 2 } })
+		const child = defineAgent('child', { instructions: 'Answer.', input, output, responseMode: 'text', prompt: value => ({ role: 'user', content: value.value }), loop: { maxDepth: 2 } })
 		const execute = vi.fn(async (request: any) => stream([
 			{ type: 'run.finished', runId: 'child-run', at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId: 'child-run', output: { answer: 'ok' } } },
 		]))

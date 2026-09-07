@@ -15,6 +15,7 @@ import { canonicalJson } from '../runtime/canonical-json.js'
 import { getDefinitionIdentity, type DefinitionIdentity } from '../definitions/identity.js'
 import type {
 	AnyAgentDefinition,
+	HarnessExecutionCaller,
 	BuiltInToolDefinition,
 	HostToolDefinition,
 	McpToolDefinition,
@@ -27,6 +28,7 @@ export type AgentBindingKind = 'portable' | 'built-in' | 'read-skill' | 'mcp' | 
 
 /** @internal Broad runtime context; binding factories project narrower handler contexts. */
 export interface AgentToolInvocationContext {
+	readonly caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>
 	readonly harnessName: string
 	readonly sessionId: string
 	readonly runId: string
@@ -57,6 +59,16 @@ export interface AgentToolInvocationContext {
 	readonly checkpointStep: HarnessCheckpointStep
 }
 
+/** @internal Workflow-owned tool context. It deliberately has no synthetic agent identity. */
+export type WorkflowToolInvocationContext = Omit<AgentToolInvocationContext, 'caller' | 'agentId' | 'workflowId'> & Readonly<{
+	caller: Extract<HarnessExecutionCaller, { kind: 'workflow' }>
+	workflowId: string
+	agentId?: never
+}>
+
+/** @internal Exact caller-specific context accepted by a shared executable tool binding. */
+export type ToolInvocationContext = AgentToolInvocationContext | WorkflowToolInvocationContext
+
 /** @internal Prepared implementation owned by one exact definition identity. */
 export interface AgentExecutableBinding<Input extends ModelSchema = ModelSchema, Output extends Schema = Schema> {
 	readonly id: string
@@ -72,6 +84,8 @@ export interface AgentExecutableBinding<Input extends ModelSchema = ModelSchema,
 	/** @internal Releases an unused runtime-owned launch fence. */
 	readonly afterInvoke?: (context: AgentToolInvocationContext) => void
 	invokeValidated(context: AgentToolInvocationContext, input: Infer<Input> & JsonValue, wireInput: InferIn<Input> & JsonValue): Promise<unknown>
+	/** @internal Workflow path through the same definition-authentic prepared binding. */
+	readonly invokeWorkflowValidated?: (context: WorkflowToolInvocationContext, input: JsonValue, wireInput: JsonValue) => Promise<unknown>
 }
 
 /** Internal spelling retained by H4-004 runtime bundles. */
@@ -131,6 +145,7 @@ export function createAgentExecutableBinding<Input extends ModelSchema, Output e
 		...(options.beforeInvoke === undefined ? {} : { beforeInvoke: options.beforeInvoke }),
 		...(options.afterInvoke === undefined ? {} : { afterInvoke: options.afterInvoke }),
 		invokeValidated: options.invokeValidated,
+		...(options.invokeWorkflowValidated === undefined ? {} : { invokeWorkflowValidated: options.invokeWorkflowValidated }),
 	})
 }
 
@@ -144,6 +159,7 @@ export function bindPortableTool<Id extends string, Input extends ModelSchema, O
 		implementationKind: 'portable', definitionIdentity: identity, digestDefinition: ['tool', definition.id],
 		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
 		invokeValidated: (context, input) => definition.handler(projectPortableContext(context, definition.requires), input),
+		invokeWorkflowValidated: (context, input) => definition.handler(projectPortableContext(context, definition.requires), input as Infer<Input>),
 	})
 }
 
@@ -155,7 +171,8 @@ export function bindBuiltInTool<Input extends ModelSchema, Output extends Schema
 	const identity = requireIdentity(definition, 'built-in-tool')
 	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
 		implementationKind: 'built-in', definitionIdentity: identity, digestDefinition: ['built-in-tool', definition.id],
-		mcpOwner: null, remoteMcpName: null, outputValidation: 'required', invokeValidated: invoke })
+		mcpOwner: null, remoteMcpName: null, outputValidation: 'required', invokeValidated: invoke,
+		invokeWorkflowValidated: (context, input) => invoke(context as unknown as AgentToolInvocationContext, input as Infer<Input>) })
 }
 
 /** @internal Creates the generated reader owned by one exact agent definition. */
@@ -184,7 +201,8 @@ export function bindMcpTool<Input extends ModelSchema, Output extends Schema>(
 		implementationKind: 'mcp', definitionIdentity: identity, digestDefinition: ['mcp-tool', definition.id],
 		mcpOwner: ['mcp-server', owner.id], remoteMcpName: definition.remoteName,
 		outputValidation: 'required',
-		invokeValidated: (context, value) => invoke(context, definition.remoteName, value) })
+		invokeValidated: (context, value) => invoke(context, definition.remoteName, value),
+		invokeWorkflowValidated: (context, value) => invoke(context as unknown as AgentToolInvocationContext, definition.remoteName, value as Infer<Input>) })
 }
 
 /** @internal Creates one run-scoped host-aware binding through the canonical finalizer. */
@@ -196,7 +214,8 @@ export function bindHostTool(
 	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
 		implementationKind: 'host', definitionIdentity: identity, digestDefinition: ['host-tool', definition.id],
 		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
-		invokeValidated: invoke })
+		invokeValidated: invoke,
+		invokeWorkflowValidated: (context, input, wireInput) => invoke(context as unknown as AgentToolInvocationContext, input, wireInput) })
 }
 
 /** @internal Reserves a host-aware binding without a standalone call path. */
@@ -214,13 +233,13 @@ function requireIdentity(value: unknown, kind: DefinitionIdentity['kind']): Defi
 }
 
 function projectPortableContext<Requirements extends ToolRequirements>(
-	context: AgentToolInvocationContext,
+	context: ToolInvocationContext,
 	requirements: Requirements | undefined,
 ): ToolHandlerContext<Requirements> {
 	return Object.freeze({
 		signal: context.signal, logger: context.logger, metrics: context.metrics, telemetry: context.telemetry,
 		...(context.identity === undefined ? {} : { identity: context.identity }), sessionId: context.sessionId,
-		runId: context.runId, agentId: context.agentId, toolId: context.toolId, callId: context.callId,
+		runId: context.runId, caller: context.caller, toolId: context.toolId, callId: context.callId,
 		invocationId: context.invocationId, ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
 		metadata: context.metadata,
 		...((requirements?.memory?.length ?? 0) === 0 ? {} : { memory: context.memory }),

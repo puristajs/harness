@@ -1,5 +1,5 @@
 import type { DecisionEvidence } from '../decisions/types.js'
-import type { ChildTaskContextPolicy, ChildTaskMode } from './types.js'
+import type { ChildTaskContextPolicy, ChildTaskMode, HarnessExecutionCaller } from './types.js'
 import type { GovernanceEffect, GovernanceExposureEffect } from '../governance/types.js'
 import type { HarnessInterrupt, RunOutcome } from '../runtime/outcomes.js'
 import type { JsonValue } from '../models/json.js'
@@ -11,7 +11,7 @@ import type { ExternalWaitOutcome } from '../storage/external-wait.js'
 /** Ordered inventory of every event discriminator emitted by Harness v4. */
 export const harnessExecutionEventTypesV1 = Object.freeze([
 	'run.started', 'run.finished', 'agent.started', 'agent.finished', 'model.message', 'model.completed',
-	'model.embedding.completed', 'model.rerank.completed', 'output.text.delta', 'output.object.snapshot',
+	'model.embedding.completed', 'model.rerank.completed', 'model.output.text.delta', 'model.output.object.snapshot', 'output.text.delta', 'output.object.snapshot',
 	'output.file', 'output.progress', 'tool.input.available', 'tool.started', 'tool.finished',
 	'policy.exposure', 'policy.evaluated', 'approval.requested', 'approval.responded',
 	'external_wait.requested', 'external_wait.waiting', 'external_wait.resolved', 'fanout.started',
@@ -38,22 +38,30 @@ type ExecutionTerminalOutcome<Output, Interrupt> = RunOutcome<Output, Interrupt>
 	| Readonly<{ status: 'failed'; runId: string; error: SerializedError }>
 	| Readonly<{ status: 'cancelled'; runId: string; error: SerializedError }>
 
+type ModelExecutionCorrelation =
+	| Readonly<{ caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>; callId?: string }>
+	| Readonly<{ caller: Extract<HarnessExecutionCaller, { kind: 'workflow' }>; callId: string }>
+type AgentModelExecutionCorrelation = Extract<ModelExecutionCorrelation, { caller: { kind: 'agent' } }>
+type WorkflowModelExecutionCorrelation = Extract<ModelExecutionCorrelation, { caller: { kind: 'workflow' } }>
+
 type EventBody<Output, Interrupt> =
 	| Readonly<{ type: 'run.started'; at: string }>
 	| Readonly<{ type: 'run.finished'; at: string; outcome: ExecutionTerminalOutcome<Output, Interrupt> }>
 	| Readonly<{ type: 'agent.started'; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string }>
 	| Readonly<{ type: 'agent.finished'; agentId: string; at: string; workflowId?: string; parentAgentId?: string; delegationCallId?: string; delegationDepth?: number; modelAlias?: string; output?: JsonValue; error?: SerializedError }>
-	| Readonly<{ type: 'model.message'; agentId: string; message: Message }>
-	| Readonly<{ type: 'model.completed'; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: TokenUsage; finishReason?: FinishReason }>
-	| Readonly<{ type: 'model.embedding.completed'; agentId?: string; count: number; dimensions?: number; usage?: TokenUsage }>
-	| Readonly<{ type: 'model.rerank.completed'; agentId?: string; count: number; topN?: number; usage?: TokenUsage }>
-	| Readonly<{ type: 'output.text.delta'; id: string; agentId?: string; workflowId?: string; modelAlias?: string; delta: string }>
-	| Readonly<{ type: 'output.object.snapshot'; id: string; agentId?: string; workflowId?: string; modelAlias?: string; value: JsonValue }>
-	| Readonly<{ type: 'output.file'; id: string; agentId?: string; workflowId?: string; modelAlias: string; operation: 'image' | 'speech' | 'video'; artifact: ArtifactReference }>
-	| Readonly<{ type: 'output.progress'; id: string; agentId?: string; workflowId?: string; modelAlias: string; operation: 'video'; state: 'queued' | 'running'; progress?: number }>
-	| Readonly<{ type: 'tool.input.available'; agentId: string; toolId: string; callId: string; input: JsonValue }>
-	| Readonly<{ type: 'tool.started'; agentId: string; toolId: string; callId: string; input: JsonValue }>
-	| Readonly<{ type: 'tool.finished'; agentId: string; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }>
+	| Readonly<{ type: 'model.message'; caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>; message: Message }>
+	| (Readonly<{ type: 'model.completed'; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: TokenUsage; finishReason?: FinishReason }> & ModelExecutionCorrelation)
+	| (Readonly<{ type: 'model.embedding.completed'; modelAlias: string; count: number; dimensions?: number; usage?: TokenUsage }> & ModelExecutionCorrelation)
+	| (Readonly<{ type: 'model.rerank.completed'; modelAlias: string; count: number; topN?: number; usage?: TokenUsage }> & ModelExecutionCorrelation)
+	| (Readonly<{ type: 'model.output.text.delta'; id: string; modelAlias: string; delta: string }> & WorkflowModelExecutionCorrelation)
+	| (Readonly<{ type: 'model.output.object.snapshot'; id: string; modelAlias: string; value: JsonValue }> & WorkflowModelExecutionCorrelation)
+	| (Readonly<{ type: 'output.text.delta'; id: string; modelAlias?: string; delta: string }> & AgentModelExecutionCorrelation)
+	| (Readonly<{ type: 'output.object.snapshot'; id: string; modelAlias?: string; value: JsonValue }> & AgentModelExecutionCorrelation)
+	| (Readonly<{ type: 'output.file'; id: string; modelAlias: string; operation: 'image' | 'speech' | 'video'; artifact: ArtifactReference }> & ModelExecutionCorrelation)
+	| (Readonly<{ type: 'output.progress'; id: string; modelAlias: string; operation: 'video'; state: 'queued' | 'running'; progress?: number }> & ModelExecutionCorrelation)
+	| Readonly<{ type: 'tool.input.available'; caller: HarnessExecutionCaller; toolId: string; callId: string; input: JsonValue }>
+	| Readonly<{ type: 'tool.started'; caller: HarnessExecutionCaller; toolId: string; callId: string; input: JsonValue }>
+	| Readonly<{ type: 'tool.finished'; caller: HarnessExecutionCaller; toolId: string; callId: string; output?: JsonValue; error?: SerializedError }>
 	| Readonly<{ type: 'policy.exposure'; agentId: string; invocationId: string; toolId: string; step: number; evidence: DecisionEvidence; effect: GovernanceExposureEffect; enforced: boolean }>
 	| Readonly<{ type: 'policy.evaluated'; agentId: string; invocationId: string; toolId: string; callId: string; step: number; evidence: DecisionEvidence; effect: GovernanceEffect; enforced: boolean }>
 	| Readonly<{ type: 'approval.requested'; agentId: string; invocationId: string; toolId: string; callId: string; step: number; approvalId: string; demands: readonly DecisionEvidence[] }>
@@ -92,7 +100,7 @@ export interface HarnessTargetStream<Output> extends AsyncIterable<ExecutionEven
 	cancel(reason?: string): Promise<void>
 }
 export type AgentPipelineEventType = Extract<EventBody<JsonValue, HarnessInterrupt>['type'],
-	'agent.started' | 'agent.finished' | 'model.message' | 'output.text.delta' | 'output.object.snapshot' |
+	'agent.started' | 'agent.finished' | 'model.message' | 'model.completed' | 'output.text.delta' | 'output.object.snapshot' |
 	'tool.input.available' | 'tool.started' | 'tool.finished' | 'policy.exposure' | 'policy.evaluated' |
 	'approval.requested' | 'approval.responded'>
 export type AgentPipelineEvent = Extract<EventBody<JsonValue, HarnessInterrupt>, { readonly type: AgentPipelineEventType }>

@@ -338,8 +338,8 @@ describe('v4 session lifecycle', () => {
 			async handler(_context, input) { effects += 1; return input } })
 		const reviewer = defineAgent('borrowedReviewer', { instructions: 'Review.', tools: [effect], permissions: { bash: 'require_approval' } })
 		const child = defineAgent('borrowedChild', { instructions: 'Reply.' })
-		const parent = defineWorkflow('borrowedParent', { input: z.string(), output: z.string(), agents: { child },
-			async handler({ input, agents }) { return agents.child.run(input, { callId: 'child-call' }) } })
+		const parent = defineWorkflow('borrowedParent', { input: z.string(), output: z.string(), agents: [child],
+			async handler({ input, agents }) { return agents.borrowedChild.run(input, { callId: 'child-call' }) } })
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: 'bash', arguments: 'approved' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
@@ -376,15 +376,14 @@ describe('v4 session lifecycle', () => {
 		const owner = Object.freeze({ namespace: 'external', id: 'recursive-shared', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FB1',
 			identity: Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }) })
 		const sandbox = new TrackingSandbox()
-		await sandbox.registerOwner({ owner, mode: 'create' })
 		let allowed = true
 		let effects = 0
 		const effect = defineTool('recursiveBorrowedEffect', { description: 'Record one effect.', input: z.string(), output: z.string(),
 			async handler(_context, input) { effects += 1; return input } })
 		const leaf = defineAgent('recursiveBorrowedLeaf', { instructions: 'Run the effect.', tools: [effect] })
 		const middle = defineAgent('recursiveBorrowedMiddle', { instructions: 'Delegate.', subagents: { leaf } })
-		const workflow = defineWorkflow('recursiveBorrowedFlow', { input: z.string(), output: z.string(), agents: { middle },
-			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		const workflow = defineWorkflow('recursiveBorrowedFlow', { input: z.string(), output: z.string(), agents: [middle],
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.recursiveBorrowedMiddle.run(input, { callId: 'middle' }) } })
 		class RevokingProvider extends FakeModelProvider {
 			public calls = 0
 			public override async text(request: Parameters<FakeModelProvider['text']>[0]) {
@@ -402,8 +401,11 @@ describe('v4 session lifecycle', () => {
 				authorizeOwner: () => allowed },
 		})
 		const session = await harness.getSession('recursive-borrowed', { identity: owner.identity, sandboxOwner: owner })
+		await sandbox.registerOwner({ owner, mode: 'create' })
+		await sandbox.open({ scope: Object.freeze({ owner, partition: Object.freeze({ kind: 'group' as const, id: 'reviewers' }), lifetime: 'session' as const }),
+			mode: 'create', identity: owner.identity })
 		await expect(session.workflows.recursiveBorrowedFlow.run('start')).rejects.toMatchObject({
-			code: 'WORKFLOW_CHILD_TARGET_FAILED', cause: { code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'owner_not_authorized' } },
+			code: 'WORKFLOW_MANAGED_CALL_FAILED', meta: { operation: 'agent_run', target_kind: 'agent', target_id: 'recursiveBorrowedMiddle' },
 		})
 		expect(provider.calls).toBe(1)
 		expect(effects).toBe(0)
@@ -557,12 +559,12 @@ describe('v4 session lifecycle', () => {
 			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); observations.push(exists); return exists } })
 		const writer = defineAgent('groupWriter', { instructions: 'Write once.', tools: [writeFile], sandbox: { group: 'reviewers' } })
 		const reader = defineAgent('childReader', { instructions: 'Inspect once.', tools: [inspectFile] })
-		const workflow = defineWorkflow('childSandboxVisibility', { input: z.string(), output: z.string(), agents: { reader },
+		const workflow = defineWorkflow('childSandboxVisibility', { input: z.string(), output: z.string(), agents: [reader],
 			sandbox: { group: 'reviewers' }, childTaskSandboxGroups: ['reviewers'] as const, async handler({ agents, childTasks, input }) {
-				await agents.reader.run(input, { callId: 'inline' })
-				const shared = await childTasks.start('reader', input, { callId: 'shared', sandbox: { group: 'reviewers' } })
+				await agents.childReader.run(input, { callId: 'inline' })
+				const shared = await childTasks.start('childReader', input, { callId: 'shared', sandbox: { group: 'reviewers' } })
 				await shared.result()
-				const isolated = await childTasks.start('reader', input, { callId: 'isolated' })
+				const isolated = await childTasks.start('childReader', input, { callId: 'isolated' })
 				await isolated.result()
 				return input
 			} })
@@ -639,8 +641,8 @@ describe('v4 session lifecycle', () => {
 		const inheritedLeaf = defineAgent('recursiveInheritedLeaf', { instructions: 'Inspect once.', tools: [inspectFile] })
 		const privateLeaf = defineAgent('recursivePrivateLeaf', { instructions: 'Inspect once.', tools: [inspectFile], sandbox: 'private' })
 		const middle = defineAgent('recursiveMiddle', { instructions: 'Delegate twice.', subagents: { inheritedLeaf, privateLeaf } })
-		const workflow = defineWorkflow('recursiveSandboxFlow', { input: z.string(), output: z.string(), agents: { middle },
-			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { await agents.middle.run(input, { callId: 'middle' }); return input } })
+		const workflow = defineWorkflow('recursiveSandboxFlow', { input: z.string(), output: z.string(), agents: [middle],
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { await agents.recursiveMiddle.run(input, { callId: 'middle' }); return input } })
 		const provider = new FakeModelProvider({ strict: true })
 		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
 			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
@@ -694,8 +696,8 @@ describe('v4 session lifecycle', () => {
 		const reviewer = defineAgent('approvalPrivateLeaf', { instructions: 'Run the approved inspection.', tools: [approvedEffect],
 			permissions: { bash: 'require_approval' }, sandbox: 'private' })
 		const middle = defineAgent('approvalInheritedMiddle', { instructions: 'Inspect, then delegate.', tools: [inspectGroup], subagents: { reviewer } })
-		const workflow = defineWorkflow('nestedApprovalScope', { input: z.string(), output: z.string(), agents: { middle },
-			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		const workflow = defineWorkflow('nestedApprovalScope', { input: z.string(), output: z.string(), agents: [middle],
+			sandbox: { group: 'reviewers' }, async handler({ agents, input }) { return agents.approvalInheritedMiddle.run(input, { callId: 'middle' }) } })
 		const provider = new FakeModelProvider({ strict: true })
 		const response = (content: string, toolCalls: readonly { id: string; name: string; arguments: string }[] = []) => ({
 			content, toolCalls, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: toolCalls.length > 0 ? 'tool_calls' as const : 'stop' as const,
@@ -735,8 +737,8 @@ describe('v4 session lifecycle', () => {
 	it('streams nested workflow events with exact immediate-parent correlation in execution order', async () => {
 		const leaf = defineAgent('eventLeaf', { instructions: 'Finish.' })
 		const middle = defineAgent('eventMiddle', { instructions: 'Delegate.', subagents: { leaf } })
-		const workflow = defineWorkflow('eventWorkflow', { input: z.string(), output: z.string(), agents: { middle },
-			async handler({ agents, input }) { return agents.middle.run(input, { callId: 'middle' }) } })
+		const workflow = defineWorkflow('eventWorkflow', { input: z.string(), output: z.string(), agents: [middle],
+			async handler({ agents, input }) { return agents.eventMiddle.run(input, { callId: 'middle' }) } })
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'child' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
@@ -828,7 +830,7 @@ describe('v4 session lifecycle', () => {
 		})
 		let task: ChildTaskHandle<string> | undefined
 		const launch = defineWorkflow('launch', {
-			input: z.string(), output: z.string(), agents: { worker }, durable: true,
+			input: z.string(), output: z.string(), agents: [worker], durable: true,
 			async handler({ childTasks, input }) {
 				task = await childTasks.start('worker', input, { callId: 'background', idempotencyKey: 'background' })
 				void task.result().catch(() => undefined)

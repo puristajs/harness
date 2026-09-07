@@ -58,18 +58,17 @@ import type {
   ModelAdmissionOperation,
 } from '../ports/model-admission.js'
 import { modelAdmissionKey } from '../ports/model-admission.js'
+import type { HarnessExecutionCaller } from '../definitions/types.js'
 
 export interface ModelInvokeContext {
+	/** Exact validated owner of this model effect. */
+	caller: HarnessExecutionCaller
   /** Harness instance name used for telemetry and run-event attribution. */
   harnessName?: string
   /** Session id used for telemetry and run-event attribution. */
   sessionId?: string
   /** Run id used for telemetry and run-event attribution. */
   runId?: string
-  /** Workflow id when the model call belongs to a workflow run. */
-  workflowId?: string
-  /** Agent id when the model call belongs to an agent run. */
-  agentId?: string
   /** Stable base key used when publishing generated artifacts. */
   artifactIdempotencyKey?: string
 }
@@ -435,8 +434,8 @@ async function publishArtifact(
       ...(resolvedHarnessName ? { harnessName: resolvedHarnessName } : {}),
       ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
       ...(ctx?.runId ? { runId: ctx.runId } : {}),
-      ...(ctx?.workflowId ? { workflowId: ctx.workflowId } : {}),
-      ...(ctx?.agentId ? { agentId: ctx.agentId } : {}),
+		...(ctx?.caller?.workflowId ? { workflowId: ctx.caller.workflowId } : {}),
+		...(ctx?.caller?.kind === 'agent' ? { agentId: ctx.caller.agentId } : {}),
     },
     ...(ctx?.artifactIdempotencyKey ? { idempotencyKey: `${ctx.artifactIdempotencyKey}:${suffix}` } : {}),
     signal,
@@ -682,8 +681,8 @@ function modelSpanAttrs(
     'harness.name': ctx?.harnessName ?? options.harnessName,
     'harness.session.id': ctx?.sessionId,
     'harness.run.id': ctx?.runId,
-    'harness.workflow.id': ctx?.workflowId,
-    'harness.agent.id': ctx?.agentId,
+    'harness.workflow.id': ctx?.caller.workflowId,
+    'harness.agent.id': ctx?.caller.kind === 'agent' ? ctx.caller.agentId : undefined,
     'harness.model.alias': aliasKey,
     'harness.model.method': method,
     'gen_ai.operation.name': genAiOperationName(method),

@@ -5,6 +5,8 @@ import { invokeBuiltinTool, resolveEnabledBuiltinTools } from '../src/tools/inde
 import { SandboxNoExecutorError, ValidationError } from '../src/errors/index.js'
 import { z } from 'zod'
 import { defineTool } from '../src/definitions/tool.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
+import { defineHarness } from '../src/definitions/harness.js'
 import { defineMcpServer } from '../src/definitions/mcp-server.js'
 import { builtInTools } from '../src/tools/index.js'
 import { bindBuiltInTool, bindHostToolSeam, bindMcpTool, bindPortableTool, createAgentExecutableBinding } from '../src/tools/bindings.js'
@@ -54,6 +56,45 @@ it('prepares a portable binding without validation, policy, registry lookup, or 
   expect(binding.implementationKind).toBe('portable')
   expect(Object.isFrozen(binding)).toBe(true)
   await expect(binding.invokeValidated({ signal: new AbortController().signal } as never, { value: 'ok' }, { value: 'ok' })).resolves.toEqual({ value: 'OK' })
+})
+
+it('runs a declared workflow tool through the managed binding with exact caller events and call coalescing', async () => {
+	let effects = 0
+	let observedContext: unknown
+	const uppercase = defineTool('workflowUppercase', {
+		description: 'Uppercase workflow input.', input: z.object({ value: z.string() }), output: z.object({ value: z.string() }),
+		async handler(context, input) {
+			effects += 1
+			observedContext = context
+			return { value: input.value.toUpperCase() }
+		},
+	})
+	const workflow = defineWorkflow('toolWorkflow', {
+		input: z.string(), output: z.string(), tools: [uppercase],
+		async handler({ input, tools }) {
+			const [first, replay] = await Promise.all([
+				tools.workflowUppercase.run({ value: input }, { callId: 'uppercase' }),
+				tools.workflowUppercase.run({ value: input }, { callId: 'uppercase' }),
+			])
+			expect(replay).toEqual(first)
+			return first.value
+		},
+	})
+	const harness = await defineHarness({ name: 'workflowToolPipeline' }).addWorkflow(workflow).getInstance({})
+	const session = await harness.getSession('tool-workflow')
+	const events = []
+	for await (const event of session.workflows.toolWorkflow.stream('hello')) events.push(event)
+	expect(effects).toBe(1)
+	expect(observedContext).toMatchObject({ caller: { kind: 'workflow', workflowId: 'toolWorkflow' }, toolId: 'workflowUppercase', callId: 'uppercase' })
+	expect(Object.isFrozen((observedContext as { caller: object }).caller)).toBe(true)
+	expect('agentId' in (observedContext as object)).toBe(false)
+	expect(events).toEqual(expect.arrayContaining([
+		expect.objectContaining({ type: 'tool.started', caller: { kind: 'workflow', workflowId: 'toolWorkflow' }, toolId: 'workflowUppercase', callId: 'uppercase' }),
+		expect.objectContaining({ type: 'tool.finished', caller: { kind: 'workflow', workflowId: 'toolWorkflow' }, toolId: 'workflowUppercase', callId: 'uppercase' }),
+		expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'HELLO' }) }),
+	]))
+	await session.destroy()
+	await harness.close()
 })
 
 it('prepares built-in execution and a non-callable host seam without exposing a lookup registry', async () => {

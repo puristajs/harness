@@ -220,11 +220,13 @@ defineAgent('visionAgent', {
 })
 
 const workflow = defineWorkflow('resolveCase', {
-	input, output, agents: { classify: structuredAgent },
-	models: { embeddings: { alias: 'embeddings', capabilities: ['embeddings'] } },
+	input, output, agents: [structuredAgent],
+	models: { embeddings: { capabilities: ['embeddings'] } },
 	async handler(context) {
 		const child = await context.agents.classify.run(context.input, { callId: 'classify' })
-		const embedding = await context.models.embeddings.embed({ input: 'text' }, context.signal)
+		const embedding = await context.models.embeddings.embed({ input: 'text' }, { callId: 'embedding' })
+		// @ts-expect-error workflow model calls require a stable callId
+		await context.models.embeddings.embed({ input: 'text' })
 		const task = await context.childTasks.start('classify', context.input, { callId: 'classifyTask' })
 		await task.result()
 		// @ts-expect-error undeclared agents are unavailable
@@ -247,7 +249,7 @@ const workflow = defineWorkflow('resolveCase', {
 	},
 })
 const sandboxedChildWorkflow = defineWorkflow('sandboxedChild', {
-	input, output, agents: { classify: structuredAgent }, childTaskSandboxGroups: ['reviewers'] as const,
+	input, output, agents: [structuredAgent], childTaskSandboxGroups: ['reviewers'] as const,
 	async handler(context) {
 		const task = await context.childTasks.start('classify', context.input, { callId: 'review', sandbox: { group: 'reviewers' } })
 		// @ts-expect-error child-task group overrides use only the workflow-declared vocabulary
@@ -273,10 +275,8 @@ const transformedWorkflow = defineWorkflow('transformInput', {
 type _TransformedWorkflowInput = Expect<typeof transformedWorkflow.contract.$infer.input extends string ? true : false>
 type _TransformedWorkflowValidatedInput = Expect<typeof transformedWorkflow.contract.$infer.validatedInput extends number ? true : false>
 
-// @ts-expect-error workflow input is required
-defineWorkflow('missingInput', { output, async handler() { return { answer: 'bad' } } })
-// @ts-expect-error workflow output is required
-defineWorkflow('missingOutput', { input, async handler() { return { answer: 'bad' } } })
+defineWorkflow('defaultInput', { output: z.string(), async handler({ input }) { return input } })
+defineWorkflow('defaultOutput', { input: z.string(), async handler({ input }) { return input } })
 // @ts-expect-error workflow handler is required
 defineWorkflow('missingHandler', { input, output })
 // @ts-expect-error workflow handler output must satisfy its schema input
@@ -440,10 +440,10 @@ const approvalInterruptParent = defineAgent('approvalInterruptParent', {
 	instructions: 'Delegate.', subagents: { child: approvalInterruptChild },
 })
 const nonDurableInterruptWorkflow = defineWorkflow('nonDurableInterruptWorkflow', {
-	input, output, agents: { parent: approvalInterruptParent }, async handler({ input: value }) { return { answer: value.message } },
+	input, output, agents: [approvalInterruptParent], async handler({ input: value }) { return { answer: value.message } },
 })
 const durableInterruptWorkflow = defineWorkflow('durableInterruptWorkflow', {
-	input, output, durable: true, agents: { parent: approvalInterruptParent }, async handler({ input: value }) { return { answer: value.message } },
+	input, output, durable: true, agents: [approvalInterruptParent], async handler({ input: value }) { return { answer: value.message } },
 })
 type _PlainAgentInterrupts = Expect<Equal<typeof plainInterruptAgent.contract.interrupts, readonly []>>
 type _DescendantAgentInterrupts = Expect<Equal<typeof approvalInterruptParent.contract.interrupts, readonly ['tool-approval']>>

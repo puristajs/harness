@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 import { HarnessConfigError } from '../errors/index.js'
 import type { ModelCapability } from '../ports/model-provider.js'
 import type { JsonSchemaBoundary, ModelSchema } from '../schema/index.js'
@@ -16,14 +18,19 @@ import {
 import type {
 	WorkflowAgentMap,
 	WorkflowAgentCallLimits,
+	AnyAgentDefinition,
+	AnyToolDefinition,
 	WorkflowDefinition,
 	WorkflowModelMap,
 	WorkflowOptions,
+	WorkflowToolDefinitions,
 } from './types.js'
 
 const workflowFields = [
-	'input', 'output', 'description', 'agents', 'models', 'agentCalls', 'childTaskSandboxGroups', 'sandbox', 'maxDepth', 'workspace', 'durable', 'handler',
+	'input', 'output', 'description', 'agents', 'tools', 'models', 'agentCalls', 'childTaskSandboxGroups', 'sandbox', 'maxDepth', 'workspace', 'durable', 'handler',
 ] as const
+const defaultStringInput = z.string()
+const defaultStringOutput = z.string()
 const modelCapabilities: readonly ModelCapability[] = Object.freeze([
 	'text', 'text_stream', 'object', 'object_stream', 'tool_use', 'vision_input', 'audio_input', 'file_input',
 	'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation',
@@ -32,26 +39,30 @@ const modelCapabilities: readonly ModelCapability[] = Object.freeze([
 /**
  * Defines one typed custom orchestration workflow.
  *
- * Only agents and models listed in the definition are visible in the handler
- * context. Agent calls require stable `callId` values for replay-safe dispatch.
+ * Only agents, tools, and models listed in the definition are visible in the
+ * handler context. Managed calls require stable `callId` values for replay.
  *
  * @example
  * ```ts
  * const answerCase = defineWorkflow('answerCase', {
  *   input: caseInput,
  *   output: caseOutput,
- *   agents: { answer: answerAgent },
+ *   agents: [answerAgent],
  *   async handler(context) {
- *     return context.agents.answer.run(context.input, { callId: 'answer' })
+ *     return context.agents.answerAgent.run(context.input, { callId: 'answer' })
  *   },
  * })
  * ```
  */
+type ResolvedInput<Input extends ModelSchema | undefined> = Input extends ModelSchema ? Input : typeof defaultStringInput
+type ResolvedOutput<Output extends ModelSchema | undefined> = Output extends ModelSchema ? Output : typeof defaultStringOutput
+
 export function defineWorkflow<
 	const Id extends string,
-	Input extends ModelSchema,
-	Output extends ModelSchema,
+	const Input extends ModelSchema | undefined = undefined,
+	const Output extends ModelSchema | undefined = undefined,
 	const Agents extends WorkflowAgentMap | undefined = undefined,
+	const Tools extends WorkflowToolDefinitions | undefined = undefined,
 	const Models extends WorkflowModelMap | undefined = undefined,
 	const ChildTaskSandboxGroups extends readonly string[] = readonly [],
 	const Workspace extends true | undefined = undefined,
@@ -59,15 +70,16 @@ export function defineWorkflow<
 	const Sandbox extends SandboxPolicy | undefined = undefined,
 >(
 	id: Id,
-	options: WorkflowOptions<Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox> & Readonly<{
-		input: JsonSchemaBoundary<Input>
-		output: JsonSchemaBoundary<Output>
-	}>,
-): WorkflowDefinition<Id, Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox> {
+	options: WorkflowOptions<ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
+		& ([Input] extends [ModelSchema] ? Readonly<{ input: JsonSchemaBoundary<Extract<Input, ModelSchema>> }> : unknown)
+		& ([Output] extends [ModelSchema] ? Readonly<{ output: JsonSchemaBoundary<Extract<Output, ModelSchema>> }> : unknown),
+): WorkflowDefinition<Id, ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox> {
 	assertDefinitionId(id, 'workflow.id')
 	assertKnownFields(options, workflowFields, 'workflow', id)
-	assertModelSchema(options.input, 'workflow.input', id)
-	assertModelSchema(options.output, 'workflow.output', id)
+	const input = options.input ?? defaultStringInput
+	const output = options.output ?? defaultStringOutput
+	assertModelSchema(input, 'workflow.input', id)
+	assertModelSchema(output, 'workflow.output', id)
 	if (options.description !== undefined) assertNonemptyText(options.description, 'workflow.description', id)
 	if (typeof options.handler !== 'function') {
 		throw new HarnessConfigError('Workflow handler must be a function.', {
@@ -80,6 +92,7 @@ export function defineWorkflow<
 	if (options.durable !== undefined && options.durable !== true) throw invalidWorkflowConfig(id, 'workflow.durable')
 
 	const agents = copyAgents(options.agents, id) as Agents
+	const tools = copyTools(options.tools, id) as Tools
 	const models = copyModels(options.models, id) as Models
 	const childTaskSandboxGroups = copyChildTaskSandboxGroups(options.childTaskSandboxGroups, id) as ChildTaskSandboxGroups
 	const sandbox = snapshotSandboxPolicy(options.sandbox, id)
@@ -89,8 +102,8 @@ export function defineWorkflow<
 		kind: 'workflow' as const,
 		id,
 		...(options.description === undefined ? {} : { description: options.description }),
-		input: options.input,
-		output: options.output,
+		input,
+		output,
 		executionModes: Object.freeze(['run', 'stream'] as const),
 		updates: 'none' as const,
 		interrupts,
@@ -104,9 +117,10 @@ export function defineWorkflow<
 		kind: 'workflow' as const,
 		id,
 		...(options.description === undefined ? {} : { description: options.description }),
-		input: options.input,
-		output: options.output,
+		input,
+		output,
 		...(agents === undefined ? {} : { agents }),
+		...(tools === undefined ? {} : { tools }),
 		...(models === undefined ? {} : { models }),
 		...(agentCalls === undefined ? {} : { agentCalls }),
 		...(childTaskSandboxGroups.length === 0 ? {} : { childTaskSandboxGroups }),
@@ -117,7 +131,26 @@ export function defineWorkflow<
 		handler: options.handler,
 		contract,
 	}
-	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
+	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
+}
+
+function copyTools<T extends WorkflowToolDefinitions>(tools: T | undefined, workflowId: string): T | undefined {
+	if (tools === undefined) return undefined
+	if (!Array.isArray(tools) || tools.length === 0) throw invalidWorkflowConfig(workflowId, 'workflow.tools')
+	const copy: AnyToolDefinition[] = []
+	const ids = new Set<string>()
+	for (const tool of tools) {
+		const identity = getDefinitionIdentity(tool)
+		if (identity === undefined || !['tool', 'built-in-tool', 'host-tool', 'mcp-tool'].includes(identity.kind)) {
+			throw new HarnessConfigError('Workflow tools must be exact package-owned definitions.', {
+				reason: 'foreign_definition', path: `workflow.${workflowId}.tools`, id: workflowId,
+			})
+		}
+		if (ids.has(tool.id)) throw invalidWorkflowConfig(workflowId, 'workflow.tools')
+		ids.add(tool.id)
+		copy.push(tool)
+	}
+	return Object.freeze(copy) as unknown as T
 }
 
 function resolveWorkflowInterrupts(agents: WorkflowAgentMap | undefined, durable: true | undefined): readonly ('tool-approval' | 'external-wait')[] {
@@ -151,17 +184,19 @@ function snapshotAgentCalls(value: WorkflowAgentCallLimits | undefined, id: stri
 
 function copyAgents<A extends WorkflowAgentMap>(agents: A | undefined, workflowId: string): A | undefined {
 	if (agents === undefined) return undefined
-	if (typeof agents !== 'object' || agents === null || Array.isArray(agents)) throw invalidWorkflowConfig(workflowId, 'workflow.agents')
-	const copy: Record<string, A[keyof A]> = {}
-	for (const [name, agent] of Object.entries(agents) as [string, A[keyof A]][]) {
-		assertDefinitionId(name, `workflow.${workflowId}.agents`)
+	if (!Array.isArray(agents) || agents.length === 0) throw invalidWorkflowConfig(workflowId, 'workflow.agents')
+	const copy: AnyAgentDefinition[] = []
+	const ids = new Set<string>()
+	for (const agent of agents) {
 		const identity = getDefinitionIdentity(agent)
 		if (identity?.kind !== 'agent' || getDefinitionIdentity(agent.contract)?.token !== identity.token) {
 			throw new HarnessConfigError('Workflow agents must be exact package-owned definitions.', {
-				reason: 'foreign_definition', path: `workflow.${workflowId}.agents.${name}`, id: workflowId,
+				reason: 'foreign_definition', path: `workflow.${workflowId}.agents`, id: workflowId,
 			})
 		}
-		copy[name] = agent
+		if (ids.has(agent.id)) throw invalidWorkflowConfig(workflowId, 'workflow.agents')
+		ids.add(agent.id)
+		copy.push(agent)
 	}
 	return Object.freeze(copy) as unknown as A
 }
@@ -176,7 +211,9 @@ function copyModels<M extends WorkflowModelMap>(models: M | undefined, workflowI
 			throw invalidWorkflowConfig(workflowId, `workflow.${workflowId}.models.${name}`)
 		}
 		assertKnownFields(model, ['alias', 'capabilities'], `workflow.${workflowId}.models.${name}`, workflowId)
-		assertDefinitionId(model.alias, `workflow.${workflowId}.models.${name}.alias`)
+		const alias = model.alias ?? name
+		assertDefinitionId(alias, `workflow.${workflowId}.models.${name}.alias`)
+		if (model.alias === name) throw invalidWorkflowConfig(workflowId, `workflow.${workflowId}.models.${name}.alias`)
 		if (
 			!Array.isArray(model.capabilities)
 			|| model.capabilities.length === 0
@@ -187,12 +224,12 @@ function copyModels<M extends WorkflowModelMap>(models: M | undefined, workflowI
 				reason: 'invalid_workflow_model_capabilities', path: `workflow.${workflowId}.models.${name}.capabilities`, id: workflowId,
 			})
 		}
-		copy[name] = Object.freeze({ alias: model.alias, capabilities: Object.freeze([...model.capabilities]) })
+		copy[name] = Object.freeze({ ...(model.alias === undefined ? {} : { alias }), capabilities: Object.freeze([...model.capabilities]) })
 	}
 	return Object.freeze(copy) as M
 }
 
-function snapshotSandboxPolicy(policy: WorkflowOptions<any, any, any, any, any, any, any, any>['sandbox'], id: string) {
+function snapshotSandboxPolicy(policy: WorkflowOptions<any, any, any, any, any, any, any, any, any>['sandbox'], id: string) {
 	if (policy === undefined || policy === 'inherit' || policy === 'private') return policy
 	if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) throw invalidWorkflowConfig(id, 'workflow.sandbox')
 	assertKnownFields(policy, ['group'], 'workflow.sandbox', id)

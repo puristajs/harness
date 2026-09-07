@@ -244,6 +244,35 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 }
 
 describe('hosted Harness runtime', () => {
+	it('runs a workflow-declared host tool with workflow target context and caller events', async () => {
+		interface HostContext { readonly marker: string }
+		const owner = createHostOwnerToken<HostContext>()
+		let hostEffects = 0
+		const hosted = defineHostTool(owner, 'workflowHostEffect', { description: 'Run a host effect.', input: z.string(), output: z.string(),
+			async handler(context, input) { hostEffects += 1; return `${context.marker}:${input}` } })
+		const workflow = defineWorkflow('directHostedWorkflow', { input: z.string(), output: z.string(), tools: [hosted], durable: true,
+			async handler({ input, tools }) { return tools.workflowHostEffect.run(input, { callId: 'host-effect' }) } })
+		const definition = defineHarness({ name: 'directHostedWorkflowHarness', revision: 'v1' }).addWorkflow(workflow)
+		const unused = defineAgent('unusedHostedWorkflowTarget', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const storage = persistentStorage()
+		const projectedTargets: unknown[] = []
+		const instance = await instantiateHostedHarness(definition, { storage }, {
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => trace,
+			createHostContext: request => { projectedTargets.push(request.target); return { marker: 'host' } },
+			logger: logger(), telemetry: createTelemetryShim(),
+		})
+		const result = await instance.runHosted({ target: workflow.contract, input: 'value', invokeOptions: { sessionId: 'workflow-host-session' }, hostInvocation: {} })
+		expect(result).toMatchObject({ status: 'completed', output: 'host:value' })
+		expect(hostEffects).toBe(1)
+		expect(projectedTargets).toEqual([{ kind: 'workflow', id: 'directHostedWorkflow' }])
+		const events = await storage.listEvents(result.runId)
+		expect(events).toEqual(expect.arrayContaining([
+			expect.objectContaining({ type: 'tool.started', payload: expect.objectContaining({ caller: { kind: 'workflow', workflowId: 'directHostedWorkflow' }, toolId: 'workflowHostEffect', callId: 'host-effect' }) }),
+		]))
+		await instance.close()
+	})
+
 	it('requires factory-authentic owners and rejects a different owner before runtime initialization', async () => {
 		interface Context { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<Context>()
@@ -994,8 +1023,8 @@ describe('hosted Harness runtime', () => {
 			async handler(_context, input) { approvedEffects += 1; return `approved:${input}` } })
 		const leaf = defineAgent('workflowApprovalLeaf', { input: z.string(), output: z.string(), instructions: 'Use effect.',
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
-		const workflow = defineWorkflow('hostedApprovalWorkflow', { input: z.string(), output: z.string(), agents: { leaf }, durable: true,
-			async handler(context) { return context.agents.leaf.run(context.input, { callId: 'workflow-leaf' }) } })
+		const workflow = defineWorkflow('hostedApprovalWorkflow', { input: z.string(), output: z.string(), agents: [leaf], durable: true,
+			async handler(context) { return context.agents.workflowApprovalLeaf.run(context.input, { callId: 'workflow-leaf' }) } })
 		const hostTool = defineHostTool(owner, 'workflowHostTool', { description: 'Invoke workflow.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(workflow.contract, input, { callId: 'host-workflow' }) } })
 		const parentAgent = defineAgent('workflowHostParent', { input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool],
@@ -1040,11 +1069,11 @@ describe('hosted Harness runtime', () => {
 			projectTraceContext: () => trace, createHostContext: (request: HarnessHostContextRequest<object>) => ({ nestedTargets: request.nestedTargets }),
 			logger: logger(), telemetry: createTelemetryShim() }
 		const firstReceiverProvider = new FakeModelProvider({ strict: true })
-		firstReceiverProvider.enqueueObject({ object: '', toolCalls: [{ id: 'workflow-effect-call', name: effect.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
+		firstReceiverProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-effect-call', name: effect.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
 			{ model: { provider: firstReceiverProvider, model: 'fake' }, storage }, bindings)
 		const firstParentProvider = new FakeModelProvider({ strict: true })
-		firstParentProvider.enqueueObject({ object: '', toolCalls: [{ id: 'workflow-host-call', name: hostTool.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
+		firstParentProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-host-call', name: hostTool.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		const firstParent = await instantiateHostedHarness(parentDefinition,
 			{ model: { provider: firstParentProvider, model: 'fake' }, storage }, bindings)
 		const interrupted = await firstParent.runHosted({ target: parentAgent.contract, input: 'transfer',
@@ -1054,11 +1083,11 @@ describe('hosted Harness runtime', () => {
 		await receiver.close()
 
 		const resumedReceiverProvider = new FakeModelProvider({ strict: true })
-		resumedReceiverProvider.enqueueObject({ object: 'workflow-leaf-complete', toolCalls: [], usage, finishReason: 'stop' })
+		resumedReceiverProvider.enqueueText({ content: 'workflow-leaf-complete', toolCalls: [], usage, finishReason: 'stop' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
 			{ model: { provider: resumedReceiverProvider, model: 'fake' }, storage }, bindings)
 		const resumedParentProvider = new FakeModelProvider({ strict: true })
-		resumedParentProvider.enqueueObject({ object: 'workflow-parent-complete', toolCalls: [], usage, finishReason: 'stop' })
+		resumedParentProvider.enqueueText({ content: 'workflow-parent-complete', toolCalls: [], usage, finishReason: 'stop' })
 		const resumedParent = await instantiateHostedHarness(parentDefinition,
 			{ model: { provider: resumedParentProvider, model: 'fake' }, storage }, bindings)
 		const approval = interrupted.interrupt.requests[0]!

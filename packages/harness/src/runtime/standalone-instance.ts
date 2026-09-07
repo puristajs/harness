@@ -27,7 +27,7 @@ import { retainCompleteTurns } from '../sessions/history-retention.js'
 import { validateSchema } from '../schema/validation.js'
 import { loadSkillSnapshots, createReadSkillBinding, type LoadedSkillSnapshot } from '../skills/index.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
-import type { DurableRunLease, HostNestedTargetCheckpointV1, RunCheckpoint, WorkflowChildCallCheckpointV1 } from '../storage/execution.js'
+import type { DurableRunLease, HostNestedTargetCheckpointV1, RunCheckpoint, WorkflowCallCheckpointV1 } from '../storage/execution.js'
 import type { AcquireRunRequest, AppliedApprovalDecisionV1, ApprovalResumeReceiptV1, HarnessStorage } from '../storage/types.js'
 import {
 	asExternalWaitResolved,
@@ -43,7 +43,7 @@ import {
 import { createMetrics, createTelemetryShim, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telemetry/trace-context.js'
 import { ulid } from '../ulid/index.js'
-import { bindBuiltInTool, bindHostTool, bindPortableTool, type AgentExecutableBinding } from '../tools/bindings.js'
+import { bindBuiltInTool, bindHostTool, bindPortableTool, type AgentExecutableBinding, type WorkflowToolInvocationContext } from '../tools/bindings.js'
 import { invokePreparedBuiltinTool, prepareBuiltinTool } from '../tools/index.js'
 import { initializeMcpRuntimeBundles, type McpRuntimeBundle } from '../tools/mcp/runtime.js'
 import { createWorkflowExecutionRuntime, restoreSessionChildTaskHandle, type WorkflowExecutionRuntime } from '../workflows/index.js'
@@ -62,6 +62,7 @@ import { attachHarnessChildTargetHostFrame, createDurableWorkflowContext, create
 	type ChildApprovalResumeDescriptorV1, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from './steps.js'
 import { withAgentAdmission } from './agent-admission.js'
 import { abortError } from './abort.js'
+import { projectHarnessExecutionCaller } from './execution-caller.js'
 
 type AnyTargetContract = import('../ports/target-dispatcher.js').AnyHarnessTargetContract
 type TargetInput<T extends AnyTargetContract> = import('../ports/target-dispatcher.js').HarnessTargetInput<T>
@@ -399,6 +400,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	let skills!: Readonly<Record<string, LoadedSkillSnapshot>>
 	let mcpBundles: readonly McpRuntimeBundle[] = []
 	let agentBindings!: readonly (readonly [object, Readonly<Record<string, AgentExecutableBinding>>])[]
+	let workflowBindings!: readonly (readonly [object, Readonly<Record<string, AgentExecutableBinding>>])[]
 	let graphDigest!: string
 	let dispatcher!: ReturnType<typeof createLocalTargetDispatcher>
 	try {
@@ -462,7 +464,28 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			agentBindingRows.push(Object.freeze([identity.token, Object.freeze(result)]))
 		}
 		agentBindings = Object.freeze(agentBindingRows)
-		graphDigest = compiledGraphDigest(options, agentBindings)
+		const workflowBindingRows: Array<readonly [object, Readonly<Record<string, AgentExecutableBinding>>]> = []
+		for (const workflow of Object.values(options.graph.workflows)) {
+			const result: Record<string, AgentExecutableBinding> = {}
+			for (const tool of workflow.tools ?? []) {
+				const identity = getDefinitionIdentity(tool)
+				if (!identity) throw new InternalError('Compiled workflow tool identity is unavailable.')
+				if (identity.kind === 'tool') result[tool.id] = bindPortableTool(tool as ToolDefinition)
+				else if (identity.kind === 'built-in-tool') result[tool.id] = bindBuiltInTool(tool as BuiltInToolDefinition, async (context, input) => invokePreparedBuiltinTool(prepareBuiltinTool(tool.id, input), context.sandbox, context.signal))
+				else if (identity.kind === 'mcp-tool') {
+					const binding = mcpTools.find(([token]) => token === identity.token)?.[1]
+					if (!binding) throw new InternalError('Compiled workflow MCP tool binding is unavailable.')
+					result[tool.id] = binding
+				} else if (identity.kind === 'host-tool' && options.hosted === true) {
+					result[tool.id] = bindHostTool(tool as import('../definitions/types.js').HostToolDefinition, async () => {
+						throw new InternalError('Hosted workflow tool binding is unavailable for this root invocation.')
+					})
+				} else throw new InternalError('Standalone Harness cannot bind a workflow host tool.')
+			}
+			workflowBindingRows.push(Object.freeze([getDefinitionIdentity(workflow)!.token, Object.freeze(result)]))
+		}
+		workflowBindings = Object.freeze(workflowBindingRows)
+		graphDigest = compiledGraphDigest(options, agentBindings, workflowBindings)
 
 		const localAgentBindings = Object.freeze(Object.values(options.graph.agents).map((agent): LocalTargetBinding => Object.freeze({
 			definition: agent,
@@ -896,7 +919,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				? { 'harness.agent.id': definition.id, 'gen_ai.operation.name': 'invoke_agent' }
 				: { 'harness.workflow.id': definition.id, 'gen_ai.operation.name': 'invoke_workflow' }),
 		}, async targetSpan => {
-		let activeWorkflowRuntime: Pick<WorkflowExecutionRuntime<undefined, undefined>, 'agentCallBudgetState' | 'activeCallIds'> | undefined
+		let activeWorkflowRuntime: Pick<WorkflowExecutionRuntime<undefined, undefined, undefined>, 'agentCallBudgetState' | 'activeCallIds'> | undefined
 		let activeWorkflowInput: JsonValue = input
 		let conversationTurn: readonly Message[] = Object.freeze([])
 		try {
@@ -938,7 +961,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const agentCheckpointStep: import('./steps.js').HarnessCheckpointStep = <T extends JsonValue>(
 					stepId: string, handler: () => Promise<T>, stepOptions?: import('./steps.js').DurableStepOptions,
 				): Promise<T> => agentCheckpointContext === undefined ? handler() : agentCheckpointContext.step(stepId, handler, stepOptions)
-				const agentToolContext = Object.freeze({ harnessName: options.name, sessionId: invocation.sessionId, runId,
+				const agentCaller = projectHarnessExecutionCaller({ kind: 'agent', agentId: definition.id,
+					...(invocation.parentWorkflowId === undefined ? {} : { workflowId: invocation.parentWorkflowId }) })
+				if (agentCaller.kind !== 'agent') throw new InternalError('Agent caller projection is invalid.')
+				const agentToolContext = Object.freeze({ caller: agentCaller, harnessName: options.name, sessionId: invocation.sessionId, runId,
 					rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
 					...(parentInvocationId === undefined ? {} : { parentInvocationId }),
 					invocationId: invocation.invocationId, agentId: definition.id, depth: invocation.depth,
@@ -1105,7 +1131,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const workflowCheckpoint: WorkflowChildCheckpointAccess | undefined = lease === undefined ? undefined : Object.freeze({
 					rootInput: persistedInput,
 					load: (stepId: string) => storage.loadCheckpoint(runId, stepId),
-					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_child_call'; schemaVersion: 1 }>) => {
+					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call'; schemaVersion: 1 }>) => {
 						await storage.commitCheckpoint({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
 							stepId, input: persistedInput, attempt: lease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
 					},
@@ -1122,13 +1148,14 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						if (childRun === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 						const childOutput = await resumeTargetNode(childNode, childNode.frame.runId)
 						const callId = resumedWorkflowFrame.activeCallIds[index]!
-						const stored: WorkflowChildCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_child_call', callId,
+						const stored: WorkflowCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call', callId,
+							operation: 'agent_run',
 							target: Object.freeze({ kind: 'agent', id: childNode.frame.state.agentId }), input: childRun.input,
 							outcome: Object.freeze({ status: 'completed', output: childOutput }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
 								workflowRunId: runId, workflowInvocationId: resumedWorkflowFrame.invocationId, childRunId: childNode.frame.runId,
 								childInvocationId: childNode.frame.invocationId }) })
 						await workflowCheckpoint.commit(`workflow:call:${callId}`, stored as unknown as JsonValue,
-							Object.freeze({ checkpointKind: 'workflow_child_call', schemaVersion: 1 }))
+							Object.freeze({ checkpointKind: 'workflow_call', schemaVersion: 1 }))
 					}
 					resumedContinuation = Object.freeze({ frame: resumedWorkflowFrame, children: Object.freeze([]) })
 					const expectedSequence = resumeCheckpointSequence!
@@ -1139,25 +1166,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						replacement: checkpointReplacement(pendingCheckpoint.checkpoint, replacementSequence, value, lease) })
 					resumeCheckpointSequence = replacementSequence
 				}
-				const runtime = createWorkflowExecutionRuntime({ workflow: definition, models: workflowModels(definition), targetDispatcher: executionDispatcher,
-					signal, lifecycleSignal: instanceController.signal, sessionId: invocation.sessionId, runId, rootRunId: invocation.rootRunId,
-					invocationId: invocation.invocationId, depth: invocation.depth, remainingDepth: invocation.remainingDepth,
-					defaults: options.defaults,
-					...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
-					...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
-					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
-					storage, durable: definition.durable === true, emit, relayChildEvent,
-					approval: options.graph.approval.agents, taskRegistry: session.taskRegistry,
-					prepareChildLaunch: request => prepareChildSandboxLaunch(definition, invocation.sessionId, runId, request),
-					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },
-					finishChildLaunch: childInvocationId => childSandboxPolicies.delete(childInvocationId),
-					onChildTaskTerminal: cleanupBackgroundChildSession,
-					...(workflowCheckpoint === undefined ? {} : { checkpoint: workflowCheckpoint }),
-					...(resumedWorkflowFrame === undefined ? {} : { restoredAgentCallBudget: resumedWorkflowFrame.agentCallBudget }) })
-				activeWorkflowRuntime = runtime
 				const workflowInput = resumedWorkflowFrame?.input ?? input
 				activeWorkflowInput = workflowInput
-				const checkpointStep = definition.durable === true && lease !== undefined
+				const checkpointStep: import('./steps.js').HarnessCheckpointStep = definition.durable === true && lease !== undefined
 					? createDurableWorkflowContext(storage, lease, { signal, nextSequence: nextCheckpointSequence,
 						...(workspaceAttempt === undefined ? {} : {
 							onStepCommit: (commit) => workspaceAttempt!.pause(commit.stepId, commit.sequence, commit.output),
@@ -1165,10 +1176,40 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 								? Promise.resolve() : workspaceAttempt!.committed(checkpoint.replay),
 						}),
 					}).step
-					: async (_id: string, handler: () => Promise<JsonValue>) => handler()
-				const context = Object.freeze({ input: workflowInput, agents: runtime.agents, models: runtime.models, childTasks: runtime.childTasks,
+					: <T extends JsonValue>(_id: string, handler: () => Promise<T>) => handler()
+				const workflowIdentity = getDefinitionIdentity(definition)!
+				const baseWorkflowBindings = workflowBindings.find(([token]) => token === workflowIdentity.token)?.[1] ?? Object.freeze({})
+				const selectedWorkflowBindings = hostedEnvironment === undefined
+					? baseWorkflowBindings : mergeHostedBindings(definition, baseWorkflowBindings, hostedEnvironment)
+				const workflowSandbox = workspaceAttempt?.sandboxSession
+					?? (targetNeedsSandbox ? await ensureSessionSandbox(session, definition, childSandboxScope) : UNAVAILABLE_SANDBOX_SESSION)
+				const workflowCaller = projectHarnessExecutionCaller({ kind: 'workflow', workflowId: definition.id })
+				if (workflowCaller.kind !== 'workflow') throw new InternalError('Workflow caller projection is invalid.')
+				const workflowToolContext: Omit<WorkflowToolInvocationContext, 'step' | 'toolId' | 'callId' | 'idempotencyKey' | 'signal'> = Object.freeze({
+					caller: workflowCaller, workflowId: definition.id, harnessName: options.name, sessionId: invocation.sessionId, runId,
+					rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
+					...(parentInvocationId === undefined ? {} : { parentInvocationId }), invocationId: invocation.invocationId,
+					depth: invocation.depth, remainingDepth: invocation.remainingDepth, ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
+					...(invocation.identity === undefined ? {} : { identity: invocation.identity }), ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
+					metadata: invokeOptions.metadata ?? Object.freeze({}), logger, metrics, telemetry, memory: memoryFacade, sandbox: workflowSandbox,
+					targetDispatcher: executionDispatcher, relayChildEvent, checkpointStep,
+				})
+				const runtime = createWorkflowExecutionRuntime({ workflow: definition, models: workflowModels(definition), toolBindings: selectedWorkflowBindings,
+					toolContext: workflowToolContext, targetDispatcher: executionDispatcher,
+					signal, lifecycleSignal: instanceController.signal, sessionId: invocation.sessionId, runId, rootRunId: invocation.rootRunId,
+					invocationId: invocation.invocationId, depth: invocation.depth, remainingDepth: invocation.remainingDepth, defaults: options.defaults,
+					...(invocation.identity === undefined ? {} : { identity: invocation.identity }), ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
+					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), storage, durable: definition.durable === true, emit, relayChildEvent,
+					approval: options.graph.approval.agents, taskRegistry: session.taskRegistry,
+					prepareChildLaunch: request => prepareChildSandboxLaunch(definition, invocation.sessionId, runId, request),
+					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },
+					finishChildLaunch: childInvocationId => childSandboxPolicies.delete(childInvocationId), onChildTaskTerminal: cleanupBackgroundChildSession,
+					...(workflowCheckpoint === undefined ? {} : { checkpoint: workflowCheckpoint }),
+					...(resumedWorkflowFrame === undefined ? {} : { restoredAgentCallBudget: resumedWorkflowFrame.agentCallBudget }) })
+				activeWorkflowRuntime = runtime
+				const context = Object.freeze({ input: workflowInput, agents: runtime.agents, tools: runtime.tools, models: runtime.models, childTasks: runtime.childTasks,
 					fanOut: runtime.fanOut, signal, runId, sessionId: invocation.sessionId, metadata: invokeOptions.metadata ?? Object.freeze({}),
-					logger, telemetry, metrics, memory: memoryFacade, step: checkpointStep,
+					logger, telemetry, metrics, step: checkpointStep,
 					...(definition.durable === true ? { externalWait: createExternalWaitFacade({ storage,
 						durable: lease !== undefined && invokeOptions.durable !== undefined,
 						telemetry, harnessName: options.name, sessionId: invocation.sessionId, runId, workflowId: definition.id,
@@ -2019,15 +2060,15 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		return model
 	}
 	function workflowModels(workflow: AnyWorkflowDefinition): Record<string, ModelHandle> {
-		return Object.fromEntries(Object.entries(workflow.models ?? {}).map(([name, requirement]) => [name, requireModel(requirement.alias)]))
+		return Object.fromEntries(Object.entries(workflow.models ?? {}).map(([name, requirement]) => [name, requireModel(requirement.alias ?? name)]))
 	}
 	function mergeHostedBindings(
-		agent: AnyAgentDefinition,
+		target: Pick<AnyAgentDefinition | AnyWorkflowDefinition, 'tools'>,
 		base: Readonly<Record<string, AgentExecutableBinding>>,
 		environment: TrustedHostedInvocationEnvironment,
 	): Readonly<Record<string, AgentExecutableBinding>> {
 		const result: Record<string, AgentExecutableBinding> = { ...base }
-		for (const tool of agent.tools ?? []) {
+		for (const tool of target.tools ?? []) {
 			const identity = getDefinitionIdentity(tool)
 			if (identity?.kind !== 'host-tool') continue
 			const binding = environment.hostToolBindings.get(identity.token)
@@ -2282,17 +2323,19 @@ function privacySafeEventPayload(event: ExecutionEvent<JsonValue>): JsonValue {
 			: { status: event.outcome.status } } as unknown as JsonValue)) as JsonValue
 		case 'agent.started': return compactOperational(event, ['agentId', 'workflowId', 'parentAgentId', 'delegationCallId', 'delegationDepth', 'modelAlias'])
 		case 'agent.finished': return compactOperational(event, ['agentId', 'workflowId', 'parentAgentId', 'delegationCallId', 'delegationDepth', 'modelAlias', 'error'])
-		case 'model.message': return compactOperational({ ...event, messageId: event.message.id, role: event.message.role }, ['agentId', 'messageId', 'role'])
-		case 'model.completed': return compactOperational(event, ['agentId', 'workflowId', 'modelAlias', 'streamId', 'operation', 'usage', 'finishReason'])
-		case 'model.embedding.completed': return compactOperational(event, ['agentId', 'count', 'dimensions', 'usage'])
-		case 'model.rerank.completed': return compactOperational(event, ['agentId', 'count', 'topN', 'usage'])
+		case 'model.message': return compactOperational({ ...event, messageId: event.message.id, role: event.message.role }, ['caller', 'messageId', 'role'])
+		case 'model.completed': return compactOperational(event, ['caller', 'callId', 'modelAlias', 'streamId', 'operation', 'usage', 'finishReason'])
+		case 'model.embedding.completed': return compactOperational(event, ['caller', 'callId', 'modelAlias', 'count', 'dimensions', 'usage'])
+		case 'model.rerank.completed': return compactOperational(event, ['caller', 'callId', 'modelAlias', 'count', 'topN', 'usage'])
+		case 'model.output.text.delta':
+		case 'model.output.object.snapshot': return compactOperational(event, ['id', 'caller', 'callId', 'modelAlias'])
 		case 'output.text.delta':
-		case 'output.object.snapshot': return compactOperational(event, ['id', 'agentId', 'workflowId', 'modelAlias'])
-		case 'output.file': return compactOperational(event, ['id', 'agentId', 'workflowId', 'modelAlias', 'operation'])
-		case 'output.progress': return compactOperational(event, ['id', 'agentId', 'workflowId', 'modelAlias', 'operation', 'state', 'progress'])
+		case 'output.object.snapshot': return compactOperational(event, ['id', 'caller', 'callId', 'modelAlias'])
+		case 'output.file': return compactOperational(event, ['id', 'caller', 'callId', 'modelAlias', 'operation'])
+		case 'output.progress': return compactOperational(event, ['id', 'caller', 'callId', 'modelAlias', 'operation', 'state', 'progress'])
 		case 'tool.input.available':
-		case 'tool.started': return compactOperational(event, ['agentId', 'toolId', 'callId'])
-		case 'tool.finished': return compactOperational(event, ['agentId', 'toolId', 'callId', 'error'])
+		case 'tool.started': return compactOperational(event, ['caller', 'toolId', 'callId'])
+		case 'tool.finished': return compactOperational(event, ['caller', 'toolId', 'callId', 'error'])
 		case 'policy.exposure': return compactOperational(event, ['agentId', 'invocationId', 'toolId', 'step', 'evidence', 'effect', 'enforced'])
 		case 'policy.evaluated': return compactOperational(event, ['agentId', 'invocationId', 'toolId', 'callId', 'step', 'evidence', 'effect', 'enforced'])
 		case 'approval.requested': return compactOperational(event, ['agentId', 'invocationId', 'toolId', 'callId', 'step', 'approvalId', 'demands'])
@@ -2349,6 +2392,7 @@ function invocationTrace(options: InvokeOptions, logger: Logger): HarnessTraceCo
 function compiledGraphDigest(
 	options: InstantiateStandaloneHarnessOptions,
 	agentBindings: readonly (readonly [object, Readonly<Record<string, AgentExecutableBinding>>])[],
+	workflowBindings: readonly (readonly [object, Readonly<Record<string, AgentExecutableBinding>>])[],
 ): string {
 	const definitions: JsonValue[] = [
 		...Object.values(options.graph.tools).map(value => {
@@ -2381,8 +2425,9 @@ function compiledGraphDigest(
 		if (agent.memory?.summary !== undefined) edges.push(['agent-memory-summary-model', agent.id, agent.memory.summary.model])
 	}
 	for (const workflow of Object.values(options.graph.workflows)) {
-		for (const [key, agent] of Object.entries(workflow.agents ?? {})) edges.push(['workflow-agent', workflow.id, key, agent.id])
-		for (const [key, model] of Object.entries(workflow.models ?? {})) edges.push(['workflow-model', workflow.id, key, model.alias])
+		for (const agent of workflow.agents ?? []) edges.push(['workflow-agent', workflow.id, agent.id, agent.id])
+		for (const tool of workflow.tools ?? []) edges.push(['workflow-tool', workflow.id, tool.id, graphToolReference(tool)])
+		for (const [key, model] of Object.entries(workflow.models ?? {})) edges.push(['workflow-model', workflow.id, key, model.alias ?? key])
 	}
 	edges.sort(compareCanonical)
 	const targetPolicies = compiledGraphTargetPolicyPreimage(options.graph)
@@ -2392,6 +2437,13 @@ function compiledGraphDigest(
 		if (identity === undefined) throw new InternalError('Compiled agent identity is unavailable.')
 		for (const [modelFacingId, binding] of Object.entries(agentBindings.find(([token]) => token === identity.token)?.[1] ?? {})) {
 			bindings.push([agent.id, modelFacingId, binding.contractDigest])
+		}
+	}
+	for (const workflow of Object.values(options.graph.workflows)) {
+		const identity = getDefinitionIdentity(workflow)
+		if (identity === undefined) throw new InternalError('Compiled workflow identity is unavailable.')
+		for (const [id, binding] of Object.entries(workflowBindings.find(([token]) => token === identity.token)?.[1] ?? {})) {
+			bindings.push([`workflow:${workflow.id}`, id, binding.contractDigest])
 		}
 	}
 	bindings.sort((left, right) => codePointCompare(String(left[0]), String(right[0])) || codePointCompare(String(left[1]), String(right[1])))

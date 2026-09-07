@@ -149,7 +149,7 @@ describe('v4 durable session execution', () => {
   it('applies durable execution to agents with the same storage lifecycle', async () => {
     const storage = persistentStorage()
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueObject({ object: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    provider.enqueueText({ content: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     const agent = defineAgent('durableAgent', {
       input: z.string(), output: z.string(), durable: true, instructions: 'Answer.',
       prompt: input => ({ role: 'user', content: input }),

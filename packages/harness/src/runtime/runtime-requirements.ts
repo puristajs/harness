@@ -119,11 +119,9 @@ type AgentModelEntries<Agent> = Agent extends { readonly model: infer ModelAlias
 		| GuardrailModelEntries<Agent>
 	: never
 type WorkflowModelEntries<Workflow> = Workflow extends { readonly models: infer Models extends Readonly<Record<string, unknown>> }
-	? Values<Models> extends infer Model
-		? Model extends { readonly alias: infer Alias extends string; readonly capabilities: readonly (infer Capability)[] }
-			? { readonly alias: Alias; readonly capability: Extract<Capability, ModelCapability> }
-			: never
-		: never
+	? { [Key in keyof Models & string]: Models[Key] extends { readonly capabilities: readonly (infer Capability)[] }
+		? { readonly alias: Models[Key] extends { readonly alias: infer Alias extends string } ? Alias : Key; readonly capability: Extract<Capability, ModelCapability> }
+		: never }[keyof Models & string]
 	: never
 type ModelAliases<Entries> = Entries extends { readonly alias: infer Alias extends string } ? Alias : never
 type ModelCapabilitiesFor<Entries, Alias extends string> = Entries extends {
@@ -152,9 +150,10 @@ type RuntimeSubagents<Agent> = Agent extends { readonly subagents: infer Subagen
 type RuntimeAgentClosure<Agent, SeenIds extends string = never> = Agent extends AnyAgentDefinition
 	? Agent['id'] extends SeenIds ? never : Agent | RuntimeAgentClosure<RuntimeSubagents<Agent>, SeenIds | Agent['id']>
 	: never
-type RuntimeWorkflowAgents<Workflow> = Workflow extends { readonly agents: infer Agents extends Readonly<Record<string, AnyAgentDefinition>> }
-	? MapValues<Agents>
+type RuntimeWorkflowAgents<Workflow> = Workflow extends { readonly agents: infer Agents extends readonly AnyAgentDefinition[] }
+	? Agents[number]
 	: never
+type WorkflowSelectedTools<Workflow> = Workflow extends { readonly tools: readonly (infer Tool)[] } ? Tool : never
 type RuntimeGraphAgents<Agents, Workflows> = RuntimeAgentClosure<Values<Agents> | RuntimeWorkflowAgents<Values<Workflows>>>
 type ApprovalPermission<Value> = Extract<Value, 'require_approval' | { readonly mode: 'require_approval' }> extends never ? never : true
 type AgentApproval<Agent> = Agent extends { readonly permissions: infer Permissions }
@@ -212,21 +211,21 @@ export type RuntimeRequirementsFor<
 	SelectedMcpTools = never,
 > = RuntimeRequirements<
 	RequirementModels<AgentModelEntries<RuntimeGraphAgents<Agents, Workflows>> | WorkflowModelEntries<Values<Workflows>>>,
-	(keyof McpServers & string) | McpOwnerIds<SelectedMcpTools | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>>, McpToolDefinition>>,
+	(keyof McpServers & string) | McpOwnerIds<SelectedMcpTools | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, McpToolDefinition>>,
 		SkillRuntimes<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>> | Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'skillRuntimes'>, SkillRuntimeId>,
-		ToolMemoryCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>>, AnyNonMcpToolDefinition>> | AgentMemoryCapabilities<RuntimeGraphAgents<Agents, Workflows>> | Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'memory'>, MemoryCapability>,
+		ToolMemoryCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, AnyNonMcpToolDefinition>> | AgentMemoryCapabilities<RuntimeGraphAgents<Agents, Workflows>> | Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'memory'>, MemoryCapability>,
 	AgentMemoryAliases<RuntimeGraphAgents<Agents, Workflows>>,
-		ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>> | Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'sandbox'>, SandboxCapabilityId>
+		ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>> | Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<RuntimeGraphAgents<Agents, Workflows>, Values<Workflows>>,
 		SandboxGroupOf<RuntimeGraphAgents<Agents, Workflows> | Values<Workflows>> | WorkflowChildSandboxGroups<Values<Workflows>>,
 		IsPresent<
-			ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>>
+			ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>>
 			| Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<RuntimeGraphAgents<Agents, Workflows>, Values<Workflows>>
 			| HasExplicitSandboxPolicy<RuntimeGraphAgents<Agents, Workflows> | Values<Workflows>>
 			| HasWorkflowChildSandboxGroups<Values<Workflows>>
 		>,
-		HostToolIds<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>>, AnyNonMcpToolDefinition>>,
+		HostToolIds<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, AnyNonMcpToolDefinition>>,
 		IsTrue<AgentDurability<RuntimeGraphAgents<Agents, Workflows>> | WorkflowDurability<Values<Workflows>>>,
 		IsTrue<AgentWorkspace<RuntimeGraphAgents<Agents, Workflows>> | WorkflowWorkspace<Values<Workflows>>>,
 		IsTrue<GuardrailArtifacts<RuntimeGraphAgents<Agents, Workflows>> | AgentMedia<RuntimeGraphAgents<Agents, Workflows>> | WorkflowMedia<Values<Workflows>>>
@@ -309,11 +308,11 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources, ap
 		if (typeof agent.sandbox === 'object') sandboxGroups.add(agent.sandbox.group)
 	}
 	for (const workflow of Object.values(sources.workflows)) {
-		const models = Object.values(workflow.models ?? {}) as readonly Readonly<{
-			alias: string
+		const models = Object.entries(workflow.models ?? {}) as readonly (readonly [string, Readonly<{
+			alias?: string
 			capabilities: readonly ModelCapability[]
-		}>[]
-		for (const model of models) addModel(model.alias, model.capabilities)
+		}>])[]
+		for (const [name, model] of models) addModel(model.alias ?? name, model.capabilities)
 		if (workflow.durable === true) durable = true
 		if (approval.workflows[workflow.id]?.reachable === true) durable = true
 		if (workflow.workspace === true) workspace = true

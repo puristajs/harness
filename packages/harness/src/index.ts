@@ -17,7 +17,7 @@ export {
   ApprovalResumeError,
   WorkflowCallReplayConflictError,
   WorkflowAgentCallBudgetError,
-  WorkflowChildTargetError,
+  WorkflowManagedCallError,
   HostNestedTargetError,
   HostNestedTargetReplayConflictError,
   HarnessTargetRouteReceiptMismatchError,
@@ -306,6 +306,10 @@ export type {
   DurableRunStatus,
   DurableTerminalRunStatus,
   RunCheckpoint,
+	WorkflowCallCheckpointV1,
+	WorkflowCallStoredErrorV1,
+	WorkflowCallStoredOutcomeV1,
+	WorkflowManagedCallOperation,
 } from './runtime/index.js'
 
 // Sandbox port + default factories

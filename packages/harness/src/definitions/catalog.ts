@@ -16,6 +16,7 @@ import type {
 
 type EmptyMap = Readonly<Record<never, never>>
 declare class HarnessCatalogBrand<Id extends string> { private readonly __catalogDefinition: Id }
+declare const catalogDependencyClosure: unique symbol
 type IdMap<Values extends readonly { readonly id: string }[] | undefined> =
 	Values extends readonly { readonly id: string }[]
 		? Readonly<{ [Definition in Values[number] as Definition['id']]: Definition }>
@@ -48,6 +49,9 @@ type UnionIdMap<Definitions> = Readonly<{
 type McpOwner<Tool> = Tool extends McpToolDefinition<any, any, any, infer Owner> ? Owner : never
 type InferredMcpServers<Tools> = UnionIdMap<McpOwner<Tools>>
 type MergeMaps<Left, Right> = Readonly<Omit<Left, keyof Right> & Right>
+
+/** @internal Extracts the unexported recursive dependency closure retained by a catalog view. */
+export type CatalogDependencyClosure<View> = View extends { readonly [catalogDependencyClosure]?: infer Closure } ? Closure : never
 
 /** Exact target contracts derived from the definitions in a catalog. */
 export type HarnessContracts<
@@ -83,6 +87,7 @@ export interface HarnessCatalogView<
 	Agents extends Readonly<Record<string, AnyAgentDefinition>> = Readonly<Record<string, AnyAgentDefinition>>,
 	Workflows extends Readonly<Record<string, AnyWorkflowDefinition>> = Readonly<Record<string, AnyWorkflowDefinition>>,
 	Requirements extends RuntimeRequirements = RuntimeRequirements,
+	Closure = unknown,
 > {
 	readonly tools: Tools
 	readonly skills: Skills
@@ -91,6 +96,8 @@ export interface HarnessCatalogView<
 	readonly workflows: Workflows
 	readonly contracts: HarnessContracts<Agents, Workflows>
 	readonly requirements: Requirements
+	/** @internal Type-only recursive dependency closure; never present on runtime values. */
+	readonly [catalogDependencyClosure]?: Closure
 }
 
 /** Frozen reusable definition package. */
@@ -144,7 +151,8 @@ export type CatalogViewForRoots<
 		UnionIdMap<AllSkills<undefined, AgentDefinitions>>,
 		InferredMcpServers<McpTools>,
 		UnionIdMap<AgentDefinitions>, WorkflowMap, McpTools
-	>
+	>,
+	AgentDefinitions
 >
 
 /**

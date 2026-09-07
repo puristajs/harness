@@ -896,7 +896,7 @@ describe('catalog composition and graph compilation', () => {
 		})
 		expect(inspection.roots.agents).toEqual([])
 		expect(inspection.roots.workflows.map(target => target.id)).toEqual(['resolve'])
-		expect(inspection.roots.workflows[0]?.interrupts).toEqual(['external-wait', 'tool-approval'])
+		expect(inspection.roots.workflows[0]?.interrupts).toEqual([])
 		expect(serialized).not.toContain('Answer.')
 		expect(serialized).not.toContain('support-policy/')
 		expect(serialized).not.toContain('handler')

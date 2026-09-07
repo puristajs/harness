@@ -83,6 +83,7 @@ export function defineWorkflow<
 	const models = copyModels(options.models, id) as Models
 	const childTaskSandboxGroups = copyChildTaskSandboxGroups(options.childTaskSandboxGroups, id) as ChildTaskSandboxGroups
 	const sandbox = snapshotSandboxPolicy(options.sandbox, id)
+	const interrupts = resolveWorkflowInterrupts(agents, options.durable)
 	const identity = createDefinitionIdentity('workflow', id)
 	const contract = attachDefinitionIdentity({
 		kind: 'workflow' as const,
@@ -92,7 +93,7 @@ export function defineWorkflow<
 		output: options.output,
 		executionModes: Object.freeze(['run', 'stream'] as const),
 		updates: 'none' as const,
-		interrupts: Object.freeze(['tool-approval', 'external-wait'] as const),
+		interrupts,
 	}, identity)
 	Object.defineProperty(contract, '$infer', {
 		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
@@ -117,6 +118,14 @@ export function defineWorkflow<
 		contract,
 	}
 	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
+}
+
+function resolveWorkflowInterrupts(agents: WorkflowAgentMap | undefined, durable: true | undefined): readonly ('tool-approval' | 'external-wait')[] {
+	const approval = Object.values(agents ?? {}).some(agent => agent.contract.interrupts.includes('tool-approval'))
+	return Object.freeze([
+		...(approval ? ['tool-approval' as const] : []),
+		...(durable === true ? ['external-wait' as const] : []),
+	])
 }
 
 function copyChildTaskSandboxGroups<const Groups extends readonly string[]>(groups: Groups | undefined, id: string): Groups {

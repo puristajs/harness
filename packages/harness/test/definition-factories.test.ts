@@ -86,12 +86,37 @@ describe('composable definition factories', () => {
 		expect(await agent.output['~standard'].validate('hello')).toEqual({ value: 'hello' })
 		expect(agent.contract).toMatchObject({
 			kind: 'agent', id: 'assistant', executionModes: ['run', 'stream'],
-			updates: 'text-delta', interrupts: ['tool-approval'],
+			updates: 'text-delta', interrupts: [],
 		})
 		const infer = Object.getOwnPropertyDescriptor(agent.contract, '$infer')
 		expect(infer).toMatchObject({ enumerable: false, configurable: false, writable: false })
 		expect(Object.isFrozen(infer?.value)).toBe(true)
 		expect(Object.keys(agent.contract)).not.toContain('$infer')
+	})
+
+	it('derives exact agent and workflow interrupts from reachable approval and durability', () => {
+		const tool = defineTool('bash', {
+			description: 'Require approval.', input: inputSchema, output: outputSchema,
+			async handler(_context, input) { return { answer: input.message } },
+		})
+		const approvedChild = defineAgent('approvedChild', {
+			instructions: 'Ask before calling.', tools: [tool], permissions: { bash: 'require_approval' },
+		})
+		const parent = defineAgent('approvalParent', { instructions: 'Delegate.', subagents: { child: approvedChild } })
+		const plainWorkflow = defineWorkflow('plainInterruptWorkflow', {
+			input: inputSchema, output: outputSchema, async handler({ input }) { return { answer: input.message } },
+		})
+		const durableWorkflow = defineWorkflow('durableInterruptWorkflow', {
+			input: inputSchema, output: outputSchema, durable: true, agents: { parent }, async handler({ input }) { return { answer: input.message } },
+		})
+
+		expect(approvedChild.contract.interrupts).toEqual(['tool-approval'])
+		expect(parent.contract.interrupts).toEqual(['tool-approval'])
+		expect(plainWorkflow.contract.interrupts).toEqual([])
+		expect(durableWorkflow.contract.interrupts).toEqual(['tool-approval', 'external-wait'])
+		for (const contract of [approvedChild.contract, parent.contract, plainWorkflow.contract, durableWorkflow.contract]) {
+			expect(Object.isFrozen(contract.interrupts)).toBe(true)
+		}
 	})
 
 	it('derives text mode from an explicit string output schema and retains schema identity', () => {
@@ -351,7 +376,7 @@ describe('composable definition factories', () => {
 		expect(workflow.output).toBe(outputSchema)
 		expect(workflow.contract).toMatchObject({
 			kind: 'workflow', id: 'resolveCase', executionModes: ['run', 'stream'],
-			updates: 'none', interrupts: ['tool-approval', 'external-wait'],
+			updates: 'none', interrupts: [],
 		})
 		expect(workflow.agents.assistant).toBe(agent)
 		expect(Object.isFrozen(workflow.agents)).toBe(true)

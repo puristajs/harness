@@ -153,6 +153,7 @@ export function defineAgent<
 		...((skills?.length ?? 0) > 0 ? ['read_skill'] : []),
 		...Object.keys(subagents ?? {}),
 	])) as ResolvedGovernance<Governance>
+	const interrupts = resolveAgentInterrupts(tools, permissions, governance, subagents)
 
 	const identity = createDefinitionIdentity('agent', id)
 	const contract = attachDefinitionIdentity({
@@ -163,7 +164,7 @@ export function defineAgent<
 		output,
 		executionModes: Object.freeze(['run', 'stream'] as const),
 		updates,
-		interrupts: Object.freeze(['tool-approval'] as const),
+		interrupts,
 	}, identity)
 	Object.defineProperty(contract, '$infer', {
 		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
@@ -197,6 +198,24 @@ export function defineAgent<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
 		ResolvedUpdates<Output, ResponseMode>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 	>
+}
+
+function resolveAgentInterrupts(
+	tools: readonly AnyToolDefinition[] | undefined,
+	permissions: AgentPermissions | undefined,
+	governance: GovernanceConfig<any> | undefined,
+	subagents: AgentSubagentMap | undefined,
+): readonly ('tool-approval')[] | readonly [] {
+	const selected = new Set((tools ?? []).map(tool => tool.id))
+	const permission = Object.entries(permissions ?? {}).some(([id, value]) => selected.has(id) && (
+		value === 'require_approval' || (typeof value === 'object' && value !== null && value.mode === 'require_approval')
+	))
+	const policy = governance?.policies?.some(candidate => candidate.effects.includes('require_approval')) === true
+	const descendant = Object.values(subagents ?? {}).some(reference => {
+		const agent = 'agent' in reference ? reference.agent : reference
+		return agent.contract.interrupts.includes('tool-approval')
+	})
+	return Object.freeze(permission || policy || descendant ? ['tool-approval'] : [])
 }
 
 const defaultPrompt: AgentPrompt<unknown, readonly AgentInputCapability[]> = input => ({

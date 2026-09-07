@@ -19,6 +19,7 @@ import {
 import type { DefinitionReference } from './identity.js'
 import {
 	createCatalogView,
+	type CatalogDependencyClosure,
 	type CatalogViewForRoots,
 	type HarnessCatalogDefinition,
 	type HarnessCatalogView,
@@ -41,6 +42,8 @@ type MergedSkills<Left extends HarnessCatalogView, Right extends HarnessCatalogV
 type MergedMcp<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = MergeMaps<Left['mcpServers'], Right['mcpServers']>
 type MergedAgents<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = MergeMaps<Left['agents'], Right['agents']>
 type MergedWorkflows<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = MergeMaps<Left['workflows'], Right['workflows']>
+type MergedDependencyClosure<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = CatalogDependencyClosure<Left> | CatalogDependencyClosure<Right>
+type ClosureAgentMap<Closure> = Readonly<Record<string, Extract<Closure, AnyAgentDefinition>>>
 type MergeCatalogViews<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = HarnessCatalogView<
 	MergedTools<Left, Right>,
 	MergedSkills<Left, Right>,
@@ -49,8 +52,9 @@ type MergeCatalogViews<Left extends HarnessCatalogView, Right extends HarnessCat
 	MergedWorkflows<Left, Right>,
 	RuntimeRequirementsFor<
 		Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
-		MergedAgents<Left, Right>, MergedWorkflows<Left, Right>
-	>
+		ClosureAgentMap<MergedDependencyClosure<Left, Right>>, MergedWorkflows<Left, Right>
+	>,
+	MergedDependencyClosure<Left, Right>
 >
 
 type WithAgent<Catalog extends HarnessCatalogView, Agent extends AnyAgentDefinition> = MergeCatalogViews<
@@ -66,7 +70,8 @@ type EmptyCatalogView = HarnessCatalogView<
 	RuntimeRequirementsFor<
 		Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
 		Readonly<Record<never, never>>, Readonly<Record<never, never>>
-	>
+	>,
+	never
 >
 
 /** Data-only inspection of one executable Harness target. */

@@ -11,19 +11,22 @@ const answer = defineAgent('answer', {
 const supportDefinition = defineHarness({ name: 'portableSupport' }).addAgent(answer)
 
 describe('portable Harness definitions', () => {
-  it('exposes an immutable provider-free catalog and exact target contract', () => {
+  it('exposes immutable root contracts and sanitized inspection without a public catalog', () => {
     expect(supportDefinition.name).toBe('portableSupport')
-    expect(supportDefinition.catalog.agents.answer).toBe(answer)
     expect(supportDefinition.contracts.agents.answer).toMatchObject({
       kind: 'agent', id: 'answer', input: answer.input, output: answer.output, updates: 'object-snapshot',
+    })
+    expect(supportDefinition.inspect()).toMatchObject({
+      roots: { agents: [{ kind: 'agent', id: 'answer', updates: 'object-snapshot' }], workflows: [] },
+      dependencies: { agents: [], tools: [], skills: [], mcpServers: [], workflows: [] },
     })
     expect(supportDefinition.requirements.models.primary.capabilities).toContain('object')
     type SupportInfer = typeof supportDefinition.$infer
     expectTypeOf<SupportInfer['agents']['answer']['input']>().toEqualTypeOf<{ question: string }>()
     expectTypeOf<SupportInfer['agents']['answer']['output']>().toEqualTypeOf<{ answer: string }>()
     expect(Object.isFrozen(supportDefinition)).toBe(true)
-    expect(Object.isFrozen(supportDefinition.catalog)).toBe(true)
     expect(Object.isFrozen(supportDefinition.contracts)).toBe(true)
+    expect(supportDefinition).not.toHaveProperty('catalog')
   })
 
   it('instantiates the same definition with independent runtime model bindings', async () => {

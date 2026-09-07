@@ -3,10 +3,11 @@ import { z } from 'zod'
 import { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow } from '../src/definitions/index.js'
 import { defineCatalog } from '../src/definitions/catalog.js'
 import { defineHarness } from '../src/definitions/harness.js'
-import type { ToolRequirements } from '../src/definitions/index.js'
+import type { HarnessUpdateFor, ToolRequirements } from '../src/definitions/index.js'
 import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
 import type { AgentModelResponse, HarnessTargetStream } from '../src/index.js'
+import type { JsonValue } from '../src/models/json.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 type Expect<T extends true> = T
@@ -19,6 +20,7 @@ void publicObjectModelResponse
 const input = z.object({ message: z.string() })
 const output = z.object({ answer: z.string() })
 const transformedInput = z.string().transform(value => value.length)
+type _ObjectSnapshotIsExactlyJsonValue = Expect<Equal<HarnessUpdateFor<typeof output, 'object-snapshot'>, JsonValue>>
 
 const lookup = defineTool('lookup', {
 	description: 'Look up a message.', input, output,
@@ -429,6 +431,42 @@ const approvalAgent = defineAgent('approvalAgent', {
 const approvalDurable: true = defineHarness({ name: 'approvalHarness' })
 	.addAgent(approvalAgent).$infer.requirements.storage.durable
 void approvalDurable
+
+const plainInterruptAgent = defineAgent('plainInterruptAgent', { instructions: 'Plain.' })
+const approvalInterruptChild = defineAgent('approvalInterruptChild', {
+	instructions: 'Approve.', tools: [bashTool], permissions: { bash: 'require_approval' },
+})
+const approvalInterruptParent = defineAgent('approvalInterruptParent', {
+	instructions: 'Delegate.', subagents: { child: approvalInterruptChild },
+})
+const nonDurableInterruptWorkflow = defineWorkflow('nonDurableInterruptWorkflow', {
+	input, output, agents: { parent: approvalInterruptParent }, async handler({ input: value }) { return { answer: value.message } },
+})
+const durableInterruptWorkflow = defineWorkflow('durableInterruptWorkflow', {
+	input, output, durable: true, agents: { parent: approvalInterruptParent }, async handler({ input: value }) { return { answer: value.message } },
+})
+type _PlainAgentInterrupts = Expect<Equal<typeof plainInterruptAgent.contract.interrupts, readonly []>>
+type _DescendantAgentInterrupts = Expect<Equal<typeof approvalInterruptParent.contract.interrupts, readonly ['tool-approval']>>
+type _NonDurableWorkflowInterrupts = Expect<Equal<typeof nonDurableInterruptWorkflow.contract.interrupts, readonly ['tool-approval']>>
+type _DurableWorkflowInterrupts = Expect<Equal<typeof durableInterruptWorkflow.contract.interrupts, readonly ['tool-approval', 'external-wait']>>
+
+const dependencyOnlyTool = defineTool('dependencyOnlyTool', {
+	description: 'Dependency-only tool.', input, output, requires: { sandbox: ['sandbox.exec'] },
+	async handler(_context, value) { return { answer: value.message } },
+})
+const dependencyOnlySkill = defineSkill('dependency-only-skill', {
+	directory: new URL('./dependency-only-skill/', import.meta.url), runtimes: ['python'],
+})
+const dependencyOnlyAgent = defineAgent('dependencyOnlyAgent', {
+	instructions: 'Use private dependencies.', model: 'dependencyModel', tools: [dependencyOnlyTool], skills: [dependencyOnlySkill],
+})
+const rootWithPrivateDependency = defineAgent('rootWithPrivateDependency', {
+	instructions: 'Delegate.', subagents: { child: dependencyOnlyAgent },
+})
+const privateClosureHarness = defineHarness({ name: 'privateClosureHarness' }).addAgent(rootWithPrivateDependency)
+type _PrivateClosureModel = Expect<Equal<keyof typeof privateClosureHarness.$infer.requirements.models, 'primary' | 'dependencyModel'>>
+type _PrivateClosureSkill = Expect<Equal<typeof privateClosureHarness.$infer.requirements.skillRuntimes[number], 'python'>>
+type _PrivateClosureTool = Expect<'sandbox.exec' extends typeof privateClosureHarness.$infer.requirements.sandbox.capabilities[number] ? true : false>
 
 const runtimeWorkflow = defineWorkflow('runtimeWorkflow', {
 	input,

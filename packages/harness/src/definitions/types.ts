@@ -31,7 +31,7 @@ export type HarnessInterruptKind = 'tool-approval' | 'external-wait'
 
 /** Exact update value emitted by one target contract. */
 export type HarnessUpdateFor<Output extends ModelSchema, Updates extends HarnessOutputUpdateKind> =
-	Updates extends 'text-delta' ? string : Updates extends 'object-snapshot' ? Infer<Output> & JsonValue : never
+	Updates extends 'text-delta' ? string : Updates extends 'object-snapshot' ? JsonValue : never
 
 /** Exact interruption union declared by one target contract. */
 type HarnessInterruptForKind<Kind extends HarnessInterruptKind> =
@@ -332,12 +332,36 @@ export type AnyAgentDefinition = Readonly<{
 	sandbox?: SandboxPolicy | undefined
 	workspace?: true | undefined
 	durable?: true | undefined
-	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', readonly ['tool-approval']>
+	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any>
 }> & DefinitionReference<'agent', string>
 /** Direct child-agent reference or its parent-facing description override. */
 export type AgentSubagentReference = AnyAgentDefinition | Readonly<{ agent: AnyAgentDefinition; description?: string }>
 /** Provider-facing delegation names mapped to direct child-agent references. */
 export type AgentSubagentMap = Readonly<Record<string, AgentSubagentReference>>
+
+type AgentReferenceDefinition<Reference> = Reference extends { readonly agent: infer Agent } ? Agent : Reference
+type AgentToolIds<Tools> = Tools extends readonly (infer Tool)[]
+	? Tool extends { readonly id: infer Id extends string } ? Id : never
+	: never
+type ApprovalPermission<Value> = Extract<Value, 'require_approval' | { readonly mode: 'require_approval' }> extends never ? never : 'tool-approval'
+type SelectedPermissionInterrupts<Permissions, Tools> = Permissions extends object
+	? { [Key in keyof Permissions]: Key extends AgentToolIds<Tools> ? ApprovalPermission<Permissions[Key]> : never }[keyof Permissions]
+	: never
+type GovernanceInterrupts<Governance> = undefined extends Governance ? never : Governance extends { readonly policies?: readonly (infer Policy)[] }
+	? Policy extends { readonly effects: readonly (infer Effect)[] }
+		? Extract<Effect, 'require_approval'> extends never ? never : 'tool-approval'
+		: Policy extends { readonly rules: readonly (infer Rule)[] }
+			? Rule extends { readonly effect: infer Effect } ? Extract<Effect, 'require_approval'> extends never ? never : 'tool-approval' : never
+			: never
+	: never
+type SubagentInterrupts<Subagents> = Subagents extends Readonly<Record<string, unknown>>
+	? AgentReferenceDefinition<Subagents[keyof Subagents]> extends { readonly contract: { readonly interrupts: infer Interrupts extends readonly HarnessInterruptKind[] } }
+		? Interrupts[number]
+		: never
+	: never
+type AgentInterruptTuple<Tools, Permissions, Governance, Subagents> = 'tool-approval' extends (
+	SelectedPermissionInterrupts<Permissions, Tools> | GovernanceInterrupts<Governance> | SubagentInterrupts<Subagents>
+) ? readonly ['tool-approval'] : readonly []
 
 type AgentPromptField<I extends ModelSchema | undefined, C extends readonly AgentInputCapability[]> =
 	I extends ModelSchema
@@ -422,7 +446,7 @@ export type AgentDefinition<
 	instructions: string
 	inputCapabilities?: Capabilities
 	loop?: AgentLoopOptions
-	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, readonly ['tool-approval']>
+	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
 	& PresentField<'memory', Memory>
 	& PresentField<'guardrails', Guardrails>
@@ -539,6 +563,15 @@ type WorkflowExternalWait<Durable extends true | undefined> = Durable extends tr
 	? Readonly<{ externalWait: Readonly<{ wait(request: ExternalWaitRequest): Promise<ExternalWaitResolved> }> }>
 	: Readonly<Record<never, never>>
 
+type WorkflowAgentInterrupts<Agents> = Agents extends Readonly<Record<string, unknown>>
+	? Agents[keyof Agents] extends { readonly contract: { readonly interrupts: infer Interrupts extends readonly HarnessInterruptKind[] } }
+		? Interrupts[number]
+		: never
+	: never
+type WorkflowInterruptTuple<Agents, Durable> = 'tool-approval' extends WorkflowAgentInterrupts<Agents>
+	? Durable extends true ? readonly ['tool-approval', 'external-wait'] : readonly ['tool-approval']
+	: Durable extends true ? readonly ['external-wait'] : readonly []
+
 /** Typed handler context limited to the agents and models declared by a workflow. */
 export type WorkflowContext<
 	Input extends ModelSchema,
@@ -609,7 +642,7 @@ export type WorkflowDefinition<
 	childTaskSandboxGroups?: ChildTaskSandboxGroups
 	maxDepth?: number
 	handler: WorkflowOptions<Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>['handler']
-	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', readonly ['tool-approval', 'external-wait']>
+	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>
 }> & PresentField<'agents', Agents> & PresentField<'models', Models>
 	& PresentField<'childTaskSandboxGroups', ChildTaskSandboxGroups extends readonly [] ? undefined : ChildTaskSandboxGroups>
 	& PresentField<'workspace', Workspace> & PresentField<'durable', Durable>
@@ -632,5 +665,5 @@ export type AnyWorkflowDefinition = Readonly<{
 	workspace?: true | undefined
 	durable?: true | undefined
 	handler: (...args: any[]) => Promise<any>
-	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', readonly ['tool-approval', 'external-wait']>
+	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', any>
 }> & DefinitionReference<'workflow', string>

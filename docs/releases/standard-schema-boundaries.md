@@ -16,15 +16,16 @@ with `toStandardJsonSchema(...)` only for a model-facing boundary.
 will consume:
 
 - TypeScript tool `input`;
-- default-loop agent `output`.
+- standard-loop agent `output`.
 
-Those schemas must implement Standard JSON Schema. During `.build()`, Harness
-calls the schema's input projection once with `{ target: 'draft-2020-12' }`,
+Those schemas must implement Standard JSON Schema. During definition
+compilation, Harness calls the schema's input projection once with
+`{ target: 'draft-2020-12' }`,
 validates it as JSON, clones and freezes it, then gives every provider that
 same JSON value. Providers do not receive a Zod, ArkType, or Valibot object and
 do not rewrite the projection.
 
-Agent input, custom-handler agent output, tool output, workflow input/output,
+Agent input, tool output, workflow input/output,
 and guardrail values need only `Schema`. The validator's raw accepted input is
 preserved for defaults, coercions, and transforms; the validated result must be
 JSON before it crosses a Harness handler, provider, persistence, telemetry, or

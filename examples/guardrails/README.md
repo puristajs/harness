@@ -19,8 +19,8 @@ Expected output: `The [redacted] answer.`
 ## Follow the source
 
 [`createGuardrailsExample`](src/index.ts) owns the composition. Its first fake
-model turn requests `lookup_status`, `publish_note`, and builtin `write`; its
-second returns the final answer. The registered `assistant` alias resolves to
+model turn requests `lookupStatus`, `publishNote`, and builtin `write`; its
+second returns the final answer. The registered `assistant` model alias resolves to
 that fake provider, and rail flow names resolve to the declared action map.
 
 - Input rails replace `[secret]` and mask the synthetic `[email]` marker before
@@ -31,7 +31,7 @@ that fake provider, and rail flow names resolve to the declared action map.
   `visibility: 'internal'`; policy, approval request, and handler share this parsed input.
 - A native multi-tool rule narrows `ctx.input` through `ctx.toolId` without
   casts or duplicate schemas.
-- `publish_note` needs policy approval. Builtin `write` needs both static
+- `publishNote` needs policy approval. Builtin `write` needs both static
   permission and policy approval. Harness combines the prepared calls in one
   durable `ToolApprovalInterrupt` before either gated handler starts.
 - Tool-output rails replace the validated private status with a public

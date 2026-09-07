@@ -26,7 +26,7 @@ describe('observability quickstart', () => {
       finishReason: 'stop',
     })
     const logLines: string[] = []
-    const harness = createObservedHarness({
+    const harness = await createObservedHarness({
       provider,
       logger: new (await import('@purista/harness')).JsonLogger({
         out: { write: chunk => logLines.push(chunk) },
@@ -36,7 +36,7 @@ describe('observability quickstart', () => {
 
     try {
       const session = await harness.getSession('observability-test')
-      await expect(session.workflows.handle_ticket.run({
+      await expect(session.workflows.handleTicket.run({
         ticketId: 'SUP-42',
         question: 'How can I update my billing address?',
       })).resolves.toMatchObject({ status: 'completed', output: { answer: 'Open Billing and choose Edit address.' } })
@@ -44,7 +44,7 @@ describe('observability quickstart', () => {
 
       const spanNames = spanExporter.getFinishedSpans().map(span => span.name)
       expect(spanNames).toContain('harness.workflow.run')
-      expect(spanNames).toContain('invoke_agent answer_ticket')
+      expect(spanNames).toContain('invoke_agent answerTicket')
 
       const metricNames = metricExporter.getMetrics().flatMap(resource =>
         resource.scopeMetrics.flatMap(scope => scope.metrics.map(metric => metric.descriptor.name)),
@@ -62,7 +62,7 @@ describe('observability quickstart', () => {
       }))
       expect(JSON.stringify(capturedTelemetry)).not.toContain('billing address')
     } finally {
-      await harness.shutdown()
+      await harness.close()
     }
   })
 })

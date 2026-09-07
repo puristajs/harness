@@ -1,3 +1,6 @@
+import { useChat } from '@ai-sdk/react'
+import type { HarnessUIMessage } from '@purista/harness-ai-sdk-ui/v1'
+import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai'
 import { type CSSProperties, type PointerEvent, Suspense, lazy, useEffect, useState } from 'react'
 import JsonRenderer from 'json-renderer'
 import ReactMarkdown, { type Components } from 'react-markdown'
@@ -35,6 +38,7 @@ type ChatMessage = {
   status: 'pending' | 'streaming' | 'done' | 'failed'
   panelSpec?: unknown
   artifacts?: ResearchArtifact[]
+  uiParts?: HarnessUIMessage['parts']
 }
 
 type KnowledgeGraph = {
@@ -55,6 +59,8 @@ const workflows = [
   { id: 'architecture_review', label: 'Architecture Review', description: 'Generate Mermaid, draw.io XML, JSON panels, and review gates.' },
   { id: 'wiki_audit', label: 'Wiki Audit', description: 'Find stale claims and propose governed wiki updates.' }
 ]
+
+const livingWikiChatTransport = new DefaultChatTransport<HarnessUIMessage>({ api: '/api/chat' })
 
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -79,22 +85,6 @@ function workflowPayload(id: string, selected?: DocumentView, prompt = ''): Reco
       return { pageSlug: selected?.kind === 'page' ? selected.slug : 'agent-harness', focus: prompt || 'Review module boundaries, adapters, tracing, MCP tools, and artifact generation.' }
     case 'wiki_audit':
       return { scope: 'all' }
-    default:
-      return { question: prompt || 'What does this wiki know about Jaeger tracing?' }
-  }
-}
-
-function agentPayload(id: string, selected?: DocumentView, prompt = ''): Record<string, unknown> {
-  const slug = selected?.slug ?? 'agent-harness'
-  switch (id) {
-    case 'wiki_curator':
-      return { sourceSlug: selected?.kind === 'source' ? selected.slug : 'harness-flow' }
-    case 'wiki_linter':
-      return { scope: 'all' }
-    case 'wiki_reconciler':
-      return { leftRef: slug, rightRef: 'jaeger-tracing', conflict: prompt || 'Conflicting wording needs reconciliation.' }
-    case 'wiki_brief_writer':
-      return { pageSlugs: [selected?.kind === 'page' ? selected.slug : 'agent-harness'], goal: prompt || 'Summarize operational traceability.' }
     default:
       return { question: prompt || 'What does this wiki know about Jaeger tracing?' }
   }
@@ -211,6 +201,17 @@ export function App() {
   const [reviewRequest, setReviewRequest] = useState<ReviewRequest | undefined>()
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
   const [runArtifacts, setRunArtifacts] = useState<ResearchArtifact[]>([])
+  const {
+    messages: aiMessages,
+    sendMessage: sendAiMessage,
+    status: aiChatStatus,
+    error: aiChatError,
+    addToolApprovalResponse,
+  } = useChat<HarnessUIMessage>({
+    id: 'living-wiki-chat',
+    transport: livingWikiChatTransport,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  })
 
   useEffect(() => {
     void (async () => {
@@ -315,7 +316,8 @@ export function App() {
     subscribe(started.runId, assistantMessageId)
   }
 
-  async function runAgent(id: string, selectedOverride = selected, promptOverride = prompt) {
+  async function runAgent(id: string, _selectedOverride = selected, promptOverride = prompt) {
+    if (id !== 'wiki_answerer') throw new Error(`The standard chat endpoint does not expose ${id}.`)
     setSseState('invoking agent')
     setEvents([])
     setOverflow(0)
@@ -323,21 +325,8 @@ export function App() {
     setReviewRequest(undefined)
     setRunArtifacts([])
     const userMessage = promptOverride || 'What does this wiki know about Jaeger tracing?'
-    const assistantMessageId = crypto.randomUUID()
-    setChatBusy(true)
-    setChatMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: 'user', content: userMessage, status: 'done' },
-      { id: assistantMessageId, role: 'assistant', content: '', status: 'pending' }
-    ])
-    const started = await apiJson<RunInfo>(`/api/agents/${id}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(agentPayload(id, selectedOverride, promptOverride))
-    })
-    setRun(started)
+    await sendAiMessage({ text: userMessage })
     if (id === 'wiki_answerer') setPrompt('')
-    subscribe(started.runId, assistantMessageId)
   }
 
   function subscribe(runId: string, assistantMessageId: string) {
@@ -521,10 +510,13 @@ export function App() {
 
       <aside className="chat-rail">
         <ChatPanel
-          messages={chatMessages}
+          messages={[
+            ...chatMessages,
+            ...aiMessages.map((message, index) => fromUiMessage(message, index === aiMessages.length - 1 ? aiChatStatus : 'ready', aiChatError)),
+          ]}
           prompt={prompt}
           setPrompt={setPrompt}
-          busy={chatBusy}
+          busy={chatBusy || aiChatStatus === 'submitted' || aiChatStatus === 'streaming'}
           tools={activeTools}
           sseState={sseState}
           openInspector={() => setInspectorOpen(true)}
@@ -532,6 +524,7 @@ export function App() {
           reviewSubmitting={reviewSubmitting}
           submitReview={(decision) => void submitReviewDecision(decision)}
           submitReviewAnswer={(questionId, value) => void submitReviewAnswer(questionId, value)}
+          submitToolApproval={(id, approved) => void addToolApprovalResponse({ id, approved })}
           runWorkflow={() => void runAgent('wiki_answerer')}
           {...(reviewRequest ? { reviewRequest } : {})}
         />
@@ -684,6 +677,31 @@ function outputSummary(result: Record<string, unknown> | undefined): Record<stri
   return rest
 }
 
+function fromUiMessage(
+  message: HarnessUIMessage,
+  status: 'submitted' | 'streaming' | 'ready' | 'error',
+  error: Error | undefined,
+): ChatMessage {
+  const text = message.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('')
+  const output = message.parts.findLast(part => part.type === 'data-output')
+  const outputData = output?.type === 'data-output' && output.data !== null && typeof output.data === 'object'
+    ? output.data as { value?: unknown }
+    : undefined
+  const result = outputData?.value && typeof outputData.value === 'object' && !Array.isArray(outputData.value)
+    ? outputData.value as Record<string, unknown>
+    : undefined
+  const content = text || answerFromResult(result) || (error?.message ?? '')
+  return {
+    id: message.id,
+    role: message.role === 'user' ? 'user' : 'assistant',
+    content,
+    status: status === 'submitted' ? 'pending' : status === 'streaming' ? 'streaming' : status === 'error' ? 'failed' : 'done',
+    uiParts: message.parts,
+    ...(result?.['panelSpec'] !== undefined ? { panelSpec: result['panelSpec'] } : {}),
+    ...(Array.isArray(result?.['artifacts']) ? { artifacts: normalizeArtifacts(result['artifacts']) } : {}),
+  }
+}
+
 function ChatPanel(props: {
   messages: ChatMessage[]
   prompt: string
@@ -697,6 +715,7 @@ function ChatPanel(props: {
   reviewSubmitting: boolean
   submitReview: (decision: ReviewDecisionPayload) => void
   submitReviewAnswer: (questionId: string, value: string | string[] | boolean) => void
+  submitToolApproval: (id: string, approved: boolean) => void
   runWorkflow: () => void
 }) {
   const status: ChatStatus = props.busy ? 'streaming' : 'ready'
@@ -727,6 +746,9 @@ function ChatPanel(props: {
                 : <p>{message.content}</p>}
             {message.panelSpec ? <div className="chat-rich-panel"><JsonRenderer siteJson={panelSiteJson(message.panelSpec)} data={{}} /></div> : null}
             {message.artifacts ? <ArtifactList artifacts={message.artifacts} compact /> : null}
+            {message.uiParts?.map((part, partIndex) => isToolUIPart(part)
+              ? <AiSdkToolPart key={`${message.id}-${part.toolCallId}-${partIndex}`} part={part} onApproval={props.submitToolApproval} />
+              : null)}
             </MessageContent>
           </Message>
         ])}
@@ -756,6 +778,39 @@ function ChatPanel(props: {
         </PromptInputFooter>
       </PromptInput>
     </section>
+  )
+}
+
+function AiSdkToolPart(props: {
+  part: Extract<HarnessUIMessage['parts'][number], { state: string }>
+  onApproval: (id: string, approved: boolean) => void
+}) {
+  if (!isToolUIPart(props.part)) return null
+  const part = props.part
+  const toolName = part.type === 'dynamic-tool' ? part.toolName : part.type.replace(/^tool-/, '')
+  const displayState: ToolState = part.state === 'output-available'
+    ? 'output-available'
+    : part.state === 'output-error' || part.state === 'output-denied'
+      ? 'output-error'
+      : 'input-available'
+  return (
+    <Tool open={part.state === 'approval-requested'}>
+      <ToolHeader type={part.type} toolName={toolName} state={displayState} />
+      <ToolContent>
+        {'input' in part ? <ToolInput input={part.input} /> : null}
+        {part.state === 'approval-requested' && !part.approval.isAutomatic ? (
+          <div className="tool-approval" aria-label={`Approve ${toolName}`}>
+            <p>{part.approval.requestReason ?? `Allow ${toolName} to run?`}</p>
+            <button type="button" onClick={() => props.onApproval(part.approval.id, true)}>Approve</button>
+            <button type="button" onClick={() => props.onApproval(part.approval.id, false)}>Reject</button>
+          </div>
+        ) : null}
+        {part.state === 'approval-responded' ? <ToolOutput output={part.approval.approved ? 'Approved' : 'Rejected'} /> : null}
+        {part.state === 'output-available' ? <ToolOutput output={<pre>{JSON.stringify(part.output, null, 2)}</pre>} /> : null}
+        {part.state === 'output-error' ? <ToolOutput errorText={part.errorText} /> : null}
+        {part.state === 'output-denied' ? <ToolOutput errorText={part.approval.reason ?? 'Tool execution was denied.'} /> : null}
+      </ToolContent>
+    </Tool>
   )
 }
 

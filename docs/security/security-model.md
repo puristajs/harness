@@ -48,11 +48,11 @@ admission, default-deny egress, node/runtime PID policy, quota/limits, reviewed
 image, CSI snapshot, encryption/retention, and orphan cleanup. Its ready
 VolumeSnapshot is the committed file recovery point; no S3 service is required.
 
-`mcp_stdio` requires a spawn-capable sandbox. `mcp_http` does not start a local
+Stdio MCP requires a spawn-capable sandbox. HTTP MCP does not start a local
 process, but the remote MCP server must independently authenticate and
-authorize each request. Trusted Agent Plugin stdio servers additionally need a
-sandbox that can enforce an immutable `mountReadOnly(...)` package mount;
-neither the in-memory nor local host-directory built-in supplies that guarantee.
+authorize each request. Agent Plugin stdio declarations can be inspected but
+are not selectable by the current plugin projection; bind reviewed stdio
+servers directly through Core.
 
 ## Threats And Ownership
 
@@ -78,24 +78,20 @@ fixed file/result/byte limits, cancellation, and explicit completeness. A
 custom adapter must execute the same bounded contract where its data lives and
 must not log patterns, paths, or matching text.
 
-- Built-ins are disabled by default; enable only an explicit canonical-name allowlist.
-- A skill-backed agent normally needs only `builtinTools: ['read']`.
+- Built-ins are absent by default; attach only explicit direct references such
+  as `builtInTools.read`.
+- A skill-backed agent normally needs only `builtInTools.read`.
 - Bind only explicit TypeScript/MCP tools to an agent; validate input and output.
-- Use permission policies and `.governance(...)` for tool decisions that depend
+- Use permission policies and an agent's `governance` definition for tool decisions that depend
   on typed domain facts.
 - Keep business mutations behind application authorization, an idempotent
   transaction boundary, and an application-owned durable review task where
   human review is required.
 
-When upgrading an application that previously relied on an omitted
-`builtinTools` field to expose all built-ins, add an explicit, minimal
-allowlist to each affected agent. `builtinTools: false` remains supported, but
-omission already expresses the secure default.
-
 Declaring a skill does not grant tools. Registration and mounting do not run
 skill scripts, but `SKILL.md` and supporting files remain model-readable
 instruction content. A separately allowed `bash`, custom tool, MCP server, or
-custom handler can make script execution possible. Frontmatter
+host integration can make script execution possible. Frontmatter
 `allowed-tools` is not enforced and must never be treated as a permission.
 
 Harness governance makes a bounded immediate tool decision. Static permission
@@ -120,7 +116,7 @@ replace application-authenticated principal/resource resolution.
 
 Content rails are separate from authorization. Their transforms cannot grant
 authority, inspect opaque provider reasoning, undo a prior effect, or revoke
-an already admitted operation. Direct model calls and custom handlers do not
+an already admitted operation. Direct model calls from workflows do not
 receive automatic rail coverage. Log only safe decision evidence, never the
 transient approval subject or raw callback exception.
 

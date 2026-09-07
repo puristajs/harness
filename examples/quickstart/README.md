@@ -1,18 +1,8 @@
 # Quickstart Example
 
-This is the smallest runnable harness example. It defines one model alias, one
-agent, and one workflow.
+This is the smallest runnable Harness example. It defines one structured agent, adds it to a Harness, and binds a model provider when the application starts.
 
-The workflow is intentionally small but shows the production shape:
-
-- agents are registered before workflows so `ctx.agents.assistant` is typed;
-- workflow code owns orchestration, metrics, and memory writes;
-- the session API invokes `session.workflows.explain_quickstart.run(...)`;
-- tests inject a fake model provider, so no API key is required for CI.
-
-## Run
-
-From this example directory:
+## Run it
 
 ```bash
 npm install
@@ -23,5 +13,4 @@ npm run build
 npm start
 ```
 
-The example stores the last topic in session memory, records two application
-metrics, invokes the assistant agent, and prints the validated answer.
+`defineAgent(...)` owns the input, output, prompt, and instructions. `defineHarness(...).addAgent(...)` keeps that definition independent of credentials. `getInstance({ model })` binds the OpenAI provider for the process. The test passes `FakeModelProvider`, so CI uses no network or API key.

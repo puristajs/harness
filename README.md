@@ -54,20 +54,21 @@ The `examples/quickstart` workspace is the recommended starting point.
 `examples/showcase` demonstrates mounted skills, custom TypeScript tools, and
 multiple workflows with the OpenAI adapter. `examples/living-wiki-jaeger`
 demonstrates a local file-backed research workspace with direct typed agent
-invocation, optional typed workflows, SSE run observation, application-owned review tasks,
-artifacts, MCP, and Jaeger tracing. `examples/delm-shared-context` uses the
+invocation, optional typed workflows, AI SDK UI Message Stream v1, resumable
+tool approval, a separate operator view, artifacts, MCP, and Jaeger tracing.
+`examples/delm-shared-context` uses the
 OpenAI adapter by default to demonstrate a DeLM-inspired decentralized
 shared-context pattern with task claiming, admission-gated compact entries,
 evidence unfolding, and durable checkpoints.
-`examples/modular-support-harness` demonstrates static, typed reusable modules
+`examples/catalog-support-harness` demonstrates immutable, typed reusable catalogs
 with application-owned workflows, retry-only context projection, and sanitized
 test replay. `examples/workflow-child-tasks` demonstrates credential-free
 bounded fan-out, isolated background task lookup, and short continuable task
 conversations.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
-The [clean builder and runtime API notes](docs/releases/clean-builder-and-runtime-api.md)
-describe the intentional Harness 3 breaking surface.
+The [Harness 4 definition and runtime API notes](docs/releases/clean-builder-and-runtime-api.md)
+describe the intentional Harness 4 breaking surface.
 
 ## Verification
 
@@ -110,7 +111,7 @@ npm run test:failure
 
 ## Project Structure
 
-- `packages/harness/` — Core runtime, contracts, ports, builder, sessions, tools, sandbox, telemetry, and test helpers.
+- `packages/harness/` — Core definitions, runtime, contracts, ports, sessions, tools, sandbox, telemetry, and test helpers.
 - `packages/harness-ai-sdk-ui/` — AI SDK UI Message Stream v1 adapter for standard chat streaming and resumable tool approvals.
 - `packages/harness-openai/` — OpenAI model provider adapter.
 - `packages/harness-anthropic/` — Anthropic model provider adapter.
@@ -126,9 +127,9 @@ npm run test:failure
 - `packages/harness-guardrails-native-privacy/` — Optional local Rust/Node-API sensitive-data subset for Node.js and Bun.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.
-- `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, SSE, artifacts, MCP, and Jaeger.
+- `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, AI SDK UI streaming, artifacts, MCP, and Jaeger.
 - `examples/delm-shared-context/` — DeLM-inspired shared-context coordination example for parallel worker workflows.
-- `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
+- `examples/catalog-support-harness/` — Reusable catalog composition, support workflow ownership, and hermetic replay testing.
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
 - `examples/guardrails/` — Deterministic inline guardrails and local sensitive-data example using the Harness test adapter.

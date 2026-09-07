@@ -2,7 +2,7 @@
 
 This private example uses `@purista/harness-sandbox-docker` directly. It needs
 no PURISTA framework, model provider, API key, agent, or Harness session storage.
-The same adapter can be registered with `defineHarness().sandbox(...)` later.
+The same adapter can be supplied by an application through `definition.getInstance({ sandbox })`.
 
 ## Prepare your engine and image
 

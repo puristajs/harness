@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
-import { InMemoryHarnessStorage, inMemorySandbox, type RunCheckpoint, type Sandbox } from '@purista/harness'
+import { afterEach, describe, expect, it } from 'vitest'
+import { InMemoryHarnessStorage, type RunCheckpoint } from '@purista/harness'
 import { createPaymentReviewExample, InMemoryPaymentExecutor, type PaymentExecutor, type PaymentReviewAdmission } from './payment-review.js'
 import {
   actionDigest,
@@ -14,24 +14,41 @@ import {
 } from './review-task-store.js'
 
 const payment = { paymentId: 'p-1', amountCents: 12_500, targetRevision: 7 } as const
+const openApps: Array<{ close(): Promise<void> }> = []
+const openStorages = new Set<InMemoryHarnessStorage>()
 
-function fixture(options: Partial<PaymentReviewAdmission> & { now?: () => Date; payments?: PaymentExecutor; storage?: InMemoryHarnessStorage; tasks?: ReviewTaskStore; sandbox?: Sandbox } = {}) {
+afterEach(async () => {
+  await Promise.allSettled(openApps.splice(0).map(app => app.close()))
+  await Promise.allSettled([...openStorages].map(storage => storage.close()))
+  openStorages.clear()
+})
+
+function fixture(options: Partial<PaymentReviewAdmission> & { now?: () => Date; payments?: PaymentExecutor; storage?: InMemoryHarnessStorage; tasks?: ReviewTaskStore } = {}) {
   const now = options.now ?? (() => new Date('2029-01-01T00:00:00.000Z'))
   const tasks = options.tasks ?? new ReviewTaskStore({ now, reviewTtlMs: 60_000 })
   const storage = options.storage ?? new InMemoryHarnessStorage({ now })
-  const sandbox = options.sandbox ?? inMemorySandbox()
+  markPersistentForTest(storage)
   const payments = options.payments ?? new InMemoryPaymentExecutor()
   const admission: PaymentReviewAdmission = {
     authorizeExecution: options.authorizeExecution ?? (async () => true),
     readTargetRevision: options.readTargetRevision ?? (async () => payment.targetRevision)
   }
+  const app = createPaymentReviewExample({ tasks, storage, payments, ...admission })
+  openApps.push(app)
+  openStorages.add(storage)
   return {
-    app: createPaymentReviewExample({ tasks, storage, payments, sandbox, now, ...admission }),
+    app,
     tasks,
     storage,
     payments,
-    sandbox
   }
+}
+
+function markPersistentForTest(storage: InMemoryHarnessStorage): void {
+  if ((storage.capabilities as readonly string[]).includes('storage.persistent')) return
+  const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'])
+  Object.defineProperty(storage, 'capabilities', { value: capabilities })
+  Object.defineProperty(storage, 'info', { value: Object.freeze({ ...storage.info, capabilities }) })
 }
 
 async function approve(tasks: ReviewTaskStore, storage: InMemoryHarnessStorage, action: PaymentAction, eventId = 'decision-1') {
@@ -50,7 +67,7 @@ async function approve(tasks: ReviewTaskStore, storage: InMemoryHarnessStorage, 
 }
 
 describe('durable human review reference', () => {
-  it('creates before its checkpoint and retains the original task when a retry supplies another wait id', async () => {
+  it('retains the original task and fails the durable run closed when checkpoint persistence becomes uncertain', async () => {
     let clockReads = 0
     const taskNow = () => {
       clockReads += 1
@@ -68,12 +85,11 @@ describe('durable human review reference', () => {
     expect(retried).toEqual(created)
     expect(retried.waitId).toBe(reviewIdentity(payment).waitId)
     expect(retried.descriptor.expiresAt).toBe(created.descriptor.expiresAt)
-    expect(clockReads).toBe(2) // creation plus the explicit read; malformed retry does not consult the clock.
+    expect(clockReads).toBe(2)
 
-    await expect(app.app.run(payment)).resolves.toEqual({ status: 'waiting' })
-    await expect(app.app.run(payment)).resolves.toEqual({ status: 'waiting' })
-    const requested = (await storage.listEvents(reviewIdentity(payment).runId)).filter((event) => event.type === 'external_wait.requested')
-    expect(requested).toHaveLength(1)
+    await expect(app.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
+    const requested = (await storage.listEvents(reviewIdentity(payment).runId)).filter(event => event.type === 'external_wait.requested')
+    expect(requested).toHaveLength(0)
   })
 
   it('uses strict schemas and returns immutable application snapshots', async () => {
@@ -199,7 +215,7 @@ describe('durable human review reference', () => {
     }
   })
 
-  it('does not re-admit a claimed execution after expiry, revocation, or revision lookup failure', async () => {
+  it('does not re-admit a failed claimed execution after expiry, revocation, or revision lookup failure', async () => {
     let time = new Date('2029-01-01T00:00:00.000Z')
     let fail = true
     let authorized = true
@@ -226,22 +242,22 @@ describe('durable human review reference', () => {
     await app.app.run(payment)
     await approve(app.tasks, app.storage, payment)
     await expect(app.app.run(payment)).rejects.toThrow('transient executor failure')
-    expect((await app.tasks.readExecution(`payment-review:${identityDigest(payment)}`))?.status).toBe('claimed')
+    expect((await app.tasks.readExecution(reviewIdentity(payment).runId))?.status).toBe('claimed')
     time = new Date('2029-01-01T00:02:00.000Z')
     authorized = false
     revisionAvailable = false
-    await expect(app.app.run(payment)).resolves.toEqual({ status: 'approved' })
-    expect(effects.effects).toBe(1)
+    await expect(app.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
+    expect(effects.effects).toBe(0)
   })
 
-  it('recovers one logical effect across receipt and checkpoint crash windows', async () => {
+  it('retains one logical effect and a terminal failure across receipt and checkpoint crash windows', async () => {
     const beforeReceipt = new CrashBeforeReceiptStore({ now: () => new Date('2029-01-01T00:00:00.000Z'), reviewTtlMs: 60_000 })
     const beforeReceiptApp = fixture({ tasks: beforeReceipt, now: () => new Date('2029-01-01T00:00:00.000Z') })
     await beforeReceiptApp.app.run(payment)
     await approve(beforeReceiptApp.tasks, beforeReceiptApp.storage, payment)
     await expect(beforeReceiptApp.app.run(payment)).rejects.toThrow('receipt persistence crash')
-    expect((await beforeReceiptApp.tasks.readExecution(`payment-review:${identityDigest(payment)}`))?.status).toBe('claimed')
-    await expect(beforeReceiptApp.app.run(payment)).resolves.toEqual({ status: 'approved' })
+    expect((await beforeReceiptApp.tasks.readExecution(reviewIdentity(payment).runId))?.status).toBe('claimed')
+    await expect(beforeReceiptApp.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(beforeReceiptApp.payments)).toBe(1)
 
     const afterReceipt = new CrashAfterReceiptStore({ now: () => new Date('2029-01-01T00:00:00.000Z'), reviewTtlMs: 60_000 })
@@ -249,7 +265,7 @@ describe('durable human review reference', () => {
     await first.app.run(payment)
     await approve(first.tasks, first.storage, payment)
     await expect(first.app.run(payment)).rejects.toThrow('receipt write crash')
-    await expect(first.app.run(payment)).resolves.toEqual({ status: 'approved' })
+    await expect(first.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(first.payments)).toBe(1)
 
     const storage = new CrashAfterExecutionCheckpointStorage()
@@ -257,17 +273,18 @@ describe('durable human review reference', () => {
     await second.app.run(payment)
     await approve(second.tasks, second.storage, payment)
     await expect(second.app.run(payment)).rejects.toThrow('checkpoint crash')
-    await expect(second.app.run(payment)).resolves.toEqual({ status: 'approved' })
+    await expect(second.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(second.payments)).toBe(1)
   })
 
-  it('binds changed invocation input before replaying a receipt or committed execution step', async () => {
-    const storage = new CrashBeforeSuccessfulFinishStorage()
+  it('replays the authoritative success after the atomic finalization result becomes uncertain', async () => {
+    const storage = new CrashAfterSuccessfulFinalizeStorage()
     const app = fixture({ storage })
     await app.app.run(payment)
     await approve(app.tasks, app.storage, payment)
-    await expect(app.app.run(payment)).rejects.toThrow('final run commit crash')
-    expect((await app.tasks.readExecution(`payment-review:${identityDigest(payment)}`))?.status).toBe('succeeded')
+    await expect(app.app.run(payment)).rejects.toThrow()
+    expect((await app.tasks.readExecution(reviewIdentity(payment).runId))?.status).toBe('succeeded')
+    await expect(app.app.run(payment)).resolves.toEqual({ status: 'approved' })
     await expect(app.app.run({ ...payment, amountCents: 1 })).rejects.toMatchObject({
       code: 'REVIEW_BINDING_ERROR',
       meta: { reason: 'stale_action' }
@@ -309,13 +326,12 @@ describe('durable human review reference', () => {
     const second = fixture({
       tasks: first.tasks,
       storage: first.storage,
-      sandbox: first.sandbox,
       payments: executor
     })
     const winner = first.app.run(payment)
     await executor.started
     const loser = second.app.run(payment)
-    await expect(loser).rejects.toMatchObject({ name: 'DurableRunLeaseError' })
+    await expect(loser).rejects.toMatchObject({ name: 'StateError', meta: { reason: 'lease_conflict' } })
     executor.release()
     await expect(winner).resolves.toEqual({ status: 'approved' })
     expect(executor.effects).toBe(1)
@@ -340,7 +356,7 @@ describe('durable human review reference', () => {
     const first = fixture()
     await first.app.run(payment)
     const lostTasks = new ReviewTaskStore({ now: () => new Date('2029-01-01T00:00:00.000Z'), reviewTtlMs: 60_000 })
-    const resumed = fixture({ tasks: lostTasks, storage: first.storage, payments: first.payments, sandbox: first.sandbox })
+    const resumed = fixture({ tasks: lostTasks, storage: first.storage, payments: first.payments })
     await expect(resumed.app.run(payment)).rejects.toMatchObject({ code: 'REVIEW_BINDING_ERROR', meta: { reason: 'missing_task' } })
   })
 })
@@ -394,15 +410,15 @@ class CrashAfterExecutionCheckpointStorage extends InMemoryHarnessStorage {
   }
 }
 
-class CrashBeforeSuccessfulFinishStorage extends InMemoryHarnessStorage {
-  private successFailures = 0
+class CrashAfterSuccessfulFinalizeStorage extends InMemoryHarnessStorage {
+  private crashed = false
 
-  public override async finishRun(runId: string, patch: Parameters<InMemoryHarnessStorage['finishRun']>[1]): Promise<void> {
-    if (patch.status === 'succeeded' && this.successFailures < 2) {
-      this.successFailures += 1
-      throw new Error('final run commit crash')
+  public override async finalizeRun(request: Parameters<InMemoryHarnessStorage['finalizeRun']>[0]): Promise<void> {
+    await super.finalizeRun(request)
+    if (request.patch.status === 'succeeded' && !this.crashed) {
+      this.crashed = true
+      throw new Error('final run commit response lost')
     }
-    return super.finishRun(runId, patch)
   }
 }
 

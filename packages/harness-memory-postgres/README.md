@@ -4,6 +4,12 @@ PostgreSQL 16+ and pgvector memory engine for `@purista/harness`. It provides
 durable, multi-instance scoped KV, pagination, TTL, PostgreSQL full-text
 search, vector search, and hybrid retrieval.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-memory-postgres
+```
+
 ```ts
 import { defineHarness } from '@purista/harness'
 import { postgresMemoryEngine } from '@purista/harness-memory-postgres'

@@ -1,4 +1,4 @@
-import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '@purista/harness'
+import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse, ObjectStreamChunk } from '@purista/harness'
 import { workerAgentInputSchema, workerReportSchema, type WorkerAgentInput, type WorkerReport } from './schemas.js'
 
 export class ScriptedDelmProvider implements ModelProvider {
@@ -15,6 +15,11 @@ export class ScriptedDelmProvider implements ModelProvider {
       usage: { inputTokens: 42, outputTokens: 18, totalTokens: 60 },
       finishReason: 'stop'
     }
+  }
+
+  public async *objectStream<T extends JsonValue = JsonValue>(request: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+    const response = await this.object(request)
+    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
   }
 }
 

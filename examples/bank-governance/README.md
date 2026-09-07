@@ -18,8 +18,7 @@ npm run build
 npm run start
 ```
 
-The key integration point is `.governance(({ native, rule }) => ...)` in
-`src/index.ts`. The `rule(...)` helper receives the typed `transfer_funds` tool input, so policy
+The key integration point is the agent's `governance: ({ native, rule }) => ...` definition in `src/index.ts`. The `rule(...)` helper receives the typed `transferFunds` tool input, so policy
 predicates can use `input.from`, `input.to`, and `input.amount` without manual
 casts. Account balances remain application-owned state: the policy reads the
 balance from the same application-owned record as the handler, and the handler

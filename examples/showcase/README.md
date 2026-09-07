@@ -22,5 +22,5 @@ npm start
 ```
 
 The application runs one incident-summary workflow and one policy question.
-The policy agent calls the typed `policy_lookup` tool before returning its
+The policy agent calls the typed `policyLookup` tool before returning its
 structured answer.

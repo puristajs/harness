@@ -26,11 +26,10 @@ flowchart TD
   output --> result[Output validation and return]
 ```
 
-Input, output, tool-input, and tool-output rails attach automatically only to
-an attached default-loop agent. Retrieval stays application-owned: call
-`filterRetrievedChunks(...)` after retrieval. Direct `ctx.models.*` calls and
-custom-handler agents are outside automatic coverage, and `attach(...)` rejects
-custom handlers.
+Input, output, tool-input, and tool-output rails attach automatically to an
+agent definition. Retrieval stays application-owned: call
+`filterRetrievedChunks(...)` after retrieval. Direct `ctx.models.*` workflow
+calls are outside automatic coverage.
 
 Every phase runs in configured order. A transform becomes the next rail's
 input. A block, missing action, malformed action result, timeout, detector or
@@ -44,7 +43,7 @@ defaults to `{}`. Each phase uses an ordered `flows` list whose identifiers are
 checked against the supplied action map and the action's declared phase.
 
 ```ts
-import { defineHarness, inMemorySandbox } from '@purista/harness'
+import { defineAgent, defineHarness, defineTool } from '@purista/harness'
 import { defineGuardrailAction, defineGuardrails } from '@purista/harness-guardrails'
 import { z } from 'zod'
 
@@ -63,7 +62,7 @@ const redactInput = defineGuardrailAction({
 })
 const validatePublish = defineGuardrailAction({
 	phase: 'tool_input',
-	tools: ['publish_note'],
+	tools: ['publishNote'],
 	valueSchema: z.strictObject({ message: z.string() }),
 	mayTransform: false,
 	evaluate: ({ value }) =>
@@ -90,42 +89,36 @@ const rails = defineGuardrails({
 	actions: { 'redact input': redactInput, 'validate publish': validatePublish, 'redact output': redactOutput },
 })
 
-const harness = defineHarness({ name: 'safe-notes' })
-	.sandbox(inMemorySandbox())
-	.models({ assistant: { provider, model: 'assistant', capabilities: ['object', 'tool_use'] } })
-	.tool('lookup_status', {
-			description: 'Read a public status.',
-			input: z.strictObject({ ticket: z.string() }),
-			output: z.strictObject({ status: z.string() }),
-			handler: async (_ctx, { ticket }) => ({ status: `Status for ${ticket}` }),
-	})
-	.tool('publish_note', {
-			description: 'Publish a reviewed note.',
-			input: z.strictObject({ message: z.string() }),
-			output: z.strictObject({ published: z.boolean() }),
-			handler: async (_ctx, _input) => ({ published: true }),
-	})
-	.tool('unrelated_tool', {
-			description: 'An action not selected by this rail.',
-			input: z.strictObject({ id: z.string() }),
-			output: z.strictObject({ id: z.string() }),
-			handler: async (_ctx, input) => input,
-	})
-	.agent('support', {
-		model: 'assistant',
-		input: z.string(),
-		output: z.string(),
-		instructions: 'Use the available tools when needed.',
-		tools: ['lookup_status', 'publish_note', 'unrelated_tool'],
-		guardrails: rails,
-	})
-	.build()
+const lookupStatus = defineTool('lookupStatus', {
+  description: 'Read a public status.',
+  input: z.strictObject({ ticket: z.string() }),
+  output: z.strictObject({ status: z.string() }),
+  handler: async (_ctx, { ticket }) => ({ status: `Status for ${ticket}` }),
+})
+
+const publishNote = defineTool('publishNote', {
+  description: 'Publish a reviewed note.',
+  input: z.strictObject({ message: z.string() }),
+  output: z.strictObject({ published: z.boolean() }),
+  handler: async () => ({ published: true }),
+})
+
+const support = defineAgent('support', {
+  model: 'assistant',
+  instructions: 'Use the available tools when needed.',
+  tools: [lookupStatus, publishNote],
+  guardrails: rails,
+})
+
+const definition = defineHarness({ name: 'safeNotes' }).addAgent(support)
+const instance = await definition.getInstance({
+  models: { assistant: { provider, model: 'gpt-5-mini' } },
+})
 ```
 
-Native tools must be registered through the builder-local `tool(...)` helper.
-That helper keeps input/output schema and handler inference together and rejects
-raw native tool objects during `.tools(...)` registration. MCP tool literals remain their own
-integration boundary.
+`defineTool(...)` keeps input, output, and handler inference together. Agents
+receive direct definition references, so invalid or undeclared tool names fail
+while TypeScript checks the definition graph.
 
 `defineGuardrailAction(...)` returns an opaque action token. Its evaluator
 receives a phase-specific value; an action with `mayTransform: false` cannot
@@ -180,8 +173,8 @@ const rails = defineGuardrails({
 })
 ```
 
-The model alias must be present in the harness. `build()` checks active rail
-requirements before a session, provider request, detector inspection, tool
+The model alias must be bound when the Harness instance is created. Instance
+creation checks active rail requirements before a session, provider request, detector inspection, tool
 call, or approval request occurs. For retrieval, keep storage and ranking in
 application code and filter already-retrieved JSON values explicitly:
 

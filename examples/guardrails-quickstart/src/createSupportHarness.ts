@@ -1,6 +1,6 @@
 import {
+  defineAgent,
   defineHarness,
-  inMemorySandbox,
   JsonLogger,
   type Logger,
   type ModelProvider,
@@ -49,23 +49,17 @@ function createOpenAiProvider(): ModelProvider {
 
 export function createSupportHarness(options: SupportHarnessOptions = {}) {
   const provider = options.provider ?? createOpenAiProvider()
-
-  return defineHarness({ name: 'guardrails-quickstart' })
-    .logger(options.logger ?? new JsonLogger({ level: 'info' }))
-    .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-    .sandbox(inMemorySandbox())
-    .models({
-      support: {
-        provider,
-        model: options.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5-mini',
-        capabilities: ['object'],
-      },
-    }).agent('answer', {
+  const answer = defineAgent('answer', {
         model: 'support',
         input: z.string().min(1).max(2_000),
         output: z.string(),
         instructions: 'Answer the support question concisely.',
+        prompt: input => ({ role: 'user', content: input }),
         guardrails: supportRails,
       })
-    .build()
+  return defineHarness({ name: 'guardrailsQuickstart' }).addAgent(answer).getInstance({
+    models: { support: { provider, model: options.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5-mini' } },
+    logger: options.logger ?? new JsonLogger({ level: 'info' }),
+    telemetry: { contentCaptureMode: 'NO_CONTENT' },
+  })
 }

@@ -3,6 +3,12 @@
 Distributed PostgreSQL storage for sessions, history, runs, events, durable
 checkpoints, leases, and external waits in `@purista/harness`.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-storage-postgres
+```
+
 ```ts
 import { defineHarness } from '@purista/harness'
 import { postgresHarnessStorage } from '@purista/harness-storage-postgres'

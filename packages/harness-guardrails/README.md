@@ -8,6 +8,12 @@ compiles. Applications provide action implementations and direct model aliases
 explicitly; guardrail configuration never creates a provider, starts a server,
 or opens a vector database.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-guardrails
+```
+
 Use the [runnable composition](../../examples/guardrails/README.md) and its
 [typed action map](../../examples/guardrails/src/index.ts). Each action declares
 its `phase`; configuration flow names must match actions of that phase. The
@@ -29,8 +35,8 @@ and the handler; tool-output rails run after handler-output validation.
 `DecisionBlockedError` and `DecisionEvaluationError` come from core and retain
 rail-owned safe evidence. A block does not request approval or suspend a run.
 Attached actions honor the enclosing deadline and cancellation; no rail can
-undo an effect or inspect opaque provider reasoning. Direct model calls and
-custom handlers are outside automatic coverage. See the
+undo an effect or inspect opaque provider reasoning. Direct model calls from
+workflow handlers are outside automatic coverage. See the
 [decision guide](../../docs/guides/decisions-and-approval.md) for exact boundaries.
 
 The configuration has only `rails` and `sensitiveData`. `rails` defaults to an

@@ -8,6 +8,12 @@ The first release supports only `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IP_ADDRESS` (IPv4 and IPv6 syntax), `IBAN_CODE`, `US_SSN`, and `URL`. Use the Presidio sidecar adapter
 for entities such as `PERSON` or custom/ML recognizers.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-guardrails @purista/harness-guardrails-native-privacy
+```
+
 ```ts
 import { createNativePrivacyDetector } from '@purista/harness-guardrails-native-privacy'
 

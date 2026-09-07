@@ -1,45 +1,117 @@
 # Quickstart
 
-This guide gets a new developer from clone to a typed harness run.
-
-## What You Build
-
-The quickstart example creates:
-
-- one OpenAI-backed model alias;
-- one typed agent, which is the LLM conversation loop;
-- one typed workflow, which orchestrates a call to that agent;
-- one session;
-- one workflow invocation.
-
-Direct agent invocation uses the same session API and is covered after the first
-run.
+This guide creates the smallest useful Harness application: one agent, one
+Harness definition, one model binding, and one session call.
 
 ## Prerequisites
 
 - Node.js `>=24.15.0`
 - npm
-- an OpenAI API key for live runs
+- an OpenAI API key for a live run
 
 ## Install
 
-From the quickstart example directory:
+Create an empty TypeScript project and install published packages:
 
 ```bash
+npm install @purista/harness @purista/harness-openai zod
+npm install --save-dev typescript
+```
+
+The repository example is already configured. Run it with:
+
+```bash
+cd examples/quickstart
 npm install
 cp .env.example .env
 ```
 
-Set:
+Set `OPENAI_API_KEY` in `.env`. You can also set
+`OPENAI_MODEL=gpt-5-mini`.
 
-```env
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5-mini
+## Define the agent
+
+An agent is a configurable model loop. Its definition contains schemas,
+instructions, and an optional prompt mapper. It contains no API key, live
+provider, storage connection, or sandbox.
+
+```ts
+import { z } from 'zod'
+import { defineAgent } from '@purista/harness'
+
+const assistant = defineAgent('assistant', {
+  input: z.object({ topic: z.string() }),
+  output: z.object({ answer: z.string() }),
+  instructions: 'Return a concise answer matching the output schema.',
+  prompt: input => ({ role: 'user', content: `Explain ${input.topic}.` }),
+})
 ```
 
-The quickstart reads the `.env` file in its directory.
+The schemas validate values at runtime and provide TypeScript types for the
+prompt input and final output.
 
-## Run
+## Compose and start the Harness
+
+```ts
+import { defineHarness } from '@purista/harness'
+import { openai } from '@purista/harness-openai'
+
+const definition = defineHarness({ name: 'quickstart' }).addAgent(assistant)
+
+const instance = await definition.getInstance({
+  model: {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+  },
+})
+```
+
+`defineHarness` compiles immutable definitions and infers the runtime
+requirements. Because this graph uses only the default `primary` model alias,
+`getInstance` asks for one `model` binding. Adding memory, MCP, durable
+execution, or sandbox capabilities makes the corresponding bindings required by
+TypeScript.
+
+## Run the agent
+
+```ts
+const session = await instance.getSession('quickstart')
+const outcome = await session.agents.assistant.run({
+  topic: 'enterprise agent harnesses',
+})
+
+if (outcome.status === 'completed') {
+  console.log(outcome.output.answer)
+} else {
+  console.log(outcome.interrupt)
+}
+
+await instance.close()
+```
+
+`run()` returns a terminal outcome. An approval request is an
+`interrupted` outcome, so the application can show it to a human and resume
+the same run instead of turning it into an HTTP 500 response.
+
+## Stream progress
+
+Use `stream()` when the caller needs live output and status updates:
+
+```ts
+for await (const event of session.agents.assistant.stream({
+  topic: 'enterprise agent harnesses',
+})) {
+  if (event.type === 'output.object.snapshot') console.log(event.value)
+  if (event.type === 'run.finished') console.log(event.outcome)
+}
+```
+
+The terminal value represents the same result as `run()`. Browser chat
+applications should use `@purista/harness-ai-sdk-ui/v1`, which converts this
+stream to AI SDK UI Message Stream v1. Keep persisted run summaries and
+operational telemetry in a separate operator view.
+
+## Verify
 
 ```bash
 npm test
@@ -47,72 +119,9 @@ npm run build
 npm start
 ```
 
-Expected output is a short answer about enterprise agent harnesses.
+The test injects `FakeModelProvider`, so it needs no credential or network
+connection.
 
-## Verify The Repo
-
-```bash
-npm run typecheck
-npm test
-npm run build
-```
-
-## Read The Flow
-
-[examples/quickstart/src/index.ts](../../examples/quickstart/src/index.ts)
-does this:
-
-```mermaid
-sequenceDiagram
-  participant App
-  participant Harness
-  participant Session
-  participant Workflow
-  participant Agent
-  participant Model
-
-  App->>Harness: defineHarness().models().agent().workflow().build()
-  App->>Session: harness.getSession("quickstart")
-  App->>Workflow: session.workflows.explain_quickstart.run(input)
-  Workflow->>Agent: ctx.agents.assistant(input)
-  Agent->>Model: object request
-  Model-->>Agent: validated object
-  Agent-->>Workflow: typed output
-  Workflow-->>App: completed or interrupted RunOutcome
-```
-
-The key rule: application code calls sessions, not provider adapters directly.
-In this flow, the workflow owns orchestration and the agent owns the model loop.
-The agent prepares messages, calls the model, handles tool calls when available,
-and returns validated output. The workflow decides when that agent is invoked
-and what happens before or after it. Because workflow child-agent calls are
-disabled by default, the example workflow declares
-`delegation: { agents: ['assistant'] }`.
-
-The quickstart keeps the workflow intentionally small. For multi-agent
-orchestration, durable steps, streaming, and failure handling, continue with
+Continue with [Architecture](../concepts/architecture.md),
+[Tools and skills](../guides/tools-and-skills.md), and
 [Workflows](../guides/workflows.md).
-
-## Direct Agent Alternative
-
-When you do not need application orchestration, call the agent's LLM
-conversation loop directly:
-
-```ts
-const session = await harness.getSession('quickstart')
-const response = await session.agents.assistant.run({
-	topic: 'enterprise agent harnesses',
-})
-
-if (response.status === 'completed') console.log(response.output)
-```
-
-Use workflows when you need pre-processing, post-processing, fan-out/fan-in,
-application-owned human review, retries, durable writes, or a business process run.
-
-## Next Steps
-
-- [Architecture](../concepts/architecture.md)
-- [Usage Guide](../guides/usage.md)
-- [Testing Guide](../guides/testing.md)
-- [Living Wiki Jaeger Example](../../examples/living-wiki-jaeger/README.md)

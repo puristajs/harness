@@ -271,6 +271,8 @@ type SandboxBase = Partial<AdapterCapabilities> & {
  * handle. Provider placement, coordination, and fencing stay inside the adapter.
  *
  * @typeParam C - The adapter's readonly capability tuple; omit when accepting any adapter.
+ * A literal tuple makes the `capabilities` property required so instance
+ * configuration can verify the adapter at compile time.
  * @example
  * ```ts
  * const opened = await sandbox.open({ scope, mode: 'attach' })
@@ -283,7 +285,7 @@ type SandboxBase = Partial<AdapterCapabilities> & {
  */
 export type Sandbox<C extends readonly AdapterCapability[] = readonly AdapterCapability[]> =
   number extends C['length'] ? SandboxBase : Omit<SandboxBase, 'capabilities' | 'open'> & {
-    readonly capabilities?: C
+    readonly capabilities: C
     open(options: SandboxOpenOptions): Promise<SandboxOpenResult<C>>
   }
 

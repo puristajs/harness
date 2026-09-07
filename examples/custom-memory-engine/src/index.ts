@@ -1,4 +1,4 @@
-import { defineHarness, inMemorySandbox } from '@purista/harness'
+import { defineAgent, defineHarness, type ModelProvider } from '@purista/harness'
 
 import {
   InMemoryTicketMemoryClient,
@@ -7,21 +7,21 @@ import {
 } from './ticketMemoryEngine.js'
 
 export function createTicketMemoryHarness(client: TicketMemoryClient) {
-  return defineHarness({ name: 'custom-memory-example' })
-    .sandbox(inMemorySandbox())
-    .memory(new TicketMemoryEngine(client))
-    .models({
-      unused: {
-        provider: { id: 'not-called', genAiSystem: 'not-called' },
-        model: 'not-called',
-        capabilities: [],
-      },
-    })
-    .build()
+  const memoryUser = defineAgent('memoryUser', {
+    instructions: 'Use the session memory configured by the application.',
+    memory: { capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.ttl'] },
+  })
+  const provider: ModelProvider = {
+    id: 'not-called', genAiSystem: 'not-called',
+    async text() { return { content: '', finishReason: 'stop', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
+    async *textStream() { yield { kind: 'finish', content: '', finishReason: 'stop', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
+  }
+  return defineHarness({ name: 'customMemoryExample' }).addAgent(memoryUser)
+    .getInstance({ model: { provider, model: 'not-called' }, memory: new TicketMemoryEngine(client) })
 }
 
 export async function runCustomMemoryExample(): Promise<string | undefined> {
-  const harness = createTicketMemoryHarness(new InMemoryTicketMemoryClient())
+  const harness = await createTicketMemoryHarness(new InMemoryTicketMemoryClient())
   const session = await harness.getSession('ticket-42', {
     identity: { tenantId: 'acme', principalId: 'operator-7' },
   })
@@ -31,7 +31,7 @@ export async function runCustomMemoryExample(): Promise<string | undefined> {
     return await session.memory.read<string>('status')
   } finally {
     await session.release()
-    await harness.shutdown()
+    await harness.close()
   }
 }
 

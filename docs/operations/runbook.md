@@ -50,7 +50,7 @@ Before exposing a harness-backed service:
 - when Kubernetes execution is configured, verify namespace/RBAC denial,
   restricted admission, default-deny egress, quota/limits, Pod loss, snapshot
   restore, stale attachment rejection, and idempotent cleanup;
-- verify `harness.shutdown()` closes adapters and MCP runners.
+- verify `instance.close()` closes Harness-owned adapters and MCP runners.
 
 ```mermaid
 flowchart TD
@@ -132,4 +132,4 @@ under operator policy; do not replay completed business work for cleanup.
 4. Check final `run.finished` event for normalized error metadata.
 5. Fix provider/tool/config issue.
 6. Re-run a smoke test.
-7. Call `harness.shutdown()` during controlled process shutdown.
+7. Call `instance.close()` during controlled process shutdown.

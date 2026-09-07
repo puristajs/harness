@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { defineHarness, type ToolHandlerContext } from '@purista/harness'
+import type { ToolHandlerContext } from '@purista/harness'
 import { createLivingWikiStore } from './data.js'
 import { createLivingWikiTools } from './tools.js'
 
@@ -21,11 +21,10 @@ async function createTempDataRoot(): Promise<string> {
 async function createRegisteredLivingWikiTools() {
   const store = createLivingWikiStore({ dataRoot: await createTempDataRoot() })
   const tools = createLivingWikiTools(store)
-  defineHarness().tools(tools)
   return tools
 }
 
-function toolContext(): ToolHandlerContext {
+function toolContext(): ToolHandlerContext<Record<string, never>> {
   return {
     signal: new AbortController().signal,
     metadata: {},
@@ -34,15 +33,14 @@ function toolContext(): ToolHandlerContext {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn()
-    } as unknown as ToolHandlerContext['logger'],
-    telemetry: { span: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()) } as unknown as ToolHandlerContext['telemetry'],
-    sandbox: {} as ToolHandlerContext['sandbox'],
-    metrics: {} as ToolHandlerContext['metrics'],
-    memory: {} as ToolHandlerContext['memory'],
+    } as unknown as ToolHandlerContext<Record<string, never>>['logger'],
+    telemetry: { span: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()) } as unknown as ToolHandlerContext<Record<string, never>>['telemetry'],
+    metrics: {} as ToolHandlerContext<Record<string, never>>['metrics'],
     runId: 'run_test',
+    invocationId: 'invocation_test',
     sessionId: 'session_test',
-    agentId: 'wiki_curator',
-    toolId: 'test_tool',
+    agentId: 'wikiCurator',
+    toolId: 'testTool',
     callId: 'call_test',
     idempotencyKey: 'run_test:call_test'
   }
@@ -53,13 +51,13 @@ describe('wiki tool contracts', () => {
     const tools = await createRegisteredLivingWikiTools()
 
     expect(Object.keys(tools).sort()).toEqual([
-      'append_log',
-      'list_backlinks',
-      'read_source',
-      'read_wiki_page',
-      'render_panel_spec',
-      'search_wiki',
-      'write_wiki_page'
+      'appendLog',
+      'listBacklinks',
+      'readSource',
+      'readWikiPage',
+      'renderPanelSpec',
+      'searchWiki',
+      'writeWikiPage'
     ])
 
     for (const tool of Object.values(tools)) {
@@ -74,19 +72,19 @@ describe('wiki tool contracts', () => {
     const tools = await createRegisteredLivingWikiTools()
     const ctx = toolContext()
 
-    const source = await tools['read_source']!.handler(ctx, { slug: 'harness-flow' })
-    expect(tools['read_source']!.output.safeParse(source).success).toBe(true)
+    const source = await tools['readSource']!.handler(ctx, { slug: 'harness-flow' })
+    expect(tools['readSource']!.output.safeParse(source).success).toBe(true)
     expect(source).toMatchObject({ slug: 'harness-flow', content: expect.stringContaining('Source content') })
 
-    const written = await tools['write_wiki_page']!.handler(ctx, {
+    const written = await tools['writeWikiPage']!.handler(ctx, {
       slug: 'new-page',
       content: '# New Page\n\nLinks to [[agent-harness]].\n'
     })
-    expect(tools['write_wiki_page']!.output.safeParse(written).success).toBe(true)
+    expect(tools['writeWikiPage']!.output.safeParse(written).success).toBe(true)
     expect(written).toMatchObject({ slug: 'new-page', content: expect.stringContaining('[[agent-harness]]') })
 
-    const backlinks = await tools['list_backlinks']!.handler(ctx, { slug: 'agent-harness' })
-    expect(tools['list_backlinks']!.output.safeParse(backlinks).success).toBe(true)
+    const backlinks = await tools['listBacklinks']!.handler(ctx, { slug: 'agent-harness' })
+    expect(tools['listBacklinks']!.output.safeParse(backlinks).success).toBe(true)
     expect(backlinks).toMatchObject({ pages: expect.arrayContaining([expect.objectContaining({ slug: 'new-page' })]) })
   })
 
@@ -94,16 +92,16 @@ describe('wiki tool contracts', () => {
     const tools = await createRegisteredLivingWikiTools()
     const ctx = toolContext()
 
-    expect(tools['read_wiki_page']!.input.safeParse({ slug: '../agent-harness' }).success).toBe(false)
-    await expect(tools['read_wiki_page']!.handler(ctx, { slug: '../agent-harness' })).rejects.toThrow(/slug/i)
+    expect(tools['readWikiPage']!.input.safeParse({ slug: '../agent-harness' }).success).toBe(false)
+    await expect(tools['readWikiPage']!.handler(ctx, { slug: '../agent-harness' })).rejects.toThrow(/slug/i)
 
     const panelSpec = {
       type: 'article',
       title: 'Lint Report',
       children: [{ type: 'text', text: 'No weak claims found.' }]
     }
-    const rendered = await tools['render_panel_spec']!.handler(ctx, { panelSpec })
-    expect(tools['render_panel_spec']!.output.safeParse(rendered).success).toBe(true)
+    const rendered = await tools['renderPanelSpec']!.handler(ctx, { panelSpec })
+    expect(tools['renderPanelSpec']!.output.safeParse(rendered).success).toBe(true)
     expect(rendered).toEqual({ panelSpec })
   })
 })

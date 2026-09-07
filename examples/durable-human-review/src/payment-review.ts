@@ -2,13 +2,10 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import {
   defineHarness,
-  InMemoryHarnessStorage,
-  inMemorySandbox,
+  defineWorkflow,
   type HarnessStorage,
   type JsonValue,
-  type Sandbox,
 } from '@purista/harness'
-import { FakeModelProvider } from '@purista/harness/testing'
 import {
   actionDigest,
   executionReceiptSchema,
@@ -49,10 +46,7 @@ export interface PaymentReviewAdmission {
 export interface PaymentReviewExampleOptions extends PaymentReviewAdmission {
   readonly tasks: ReviewTaskStore
   readonly payments: PaymentExecutor
-  readonly storage?: HarnessStorage
-  readonly sandbox?: Sandbox
-  /** Application composition clock. Pass the same clock to in-memory storage and task store in tests. */
-  readonly now?: () => Date
+  readonly storage: HarnessStorage
 }
 
 /**
@@ -62,16 +56,11 @@ export interface PaymentReviewExampleOptions extends PaymentReviewAdmission {
  * stay in the application. Harness only persists the safe wait/checkpoint state.
  */
 export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
-  const now = input.now ?? (() => new Date())
-  const storage = input.storage ?? new InMemoryHarnessStorage({ now })
-  const harness = defineHarness({ name: 'durable-payment-review-example' })
-    .sandbox(input.sandbox ?? inMemorySandbox())
-    .storage(storage)
-    .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-    .agent('noop', { model: 'fake', instructions: 'No model call is needed for this reference workflow.' })
-    .workflow('review_payment', {
+  const storage = input.storage
+  const reviewPayment = defineWorkflow('reviewPayment', {
       input: paymentInputSchema,
       output: paymentResultSchema,
+      durable: true,
       handler: async (ctx): Promise<PaymentResult> => {
         const action = paymentInputSchema.parse(ctx.input)
         const identity = reviewIdentity(action)
@@ -124,7 +113,9 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
         return { status: 'approved' }
       },
     })
-    .build()
+  const harness = defineHarness({ name: 'durablePaymentReviewExample', revision: 'v1' })
+    .addWorkflow(reviewPayment)
+    .getInstance({ storage })
 
   return {
     storage,
@@ -139,9 +130,10 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
       // check after checkpoint replay to close the race with task changes.
       const existingTask = await input.tasks.get(identity.businessKey)
       if (existingTask) assertTaskMatchesInvocation(existingTask, action, identity)
-      const session = await harness.getSession(identity.sessionId)
+      const activeHarness = await harness
+      const session = await activeHarness.getSession(identity.sessionId)
       try {
-        const outcome = await session.workflows.review_payment.run(action, { durable: { runId: identity.runId } })
+        const outcome = await session.workflows.reviewPayment.run(action, { durable: { runId: identity.runId } })
         if (outcome.status === 'interrupted') {
           if (outcome.interrupt.type === 'external-wait') return { status: 'waiting' }
           throw new Error(`Unexpected ${outcome.interrupt.type} interrupt in payment review workflow.`)
@@ -151,6 +143,8 @@ export function createPaymentReviewExample(input: PaymentReviewExampleOptions) {
         await session.release()
       }
     },
+    /** Releases Harness runtime resources. */
+    async close(): Promise<void> { await (await harness).close() },
   }
 }
 

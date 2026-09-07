@@ -2,20 +2,21 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateRawSync } from 'node:zlib'
 import {
-  bashSandbox,
+  defineAgent,
   defineHarness,
-  inMemorySandbox,
+  defineMcpServer,
+  defineWorkflow,
+  sqliteHarnessStorage,
   JsonLogger,
-  type Harness,
-  type HarnessAdapterContext,
   type JsonValue,
-  type McpHttpToolDefinition,
-  type McpStdioToolDefinition,
+  type McpBinding,
+  type ModelProvider,
   type ObjectRequest,
   type ObjectResponse,
-  type ModelProvider,
-  type Sandbox,
+  type ObjectStreamChunk,
 } from '@purista/harness'
+import { openai } from '@purista/harness-openai'
+import { z } from 'zod'
 import { createFileWikiStore, type FileWikiStore } from './data.js'
 import { loadRootEnv as loadRepositoryRootEnv, requireOpenAiKey as requireRepositoryOpenAiKey } from './env.js'
 import { createLivingWikiTools, makePanelSpec } from './tools.js'
@@ -39,7 +40,6 @@ import {
   wikiQualityAuditOutputSchema,
   type ArchitectureReviewOutput,
   type DecisionMemoOutput,
-  type IngestSourceInput,
   type ProposedPageChange,
   type ResearchArtifact,
   type ReviewRequest,
@@ -69,467 +69,150 @@ export type AgentId =
   | 'architecture_reviewer'
   | 'wiki_auditor'
 
-export const workflowIds: WorkflowId[] = [
-  'ingest_source',
-  'ask_wiki',
-  'lint_wiki',
-  'reconcile_contradiction',
-  'generate_research_brief',
-  'decision_memo',
-  'architecture_review',
-  'wiki_audit',
-]
-export const agentIds: AgentId[] = [
-  'wiki_curator',
-  'wiki_answerer',
-  'wiki_linter',
-  'wiki_reconciler',
-  'wiki_brief_writer',
-  'source_extractor',
-  'decision_memo_writer',
-  'architecture_reviewer',
-  'wiki_auditor',
-]
+export const workflowIds: readonly WorkflowId[] = Object.freeze([
+  'ingest_source', 'ask_wiki', 'lint_wiki', 'reconcile_contradiction',
+  'generate_research_brief', 'decision_memo', 'architecture_review', 'wiki_audit',
+])
+export const agentIds: readonly AgentId[] = Object.freeze([
+  'wiki_curator', 'wiki_answerer', 'wiki_linter', 'wiki_reconciler', 'wiki_brief_writer',
+  'source_extractor', 'decision_memo_writer', 'architecture_reviewer', 'wiki_auditor',
+])
 
-export function loadRootEnv(): void {
-  loadRepositoryRootEnv(exampleRoot)
-}
+const workflowTarget = {
+  ingest_source: 'ingestSource', ask_wiki: 'askWiki', lint_wiki: 'lintWiki',
+  reconcile_contradiction: 'reconcileContradiction', generate_research_brief: 'generateResearchBrief',
+  decision_memo: 'decisionMemo', architecture_review: 'architectureReview', wiki_audit: 'wikiAudit',
+} as const
+const agentTarget = {
+  wiki_curator: 'wikiCurator', wiki_answerer: 'wikiAnswerer', wiki_linter: 'wikiLinter',
+  wiki_reconciler: 'wikiReconciler', wiki_brief_writer: 'wikiBriefWriter', source_extractor: 'sourceExtractor',
+  decision_memo_writer: 'decisionMemoWriter', architecture_reviewer: 'architectureReviewer', wiki_auditor: 'wikiAuditor',
+} as const
 
-function requireOpenAiKey(): string {
-  return requireRepositoryOpenAiKey(exampleRoot)
-}
+export function resolveWorkflowTarget(id: WorkflowId) { return workflowTarget[id] }
+export function resolveAgentTarget(id: AgentId) { return agentTarget[id] }
+
+export function loadRootEnv(): void { loadRepositoryRootEnv(exampleRoot) }
+function requireOpenAiKey(): string { return requireRepositoryOpenAiKey(exampleRoot) }
 
 export class ScriptedLivingWikiProvider implements ModelProvider {
   public readonly id = 'scripted-living-wiki'
   public readonly genAiSystem = 'fake'
   public readonly requests: ObjectRequest[] = []
-
   public constructor(private readonly options: { delayMs?: number } = {}) {}
-
   async object<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
     this.requests.push(req)
-    if (this.options.delayMs) {
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(resolve, this.options.delayMs)
-        req.signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timeout)
-            reject(req.signal.reason ?? new Error('cancelled'))
-          },
-          { once: true },
-        )
-      })
-    }
-
+    if (this.options.delayMs) await new Promise((resolveDelay, reject) => {
+      const timeout = setTimeout(resolveDelay, this.options.delayMs)
+      req.signal.addEventListener('abort', () => { clearTimeout(timeout); reject(req.signal.reason ?? new Error('cancelled')) }, { once: true })
+    })
     const text = JSON.stringify(req.messages).toLowerCase()
     const usage = { inputTokens: 20, outputTokens: 10, totalTokens: 30 }
-    if (text.includes('ingest_source')) {
-      return {
-        object: objectData({
-          updatedPages: ['jaeger'],
-          extractedConcepts: ['jaeger'],
-          followUpQuestions: ['Which service owns trace retention?'],
-          proposedChanges: [auditNoteChange('ingest-change-1')],
-          contradictions: [],
-          citedEvidence: [sourceEvidence()],
-          panelSpec: makePanelSpec('Source Ingest', [
-            { heading: 'Needs Review', items: ['1 proposed Jaeger page update'] },
-          ]),
-        }) as T,
-        usage,
-        finishReason: 'stop',
-      }
-    }
-    if (text.includes('lint_wiki')) {
-      return {
-        object: objectData({
-          orphanPages: [],
-          missingBacklinks: [],
-          weakClaims: [],
-          staleNotes: [],
-          duplicateConcepts: [],
-          panelSpec: makePanelSpec('Lint Report', [{ heading: 'Status', items: ['No blocking wiki issues found.'] }]),
-        }) as T,
-        usage,
-        finishReason: 'stop',
-      }
-    }
-    if (text.includes('reconcile_contradiction')) {
-      return {
-        object: objectData({
-          summary: 'The conflict is recorded and left with a narrow follow-up.',
-          changedPages: ['jaeger'],
-          unresolvedQuestions: ['Confirm the authoritative wording.'],
-        }) as T,
-        usage,
-        finishReason: 'stop',
-      }
-    }
-    if (text.includes('generate_research_brief')) {
-      return {
-        object: objectData({
-          markdown: '## Research Brief\n\nJaeger traces make local harness runs observable.',
-          panelSpec: makePanelSpec('Research Brief', [{ heading: 'Cited Pages', items: ['jaeger'] }]),
-          citedPages: ['jaeger'],
-        }) as T,
-        usage,
-        finishReason: 'stop',
-      }
-    }
-    if (text.includes('decision_memo')) {
-      return { object: objectData(decisionMemoFixture()) as T, usage, finishReason: 'stop' }
-    }
-    if (text.includes('architecture_review')) {
-      return { object: objectData(architectureReviewFixture()) as T, usage, finishReason: 'stop' }
-    }
-    if (text.includes('wiki_audit')) {
-      return { object: objectData(wikiAuditFixture()) as T, usage, finishReason: 'stop' }
-    }
-    return {
-      object: objectData({
-        answer: 'Jaeger stores and visualizes traces for local harness workflow runs.',
-        citedPages: ['jaeger'],
-        confidenceNotes: ['Fake provider response for hermetic tests.'],
-      }) as T,
-      usage,
-      finishReason: 'stop',
-    }
+    if (text.includes('ingest_source')) return { object: objectData({ updatedPages: ['jaeger'], extractedConcepts: ['jaeger'], followUpQuestions: ['Which service owns trace retention?'], proposedChanges: [auditNoteChange('ingest-change-1')], contradictions: [], citedEvidence: [sourceEvidence()], panelSpec: makePanelSpec('Source Ingest', [{ heading: 'Needs Review', items: ['1 proposed Jaeger page update'] }]) }) as T, usage, finishReason: 'stop' }
+    if (text.includes('lint_wiki')) return { object: objectData({ orphanPages: [], missingBacklinks: [], weakClaims: [], staleNotes: [], duplicateConcepts: [], panelSpec: makePanelSpec('Lint Report', [{ heading: 'Status', items: ['No blocking wiki issues found.'] }]) }) as T, usage, finishReason: 'stop' }
+    if (text.includes('reconcile_contradiction')) return { object: objectData({ summary: 'The conflict is recorded and left with a narrow follow-up.', changedPages: ['jaeger'], unresolvedQuestions: ['Confirm the authoritative wording.'] }) as T, usage, finishReason: 'stop' }
+    if (text.includes('generate_research_brief')) return { object: objectData({ markdown: '## Research Brief\n\nJaeger traces make local harness runs observable.', panelSpec: makePanelSpec('Research Brief', [{ heading: 'Cited Pages', items: ['jaeger'] }]), citedPages: ['jaeger'] }) as T, usage, finishReason: 'stop' }
+    if (text.includes('decision_memo')) return { object: objectData(decisionMemoFixture()) as T, usage, finishReason: 'stop' }
+    if (text.includes('architecture_review')) return { object: objectData(architectureReviewFixture()) as T, usage, finishReason: 'stop' }
+    if (text.includes('wiki_audit')) return { object: objectData(wikiAuditFixture()) as T, usage, finishReason: 'stop' }
+    return { object: objectData({ answer: 'Jaeger stores and visualizes traces for local harness workflow runs.', citedPages: ['jaeger'], confidenceNotes: ['Fake provider response for hermetic tests.'] }) as T, usage, finishReason: 'stop' }
+  }
+  async *objectStream<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+    const response = await this.object(req)
+    yield { kind: 'partial', partial: response.object }
+    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
   }
 }
 
-export function createScriptedLivingWikiProvider(options: { delayMs?: number } = {}): ScriptedLivingWikiProvider {
-  return new ScriptedLivingWikiProvider(options)
-}
+export function createScriptedLivingWikiProvider(options: { delayMs?: number } = {}) { return new ScriptedLivingWikiProvider(options) }
+
+const drawioDiagramInputSchema = z.object({
+  title: z.string().min(1),
+  nodes: z.array(z.string().min(1)).min(1),
+})
+const drawioDiagramOutputSchema = z.object({ xml: z.string().min(1) })
+
+/** Optional remote diagram capability selected explicitly by the architecture-review agent. */
+export const drawioMcpServer = defineMcpServer('drawio', {
+  tools: {
+    createDrawioDiagram: {
+      remoteName: 'create_drawio_diagram',
+      description: 'Create a draw.io XML diagram from a title and labeled nodes.',
+      input: drawioDiagramInputSchema,
+      output: drawioDiagramOutputSchema,
+    },
+  },
+})
 
 export interface LivingWikiHarnessOptions {
   dataRoot?: string
-  skillDirectory?: string
   provider?: ModelProvider
   model?: string
   store?: FileWikiStore
-  sandbox?: Sandbox
+  /** Runtime-only HTTP or stdio transport for the optional draw.io MCP server. */
+  drawioMcp?: McpBinding
 }
 
-export interface LivingWikiHarnessResult {
-  harness: Harness<any>
-  store: FileWikiStore
-  provider: ModelProvider
-  model: string
-}
-
-export function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}): LivingWikiHarnessResult {
+export async function createLivingWikiHarness(options: LivingWikiHarnessOptions = {}) {
   loadRootEnv()
   const model = options.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'
-  const provider = options.provider ?? lazyOpenAiProvider(requireOpenAiKey())
-  const store = options.store ?? createFileWikiStore({ dataDir: options.dataRoot ?? join(exampleRoot, 'data') })
-  const skillDirectory = options.skillDirectory ?? join(exampleRoot, 'skills/wiki-curator')
+  const provider = options.provider ?? openai({ apiKey: requireOpenAiKey() })
+  const dataRoot = options.dataRoot ?? join(exampleRoot, 'data')
+  const store = options.store ?? createFileWikiStore({ dataDir: dataRoot })
+  const storage = sqliteHarnessStorage({ file: join(dataRoot, 'harness.sqlite') })
   const skillsRoot = join(exampleRoot, 'skills')
-  const drawioMcpTool = createDrawioMcpTool()
-  const builtInAgentTools = [
-    'read_source',
-    'search_wiki',
-    'read_wiki_page',
-    'write_wiki_page',
-    'append_log',
-    'list_backlinks',
-    'render_panel_spec',
-  ] as const
-  const agentTools = drawioMcpTool ? ([...builtInAgentTools, 'drawio_mcp_diagram'] as const) : builtInAgentTools
-  const baseInstructions = [
-    'Use the mounted wiki-curator skill.',
-    'Keep markdown compact and linked with [[page-slug]] syntax.',
-    'Use tools for source/wiki reads, wiki writes, backlinks, panels, and log entries.',
-    'Return only JSON matching the requested workflow schema.',
-  ].join('\n')
+  const tools = createLivingWikiTools(store)
+  const readTools = [tools.readSource, tools.searchWiki, tools.readWikiPage, tools.listBacklinks, tools.renderPanelSpec] as const
+  const answerTools = [...readTools, tools.writeWikiPage] as const
+  const drawioMcpBinding = options.drawioMcp ?? drawioMcpBindingFromEnvironment()
+  const baseInstructions = 'Use the mounted skills and tools to ground the answer in the local wiki. Return only data matching the output schema.'
+  const wikiCurator = defineAgent('wikiCurator', { model: 'wikiModel', input: ingestSourceInputSchema, output: ingestSourceOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: ingest_source.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const sourceExtractor = defineAgent('sourceExtractor', { model: 'wikiModel', input: ingestSourceInputSchema, output: ingestSourceOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: ingest_source. Plan source extraction and proposed page changes.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const wikiAnswerer = defineAgent('wikiAnswerer', {
+    model: 'wikiModel', input: askWikiInputSchema, output: askWikiOutputSchema, tools: answerTools,
+    instructions: `${baseInstructions} Workflow: ask_wiki. Ask for approval before applying any requested page change.`,
+    prompt: input => ({ role: 'user', content: JSON.stringify(input) }),
+    governance: ({ native, rule }) => ({
+      defaultEffect: 'allow',
+      policies: [native({
+        id: 'wikiWritePolicy',
+        rules: [rule({ id: 'approveWikiWrite', tools: ['writeWikiPage'], effect: 'require_approval', reasonCode: 'wiki_write' })],
+      })],
+    }),
+  })
+  const wikiLinter = defineAgent('wikiLinter', { model: 'wikiModel', input: lintWikiInputSchema, output: lintWikiOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: lint_wiki.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const wikiReconciler = defineAgent('wikiReconciler', { model: 'wikiModel', input: reconcileContradictionInputSchema, output: reconcileContradictionOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: reconcile_contradiction.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const wikiBriefWriter = defineAgent('wikiBriefWriter', { model: 'wikiModel', input: generateResearchBriefInputSchema, output: generateResearchBriefOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: generate_research_brief.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const decisionMemoWriter = defineAgent('decisionMemoWriter', { model: 'wikiModel', input: decisionMemoInputSchema, output: decisionMemoOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: decision_memo.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const architectureReviewer = defineAgent('architectureReviewer', { model: 'wikiModel', input: architectureReviewInputSchema, output: architectureReviewOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: architecture_review.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const architectureReviewerWithDrawio = defineAgent('architectureReviewer', { model: 'wikiModel', input: architectureReviewInputSchema, output: architectureReviewOutputSchema, tools: [...readTools, drawioMcpServer.tools.createDrawioDiagram], instructions: `${baseInstructions} Workflow: architecture_review. Use createDrawioDiagram when a remote draw.io server is available.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
+  const wikiAuditor = defineAgent('wikiAuditor', { model: 'wikiModel', input: wikiQualityAuditInputSchema, output: wikiQualityAuditOutputSchema, tools: readTools, instructions: `${baseInstructions} Workflow: wiki_audit.`, prompt: input => ({ role: 'user', content: JSON.stringify(input) }) })
 
-  const harness = defineHarness({ name: 'living-wiki-jaeger-example' })
-    .logger(new JsonLogger({ level: 'info' }))
-    .telemetry({})
-    .sandbox(options.sandbox ?? (drawioMcpTool?.kind === 'mcp_stdio' ? bashSandbox() : inMemorySandbox()))
-    .models({
-      wiki_model: {
-        provider,
-        model,
-        capabilities: ['text', 'object', 'tool_use'],
-      },
-    })
-    .tools({
-      ...createLivingWikiTools(store),
-      ...(drawioMcpTool ? { drawio_mcp_diagram: drawioMcpTool } : {}),
-    })
-    .skills({
-      'wiki-curator': { directory: skillDirectory },
-      'research-brief-writer': { directory: join(skillsRoot, 'research-brief-writer') },
-      'diagram-designer': { directory: join(skillsRoot, 'diagram-designer') },
-      'decision-memo-planner': { directory: join(skillsRoot, 'decision-memo-planner') },
-      'reflective-critic': { directory: join(skillsRoot, 'reflective-critic') },
-      'judge-rubric': { directory: join(skillsRoot, 'judge-rubric') },
-    })
-    .agent('wiki_curator', {
-      model: 'wiki_model',
-      input: ingestSourceInputSchema,
-      output: ingestSourceOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator'],
-      instructions: (ctx) => `${baseInstructions}\nWorkflow: ingest_source\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('source_extractor', {
-      model: 'wiki_model',
-      input: ingestSourceInputSchema,
-      output: ingestSourceOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator', 'reflective-critic'],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: ingest_source\nPlan source extraction and produce proposed page changes for human review.\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('wiki_answerer', {
-      model: 'wiki_model',
-      input: askWikiInputSchema,
-      output: askWikiOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator'],
-      instructions: (ctx) => `${baseInstructions}\nWorkflow: ask_wiki\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('wiki_linter', {
-      model: 'wiki_model',
-      input: lintWikiInputSchema,
-      output: lintWikiOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator'],
-      instructions: (ctx) => `${baseInstructions}\nWorkflow: lint_wiki\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('wiki_reconciler', {
-      model: 'wiki_model',
-      input: reconcileContradictionInputSchema,
-      output: reconcileContradictionOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator'],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: reconcile_contradiction\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('wiki_brief_writer', {
-      model: 'wiki_model',
-      input: generateResearchBriefInputSchema,
-      output: generateResearchBriefOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator', 'research-brief-writer'],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: generate_research_brief\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('decision_memo_writer', {
-      model: 'wiki_model',
-      input: decisionMemoInputSchema,
-      output: decisionMemoOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: [
-        'decision-memo-planner',
-        'research-brief-writer',
-        'diagram-designer',
-        'reflective-critic',
-        'judge-rubric',
-      ],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: decision_memo\nUse plan, retrieve, reason, reflect, judge, publish phases.\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('architecture_reviewer', {
-      model: 'wiki_model',
-      input: architectureReviewInputSchema,
-      output: architectureReviewOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator', 'reflective-critic', 'judge-rubric', 'diagram-designer'],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: architecture_review\nReview API, data, operations, security, migration, and observability concerns.\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .agent('wiki_auditor', {
-      model: 'wiki_model',
-      input: wikiQualityAuditInputSchema,
-      output: wikiQualityAuditOutputSchema,
-      tools: agentTools,
-      builtinTools: ['read'],
-      skills: ['wiki-curator', 'reflective-critic', 'judge-rubric'],
-      instructions: (ctx) =>
-        `${baseInstructions}\nWorkflow: wiki_audit\nAudit without mutating pages; return proposed changes and a review request.\nInput: ${JSON.stringify(ctx.input)}`,
-    })
-    .workflow('ingest_source', {
-      input: ingestSourceInputSchema,
-      output: ingestSourceOutputSchema,
-      delegation: { agents: ['source_extractor'] },
-      handler: async (ctx) => {
-        await store.readSource(ctx.input.sourceSlug)
-        const output = await ctx.agents.source_extractor(ctx.input, { signal: ctx.signal })
-        return {
-          ...output,
-          reviewRequest: withRunId(
-            output.reviewRequest ??
-              reviewRequest(
-                ctx.runId,
-                'source-ingest',
-                'Review source ingest changes',
-                'Approve extracted wiki edits before applying them.',
-              ),
-            ctx.runId,
-          ),
-          phases: phases('source_extractor'),
-        }
-      },
-    })
-    .workflow('ask_wiki', {
-      input: askWikiInputSchema,
-      output: askWikiOutputSchema,
-      delegation: { agents: ['wiki_answerer'] },
-      handler: async (ctx) => ctx.agents.wiki_answerer(ctx.input, { signal: ctx.signal }),
-    })
-    .workflow('lint_wiki', {
-      input: lintWikiInputSchema,
-      output: lintWikiOutputSchema,
-      delegation: { agents: ['wiki_linter'] },
-      handler: async (ctx) => ctx.agents.wiki_linter(ctx.input, { signal: ctx.signal }),
-    })
-    .workflow('reconcile_contradiction', {
-      input: reconcileContradictionInputSchema,
-      output: reconcileContradictionOutputSchema,
-      delegation: { agents: ['wiki_reconciler'] },
-      handler: async (ctx) => {
-        await store.readWikiPage(ctx.input.leftRef)
-        await store.readWikiPage(ctx.input.rightRef)
-        const output = await ctx.agents.wiki_reconciler(ctx.input, { signal: ctx.signal })
-        await store.appendLog({
-          workflow: 'reconcile_contradiction',
-          message: ctx.input.conflict,
-          pages: output.changedPages,
-        })
-        return output
-      },
-    })
-    .workflow('generate_research_brief', {
-      input: generateResearchBriefInputSchema,
-      output: generateResearchBriefOutputSchema,
-      delegation: { agents: ['wiki_brief_writer'] },
-      handler: async (ctx) => {
-        const pages = await Promise.all(ctx.input.pageSlugs.map((slug) => store.readWikiPage(slug)))
-        const output = await ctx.agents.wiki_brief_writer(ctx.input, { signal: ctx.signal })
-        const markdown = researchBriefMarkdown(
-          ctx.input.goal,
-          pages.map((page) => page.slug),
-          output.markdown,
-        )
-        const panelSpec =
-          output.panelSpec ?? makePanelSpec('Research Brief', [{ heading: 'Cited Pages', items: output.citedPages }])
-        const artifacts = await createStudioArtifactSet(store, {
-          runId: ctx.runId,
-          baseTitle: 'Research Brief',
-          markdown,
-          panelSpec,
-          sourcePageIds: output.citedPages,
-          mermaid: researchBriefMermaid(output.citedPages),
-          drawioXml: drawioArchitectureXml(
-            'Research Brief Studio',
-            ['Evidence', 'Synthesis', 'Risks', 'Next actions'],
-            'Research brief',
-          ),
-        })
-        return generateResearchBriefOutputSchema.parse({
-          ...output,
-          markdown,
-          panelSpec,
-          artifacts: [...(output.artifacts ?? []), ...artifacts],
-          phases: phases('wiki_brief_writer'),
-        })
-      },
-    })
-    .workflow('decision_memo', {
-      input: decisionMemoInputSchema,
-      output: decisionMemoOutputSchema,
-      delegation: { agents: ['decision_memo_writer'] },
-      handler: async (ctx) => {
-        const output = await ctx.agents.decision_memo_writer(ctx.input, { signal: ctx.signal })
-        const markdown = decisionMemoMarkdown(ctx.input.proposal, output)
-        const panelSpec =
-          output.panelSpec ??
-          makePanelSpec('Decision Memo', [{ heading: 'Recommendation', items: [output.recommendation] }])
-        const artifacts = await createStudioArtifactSet(store, {
-          runId: ctx.runId,
-          baseTitle: 'Decision Memo',
-          markdown,
-          panelSpec,
-          sourcePageIds: citedPageIds(output.citedEvidence),
-          mermaid: decisionMemoMermaid(output.recommendation),
-          drawioXml: drawioArchitectureXml(
-            'Decision Memo Studio',
-            ['Proposal', 'Options', 'Recommendation', 'Pilot plan'],
-            `Recommendation: ${output.recommendation}`,
-          ),
-        })
-        return decisionMemoOutputSchema.parse({
-          ...output,
-          ...(output.reviewRequest ? { reviewRequest: withRunId(output.reviewRequest, ctx.runId) } : {}),
-          markdown,
-          panelSpec,
-          artifacts: [...output.artifacts, ...artifacts],
-          phases: phases('decision_memo_writer'),
-        })
-      },
-    })
-    .workflow('architecture_review', {
-      input: architectureReviewInputSchema,
-      output: architectureReviewOutputSchema,
-      delegation: { agents: ['architecture_reviewer'] },
-      handler: async (ctx) => {
-        if (ctx.input.sourceSlug) await store.readSource(ctx.input.sourceSlug)
-        if (ctx.input.pageSlug) await store.readWikiPage(ctx.input.pageSlug)
-        const output = await ctx.agents.architecture_reviewer(ctx.input, { signal: ctx.signal })
-        const markdown = architectureReviewMarkdown(ctx.input.focus, output)
-        const panelSpec =
-          output.panelSpec ??
-          makePanelSpec('Architecture Review', [{ heading: 'Readiness', items: [output.readiness] }])
-        const artifacts = await createStudioArtifactSet(store, {
-          runId: ctx.runId,
-          baseTitle: 'Architecture Review',
-          markdown,
-          panelSpec,
-          sourcePageIds: ctx.input.pageSlug ? [ctx.input.pageSlug] : citedPageIds(output.citedEvidence),
-          mermaid: architectureReviewMermaid(output.readiness),
-          drawioXml: drawioArchitectureXml(
-            'Architecture Board Studio',
-            ['API surface', 'Data ownership', 'Operations', 'Security', 'Migration', 'Observability'],
-            `Readiness: ${output.readiness}`,
-          ),
-        })
-        return architectureReviewOutputSchema.parse({
-          ...output,
-          ...(output.reviewRequest ? { reviewRequest: withRunId(output.reviewRequest, ctx.runId) } : {}),
-          markdown,
-          panelSpec,
-          artifacts: [...output.artifacts, ...artifacts],
-          phases: phases('architecture_reviewer'),
-        })
-      },
-    })
-    .workflow('wiki_audit', {
-      input: wikiQualityAuditInputSchema,
-      output: wikiQualityAuditOutputSchema,
-      delegation: { agents: ['wiki_auditor'] },
-      handler: async (ctx) => {
-        const output = await ctx.agents.wiki_auditor(ctx.input, { signal: ctx.signal })
-        return {
-          ...output,
-          reviewRequest: withRunId(output.reviewRequest, ctx.runId),
-          phases: phases('wiki_auditor'),
-        }
-      },
-    })
-    .build()
+  const ingestSource = defineWorkflow('ingestSource', { input: ingestSourceInputSchema, output: ingestSourceOutputSchema, agents: { sourceExtractor }, async handler(ctx) { await store.readSource(ctx.input.sourceSlug); const output = await ctx.agents.sourceExtractor.run(ctx.input, { callId: 'extractSource' }); return { ...output, reviewRequest: withRunId(output.reviewRequest ?? reviewRequest(ctx.runId, 'source-ingest', 'Review source ingest changes', 'Approve extracted wiki edits before applying them.'), ctx.runId), phases: phases('sourceExtractor') } } })
+  const askWiki = defineWorkflow('askWiki', { input: askWikiInputSchema, output: askWikiOutputSchema, agents: { wikiAnswerer }, handler: ctx => ctx.agents.wikiAnswerer.run(ctx.input, { callId: 'answerWiki' }) })
+  const lintWiki = defineWorkflow('lintWiki', { input: lintWikiInputSchema, output: lintWikiOutputSchema, agents: { wikiLinter }, handler: ctx => ctx.agents.wikiLinter.run(ctx.input, { callId: 'lintWiki' }) })
+  const reconcileContradiction = defineWorkflow('reconcileContradiction', { input: reconcileContradictionInputSchema, output: reconcileContradictionOutputSchema, agents: { wikiReconciler }, async handler(ctx) { await store.readWikiPage(ctx.input.leftRef); await store.readWikiPage(ctx.input.rightRef); const output = await ctx.agents.wikiReconciler.run(ctx.input, { callId: 'reconcileWiki' }); await store.appendLog({ workflow: 'reconcile_contradiction', message: ctx.input.conflict, pages: output.changedPages }); return output } })
+  const generateResearchBrief = defineWorkflow('generateResearchBrief', { input: generateResearchBriefInputSchema, output: generateResearchBriefOutputSchema, agents: { wikiBriefWriter }, async handler(ctx) { const pages = await Promise.all(ctx.input.pageSlugs.map(slug => store.readWikiPage(slug))); const output = await ctx.agents.wikiBriefWriter.run(ctx.input, { callId: 'writeBrief' }); const markdown = researchBriefMarkdown(ctx.input.goal, pages.map(page => page.slug), output.markdown); const panelSpec = output.panelSpec ?? makePanelSpec('Research Brief', [{ heading: 'Cited Pages', items: output.citedPages }]); const artifacts = await createStudioArtifactSet(store, { runId: ctx.runId, baseTitle: 'Research Brief', markdown, panelSpec, sourcePageIds: output.citedPages, mermaid: researchBriefMermaid(output.citedPages), drawioXml: drawioArchitectureXml('Research Brief Studio', ['Evidence', 'Synthesis', 'Risks', 'Next actions'], 'Research brief') }); return generateResearchBriefOutputSchema.parse({ ...output, markdown, panelSpec, artifacts: [...(output.artifacts ?? []), ...artifacts], phases: phases('wikiBriefWriter') }) } })
+  const decisionMemo = defineWorkflow('decisionMemo', { input: decisionMemoInputSchema, output: decisionMemoOutputSchema, agents: { decisionMemoWriter }, async handler(ctx) { const output = await ctx.agents.decisionMemoWriter.run(ctx.input, { callId: 'writeDecisionMemo' }); const markdown = decisionMemoMarkdown(ctx.input.proposal, output); const panelSpec = output.panelSpec ?? makePanelSpec('Decision Memo', [{ heading: 'Recommendation', items: [output.recommendation] }]); const artifacts = await createStudioArtifactSet(store, { runId: ctx.runId, baseTitle: 'Decision Memo', markdown, panelSpec, sourcePageIds: citedPageIds(output.citedEvidence), mermaid: decisionMemoMermaid(output.recommendation), drawioXml: drawioArchitectureXml('Decision Memo Studio', ['Proposal', 'Options', 'Recommendation', 'Pilot plan'], `Recommendation: ${output.recommendation}`) }); return decisionMemoOutputSchema.parse({ ...output, ...(output.reviewRequest ? { reviewRequest: withRunId(output.reviewRequest, ctx.runId) } : {}), markdown, panelSpec, artifacts: [...output.artifacts, ...artifacts], phases: phases('decisionMemoWriter') }) } })
+  const architectureReview = defineWorkflow('architectureReview', { input: architectureReviewInputSchema, output: architectureReviewOutputSchema, agents: { architectureReviewer }, async handler(ctx) { if (ctx.input.sourceSlug) await store.readSource(ctx.input.sourceSlug); if (ctx.input.pageSlug) await store.readWikiPage(ctx.input.pageSlug); const output = await ctx.agents.architectureReviewer.run(ctx.input, { callId: 'reviewArchitecture' }); const markdown = architectureReviewMarkdown(ctx.input.focus, output); const panelSpec = output.panelSpec ?? makePanelSpec('Architecture Review', [{ heading: 'Readiness', items: [output.readiness] }]); const artifacts = await createStudioArtifactSet(store, { runId: ctx.runId, baseTitle: 'Architecture Review', markdown, panelSpec, sourcePageIds: ctx.input.pageSlug ? [ctx.input.pageSlug] : citedPageIds(output.citedEvidence), mermaid: architectureReviewMermaid(output.readiness), drawioXml: drawioArchitectureXml('Architecture Board Studio', ['API surface', 'Data ownership', 'Operations', 'Security', 'Migration', 'Observability'], `Readiness: ${output.readiness}`) }); return architectureReviewOutputSchema.parse({ ...output, ...(output.reviewRequest ? { reviewRequest: withRunId(output.reviewRequest, ctx.runId) } : {}), markdown, panelSpec, artifacts: [...output.artifacts, ...artifacts], phases: phases('architectureReviewer') }) } })
+  const architectureReviewWithDrawio = defineWorkflow('architectureReview', { input: architectureReviewInputSchema, output: architectureReviewOutputSchema, agents: { architectureReviewer: architectureReviewerWithDrawio }, async handler(ctx) { if (ctx.input.sourceSlug) await store.readSource(ctx.input.sourceSlug); if (ctx.input.pageSlug) await store.readWikiPage(ctx.input.pageSlug); const output = await ctx.agents.architectureReviewer.run(ctx.input, { callId: 'reviewArchitecture' }); const markdown = architectureReviewMarkdown(ctx.input.focus, output); const panelSpec = output.panelSpec ?? makePanelSpec('Architecture Review', [{ heading: 'Readiness', items: [output.readiness] }]); const artifacts = await createStudioArtifactSet(store, { runId: ctx.runId, baseTitle: 'Architecture Review', markdown, panelSpec, sourcePageIds: ctx.input.pageSlug ? [ctx.input.pageSlug] : citedPageIds(output.citedEvidence), mermaid: architectureReviewMermaid(output.readiness), drawioXml: drawioArchitectureXml('Architecture Board Studio', ['API surface', 'Data ownership', 'Operations', 'Security', 'Migration', 'Observability'], `Readiness: ${output.readiness}`) }); return architectureReviewOutputSchema.parse({ ...output, ...(output.reviewRequest ? { reviewRequest: withRunId(output.reviewRequest, ctx.runId) } : {}), markdown, panelSpec, artifacts: [...output.artifacts, ...artifacts], phases: phases('architectureReviewer') }) } })
+  const wikiAudit = defineWorkflow('wikiAudit', { input: wikiQualityAuditInputSchema, output: wikiQualityAuditOutputSchema, agents: { wikiAuditor }, async handler(ctx) { const output = await ctx.agents.wikiAuditor.run(ctx.input, { callId: 'auditWiki' }); return { ...output, reviewRequest: withRunId(output.reviewRequest, ctx.runId), phases: phases('wikiAuditor') } } })
 
-  return { harness, store, provider, model }
+  const definition = defineHarness({ name: 'livingWikiJaegerExample', revision: 'v1' })
+    .addAgent(wikiCurator).addAgent(sourceExtractor).addAgent(wikiAnswerer).addAgent(wikiLinter)
+    .addAgent(wikiReconciler).addAgent(wikiBriefWriter).addAgent(decisionMemoWriter).addAgent(wikiAuditor)
+    .addWorkflow(ingestSource).addWorkflow(askWiki).addWorkflow(lintWiki).addWorkflow(reconcileContradiction)
+    .addWorkflow(generateResearchBrief).addWorkflow(decisionMemo).addWorkflow(wikiAudit)
+  const runtime = { models: { wikiModel: { provider, model } }, storage, logger: new JsonLogger({ level: 'info' }), telemetry: { flavor: 'dual' as const, contentCaptureMode: 'NO_CONTENT' as const } }
+  try {
+    const harness = drawioMcpBinding === undefined
+      ? await definition.addAgent(architectureReviewer).addWorkflow(architectureReview).getInstance(runtime)
+      : await definition.addMcpServer(drawioMcpServer).addAgent(architectureReviewerWithDrawio).addWorkflow(architectureReviewWithDrawio).getInstance({ ...runtime, mcp: { drawio: drawioMcpBinding } })
+    return { harness, store, provider, model, storage }
+  } catch (error) {
+    await storage.close().catch(() => undefined)
+    throw error
+  }
 }
 
 function sourceEvidence() {
@@ -1025,49 +708,20 @@ function citedPageIds(evidence: Array<{ sourceType: string; reference: string }>
 }
 
 function drawioMcpStatus(): string {
-  const mcpConfigured = Boolean(
-    process.env['LIVING_WIKI_DRAWIO_MCP_COMMAND'] || process.env['LIVING_WIKI_DRAWIO_MCP_URL'],
-  )
+  const mcpConfigured = Boolean(process.env['LIVING_WIKI_DRAWIO_MCP_URL'])
   return mcpConfigured ? 'configured-optional-tool' : 'unavailable-mermaid-is-canonical'
 }
 
-function createDrawioMcpTool(): McpHttpToolDefinition | McpStdioToolDefinition | undefined {
-  const httpUrl = process.env['LIVING_WIKI_DRAWIO_MCP_URL']
-  if (httpUrl) {
-    const token = process.env['LIVING_WIKI_DRAWIO_MCP_AUTH_TOKEN']
-    return {
-      kind: 'mcp_http',
-      description: 'Create draw.io diagrams through an optional remote MCP server.',
-      url: httpUrl,
-      ...(token ? { auth: { kind: 'bearer', token } } : {}),
-      tool: process.env['LIVING_WIKI_DRAWIO_MCP_TOOL'] ?? 'drawio.create',
-    }
-  }
-
-  const command = process.env['LIVING_WIKI_DRAWIO_MCP_COMMAND']
-  if (!command) return undefined
-  const installCommand = process.env['LIVING_WIKI_DRAWIO_MCP_INSTALL']
-  return {
-    kind: 'mcp_stdio',
-    description: 'Create draw.io diagrams through an optional sandbox-local MCP server.',
-    command,
-    args: splitArgs(process.env['LIVING_WIKI_DRAWIO_MCP_ARGS']),
-    ...(installCommand
-      ? {
-          install: {
-            command: installCommand,
-            cwd: process.env['LIVING_WIKI_DRAWIO_MCP_CWD'] ?? '/workspace',
-            timeoutMs: Number(process.env['LIVING_WIKI_DRAWIO_MCP_INSTALL_TIMEOUT_MS'] ?? 120_000),
-          },
-        }
-      : {}),
-    tool: process.env['LIVING_WIKI_DRAWIO_MCP_TOOL'] ?? 'drawio.create',
-  }
-}
-
-function splitArgs(value: string | undefined): string[] {
-  if (!value?.trim()) return []
-  return value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => part.replace(/^["']|["']$/g, '')) ?? []
+/** Reads the optional draw.io MCP HTTP transport without placing secrets in the definition. */
+export function drawioMcpBindingFromEnvironment(): McpBinding | undefined {
+  const url = process.env['LIVING_WIKI_DRAWIO_MCP_URL']?.trim()
+  if (!url) return undefined
+  const token = process.env['LIVING_WIKI_DRAWIO_MCP_AUTH_TOKEN']?.trim()
+  return Object.freeze({
+    transport: 'http' as const,
+    url,
+    ...(token ? { headers: Object.freeze({ authorization: `Bearer ${token}` }) } : {}),
+  })
 }
 
 function drawioEditorUrl(xml: string): string {
@@ -1079,63 +733,4 @@ function drawioEditorUrl(xml: string): string {
 
 function objectData<T extends JsonValue = JsonValue>(value: unknown): T {
   return JSON.parse(JSON.stringify(value)) as T
-}
-
-function lazyOpenAiProvider(apiKey: string): ModelProvider {
-  let delegate: ModelProvider | undefined
-  let harnessContext: HarnessAdapterContext | undefined
-  const configureDelegate = (provider: ModelProvider, context: HarnessAdapterContext) => {
-    ;(
-      provider as ModelProvider & { configureHarnessContext?: (ctx: HarnessAdapterContext) => void }
-    ).configureHarnessContext?.(context)
-  }
-  const load = async (): Promise<ModelProvider> => {
-    if (!delegate) {
-      const packageName = '@purista/harness-openai'
-      const module = (await import(packageName)) as { openai: (options: { apiKey: string }) => ModelProvider }
-      delegate = module.openai({ apiKey })
-      if (harnessContext) configureDelegate(delegate, harnessContext)
-    }
-    return delegate
-  }
-  const provider: ModelProvider & { configureHarnessContext(context: HarnessAdapterContext): void } = {
-    id: 'openai',
-    genAiSystem: 'openai',
-    configureHarnessContext(context) {
-      harnessContext = context
-      if (delegate) configureDelegate(delegate, context)
-    },
-    async text(req) {
-      const provider = await load()
-      if (!provider.text) throw new Error('OpenAI provider does not implement text generation.')
-      return provider.text(req)
-    },
-    textStream(req) {
-      return lazyStream(async () => {
-        const provider = await load()
-        if (!provider.textStream) throw new Error('OpenAI provider does not implement text streaming.')
-        return provider.textStream(req)
-      })
-    },
-    async object(req) {
-      const provider = await load()
-      if (!provider.object) throw new Error('OpenAI provider does not implement object generation.')
-      return provider.object(req)
-    },
-    objectStream(req) {
-      return lazyStream(async () => {
-        const provider = await load()
-        if (!provider.objectStream) throw new Error('OpenAI provider does not implement object streaming.')
-        return provider.objectStream(req)
-      })
-    },
-    async close() {
-      await delegate?.close?.()
-    },
-  }
-  return provider
-}
-
-async function* lazyStream<T>(load: () => Promise<AsyncIterable<T>>): AsyncIterable<T> {
-  yield* await load()
 }

@@ -1,176 +1,114 @@
-# Recoverable Workflows And Durable Workspaces
+# Durable Execution and Workspaces
 
-Harness 3 has one persistence contract: `HarnessStorage`. It stores sessions,
-messages, run records, events, workflow step checkpoints, leases, and opaque
-external waits. `DurableWorkspace` is separate because file snapshots have a
-different lifecycle. `Sandbox` remains the execution boundary.
+Durable execution lets a workflow resume from committed checkpoints after a
+retry or process restart. A durable workspace links those checkpoints to
+persistent files.
 
-Checkpointed workspace files are the only promised sandbox recovery mechanism.
-Live processes, containers, and provider volumes may improve availability, but
-they are not a recovery contract. On a resumed run, Harness opens the sandbox
-in `restore` mode only when its adapter declares `sandbox.workspace_binding`;
-otherwise the adapter must report `SandboxStateLostError` rather than silently
-starting an empty replacement.
+## Start locally
 
-```mermaid
-flowchart LR
-  Workflow["Workflow ctx.step"] --> Storage["HarnessStorage"]
-  Storage --> Run["run + lease"]
-  Storage --> Checkpoint["step checkpoint"]
-  Storage --> Wait["external wait"]
-  Workflow --> Workspace["DurableWorkspace"]
-  Workspace --> Files["file snapshot"]
-  Workflow --> Sandbox["Sandbox"]
-```
-
-## Local Node.js And Bun Setup
-
-`localDurableExecution` uses the runtime's built-in SQLite module and adds no
-database dependency. It is intended for development, tests, and one process on
-one host.
+`localDurableExecution` provides SQLite storage, a local sandbox, and a local
+workspace adapter that share one coordinator:
 
 ```ts
-import { defineHarness, localDurableExecution } from '@purista/harness'
+import {
+  defineHarness,
+  defineWorkflow,
+  localDurableExecution,
+} from '@purista/harness'
 
 const local = localDurableExecution({
-	root: './.harness',
-	exec: false,
-	policy: { retention: { cleanupMode: 'manual_only' } },
+  root: '.purista/durable',
+  exec: false,
 })
 
-const harness = defineHarness({ name: 'report-worker' })
-	.storage(local.storage)
-	.workspace(local.workspace)
-	.sandbox(local.sandbox)
-	.requires(['storage.persistent', 'storage.checkpoint', 'storage.resume', 'workspace.persistent'])
-	.build()
+const report = defineWorkflow('report', {
+  input,
+  output,
+  durable: true,
+  workspace: true,
+  async handler(ctx) {
+    const outline = await ctx.step('outline', async () => createOutline(ctx.input))
+    return ctx.step('render', async () => renderReport(outline))
+  },
+})
+
+const definition = defineHarness({
+  name: 'reports',
+  revision: '2026-09-07',
+}).addWorkflow(report)
+
+const instance = await definition.getInstance({
+  storage: local.storage,
+  sandbox: local.sandbox,
+  workspace: local.workspace,
+})
 ```
 
-Close the Harness during graceful shutdown. It closes configured adapters;
-`local.close()` is available when the bundle is used outside a Harness.
+`revision` identifies the deployed definition used for replay. Change it when
+a release changes durable behavior.
 
-## Create Replay Boundaries
-
-Only workflows support recoverable execution. Invoke one with a stable logical
-run ID and put replayable work behind stable step IDs:
+## Invoke with a stable run id
 
 ```ts
-const result = await session.workflows.report.run(input, {
-	durable: { runId: `report:${input.reportId}:v1` },
+const session = await instance.getSession('report-session')
+const outcome = await session.workflows.report.run(input, {
+  durable: { runId: 'report-42' },
+  idempotencyKey: 'report-42',
 })
-
-if (result.status === 'completed') console.log(result.output)
-
-// Inside the workflow:
-const facts = await ctx.step('collect-facts-v1', () => collectFacts(ctx.input))
-const draft = await ctx.step('draft-v1', () => ctx.agents.writer(facts))
 ```
 
-On retry, a committed step returns its stored JSON output without running the
-callback again. Version a step ID when its output contract or side effects
-change. Keep external writes idempotent: a crash can happen after an external
-system commits but before Harness commits the next checkpoint.
+The session id identifies conversation state. The durable run id identifies one
+workflow execution and its checkpoints.
 
-## Status And Recovery
+## Write replay-safe steps
 
-| Status | Meaning | Can acquire again? |
-| --- | --- | --- |
-| `running` | A worker owns or was executing the run. | Yes, subject to lease rules. |
-| `waiting` | An external wait was registered and the lease released. | Yes, after a terminal signal. |
-| `interrupted` | Execution stopped without a terminal result. | Yes. |
-| `succeeded` | Final output committed. | No. |
-| `failed` | Terminal failure committed. | No. |
-| `cancelled` | Cancellation committed. | No. |
+`ctx.step(stepId, handler)` stores one JSON-compatible result. Use stable step
+ids and put each external side effect behind its own step. A retry returns the
+committed value instead of executing the handler again.
 
-The storage must serialize each session, enforce one active lease per run and
-session, commit checkpoints atomically, and register a wait together with the
-`waiting` transition and lease release.
+Do not hide multiple unrelated effects inside one step. If the process can fail
+between two writes, make them separate steps or use an application-owned
+transactional outbox.
 
-## Sandbox checkpoint boundary
+## Use a workspace
 
-At a committed durable step, Harness snapshots the run-owned sandbox
-partitions together with the workspace checkpoint. The checkpoint records the
-exact scope membership and sharing-policy digest; an adapter must restore that
-state before executing the next step. It must not substitute a missing sandbox,
-snapshot, or provider resource with empty files. That condition is
-`SandboxStateLostError` and requires an explicit application recovery choice.
+A workflow with `workspace: true` receives a sandbox bound to its durable
+workspace lifecycle. The graph requires:
 
-Harness only promises durable files. It does not promise a running process,
-container, provider volume, or external shared partition across recovery.
-Sandbox resources required for recovery are pinned while checkpoint metadata is
-being committed and released only after retention metadata is safely updated.
-Bound retention through the configured workspace policy; unsupported retention
-controls fail at setup rather than looking accepted while doing nothing.
+- a `HarnessStorage` with persistent durability;
+- a sandbox advertising `sandbox.workspace_binding`;
+- a `DurableWorkspace` adapter.
 
-## Distributed PostgreSQL And Kubernetes Setup
+The workspace adapter checkpoints, restores, retains, and cleans workspace
+state. The sandbox owns file and process operations. Their responsibilities are
+separate even when one local helper creates both.
 
-For multiple processes or hosts, install the first-party distributed storage
-and self-hosted execution packages:
+## Pause and resume
+
+Tool approval and `ctx.externalWait.wait(...)` return an `interrupted`
+outcome. Persist the run id and interrupt revision. After an authenticated and
+authorized decision, signal the wait or pass a correlated approval resume and
+invoke the same durable run again.
+
+Invalid, expired, duplicate, or mismatched decisions fail closed.
+
+## Production adapters
+
+Use `@purista/harness-storage-postgres` for distributed state. Combine it with
+a sandbox and workspace implementation that provide the durability guarantees
+your deployment needs. Kubernetes deployments can use
+`@purista/harness-sandbox-kubernetes`.
+
+Verify adapter capability metadata at startup and run the exported storage and
+sandbox conformance suites for custom adapters.
+
+## Shut down
 
 ```ts
-import { postgresHarnessStorage } from '@purista/harness-storage-postgres'
-import { kubernetesSandboxRuntime } from '@purista/harness-sandbox-kubernetes'
-
-const storage = postgresHarnessStorage({
-	connectionString: process.env.DATABASE_URL!,
-})
-const execution = kubernetesSandboxRuntime({
-	namespace: process.env.PURISTA_SANDBOX_NAMESPACE!,
-	image: process.env.PURISTA_SANDBOX_IMAGE!,
-	runtimeId: 'report-worker-v1',
-	workspace: { snapshotClassName: process.env.PURISTA_VOLUME_SNAPSHOT_CLASS },
-})
-
-const harness = defineHarness({ name: 'report-worker' })
-	.storage(storage)
-	.sandbox(execution.sandbox)
-	.workspace(execution.workspace)
-	.requires([
-		'storage.persistent',
-		'storage.multi_instance',
-		'workspace.durable',
-		'workspace.checkpoint',
-		'workspace.resume',
-	])
-	.models(models)
-	.workflows(workflows)
-	.build()
-
-await harness.shutdown()
-await execution.close()
+await session.release()
+await instance.close()
+await local.close()
 ```
 
-PostgreSQL owns transactional sessions, leases, checkpoints, waits, and
-fencing. Kubernetes PVC generations hold active files and ready
-VolumeSnapshots are committed recovery points. A retained Pod or PVC alone is
-not a checkpoint. This path does not require S3.
-
-Give replicas of the same application the same stable `runtimeId`; give
-independently administered runtimes different IDs even in one namespace.
-Provision namespaced RBAC, Pod Security admission, default-deny egress,
-resource quota/limits, reviewed images, CSI snapshot support, encryption,
-retention, and cleanup before production use.
-
-Custom adapters still run the public contract suites plus backend-specific
-contention, migration, retention, deletion, and outage tests:
-
-```ts
-import { harnessStorageContract, durableWorkspaceContract } from '@purista/harness/testing'
-
-harnessStorageContract(() => createHarnessStorageUnderTest())
-durableWorkspaceContract(() => createDurableWorkspaceUnderTest())
-```
-
-OpenTelemetry operations use `harness.storage.*` and `harness.workspace.*`.
-Attributes are content-free: record adapter, operation, run/session correlation,
-attempt, sequence, wait kind/outcome, duration, and normalized errors—never
-prompt text, checkpoint output, files, wait IDs, credentials, or tool data.
-
-## SQLite Schema Readiness
-
-SQLite storage rejects incompatible schema layouts with `HarnessConfigError`
-reason `sqlite_schema_incompatible`; it does not rewrite existing databases.
-Use the current storage schema and verify lease, checkpoint, external-wait,
-signal, and resume behavior before accepting work. Keep application business
-state in application storage; PURISTA's general-purpose `StateStore` is not a
-Harness persistence adapter.
+The instance closes Harness-owned resources. Close application-owned adapter
+bundles separately when their factory exposes a close method.

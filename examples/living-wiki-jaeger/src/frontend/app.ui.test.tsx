@@ -1,5 +1,6 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { reviewRequestFixture } from './__fixtures__/reviewRequest.js'
 
@@ -43,6 +44,53 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' }
+  })
+}
+
+function standardChatResponse(text: string): Response {
+  return createUIMessageStreamResponse({
+    stream: createUIMessageStream({
+      execute({ writer }) {
+        writer.write({ type: 'start', messageId: 'assistant-standard' })
+        writer.write({ type: 'start-step' })
+        writer.write({ type: 'text-start', id: 'answer-text' })
+        writer.write({ type: 'text-delta', id: 'answer-text', delta: text })
+        writer.write({ type: 'text-end', id: 'answer-text' })
+        writer.write({ type: 'finish-step' })
+        writer.write({ type: 'finish', finishReason: 'stop' })
+      },
+    }),
+  })
+}
+
+function approvalChatResponse(): Response {
+  return createUIMessageStreamResponse({
+    stream: createUIMessageStream({
+      execute({ writer }) {
+        writer.write({ type: 'start', messageId: 'assistant-approval' })
+        writer.write({ type: 'start-step' })
+        writer.write({ type: 'tool-input-available', toolCallId: 'write-call', toolName: 'writeWikiPage', input: { slug: 'jaeger' }, dynamic: true })
+        writer.write({
+          type: 'tool-approval-request',
+          approvalId: 'approval-1',
+          toolCallId: 'write-call',
+          approvalDescriptor: {
+            protocol: 'purista-harness/tool-approval',
+            version: 1,
+            rootRunId: 'root-run',
+            agentRunId: 'agent-run',
+            sessionId: 'living-wiki-chat',
+            interruptId: 'interrupt-1',
+            revision: 'revision-1',
+            eventId: 'event-1',
+            approvalIds: ['approval-1'],
+          },
+          reason: 'wiki_write',
+        })
+        writer.write({ type: 'finish-step' })
+        writer.write({ type: 'finish', finishReason: 'tool-calls' })
+      },
+    }),
   })
 }
 
@@ -127,6 +175,65 @@ describe('living wiki UI', () => {
     expect(await screen.findByText(/trace_fake_1/i)).toBeTruthy()
   })
 
+  it('uses the standard AI SDK UI transport for direct chat', async () => {
+    let chatRequest: Record<string, unknown> | undefined
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok', model: 'fake-wiki-model' })
+      if (url.endsWith('/api/pages')) return jsonResponse({ pages: [] })
+      if (url.endsWith('/api/sources')) return jsonResponse({ sources: [] })
+      if (url.endsWith('/api/graph')) return jsonResponse({ nodes: [], edges: [], panelSpec: { version: '1.0', title: 'Knowledge Map', sections: [] } })
+      if (url.endsWith('/api/chat') && init?.method === 'POST') {
+        chatRequest = JSON.parse(String(init.body)) as Record<string, unknown>
+        return standardChatResponse('Standard streamed answer')
+      }
+      throw new Error(`Unhandled fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    const { App } = await loadAppModule()
+    render(<App />)
+    await screen.findByText('Mission Board')
+    fireEvent.change(screen.getByPlaceholderText(/ask the wiki/i), { target: { value: 'Use the standard transport' } })
+    fireEvent.click(screen.getByRole('button', { name: /send message/i }))
+
+    expect(await screen.findByText('Standard streamed answer')).toBeTruthy()
+    expect(chatRequest).toMatchObject({ id: 'living-wiki-chat', trigger: 'submit-message' })
+    expect(JSON.stringify(chatRequest)).toContain('Use the standard transport')
+    expect(FakeEventSource.instances).toHaveLength(0)
+  })
+
+  it('returns standard tool approval responses through the AI SDK transport', async () => {
+    const chatRequests: Record<string, unknown>[] = []
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok', model: 'fake-wiki-model' })
+      if (url.endsWith('/api/pages')) return jsonResponse({ pages: [] })
+      if (url.endsWith('/api/sources')) return jsonResponse({ sources: [] })
+      if (url.endsWith('/api/graph')) return jsonResponse({ nodes: [], edges: [], panelSpec: { version: '1.0', title: 'Knowledge Map', sections: [] } })
+      if (url.endsWith('/api/chat') && init?.method === 'POST') {
+        chatRequests.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return chatRequests.length === 1 ? approvalChatResponse() : standardChatResponse('Write approved')
+      }
+      throw new Error(`Unhandled fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    const { App } = await loadAppModule()
+    render(<App />)
+    await screen.findByText('Mission Board')
+    fireEvent.change(screen.getByPlaceholderText(/ask the wiki/i), { target: { value: 'Update the Jaeger page' } })
+    fireEvent.click(screen.getByRole('button', { name: /send message/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^approve$/i }))
+
+    expect(await screen.findByText('Write approved')).toBeTruthy()
+    await waitFor(() => expect(chatRequests).toHaveLength(2))
+    expect(JSON.stringify(chatRequests[1])).toContain('"approved":true')
+    expect(JSON.stringify(chatRequests[1])).toContain('purista-harness/tool-approval')
+  })
+
   it('renders tools, artifacts, and review UI only from backend payloads', async () => {
     FakeEventSource.events = [
       { type: 'tool.started', callId: 'tool_1', toolId: 'search_wiki', input: { query: 'trace' } },
@@ -142,7 +249,7 @@ describe('living wiki UI', () => {
       if (url.endsWith('/api/pages/agent-harness')) return jsonResponse({ slug: 'agent-harness', title: 'Agent Harness', content: '# Agent Harness\n\nContent.' })
       if (url.endsWith('/api/sources')) return jsonResponse({ sources: [] })
       if (url.endsWith('/api/graph')) return jsonResponse({ nodes: [], edges: [], highlights: [], panelSpec: { version: '1.0', title: 'Knowledge Map', sections: [] } })
-      if (url.endsWith('/api/agents/wiki_answerer') && init?.method === 'POST') return jsonResponse({ runId: 'run_fake_1', status: 'running' }, 202)
+      if (url.endsWith('/api/workflows/wiki_audit') && init?.method === 'POST') return jsonResponse({ runId: 'run_fake_1', status: 'running' }, 202)
       if (url.endsWith('/api/runs/run_fake_1')) {
         return jsonResponse({
           runId: 'run_fake_1',
@@ -176,7 +283,7 @@ describe('living wiki UI', () => {
 
     expect(await screen.findByText('Agent Harness')).toBeTruthy()
     fireEvent.change(screen.getByPlaceholderText(/ask the wiki/i), { target: { value: 'Needs review' } })
-    fireEvent.click(screen.getByRole('button', { name: /send message/i }))
+    fireEvent.click(screen.getByRole('button', { name: /wiki audit/i }))
 
     expect(await screen.findByText(/Tools used: search_wiki/i)).toBeTruthy()
     expect(await screen.findByText(/Review Artifact/i)).toBeTruthy()

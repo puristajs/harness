@@ -14,18 +14,18 @@ describe('custom model provider example', () => {
         stopReason: 'complete',
       }
     })
-    const harness = createInvoiceHarness({ generateJson })
+    const harness = await createInvoiceHarness({ generateJson })
     const session = await harness.getSession('custom-provider-test')
 
     try {
       await expect(
-        session.agents.invoice_status.run({ invoiceId: 'INV-42' }),
+        session.agents.invoiceStatus.run({ invoiceId: 'INV-42' }),
       ).resolves.toMatchObject({ status: 'completed', output: { message: 'Invoice INV-42 is ready for payment.' } })
       expect(generateJson).toHaveBeenCalledOnce()
       expect(generateJson.mock.calls[0]?.[0].model).toBe('internal-json-v1')
     } finally {
       await session.release()
-      await harness.shutdown()
+      await harness.close()
     }
   })
 })

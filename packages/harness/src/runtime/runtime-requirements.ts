@@ -136,6 +136,7 @@ type RequirementModels<Entries> = Readonly<{
 type McpOwnerIds<Tool> = Tool extends McpToolDefinition<any, any, any, infer Owner> ? Owner['id'] : never
 type HostToolIds<Tool> = Tool extends HostToolDefinition<infer Id, any, any, any> ? Id : never
 type IsTrue<Value> = true extends Value ? true : false
+type IsPresent<Value> = [Value] extends [never] ? false : true
 type AgentSelectedToolIds<Agent> = Agent extends { readonly tools: readonly (infer Tool)[] }
 	? Tool extends { readonly id: infer Id extends string } ? Id : never
 	: never
@@ -202,7 +203,7 @@ export type RuntimeRequirementsFor<
 		ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>,
 		SandboxGroupOf<Values<Agents> | Values<Workflows>> | WorkflowChildSandboxGroups<Values<Workflows>>,
-		IsTrue<
+		IsPresent<
 			ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>>
 			| Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>

@@ -1,7 +1,11 @@
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { JsonLogger, serializeError, type ExecutionEvent } from '@purista/harness'
-import { agentIds, createLivingWikiHarness, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
+import { JsonLogger, serializeError, type ExecutionEvent, type HarnessTargetStream, type JsonValue } from '@purista/harness'
+import {
+  createHarnessUIMessageStreamResponse,
+  parseHarnessUIMessageRequest,
+} from '@purista/harness-ai-sdk-ui/v1'
+import { agentIds, createLivingWikiHarness, resolveAgentTarget, resolveWorkflowTarget, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
 import { slugSchema } from './data.js'
 import {
   agentRunRequestSchema,
@@ -77,8 +81,8 @@ async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<u
   }
 }
 
-export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
-  const { harness, store, model } = createLivingWikiHarness(options)
+export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
+  const { harness, store, model, storage } = await createLivingWikiHarness(options)
   const logger = new JsonLogger({ level: 'info', bindings: { component: 'living-wiki-api' } })
   const app = new Hono()
   const runs = new Map<string, ApiRun>()
@@ -109,6 +113,23 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
   })
 
   app.get('/api/health', (c) => c.json({ status: 'ok', model }))
+
+  app.post('/api/chat', async (c) => {
+    const parsed = await parseHarnessUIMessageRequest(await readJson(c))
+    const question = parsed.lastUserMessage.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('')
+    const session = await harness.getSession(parsed.sessionId)
+    const events = releaseSessionAfterStream(session.agents.wikiAnswerer.stream(
+      { question },
+      parsed.resume === undefined ? undefined : { resume: parsed.resume },
+    ), () => session.release())
+    return createHarnessUIMessageStreamResponse(events, {
+      sessionId: parsed.sessionId,
+      ...(parsed.assistantMessageId === undefined ? {} : { messageId: parsed.assistantMessageId }),
+    })
+  })
 
   app.get('/api/pages', async (c) => c.json({ pages: (await store.listPages()).map(({ slug, title, summary }) => ({ slug, title, summary })) }))
   app.get('/api/pages/:slug', async (c) => {
@@ -444,7 +465,9 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
 
     void (async () => {
       try {
-        const invoker = args.kind === 'workflow' ? session.workflows[args.targetId] : session.agents[args.targetId]
+        const invoker = args.kind === 'workflow'
+          ? session.workflows[resolveWorkflowTarget(args.targetId)]
+          : session.agents[resolveAgentTarget(args.targetId)]
         if (!invoker) throw new Error(`Unknown ${args.kind} target ${args.targetId}.`)
         for await (const event of invoker.stream(args.input as never, { signal: controller.signal })) {
           if (!pending.runId) {
@@ -465,7 +488,7 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
                 target_id: args.targetId,
                 status: pending.status
               })
-            } else {
+            } else if (event.outcome.status === 'interrupted') {
               pending.status = 'interrupted'
               pending.result = event.outcome.interrupt
               logger.info('Living wiki run interrupted.', {
@@ -475,6 +498,9 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
                 status: pending.status,
                 interrupt_type: event.outcome.interrupt.type
               })
+            } else {
+              pending.status = event.outcome.status
+              pending.error = event.outcome.error
             }
           }
         }
@@ -521,8 +547,37 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
         if (run.status === 'running') run.controller.abort(new Error('shutdown'))
       }
       await Promise.all([...runs.values()].map((run) => run.done.catch(() => undefined)))
-      await harness.shutdown()
+      await harness.close()
+      await storage.close()
     }
+  }
+}
+
+function releaseSessionAfterStream<Output extends JsonValue>(
+  stream: HarnessTargetStream<Output>,
+  release: () => Promise<void>,
+): HarnessTargetStream<Output> {
+  let released = false
+  const releaseOnce = async () => {
+    if (released) return
+    released = true
+    await release()
+  }
+  return {
+    async cancel(reason) {
+      try {
+        await stream.cancel(reason)
+      } finally {
+        await releaseOnce()
+      }
+    },
+    async *[Symbol.asyncIterator]() {
+      try {
+        yield* stream
+      } finally {
+        await releaseOnce()
+      }
+    },
   }
 }
 

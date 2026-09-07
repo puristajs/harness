@@ -13,7 +13,7 @@ flowchart TB
   end
 
   subgraph Harness["@purista/harness"]
-    Builder["defineHarness builder"]
+    Definition["Immutable Harness definition"]
     Session["Session"]
     Agent["Agent loop: LLM conversation + tools"]
     Workflow["Workflow handler: orchestration"]
@@ -36,7 +36,7 @@ flowchart TB
   end
 
   UI --> Session
-  Builder --> Session
+  Definition --> Session
   Session --> Agent
   Session --> Workflow
   Workflow --> Agent
@@ -58,7 +58,8 @@ flowchart TB
 
 | Concept | What It Does | User Decision |
 |---|---|---|
-| `Harness` | Compiled definition of models, tools, skills, agents, workflows, defaults, and adapters. | What capabilities exist? |
+| Harness definition | Immutable graph of tools, skills, MCP servers, agents, workflows, and defaults. | What capabilities exist? |
+| Harness instance | A definition bound to live models, storage, memory, sandbox, MCP transports, and telemetry. | Which infrastructure runs this graph? |
 | `Session` | Isolated operational context with memory, history, sandbox, and one active run at a time. | What user/thread/tenant is this run for? |
 | `Agent` | A typed LLM conversation loop. It prepares messages, calls the model, executes tool invocations, appends tool results, repeats until the model returns, validates output, and emits events. | What single model-driven job should this loop perform? |
 | `Workflow` | Application-owned orchestration around one or more agent invocations. It can sequence, branch, fan out, reflect, judge, request human approval, and perform durable writes. | What business process or multi-step flow must happen around agents? |
@@ -142,10 +143,11 @@ flowchart LR
 
 ## Event And Trace Shape
 
-Session streaming APIs emit run events. Applications can render these events in
-a chat UI, run inspector, logs, or tests. Model stream chunks consumed inside a
-workflow or custom agent handler stay internal unless that model stream call
-opts in with `{ emitRunEvents: true }`.
+Session target `stream()` APIs emit the public execution event contract.
+Browser chat endpoints should project that stream through
+`@purista/harness-ai-sdk-ui/v1`; ordinary AI SDK clients can then render text,
+status, tool calls, and approval requests. Persisted run summaries and telemetry
+serve operator views through a separate application endpoint.
 
 ```mermaid
 flowchart TD

@@ -14,8 +14,6 @@ npm run test
 npm run start
 ```
 
-The two agents use deterministic handlers solely so this example has no model
-provider credential. Replacing them with normal model-loop agents preserves the
-same task ownership, delegation policy, sandbox isolation, and lifecycle API.
+The two agents use the normal bounded model loop with `FakeModelProvider`, so this example needs no provider credential. The same task ownership, delegation policy, isolation, and lifecycle API applies with a production provider.
 Continuable tasks are in-process only; use an application queue/worker for work
 that must survive a process restart.

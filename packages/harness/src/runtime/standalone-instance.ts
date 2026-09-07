@@ -1688,7 +1688,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				}) as SessionChildTasks,
 			memory: createSessionMemory({ engine: memory, harnessName: options.name, sessionId: id,
 				...(state.record.identity === undefined ? {} : { identity: state.record.identity }), signal: state.controller.signal,
-				logger, telemetry, metrics, contentCaptureMode }, { kind: 'session', scopeKey: `${options.name}:session:${id}` }),
+				logger, telemetry, metrics, contentCaptureMode }, {
+					kind: 'session',
+					scopeKey: `${options.name}:session:${id}`,
+					sessionId: id,
+				}),
 			history: Object.freeze({ list: (listOptions?: { limit?: number; before?: string }) => storage.listMessages(id, listOptions) }),
 			async getRunSummary(runId: string) {
 				const run = await storage.getRun(runId)

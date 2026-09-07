@@ -1,10 +1,14 @@
 import {
+  builtInTools,
+  defineAgent,
   defineHarness,
+  defineTool,
   inMemorySandbox,
   JsonLogger,
   type RunOutcome,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  sqliteHarnessStorage,
 } from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
 import {
@@ -34,7 +38,7 @@ export interface GuardrailsExamplePreflight {
  * Fully local, deterministic guardrails example. Replace `FakeModelProvider`
  * with a normal provider addon in an application; rails remain unchanged.
  */
-export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) {
+export async function createGuardrailsExample(options: GuardrailsExampleOptions = {}) {
   const provider = new FakeModelProvider()
   const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
   provider.enqueueObject({
@@ -42,8 +46,8 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
     usage,
     finishReason: 'tool_calls',
     toolCalls: [
-      { id: 'call_lookup', name: 'lookup_status', arguments: { ticket: 'DEMO' } },
-      { id: 'call_publish', name: 'publish_note', arguments: { message: '[secret]' } },
+      { id: 'call_lookup', name: 'lookupStatus', arguments: { ticket: 'DEMO' } },
+      { id: 'call_publish', name: 'publishNote', arguments: { message: '[secret]', visibility: 'internal' } },
       { id: 'call_write', name: 'write', arguments: { path: '/workspace/note.txt', content: 'Reviewed note.' } },
     ],
   })
@@ -71,7 +75,7 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
     },
   }
   const sensitiveDataActions = createSensitiveDataActions({ detector })
-  const publishNoteRailSchema = z.strictObject({ message: z.string() })
+  const publishNoteRailSchema = z.strictObject({ message: z.string(), visibility: z.literal('internal') })
   const publicStatusRailSchema = z.strictObject({ status: z.string() })
   const rails = defineGuardrails({
     config: {
@@ -105,9 +109,9 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
               }
             : { decision: 'allow' },
       }),
-      'redact note': defineGuardrailAction<'tool_input', typeof publishNoteRailSchema>({
+      'redact note': defineGuardrailAction({
         phase: 'tool_input',
-        tools: ['publish_note'],
+        tools: ['publishNote'],
         valueSchema: publishNoteRailSchema,
         evaluate: ({ toolId, value }) => {
           lifecycle.push(`preflight:${toolId}`)
@@ -115,15 +119,15 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
             ? {
                 decision: 'transform',
                 target: 'tool_input',
-                value: { ...value, message: value.message.replaceAll('[secret]', '[redacted]') },
+                value: { message: value.message.replaceAll('[secret]', '[redacted]'), visibility: value.visibility },
                 reasonCode: 'secret_redacted',
               }
             : { decision: 'allow' }
         },
       }),
-      'present public status': defineGuardrailAction<'tool_output', typeof publicStatusRailSchema>({
+      'present public status': defineGuardrailAction({
         phase: 'tool_output',
-        tools: ['lookup_status'],
+        tools: ['lookupStatus'],
         valueSchema: publicStatusRailSchema,
         evaluate: () => ({
           decision: 'transform' as const,
@@ -147,68 +151,73 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
       }),
     },
   })
-  const harness = defineHarness({ name: 'guardrails-example' })
-    .logger(new JsonLogger({ level: 'error' }))
-    .sandbox(inMemorySandbox())
-    .defaults({ decisionTimeoutMs: options.decisionTimeoutMs ?? 1_000, toolTimeoutMs: 5_000 })
-    .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tool('lookup_status', {
+  const lookupStatus = defineTool('lookupStatus', {
         description: 'Read a synthetic ticket status.',
         input: z.strictObject({ ticket: z.string() }),
         output: z.strictObject({ status: z.string() }),
         handler: async (ctx) => {
           ctx.signal.throwIfAborted()
-          lifecycle.push('handler:lookup_status')
+          lifecycle.push('handler:lookupStatus')
           return { status: 'private status' }
         },
       })
-    .tool('publish_note', {
+  const publishNote = defineTool('publishNote', {
         description: 'Publish a synthetic note after review.',
-        input: z.strictObject({ message: z.string().trim(), visibility: z.literal('internal').default('internal') }),
+        input: z.strictObject({ message: z.string().trim(), visibility: z.literal('internal') }),
         output: z.strictObject({ published: z.boolean() }),
         handler: async (ctx, input) => {
           ctx.signal.throwIfAborted()
-          lifecycle.push('handler:publish_note')
+          lifecycle.push('handler:publishNote')
           handledNotes.push(input.message)
           return { published: true }
         },
       })
-    .agent('support', {
+  const support = defineAgent('support', {
       model: 'assistant',
       input: z.string(),
       output: z.string(),
-      instructions: ({ input }) => `Answer safely: ${input}`,
-      tools: ['lookup_status', 'publish_note'],
-      builtinTools: ['write'],
+      instructions: 'Answer safely and use the available tools when needed.',
+      prompt: input => ({ role: 'user', content: input }),
+      tools: [lookupStatus, publishNote, builtInTools.write],
       permissions: { write: 'require_approval' },
       guardrails: rails,
-    })
-    .governance(({ native, rule }) => ({
+      governance: ({ native, rule }) => ({
       defaultEffect: 'allow',
       policies: [
         native({
-          id: 'example-review',
+          id: 'exampleReview',
           rules: [
             rule({
-              id: 'synthetic-input-audit',
-              tools: ['lookup_status', 'publish_note'],
+              id: 'syntheticInputAudit',
+              tools: ['lookupStatus', 'publishNote'],
               effect: 'audit',
               reasonCode: 'synthetic_input',
               when: (ctx) =>
-                ctx.toolId === 'lookup_status' ? ctx.input.ticket === 'DEMO' : ctx.input.visibility === 'internal',
+                ctx.toolId === 'lookupStatus' ? ctx.input.ticket === 'DEMO' : ctx.input.visibility === 'internal',
             }),
             rule({
-              id: 'review-note',
-              tools: ['publish_note', 'write'],
+              id: 'reviewNote',
+              tools: ['publishNote', 'write'],
               effect: 'require_approval',
               reasonCode: 'note_review',
             }),
           ],
         }),
       ],
-    }))
-    .build()
+      }),
+    })
+  const storage = sqliteHarnessStorage({ file: ':memory:' })
+  const harness = await defineHarness({
+    name: 'guardrailsExample',
+    revision: 'v1',
+    defaults: { decisionTimeoutMs: options.decisionTimeoutMs ?? 1_000, toolTimeoutMs: 5_000 },
+  }).addAgent(support).getInstance({
+    models: { assistant: { provider, model: 'fake' } },
+    sandbox: inMemorySandbox(),
+    storage,
+    logger: new JsonLogger({ level: 'error' }),
+    telemetry: { contentCaptureMode: 'NO_CONTENT' },
+  })
 
   return {
     harness,
@@ -216,6 +225,7 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
     approvalRequests,
     handledNotes,
     lifecycle,
+    storage,
     get detectorInspections() {
       return detectorInspections
     },
@@ -224,7 +234,7 @@ export function createGuardrailsExample(options: GuardrailsExampleOptions = {}) 
 
 /** Application-side approval/resume flow used by the example UI or worker. */
 export async function runSupportRequest(
-  example: ReturnType<typeof createGuardrailsExample>,
+  example: Awaited<ReturnType<typeof createGuardrailsExample>>,
   sessionId: string,
   input: string,
   decide: (request: ToolApprovalRequest) => ToolApprovalDecision = request => ({
@@ -243,7 +253,7 @@ export async function runSupportRequest(
       example.lifecycle.push(`approval:${request.toolId}`)
       return decide(request)
     })
-    return session.agents.support.run(input, {
+    return await session.agents.support.run(input, {
       ...(signal ? { signal } : {}),
       resume: {
         type: 'tool-approval',
@@ -261,13 +271,14 @@ export async function runSupportRequest(
 
 /** Run the composed example without credentials, network calls, or durable business effects. */
 export async function runGuardrailsExample(): Promise<string> {
-  const example = createGuardrailsExample()
+  const example = await createGuardrailsExample()
   try {
     const outcome = await runSupportRequest(example, 'example-session', 'Where is [secret] [email]?')
     if (outcome.status === 'interrupted') throw new Error(`Guardrails example interrupted: ${outcome.interrupt.type}`)
     return outcome.output
   } finally {
-    await example.harness.shutdown()
+    await example.harness.close()
+    await example.storage.close()
   }
 }
 
@@ -275,7 +286,7 @@ export async function runGuardrailsExample(): Promise<string> {
 export async function preflightGuardrailsExample(
   options: GuardrailsExampleOptions = {},
 ): Promise<GuardrailsExamplePreflight> {
-  const example = createGuardrailsExample(options)
+  const example = await createGuardrailsExample(options)
   try {
     return {
       modelRequests: example.provider.requests.length,
@@ -284,7 +295,8 @@ export async function preflightGuardrailsExample(
       approvalRequests: example.approvalRequests.length,
     }
   } finally {
-    await example.harness.shutdown()
+    await example.harness.close()
+    await example.storage.close()
   }
 }
 

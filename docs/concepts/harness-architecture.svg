@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" role="img" aria-labelledby="title desc">
   <title id="title">@purista/harness logic-level architecture</title>
-  <desc id="desc">Logic-level diagram of @purista/harness showing model provider adapters, model aliases and capabilities, sessions, direct agent calls, workflow orchestration, delegation policy, agent loop outside the sandbox, tool execution through sandbox and MCP, skills mounted into the sandbox, Harness storages, memory, Harness storage, durable workspace, and telemetry.</desc>
+  <desc id="desc">Logic-level diagram of @purista/harness showing immutable definitions, runtime model and infrastructure bindings, sessions, agent and workflow invocation, bounded subagent calls, tool execution through sandbox and MCP, skills mounted into the sandbox, Harness storage, memory, durable workspace, telemetry, and the standard AI SDK UI stream adapter.</desc>
   <defs>
     <style>
       text {
@@ -65,17 +65,17 @@
   <!-- Harness boundary -->
   <rect x="44" y="252" width="1512" height="868" rx="24" class="harness" filter="url(#shadow)"/>
   <text x="76" y="286" class="section">@PURISTA/HARNESS</text>
-  <text x="76" y="314" class="boxSub">one in-process runtime boundary: configuration, execution, model registry, agent loops, workflow orchestration, tool runners, sandbox sessions, stores, telemetry</text>
+  <text x="76" y="314" class="boxSub">one in-process runtime boundary: runtime bindings, execution, agent loops, workflow orchestration, tool runners, sandbox sessions, stores, telemetry</text>
 
   <!-- Definition and models -->
   <rect x="76" y="348" width="330" height="238" rx="14" class="card"/>
-  <text x="104" y="382" class="boxTitle">Definition registry</text>
-  <text x="104" y="407" class="mono">defineHarness().build()</text>
+  <text x="104" y="382" class="boxTitle">Immutable definition graph</text>
+  <text x="104" y="407" class="mono">defineHarness({ name }).getInstance(...)</text>
   <line x1="104" y1="426" x2="378" y2="426" class="line"/>
-  <text x="110" y="454" class="small">foundation: state, sandbox, memory, runtime</text>
-  <text x="110" y="476" class="small">domain: models, tools, skills</text>
-  <text x="110" y="498" class="small">execution: agents, workflows</text>
-  <text x="110" y="520" class="small">guards: requires(...), defaults, permissions</text>
+  <text x="110" y="454" class="small">capabilities: tools, Skills, MCP schemas</text>
+  <text x="110" y="476" class="small">behavior: prompts, policies, Guardrails</text>
+  <text x="110" y="498" class="small">targets: agents, workflows</text>
+  <text x="110" y="520" class="small">requirements: inferred from the completed graph</text>
   <rect x="110" y="542" width="220" height="28" rx="14" class="pill"/>
   <text x="145" y="561" class="mono">synchronous validation</text>
 
@@ -133,13 +133,14 @@
 
   <rect x="620" y="642" width="250" height="260" rx="16" class="red"/>
   <text x="648" y="676" class="section">DELEGATION GATE</text>
-  <text x="648" y="704" class="boxSub">only workflows call child agents</text>
+  <text x="648" y="702" class="boxSub">workflow agent calls and</text>
+  <text x="648" y="720" class="boxSub">model-selected subagents</text>
   <rect x="654" y="734" width="178" height="40" rx="14" class="outside"/>
   <text x="690" y="759" class="mono">default: off</text>
   <rect x="654" y="794" width="178" height="34" rx="14" class="yellowPill"/>
-  <text x="682" y="816" class="mono">agent allowlist</text>
+  <text x="682" y="816" class="mono">typed agent maps</text>
   <text x="650" y="856" class="small">budgets: total, parallel, depth</text>
-  <text x="650" y="878" class="small">model alias policy per child call</text>
+  <text x="650" y="878" class="small">each child owns its declared model alias</text>
 
   <!-- Agent -->
   <rect x="906" y="642" width="608" height="260" rx="16" class="blue"/>
@@ -184,16 +185,16 @@
   <rect x="394" y="1008" width="124" height="30" rx="10" class="greenPill"/>
   <text x="416" y="1028" class="mono">Sandbox</text>
   <rect x="536" y="1008" width="144" height="30" rx="10" class="greenPill"/>
-  <text x="554" y="1028" class="mono">HarnessStorage</text>
+  <text x="554" y="1028" class="mono">ArtifactStore</text>
   <rect x="698" y="1008" width="132" height="30" rx="10" class="greenPill"/>
   <text x="714" y="1028" class="mono">Workspace</text>
-  <text x="110" y="1058" class="small">state persists sessions, messages, runs, events; memory defaults to sandboxMemory; durability is workflow/invocation-time</text>
+  <text x="110" y="1058" class="small">storage persists sessions, messages, runs, events; memory defaults to in-memory; durability is graph-derived</text>
 
   <!-- Key notes -->
   <rect x="1238" y="124" width="278" height="92" rx="16" class="outside" filter="url(#shadow)"/>
   <text x="1264" y="154" class="section">BOUNDARY NOTES</text>
-  <text x="1264" y="181" class="small">No Vercel/UI protocol layer.</text>
-  <text x="1264" y="202" class="small">RunEvent is the harness stream shape.</text>
+  <text x="1264" y="181" class="small">Core owns no UI protocol dependency.</text>
+  <text x="1264" y="202" class="small">ExecutionEvent projects to AI SDK UI Stream v1.</text>
 
   <!-- Arrows outside to harness -->
   <path d="M206 216 L206 252" class="arrow"/>

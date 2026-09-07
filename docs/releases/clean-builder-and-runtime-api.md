@@ -1,36 +1,63 @@
-# Clean Builder and Runtime API
+# Harness 4 definition and runtime API
 
-The Harness 3 API uses one consistent singular/plural registration vocabulary
-for every definition family:
+Harness 4 replaces the fluent Harness 3 builder with immutable, independently
+typed definitions and explicit runtime binding. This is a clean break; removed
+methods have no aliases or compatibility layer.
 
-| One definition | Reusable record |
-| --- | --- |
-| `.model(id, definition)` | `.models(record)` |
-| `.tool(id, definition)` | `.tools(record)` |
-| `.skill(id, definition)` | `.skills(record)` |
-| `.agent(id, definition)` | `.agents(record)` |
-| `.workflow(id, definition)` | `.workflows(record)` |
+## Definitions
 
-Calls are additive and duplicate ids fail immediately. Use singular methods for
-inline definitions. In particular, `.tool(...)` contextually derives its
-handler input and output from the adjacent schemas and exposes only sandbox
-capabilities already registered on the builder. Use plural methods for
-cohesive, pre-typed records; `.tools(...)` can contain native and MCP tools.
+Replace inline builder registration:
 
-Native tools are ordinary objects. There is no tool identity helper,
-registration brand, callback wrapper, or separate `defineTool` API.
+```ts
+// Harness 3
+defineHarness()
+  .tool('lookup', toolOptions)
+  .agent('support', { ...agentOptions, tools: ['lookup'] })
+  .build()
+```
 
-Runtime invocation and lifecycle names now describe their behavior directly:
+with direct definition references:
 
-- `session.agents.<id>.run(input)` and
-  `session.workflows.<id>.run(input)` perform non-streaming work;
-- `.stream(input)` remains the streaming form;
-- `session.release()` frees live resources while retaining persisted state;
-- `session.destroy()` explicitly deletes the session and its persisted state.
+```ts
+// Harness 4
+const lookup = defineTool('lookup', toolOptions)
+const support = defineAgent('support', { ...agentOptions, tools: [lookup] })
+const definition = defineHarness({ name: 'support' }).addAgent(support)
+```
 
-Custom agent and workflow handlers both receive `ctx.logger` and
-`ctx.telemetry`. Workflow `ctx.log` no longer exists. The root run span is
-`harness.session.run`.
+Use `defineSkill`, `defineMcpServer`, and `defineWorkflow` for the other
+definition families. Use `defineCatalog` plus `.use(catalog)` to package a
+reusable graph. There is no terminal `.build()` call.
 
-This is a clean break. The removed tool-helper, `prompt`, session `close`, and
-workflow `log` forms have no aliases or compatibility overloads.
+## Runtime configuration
+
+Provider clients and infrastructure no longer live in definitions:
+
+```ts
+const instance = await definition.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
+  storage,
+  memory,
+  sandbox,
+})
+```
+
+The definition graph projects the required bindings into the
+`getInstance(...)` type and validates them before any model or tool work.
+
+## Invocation and lifecycle
+
+Target invocation remains address-first:
+
+- `session.agents.<id>.run(input)`
+- `session.agents.<id>.stream(input)`
+- `session.workflows.<id>.run(input)`
+- `session.workflows.<id>.stream(input)`
+
+Use `session.release()` to release live resources while retaining persisted
+state, `session.destroy()` to delete session state, and `instance.close()` to
+close instance-owned adapters.
+
+Harness 4 exposes `ExecutionEvent` as its portable stream contract. Browser
+clients should use `@purista/harness-ai-sdk-ui/v1` to receive the standard AI
+SDK UI Message Stream protocol.

@@ -531,6 +531,7 @@ export type {
   ToolSandboxFacade,
   UserModelMessage,
   WorkflowAgentMap,
+  WorkflowAgentCallLimits,
   WorkflowChildTasks,
   WorkflowContext,
   WorkflowDefinition,
@@ -538,6 +539,7 @@ export type {
   WorkflowModelRequirement,
   WorkflowOptions,
 } from './definitions/index.js'
+export type { DefinitionReference } from './definitions/identity.js'
 export type {
   CatalogOptions,
   HarnessCatalogDefinition,
@@ -567,6 +569,7 @@ export type {
   GovernanceToolExposureRule,
   GovernanceToolMap,
   NativePolicyDefinition,
+  NativePolicyAuthoringDefinition,
   NativePolicyRule,
   NativePolicyRuleForTool,
   ResolvedAgentGovernance,

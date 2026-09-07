@@ -2,6 +2,12 @@
 
 Local Docker sandbox adapter for `@purista/harness`.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-sandbox-docker
+```
+
 The package implements one `Sandbox` contract and has no dependency on PURISTA.
 Docker Desktop, OrbStack, and Linux Docker Engine are compatibility targets;
 the verified environment is recorded below. Untested environments are not

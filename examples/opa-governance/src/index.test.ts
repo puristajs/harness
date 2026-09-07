@@ -26,7 +26,7 @@ describe('OPA governance consumer example', () => {
       }),
     ]))
     expect(JSON.parse(String(api.requests[0]?.init.body))).toEqual({
-      input: { tool: 'transfer_funds', amount: 250, destination: 'acct_savings' },
+      input: { tool: 'transferFunds', amount: 250, destination: 'acct_savings' },
     })
     api.assertExhausted()
   })

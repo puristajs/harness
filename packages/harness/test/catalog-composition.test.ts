@@ -389,6 +389,17 @@ describe('catalog composition and graph compilation', () => {
 		}
 	})
 
+	it('binds the public session memory facade to the active session id', async () => {
+		const instance = await defineHarness({ name: 'sessionMemory' }).getInstance({})
+		const session = await instance.getSession('session-memory-id')
+
+		await expect(session.memory.write('preference', { language: 'en' })).resolves.toBeUndefined()
+		await expect(session.memory.read('preference')).resolves.toEqual({ language: 'en' })
+
+		await session.destroy()
+		await instance.close()
+	})
+
 	it('requires a valid Harness name and accepts an empty Harness', () => {
 		expect(() => defineHarness({} as never)).toThrow(HarnessConfigError)
 		expect(() => defineHarness({ name: 'NotLowerCamel' })).toThrow(HarnessConfigError)

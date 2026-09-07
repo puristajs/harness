@@ -2,6 +2,12 @@
 
 Persistent, scoped key/value memory for `@purista/harness` using the official NATS v3 JetStream KV packages.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-memory-nats
+```
+
 ```ts
 import { defineHarness } from '@purista/harness'
 import { natsMemoryEngine } from '@purista/harness-memory-nats'

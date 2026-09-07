@@ -44,5 +44,8 @@ npm run typecheck
 
 For a local restart demo, provide a durable `HarnessStorage` and an application
 store that retain their data together. The included contract tests exercise crash
-windows after an executor effect, after a receipt write, and after the durable step
-checkpoint; all retries retain one execution identity and one logical effect.
+windows after task creation, after an executor effect, after a receipt write,
+after the durable step checkpoint, and after atomic run finalization. A failed
+durable run remains terminal and requires application reconciliation; an
+uncertain response after a committed success replays that authoritative result.
+Every case retains one execution identity and prevents duplicate effects.

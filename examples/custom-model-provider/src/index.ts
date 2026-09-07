@@ -1,4 +1,4 @@
-import { defineHarness } from '@purista/harness'
+import { defineAgent, defineHarness, type HarnessInstance } from '@purista/harness'
 import { z } from 'zod'
 
 import {
@@ -9,21 +9,19 @@ import {
 const invoiceInput = z.object({ invoiceId: z.string().min(1) })
 const invoiceOutput = z.object({ message: z.string().min(1) })
 
-export function createInvoiceHarness(client: InternalJsonClient) {
-  return defineHarness({ name: 'internal-provider-example' })
-    .models({
-      assistant: {
-        provider: new InternalModelProvider(client),
-        model: 'internal-json-v1',
-        capabilities: ['object'],
-      },
-    }).agent('invoice_status', {
-        model: 'assistant',
-        input: invoiceInput,
-        output: invoiceOutput,
-        instructions: 'Return a concise invoice status matching the output schema.',
-      })
-    .build()
+const invoiceStatus = defineAgent('invoiceStatus', {
+  input: invoiceInput,
+  output: invoiceOutput,
+  instructions: 'Return a concise invoice status matching the output schema.',
+  prompt: input => ({ role: 'user', content: `Report the status of invoice ${input.invoiceId}.` }),
+})
+
+const invoiceHarness = defineHarness({ name: 'internalProviderExample' }).addAgent(invoiceStatus)
+
+export function createInvoiceHarness(client: InternalJsonClient): Promise<HarnessInstance<typeof invoiceHarness.contracts, typeof invoiceHarness.requirements>> {
+  return invoiceHarness.getInstance({
+    model: { provider: new InternalModelProvider(client), model: 'internal-json-v1' },
+  })
 }
 
 export async function runCustomProviderExample(): Promise<string> {
@@ -38,16 +36,16 @@ export async function runCustomProviderExample(): Promise<string> {
       }
     },
   }
-  const harness = createInvoiceHarness(client)
+  const harness = await createInvoiceHarness(client)
   const session = await harness.getSession('custom-provider-example')
 
   try {
-    const result = await session.agents.invoice_status.run({ invoiceId: 'INV-42' })
+    const result = await session.agents.invoiceStatus.run({ invoiceId: 'INV-42' })
     if (result.status === 'interrupted') throw new Error(`Invoice lookup interrupted: ${result.interrupt.type}`)
     return result.output.message
   } finally {
     await session.release()
-    await harness.shutdown()
+    await harness.close()
   }
 }
 

@@ -1,12 +1,14 @@
 import {
+  defineAgent,
   defineHarness,
-  inMemorySandbox,
+  defineTool,
   JsonLogger,
   type JsonValue,
   type ModelProvider,
   type ObjectRequest,
   type ObjectResponse,
-  type RunEvent,
+  type ObjectStreamChunk,
+  type ExecutionEvent,
 } from '@purista/harness'
 import { createOpaClient, opaPolicy, type OpaClient } from '@purista/harness-policy-opa'
 import { z } from 'zod'
@@ -20,7 +22,7 @@ const transferOutput = z.object({ accepted: z.boolean() })
 
 const opaTransferDecision = z.object({
   matched: z.boolean(),
-  effect: z.enum(['allow', 'deny', 'audit', 'require_approval']),
+  effect: z.enum(['allow', 'deny']),
   ruleId: z.string().optional(),
   reasonCode: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/).optional(),
 })
@@ -34,7 +36,7 @@ export interface TransferScenario {
 /** Observable result used by the executable example and its deterministic tests. */
 export interface OpaGovernanceExampleResult {
   readonly output: string
-  readonly events: readonly RunEvent[]
+  readonly events: readonly ExecutionEvent<string>[]
   readonly handlerCalls: number
 }
 
@@ -52,7 +54,7 @@ class ScriptedTransferProvider implements ModelProvider {
         object: {} as T,
         toolCalls: [{
           id: 'call-transfer',
-          name: 'transfer_funds',
+          name: 'transferFunds',
           arguments: { ...this.scenario },
         }],
         usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
@@ -65,17 +67,19 @@ class ScriptedTransferProvider implements ModelProvider {
       finishReason: 'stop',
     }
   }
+
+  public async *objectStream<T extends JsonValue = JsonValue>(request: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+    const response = await this.object(request)
+    for (const call of response.toolCalls ?? []) yield { kind: 'tool_call', call }
+    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
+  }
 }
 
 /** Builds the example Harness while allowing tests to inject the strict OPA fake. */
 export function createOpaGovernanceHarness(scenario: TransferScenario, client: OpaClient) {
   let handlerCalls = 0
   const provider = new ScriptedTransferProvider(scenario)
-  const harness = defineHarness()
-    .logger(new JsonLogger({ level: 'error' }))
-    .sandbox(inMemorySandbox())
-    .models({ transfer_model: { provider, model: 'scripted-transfer', capabilities: ['object', 'tool_use'] } })
-    .tool('transfer_funds', {
+  const transferFunds = defineTool('transferFunds', {
         description: 'Execute a synthetic transfer after policy evaluation.',
         input: transferInput,
         output: transferOutput,
@@ -84,24 +88,25 @@ export function createOpaGovernanceHarness(scenario: TransferScenario, client: O
           return { accepted: true }
         },
       })
-    .agent('transfer_agent', {
-      model: 'transfer_model',
+  const transferAgent = defineAgent('transferAgent', {
+      model: 'transferModel',
       input: z.string(),
       output: z.string(),
-      instructions: 'Call transfer_funds once with the requested synthetic transfer, then summarize the result.',
-      tools: ['transfer_funds'],
-    })
-    .governance((helpers) => ({
+      instructions: 'Call transferFunds once with the requested synthetic transfer, then summarize the result.',
+      prompt: input => ({ role: 'user', content: input }),
+      tools: [transferFunds],
+      governance: (helpers) => ({
       mode: 'enforce',
       defaultEffect: 'deny',
       policies: [
         opaPolicy(helpers, {
           id: 'opa-transfer-policy',
           version: '2026-08-30',
+          effects: ['allow', 'deny'],
           client,
           decisionPath: ['purista', 'bank', 'transfer', 'decision'],
           mapInput(context) {
-            if (context.toolId !== 'transfer_funds') return undefined
+            if (context.toolId !== 'transferFunds') return undefined
             return {
               tool: context.toolId,
               amount: context.input.amount,
@@ -119,8 +124,12 @@ export function createOpaGovernanceHarness(scenario: TransferScenario, client: O
           },
         }),
       ],
-    }))
-    .build()
+      }),
+    })
+  const harness = defineHarness({ name: 'opaGovernanceExample' }).addAgent(transferAgent).getInstance({
+    models: { transferModel: { provider, model: 'scripted-transfer' } },
+    logger: new JsonLogger({ level: 'error' }),
+  })
 
   return { harness, getHandlerCalls: () => handlerCalls }
 }
@@ -130,20 +139,21 @@ export async function runOpaGovernanceScenario(
   scenario: TransferScenario,
   client: OpaClient,
 ): Promise<OpaGovernanceExampleResult> {
-  const { harness, getHandlerCalls } = createOpaGovernanceHarness(scenario, client)
-  const events: RunEvent[] = []
+  const { harness: harnessPromise, getHandlerCalls } = createOpaGovernanceHarness(scenario, client)
+  const harness = await harnessPromise
+  const events: ExecutionEvent<string>[] = []
   let output = ''
   try {
     const session = await harness.getSession(`opa-transfer-${scenario.amount}-${scenario.destination}`)
-    for await (const event of session.agents.transfer_agent.observe(
+    for await (const event of session.agents.transferAgent.stream(
       `Transfer ${scenario.amount} to ${scenario.destination}.`,
     )) {
       events.push(event)
-      if (event.type === 'run.finished' && typeof event.output === 'string') output = event.output
+      if (event.type === 'run.finished' && event.outcome.status === 'completed') output = event.outcome.output
     }
     return { output, events, handlerCalls: getHandlerCalls() }
   } finally {
-    await harness.shutdown()
+    await harness.close()
   }
 }
 

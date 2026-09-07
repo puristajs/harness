@@ -76,7 +76,7 @@ evidence to a normal object-output agent.
 ```ts
 const queryEmbedding = await ctx.models.retrieval.embed({
 	input: ctx.input.question,
-})
+}, ctx.signal)
 
 const candidates = await vectorIndex.search(queryEmbedding.embeddings[0].vector)
 
@@ -88,30 +88,30 @@ const ranked = await ctx.models.ranker.rerank({
 		metadata: { source: doc.source },
 	})),
 	topN: 5,
-})
+}, ctx.signal)
 ```
 
-The harness owns provider calls, timeout/cancellation, usage metadata, and run
-observation. The vector database, retrieval policy, and final prompt assembly
+The harness owns provider calls, timeout/cancellation, usage metadata, and
+execution events. The vector database, retrieval policy, and final prompt assembly
 stay in application code.
 
 ## Application-Owned Human Review
 
-Use a workflow when proposed changes should not be applied until a human
-approves them. The proposal agent drafts the change; the application owns the
-review record, user interface, identity checks, and decision persistence, then
-decides whether a write tool may run. The Harness does not currently provide a
-durable review queue or suspend and resume a workflow across a process restart.
+Use tool approval when a prepared model tool call needs a human decision before
+its handler runs. Harness returns a resumable interruption and checkpoints the
+exact call. Use a durable workflow external wait for a broader business review.
+In both cases, the application owns the review record, user interface,
+authenticated reviewer, authorization, expiry, and decision persistence.
 
 ```mermaid
 flowchart LR
   Source["Source / request"] --> Agent["Proposal agent"]
-  Agent --> Review["ReviewRequest"]
+  Agent --> Review["Approval interruption or external wait"]
   Review --> UI["Questionnaire UI"]
   UI --> Decision["ReviewDecision"]
   Decision --> Apply{"Approved?"}
   Apply -- "Yes" --> Write["Write tool"]
-  Apply -- "Revise" --> Followup["Follow-up run"]
+  Apply -- "Revise" --> Followup["Reject and start a new request"]
   Apply -- "Reject" --> Log["Audit log"]
 ```
 
@@ -119,7 +119,7 @@ Required behavior:
 
 - no mutation before approval;
 - visible review questions and recommended answers;
-- immediate answer capture when a user selects an option;
+- standard approval parts in the client stream;
 - idempotent final decision submission;
 - stale run/review ids fail with a clear error.
 

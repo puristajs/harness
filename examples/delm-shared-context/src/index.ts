@@ -10,10 +10,10 @@ export { createTaskQueue, type SharedTaskQueue, type TaskQueueSnapshotItem, type
 export * from './schemas.js'
 
 export async function runDelmSharedContextExample(): Promise<void> {
-  const example = createDelmSharedContextHarness()
+  const example = await createDelmSharedContextHarness()
   try {
     const session = await example.harness.getSession('delm-demo')
-    const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
+    const result = await session.workflows.decentralizedResearch.run(defaultDelmInput(), {
       durable: { runId: 'delm-demo-run' }
     })
     if (result.status === 'interrupted') throw new Error(`Research workflow interrupted: ${result.interrupt.type}`)

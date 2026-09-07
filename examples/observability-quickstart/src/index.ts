@@ -3,18 +3,18 @@ import { startOpenTelemetry } from './telemetry.js'
 
 export async function runObservedSupportTicket(): Promise<string> {
   const telemetry = startOpenTelemetry()
-  const harness = createObservedHarness()
+  const harness = await createObservedHarness()
 
   try {
     const session = await harness.getSession('support-demo')
-    const result = await session.workflows.handle_ticket.run({
+    const result = await session.workflows.handleTicket.run({
       ticketId: 'SUP-42',
       question: 'How can I update my billing address?',
     })
     if (result.status === 'interrupted') throw new Error(`Support workflow interrupted: ${result.interrupt.type}`)
     return result.output.answer
   } finally {
-    await harness.shutdown()
+    await harness.close()
     await telemetry.shutdown()
   }
 }

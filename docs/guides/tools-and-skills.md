@@ -1,158 +1,122 @@
-# Tools and Skills
+# Tools and Agent Skills
 
-Tools perform narrowly defined operations. Skills provide mounted, reviewable
-methods for using those capabilities. An agent receives neither implicitly:
-its definition names each tool and skill it may use.
+Tools let a model request an action. Agent Skills provide reusable instructions
+and optional scripts. Define both beside the agent that selects them.
 
-## Start with one typed tool
+## Define a native tool
 
-```ts title="Register the order lookup tool"
+```ts
+import { defineTool } from '@purista/harness'
 import { z } from 'zod'
 
-.tool('find_order', {
-    description: 'Find one order visible to the current customer.',
-    input: z.object({ orderId: z.string().min(1) }),
-    output: z.object({ status: z.enum(['pending', 'shipped', 'delivered']) }),
-    handler: async (_ctx, { orderId }) => orders.getVisibleOrder(orderId),
-  })
-  .agent('support', {
-    model: 'assistant',
-    tools: ['find_order'],
-    instructions: 'Use find_order only when the customer provides an order id.',
-  })
-```
-
-Input and output schemas are security boundaries, not prose. Keep deterministic
-authorization in the tool handler or application layer; do not ask the model
-to decide whether a customer may access a record.
-
-## Choose the schema boundary deliberately
-
-Zod is the default in Harness documentation, but the public contract accepts
-any [Standard Schema](https://standardschema.dev/) validator. A TypeScript
-tool's `input` is different from its other boundaries: the default agent loop
-must describe tool arguments to a model, so it requires a **Standard JSON
-Schema**-capable `ModelSchema`. Tool `output`, agent input, workflow input, and
-workflow/custom-handler output need only the validation `Schema` contract.
-
-Harness projects every model-facing schema once during `.build()` through its
-Standard JSON Schema **input** direction with target `draft-2020-12`. It owns
-and freezes that JSON value before passing it unchanged to a provider. Do not
-wrap a vendor schema, call a provider converter, or construct JSON Schema in a
-tool handler.
-
-Zod needs no extra adapter:
-
-```ts title="src/harness/schemas.ts"
-import { z } from 'zod'
-
-export const orderLookupInput = z.object({ orderId: z.string().min(1) })
-export const orderLookupOutput = z.object({ status: z.string() })
-```
-
-ArkType implements both Standard Schema and Standard JSON Schema directly:
-
-```ts title="src/harness/schemas.ts"
-import { type } from 'arktype'
-
-export const orderLookupInput = type({ orderId: 'string' })
-export const orderLookupOutput = type({ status: 'string' })
-```
-
-Valibot schemas are Standard Schema validators. Add the official
-`@valibot/to-json-schema` wrapper only when the same schema is model-facing,
-such as a TypeScript tool input or a default-loop agent output:
-
-```ts title="src/harness/schemas.ts"
-import { toStandardJsonSchema } from '@valibot/to-json-schema'
-import * as v from 'valibot'
-
-const orderLookupValidation = v.object({ orderId: v.string() })
-export const orderLookupInput = toStandardJsonSchema(orderLookupValidation)
-export const orderLookupOutput = v.object({ status: v.string() })
-```
-
-The wrapper is an application dependency, not a Harness adapter. Install it
-beside Valibot with `npm install @valibot/to-json-schema`. Do not apply it to a
-validation-only boundary unless that boundary later becomes model-facing.
-
-## Add a skill when the method needs reviewed files
-
-Skills are directories mounted into the sandbox. They are not copied into a
-prompt. Register the directory, allowlist it for the agent, and retain the
-built-in `read` tool so the agent can open the required `SKILL.md`.
-
-```ts title="Register the support-methods skill"
-.skill('support_methods', { directory: './skills/support-methods' })
-  .agent('support', {
-    model: 'assistant',
-    skills: ['support_methods'],
-    builtinTools: ['read'],
-    tools: ['find_order'],
-    instructions: 'Read the mounted support method before handling a return.',
-  })
-```
-
-Use repeated `.tool(...)` calls for inline native tools. Use `.tools(record)`
-when definitions have already been typed and collected into a reusable native,
-MCP, or mixed catalog. This distinction keeps inline handler input/output and
-sandbox capability inference exact without an identity helper.
-
-Use a TypeScript tool for a business operation. Use a skill for a reusable,
-reviewed method, checklist, or file-backed reference. Use
-[MCP tools](./mcp-tools.md) only when an external tool server is the correct,
-explicit integration boundary.
-
-Built-ins are disabled when `builtinTools` is omitted. Skills never widen that
-set: a default-loop skill agent must explicitly include `read`, and
-registration fails before model or sandbox I/O if it does not.
-
-Review a skill directory like executable source even though mounting does not
-execute it. Instructions can attempt to steer allowed tools, and scripts can
-run if the application separately exposes an execution-capable tool.
-Frontmatter `allowed-tools` is metadata only; authorization remains in the
-agent allowlists, tool handlers, governance, and sandbox.
-
-## Search files without granting a shell
-
-Enable `grep` when an agent needs to find text in sandbox files:
-
-```ts title="Enable bounded file search"
-.agent('support', {
-  model: 'assistant',
-  builtinTools: ['read', 'grep'],
-  instructions: 'Search the mounted material, then open only relevant files.',
+export const findOrder = defineTool('findOrder', {
+  description: 'Find one order visible to the current customer.',
+  input: z.object({ orderId: z.string() }),
+  output: z.object({ status: z.string() }),
+  async handler(context, input) {
+    context.logger.debug('Finding an order', { order_id: input.orderId })
+    return { status: 'processing' }
+  },
 })
 ```
 
-The default sandbox already provides this feature. `grep` calls the sandbox's
-`sandbox.text_search` capability; it does not compile a JavaScript `RegExp`,
-read every file into the agent loop, or invoke a shell. Literal search is the
-simplest mode. `safe_regex_v1` is a versioned non-backtracking subset for cases
-that need pattern operators; it accepts ASCII patterns and case-sensitive mode
-only. Case-insensitive literal search folds ASCII letters consistently across
-local and remote adapters.
+The input schema validates model-generated arguments before the handler runs.
+The output schema validates the handler result before it returns to the model.
+Keep the description specific because the model uses it to choose tools.
 
-Every response says whether it is exhaustive:
+## Declare resources
+
+A portable tool receives common run metadata by default. Memory and sandbox
+facades appear only when the definition declares them:
 
 ```ts
-{
-  matches: [{ path: '/workspace/runbook.md', line: 18, text: '...', textTruncated: false }],
-  complete: false,
-  limitReasons: ['result_limit'],
-  scannedFiles: 12,
-  scannedBytes: 48120,
-}
+export const searchNotes = defineTool('searchNotes', {
+  description: 'Search notes from this session.',
+  input: z.object({ query: z.string() }),
+  output: z.object({ matches: z.array(z.string()) }),
+  requires: {
+    memory: ['memory.text_search'],
+    sandbox: ['sandbox.fs'],
+  },
+  async handler({ memory, sandbox }, input) {
+    const notes = await memory.session.search({ text: input.query, limit: 5 })
+    await sandbox.write('/workspace/last-query.txt', input.query)
+    return { matches: notes.items.map(item => item.content) }
+  },
+})
 ```
 
-Agents and workflows must not interpret `complete: false` as “there are no
-more matches.” Narrow the path or pattern and search again. The fixed contract
-caps pattern size, result count, returned-line bytes, file size, total scanned
-bytes, and file count.
+These requirements are projected into `getInstance`, so an incompatible
+runtime fails before execution.
 
-## Next
+In a PURISTA service, use the PURISTA host-tool helper when a tool must invoke a
+command, enqueue work, or emit an event. The helper adds the service context and
+preserves the trusted principal and tenant. The portable Harness definition
+still contains no EventBridge or service instance.
 
-- [Usage and sessions](./usage.md)
-- [Workflows](./workflows.md)
-- [Security model](../security/security-model.md)
-- [Testing](./testing.md)
+## Attach tools to an agent
+
+```ts
+const support = defineAgent('support', {
+  instructions: 'Help the customer using verified order data.',
+  tools: [findOrder, searchNotes],
+})
+
+const definition = defineHarness({ name: 'support' }).addAgent(support)
+```
+
+Use direct definition references. String tool ids are not accepted, which
+prevents missing definitions and runtime name lookup.
+
+## Use built-in tools
+
+`builtInTools` provides sandbox-backed file and command operations. Each tool
+declares its exact sandbox capability. Selecting `builtInTools.read`, for
+example, makes a compatible sandbox binding required.
+
+## Define an Agent Skill
+
+```ts
+import { defineSkill } from '@purista/harness'
+
+export const supportMethod = defineSkill('support-method', {
+  directory: new URL('../skills/support-method/', import.meta.url),
+  runtimes: ['node'],
+})
+```
+
+The directory contains `SKILL.md` and any supporting files. `runtimes`
+declares what must be available if the skill includes executable scripts. The
+Harness mounts files read-only. Runtime availability never grants tool
+authority; the agent still needs an allowed tool to execute anything.
+
+```ts
+const support = defineAgent('support', {
+  instructions: 'Follow the support method.',
+  tools: [findOrder],
+  skills: [supportMethod],
+})
+```
+
+Skills may be shared through a catalog:
+
+```ts
+const supportCatalog = defineCatalog('supportCatalog', {
+  tools: [findOrder],
+  skills: [supportMethod],
+  agents: [support],
+})
+
+const definition = defineHarness({ name: 'app' }).use(supportCatalog)
+```
+
+`defineCatalog` is an immutable package of definitions. It is useful for reuse
+and distribution; direct `.addAgent` and `.addTool` calls remain the
+simplest choice inside one application.
+
+## Test tools
+
+Call the tool handler with a typed fake context for unit tests, or compose it
+into a Harness with `FakeModelProvider` to test validation and model-driven
+selection. Include invalid input, denied access, cancellation, and adapter
+failure cases when they affect the tool.

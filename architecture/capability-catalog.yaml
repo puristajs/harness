@@ -6,7 +6,7 @@
       "owner": "@purista/harness-openai",
       "port": "@purista/harness:ModelProvider",
       "provider": "@purista/harness-openai",
-      "consumer": "packages/harness-openai/test/static-module-consumer.test.ts",
+      "consumer": "packages/harness-openai/test/v4-runtime-binding.test.ts",
       "conformance": "@purista/harness/testing:modelProviderContract"
     },
     {

@@ -20,16 +20,16 @@ const provider = google({ apiKey: process.env.GEMINI_API_KEY! })
 ```
 
 ```ts
-.models({
-  assistant: {
-    provider,
-    model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
-    capabilities: ['object', 'object_stream', 'tool_use', 'vision_input'],
-  },
-  embeddings: {
-    provider,
-    model: process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2',
-    capabilities: ['embeddings'],
+const instance = await definition.getInstance({
+  models: {
+    assistant: {
+      provider,
+      model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+    },
+    embeddings: {
+      provider,
+      model: process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2',
+    },
   },
 })
 ```

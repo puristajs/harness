@@ -1,9 +1,9 @@
-import type { JsonValue } from '../../models/json.js'
+import { isJsonValue, type JsonValue } from '../../models/json.js'
 import type { McpServerDefinition, McpToolDefinition } from '../../definitions/types.js'
 import type { McpBinding } from '../../runtime/instance-config.js'
 import type { SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import { isSpawnCapableSession } from '../../sandbox/index.js'
-import { McpProtocolError, OperationCancelledError, OperationTimeoutError, SandboxNoExecutorError } from '../../errors/index.js'
+import { McpProtocolError, OperationCancelledError, OperationTimeoutError, SandboxNoExecutorError, ToolError } from '../../errors/index.js'
 import { abortError, withAbortSignal } from '../../runtime/abort.js'
 import { projectModelSchema } from '../../schema/json-schema.js'
 import { bindMcpTool, type ExecutableToolBinding } from '../bindings.js'
@@ -132,13 +132,15 @@ async function initializeServer(
 			const remote = normalizeSchema(candidates[0]!.inputSchema, localId, binding.transport)
 			if (JSON.stringify(declared) !== JSON.stringify(remote)) throw protocol(localId, binding.transport, 'list')
 			tools[localId] = bindMcpTool(definition, async (context, remoteName, input) => {
+				let result: unknown
 				try {
-					return await client.callTool(remoteName, input, { ...(context.signal ? { signal: context.signal } : {}) })
+					result = await client.callTool(remoteName, input, { ...(context.signal ? { signal: context.signal } : {}) })
 				} catch (error) {
 					if (isOperationControlError(error)) throw error
 					if (context.signal?.aborted) throw abortError(context.signal, 'tool', 'MCP tool operation was cancelled.')
 					throw protocol(localId, binding.transport, 'call', error)
 				}
+				return normalizeMcpOutput(result, localId, binding.transport)
 			})
 		}
 		return Object.freeze({ serverId: server.id, tools: Object.freeze(tools), close })
@@ -146,6 +148,45 @@ async function initializeServer(
 		await close().catch(() => undefined)
 		throw error
 	}
+}
+
+/** @internal Converts an MCP CallToolResult envelope into the declared tool output value. */
+export function normalizeMcpOutput(result: unknown, toolId: string, transport: 'http' | 'stdio'): JsonValue {
+	if (isPlain(result) && result['isError'] === true) {
+		throw new ToolError('MCP tool returned an error.', { tool_id: toolId, tool_kind: `mcp_${transport}` })
+	}
+	if (isPlain(result) && isJsonValue(result['structuredContent'])) return result['structuredContent']
+	if (!isPlain(result) || !Array.isArray(result['content'])) return isJsonValue(result) ? result : null
+
+	const normalized = result['content'].map(normalizeContentBlock)
+	if (normalized.length === 0) return null
+	if (normalized.every(item => typeof item === 'string')) return normalized.join('\n')
+	if (normalized.length === 1) return normalized[0] ?? null
+	return Object.freeze({ content: normalized })
+}
+
+function normalizeContentBlock(block: unknown): JsonValue {
+	if (!isPlain(block)) return null
+	if (block['type'] === 'text' && typeof block['text'] === 'string') return block['text']
+	if ((block['type'] === 'image' || block['type'] === 'audio') && typeof block['mimeType'] === 'string') {
+		return Object.freeze({ contentType: block['mimeType'], ...(typeof block['data'] === 'string' ? { data: block['data'] } : {}) })
+	}
+	if (block['type'] === 'resource' && isPlain(block['resource'])) {
+		const resource = block['resource']
+		return Object.freeze({
+			...(typeof resource['mimeType'] === 'string' ? { contentType: resource['mimeType'] } : {}),
+			...(typeof resource['uri'] === 'string' ? { uri: resource['uri'] } : {}),
+			...(typeof resource['text'] === 'string' ? { data: resource['text'] } : {}),
+			...(typeof resource['blob'] === 'string' ? { data: resource['blob'] } : {}),
+		})
+	}
+	if (block['type'] === 'resource_link') {
+		return Object.freeze({
+			...(typeof block['mimeType'] === 'string' ? { contentType: block['mimeType'] } : {}),
+			...(typeof block['uri'] === 'string' ? { uri: block['uri'] } : {}),
+		})
+	}
+	return isJsonValue(block) ? block : null
 }
 
 const defaultMcpRuntimeDependencies: McpRuntimeDependencies = Object.freeze({

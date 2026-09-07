@@ -24,31 +24,30 @@ Telemetry defaults to dual GenAI and OpenInference attributes with no content
 capture. `InvokeOptions.traceparent` and `tracestate` accept inbound W3C Trace
 Context so application traces can parent harness run spans.
 
-Workflows can orchestrate typed child agents with `ctx.agents.<id>(input)`.
-Child-agent calls are disabled until a workflow declares `delegation` or the
-harness opts in with `defaults.delegation.enabled: true`. Opted-in workflows get
-bounded fan-out, agent allowlists, per-agent model alias overrides, and
-lineage-rich run events.
+Workflows orchestrate exact agent references through
+`ctx.agents.<localName>.run(input, { callId })`. The workflow's `agents` map
+provides the compile-time allowlist; `agentCalls` bounds total and parallel
+calls. Child runs retain lineage in the public execution stream.
 
 For explicit background work, a workflow can use
-`ctx.childTasks.start('agent', input)`. Tasks always own private history and
+`ctx.childTasks.start('agent', input, { callId })`. Tasks always own private history and
 are retrievable by their session owner through
-`session.childTasks`, and queue under the configured delegation ceiling. Use
+`session.childTasks`, and run under configured admission and call ceilings. Use
 `{ mode: 'continuable' }` for a short in-process task conversation with
 serialized `send(...)` turns and an explicit `close()`; durable/restart-safe
 work belongs in an application queue/worker integration.
 
 Sandbox sharing is a workflow policy, not an adapter-topology choice. With no
 explicit policy, a background task receives a fresh task-run shared partition.
-Set `sandbox: { sharing: 'inherit' }` to use the parent partition, `private`
-for a child-private partition, or `group` with an approved group id. A child
+Set `sandbox: 'inherit'` to use the parent partition, `private`
+for a child-private partition, or `{ group: 'approvedGroup' }`. A child
 may detach from shared sandbox state but cannot terminate the parent resource.
 
-Tool-call governance is optional. Configure `.governance(...)` only when an
+Tool-call governance is optional. Set `governance` on an agent only when an
 application needs policy-driven tool exposure, typed domain policies, approval
 gates, shadow rollout, audit events, or an adapter to an external policy engine.
 For OPA, install the independent `@purista/harness-policy-opa` addon. It owns
-the bounded Data API transport and preserves builder-derived tool-input types;
+the bounded Data API transport and preserves definition-derived tool-input types;
 the application still owns identity, least-data mapping, Rego/bundles,
 credentials, topology, and decision-log controls. Cedar and AWS Verified
 Permissions remain distinct application-owned integrations.
@@ -78,10 +77,10 @@ volume—are the recovery guarantee.
 
 Both built-in sandboxes provide bounded, non-backtracking file search through
 `sandbox.text_search`; `inMemorySandbox()` needs no shell. Agents opt in with
-`builtinTools: ['grep']`, and each result reports whether limits made it
+the direct `builtInTools.grep` reference, and each result reports whether limits made it
 incomplete. Custom Docker, Kubernetes, microVM, and remote adapters implement
 the same `searchText(...)` contract where their files live. Missing support
-fails at `build()` instead of downloading files or using a hidden fallback.
+fails when the Harness instance is created instead of downloading files or using a hidden fallback.
 
 For trusted single-host Docker Desktop or OrbStack development, install the
 independent adapter:
@@ -96,27 +95,25 @@ does not provide durable-workspace restore or hostile multi-tenant isolation.
 See the [evaluation guide](../../docs/guides/evaluating-prompts.md) for the
 execution model, scorer boundary, and privacy behavior.
 
-## Static modules and test utilities
+## Reusable catalogs and test utilities
 
-Reuse local, typed configuration with a static module. Modules are imported
+Reuse portable definitions with an immutable catalog. Catalogs are imported
 application code: they are not discovered, downloaded, or hot-reloaded.
 
 ```ts
-import { defineHarness, defineHarnessModule } from '@purista/harness'
+import { defineAgent, defineCatalog, defineHarness } from '@purista/harness'
 
-const provider = /* a configured ModelProvider */
-const models = defineHarnessModule<{}>()('support.models', {
-  register: (builder) => builder.models({
-    support: { provider, model: 'gpt-5-mini', capabilities: ['object'] }
-  })
+const support = defineAgent('support', { instructions: 'Help the user.' })
+const catalog = defineCatalog('supportDefinitions', { agents: [support] })
+const definition = defineHarness({ name: 'supportApp' }).use(catalog)
+const instance = await definition.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
 })
-
-const harness = defineHarness().use(models).agents({ /* ... */ }).build()
 ```
 
-`harness.inspect().modules` contains ordered, data-only provenance. Definition
-ids compose additively and duplicates fail early. `shutdown()` centrally closes
-all configured closable resources exactly once.
+`definition.inspect()` exposes a sanitized definition and requirement summary.
+Definition ids compose additively and duplicates fail early. `instance.close()`
+centrally closes configured instance-owned resources exactly once.
 
 For deterministic tests, `@purista/harness/testing` provides an explicit
 sanitizer-based recorder, offline replay provider, and explicit diagnostic
@@ -140,13 +137,13 @@ Harness does not re-export Zod or require an application dependency on it.
 Optional peer dependencies:
 
 - `@modelcontextprotocol/client` enables MCP stdio/http tools.
+- `just-bash` enables the exec-capable bash sandbox.
+- `@opentelemetry/api` connects harness spans to an existing OpenTelemetry
+  context.
 
 ## Optional guardrails
 
 `@purista/harness-guardrails` provides inline typed configuration, opaque action rails, direct model-check rails, and explicit retrieval filtering through the Harness interceptor contract. It is intentionally optional so the core runtime remains dependency-light. See the [guardrails guide](../../docs/guides/guardrails.md).
-- `just-bash` enables the exec-capable bash sandbox.
-- `@opentelemetry/api` connects harness spans to an existing OpenTelemetry
-  context.
 
 ## Package Format
 

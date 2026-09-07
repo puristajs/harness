@@ -59,7 +59,7 @@ flowchart TD
 - Start building
   - [Quickstart](./getting-started/quickstart.md): install, run the smallest example, and verify the harness works.
   - [Living Wiki Jaeger Example](../examples/living-wiki-jaeger/README.md): explore a full research workspace with agents, workflows, application-owned review tasks, artifacts, MCP, and Jaeger.
-  - [Modular Support Harness](../examples/modular-support-harness/README.md): compose typed local modules while retaining application-owned workflows and hermetic replay tests.
+  - [Catalog Support Harness](../examples/catalog-support-harness/README.md): compose reusable typed definition catalogs while retaining application-owned workflows and hermetic replay tests.
   - [Workflow Child Tasks](../examples/workflow-child-tasks/README.md): run bounded fan-out, isolated background tasks, and a short continuable task conversation without credentials.
   - [Agent Plugins](../examples/agent-plugins/README.md): inspect a local package, pin its reviewed digest, and explicitly bind selected Skills or MCP tools.
 - Learn the model
@@ -84,17 +84,17 @@ flowchart TD
   - [Operations Runbook](./operations/runbook.md): readiness checks, failure handling, logs, traces, MCP operations, and shutdown.
   - [Security Model](./security/security-model.md): trust boundaries, secret handling, sandbox execution, MCP risk, application-owned review tasks, and telemetry privacy.
 - Reference
-  - [Public API](./reference/public-api.md): package exports, builder shape, session API, run events, errors, and type inference.
+  - [Public API](./reference/public-api.md): definitions, runtime bindings, sessions, execution events, errors, and type inference.
   - [Decision Boundary Release Notes](./releases/decision-boundaries.md): current breaking contracts with no compatibility recipes.
   - [Standard Schema Boundaries](./releases/standard-schema-boundaries.md): vendor-neutral validation, model-facing JSON Schema projection, and the clean breaking contract.
-  - [Clean Builder and Runtime API](./releases/clean-builder-and-runtime-api.md): consistent definition registration, `run`, and explicit session lifecycle names.
+  - [Harness 4 Definition and Runtime API](./releases/clean-builder-and-runtime-api.md): the clean break to immutable definitions, explicit runtime bindings, and standard target invocation.
   - [Spec Conformance](./reference/spec-conformance.md): current implementation status against the approved specs.
 
 ## Repository Map
 
 | Path | Purpose |
 |---|---|
-| `packages/harness` | Core runtime, builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
+| `packages/harness` | Core definitions, runtime, sessions, agents, workflows, tools, sandbox, state, telemetry, and errors. |
 | `packages/harness-ai-sdk-ui` | AI SDK UI Message Stream v1 adapter for standard browser chat clients and approval flows. |
 | `packages/harness-openai` | OpenAI model provider adapter. |
 | `packages/harness-google` | Google Gemini API model provider adapter. |
@@ -104,7 +104,7 @@ flowchart TD
 | `packages/harness-agent-plugins` | Opt-in Agent Plugins v1 inspector and explicit Skill/MCP binding addon. |
 | `examples/quickstart` | Smallest typed harness example. |
 | `examples/showcase` | Skills, TypeScript tools, and multiple workflows. |
-| `examples/modular-support-harness` | Static module composition, application workflow ownership, retry-only context projection, and sanitized replay. |
+| `examples/catalog-support-harness` | Reusable catalog composition, application workflow ownership, context projection, and sanitized replay. |
 | `examples/workflow-child-tasks` | Bounded fan-out, isolated task ownership and lookup, and in-process continuables. |
 | `examples/agent-plugins` | Review, digest-pin, and explicitly bind an installed Agent Plugins package. |
 | `examples/bank-governance` | Optional typed governance policies, exposure-aware events, approvals, shadow-ready rollout, and blocked tool calls. |

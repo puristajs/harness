@@ -1,12 +1,16 @@
 import {
+  defineAgent,
   defineHarness,
-  inMemorySandbox,
+  defineTool,
   JsonLogger,
   type ExecutionEvent,
   type JsonValue,
   type ModelProvider,
   type ObjectRequest,
   type ObjectResponse,
+  type ObjectStreamChunk,
+  type RunOutcome,
+  sqliteHarnessStorage,
 } from '@purista/harness'
 import { z } from 'zod'
 
@@ -52,7 +56,7 @@ class ScriptedTransferProvider implements ModelProvider {
         toolCalls: [
           {
             id: 'call_transfer',
-            name: 'transfer_funds',
+            name: 'transferFunds',
             arguments: { ...this.scenario } as unknown as JsonValue,
           },
         ],
@@ -66,6 +70,12 @@ class ScriptedTransferProvider implements ModelProvider {
       finishReason: 'stop',
     }
   }
+
+  public async *objectStream<T extends JsonValue = JsonValue>(request: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
+    const response = await this.object(request)
+    for (const call of response.toolCalls ?? []) yield { kind: 'tool_call', call }
+    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
+  }
 }
 
 export function createBankGovernanceHarness(scenario: TransferScenario, opts: BankGovernanceOptions = {}) {
@@ -74,11 +84,7 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
   const hardLimit = opts.hardLimit ?? 10_000
   const provider = new ScriptedTransferProvider(scenario)
 
-  const harness = defineHarness()
-    .logger(new JsonLogger({ level: 'error' }))
-    .sandbox(inMemorySandbox())
-    .models({ banker_model: { provider, model: 'scripted-bank-model', capabilities: ['object', 'tool_use'] } })
-    .tool('transfer_funds', {
+  const transferFunds = defineTool('transferFunds', {
         description: 'Move money between two authorized bank accounts.',
         input: transferInput,
         output: transferOutput,
@@ -95,58 +101,66 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
           }
         },
       })
-    .agent('banker', {
-      model: 'banker_model',
+  const banker = defineAgent('banker', {
+      model: 'bankerModel',
       input: z.string(),
       output: z.string(),
-      instructions: 'Use transfer_funds for the requested bank transaction, then summarize the result.',
-      tools: ['transfer_funds'],
-    })
-    .governance(({ native, rule }) => ({
+      instructions: 'Use transferFunds for the requested bank transaction, then summarize the result.',
+      prompt: input => ({ role: 'user', content: input }),
+      tools: [transferFunds],
+      governance: ({ native, rule }) => ({
       defaultEffect: 'allow',
       policies: [
         native({
-          id: 'bank-transfer-policy',
+          id: 'bankTransferPolicy',
           description: 'Bank transfer controls for balance, approval, and hard limits.',
           rules: [
             rule({
-              id: 'insufficient-funds',
+              id: 'insufficientFunds',
               effect: 'deny',
-              tools: ['transfer_funds'],
+              tools: ['transferFunds'],
               when: ({ input }) => (balances[input.from] ?? 0) < input.amount,
               reasonCode: 'insufficient_funds',
             }),
             rule({
-              id: 'hard-transfer-limit',
+              id: 'hardTransferLimit',
               effect: 'deny',
-              tools: ['transfer_funds'],
+              tools: ['transferFunds'],
               when: ({ input }) => input.amount > hardLimit,
               reasonCode: 'hard_limit',
             }),
             rule({
-              id: 'large-transfer-approval',
+              id: 'largeTransferApproval',
               effect: 'require_approval',
-              tools: ['transfer_funds'],
+              tools: ['transferFunds'],
               when: ({ input }) => input.amount > approvalThreshold,
               reasonCode: 'large_transfer',
             }),
           ],
         }),
       ],
-    }))
-    .build()
+      }),
+    })
+  const storage = sqliteHarnessStorage({ file: ':memory:' })
+  const harness = defineHarness({ name: 'bankGovernanceExample', revision: 'v1' }).addAgent(banker).getInstance({
+    models: { bankerModel: { provider, model: 'scripted-bank-model' } },
+    storage,
+    logger: new JsonLogger({ level: 'error' }),
+  })
 
-  return { harness, balances }
+  return { harness, balances, storage }
 }
 
 export async function runTransferScenario(
   scenario: TransferScenario,
   opts?: BankGovernanceOptions,
 ): Promise<{ output: string; events: ExecutionEvent<string>[]; balances: AccountBalances }> {
-  const { harness, balances } = createBankGovernanceHarness(scenario, opts)
+  const { harness: harnessPromise, balances, storage } = createBankGovernanceHarness(scenario, opts)
+  const harness = await harnessPromise
   const session = await harness.getSession(`bank-${scenario.from}-${scenario.to}-${scenario.amount}`)
   const events: ExecutionEvent<string>[] = []
   let output = ''
+  let interrupted: Extract<RunOutcome<string>, { status: 'interrupted' }> | undefined
   const input = `Transfer ${scenario.amount} from ${scenario.from} to ${scenario.to}.`
 
   try {
@@ -154,30 +168,32 @@ export async function runTransferScenario(
       events.push(event)
       if (event.type !== 'run.finished') continue
       if (event.outcome.status === 'completed') output = event.outcome.output
-      else if (event.outcome.interrupt.type === 'tool-approval') {
-        const decision = opts?.approval ?? { approved: true, reason: 'Approved for the example.' }
-        for await (const resumed of session.agents.banker.stream(input, {
+      else if (event.outcome.status === 'interrupted') interrupted = event.outcome
+    }
+    if (interrupted?.interrupt.type === 'tool-approval') {
+      const decision = opts?.approval ?? { approved: true, reason: 'Approved for the example.' }
+      for await (const resumed of session.agents.banker.stream(input, {
           resume: {
             type: 'tool-approval',
-            runId: event.outcome.runId,
-            interruptId: event.outcome.interrupt.id,
-            revision: event.outcome.interrupt.revision,
-            eventId: `bank-example:${event.outcome.interrupt.id}`,
-            decisions: event.outcome.interrupt.requests.map(request => ({
+            runId: interrupted.runId,
+            interruptId: interrupted.interrupt.id,
+            revision: interrupted.interrupt.revision,
+            eventId: `bank-example:${interrupted.interrupt.id}`,
+            decisions: interrupted.interrupt.requests.map(request => ({
               approvalId: request.approvalId,
               approved: decision.approved,
               ...(decision.reason ? { reason: decision.reason } : {}),
             })),
           },
-        })) {
-          events.push(resumed)
-          if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed') output = resumed.outcome.output
-        }
+      })) {
+        events.push(resumed)
+        if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed') output = resumed.outcome.output
       }
     }
     return { output, events, balances }
   } finally {
-    await harness.shutdown()
+    await harness.close()
+    await storage.close()
   }
 }
 

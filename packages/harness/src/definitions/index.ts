@@ -50,6 +50,7 @@ export type {
 	ToolSandboxFacade,
 	UserModelMessage,
 	WorkflowAgentMap,
+	WorkflowAgentCallLimits,
 	WorkflowChildTasks,
 	WorkflowContext,
 	WorkflowDefinition,
@@ -57,6 +58,7 @@ export type {
 	WorkflowModelRequirement,
 	WorkflowOptions,
 } from './types.js'
+export type { DefinitionReference } from './identity.js'
 export type { SkillOptions } from './skill.js'
 export type { McpServerOptions } from './mcp-server.js'
 export type {

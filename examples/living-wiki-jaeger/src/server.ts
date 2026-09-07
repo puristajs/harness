@@ -5,7 +5,7 @@ import { startOpenTelemetry } from './backend/telemetry.js'
 
 loadRootEnv()
 const telemetry = startOpenTelemetry()
-const { app, shutdown } = createLivingWikiApi()
+const { app, shutdown } = await createLivingWikiApi()
 const port = Number(process.env['PORT'] ?? 8787)
 
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {

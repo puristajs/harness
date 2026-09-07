@@ -1,4 +1,4 @@
-import { defineHarness } from '@purista/harness'
+import { defineAgent, defineHarness, defineTool } from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
 import { z } from 'zod'
 
@@ -10,43 +10,40 @@ export function createReportHarness() {
   const provider = new FakeModelProvider({ strict: true })
   const sandbox = new TrackedFilesystemSandbox()
 
-  const harness = defineHarness({ name: 'custom-sandbox-example' })
-    .sandbox(sandbox)
-    .models({
-      assistant: {
-        provider,
-        model: 'scripted-report-model',
-        capabilities: ['object', 'tool_use'],
-      },
-    })
-    .tool('create_report', {
+  const createReport = defineTool('createReport', {
         description: 'Create and verify one report in the active sandbox.',
         input: z.object({ content: z.string().min(1) }),
         output: z.object({ saved: z.boolean() }),
+        requires: { sandbox: ['sandbox.fs'] },
         handler: async (context, input) => {
           await context.sandbox.write('/workspace/report.txt', input.content)
           const saved = await context.sandbox.readText('/workspace/report.txt')
           return { saved: saved === input.content }
         },
-      }).agent('reporter', {
-        model: 'assistant',
+      })
+  const reporter = defineAgent('reporter', {
         input: z.string().min(1),
         output: z.string().min(1),
-        tools: ['create_report'],
+        tools: [createReport],
         instructions: 'Use create_report, then return a concise status.',
+        prompt: input => ({ role: 'user', content: input }),
       })
-    .build()
+  const harness = defineHarness({ name: 'customSandboxExample' }).addTool(createReport).addAgent(reporter).getInstance({
+    model: { provider, model: 'scripted-report-model' },
+    sandbox,
+  })
 
   return { harness, provider, sandbox }
 }
 
 export async function runCustomSandboxExample() {
-  const { harness, provider, sandbox } = createReportHarness()
+  const { harness: harnessPromise, provider, sandbox } = createReportHarness()
+  const harness = await harnessPromise
   provider.enqueueObject({
     object: {},
     toolCalls: [{
       id: 'create-report-1',
-      name: 'create_report',
+      name: 'createReport',
       arguments: { content: 'Synthetic quarterly report.' },
     }],
     usage,
@@ -61,7 +58,7 @@ export async function runCustomSandboxExample() {
     await session.destroy()
     return { output: output.output, operations: { ...sandbox.operations } }
   } finally {
-    await harness.shutdown()
+    await harness.close()
   }
 }
 

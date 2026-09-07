@@ -68,15 +68,12 @@ expect(events).toContain('run.finished')
 This test consumes the portable `ExecutionEvent` contract. Assert that the
 terminal `run.finished.outcome` matches the corresponding aggregate call.
 
-For diagnostic model-stream behavior, consume `.observe(...)`, queue provider
-stream chunks, and assert both privacy modes. A consumed `textStream(...)` /
-`objectStream(...)` call should not produce model partial `RunEvent` values by
-default. A call with `{ emitRunEvents: true }` should produce `model.delta` for
-text streams and `model.object.partial` plus final `model.object` for object
-streams. Plain `text(...)` / `object(...)` calls should not produce partial
-events. Assert generated `streamId` stability per model-stream invocation,
-distinct IDs across parallel streams, `modelAlias`, and available `workflowId`
-/ `agentId` on this diagnostic surface.
+For model streaming, queue deterministic provider chunks and consume the
+target's `.stream(...)` result. Assert the public `ExecutionEvent` sequence,
+including text deltas or object snapshots, tool lifecycle events, and exactly
+one terminal `run.finished` event. Also assert cancellation reaches the
+provider signal and that an interrupted approval never executes the protected
+tool before resume.
 
 For public stream tests, assert only portable execution events and test the
 selected protocol adapter, such as `@purista/harness-ai-sdk-ui/v1`, at its own
@@ -134,7 +131,8 @@ import { durableWorkspaceContract } from '@purista/harness/testing'
 durableWorkspaceContract(() => makeDurableWorkspace())
 ```
 
-Also test application startup with `.requires(...)` so missing
+Also test instance creation with a definition that declares durable workspace
+requirements, so missing
 `storage.workspace_checkpoint`, `workspace.durable`, `workspace.resume`, or
 cleanup/retention/quota capabilities fail before work is queued.
 

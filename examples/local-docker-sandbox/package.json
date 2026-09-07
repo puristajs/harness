@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run typecheck",
     "lint": "npm run typecheck",
     "start": "node dist/index.js",
     "smoke": "npm run build && npm start"

@@ -84,11 +84,11 @@ describe('DeLM shared-context harness example', () => {
   it('runs parallel worker rounds with admission, rejection, and checkpoints', async () => {
     const storageRoot = mkdtempSync(join(tmpdir(), 'purista-delm-test-'))
     const provider = new ScriptedDelmProvider()
-    const example = createDelmSharedContextHarness({ provider, storageRoot })
+    const example = await createDelmSharedContextHarness({ provider, storageRoot })
 
     try {
       const session = await example.harness.getSession('delm-test')
-      const result = await session.workflows.decentralized_research.run(defaultDelmInput(), {
+      const result = await session.workflows.decentralizedResearch.run(defaultDelmInput(), {
         durable: { runId: 'delm-test-run' }
       })
       expect(result.status).toBe('completed')

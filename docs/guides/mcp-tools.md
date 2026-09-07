@@ -1,139 +1,111 @@
-# MCP Tools
+# Use MCP tools
 
-MCP tools let agents call capabilities exposed by Model Context Protocol
-servers. The harness supports two transport modes.
+An MCP server definition describes the tools an agent may see. The transport,
+URL, process command, credentials, and sandbox belong to the runtime instance.
+Keeping those concerns separate makes the same definitions reusable in local,
+test, and production environments.
 
-Install the optional `@modelcontextprotocol/client` dependency only where MCP
-is used. The runtime uses protocol `2026-07-28` with modern stdio or stateless
-Streamable HTTP; stateful HTTP+SSE and exec-only stdio are unsupported. Adapter
-implementations should run the public Harness type and contract suites against
-the same core package version as the application.
+Install the optional MCP client only in applications that use MCP:
 
-| Mode | Use When | Execution Boundary |
-|---|---|---|
-| `mcp_stdio` | The MCP server is a local command. | Persistent process via a spawn-capable `SandboxSession`. |
-| `mcp_http` | The MCP server is already running remotely or sidecar-local over HTTP. | Uses HTTP; no local process launch. |
-
-## Transport Decision
-
-```mermaid
-flowchart TD
-  Need["Need MCP tool"] --> Local{"Server is a local command?"}
-  Local -- "Yes" --> Spawn{"Sandbox has spawn?"}
-  Spawn -- "Yes" --> Stdio["mcp_stdio"]
-  Spawn -- "No" --> NoExec["Use a spawn-capable sandbox or mcp_http"]
-  Local -- "No" --> Http["mcp_http"]
+```bash
+npm install @purista/harness @modelcontextprotocol/client zod
 ```
 
-## Stdio Runs In The Sandbox
+## Declare the server and selected tools
 
-`mcp_stdio` runs inside the active sandbox session — never spawned directly from
-the host process. This keeps filesystem, network, timeout, cancellation,
-logging, and tracing policy aligned with the rest of the harness. The transport
-requires a spawn-capable sandbox:
-
-- **Persistent transport** — the session advertises `sandbox.spawn`
-  (isolation backends such as Docker/e2b/microvm), the server is spawned **once**
-  and the MCP `initialize` handshake runs a single time. Every subsequent
-  `tools/list`/`tools/call` is multiplexed over the same long-lived pipe, so
-  **server-side session state is preserved across calls**. The process is killed
-  when the runner (or sandbox session) closes. If the process dies mid-call, the
-  call fails with `McpProtocolError{phase:'call'}` and the next call re-spawns and
-  re-initializes a fresh server.
-There is no exec-only fallback. A sandbox that cannot spawn fails with
-`SandboxNoExecutorError`.
-
-## Installing A Stdio MCP Server
-
-Use `install` to bootstrap the MCP server inside the sandbox before first use:
+Declare only the remote tools the application needs. Each local key becomes the
+stable tool name visible to the agent; `remoteName` is the name advertised by
+the MCP server.
 
 ```ts
-.tools({
-  drawio_diagram: {
-    kind: 'mcp_stdio',
-    description: 'Create draw.io diagrams from structured architecture notes.',
-    install: {
-      command: 'npm install @drawio/mcp',
-      cwd: '/workspace',
-      timeoutMs: 120_000
+import { defineAgent, defineHarness, defineMcpServer } from '@purista/harness'
+import { z } from 'zod'
+
+const knowledge = defineMcpServer('knowledge', {
+  tools: {
+    search: {
+      remoteName: 'search_documents',
+      description: 'Search the approved product documentation.',
+      input: z.object({ query: z.string().min(1), limit: z.number().int().max(10) }),
+      output: z.object({ results: z.array(z.object({ title: z.string(), text: z.string() })) }),
     },
-    command: 'npx',
-    args: ['@drawio/mcp'],
-    tool: 'drawio.create'
-  }
+  },
 })
+
+const assistant = defineAgent('assistant', {
+  instructions: 'Answer from the approved documentation. Use search when needed.',
+  tools: [knowledge.tools.search],
+})
+
+const supportHarness = defineHarness({ name: 'support' })
+  .addMcpServer(knowledge)
+  .addAgent(assistant)
 ```
 
-Lifecycle:
+The direct tool reference prevents misspelled allowlists and makes a foreign or
+undeclared MCP tool a definition-time error.
 
-```mermaid
-sequenceDiagram
-  participant Agent
-  participant Harness
-  participant Sandbox
-  participant MCP
+## Bind Streamable HTTP
 
-  Agent->>Harness: call drawio_diagram
-  Harness->>Sandbox: install.command (first use)
-  Harness->>Sandbox: command + args with JSON-RPC stdin
-  Sandbox->>MCP: start stdio server
-  MCP-->>Sandbox: tools/list + tool result
-  Sandbox-->>Harness: stdout/stderr/exit
-  Harness-->>Agent: normalized JSON output
-```
-
-## HTTP MCP
-
-Use `mcp_http` when the MCP server is already available over streamable HTTP:
+Use HTTP when the server already runs remotely or beside the application:
 
 ```ts
-.tools({
-  drawio_remote: {
-    kind: 'mcp_http',
-    description: 'Create draw.io diagrams through a remote MCP server.',
-    url: process.env.DRAWIO_MCP_URL!,
-    auth: { kind: 'bearer', token: process.env.DRAWIO_MCP_TOKEN! },
-    tool: 'drawio.create'
-  }
+const instance = await supportHarness.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
+  mcp: {
+    knowledge: {
+      transport: 'http',
+      url: process.env.KNOWLEDGE_MCP_URL!,
+      headers: { authorization: `Bearer ${process.env.KNOWLEDGE_MCP_TOKEN!}` },
+    },
+  },
 })
 ```
 
-Supported auth:
+Treat the URL and headers as trusted deployment configuration. Never derive
+them from a prompt, model result, tenant input, or tool arguments.
 
-- `none`
-- `bearer`
-- `oauth2`
-- `api_key`
-- `basic`
+## Bind stdio in a sandbox
 
-## Validation And Errors
+Use stdio for a local MCP server process. Harness starts the persistent process
+through a spawn-capable sandbox session, performs the MCP handshake once, and
+reuses the connection until the instance closes.
 
-The harness calls `tools/list`, validates MCP input/output JSON Schema, and
-normalizes MCP response envelopes before returning output to the model.
-
-| Failure | Error |
-|---|---|
-| Sandbox has no executor for stdio | `SandboxNoExecutorError` |
-| Unknown upstream MCP tool | `ToolNotFoundError` |
-| Invalid MCP input/output | `ValidationError` |
-| MCP protocol/list/call failure | `McpProtocolError` |
-| HTTP auth failure | `McpAuthError` |
-| MCP tool returns `isError: true` | `ToolError` |
-
-## Living Wiki draw.io Example
-
-The Living Wiki app runs without draw.io MCP by default. To enable a real server:
-
-```env
-LIVING_WIKI_DRAWIO_MCP_INSTALL=npm install @drawio/mcp
-LIVING_WIKI_DRAWIO_MCP_COMMAND=npx
-LIVING_WIKI_DRAWIO_MCP_ARGS=@drawio/mcp
-LIVING_WIKI_DRAWIO_MCP_TOOL=drawio.create
+```ts
+const instance = await supportHarness.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
+  mcp: {
+    knowledge: {
+      transport: 'stdio',
+      command: 'node',
+      args: ['/opt/mcp/knowledge-server.mjs'],
+      env: { NODE_ENV: 'production' },
+      sandbox: spawnCapableSandbox,
+    },
+  },
+})
 ```
 
-Or use HTTP:
+There is no host-process fallback. A stdio binding without `sandbox.spawn`
+fails before the first model request.
 
-```env
-LIVING_WIKI_DRAWIO_MCP_URL=https://example.test/mcp
-LIVING_WIKI_DRAWIO_MCP_AUTH_TOKEN=...
+## Runtime behavior
+
+Before a tool result reaches the model, Harness:
+
+1. calls `tools/list` and confirms the selected remote tool exists;
+2. validates model-produced input against the declared input schema;
+3. invokes `tools/call` through the configured transport;
+4. normalizes the MCP result and validates the declared output schema.
+
+Transport, protocol, schema, timeout, and cancellation failures are normalized
+as Harness errors. An MCP response with `isError: true` becomes a `ToolError`.
+Close the Harness instance to close HTTP clients and terminate persistent stdio
+servers:
+
+```ts
+await instance.close()
 ```
+
+MCP tools then participate in the same permissions, governance, approval,
+guardrail, telemetry, cancellation, and loop limits as native tools.

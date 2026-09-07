@@ -4,6 +4,12 @@ Self-hosted Kubernetes execution for `@purista/harness`. It keeps the public
 Harness ports provider-neutral while Pods, PVCs, VolumeSnapshots, distributed
 fencing, and cleanup remain private to this adapter.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-sandbox-kubernetes
+```
+
 ```ts
 import { kubernetesSandboxRuntime } from '@purista/harness-sandbox-kubernetes'
 
@@ -29,14 +35,17 @@ const execution = kubernetesSandboxRuntime({
   },
 })
 
-const harness = defineHarness()
-  .storage(storage)
-  .sandbox(execution.sandbox)
-  .workspace(execution.workspace)
-  // definitions ...
-  .build()
+const definition = defineHarness({ name: 'workspaceApp', revision: 'v1' })
+  .addAgent(workspaceAgent)
 
-await harness.shutdown()
+const instance = await definition.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
+  storage,
+  sandbox: execution.sandbox,
+  workspace: execution.workspace,
+})
+
+await instance.close()
 await execution.close()
 ```
 

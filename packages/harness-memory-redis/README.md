@@ -5,6 +5,12 @@ record namespace, atomic record/index writes, text search, TTL, and optional
 fixed-dimension vector search. It requires the official `redis` package and a
 Redis deployment with Search/vector commands.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-memory-redis
+```
+
 Use an application-owned, versioned namespace. Changing vector dimensions or
 index schema requires a new namespace and an explicit reindex; this package
 never drops or migrates an existing Redis index automatically.

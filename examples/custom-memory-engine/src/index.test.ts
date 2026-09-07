@@ -4,7 +4,7 @@ import { createTicketMemoryHarness } from './index.js'
 import { InMemoryTicketMemoryClient } from './ticketMemoryEngine.js'
 
 it('uses the custom engine through tenant-bound session memory', async () => {
-  const harness = createTicketMemoryHarness(new InMemoryTicketMemoryClient())
+  const harness = await createTicketMemoryHarness(new InMemoryTicketMemoryClient())
   const session = await harness.getSession('ticket-42', {
     identity: { tenantId: 'acme', principalId: 'operator-7' },
   })
@@ -17,6 +17,6 @@ it('uses the custom engine through tenant-bound session memory', async () => {
     })
   } finally {
     await session.release()
-    await harness.shutdown()
+    await harness.close()
   }
 })

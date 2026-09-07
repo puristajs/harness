@@ -2,7 +2,7 @@
 
 Harness external waits are a provider-neutral checkpoint-and-signal primitive
 for application-owned review processes. In production, configure one
-`HarnessStorage` through `.storage(store)`; it supplies conversation, run/event,
+`HarnessStorage` through `getInstance({ storage: store })`; it supplies conversation, run/event,
 lease, checkpoint, and external-wait persistence through one consistency
 boundary.
 Then invoke a workflow with a stable durable run id.

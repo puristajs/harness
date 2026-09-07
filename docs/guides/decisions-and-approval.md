@@ -152,16 +152,19 @@ idempotency.
 
 ## Connect an external policy engine
 
-Harness ships `@purista/harness-policy-opa` for OPA's stable Data API. The
-builder's `adapter(...)` helper performs no I/O; `opaPolicy(...)` supplies the
-transport and preserves typed mapping.
+Harness ships `@purista/harness-policy-opa` for OPA's stable Data API.
+`opaPolicy(...)` supplies the transport and preserves definition-derived typed
+mapping.
 
 ```ts
 import { createOpaClient, opaPolicy } from '@purista/harness-policy-opa'
 
 const client = createOpaClient({ baseUrl: process.env.OPA_URL! })
 
-.governance((helpers) => ({
+const transferAgent = defineAgent('transferAgent', {
+  instructions: 'Use the transfer tool for an approved request.',
+  tools: [transferFunds],
+  governance: (helpers) => ({
   defaultEffect: 'deny',
   policies: [opaPolicy(helpers, {
     id: 'transfer-policy',
@@ -175,7 +178,8 @@ const client = createOpaClient({ baseUrl: process.env.OPA_URL! })
       ? { effect: result.effect, ruleId: result.ruleId, reasonCode: result.reasonCode }
       : undefined,
   })],
-}))
+  }),
+})
 ```
 
 The package owns fixed-endpoint transport, path encoding, cancellation,
@@ -187,8 +191,8 @@ evaluators rather than a generic arbitrary-URL client.
 
 ## Know the coverage limits
 
-Attached rails protect default-loop agents. Direct `ctx.models.*` calls and
-custom-handler agents are outside automatic rail coverage. Retrieval is
+Attached rails protect standard-loop agents. Direct `ctx.models.*` workflow
+calls are outside automatic rail coverage. Retrieval is
 application-owned and needs an explicit `filterRetrievedChunks(...)` call.
 Opaque provider reasoning is continuation state, not inspectable text. Keep
 application authentication, tenancy, rate limits, and final domain

@@ -1,11 +1,6 @@
 # Local durable execution
 
-This example runs a workflow with the local durable storage, workspace, and
-sandbox adapters. It simulates a process failure after the first durable step,
-starts a fresh Harness instance, and resumes the same run without repeating the
-completed step.
-
-Install, verify, and run it from this directory:
+This example combines the local durable storage, workspace, and sandbox adapters. A workflow commits an outline step, pauses on a persisted external review wait, then a fresh Harness instance resumes the same run after the application signals approval.
 
 ```sh
 npm install
@@ -15,6 +10,4 @@ npm run build
 npm start
 ```
 
-The example writes only to a temporary directory and needs no provider key or
-external service. Use provider-backed adapters when several processes need to
-share durable state.
+The example writes only to a temporary directory and needs no provider key or external service. `localDurableExecution(...)` is intended for development and one trusted host. Use provider-backed storage, sandbox, and workspace adapters when several workers share durable state.

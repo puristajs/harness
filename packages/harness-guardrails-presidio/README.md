@@ -5,6 +5,12 @@ Original Presidio Analyzer sidecar adapter for
 HTTP(S) gateway and any static headers explicitly; the package discovers no
 endpoint or credentials and has no retry/fallback behavior.
 
+## Install
+
+```bash
+npm install @purista/harness @purista/harness-guardrails @purista/harness-guardrails-presidio
+```
+
 ```ts
 import { createPresidioDetector } from '@purista/harness-guardrails-presidio'
 

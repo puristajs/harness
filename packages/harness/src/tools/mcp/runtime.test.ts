@@ -2,9 +2,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { defineMcpServer } from '../../definitions/mcp-server.js'
-import { initializeMcpRuntimeBundles } from './runtime.js'
+import { initializeMcpRuntimeBundles, normalizeMcpOutput } from './runtime.js'
 
 afterEach(() => vi.unstubAllGlobals())
+
+describe('MCP result normalization', () => {
+	it('prefers structured content and normalizes standard content blocks', () => {
+		expect(normalizeMcpOutput({ structuredContent: { ok: true }, content: [{ type: 'text', text: 'ignored' }] }, 'lookup', 'http')).toEqual({ ok: true })
+		expect(normalizeMcpOutput({ structuredContent: { ok: undefined }, content: [{ type: 'text', text: 'fallback' }] }, 'lookup', 'http')).toBe('fallback')
+		expect(normalizeMcpOutput({ content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }, 'lookup', 'http')).toBe('a\nb')
+		expect(normalizeMcpOutput({ content: [{ type: 'image', mimeType: 'image/png', data: 'abc' }] }, 'lookup', 'stdio')).toEqual({ contentType: 'image/png', data: 'abc' })
+		expect(normalizeMcpOutput({ content: [{ type: 'resource', resource: { uri: 'file:///a.txt', mimeType: 'text/plain', text: 'abc' } }] }, 'lookup', 'stdio')).toEqual({ contentType: 'text/plain', uri: 'file:///a.txt', data: 'abc' })
+		expect(normalizeMcpOutput({ content: [{ type: 'text', text: 'caption' }, { type: 'image', mimeType: 'image/png', data: 'abc' }] }, 'lookup', 'http')).toEqual({
+			content: ['caption', { contentType: 'image/png', data: 'abc' }],
+		})
+	})
+
+	it('maps an MCP error result to a typed tool failure', () => {
+		let failure: unknown
+		try { normalizeMcpOutput({ isError: true, content: [{ type: 'text', text: 'upstream detail' }] }, 'lookup', 'http') }
+		catch (error) { failure = error }
+		expect(failure).toMatchObject({ code: 'TOOL_ERROR', meta: { tool_id: 'lookup', tool_kind: 'mcp_http' } })
+		expect(`${String(failure)}${JSON.stringify(failure)}`).not.toContain('upstream detail')
+	})
+})
 
 describe('MCP Streamable HTTP transport', () => {
 	it('rejects redirects without contacting the target origin or exposing configured headers', async () => {

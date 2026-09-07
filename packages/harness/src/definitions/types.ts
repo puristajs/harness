@@ -154,15 +154,21 @@ export type NonMcpToolDefinition<
 	readonly $infer: DefinitionInference<Input, Output>
 }> & DefinitionReference<IdentityKind, Id>
 
+type ToolRequirementsField<Requires extends ToolRequirements> =
+	[keyof Requires] extends [never]
+		? Readonly<{ requires?: never }>
+		: ToolRequirements extends Requires
+			? Readonly<{ requires?: Requires }>
+			: Readonly<{ requires: Requires }>
+
 /** Frozen portable native tool reference. */
 export type ToolDefinition<
 	Id extends string = string,
 	Input extends ModelSchema = ModelSchema,
 	Output extends Schema = Schema,
 	Requires extends ToolRequirements = ToolRequirements,
-> = NonMcpToolDefinition<'tool', Id, Input, Output> & Readonly<{
-	requires?: Requires
-	handler: ToolOptions<Input, Output, Requires>['handler']
+> = NonMcpToolDefinition<'tool', Id, Input, Output> & ToolRequirementsField<Requires> & Readonly<{
+	handler(context: ToolHandlerContext<Requires>, input: Infer<Input>): Promise<InferIn<Output>>
 }>
 
 /** Immutable built-in tool reference supplied by the Harness package. */

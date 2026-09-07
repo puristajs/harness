@@ -20,7 +20,7 @@ No OPA JavaScript SDK is required. Run and operate OPA separately.
 ## Minimum typed policy
 
 ```ts
-import { defineHarness } from '@purista/harness'
+import { defineAgent, defineHarness, defineTool } from '@purista/harness'
 import { createOpaClient, opaPolicy } from '@purista/harness-policy-opa'
 import { z } from 'zod'
 
@@ -35,14 +35,17 @@ const opaResult = z.object({
   reasonCode: z.string().regex(/^[a-z0-9_.-]{1,128}$/).optional(),
 })
 
-const harness = defineHarness()
-  .tool('transfer_funds', {
-      description: 'Transfer funds.',
-      input: z.object({ amount: z.number(), destination: z.string() }),
-      output: z.object({ accepted: z.boolean() }),
-      handler: async () => ({ accepted: true }),
-  })
-  .governance((helpers) => ({
+const transferFunds = defineTool('transferFunds', {
+  description: 'Transfer funds.',
+  input: z.object({ amount: z.number(), destination: z.string() }),
+  output: z.object({ accepted: z.boolean() }),
+  handler: async () => ({ accepted: true }),
+})
+
+const transferAgent = defineAgent('transferAgent', {
+  instructions: 'Use transferFunds for a requested transfer.',
+  tools: [transferFunds],
+  governance: (helpers) => ({
     mode: 'enforce',
     defaultEffect: 'deny',
     policies: [
@@ -52,7 +55,7 @@ const harness = defineHarness()
         client,
         decisionPath: ['purista', 'bank', 'transfer', 'decision'],
         mapInput(context) {
-          if (context.toolId !== 'transfer_funds') return undefined
+          if (context.toolId !== 'transferFunds') return undefined
           return {
             tool: context.toolId,
             amount: context.input.amount,
@@ -70,8 +73,13 @@ const harness = defineHarness()
         },
       }),
     ],
-  }))
-  .build()
+  }),
+})
+
+const definition = defineHarness({ name: 'transfers' }).addAgent(transferAgent)
+const instance = await definition.getInstance({
+  model: { provider, model: 'gpt-5-mini' },
+})
 ```
 
 `helpers` is the type-inference anchor. After `toolId` is narrowed,
@@ -89,7 +97,7 @@ The client sends one request and never retries or follows redirects:
 POST /v1/data/purista/bank/transfer/decision
 Content-Type: application/json
 
-{"input":{"tool":"transfer_funds","amount":250,"destination":"acct_savings"}}
+{"input":{"tool":"transferFunds","amount":250,"destination":"acct_savings"}}
 ```
 
 OPA returns a defined decision as:

@@ -1,7 +1,7 @@
 import { createSupportHarness } from './createSupportHarness.js'
 
 export async function runGuardrailsQuickstart(): Promise<void> {
-  const harness = createSupportHarness()
+  const harness = await createSupportHarness()
 
   try {
     const allowedSession = await harness.getSession('allowed-request')
@@ -27,7 +27,7 @@ export async function runGuardrailsQuickstart(): Promise<void> {
       await blockedSession.release()
     }
   } finally {
-    await harness.shutdown()
+    await harness.close()
   }
 }
 

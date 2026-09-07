@@ -76,7 +76,7 @@ export interface NativePolicyRuleForTool<Tools extends GovernanceToolMap, Id ext
 	readonly description?: string
 	readonly effect: GovernanceEffect
 	readonly tools?: readonly Id[]
-	readonly when?: (context: GovernanceContext<Tools, Id>) => boolean | Promise<boolean>
+	when?(context: GovernanceContext<Tools, Id>): boolean | Promise<boolean>
 	readonly reasonCode?: GovernanceDecision['reasonCode']
 }
 
@@ -108,7 +108,7 @@ export interface GovernanceToolExposureRule<Tools extends GovernanceToolMap, Id 
 	readonly description?: string
 	readonly effect: GovernanceExposureEffect
 	readonly tools?: readonly Id[]
-	readonly when?: (context: GovernanceToolExposureContext<Tools, Id>) => boolean | Promise<boolean>
+	when?(context: GovernanceToolExposureContext<Tools, Id>): boolean | Promise<boolean>
 }
 /** Policy controlling which tools are visible in each model request. */
 export interface GovernanceToolExposurePolicy<Tools extends GovernanceToolMap> {

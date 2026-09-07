@@ -55,7 +55,11 @@ const stateful = defineTool('stateful', {
 		return { answer: value.message }
 	},
 })
-void stateful
+const resourceToolHarness = defineHarness({ name: 'resourceToolHarness' }).addTool(stateful)
+defineAgent('resourceToolAgent', { instructions: 'Use the stateful tool.', tools: [stateful] })
+const resourceToolSandboxRequired: true = resourceToolHarness.$infer.requirements.sandbox.required
+type _ResourceToolSandbox = Expect<Equal<typeof resourceToolHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.exec'>>
+void resourceToolSandboxRequired
 
 defineTool('filesystemOnly', {
 	description: 'Read one file.', input, output, requires: { sandbox: ['sandbox.fs'] },
@@ -297,6 +301,24 @@ const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgen
 const usedHarness = defineHarness({ name: 'support' }).use(catalog)
 const reusedCatalogHarness = usedHarness.use(catalog)
 const leafHarness = defineHarness({ name: 'leaves' }).addTool(lookup).addSkill(skill).addMcpServer(mcp)
+const governedAgent = defineAgent('governedAgent', {
+	instructions: 'Apply the declared policy.',
+	tools: [lookup],
+	governance: ({ native, rule }) => ({
+		policies: [native({
+			id: 'lookupPolicy',
+			rules: [rule({
+				id: 'denyEmptyLookup',
+				tools: ['lookup'],
+				effect: 'deny',
+				when: context => context.input.message.length === 0,
+			})],
+		})],
+	}),
+})
+const governedHarness = defineHarness({ name: 'governed' }).addAgent(governedAgent)
+const governedAgentId: 'governedAgent' = governedHarness.catalog.agents.governedAgent.id
+void governedAgentId
 const memoryAgent = defineAgent('memoryAgent', {
 	instructions: 'Remember.',
 	memory: {
@@ -380,6 +402,14 @@ const durableWorkflow = defineWorkflow('durableWorkflow', {
 	models: { media: { alias: 'media', capabilities: ['image_generation'] } },
 	async handler({ input: value }) { return { answer: value.message } },
 })
+const exactDurableWorkflowWorkspace: true = durableWorkflow.workspace
+const exactDurableWorkflowFlag: true = durableWorkflow.durable
+const workspaceWorkflowHarness = defineHarness({ name: 'workspaceWorkflowHarness', revision: 'v1' }).addWorkflow(durableWorkflow)
+const workflowSandboxRequired: true = workspaceWorkflowHarness.$infer.requirements.sandbox.required
+type _WorkflowWorkspaceSandbox = Expect<Equal<typeof workspaceWorkflowHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.workspace_binding'>>
+void workflowSandboxRequired
+void exactDurableWorkflowWorkspace
+void exactDurableWorkflowFlag
 const featureHarness = defineHarness({ name: 'featureHarness' }).addAgent(fullRequirementsAgent).addWorkflow(durableWorkflow)
 const durableRequired: true = featureHarness.$infer.requirements.storage.durable
 const workspaceRequired: true = featureHarness.$infer.requirements.workspace

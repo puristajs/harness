@@ -7,5 +7,5 @@
       "@purista/harness": ["../harness/src/index.ts"]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "type-tests/**/*.ts"]
 }

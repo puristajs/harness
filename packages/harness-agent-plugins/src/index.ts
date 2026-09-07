@@ -1,1305 +1,735 @@
 import fs from 'node:fs'
-import crypto from 'node:crypto'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
-import { isReadOnlyMountCapableSession } from '@purista/harness'
-import type {
-  McpHttpToolDefinition,
-  McpStdioToolDefinition,
-  SkillValidationMode,
-  SkillsConfig,
-  ToolsConfig
-} from '@purista/harness'
+import { defineMcpServer, defineSkill } from '@purista/harness'
+import type { McpBinding, McpToolOptions, ModelSchema, Schema, SkillRuntimeId } from '@purista/harness'
+import { createHttpMcpBinding, HttpBindingValidationError } from './http.js'
+import {
+	AGENT_PLUGIN_DEFAULT_MAX_FILE_BYTES,
+	AGENT_PLUGIN_DEFAULT_MAX_PACKAGE_BYTES,
+	AGENT_PLUGIN_MAX_DEPTH,
+	AGENT_PLUGIN_MAX_ENTRIES,
+	AGENT_PLUGIN_MAX_FILE_BYTES,
+	AGENT_PLUGIN_MAX_PACKAGE_BYTES,
+	AGENT_PLUGIN_MAX_PATH_BYTES,
+	AgentPluginSnapshotError,
+	captureAgentPluginSnapshot,
+} from './snapshot.js'
+import type { AgentPluginSnapshot, AgentPluginSnapshotLimits } from './snapshot.js'
 
-/** Canonical Agent Plugins v1 manifest schema identifier. */
+/** Canonical Agent Plugins 1.0.0 manifest schema identifier. */
 export const AGENT_PLUGIN_MANIFEST_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json'
-
-/** Canonical Agent Plugins v1 MCP configuration schema identifier. */
+/** Canonical Agent Plugins 1.0.0 MCP schema identifier. */
 export const AGENT_PLUGIN_MCP_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json'
-
-const pluginNamePattern = /^(?!.*--)(?!.*\.\.)[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/
-const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
-const headerNamePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
-const prohibitedPluginHeaders = new Set([
-  'accept',
-  'api-key',
-  'authorization',
-  'connection',
-  'content-length',
-  'content-type',
-  'cookie',
-  'host',
-  'keep-alive',
-  'last-event-id',
-  'mcp-protocol-version',
-  'mcp-session-id',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'set-cookie',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'x-access-token',
-  'x-api-key',
-  'x-auth-token'
-])
-
-/** A portable Agent Plugins manifest author. */
-export interface AgentPluginAuthor {
-  name?: string
-  email?: string
-  url?: string
+export {
+	AGENT_PLUGIN_DEFAULT_MAX_FILE_BYTES,
+	AGENT_PLUGIN_DEFAULT_MAX_PACKAGE_BYTES,
+	AGENT_PLUGIN_MAX_DEPTH,
+	AGENT_PLUGIN_MAX_ENTRIES,
+	AGENT_PLUGIN_MAX_FILE_BYTES,
+	AGENT_PLUGIN_MAX_PACKAGE_BYTES,
+	AGENT_PLUGIN_MAX_PATH_BYTES,
 }
 
-/** The recognized, portable fields in `plugin.json`. */
-export interface AgentPluginManifest {
-  $schema: typeof AGENT_PLUGIN_MANIFEST_SCHEMA
-  name: string
-  version?: string
-  description?: string
-  author?: AgentPluginAuthor
-  homepage?: string
-  repository?: string
-  license?: string
-  keywords?: readonly string[]
-  /** Client-owned data. This package deliberately assigns no semantics to it. */
-  extensions?: Record<string, unknown>
-}
-
-/** Trust is an explicit application policy decision, never manifest metadata. */
+/** Application trust decision for one installed Agent Plugin package. */
 export type AgentPluginTrust = 'trusted' | 'untrusted'
-
-/** Portable MCP transports supported by this clean-major integration. */
+/** Portable transport names recognized during inspection. */
 export type AgentPluginTransport = 'stdio' | 'streamable-http'
-
-/** One already-installed plugin root to inspect or load. */
-export interface AgentPluginSource {
-  root: string
-  trust?: AgentPluginTrust
-  /** Reserved for the core's prepared stdio launch bridge; never created during inspection. */
-  dataDirectory?: string
-  /** Lowercase SHA-256 package digest previously reviewed by the application, when loading. */
-  expectedDigest?: string
-}
-
-/**
- * An application-approved plugin source. Loading executable plugin components
- * always requires a digest recorded by the application after review.
- */
-export interface ApprovedAgentPluginSource extends AgentPluginSource {
-  /** Lowercase SHA-256 package digest previously reviewed by the application. */
-  expectedDigest: string
-}
-
-/** Options for loading approved plugin roots into explicit application bindings. */
+/** Location and optional review metadata for an installed plugin package. */
+export interface AgentPluginSource { readonly root: string; readonly trust?: AgentPluginTrust; readonly expectedDigest?: string }
+/** Plugin source carrying the digest recorded by the application review. */
+export interface ApprovedAgentPluginSource extends AgentPluginSource { readonly expectedDigest: string }
+/** Bounded package-inspection limits. */
+export interface InspectAgentPluginOptions { readonly maxFileBytes?: number; readonly maxPackageBytes?: number }
+/** Atomic load request for one or more reviewed plugin packages. */
 export interface AgentPluginLoadOptions extends InspectAgentPluginOptions {
-  plugins: readonly ApprovedAgentPluginSource[]
-  trustedRoots?: readonly string[]
-  supportedTransports?: readonly AgentPluginTransport[]
-  validationMode?: SkillValidationMode
+	readonly plugins: readonly [ApprovedAgentPluginSource, ...ApprovedAgentPluginSource[]]
+	readonly trustedRoots?: readonly string[]
 }
-
-/** A caller-selected upstream MCP tool exposed through a local harness alias. */
-export interface AgentPluginToolBinding {
-  server: string
-  tool: string
-  description: string
-  /** Application-owned static headers. Package-declared headers are never sent. */
-  headers?: Readonly<Record<string, string>>
+/** Recognized portable manifest author fields. */
+export interface AgentPluginAuthor { readonly name?: string; readonly email?: string; readonly url?: string }
+/** Recognized, path-free manifest metadata returned by inspection. */
+export interface AgentPluginManifestSummary {
+	readonly $schema: typeof AGENT_PLUGIN_MANIFEST_SCHEMA
+	readonly name: string
+	readonly version?: string
+	readonly description?: string
+	readonly author?: AgentPluginAuthor
+	readonly homepage?: string
+	readonly repository?: string
+	readonly license?: string
+	readonly keywords?: readonly string[]
 }
-
-/** Content-free skill inventory record safe to expose in inspection output. */
-export interface AgentPluginSkill {
-  name: string
-  description: string
-}
-
-/** A validated, declarative MCP stdio server entry. It is not executed by this package. */
-interface AgentPluginStdioMcpServer {
-  name: string
-  type: 'stdio'
-  command: string
-  args?: readonly string[]
-  env?: Readonly<Record<string, string>>
-  cwd?: string
-}
-
-/** A validated, declarative MCP Streamable HTTP server entry. */
-interface AgentPluginHttpMcpServer {
-  name: string
-  type: 'streamable-http'
-  url: string
-  headers?: Readonly<Record<string, string>>
-}
-
-/** A validated, declarative MCP server entry. */
-type AgentPluginMcpServer = AgentPluginStdioMcpServer | AgentPluginHttpMcpServer
-
-/** Content-free MCP inventory record safe to expose in inspection output. */
-export interface AgentPluginMcpServerSummary {
-  name: string
-  transport: AgentPluginTransport
-}
-
-/** Content-free provenance retained alongside each projected component. */
-export interface AgentPluginProvenance {
-  pluginName: string
-  version?: string
-  digest: string
-  component: 'skill' | 'mcp'
-  componentName: string
-  transport?: AgentPluginTransport
-}
-
-/** One diagnostic emitted while inspecting an untrusted package. No file content is included. */
+/** Path-free Agent Skill inventory row. */
+export interface AgentPluginSkill { readonly name: string; readonly description: string }
+/** Path-free MCP server inventory row, including projection support. */
+export type AgentPluginMcpServerSummary =
+	| Readonly<{ name: string; transport: 'streamable-http'; supported: true }>
+	| Readonly<{ name: string; transport: 'stdio'; supported: false }>
+/** Stable diagnostic codes returned by data-only inspection. */
+export type AgentPluginDiagnosticCode =
+	| 'plugin_root_invalid' | 'manifest_missing' | 'manifest_invalid' | 'manifest_unknown_field'
+	| 'manifest_extensions_ignored' | 'schema_unsupported' | 'path_escape' | 'untrusted'
+	| 'digest_invalid' | 'digest_mismatch' | 'package_too_large' | 'component_invalid'
+	| 'skill_invalid' | 'skill_duplicate' | 'mcp_config_invalid' | 'transport_unsupported' | 'server_invalid'
+/** Stable content-free package diagnostic. */
 export interface AgentPluginDiagnostic {
-  level: 'warn' | 'error'
-  code:
-    | 'plugin_root_invalid'
-    | 'manifest_missing'
-    | 'manifest_invalid'
-    | 'manifest_unknown_field'
-    | 'manifest_extensions_ignored'
-    | 'schema_unsupported'
-    | 'path_escape'
-    | 'untrusted'
-    | 'digest_mismatch'
-    | 'component_invalid'
-    | 'skill_invalid'
-    | 'skill_duplicate'
-    | 'mcp_config_invalid'
-    | 'transport_unsupported'
-    | 'server_invalid'
-  message: string
-  /** Plugin name when the manifest was valid enough to determine it. */
-  pluginName?: string
-  /** A component kind, never a source path. */
-  component?: 'skills' | 'mcp'
-  /** The declared skill or MCP server name when applicable. */
-  item?: string
+	readonly level: 'warn' | 'error'; readonly code: AgentPluginDiagnosticCode; readonly message: string
+	readonly pluginName?: string; readonly component?: 'skills' | 'mcp'; readonly item?: string
 }
-
-/** Result of inspecting a local Agent Plugins v1 package. */
+/** Frozen data-only result of inspecting one plugin package. */
 export interface AgentPluginInspection {
-  /** `true` only when `plugin.json` is valid and can be used for component discovery. */
-  valid: boolean
-  manifest?: AgentPluginManifest
-  trust: AgentPluginTrust
-  /** SHA-256 of the package files when the plugin root could be read safely. */
-  digest?: string
-  skills: readonly AgentPluginSkill[]
-  /** Valid individual MCP server entries without URLs, commands, headers, or environment data. */
-  mcpServers: readonly AgentPluginMcpServerSummary[]
-  diagnostics: readonly AgentPluginDiagnostic[]
+	readonly valid: boolean; readonly manifest?: AgentPluginManifestSummary; readonly trust: AgentPluginTrust
+	readonly digest?: string; readonly skills: readonly AgentPluginSkill[]
+	readonly mcpServers: readonly AgentPluginMcpServerSummary[]; readonly diagnostics: readonly AgentPluginDiagnostic[]
 }
-
-/** Local inspection limits and behavior. This package never downloads schemas or executes a plugin. */
-export interface InspectAgentPluginOptions {
-  /** Maximum bytes read from each JSON manifest or `SKILL.md`. Default: 2 MiB. */
-  maxFileBytes?: number
-  /** Maximum aggregate bytes hashed while calculating a package digest. Default: 100 MiB. */
-  maxPackageBytes?: number
+/** Application-owned runtime requirements for one selected Skill. */
+export interface AgentPluginSkillSelection<Runtimes extends readonly SkillRuntimeId[] = readonly SkillRuntimeId[]> { readonly runtimes: Runtimes }
+/** Skill selections keyed by the exact portable Skill id. */
+export type AgentPluginSkillSelections = Readonly<Record<string, AgentPluginSkillSelection>>
+/** Caller-owned typed tools and runtime headers for one portable HTTP server. */
+export interface AgentPluginHttpMcpServerSelection<Tools extends Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>> = Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>>> {
+	readonly server: string; readonly tools: Tools; readonly headers?: Readonly<Record<string, string>>
 }
-
-/** Normal harness configuration generated from caller-owned literal aliases. */
-export interface AgentPluginBindings {
-  skills: SkillsConfig
-  tools: ToolsConfig
-  diagnostics: readonly AgentPluginDiagnostic[]
-  provenance: readonly AgentPluginProvenance[]
+/** HTTP MCP selections keyed by caller-owned local server id. */
+export type AgentPluginHttpMcpServerSelections = Readonly<Record<string, AgentPluginHttpMcpServerSelection>>
+/** Authentic Core Skill definitions projected from literal selections. */
+export type ProjectedAgentPluginSkills<Skills extends AgentPluginSkillSelections> = Readonly<{ [Id in keyof Skills & string]: ReturnType<typeof defineSkill<Id, Skills[Id]['runtimes']>> }>
+/** Authentic Core MCP server definitions projected from literal selections. */
+export type ProjectedAgentPluginMcpServers<Servers extends AgentPluginHttpMcpServerSelections> = Readonly<{ [Id in keyof Servers & string]: ReturnType<typeof defineMcpServer<Id, Servers[Id]['tools']>> }>
+/** Core Streamable HTTP binding shape. */
+export type AgentPluginHttpMcpBinding = Extract<McpBinding, { transport: 'http' }>
+/** HTTP runtime bindings keyed by the exact selected local server ids. */
+export type ProjectedAgentPluginMcpBindings<Servers extends AgentPluginHttpMcpServerSelections> = Readonly<{ [Id in keyof Servers & string]: AgentPluginHttpMcpBinding }>
+/** Reviewed package identity carried separately from Core definitions and bindings. */
+export interface AgentPluginComponentProvenance { readonly pluginName: string; readonly version?: string; readonly digest: string }
+/** Deeply keyed provenance matching the exact selected Skill, server, and tool ids. */
+export type AgentPluginBindingProvenance<Skills extends AgentPluginSkillSelections, Servers extends AgentPluginHttpMcpServerSelections> = Readonly<{
+	skills: Readonly<{ [Id in keyof Skills & string]: AgentPluginComponentProvenance & Readonly<{ component: 'skill'; skillId: Id }> }>
+	mcpServers: Readonly<{ [Id in keyof Servers & string]: AgentPluginComponentProvenance & Readonly<{
+		component: 'mcp-server'; localServerId: Id; pluginServerName: Servers[Id]['server']
+		tools: Readonly<{ [ToolId in keyof Servers[Id]['tools'] & string]: AgentPluginComponentProvenance & Readonly<{ component: 'mcp-tool'; localToolId: ToolId; remoteName: Servers[Id]['tools'][ToolId]['remoteName'] }> }>
+	}> }>
+}>
+/** Exact selected definitions, HTTP bindings, and separate provenance. */
+export interface AgentPluginBindings<Skills extends AgentPluginSkillSelections, Servers extends AgentPluginHttpMcpServerSelections> {
+	readonly skills: ProjectedAgentPluginSkills<Skills>; readonly mcpServers: ProjectedAgentPluginMcpServers<Servers>
+	readonly mcp: ProjectedAgentPluginMcpBindings<Servers>; readonly provenance: AgentPluginBindingProvenance<Skills, Servers>
 }
-
-/** An approved plugin retained privately with its resolved source paths. */
+/** Reviewed plugin handle that can project explicit selections without starting runtime work. */
 export interface LoadedAgentPlugin {
-  inspection: AgentPluginInspection
-  bindings(options: {
-    skills?: Readonly<Record<string, string>>
-    tools?: Readonly<Record<string, AgentPluginToolBinding>>
-  }): AgentPluginBindings
+	readonly inspection: AgentPluginInspection
+	/**
+	 * Projects only the explicitly selected Skills and Streamable HTTP MCP servers.
+	 *
+	 * @example
+	 * ```ts
+	 * const bindings = plugin.bindings({ skills: {}, mcpServers: {} })
+	 * ```
+	 */
+	bindings<const Skills extends AgentPluginSkillSelections, const Servers extends AgentPluginHttpMcpServerSelections>(options: Readonly<{ skills: Skills; mcpServers: Servers }>): AgentPluginBindings<Skills, Servers>
 }
 
-/** Base error for explicit plugin-loading failures. Errors never contain plugin file content. */
-export class AgentPluginError extends Error {
-  public constructor(message: string, options?: ErrorOptions) {
-    super(message, options)
-    this.name = new.target.name
-  }
+/** Stable binding-selection failure reasons. */
+export type AgentPluginLoadErrorReason = 'skill_not_found' | 'mcp_server_not_found' | 'transport_unsupported' | 'duplicate_selection' | 'invalid_selection' | 'invalid_http_headers'
+/** Stable package and manifest failure reasons. */
+export type AgentPluginManifestErrorReason = 'plugin_root_invalid' | 'manifest_missing' | 'manifest_invalid' | 'schema_unsupported' | 'package_too_large'
+/** Stable package trust failure reasons. */
+export type AgentPluginTrustErrorReason = 'untrusted' | 'digest_invalid' | 'digest_mismatch'
+/** Base class for content-free Agent Plugin failures. */
+export class AgentPluginError extends Error {}
+/** Invalid package or manifest failure during atomic loading. */
+export class AgentPluginManifestError extends AgentPluginError {
+	readonly reason: AgentPluginManifestErrorReason
+	constructor(reason: AgentPluginManifestErrorReason) { super('Agent Plugin package is invalid.'); this.name = 'AgentPluginManifestError'; this.reason = reason }
+}
+/** Missing or mismatched application trust failure. */
+export class AgentPluginTrustError extends AgentPluginError {
+	readonly reason: AgentPluginTrustErrorReason
+	constructor(reason: AgentPluginTrustErrorReason) { super('Agent Plugin trust verification failed.'); this.name = 'AgentPluginTrustError'; this.reason = reason }
+}
+/** Invalid explicit Skill or MCP projection request. */
+export class AgentPluginLoadError extends AgentPluginError {
+	readonly reason: AgentPluginLoadErrorReason
+	constructor(reason: AgentPluginLoadErrorReason) { super('Agent Plugin binding selection is invalid.'); this.name = 'AgentPluginLoadError'; this.reason = reason }
 }
 
-/** Raised by callers that choose to turn an invalid inspection into an exception. */
-export class AgentPluginManifestError extends AgentPluginError {}
+type Plain = Record<string, unknown> & {
+	root?: unknown; trust?: unknown; expectedDigest?: unknown
+	maxFileBytes?: unknown; maxPackageBytes?: unknown; plugins?: unknown; trustedRoots?: unknown
+	$schema?: unknown; name?: unknown; version?: unknown; description?: unknown; author?: unknown
+	homepage?: unknown; repository?: unknown; license?: unknown; keywords?: unknown; extensions?: unknown
+	metadata?: unknown; compatibility?: unknown; type?: unknown; command?: unknown; args?: unknown; env?: unknown; cwd?: unknown
+	mcpServers?: unknown; server?: unknown; tools?: unknown; headers?: unknown; url?: unknown; runtimes?: unknown
+	remoteName?: unknown; input?: unknown; output?: unknown; skills?: unknown
+}
+type HttpServer = Readonly<{ name: string; transport: 'streamable-http'; supported: true; url: string; headers?: Readonly<Record<string, string>> }>
+type StdioServer = Readonly<{ name: string; transport: 'stdio'; supported: false }>
+type Parsed = Readonly<{ snapshot: AgentPluginSnapshot; manifest: AgentPluginManifestSummary; skills: readonly AgentPluginSkill[]; mcpServers: readonly (HttpServer | StdioServer)[]; diagnostics: readonly AgentPluginDiagnostic[] }>
+type LazyMap = Readonly<{ keys: readonly string[]; read(key: string): unknown }>
+class ManifestParseFailure extends Error {
+	constructor(readonly reason: AgentPluginManifestErrorReason, readonly snapshot: AgentPluginSnapshot, readonly diagnostics: readonly AgentPluginDiagnostic[]) { super('manifest') }
+}
+const pluginNamePattern = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/
+const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
+const lowerCamelPattern = /^[a-z][A-Za-z0-9]{0,63}$/
+const digestPattern = /^[a-f0-9]{64}$/
+const runtimeIds = new Set<SkillRuntimeId>(['node', 'python', 'shell'])
+const manifestFields = ['$schema', 'name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'extensions']
+const decoder = new TextDecoder('utf-8', { fatal: true })
 
-/** Raised by callers that choose to turn a denied trust decision into an exception. */
-export class AgentPluginTrustError extends AgentPluginError {}
-
-/** Raised when a requested binding cannot be created from an approved plugin. */
-export class AgentPluginLoadError extends AgentPluginError {}
-
-type ParsedAgentPluginSkill = AgentPluginSkill & {
-  directory: string
-  skillPath: string
+function byteCompare(left: string, right: string): number { return Buffer.compare(Buffer.from(left), Buffer.from(right)) }
+function deepFreeze<T>(value: T): T {
+	if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+		for (const key of Reflect.ownKeys(value)) deepFreeze((value as Record<PropertyKey, unknown>)[key])
+		Object.freeze(value)
+	}
+	return value
+}
+function ownRecord(value: unknown, allowed: readonly string[]): Plain | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+	let keys: PropertyKey[]
+	try {
+		const prototype = Reflect.getPrototypeOf(value)
+		if (prototype !== Object.prototype && prototype !== null) return undefined
+		keys = Reflect.ownKeys(value)
+	} catch { return undefined }
+	if (keys.some(key => typeof key !== 'string' || !allowed.includes(key))) return undefined
+	const result: Plain = Object.create(null)
+	try {
+		for (const key of keys) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(value, key)
+			if (!descriptor || !descriptor.enumerable) return undefined
+			result[key as string] = 'value' in descriptor ? descriptor.value : descriptor.get?.call(value)
+		}
+	} catch { return undefined }
+	return result
+}
+function ownMap(value: unknown): Plain | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+	let keys: PropertyKey[]
+	try {
+		const prototype = Reflect.getPrototypeOf(value)
+		if (prototype !== Object.prototype && prototype !== null) return undefined
+		keys = Reflect.ownKeys(value)
+	} catch { return undefined }
+	if (keys.some(key => typeof key !== 'string')) return undefined
+	const result: Plain = Object.create(null)
+	try {
+		for (const key of keys) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(value, key)
+			if (!descriptor || !descriptor.enumerable) return undefined
+			result[key as string] = 'value' in descriptor ? descriptor.value : descriptor.get?.call(value)
+		}
+	} catch { return undefined }
+	return result
+}
+function snapshotLazyMap(value: unknown): LazyMap | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+	let keys: PropertyKey[]
+	const descriptors = new Map<string, PropertyDescriptor>()
+	try {
+		const prototype = Reflect.getPrototypeOf(value)
+		if (prototype !== Object.prototype && prototype !== null) return undefined
+		keys = Reflect.ownKeys(value)
+		if (keys.some(key => typeof key !== 'string')) return undefined
+		for (const key of keys as string[]) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(value, key)
+			if (!descriptor?.enumerable) return undefined
+			descriptors.set(key, descriptor)
+		}
+	} catch { return undefined }
+	const reads = new Set<string>()
+	return Object.freeze({
+		keys: Object.freeze(keys as string[]),
+		read(key: string) {
+			if (reads.has(key)) throw new AgentPluginLoadError('invalid_selection')
+			reads.add(key)
+			const descriptor = descriptors.get(key)
+			if (!descriptor) throw new AgentPluginLoadError('invalid_selection')
+			return 'value' in descriptor ? descriptor.value : descriptor.get?.call(value)
+		},
+	})
+}
+function denseArray(value: unknown): readonly unknown[] | undefined {
+	if (!Array.isArray(value)) return undefined
+	const result: unknown[] = []
+	try {
+		if (Reflect.getPrototypeOf(value) !== Array.prototype) return undefined
+		const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, 'length')
+		if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return undefined
+		const length = lengthDescriptor.value as number
+		const keys = Reflect.ownKeys(value)
+		if (keys.length !== length + 1 || keys.some(key => key !== 'length' && (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= length))) return undefined
+		for (let index = 0; index < length; index++) {
+			if (!Object.prototype.hasOwnProperty.call(value, index)) return undefined
+			const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index))
+			if (!descriptor || !descriptor.enumerable) return undefined
+			result.push('value' in descriptor ? descriptor.value : descriptor.get?.call(value))
+		}
+	} catch { return undefined }
+	return result
+}
+function limitsOf(value: unknown): AgentPluginSnapshotLimits | undefined {
+	const object = ownRecord(value ?? {}, ['maxFileBytes', 'maxPackageBytes'])
+	if (!object) return undefined
+	const maxFileBytes = object.maxFileBytes ?? AGENT_PLUGIN_DEFAULT_MAX_FILE_BYTES
+	const maxPackageBytes = object.maxPackageBytes ?? AGENT_PLUGIN_DEFAULT_MAX_PACKAGE_BYTES
+	if (!Number.isSafeInteger(maxFileBytes) || (maxFileBytes as number) < 1 || (maxFileBytes as number) > AGENT_PLUGIN_MAX_FILE_BYTES) return undefined
+	if (!Number.isSafeInteger(maxPackageBytes) || (maxPackageBytes as number) < 1 || (maxPackageBytes as number) > AGENT_PLUGIN_MAX_PACKAGE_BYTES || (maxFileBytes as number) > (maxPackageBytes as number)) return undefined
+	return Object.freeze({ maxFileBytes: maxFileBytes as number, maxPackageBytes: maxPackageBytes as number })
+}
+function scanAgentPlugin(root: string, cwd: string, limits: AgentPluginSnapshotLimits): AgentPluginSnapshot {
+	return captureAgentPluginSnapshot(root, cwd, limits)
+}
+function diagnostic(code: AgentPluginDiagnosticCode, metadata: Partial<Pick<AgentPluginDiagnostic, 'pluginName' | 'component' | 'item'>> = {}): AgentPluginDiagnostic {
+	const warn = code === 'manifest_unknown_field' || code === 'manifest_extensions_ignored' || code === 'transport_unsupported'
+	const item = typeof metadata.item === 'string' && /^[A-Za-z0-9._-]{1,128}$/u.test(metadata.item) ? metadata.item : undefined
+	return Object.freeze({
+		level: warn ? 'warn' : 'error', code, message: `Agent Plugin diagnostic: ${code}.`,
+		...(metadata.pluginName === undefined ? {} : { pluginName: metadata.pluginName }),
+		...(metadata.component === undefined ? {} : { component: metadata.component }),
+		...(item === undefined ? {} : { item }),
+	})
+}
+function sortDiagnostics(values: readonly AgentPluginDiagnostic[]): readonly AgentPluginDiagnostic[] {
+	const unique = new Map<string, AgentPluginDiagnostic>()
+	for (const value of values) unique.set(JSON.stringify([value.level, value.code, value.component ?? '', value.item ?? '', value.pluginName ?? '', value.message]), value)
+	return Object.freeze([...unique.values()].sort((a, b) => {
+		const left = [a.level === 'error' ? '0' : '1', a.code, a.component ?? '', a.item ?? '', a.pluginName ?? '', a.message]
+		const right = [b.level === 'error' ? '0' : '1', b.code, b.component ?? '', b.item ?? '', b.pluginName ?? '', b.message]
+		for (let index = 0; index < left.length; index++) { const compared = byteCompare(left[index]!, right[index]!); if (compared) return compared }
+		return 0
+	}))
 }
 
-type ParsedAgentPlugin = {
-  root: string
-  valid: boolean
-  manifest?: AgentPluginManifest
-  trust: AgentPluginTrust
-  digest?: string
-  skills: readonly ParsedAgentPluginSkill[]
-  mcpServers: readonly AgentPluginMcpServer[]
-  diagnostics: readonly AgentPluginDiagnostic[]
+function parseJson(bytes: Uint8Array): unknown { return JSON.parse(decoder.decode(bytes)) }
+function parseManifest(bytes: Uint8Array, diagnostics: AgentPluginDiagnostic[]): AgentPluginManifestSummary | undefined {
+	let raw: unknown
+	try { raw = parseJson(bytes) } catch { diagnostics.push(diagnostic('manifest_invalid')); return undefined }
+	const source = ownMap(raw)
+	if (!source) { diagnostics.push(diagnostic('manifest_invalid')); return undefined }
+	if (source.$schema !== AGENT_PLUGIN_MANIFEST_SCHEMA) {
+		diagnostics.push(diagnostic(typeof source.$schema === 'string' ? 'schema_unsupported' : 'manifest_invalid'))
+		return undefined
+	}
+	if (typeof source.name !== 'string' || source.name.length > 64 || !pluginNamePattern.test(source.name)) { diagnostics.push(diagnostic('manifest_invalid')); return undefined }
+	const pluginName = source.name
+	for (const key of Object.keys(source)) if (!manifestFields.includes(key)) diagnostics.push(diagnostic('manifest_unknown_field', { pluginName, item: key }))
+	if (Object.prototype.hasOwnProperty.call(source, 'extensions')) diagnostics.push(diagnostic('manifest_extensions_ignored', { pluginName }))
+	const result: Record<string, unknown> = { $schema: AGENT_PLUGIN_MANIFEST_SCHEMA, name: pluginName }
+	for (const key of ['version', 'description', 'homepage', 'repository', 'license'] as const) {
+		if (source[key] !== undefined) {
+			if (typeof source[key] !== 'string') { diagnostics.push(diagnostic('manifest_invalid', { pluginName })); return undefined }
+			result[key] = source[key]
+		}
+	}
+	if (source.author !== undefined) {
+		const author = ownRecord(source.author, ['name', 'email', 'url'])
+		if (!author || Object.values(author).some(value => typeof value !== 'string')) { diagnostics.push(diagnostic('manifest_invalid', { pluginName })); return undefined }
+		result['author'] = Object.freeze({ ...author })
+	}
+	if (source.keywords !== undefined) {
+		const keywords = denseArray(source.keywords)
+		if (!keywords || keywords.some(value => typeof value !== 'string')) { diagnostics.push(diagnostic('manifest_invalid', { pluginName })); return undefined }
+		result['keywords'] = Object.freeze([...keywords])
+	}
+	return deepFreeze(result) as unknown as AgentPluginManifestSummary
 }
 
-type PathApi = Pick<typeof path, 'relative' | 'isAbsolute' | 'sep'>
-
-/**
- * Returns whether `candidate` stays inside `root` after both paths have been
- * resolved with the same platform path implementation. This is exported for
- * host integrations that must apply the same containment rule before use.
- */
-export function isPathContained(root: string, candidate: string, pathApi: PathApi = path): boolean {
-  const relative = pathApi.relative(root, candidate)
-  return relative === '' || (!relative.startsWith(`..${pathApi.sep}`) && relative !== '..' && !pathApi.isAbsolute(relative))
+function parseSkill(bytes: Uint8Array, directory: string): AgentPluginSkill | undefined {
+	let text: string
+	try { text = decoder.decode(bytes) } catch { return undefined }
+	const envelope = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(text)
+	if (envelope?.[1] === undefined) return undefined
+	let raw: unknown
+	try {
+		const document = parseDocument(envelope[1], { strict: true })
+		if (document.errors.length !== 0) return undefined
+		raw = document.toJSON()
+	} catch { return undefined }
+	const frontmatter = ownRecord(raw, ['name', 'description', 'license', 'compatibility', 'metadata', 'allowed-tools'])
+	if (!frontmatter || frontmatter.name !== directory || typeof frontmatter.name !== 'string' || frontmatter.name.length > 64 || !skillNamePattern.test(frontmatter.name)) return undefined
+	if (typeof frontmatter.description !== 'string' || frontmatter.description.trim() === '' || frontmatter.description.length > 1024) return undefined
+	if (frontmatter.license !== undefined && (typeof frontmatter.license !== 'string' || frontmatter.license.trim() === '')) return undefined
+	if (frontmatter.compatibility !== undefined && (typeof frontmatter.compatibility !== 'string' || frontmatter.compatibility.trim() === '' || frontmatter.compatibility.length > 500)) return undefined
+	if (frontmatter['allowed-tools'] !== undefined && (typeof frontmatter['allowed-tools'] !== 'string' || frontmatter['allowed-tools'].trim() === '' || frontmatter['allowed-tools'] !== frontmatter['allowed-tools'].trim() || /[,\u0000-\u001f\u007f]/u.test(frontmatter['allowed-tools']))) return undefined
+	if (frontmatter.metadata !== undefined) {
+		const metadata = ownMap(frontmatter.metadata)
+		if (!metadata || Object.values(metadata).some(value => typeof value !== 'string')) return undefined
+	}
+	return Object.freeze({ name: directory, description: frontmatter.description })
 }
 
-/**
- * Inspects one local Agent Plugins v1 directory synchronously.
- *
- * The function reads only package data. It never imports package code, starts
- * an MCP server, expands placeholders, connects to a URL, or fetches schemas.
- */
+function validateStdioServer(value: unknown): boolean {
+	const server = ownRecord(value, ['type', 'command', 'args', 'env', 'cwd'])
+	if (!server || server.type !== 'stdio' || typeof server.command !== 'string' || server.command.length === 0) return false
+	const args = server.args === undefined ? [] : denseArray(server.args)
+	if (!args || args.some(item => typeof item !== 'string')) return false
+	const env = server.env === undefined ? Object.create(null) as Plain : ownMap(server.env)
+	if (!env || Object.keys(env).some(key => key === 'PLUGIN_ROOT' || key === 'PLUGIN_DATA' || typeof env[key] !== 'string')) return false
+	return server.cwd === undefined || (typeof server.cwd === 'string' && (/^\.\//u.test(server.cwd) || /^\$\{PLUGIN_(?:ROOT|DATA)\}(?:\/|$)/u.test(server.cwd)))
+}
+function snapshotPortableHttpServer(value: unknown, expectedType: 'streamable-http' | 'sse'): Readonly<{ url: string; headers?: Readonly<Record<string, string>> }> | undefined {
+	const server = ownRecord(value, ['type', 'url', 'headers'])
+	if (!server || server.type !== expectedType || typeof server.url !== 'string' || server.url.length === 0) return undefined
+	if (server.headers === undefined) return Object.freeze({ url: server.url })
+	const source = ownMap(server.headers)
+	if (!source || Object.values(source).some(header => typeof header !== 'string')) return undefined
+	return Object.freeze({ url: server.url, headers: Object.freeze({ ...source }) as Readonly<Record<string, string>> })
+}
+function parseMcp(bytes: Uint8Array, pluginName: string, diagnostics: AgentPluginDiagnostic[]): readonly (HttpServer | StdioServer)[] {
+	let raw: unknown
+	try { raw = parseJson(bytes) } catch { diagnostics.push(diagnostic('mcp_config_invalid', { pluginName, component: 'mcp' })); return Object.freeze([]) }
+	const config = ownRecord(raw, ['$schema', 'mcpServers'])
+	const servers = config && ownMap(config.mcpServers)
+	if (!config || config.$schema !== AGENT_PLUGIN_MCP_SCHEMA || !servers) { diagnostics.push(diagnostic('mcp_config_invalid', { pluginName, component: 'mcp' })); return Object.freeze([]) }
+	const output: Array<HttpServer | StdioServer> = []
+	for (const name of Object.keys(servers).sort(byteCompare)) {
+		const value = servers[name]
+		const base = ownMap(value)
+		if (!base || typeof base.type !== 'string') { diagnostics.push(diagnostic('server_invalid', { pluginName, component: 'mcp', item: name })); continue }
+		if (base.type === 'sse') {
+			if (snapshotPortableHttpServer(value, 'sse')) diagnostics.push(diagnostic('transport_unsupported', { pluginName, component: 'mcp', item: name }))
+			else diagnostics.push(diagnostic('server_invalid', { pluginName, component: 'mcp', item: name }))
+			continue
+		}
+		if (base.type === 'stdio') {
+			if (!validateStdioServer(value)) { diagnostics.push(diagnostic('server_invalid', { pluginName, component: 'mcp', item: name })); continue }
+			output.push(Object.freeze({ name, transport: 'stdio', supported: false }))
+			diagnostics.push(diagnostic('transport_unsupported', { pluginName, component: 'mcp', item: name }))
+			continue
+		}
+		if (base.type === 'streamable-http') {
+			const server = snapshotPortableHttpServer(value, 'streamable-http')
+			if (server) output.push(Object.freeze({ name, transport: 'streamable-http', supported: true, url: server.url, ...(server.headers === undefined ? {} : { headers: server.headers }) }))
+			else diagnostics.push(diagnostic('server_invalid', { pluginName, component: 'mcp', item: name }))
+			continue
+		}
+		diagnostics.push(diagnostic('server_invalid', { pluginName, component: 'mcp', item: name }))
+	}
+	return Object.freeze(output.sort((left, right) => byteCompare(left.name, right.name) || byteCompare(left.transport, right.transport)))
+}
+
+function parseSnapshot(snapshot: AgentPluginSnapshot): Parsed {
+	const manifestBytes = snapshot.readBytes('plugin.json')
+	if (!manifestBytes) throw new ManifestParseFailure('manifest_missing', snapshot, [diagnostic('manifest_missing')])
+	const diagnostics: AgentPluginDiagnostic[] = []
+	const manifest = parseManifest(manifestBytes, diagnostics)
+	if (!manifest) throw new ManifestParseFailure(diagnostics.some(item => item.code === 'schema_unsupported') ? 'schema_unsupported' : 'manifest_invalid', snapshot, diagnostics)
+	const skills: AgentPluginSkill[] = []
+	const skillIds = new Set<string>()
+	if (snapshot.entryKind('skills') === 'file') diagnostics.push(diagnostic('component_invalid', { pluginName: manifest.name, component: 'skills' }))
+	if (snapshot.entryKind('mcp.json') === 'directory') diagnostics.push(diagnostic('component_invalid', { pluginName: manifest.name, component: 'mcp' }))
+	for (const entryName of snapshot.entryPaths) {
+		const match = /^skills\/([^/]+)$/u.exec(entryName)
+		if (match && snapshot.entryKind(entryName) === 'directory' && snapshot.entryKind(`${entryName}/SKILL.md`) !== 'file') {
+			diagnostics.push(diagnostic('skill_invalid', { pluginName: manifest.name, component: 'skills', item: match[1]! }))
+		}
+	}
+	for (const fileName of snapshot.filePaths) {
+		const match = /^skills\/([^/]+)\/SKILL\.md$/u.exec(fileName)
+		if (!match) continue
+		const id = match[1]!
+		const bytes = snapshot.readBytes(fileName)
+		const skill = bytes && parseSkill(bytes, id)
+		if (!skill) { diagnostics.push(diagnostic('skill_invalid', { pluginName: manifest.name, component: 'skills', item: id })); continue }
+		if (skillIds.has(id)) { diagnostics.push(diagnostic('skill_duplicate', { pluginName: manifest.name, component: 'skills', item: id })); continue }
+		skillIds.add(id); skills.push(skill)
+	}
+	const mcpBytes = snapshot.readBytes('mcp.json')
+	return Object.freeze({
+		snapshot,
+		manifest,
+		skills: Object.freeze(skills.sort((left, right) => byteCompare(left.name, right.name))),
+		mcpServers: mcpBytes ? parseMcp(mcpBytes, manifest.name, diagnostics) : Object.freeze([]),
+		diagnostics: sortDiagnostics(diagnostics),
+	})
+}
+
+function inspectionFrom(parsed: Parsed, trust: AgentPluginTrust, expectedDigest?: unknown): AgentPluginInspection {
+	const diagnostics = [...parsed.diagnostics]
+	if (trust === 'untrusted') diagnostics.push(diagnostic('untrusted', { pluginName: parsed.manifest.name }))
+	if (expectedDigest !== undefined) {
+		if (typeof expectedDigest !== 'string' || !digestPattern.test(expectedDigest)) diagnostics.push(diagnostic('digest_invalid', { pluginName: parsed.manifest.name }))
+		else if (expectedDigest !== parsed.snapshot.digest) diagnostics.push(diagnostic('digest_mismatch', { pluginName: parsed.manifest.name }))
+	}
+	return deepFreeze({
+		valid: true, manifest: parsed.manifest, trust, digest: parsed.snapshot.digest,
+		skills: parsed.skills,
+		mcpServers: parsed.mcpServers.map(({ name, transport, supported }) => Object.freeze({ name, transport, supported })) as AgentPluginMcpServerSummary[],
+		diagnostics: sortDiagnostics(diagnostics),
+	})
+}
+function failedInspection(
+	codes: AgentPluginDiagnosticCode | readonly AgentPluginDiagnostic[],
+	trust: AgentPluginTrust,
+	expectedDigest?: unknown,
+	snapshot?: AgentPluginSnapshot,
+): AgentPluginInspection {
+	const diagnostics = typeof codes === 'string' ? [diagnostic(codes)] : [...codes]
+	const pluginName = diagnostics.find(item => item.pluginName !== undefined)?.pluginName
+	if (trust === 'untrusted') diagnostics.push(diagnostic('untrusted', pluginName === undefined ? {} : { pluginName }))
+	if (expectedDigest !== undefined) {
+		if (typeof expectedDigest !== 'string' || !digestPattern.test(expectedDigest)) diagnostics.push(diagnostic('digest_invalid', pluginName === undefined ? {} : { pluginName }))
+		else if (snapshot !== undefined && expectedDigest !== snapshot.digest) diagnostics.push(diagnostic('digest_mismatch', pluginName === undefined ? {} : { pluginName }))
+	}
+	return deepFreeze({ valid: false, trust, ...(snapshot === undefined ? {} : { digest: snapshot.digest }), skills: [], mcpServers: [], diagnostics: sortDiagnostics(diagnostics) })
+}
+function snapshotSource(value: unknown): { root: string; trust: AgentPluginTrust; expectedDigest?: unknown } | undefined {
+	const source = ownRecord(value, ['root', 'trust', 'expectedDigest'])
+	if (!source || typeof source.root !== 'string' || (source.trust !== undefined && source.trust !== 'trusted' && source.trust !== 'untrusted')) return undefined
+	return { root: source.root, trust: source.trust === 'trusted' ? 'trusted' : 'untrusted', ...(source.expectedDigest === undefined ? {} : { expectedDigest: source.expectedDigest }) }
+}
+function scanFailureCode(error: unknown): AgentPluginDiagnosticCode {
+	return error instanceof AgentPluginSnapshotError ? error.kind : 'plugin_root_invalid'
+}
+function inspectAt(sourceValue: unknown, optionsValue: unknown, cwd: string): { inspection: AgentPluginInspection; parsed?: Parsed; source?: ReturnType<typeof snapshotSource>; limits?: AgentPluginSnapshotLimits } {
+	const source = snapshotSource(sourceValue)
+	if (!source) return { inspection: failedInspection('manifest_invalid', 'untrusted') }
+	const limits = limitsOf(optionsValue)
+	if (!limits) return { inspection: failedInspection('manifest_invalid', source.trust, source.expectedDigest) }
+	try {
+		const snapshot = scanAgentPlugin(source.root, cwd, limits)
+		let parsed: Parsed
+		try { parsed = parseSnapshot(snapshot) } catch (error) {
+			if (error instanceof ManifestParseFailure) return { inspection: failedInspection(error.diagnostics, source.trust, source.expectedDigest, snapshot), source, limits }
+			throw error
+		}
+		return { inspection: inspectionFrom(parsed, source.trust, source.expectedDigest), parsed, source, limits }
+	} catch (error) {
+		return { inspection: failedInspection(scanFailureCode(error), source.trust, source.expectedDigest), source, limits }
+	}
+}
+
+/** Inspects one plugin directory synchronously without creating definitions or runtime bindings. */
 export function inspectAgentPluginSync(source: AgentPluginSource, options: InspectAgentPluginOptions = {}): AgentPluginInspection {
-  return toInspection(parseAgentPluginSync(source, options))
+	return inspectAt(source, options, process.cwd()).inspection
+}
+/** Async convenience form of {@link inspectAgentPluginSync}. */
+export async function inspectAgentPlugin(source: AgentPluginSource, options: InspectAgentPluginOptions = {}): Promise<AgentPluginInspection> {
+	const cwd = process.cwd()
+	return inspectAt(source, options, cwd).inspection
 }
 
-/** Async convenience wrapper for {@link inspectAgentPluginSync}. */
-export async function inspectAgentPlugin(source: AgentPluginSource, options: InspectAgentPluginOptions = {}): Promise<AgentPluginInspection> {
-  return inspectAgentPluginSync(source, options)
+function manifestReason(inspection: AgentPluginInspection): AgentPluginManifestErrorReason | undefined {
+	if (inspection.diagnostics.some(item => item.code === 'path_escape')) return 'plugin_root_invalid'
+	for (const code of ['plugin_root_invalid', 'manifest_missing', 'manifest_invalid', 'schema_unsupported', 'package_too_large'] as const) {
+		if (inspection.diagnostics.some(item => item.code === code)) return code
+	}
+	return undefined
+}
+function contained(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate)
+	return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+function snapshotTrustedRoots(value: unknown, cwd: string): readonly string[] | undefined {
+	if (value === undefined) return Object.freeze([])
+	const values = denseArray(value)
+	if (!values || values.some(item => typeof item !== 'string' || item.length === 0 || item.includes('\0'))) return undefined
+	const roots: string[] = []
+	try {
+		for (const item of values as readonly string[]) {
+			const real = fs.realpathSync(path.isAbsolute(item) ? item : path.resolve(cwd, item))
+			if (!fs.lstatSync(real).isDirectory()) return undefined
+			roots.push(real)
+		}
+	} catch { return undefined }
+	return Object.freeze(roots)
+}
+function throwSnapshot(error: unknown): never {
+	if (error instanceof AgentPluginSnapshotError) {
+		if (error.kind === 'package_too_large') throw new AgentPluginManifestError('package_too_large')
+		if (error.kind === 'manifest_invalid') throw new AgentPluginManifestError('manifest_invalid')
+	}
+	throw new AgentPluginManifestError('plugin_root_invalid')
+}
+function snapshotBindingTop(value: unknown): { skills: LazyMap; mcpServers: LazyMap } {
+	const options = ownRecord(value, ['skills', 'mcpServers'])
+	if (!options || !Object.prototype.hasOwnProperty.call(options, 'skills') || !Object.prototype.hasOwnProperty.call(options, 'mcpServers')) throw new AgentPluginLoadError('invalid_selection')
+	const skills = snapshotLazyMap(options.skills)
+	const mcpServers = snapshotLazyMap(options.mcpServers)
+	if (!skills || !mcpServers) throw new AgentPluginLoadError('invalid_selection')
+	return { skills, mcpServers }
+}
+function snapshotRuntimes(value: unknown): readonly SkillRuntimeId[] {
+	const selection = ownRecord(value, ['runtimes'])
+	if (!selection || !Object.prototype.hasOwnProperty.call(selection, 'runtimes')) throw new AgentPluginLoadError('invalid_selection')
+	const runtimes = denseArray(selection.runtimes)
+	if (!runtimes || runtimes.some(runtime => typeof runtime !== 'string' || !runtimeIds.has(runtime as SkillRuntimeId)) || new Set(runtimes).size !== runtimes.length) throw new AgentPluginLoadError('invalid_selection')
+	return Object.freeze([...runtimes] as SkillRuntimeId[])
+}
+function snapshotMcpSelection(value: unknown): Readonly<{ server: unknown; tools: unknown; readHeaders: () => unknown }> | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+	let keys: PropertyKey[]
+	try {
+		const prototype = Reflect.getPrototypeOf(value)
+		if (prototype !== Object.prototype && prototype !== null) return undefined
+		keys = Reflect.ownKeys(value)
+	} catch { return undefined }
+	if (keys.some(key => typeof key !== 'string' || !['server', 'tools', 'headers'].includes(key))) return undefined
+	if (!keys.includes('server') || !keys.includes('tools')) return undefined
+	let server: unknown
+	let tools: unknown
+	let headerDescriptor: PropertyDescriptor | undefined
+	try {
+		const serverDescriptor = Reflect.getOwnPropertyDescriptor(value, 'server')
+		const toolsDescriptor = Reflect.getOwnPropertyDescriptor(value, 'tools')
+		headerDescriptor = Reflect.getOwnPropertyDescriptor(value, 'headers')
+		if (!serverDescriptor?.enumerable || !toolsDescriptor?.enumerable || (keys.includes('headers') && !headerDescriptor?.enumerable)) return undefined
+		server = 'value' in serverDescriptor ? serverDescriptor.value : serverDescriptor.get?.call(value)
+		tools = 'value' in toolsDescriptor ? toolsDescriptor.value : toolsDescriptor.get?.call(value)
+	} catch { return undefined }
+	let read = false
+	return Object.freeze({
+		server,
+		tools,
+		readHeaders() {
+			if (read) throw new AgentPluginLoadError('invalid_http_headers')
+			read = true
+			if (!headerDescriptor) return undefined
+			return 'value' in headerDescriptor ? headerDescriptor.value : headerDescriptor.get?.call(value)
+		},
+	})
+}
+function validSchema(value: unknown, model: boolean): boolean {
+	try {
+		if (typeof value !== 'object' || value === null) return false
+		const standard = (value as { readonly '~standard'?: unknown })['~standard']
+		if (typeof standard !== 'object' || standard === null || typeof (standard as { readonly validate?: unknown }).validate !== 'function') return false
+		if (!model) return true
+		const jsonSchema = (standard as { readonly jsonSchema?: unknown }).jsonSchema
+		return typeof jsonSchema === 'object' && jsonSchema !== null
+			&& typeof (jsonSchema as { readonly input?: unknown }).input === 'function'
+			&& typeof (jsonSchema as { readonly output?: unknown }).output === 'function'
+	} catch { return false }
+}
+function snapshotTool(value: unknown): McpToolOptions<ModelSchema, Schema> {
+	const tool = ownRecord(value, ['remoteName', 'description', 'input', 'output'])
+	if (!tool || typeof tool.remoteName !== 'string' || tool.remoteName.trim() === '' || typeof tool.description !== 'string' || tool.description.trim() === '' || !validSchema(tool.input, true) || !validSchema(tool.output, false)) throw new AgentPluginLoadError('invalid_selection')
+	return Object.freeze({ remoteName: tool.remoteName, description: tool.description, input: tool.input as ModelSchema, output: tool.output as Schema })
+}
+function baseProvenance(parsed: Parsed): AgentPluginComponentProvenance {
+	return Object.freeze({ pluginName: parsed.manifest.name, ...(parsed.manifest.version === undefined ? {} : { version: parsed.manifest.version }), digest: parsed.snapshot.digest })
+}
+function createLoaded(parsed: Parsed, inspection: AgentPluginInspection, sourceRoot: string, cwd: string, limits: AgentPluginSnapshotLimits): LoadedAgentPlugin {
+	return Object.freeze({
+		inspection,
+		bindings<const Skills extends AgentPluginSkillSelections, const Servers extends AgentPluginHttpMcpServerSelections>(value: Readonly<{ skills: Skills; mcpServers: Servers }>): AgentPluginBindings<Skills, Servers> {
+			let currentSnapshot: AgentPluginSnapshot
+			try { currentSnapshot = scanAgentPlugin(sourceRoot, cwd, limits) } catch (error) { throwSnapshot(error) }
+			if (currentSnapshot.digest !== parsed.snapshot.digest) throw new AgentPluginTrustError('digest_mismatch')
+			const current = parseSnapshot(currentSnapshot)
+			const options = snapshotBindingTop(value)
+			const skillPlans: Array<readonly [string, readonly SkillRuntimeId[]]> = []
+			for (const id of [...options.skills.keys].sort(byteCompare)) {
+				if (!current.skills.some(skill => skill.name === id)) throw new AgentPluginLoadError('skill_not_found')
+				let selection: unknown
+				try { selection = options.skills.read(id) } catch { throw new AgentPluginLoadError('invalid_selection') }
+				skillPlans.push(Object.freeze([id, snapshotRuntimes(selection)]))
+			}
+			type McpPlan = Readonly<{ localId: string; server: HttpServer; tools: Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>>; binding: AgentPluginHttpMcpBinding }>
+			const mcpPlans: McpPlan[] = []
+			const selectedPortable = new Set<string>()
+			for (const localId of [...options.mcpServers.keys].sort(byteCompare)) {
+				let rawSelection: unknown
+				try { rawSelection = options.mcpServers.read(localId) } catch { throw new AgentPluginLoadError('invalid_selection') }
+				const selection = snapshotMcpSelection(rawSelection)
+				if (!selection || !lowerCamelPattern.test(localId) || typeof selection.server !== 'string') throw new AgentPluginLoadError('invalid_selection')
+				const toolMap = snapshotLazyMap(selection.tools)
+				if (!toolMap) throw new AgentPluginLoadError('invalid_selection')
+				const server = current.mcpServers.find(item => item.name === selection.server)
+				if (!server) throw new AgentPluginLoadError('mcp_server_not_found')
+				if (server.transport !== 'streamable-http') throw new AgentPluginLoadError('transport_unsupported')
+				if (selectedPortable.has(server.name)) throw new AgentPluginLoadError('duplicate_selection')
+				selectedPortable.add(server.name)
+				if (toolMap.keys.length === 0) throw new AgentPluginLoadError('invalid_selection')
+				const tools: Record<string, McpToolOptions<ModelSchema, Schema>> = Object.create(null)
+				for (const toolId of [...toolMap.keys].sort(byteCompare)) {
+					if (!lowerCamelPattern.test(toolId)) throw new AgentPluginLoadError('invalid_selection')
+					let rawTool: unknown
+					try { rawTool = toolMap.read(toolId) } catch { throw new AgentPluginLoadError('invalid_selection') }
+					tools[toolId] = snapshotTool(rawTool)
+				}
+				const remoteNames = new Set<string>()
+				for (const toolId of Object.keys(tools).sort(byteCompare)) {
+					const remoteName = tools[toolId]!.remoteName
+					if (remoteNames.has(remoteName)) throw new AgentPluginLoadError('duplicate_selection')
+					remoteNames.add(remoteName)
+				}
+				let binding: AgentPluginHttpMcpBinding
+				try {
+					createHttpMcpBinding(server.url, server.headers, undefined)
+					let callerHeaders: unknown
+					try { callerHeaders = selection.readHeaders() } catch { throw new HttpBindingValidationError('invalid_http_headers') }
+					binding = createHttpMcpBinding(server.url, server.headers, callerHeaders)
+				} catch (error) {
+					if (error instanceof HttpBindingValidationError) throw new AgentPluginLoadError(error.reason)
+					throw new AgentPluginLoadError('invalid_selection')
+				}
+				mcpPlans.push(Object.freeze({ localId, server, tools: Object.freeze(tools), binding }))
+			}
+			const skills: Record<string, ReturnType<typeof defineSkill>> = Object.create(null)
+			const mcpServers: Record<string, ReturnType<typeof defineMcpServer>> = Object.create(null)
+			const mcp: Record<string, AgentPluginHttpMcpBinding> = Object.create(null)
+			const provenanceSkills: Record<string, unknown> = Object.create(null)
+			const provenanceServers: Record<string, unknown> = Object.create(null)
+			const base = baseProvenance(current)
+			for (const [id, runtimes] of skillPlans) {
+				try { skills[id] = defineSkill(id, { directory: pathToFileURL(path.join(current.snapshot.resolvedRoot, 'skills', id)), runtimes }) } catch { throw new AgentPluginLoadError('invalid_selection') }
+				provenanceSkills[id] = Object.freeze({ ...base, component: 'skill', skillId: id })
+			}
+			for (const plan of mcpPlans) {
+				let definition: ReturnType<typeof defineMcpServer>
+				try { definition = defineMcpServer(plan.localId, { tools: plan.tools }) } catch { throw new AgentPluginLoadError('invalid_selection') }
+				mcpServers[plan.localId] = definition
+				mcp[plan.localId] = plan.binding
+				const toolProvenance: Record<string, unknown> = Object.create(null)
+				for (const [toolId, tool] of Object.entries(definition.tools)) toolProvenance[toolId] = Object.freeze({ ...base, component: 'mcp-tool', localToolId: toolId, remoteName: tool.remoteName })
+				provenanceServers[plan.localId] = Object.freeze({ ...base, component: 'mcp-server', localServerId: plan.localId, pluginServerName: plan.server.name, tools: Object.freeze(toolProvenance) })
+			}
+			const provenance = Object.freeze({ skills: Object.freeze(provenanceSkills), mcpServers: Object.freeze(provenanceServers) })
+			return Object.freeze({ skills: Object.freeze(skills), mcpServers: Object.freeze(mcpServers), mcp: Object.freeze(mcp), provenance }) as AgentPluginBindings<Skills, Servers>
+		},
+	})
 }
 
 /**
- * Loads only trusted, valid, locally installed plugins. Invalid, untrusted, or
- * digest-mismatched sources are omitted; call {@link inspectAgentPlugin} first
- * to present their content-free diagnostics to a reviewer.
+ * Atomically loads reviewed plugin snapshots for later explicit projection.
+ *
+ * @example
+ * ```ts
+ * const [plugin] = await loadAgentPlugins({
+ *   plugins: [{ root: './installed/research', trust: 'trusted', expectedDigest }],
+ * })
+ * ```
  */
-export async function loadAgentPlugins(options: AgentPluginLoadOptions): Promise<readonly LoadedAgentPlugin[]> {
-  const loaded: LoadedAgentPlugin[] = []
-  const trustedRoots = resolveTrustedRoots(options.trustedRoots)
-  for (const source of options.plugins) {
-    if (!isSha256Digest(source.expectedDigest)) continue
-    const parsed = parseAgentPluginSync(source, options, trustedRoots)
-    if (!parsed.valid || parsed.trust !== 'trusted' || !parsed.digest) continue
-    if (source.expectedDigest.toLowerCase() !== parsed.digest) continue
-    loaded.push(new LoadedAgentPluginImpl(parsed, source, options.supportedTransports ?? ['stdio', 'streamable-http'], options.validationMode ?? 'strict', options.maxPackageBytes ?? 100 * 1024 * 1024))
-  }
-  return loaded
-}
-
-function parseAgentPluginSync(
-  source: AgentPluginSource,
-  options: InspectAgentPluginOptions,
-  trustedRoots: readonly string[] = []
-): ParsedAgentPlugin {
-  const diagnostics: AgentPluginDiagnostic[] = []
-  const requestedRoot = path.resolve(source.root)
-  const maxFileBytes = positiveInteger(options.maxFileBytes, 2 * 1024 * 1024)
-  const root = resolvePluginRoot(requestedRoot, diagnostics)
-  if (!root) return parsedPlugin(requestedRoot, false, undefined, source.trust ?? 'untrusted', undefined, [], [], diagnostics)
-
-  const trust: AgentPluginTrust = source.trust === 'trusted' || trustedRoots.some((trustedRoot) => isPathContained(trustedRoot, root)) ? 'trusted' : 'untrusted'
-
-  const manifestPath = resolveRegularFile(root, 'plugin.json', diagnostics, undefined)
-  if (!manifestPath) {
-    diagnostics.push(diag('error', 'manifest_missing', 'Plugin root must contain a regular plugin.json manifest.'))
-    return parsedPlugin(root, false, undefined, trust, undefined, [], [], diagnostics)
-  }
-
-  const manifestValue = readJson(manifestPath, maxFileBytes, diagnostics, root, 'manifest')
-  const manifest = manifestValue === undefined ? undefined : parseManifest(manifestValue, diagnostics, root)
-  if (!manifest) return parsedPlugin(root, false, undefined, trust, undefined, [], [], diagnostics)
-  if (trust === 'untrusted') {
-    diagnostics.push(diag('warn', 'untrusted', 'Plugin inventory is available for review, but bindings require explicit trust or a trusted root.', undefined, undefined, manifest.name))
-  }
-
-  const skills = discoverPluginSkills(root, maxFileBytes, diagnostics)
-  const mcpServers = discoverMcpServers(root, maxFileBytes, diagnostics)
-  const digest = digestPlugin(root, options.maxPackageBytes ?? 100 * 1024 * 1024, diagnostics)
-  if (source.expectedDigest && digest && source.expectedDigest.toLowerCase() !== digest) {
-    diagnostics.push(diag('error', 'digest_mismatch', 'Plugin package digest does not match the application-reviewed digest.', undefined, undefined, manifest.name))
-  }
-  return parsedPlugin(root, !!digest, manifest, trust, digest, skills, mcpServers, diagnostics)
-}
-
-function parsedPlugin(
-  root: string,
-  valid: boolean,
-  manifest: AgentPluginManifest | undefined,
-  trust: AgentPluginTrust,
-  digest: string | undefined,
-  skills: readonly ParsedAgentPluginSkill[],
-  mcpServers: readonly AgentPluginMcpServer[],
-  diagnostics: readonly AgentPluginDiagnostic[]
-): ParsedAgentPlugin {
-  return {
-    root,
-    valid,
-    ...(manifest ? { manifest } : {}),
-    trust,
-    ...(digest ? { digest } : {}),
-    skills,
-    mcpServers,
-    diagnostics
-  }
-}
-
-function toInspection(plugin: ParsedAgentPlugin): AgentPluginInspection {
-  const manifest = plugin.manifest
-  const diagnostics = manifest
-    ? plugin.diagnostics.map((diagnostic) => diagnostic.pluginName ? diagnostic : { ...diagnostic, pluginName: manifest.name })
-    : plugin.diagnostics
-  return {
-    valid: plugin.valid,
-    trust: plugin.trust,
-    ...(manifest ? { manifest } : {}),
-    ...(plugin.digest ? { digest: plugin.digest } : {}),
-    skills: plugin.skills.map(({ name, description }) => ({ name, description })),
-    mcpServers: plugin.mcpServers.map(({ name, type }) => ({ name, transport: type })),
-    diagnostics
-  }
-}
-
-class LoadedAgentPluginImpl implements LoadedAgentPlugin {
-  public readonly inspection: AgentPluginInspection
-
-  public constructor(
-    private readonly plugin: ParsedAgentPlugin,
-    private readonly source: AgentPluginSource,
-    private readonly supportedTransports: readonly AgentPluginTransport[],
-    private readonly validationMode: SkillValidationMode,
-    private readonly maxStagedBytes: number
-  ) {
-    this.inspection = toInspection(plugin)
-  }
-
-  public bindings(options: {
-    skills?: Readonly<Record<string, string>>
-    tools?: Readonly<Record<string, AgentPluginToolBinding>>
-  }): AgentPluginBindings {
-    const skillBindings = bindSkills(this.plugin, options.skills, this.validationMode)
-    const toolBindings = bindTools(this.plugin, this.source, options.tools, this.supportedTransports, this.maxStagedBytes)
-    return {
-      skills: skillBindings.skills,
-      tools: toolBindings.tools,
-      diagnostics: [...skillBindings.diagnostics, ...toolBindings.diagnostics],
-      provenance: [...skillBindings.provenance, ...toolBindings.provenance]
-    }
-  }
-}
-
-function bindSkills(
-  plugin: ParsedAgentPlugin,
-  bindings: Readonly<Record<string, string>> | undefined,
-  validationMode: SkillValidationMode
-): { skills: SkillsConfig; diagnostics: AgentPluginDiagnostic[]; provenance: AgentPluginProvenance[] } {
-  const skills: SkillsConfig = {}
-  const diagnostics: AgentPluginDiagnostic[] = []
-  const provenance: AgentPluginProvenance[] = []
-  const byName = new Map(plugin.skills.map((skill) => [skill.name, skill]))
-  for (const [alias, sourceName] of Object.entries(bindings ?? {})) {
-    const skill = byName.get(sourceName)
-    if (!skill) {
-      diagnostics.push(diag('error', 'skill_invalid', `Selected plugin skill "${sourceName}" does not exist.`, undefined, 'skills', sourceName))
-      continue
-    }
-    if (!skillNamePattern.test(alias)) {
-      diagnostics.push(diag('error', 'skill_invalid', `Harness skill id "${alias}" must use the core harness skill-id format.`, undefined, 'skills', sourceName))
-      continue
-    }
-    if (skills[alias]) {
-      diagnostics.push(diag('error', 'skill_duplicate', `More than one plugin skill was projected to the harness skill id "${alias}".`, undefined, 'skills', sourceName))
-      continue
-    }
-    skills[alias] = {
-      directory: skill.directory,
-      validationMode,
-      trust: 'trusted',
-      source: `agent_plugin:${plugin.manifest?.name ?? 'unknown'}`
-    }
-    if (plugin.manifest && plugin.digest) {
-      provenance.push({
-        pluginName: plugin.manifest.name,
-        ...(plugin.manifest.version ? { version: plugin.manifest.version } : {}),
-        digest: plugin.digest,
-        component: 'skill',
-        componentName: skill.name
-      })
-    }
-  }
-  return { skills, diagnostics, provenance }
-}
-
-function bindTools(
-  plugin: ParsedAgentPlugin,
-  source: AgentPluginSource,
-  bindings: Readonly<Record<string, AgentPluginToolBinding>> | undefined,
-  supportedTransports: readonly AgentPluginTransport[],
-  maxStagedBytes: number
-): { tools: ToolsConfig; diagnostics: AgentPluginDiagnostic[]; provenance: AgentPluginProvenance[] } {
-  const tools: ToolsConfig = {}
-  const diagnostics: AgentPluginDiagnostic[] = []
-  const provenance: AgentPluginProvenance[] = []
-  const byName = new Map(plugin.mcpServers.map((server) => [server.name, server]))
-  for (const [alias, binding] of Object.entries(bindings ?? {})) {
-    const server = byName.get(binding.server)
-    if (!server) {
-      diagnostics.push(diag('error', 'server_invalid', `Selected MCP server "${binding.server}" does not exist.`, undefined, 'mcp', binding.server))
-      continue
-    }
-    if (!/^[a-z][a-z0-9_]*$/.test(alias) || alias.length > 64) {
-      diagnostics.push(diag('error', 'server_invalid', `Harness tool id "${alias}" must use the core harness tool-id format.`, undefined, 'mcp', binding.server))
-      continue
-    }
-    if (!binding.tool || !binding.description) {
-      diagnostics.push(diag('error', 'server_invalid', 'A selected MCP tool requires non-empty tool and description fields.', undefined, 'mcp', binding.server))
-      continue
-    }
-    if (!supportedTransports.includes(server.type)) {
-      diagnostics.push(diag('warn', 'transport_unsupported', `MCP transport "${server.type}" is disabled for this plugin load.`, undefined, 'mcp', server.name))
-      continue
-    }
-    let launchSource = source
-    if (server.type === 'stdio') {
-      if (!source.dataDirectory) {
-        diagnostics.push(diag('error', 'server_invalid', 'Trusted stdio plugins require an existing caller-owned dataDirectory for staged persistent data.', undefined, 'mcp', server.name))
-        continue
-      }
-      try {
-        launchSource = { ...source, dataDirectory: resolveDataDirectoryOutsidePluginRoot(source.dataDirectory, plugin.root) }
-      } catch {
-        diagnostics.push(diag('error', 'server_invalid', 'The caller-owned stdio plugin dataDirectory must be an existing directory outside the plugin root.', undefined, 'mcp', server.name))
-        continue
-      }
-    }
-    if (tools[alias]) {
-      diagnostics.push(diag('error', 'server_invalid', `More than one selected MCP tool uses the harness tool id "${alias}".`, undefined, 'mcp', server.name))
-      continue
-    }
-    tools[alias] = toHarnessMcpTool(plugin, launchSource, server, binding, maxStagedBytes)
-    if (plugin.manifest && plugin.digest) {
-      provenance.push({
-        pluginName: plugin.manifest.name,
-        ...(plugin.manifest.version ? { version: plugin.manifest.version } : {}),
-        digest: plugin.digest,
-        component: 'mcp',
-        componentName: server.name,
-        transport: server.type
-      })
-    }
-  }
-  return { tools, diagnostics, provenance }
-}
-
-function toHarnessMcpTool(
-  plugin: ParsedAgentPlugin,
-  source: AgentPluginSource,
-  server: AgentPluginMcpServer,
-  binding: AgentPluginToolBinding,
-  maxStagedBytes: number
-): McpStdioToolDefinition | McpHttpToolDefinition {
-  const provenance = plugin.manifest && plugin.digest
-    ? {
-        name: plugin.manifest.name,
-        ...(plugin.manifest.version ? { version: plugin.manifest.version } : {}),
-        digest: plugin.digest,
-        component: 'mcp' as const
-      }
-    : undefined
-  if (server.type === 'stdio') {
-    return {
-      kind: 'mcp_stdio',
-      description: binding.description,
-      command: server.command,
-      ...(server.args ? { args: server.args } : {}),
-      ...(server.env ? { env: { ...server.env } } : {}),
-      ...(server.cwd ? { cwd: server.cwd } : {}),
-      prepareLaunch: createPluginLaunchPreparer(plugin, source, server, maxStagedBytes),
-      ...(provenance ? { provenance } : {}),
-      tool: binding.tool
-    }
-  }
-  return {
-    kind: 'mcp_http',
-    description: binding.description,
-    url: server.url,
-    ...(binding.headers ? { headers: { ...binding.headers } } : {}),
-    redirect: 'error',
-    ...(provenance ? { provenance } : {}),
-    tool: binding.tool
-  }
-}
-
-const DATA_STAGING_MARKER = '.purista-agent-plugin-data'
-const dataDirectoryLocks = new Map<string, Promise<void>>()
-
-function createPluginLaunchPreparer(
-  plugin: ParsedAgentPlugin,
-  source: AgentPluginSource,
-  server: AgentPluginStdioMcpServer,
-  maxStagedBytes: number
-): NonNullable<McpStdioToolDefinition['prepareLaunch']> {
-  const digest = plugin.digest
-  const dataDirectory = source.dataDirectory
-  if (!digest || !dataDirectory) {
-    throw new AgentPluginLoadError('A trusted plugin digest and caller-owned dataDirectory are required for stdio staging.')
-  }
-  const sandboxPluginRoot = `/plugins/${digest}/root`
-  const sandboxDataRoot = `/plugins/${digest}/data`
-  return async ({ sandbox, signal }) => {
-    signal?.throwIfAborted()
-    if (!isReadOnlyMountCapableSession(sandbox)) throw new AgentPluginLoadError('The active sandbox cannot enforce an immutable Agent Plugin package mount.')
-    const dataRoot = resolveDataDirectoryOutsidePluginRoot(dataDirectory, plugin.root)
-    const releaseDataLock = await acquireDataDirectoryLock(dataRoot)
-    try {
-      signal?.throwIfAborted()
-      const packageFiles = collectNormalFiles(plugin.root, maxStagedBytes)
-      // Verify the exact bytes that will be mounted; a separate filesystem
-      // digest followed by a second read leaves a review-to-execution race.
-      if (digestCollectedFiles(packageFiles.files) !== digest) {
-        throw new AgentPluginLoadError('The trusted plugin changed after review and before staging.')
-      }
-      const dataFiles = collectNormalFiles(dataRoot, maxStagedBytes)
-      await sandbox.mountReadOnly(packageFiles.files, sandboxPluginRoot, { executablePaths: packageFiles.executablePaths })
-      await sandbox.mount(dataFiles.files, sandboxDataRoot)
-      // `mount` does not create a directory for an empty map. The marker is
-      // excluded from synchronization and gives stdio cwd a durable directory.
-      await sandbox.mount(new Map([[DATA_STAGING_MARKER, '']]), sandboxDataRoot)
-      signal?.throwIfAborted()
-
-      const command = server.command.startsWith('./')
-        ? `${sandboxPluginRoot}/${server.command.slice(2)}`
-        : server.command
-      const args = server.args?.map((value) => expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot))
-      const cwd = server.cwd
-        ? expandPluginPlaceholders(server.cwd, sandboxPluginRoot, sandboxDataRoot)
-        : sandboxPluginRoot
-      const env = {
-        ...Object.fromEntries(Object.entries(server.env ?? {}).map(([name, value]) => [name, expandPluginPlaceholders(value, sandboxPluginRoot, sandboxDataRoot)])),
-        PLUGIN_ROOT: sandboxPluginRoot,
-        PLUGIN_DATA: sandboxDataRoot
-      }
-      let cleanupPromise: Promise<void> | undefined
-      return {
-        command,
-        ...(args ? { args } : {}),
-        cwd,
-        env,
-        cleanup: () => {
-          cleanupPromise ??= syncSandboxData(sandbox, sandboxDataRoot, dataRoot, maxStagedBytes)
-            .finally(releaseDataLock)
-          return cleanupPromise
-        }
-      }
-    } catch (error) {
-      releaseDataLock()
-      throw error
-    }
-  }
-}
-
-function expandPluginPlaceholders(value: string, pluginRoot: string, pluginData: string): string {
-  return value.replaceAll('${PLUGIN_ROOT}', pluginRoot).replaceAll('${PLUGIN_DATA}', pluginData)
-}
-
-function resolveDataDirectoryOutsidePluginRoot(directory: string, pluginRoot: string): string {
-  const requested = path.resolve(directory)
-  try {
-    const resolved = fs.realpathSync.native(requested)
-    if (!fs.statSync(resolved).isDirectory()) throw new Error('not a directory')
-    if (pathsOverlap(pluginRoot, resolved)) throw new Error('overlaps plugin root')
-    return resolved
-  } catch (error) {
-    throw new AgentPluginLoadError('The caller-owned plugin dataDirectory must be an existing directory outside the plugin root.', { cause: error })
-  }
-}
-
-function pathsOverlap(left: string, right: string): boolean {
-  return isPathContained(left, right) || isPathContained(right, left)
-}
-
-async function acquireDataDirectoryLock(dataRoot: string): Promise<() => void> {
-  const previous = dataDirectoryLocks.get(dataRoot) ?? Promise.resolve()
-  let resolveCurrent: (() => void) | undefined
-  const current = new Promise<void>((resolve) => {
-    resolveCurrent = resolve
-  })
-  dataDirectoryLocks.set(dataRoot, current)
-  await previous
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    resolveCurrent?.()
-    if (dataDirectoryLocks.get(dataRoot) === current) dataDirectoryLocks.delete(dataRoot)
-  }
-}
-
-interface CollectedFiles {
-  files: Map<string, Uint8Array>
-  executablePaths: string[]
-}
-
-function collectNormalFiles(root: string, maxBytes: number): CollectedFiles {
-  const files = new Map<string, Uint8Array>()
-  const executablePaths: string[] = []
-  let totalBytes = 0
-  const walk = (directory: string): void => {
-    let entries: fs.Dirent[]
-    try {
-      entries = fs.readdirSync(directory, { withFileTypes: true })
-    } catch (error) {
-      throw new AgentPluginLoadError('A trusted plugin staging directory could not be read.', { cause: error })
-    }
-    for (const entry of entries) {
-      const candidate = path.join(directory, entry.name)
-      let stat: fs.Stats
-      try {
-        stat = fs.lstatSync(candidate)
-      } catch (error) {
-        throw new AgentPluginLoadError('A trusted plugin staging entry could not be read.', { cause: error })
-      }
-      if (stat.isDirectory()) {
-        walk(candidate)
-        continue
-      }
-      if (!stat.isFile()) continue
-      const relative = path.relative(root, candidate)
-      let resolved: string
-      try {
-        resolved = fs.realpathSync.native(candidate)
-      } catch (error) {
-        throw new AgentPluginLoadError('A trusted plugin staging entry could not be resolved.', { cause: error })
-      }
-      if (!isPathContained(root, resolved) || relative === '') {
-        throw new AgentPluginLoadError('A trusted plugin staging entry escapes its approved root.')
-      }
-      let data: Buffer
-      try {
-        data = fs.readFileSync(candidate)
-      } catch (error) {
-        throw new AgentPluginLoadError('A trusted plugin staging file could not be read.', { cause: error })
-      }
-      totalBytes += data.byteLength
-      if (totalBytes > positiveInteger(maxBytes, 100 * 1024 * 1024)) {
-        throw new AgentPluginLoadError('The trusted plugin staging directory exceeds its byte limit.')
-      }
-      const normalizedRelative = relative.split(path.sep).join('/')
-      files.set(normalizedRelative, data)
-      if ((stat.mode & 0o111) !== 0) executablePaths.push(normalizedRelative)
-    }
-  }
-  walk(root)
-  return { files, executablePaths: executablePaths.sort() }
-}
-
-function digestCollectedFiles(files: ReadonlyMap<string, Uint8Array>): string {
-  const hasher = crypto.createHash('sha256')
-  for (const relative of [...files.keys()].sort((left, right) => left.localeCompare(right))) {
-    const data = files.get(relative)
-    if (!data) throw new AgentPluginLoadError('A trusted plugin staging file disappeared before verification.')
-    hasher.update(relative, 'utf8')
-    hasher.update('\0', 'utf8')
-    hasher.update(data)
-    hasher.update('\0', 'utf8')
-  }
-  return hasher.digest('hex')
-}
-
-async function syncSandboxData(
-  sandbox: { list(path: string, opts?: { recursive?: boolean }): Promise<readonly { path: string; kind: string }[]>; read(path: string): Promise<Uint8Array> },
-  sandboxDataRoot: string,
-  hostDataRoot: string,
-  maxBytes: number
-): Promise<void> {
-  let totalBytes = 0
-  const entries = await sandbox.list(sandboxDataRoot, { recursive: true })
-  const snapshot = new Map<string, Uint8Array>()
-  for (const entry of entries) {
-    if (entry.kind !== 'file') continue
-    const relative = path.posix.relative(sandboxDataRoot, entry.path)
-    if (!relative || relative === DATA_STAGING_MARKER || relative.startsWith('../') || path.posix.isAbsolute(relative)) {
-      if (relative === DATA_STAGING_MARKER) continue
-      throw new AgentPluginLoadError('Sandbox plugin data contains an invalid path.')
-    }
-    const data = await sandbox.read(entry.path)
-    totalBytes += data.byteLength
-    if (totalBytes > positiveInteger(maxBytes, 100 * 1024 * 1024)) {
-      throw new AgentPluginLoadError('Sandbox plugin data exceeds its byte limit.')
-    }
-    snapshot.set(relative, data)
-  }
-  const stagedRoot = path.join(path.dirname(hostDataRoot), `.${path.basename(hostDataRoot)}.purista-stage-${crypto.randomUUID()}`)
-  const backupRoot = path.join(path.dirname(hostDataRoot), `.${path.basename(hostDataRoot)}.purista-backup-${crypto.randomUUID()}`)
-  try {
-    fs.mkdirSync(stagedRoot, { recursive: true })
-    for (const [relative, data] of snapshot) {
-      const target = path.resolve(stagedRoot, ...relative.split('/'))
-      if (!isPathContained(stagedRoot, target)) throw new AgentPluginLoadError('Sandbox plugin data escapes the caller-owned dataDirectory.')
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.writeFileSync(target, data)
-    }
-    fs.renameSync(hostDataRoot, backupRoot)
-    fs.renameSync(stagedRoot, hostDataRoot)
-    fs.rmSync(backupRoot, { recursive: true, force: true })
-  } catch (error) {
-    if (!fs.existsSync(hostDataRoot) && fs.existsSync(backupRoot)) fs.renameSync(backupRoot, hostDataRoot)
-    fs.rmSync(stagedRoot, { recursive: true, force: true })
-    throw error
-  }
-}
-
-function isSha256Digest(value: string): boolean {
-  return /^[a-fA-F0-9]{64}$/.test(value)
-}
-
-function resolveTrustedRoots(roots: readonly string[] | undefined): readonly string[] {
-  const resolved: string[] = []
-  for (const root of roots ?? []) {
-    try {
-      if (fs.statSync(root).isDirectory()) resolved.push(fs.realpathSync.native(root))
-    } catch {
-      // A missing trusted root grants no trust. It is never an implicit fallback.
-    }
-  }
-  return resolved
-}
-
-function digestPlugin(root: string, maxBytes: number, diagnostics: AgentPluginDiagnostic[]): string | undefined {
-  const hasher = crypto.createHash('sha256')
-  let totalBytes = 0
-  const files: Array<{ relative: string; absolute: string }> = []
-  const visitedDirectories = new Set<string>()
-  const walk = (directory: string): boolean => {
-    if (visitedDirectories.has(directory)) return true
-    visitedDirectories.add(directory)
-    let entries: fs.Dirent[]
-    try {
-      entries = fs.readdirSync(directory, { withFileTypes: true })
-    } catch {
-      diagnostics.push(diag('error', 'component_invalid', 'Plugin package could not be read while calculating its review digest.'))
-      return false
-    }
-    for (const entry of entries) {
-      const candidate = path.join(directory, entry.name)
-      let stat: fs.Stats
-      try {
-        stat = fs.statSync(candidate)
-      } catch {
-        diagnostics.push(diag('error', 'component_invalid', 'Plugin package entry could not be read while calculating its review digest.'))
-        return false
-      }
-      let real: string
-      try {
-        real = fs.realpathSync.native(candidate)
-      } catch {
-        diagnostics.push(diag('error', 'component_invalid', 'Plugin package entry could not be resolved while calculating its review digest.'))
-        return false
-      }
-      if (!isPathContained(root, real)) {
-        diagnostics.push(diag('error', 'path_escape', 'Plugin package entry resolves outside the plugin root.'))
-        // Discovery already applies the narrower component failure boundary.
-        // Do not read or hash an escaping entry, and do not let an unselected
-        // symlink suppress a valid sibling component.
-        continue
-      }
-      if (stat.isDirectory()) {
-        if (!walk(real)) return false
-      } else if (stat.isFile()) {
-        files.push({ relative: path.relative(root, candidate).split(path.sep).join('/'), absolute: real })
-      }
-    }
-    return true
-  }
-  if (!walk(root)) return undefined
-  files.sort((left, right) => left.relative.localeCompare(right.relative))
-  for (const file of files) {
-    let data: Buffer
-    try {
-      data = fs.readFileSync(file.absolute)
-    } catch {
-      diagnostics.push(diag('error', 'component_invalid', 'Plugin package file could not be read while calculating its review digest.'))
-      return undefined
-    }
-    totalBytes += data.byteLength
-    if (totalBytes > positiveInteger(maxBytes, 100 * 1024 * 1024)) {
-      diagnostics.push(diag('error', 'component_invalid', 'Plugin package exceeds the configured digest byte limit.'))
-      return undefined
-    }
-    hasher.update(file.relative, 'utf8')
-    hasher.update('\0', 'utf8')
-    hasher.update(data)
-    hasher.update('\0', 'utf8')
-  }
-  return hasher.digest('hex')
-}
-
-function diag(
-  level: AgentPluginDiagnostic['level'],
-  code: AgentPluginDiagnostic['code'],
-  message: string,
-  _pluginRoot?: string,
-  component?: AgentPluginDiagnostic['component'],
-  item?: string,
-  _diagnosticPath?: string
-): AgentPluginDiagnostic {
-  return {
-    level,
-    code,
-    message,
-    ...(component ? { component } : {}),
-    ...(item ? { item } : {})
-  }
-}
-
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback
-}
-
-function resolvePluginRoot(requestedRoot: string, diagnostics: AgentPluginDiagnostic[]): string | undefined {
-  try {
-    if (!fs.statSync(requestedRoot).isDirectory()) {
-      diagnostics.push(diag('error', 'plugin_root_invalid', 'Plugin root must resolve to a directory.', undefined, undefined, undefined, requestedRoot))
-      return undefined
-    }
-    return fs.realpathSync.native(requestedRoot)
-  } catch {
-    diagnostics.push(diag('error', 'plugin_root_invalid', 'Plugin root is missing or cannot be read.', undefined, undefined, undefined, requestedRoot))
-    return undefined
-  }
-}
-
-function resolveRegularFile(
-  root: string,
-  relativePath: string,
-  diagnostics: AgentPluginDiagnostic[],
-  component: AgentPluginDiagnostic['component'] | undefined,
-  item?: string
-): string | undefined {
-  const candidate = path.join(root, relativePath)
-  let stat: fs.Stats
-  try {
-    stat = fs.statSync(candidate)
-  } catch {
-    return undefined
-  }
-  if (!stat.isFile()) {
-    diagnostics.push(diag('error', 'component_invalid', `Expected ${relativePath} to resolve to a regular file.`, root, component, item, candidate))
-    return undefined
-  }
-  try {
-    const real = fs.realpathSync.native(candidate)
-    if (!isPathContained(root, real)) {
-      diagnostics.push(diag('error', 'path_escape', `${relativePath} resolves outside the plugin root.`, root, component, item, candidate))
-      return undefined
-    }
-    return real
-  } catch {
-    diagnostics.push(diag('error', 'component_invalid', `Could not resolve ${relativePath}.`, root, component, item, candidate))
-    return undefined
-  }
-}
-
-function resolveDirectory(
-  root: string,
-  relativePath: string,
-  diagnostics: AgentPluginDiagnostic[],
-  component: AgentPluginDiagnostic['component'],
-  item?: string
-): string | undefined {
-  const candidate = path.join(root, relativePath)
-  let stat: fs.Stats
-  try {
-    stat = fs.statSync(candidate)
-  } catch {
-    return undefined
-  }
-  if (!stat.isDirectory()) {
-    diagnostics.push(diag('error', 'component_invalid', `Expected ${relativePath} to resolve to a directory.`, root, component, item, candidate))
-    return undefined
-  }
-  try {
-    const real = fs.realpathSync.native(candidate)
-    if (!isPathContained(root, real)) {
-      diagnostics.push(diag('error', 'path_escape', `${relativePath} resolves outside the plugin root.`, root, component, item, candidate))
-      return undefined
-    }
-    return real
-  } catch {
-    diagnostics.push(diag('error', 'component_invalid', `Could not resolve ${relativePath}.`, root, component, item, candidate))
-    return undefined
-  }
-}
-
-function readJson(
-  filePath: string,
-  maxFileBytes: number,
-  diagnostics: AgentPluginDiagnostic[],
-  root: string,
-  kind: 'manifest' | 'mcp'
-): unknown | undefined {
-  const code = kind === 'manifest' ? 'manifest_invalid' : 'mcp_config_invalid'
-  try {
-    if (fs.statSync(filePath).size > maxFileBytes) {
-      diagnostics.push(diag('error', code, `${kind === 'manifest' ? 'plugin.json' : 'mcp.json'} exceeds the configured file-size limit.`, root, kind === 'mcp' ? 'mcp' : undefined, undefined, filePath))
-      return undefined
-    }
-    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown
-  } catch {
-    diagnostics.push(diag('error', code, `${kind === 'manifest' ? 'plugin.json' : 'mcp.json'} must contain valid JSON.`, root, kind === 'mcp' ? 'mcp' : undefined, undefined, filePath))
-    return undefined
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
-}
-
-function parseManifest(value: unknown, diagnostics: AgentPluginDiagnostic[], root: string): AgentPluginManifest | undefined {
-  const data = asRecord(value)
-  if (!data) {
-    diagnostics.push(diag('error', 'manifest_invalid', 'plugin.json must contain a top-level object.', root))
-    return undefined
-  }
-
-  const known = new Set(['$schema', 'name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'extensions'])
-  for (const key of Object.keys(data)) {
-    if (!known.has(key)) diagnostics.push(diag('warn', 'manifest_unknown_field', `Ignoring unknown plugin.json field "${key}".`, root, undefined, key))
-  }
-  if (data['$schema'] !== AGENT_PLUGIN_MANIFEST_SCHEMA) {
-    diagnostics.push(diag('error', 'schema_unsupported', `plugin.json $schema must equal "${AGENT_PLUGIN_MANIFEST_SCHEMA}".`, root))
-    return undefined
-  }
-  const name = stringField(data, 'name')
-  if (!name || !pluginNamePattern.test(name)) {
-    diagnostics.push(diag('error', 'manifest_invalid', 'plugin.json name must be 1-64 lowercase letters, numbers, hyphens, or periods with no repeated hyphens or periods.', root))
-    return undefined
-  }
-
-  const metadata = ['version', 'description', 'homepage', 'repository', 'license'] as const
-  for (const key of metadata) {
-    if (data[key] !== undefined && typeof data[key] !== 'string') {
-      diagnostics.push(diag('error', 'manifest_invalid', `plugin.json ${key} must be a string when present.`, root))
-      return undefined
-    }
-  }
-  const author = parseAuthor(data['author'])
-  if (data['author'] !== undefined && !author) {
-    diagnostics.push(diag('error', 'manifest_invalid', 'plugin.json author must be an object containing only optional name, email, and url strings.', root))
-    return undefined
-  }
-  const keywords = parseStringArray(data['keywords'])
-  if (data['keywords'] !== undefined && !keywords) {
-    diagnostics.push(diag('error', 'manifest_invalid', 'plugin.json keywords must be an array of strings.', root))
-    return undefined
-  }
-
-  let extensions: Record<string, unknown> | undefined
-  if (data['extensions'] !== undefined) {
-    extensions = asRecord(data['extensions'])
-    if (!extensions) {
-      diagnostics.push(diag('warn', 'manifest_extensions_ignored', 'Ignoring non-object plugin.json extensions.', root))
-    }
-  }
-  return {
-    $schema: AGENT_PLUGIN_MANIFEST_SCHEMA,
-    name,
-    ...(typeof data['version'] === 'string' ? { version: data['version'] } : {}),
-    ...(typeof data['description'] === 'string' ? { description: data['description'] } : {}),
-    ...(author ? { author } : {}),
-    ...(typeof data['homepage'] === 'string' ? { homepage: data['homepage'] } : {}),
-    ...(typeof data['repository'] === 'string' ? { repository: data['repository'] } : {}),
-    ...(typeof data['license'] === 'string' ? { license: data['license'] } : {}),
-    ...(keywords ? { keywords } : {}),
-    ...(extensions ? { extensions } : {})
-  }
-}
-
-function parseAuthor(value: unknown): AgentPluginAuthor | undefined {
-  const author = asRecord(value)
-  if (!author) return undefined
-  const known = new Set(['name', 'email', 'url'])
-  if (Object.keys(author).some((key) => !known.has(key) || typeof author[key] !== 'string')) return undefined
-  return {
-    ...(typeof author['name'] === 'string' ? { name: author['name'] } : {}),
-    ...(typeof author['email'] === 'string' ? { email: author['email'] } : {}),
-    ...(typeof author['url'] === 'string' ? { url: author['url'] } : {})
-  }
-}
-
-function parseStringArray(value: unknown): readonly string[] | undefined {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined
-}
-
-function stringField(data: Record<string, unknown>, key: string): string | undefined {
-  const value = data[key]
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-function discoverPluginSkills(root: string, maxFileBytes: number, diagnostics: AgentPluginDiagnostic[]): ParsedAgentPluginSkill[] {
-  const skillsRoot = resolveDirectory(root, 'skills', diagnostics, 'skills')
-  if (!skillsRoot) return []
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(skillsRoot, { withFileTypes: true })
-  } catch {
-    diagnostics.push(diag('error', 'component_invalid', 'Could not read the skills directory.', root, 'skills', undefined, skillsRoot))
-    return []
-  }
-  const skills: ParsedAgentPluginSkill[] = []
-  const names = new Set<string>()
-  for (const entry of entries) {
-    const childPath = path.join(skillsRoot, entry.name)
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-    const directory = resolveSkillDirectory(root, childPath, diagnostics, entry.name)
-    if (!directory) continue
-    const skillPath = resolveRegularFile(root, path.relative(root, path.join(directory, 'SKILL.md')), diagnostics, 'skills', entry.name)
-    if (!skillPath) continue
-    const parsed = parseSkill(skillPath, maxFileBytes, root, diagnostics, entry.name)
-    if (!parsed) continue
-    if (names.has(parsed.name)) {
-      diagnostics.push(diag('error', 'skill_duplicate', `More than one plugin skill declares the name "${parsed.name}".`, root, 'skills', parsed.name, directory))
-      continue
-    }
-    names.add(parsed.name)
-    skills.push({ name: parsed.name, description: parsed.description, directory, skillPath })
-  }
-  return skills
-}
-
-function resolveSkillDirectory(
-  root: string,
-  candidate: string,
-  diagnostics: AgentPluginDiagnostic[],
-  item: string
-): string | undefined {
-  let stat: fs.Stats
-  try {
-    stat = fs.statSync(candidate)
-  } catch {
-    return undefined
-  }
-  if (!stat.isDirectory()) return undefined
-  try {
-    const real = fs.realpathSync.native(candidate)
-    if (!isPathContained(root, real)) {
-      diagnostics.push(diag('error', 'path_escape', 'Skill directory resolves outside the plugin root.', root, 'skills', item, candidate))
-      return undefined
-    }
-    return real
-  } catch {
-    diagnostics.push(diag('error', 'skill_invalid', 'Could not resolve skill directory.', root, 'skills', item, candidate))
-    return undefined
-  }
-}
-
-function parseSkill(
-  skillPath: string,
-  maxFileBytes: number,
-  root: string,
-  diagnostics: AgentPluginDiagnostic[],
-  item: string
-): { name: string; description: string } | undefined {
-  let content: string
-  try {
-    if (fs.statSync(skillPath).size > maxFileBytes) {
-      diagnostics.push(diag('error', 'skill_invalid', 'SKILL.md exceeds the configured file-size limit.', root, 'skills', item, skillPath))
-      return undefined
-    }
-    content = fs.readFileSync(skillPath, 'utf8')
-  } catch {
-    diagnostics.push(diag('error', 'skill_invalid', 'Could not read SKILL.md.', root, 'skills', item, skillPath))
-    return undefined
-  }
-  const frontmatter = extractFrontmatter(content)
-  if (!frontmatter) {
-    diagnostics.push(diag('error', 'skill_invalid', 'SKILL.md must start with terminated YAML frontmatter.', root, 'skills', item, skillPath))
-    return undefined
-  }
-  const parsed = parseDocument(frontmatter, { strict: true })
-  if (parsed.errors.length > 0) {
-    diagnostics.push(diag('error', 'skill_invalid', 'SKILL.md contains invalid YAML frontmatter.', root, 'skills', item, skillPath))
-    return undefined
-  }
-  const data = asRecord(parsed.toJSON())
-  const name = data ? stringField(data, 'name') : undefined
-  const description = data ? stringField(data, 'description') : undefined
-  if (!name || !skillNamePattern.test(name) || !description || description.length > 1024) {
-    diagnostics.push(diag('error', 'skill_invalid', 'SKILL.md requires a valid skill name and a description of at most 1024 characters.', root, 'skills', item, skillPath))
-    return undefined
-  }
-  return { name, description }
-}
-
-function extractFrontmatter(content: string): string | undefined {
-  const prefix = content.startsWith('---\n') ? 4 : content.startsWith('---\r\n') ? 5 : -1
-  if (prefix < 0) return undefined
-  const match = /\r?\n---(?:\r?\n|$)/.exec(content.slice(prefix))
-  if (!match || match.index === undefined) return undefined
-  return content.slice(prefix, prefix + match.index)
-}
-
-function discoverMcpServers(root: string, maxFileBytes: number, diagnostics: AgentPluginDiagnostic[]): AgentPluginMcpServer[] {
-  const mcpPath = resolveRegularFile(root, 'mcp.json', diagnostics, 'mcp')
-  if (!mcpPath) return []
-  const value = readJson(mcpPath, maxFileBytes, diagnostics, root, 'mcp')
-  const data = asRecord(value)
-  if (!data) {
-    if (value !== undefined) diagnostics.push(diag('error', 'mcp_config_invalid', 'mcp.json must contain a top-level object.', root, 'mcp', undefined, mcpPath))
-    return []
-  }
-  const allowed = new Set(['$schema', 'mcpServers'])
-  if (Object.keys(data).some((key) => !allowed.has(key)) || data['$schema'] !== AGENT_PLUGIN_MCP_SCHEMA) {
-    diagnostics.push(diag('error', 'mcp_config_invalid', 'mcp.json must use the Agent Plugins v1 schema and contain no unknown top-level fields.', root, 'mcp', undefined, mcpPath))
-    return []
-  }
-  const servers = asRecord(data['mcpServers'])
-  if (!servers) {
-    diagnostics.push(diag('error', 'mcp_config_invalid', 'mcp.json mcpServers must be an object.', root, 'mcp', undefined, mcpPath))
-    return []
-  }
-  const result: AgentPluginMcpServer[] = []
-  for (const [name, config] of Object.entries(servers)) {
-    const server = parseMcpServer(name, config, root, diagnostics)
-    if (server) result.push(server)
-  }
-  return result
-}
-
-function parseMcpServer(name: string, value: unknown, root: string, diagnostics: AgentPluginDiagnostic[]): AgentPluginMcpServer | undefined {
-  const config = asRecord(value)
-  if (!config || !name) {
-    diagnostics.push(diag('error', 'server_invalid', 'Each MCP server must have a non-empty name and an object configuration.', root, 'mcp', name))
-    return undefined
-  }
-  if (config['type'] === 'stdio') return parseStdioServer(name, config, root, diagnostics)
-  if (config['type'] === 'streamable-http') return parseHttpServer(name, config, root, diagnostics)
-  if (config['type'] === 'sse') {
-    diagnostics.push(diag('warn', 'transport_unsupported', 'Legacy MCP HTTP+SSE is not supported by the current harness MCP transport.', root, 'mcp', name))
-    return undefined
-  }
-  diagnostics.push(diag('error', 'server_invalid', 'MCP server type must be stdio or streamable-http.', root, 'mcp', name))
-  return undefined
-}
-
-function parseStdioServer(name: string, config: Record<string, unknown>, root: string, diagnostics: AgentPluginDiagnostic[]): AgentPluginStdioMcpServer | undefined {
-  const allowed = new Set(['type', 'command', 'args', 'env', 'cwd'])
-  const command = stringField(config, 'command')
-  const args = config['args'] === undefined ? undefined : parseStringArray(config['args'])
-  const env = config['env'] === undefined ? undefined : parseStringRecord(config['env'])
-  const cwd = config['cwd'] === undefined ? undefined : stringField(config, 'cwd')
-  if (!command || /\s/.test(command) || Object.keys(config).some((key) => !allowed.has(key)) || (config['args'] !== undefined && !args) || (config['env'] !== undefined && !env) || hasReservedPluginEnvironmentName(env) || (config['cwd'] !== undefined && !cwd)) {
-    diagnostics.push(diag('error', 'server_invalid', 'Invalid stdio MCP server configuration.', root, 'mcp', name))
-    return undefined
-  }
-  if ((command.includes('/') || command.includes('\\')) && (!command.startsWith('./') || !isPluginRelativePathContained(root, command))) {
-    diagnostics.push(diag('error', 'server_invalid', 'Plugin-relative stdio command escapes the plugin root.', root, 'mcp', name))
-    return undefined
-  }
-  if (cwd && !isValidStdioCwd(root, cwd)) {
-    diagnostics.push(diag('error', 'server_invalid', 'stdio cwd must be plugin-relative, ${PLUGIN_ROOT}-rooted, or ${PLUGIN_DATA}-rooted and remain contained.', root, 'mcp', name))
-    return undefined
-  }
-  return {
-    name,
-    type: 'stdio',
-    command,
-    ...(args ? { args } : {}),
-    ...(env ? { env } : {}),
-    ...(cwd ? { cwd } : {})
-  }
-}
-
-function parseHttpServer(name: string, config: Record<string, unknown>, root: string, diagnostics: AgentPluginDiagnostic[]): AgentPluginHttpMcpServer | undefined {
-  const allowed = new Set(['type', 'url', 'headers'])
-  const type = config['type']
-  const url = stringField(config, 'url')
-  const headers = config['headers'] === undefined ? undefined : parseHeaders(config['headers'])
-  if (type !== 'streamable-http' || !url || Object.keys(config).some((key) => !allowed.has(key)) || (config['headers'] !== undefined && !headers) || !isSecurePluginUrl(url)) {
-    diagnostics.push(diag('error', 'server_invalid', 'Invalid HTTP MCP server configuration.', root, 'mcp', name))
-    return undefined
-  }
-  return { name, type, url, ...(headers ? { headers } : {}) }
-}
-
-function parseStringRecord(value: unknown): Readonly<Record<string, string>> | undefined {
-  const record = asRecord(value)
-  if (!record || Object.values(record).some((entry) => typeof entry !== 'string')) return undefined
-  return record as Record<string, string>
-}
-
-function parseHeaders(value: unknown): Readonly<Record<string, string>> | undefined {
-  const headers = parseStringRecord(value)
-  if (!headers) return undefined
-  const names = new Set<string>()
-  for (const [name, headerValue] of Object.entries(headers)) {
-    const normalized = name.toLowerCase()
-    if (
-      !headerNamePattern.test(name) ||
-      /[\0\r\n]/.test(headerValue) ||
-      names.has(normalized) ||
-      prohibitedPluginHeaders.has(normalized) ||
-      normalized.startsWith('mcp-')
-    ) return undefined
-    names.add(normalized)
-  }
-  return headers
-}
-
-function hasReservedPluginEnvironmentName(env: Readonly<Record<string, string>> | undefined): boolean {
-  if (!env) return false
-  const normalize = process.platform === 'win32' ? (name: string) => name.toUpperCase() : (name: string) => name
-  return Object.keys(env).some((name) => {
-    const normalized = normalize(name)
-    return normalized === 'PLUGIN_ROOT' || normalized === 'PLUGIN_DATA'
-  })
-}
-
-function isPluginRelativePathContained(root: string, configuredPath: string): boolean {
-  if (!configuredPath.startsWith('./')) return false
-  const candidate = path.resolve(root, configuredPath)
-  if (!isPathContained(root, candidate)) return false
-  try {
-    return isPathContained(root, fs.realpathSync.native(candidate))
-  } catch {
-    // The runtime must repeat containment before executing a path that was not
-    // present at inspection time. This data-only package never executes it.
-    return true
-  }
-}
-
-function isValidStdioCwd(root: string, cwd: string): boolean {
-  if (cwd.startsWith('./')) return isPluginRelativePathContained(root, cwd)
-  if (cwd === '${PLUGIN_ROOT}') return true
-  if (cwd.startsWith('${PLUGIN_ROOT}/')) return isPluginRelativePathContained(root, `./${cwd.slice('${PLUGIN_ROOT}/'.length)}`)
-  return cwd === '${PLUGIN_DATA}' || cwd.startsWith('${PLUGIN_DATA}/')
-}
-
-function isSecurePluginUrl(value: string): boolean {
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return false
-  }
-  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || url.hash) return false
-  if (url.protocol === 'https:') return true
-  return isLoopbackHost(url.hostname)
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '')
-  if (host === 'localhost' || host === '::1') return true
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
-  return !!ipv4 && Number(ipv4[1]) === 127 && ipv4.slice(1).every((part) => Number(part) <= 255)
+export async function loadAgentPlugins(optionsValue: AgentPluginLoadOptions): Promise<readonly [LoadedAgentPlugin, ...LoadedAgentPlugin[]]> {
+	const cwd = process.cwd()
+	const options = ownRecord(optionsValue, ['plugins', 'trustedRoots', 'maxFileBytes', 'maxPackageBytes'])
+	const pluginValues = options && denseArray(options.plugins)
+	const limitInput = options && {
+		...(Object.prototype.hasOwnProperty.call(options, 'maxFileBytes') ? { maxFileBytes: options.maxFileBytes } : {}),
+		...(Object.prototype.hasOwnProperty.call(options, 'maxPackageBytes') ? { maxPackageBytes: options.maxPackageBytes } : {}),
+	}
+	const limits = limitInput && limitsOf(limitInput)
+	const trustedRoots = options && snapshotTrustedRoots(options.trustedRoots, cwd)
+	if (!options || !pluginValues || pluginValues.length === 0 || !limits || !trustedRoots) throw new AgentPluginManifestError('manifest_invalid')
+	const result: LoadedAgentPlugin[] = []
+	for (const sourceValue of pluginValues) {
+		const source = snapshotSource(sourceValue)
+		if (!source) throw new AgentPluginManifestError('manifest_invalid')
+		const inspected = inspectAt(source, limits, cwd)
+		const reason = manifestReason(inspected.inspection)
+		if (reason) throw new AgentPluginManifestError(reason)
+		if (!inspected.parsed) throw new AgentPluginManifestError('manifest_invalid')
+		const locationTrusted = trustedRoots.some(root => contained(root, inspected.parsed!.snapshot.resolvedRoot))
+		if (source.trust !== 'trusted' && !locationTrusted) throw new AgentPluginTrustError('untrusted')
+		if (typeof source.expectedDigest !== 'string' || !digestPattern.test(source.expectedDigest)) throw new AgentPluginTrustError('digest_invalid')
+		if (source.expectedDigest !== inspected.parsed.snapshot.digest) throw new AgentPluginTrustError('digest_mismatch')
+		const inspection = inspectionFrom(inspected.parsed, 'trusted', source.expectedDigest)
+		result.push(createLoaded(inspected.parsed, inspection, source.root, cwd, limits))
+	}
+	return Object.freeze(result) as unknown as readonly [LoadedAgentPlugin, ...LoadedAgentPlugin[]]
 }

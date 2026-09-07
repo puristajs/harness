@@ -14,7 +14,7 @@ The private adapter validates the protected JSON with the existing shared schema
 
 `tools` is an optional nonempty unique list of exact configured tool IDs; omit to inspect all tools. No wildcard, regex, provider tool name, predicate, or category expansion. Use the existing canonical resolved tool ID also used by governance. Select before protected-value schema validation, codec extraction, detector/model invocation, or action callback. A nonselected occurrence is skipped without guardrail evaluation events. Configured ordinal remains its position in the phase list, even when other actions are skipped. A selected mismatch fails closed and performs no protected effect. Selection grants no tool permission.
 
-`createSensitiveDataActions({ detector })` returns the six existing input/output/retrieval tokens with literal keys/phases. Remove its `toolInput`/`toolOutput` options and `SensitiveDataToolActionOptions`. Add `sensitiveDataToolRail({ detector, phase, tools, policy, operation, valueSchema, codec })`: phase is tool_input/tool_output; tools is required nonempty; policy is input/output; operation is detect/mask; valueSchema is required and codec T is its JSON output. Export `SensitiveDataToolRailOptions<P extends 'tool_input' | 'tool_output', Schema extends z.ZodTypeAny>` with no generic defaults; infer both from phase/schema, never from codec callbacks. The returned token is named by its registry key. This replaces the dynamic detectFlow/maskFlow name sub-DSL. It shares detector/policy/codec algorithms with the six-action factory, not copies. Change codec `extract` and `replace` to function properties and use the same schema fence before either callback. String actions declare string schemas; retrieval actions declare arrays of strings. Existing detector port, entity offsets, privacy/failure contracts and detector packages remain unchanged.
+`createSensitiveDataActions({ detector })` returns the six existing input/output/retrieval tokens with literal keys/phases. Remove its `toolInput`/`toolOutput` options and `SensitiveDataToolActionOptions`. Add `sensitiveDataToolRail({ detector, phase, tools, policy, operation, valueSchema, codec })`: phase is tool_input/tool_output; tools is required nonempty; policy is input/output; operation is detect/mask; valueSchema is required and codec T is its JSON output. Export `SensitiveDataToolRailOptions<P extends 'tool_input' | 'tool_output', Schema extends z.ZodTypeAny>` with no generic defaults; infer both from phase/schema, never from codec callbacks. The returned token retains its action-map key. This replaces the dynamic detectFlow/maskFlow name sub-DSL. It shares detector/policy/codec algorithms with the six-action factory, not copies. Change codec `extract` and `replace` to function properties and use the same schema fence before either callback. String actions declare string schemas; retrieval actions declare arrays of strings. Existing detector port, entity offsets, privacy/failure contracts and detector packages remain unchanged.
 
 ## CTR-GA-BINDING
 
@@ -30,9 +30,23 @@ type AgentExecutionRequirements = {
 
 Lists are nonempty when present; IDs are nonempty; duplicate tool IDs and duplicate aliases/capabilities are rejected in caller declarations. Capability values reuse the existing core capability vocabulary. Interceptors gain optional `requirements`. Core imports no addon; it exposes only the provider-neutral `AgentGuardrailsBinding` integration port and the default-loop `guardrails` field required by [spec 40](../../40-declarative-registration-and-guardrails-binding.md). Internally compile/deduplicate combined requirements deterministically in interceptor order; models merge by alias and capability union. Conflicting requirements cannot weaken each other.
 
-Extend the existing builder reference validation at `.build()` to validate requirements from each attached interceptor against the completed configured registry. Reuse one internal resolver for the agent's declared custom tools and enabled builtins, including `builtinTools: false` and omitted-default behavior; replace the duplicated default builtin list in the loop with canonical `BUILTIN_TOOL_NAMES`. Requirement tool IDs must be registered and agent-enabled. MCP uses configured alias IDs, not dynamically discovered server names. Model aliases must exist and declare each required capability. Reuse the model capability membership predicate; retain runtime provider validation. Models registered after `.agents()` are supported. Builder/module helper/direct registration paths all reach the same validation.
+The agent-definition compiler validates requirements from each attached
+interceptor against the agent's direct tool references and compiled model
+requirements. Reuse one internal resolver for declared tools and enabled
+built-ins, including `builtinTools: false` and omitted-default behavior; replace
+the duplicated default built-in list in the loop with canonical
+`BUILTIN_TOOL_NAMES`. Requirement tool IDs must belong to the agent. MCP uses
+the selected local tool IDs from its referenced server definition, never a
+dynamically discovered server name. Model aliases must exist in compiled graph
+requirements and include each required capability. Direct and catalog
+composition reach the same validation.
 
-Build examines declarations only. It opens no session, invokes no model/detector/action, starts no MCP process, and performs no sandbox operation. Runtime `prepareStep`, permissions/governance and adapter capability filtering may narrow tool availability further; build does not prove a tool will be offered or executable on a particular turn. Requirements never enable a tool, add a model, invoke approval, or override restrictions.
+Definition and graph compilation examine declarations only. They open no
+session, invoke no model/detector/action, start no MCP process, and perform no
+sandbox operation. Runtime `prepareStep`, permissions/governance, and adapter
+capability filtering may narrow tool availability further; compilation does not
+prove a tool will be offered or executable on a particular turn. Requirements
+never enable a tool, add a model, invoke approval, or override restrictions.
 
 The `Guardrails` facade implements Core's opaque-symbol
 `AgentGuardrailsBinding`. An agent declares `guardrails: rails`; registration
@@ -41,8 +55,8 @@ and rejects custom-handler agents. Its interceptor requirements are derived
 from only configured input/output/tool_input/tool_output actions. Retrieval
 dependencies are excluded. The interceptor constructor remains private and no
 public decorator or interceptor factory is added. Manually authored core
-interceptors with requirements use the same build validator. Applications must
-finish `.build()` before accepting requests.
+interceptors with requirements use the same graph validator. Applications must
+complete `getInstance(...)` before accepting requests.
 
 The existing public `filterRetrievedChunks(chunks, context?)` retains its signature and checks the declared object-model dependencies for its retrieval actions against execution-context handles before any retrieval callback; missing/noncallable handles fail configuration validation. It cannot prove adapter capability or reachability beyond the supplied callable interface. There are no tool requirements for retrieval. Do not require unrelated attached-phase dependencies for retrieval and vice versa. No applyRetrieval alias is introduced.
 

@@ -4,7 +4,11 @@
 
 Follow `ai-harness/AGENTS.md`, `.agent/IMPLEMENTATION.md` and canonical PURISTA guidance. Strict TypeScript, named lowerCamelCase schema values, exported PascalCase types, provider-neutral public ports, Zod-derived non-generic types, generic projections for genuinely generic relationships, TSDoc with useful examples, and explicit ownership are mandatory. No `any`, `Function`, bivariant-method loophole, unchecked JSON-to-domain cast or duplicate field interface is allowed in new/changed authoring boundaries. External unknown data is validated at ingress; open JsonValue leaves stay explicit.
 
-The sole existing-erasure exception is the heterogeneous native runtime ToolDefinition projection reused as registered storage behind generic construction plus CheckedTools validation, as specified in CTR-GA-CALLBACKS. It cannot be used as callback contextual type or expanded into new any-based aliases. Opaque guardrail tokens need no such callback erasure.
+The sole existing-erasure exception is the private heterogeneous runtime tool
+projection behind generic definition compilation and checked dependency closure,
+as specified in CTR-GA-CALLBACKS. It cannot become a public callback context or
+expand into new `any`-based aliases. Opaque guardrail tokens need no such
+erasure.
 
 Extend existing modules/tests before introducing files. New files are limited to cohesive config/action/requirements topics listed in file structure. Use public core exports in addons; no provider SDK or private core imports. Reuse canonical decision schemas/executor/evidence, builtin IDs, model capability vocabulary and tool preparation. Never add another timer/approval/validation engine.
 

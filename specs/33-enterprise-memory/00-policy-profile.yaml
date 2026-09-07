@@ -4,7 +4,7 @@ allowed_default_refs:
   - POLICY-PURISTA-CONVENTIONS
 profiles:
   - policy_ref: POLICY-HARNESS-CONVENTIONS
-    name: Existing AI Harness package and builder conventions
+    name: Existing AI Harness package and definition conventions
     source_ref: ../../packages/harness/src/harness/defineHarness.ts
     allowed_classes:
       - D0

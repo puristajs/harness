@@ -2,15 +2,21 @@
 
 ## CTR-SS-PROJECTION
 
-During `build()`, and once per registered model-facing boundary, core:
+During definition/graph compilation, and once per unique model-facing boundary,
+core:
 
 1. Reads `schema['~standard'].jsonSchema.input`.
 2. Calls it exactly once with `{ target: 'draft-2020-12' }`.
 3. Rejects missing conversion, thrown conversion, or a non-`JsonValue` result with `CTR-SS-ERRORS` metadata.
 4. Deep-clones to a null/prototype-safe JSON value if required by the existing JSON utilities, then recursively freezes the owned copy.
-5. Stores the result in a private compiled tool/agent definition.
+5. Stores the result in the private compiled tool or agent definition.
 
-The input projection is mandatory for both tool arguments and default-loop structured output because the model produces a value that the validation schema consumes. Output projection is not used. No projection occurs in session creation, replay, retries, agent steps, or tool loops. Build-cache tests instrument the converter and assert one call per registered boundary across multiple runs and retries.
+The input projection is mandatory for both tool arguments and structured agent
+output because the model produces a value that the validation schema consumes.
+Output projection is not used. No projection occurs in instance creation,
+session creation, replay, retries, agent steps, or tool loops. Compilation-cache
+tests instrument the converter and assert one call per unique definition
+boundary across catalog reuse, multiple runs, and retries.
 
 The memory summarization request in `sessions/index.ts` must pass an actual `JsonValue` JSON Schema to `ModelHandle.object`; passing a Zod schema through a cast is forbidden and covered by regression test.
 

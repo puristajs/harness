@@ -2,8 +2,8 @@ registry_version: 1
 contracts:
   - contract_id: CTR-SS-SCHEMA
     source_ref: 03-contracts/schema-types.md#CTR-SS-SCHEMA
-  - contract_id: CTR-SS-BUILDERS
-    source_ref: 03-contracts/schema-types.md#CTR-SS-BUILDERS
+  - contract_id: CTR-SS-DEFINITIONS
+    source_ref: 03-contracts/schema-types.md#CTR-SS-DEFINITIONS
   - contract_id: CTR-SS-VALIDATION
     source_ref: 03-contracts/runtime-validation.md#CTR-SS-VALIDATION
   - contract_id: CTR-SS-ERRORS

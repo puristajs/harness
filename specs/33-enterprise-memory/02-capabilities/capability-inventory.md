@@ -2,9 +2,9 @@
 
 | Capability ID | User-facing outcome | Entry point | Failure behavior | Verification |
 | --- | --- | --- | --- | --- |
-| CAP-MEM-DX | Configure no memory, an engine, or typed model-backed memory with autocomplete | `defineHarness().memory(...)` | Wrong model capability and statically incompatible engine/model combinations are type errors; unavailable dynamic database capability is a build error | type tests and builder tests |
+| CAP-MEM-DX | Start with default memory, then add typed model-backed policy and a production engine | agent `memory` plus `getInstance({ memory })` | Missing model aliases and statically incompatible engine/model combinations are type errors; unavailable dynamic database capability is an instance-configuration error | type tests and definition/runtime tests |
 | CAP-MEM-IDENTITY | Isolate memory and session state for application, tenant, principal, or both | `harness.getSession(id, identity?)` and scoped memory handles | Identity mismatch and missing required dimension fail before runtime I/O | storage and facade contract tests |
-| CAP-MEM-ENGINE | Reuse one core orchestration path across database engines | `MemoryEngine` and core composition | Partial or falsely advertised capability fails contract/build validation | engine contract tests |
+| CAP-MEM-ENGINE | Reuse one core orchestration path across database engines | `MemoryEngine` and core composition | Partial or falsely advertised capability fails contract/instance validation | engine contract tests |
 | CAP-MEM-SEARCH | Retrieve by text, semantic, or hybrid relevance with time and metadata filters | `session.memory.search(query)` | Explicit unavailable mode and index mismatch fail without downgrade | deterministic and live engine tests |
 | CAP-MEM-SUMMARY | Maintain an opt-in provenance-bearing conversation summary | `summary: model.<alias>` | Summary failure is visible and does not reverse a completed run | fake model and session integration tests |
 | CAP-MEM-OTEL | Attribute memory operations and nested model tokens/cost without content leaks | normal Harness telemetry configuration | Model errors and engine errors preserve parent-child spans and safe metadata | telemetry snapshot tests |

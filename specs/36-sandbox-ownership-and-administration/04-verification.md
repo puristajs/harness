@@ -14,8 +14,9 @@ definitions. Child tasks are isolated by default, including continuables; explic
 inherit/group shares files but never history. Shared child completion/cancellation
 does not terminate parent compute. Child override beats definition policy.
 Tests: `test/sandbox-sharing.test.ts`, `test/workflow-child-tasks.test.ts`,
-`type-tests/harness-typing.ts`. Unknown groups/legacy options fail compile and JS
-build validation; module composition retains literal groups and capabilities.
+`type-tests/harness-typing.ts`. Unknown groups and malformed options fail type
+checking and erased-input validation; direct and catalog composition retain
+literal groups and capabilities.
 
 ## ACC-SOWN-OWNER — identity, authorization, and lazy first use
 
@@ -132,47 +133,20 @@ From `ai-harness`: `npm run test --workspace @purista/harness`,
 `npm run verify:architecture`, `npm run verify:sandbox-packages`.
 From `purista`: scoped Vitest/TypeScript checks from ticket command records,
 `npm run audit:skills`, `npm run audit:knowledge`, and the public package smoke.
-No project dependency install/update, network fetch, provider write or publication
-is a default autonomous verification action. The isolated offline test-install
-exception below does not modify either repository's dependency tree or lockfile.
+No project dependency install/update, network fetch, provider write, or
+publication is a default autonomous verification action.
 
-## VERIFY-SOWN-PACKAGED-PURISTA — prerequisite and limits
+## VERIFY-SOWN-PACKAGED-PURISTA — package boundary
 
-The current PURISTA node_modules resolves Harness 1.7.3 despite its manifest
-declaring ^3.0.0. Running the existing framework typecheck against that install
-does not prove this contract. A test-infrastructure foundation must precede the
-atomic cutover: `ai-harness/scripts/check-purista-sandbox.mjs` with modes
-`--mode source`, `--mode consumer`, and `--mode docs`, plus hermetic runner tests.
+Build and pack the current Harness and PURISTA Core packages, install those
+tarballs into a clean scratch consumer, and compile and execute the focused
+mount/sandbox contract tests against public declarations and runtime exports.
+The consumer must resolve no source alias, workspace file dependency, shim, or
+previous published package. `skipLibCheck` is forbidden.
 
-The runner builds/packs the local Harness, stages a copy of Core sources and
-required repository configs in a uniquely created workspace-local scratch root,
-installs the actual Harness tarball there, and runs Core source compilation and
-the scoped AgentQueueBuilder tests against its public declarations/runtime.
-Core's existing self-reference within its own source build is retained; no alias,
-shim or symlink may resolve Harness to source. Consumer mode builds/packs staged
-Core and tests actual Core+Harness tarballs with strict external declarations and
-public runtime calls; no source aliases or skipLibCheck in that consumer. Docs
-mode uses the same packaged Harness binding for Core/API/website builds and the
-existing internal-link audit, preserving copied repository build conventions.
-
-All temporary roots and npm cache/output paths are under
-`ai-harness/.sandbox-verification/`, with unique per-run children. Read inputs
-from existing local package artifacts and an explicitly prepopulated offline
-cache; a missing cached dependency fails before attempting network. Test installs
-use `--offline --ignore-scripts --no-audit --no-fund` and an explicit workspace
-cache. Build scripts are invoked separately from the known local source snapshot.
-Remove only the exact scratch directory created by that invocation; retain
-failure evidence in the plan evidence directory. Never overwrite the developer's
-PURISTA node_modules, fake lockfile integrity, or fetch unpublished Harness 3.
-Bring the existing Harness/Docker package checker under the same scratch/cache
-rules before using it as a default workspace-only command.
-
-Source mode preserves the existing Core tsconfig settings; it does not lower
-them. Consumer mode must separately report current pre-existing strict external
-declaration failures: dev-only @types/sinon referenced by Core declarations and
-thread-stream's TransferListItem reference absent from the installed Node 26
-types. Those are explicit release prerequisites outside this sandbox refactor,
-not waived checks or permission to patch third-party dependencies/ambient types.
-Source behavior tickets may complete with valid source-mode proof; final release
-acceptance remains blocked until consumer mode passes under separately approved
-dependency/package remediation. No implementer chooses a dependency workaround.
+Temporary roots and npm cache/output paths stay under the repository-owned
+verification directory with unique per-run children. Missing cached dependencies
+or declaration failures are reported as blockers; verification never edits the
+developer's dependency tree or lockfile and never substitutes a compatibility
+type. Package proof covers the v4 Harness definition, `mountHarness`, inferred
+runtime configuration, borrowed-owner authorization, and shutdown behavior.

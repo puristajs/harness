@@ -427,8 +427,7 @@ acceptance:
       - ai-harness/packages/harness/test/tools.test.ts
       - ai-harness/packages/harness/test/harness.test.ts
       - ai-harness/packages/harness/test/workflow-delegation.test.ts
-      - ai-harness/packages/harness/test/static-modules.test.ts
-    expected_outcome: Helper/captured-map/native-plus-MCP/module registrations preserve exact schemas, registry keys and sandbox capabilities; transformed input/output crosses each parser once.
+    expected_outcome: Direct native and MCP definition references plus catalog composition preserve exact schemas, ids and sandbox capabilities; transformed input/output crosses each parser once.
   - acceptance_id: AC-GA-CALLBACKS-FAILURE
     requirement_ids:
       - REQ-GA-CALLBACKS
@@ -439,8 +438,7 @@ acceptance:
       - ai-harness/packages/harness/test/tools.test.ts
       - ai-harness/packages/harness/test/harness.test.ts
       - ai-harness/packages/harness/test/workflow-delegation.test.ts
-      - ai-harness/packages/harness/test/static-modules.test.ts
-    expected_outcome: Unknown fields, wrong handler output, files-only exec, unsafe narrow extracted callbacks and raw native objects in either registration form fail typechecking or config validation.
+    expected_outcome: Unknown fields, wrong handler output, files-only exec, unsafe narrow extracted callbacks and structural lookalikes fail typechecking or definition validation.
   - acceptance_id: AC-GA-CALLBACKS-RECOVERY
     requirement_ids:
       - REQ-GA-CALLBACKS
@@ -451,8 +449,7 @@ acceptance:
       - ai-harness/packages/harness/test/tools.test.ts
       - ai-harness/packages/harness/test/harness.test.ts
       - ai-harness/packages/harness/test/workflow-delegation.test.ts
-      - ai-harness/packages/harness/test/static-modules.test.ts
-    expected_outcome: Omitted agent/workflow schemas still default to string; reuse of registered definitions and canonical indexed callback types preserves inferred Harness return types.
+    expected_outcome: Omitted agent/workflow schemas still default to string; reuse of immutable definitions and canonical indexed callback types preserves inferred Harness return types.
   - acceptance_id: AC-GA-CONFIG-SUCCESS
     requirement_ids:
       - REQ-GA-CONFIG
@@ -486,7 +483,7 @@ acceptance:
       - ai-harness/packages/harness/test/build-validation.test.ts
       - ai-harness/packages/harness/test/agent-interceptors.test.ts
       - ai-harness/packages/harness/type-tests/harness-typing.ts
-    expected_outcome: Build validates declared model aliases/capabilities and agent-enabled configured tool IDs across direct, helper and static-module registrations.
+    expected_outcome: Definition compilation validates declared model aliases/capabilities and agent-selected tool IDs across direct and catalog composition.
   - acceptance_id: AC-GA-REQUIREMENTS-FAILURE
     requirement_ids:
       - REQ-GA-REQUIREMENTS
@@ -506,7 +503,7 @@ acceptance:
       - ai-harness/packages/harness/test/build-validation.test.ts
       - ai-harness/packages/harness/test/agent-interceptors.test.ts
       - ai-harness/packages/harness/type-tests/harness-typing.ts
-    expected_outcome: Models registered after agents succeed; builtin defaults/false use one resolver; dynamic turn narrowing still cannot expand permissions.
+    expected_outcome: Required model bindings supplied at instance creation succeed; built-in defaults/false use one resolver; dynamic turn narrowing still cannot expand permissions.
   - acceptance_id: AC-GA-ACTIONS-SUCCESS
     requirement_ids:
       - REQ-GA-ACTIONS
@@ -575,7 +572,7 @@ acceptance:
     verification_refs:
       - ai-harness/examples/guardrails/src/index.test.ts
       - ai-harness/scripts/check-decision-boundaries.mjs
-    expected_outcome: Public guides teach inline TypeScript configuration, actual phase values, direct aliases, selectors and the same build preflight path.
+    expected_outcome: Public guides teach inline TypeScript configuration, actual phase values, direct references, selectors and the same graph and instance preflight path.
   - acceptance_id: AC-GA-DOCS-FAILURE
     requirement_ids:
       - REQ-GA-DOCS

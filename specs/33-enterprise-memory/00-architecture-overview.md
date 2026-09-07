@@ -10,8 +10,8 @@ flowchart LR
   Scope --> Orchestrator[Core memory orchestrator]
   Orchestrator --> Engine[MemoryEngine]
   Engine --> DB[(in-memory SQLite PostgreSQL Redis or NATS)]
-  Orchestrator --> Registry[Existing model registry]
-  Registry --> Provider[Configured model provider adapter]
+  Orchestrator --> Models[Private compiled model bindings]
+  Models --> Provider[Configured model provider adapter]
   Orchestrator --> OTel[Harness telemetry]
   Session --> Storage[HarnessStorage]
 ```
@@ -42,7 +42,8 @@ flowchart LR
 
 1. Validate query and scope.
 2. Resolve the effective mode from explicit query mode or effective capabilities.
-3. For semantic or hybrid mode, create the query embedding through the model registry.
+3. For semantic or hybrid mode, create the query embedding through the agent's
+   compiled model binding.
 4. Execute engine text/vector search with tenant and principal constraints inside the query.
 5. Use engine-native hybrid search or core reciprocal-rank fusion.
 6. Return one normalized, deduplicated result list.
@@ -105,11 +106,11 @@ The engine packages belong to the AI Harness repository. PURISTA StateStore adap
 ## Failure edges
 
 - Wrong model capability: compile-time rejection and runtime validation.
-- Provider method absent: build failure before a memory operation.
+- Provider method absent: instance-configuration failure before a memory operation.
 - Embedding request fails: indexed write/search fails before engine mutation.
 - Index fingerprint or dimension differs: operation fails with reindex remediation; no silent new index and no semantic downgrade.
 - Text/vector capability missing for explicit search mode: operation fails before model or engine I/O.
-- `sqlite-vec` missing or native extension loading unsupported while `vector: true`: Harness build fails with the package/version or runtime remediation; text-only execution does not start silently.
+- `sqlite-vec` missing or native extension loading unsupported while `vector: true`: Harness instance creation fails with the package/version or runtime remediation; text-only execution does not start silently.
 - SQLite FTS5 unavailable: readiness fails because the engine cannot truthfully advertise text search.
 - NATS receives a relevance-search request: capability validation fails before NATS I/O. Enumeration remains bounded but is O(namespace keys), so it is not an analytics backend.
 - Summary refresh fails: completed run remains completed; visible diagnostics record the failed enrichment.

@@ -3,8 +3,8 @@ public_api_inventory:
   - contract_id: CTR-SS-SCHEMA
     source_ref: 03-contracts/schema-types.md#CTR-SS-SCHEMA
     owner: harness_schema
-  - contract_id: CTR-SS-BUILDERS
-    source_ref: 03-contracts/schema-types.md#CTR-SS-BUILDERS
+  - contract_id: CTR-SS-DEFINITIONS
+    source_ref: 03-contracts/schema-types.md#CTR-SS-DEFINITIONS
     owner: harness_runtime
   - contract_id: CTR-SS-VALIDATION
     source_ref: 03-contracts/runtime-validation.md#CTR-SS-VALIDATION
@@ -26,7 +26,7 @@ public_api_inventory:
     owner: consumers
 execution_semantics:
   validation: one awaited Standard Schema invocation followed by JsonValue assertion
-  model_projection: once at build using Standard JSON Schema input projection for draft-2020-12
+  model_projection: once during definition and graph compilation using Standard JSON Schema input projection for draft-2020-12
   compatibility: none; breaking replacement
   persistence: existing shapes; only validated JsonValue crosses the boundary
   providers: opaque JSON Schema pass-through

@@ -10,22 +10,20 @@ public_api_inventory:
     execution_semantics: First session creation persists the exact optional dimensions; every reopen compares exact presence and value before runtime resource access.
   - contract_id: CTR-MEM-MODEL-REF
     owner: harness_core
-    kind: type
-    name: MemoryModelReference
+    kind: definition_field
+    name: AgentMemoryModelSelection
     definition:
-      alias: literal key from the model map
-      capabilities: literal capabilities from the alias
-      brand: module-private unique symbol
-    execution_semantics: The builder callback creates frozen symbolic references and core resolves the alias through the existing model registry during build.
+      alias: literal model id selected by embedding or summary
+      required_capability: embeddings for embedding and object for summary
+    execution_semantics: Definition compilation contributes the selected alias and capability to RuntimeRequirements; instance creation requires the exact corresponding provider binding.
   - contract_id: CTR-MEM-CONFIG
     owner: harness_core
-    kind: builder
-    name: HarnessBuilder.memory
+    kind: definition_and_runtime_binding
+    name: AgentMemoryPolicy and HarnessInstanceConfig.memory
     definition:
-      direct: MemoryEngine
-      callback: function receiving model references and returning MemoryConfiguration
-      configuration_fields: engine, embedding, summary
-    execution_semantics: Direct engine composition enables engine-only features; callback composition validates model-reference and literal engine capabilities and creates one core MemoryAdapter. A statically KV-only engine rejects embedding configuration at typecheck; dynamically discovered database features are revalidated during build.
+      agent_fields: capabilities, embedding, summary
+      runtime_binding: MemoryEngine
+    execution_semantics: Agent policy declares behavior and model requirements; the runtime binding supplies only the engine. A statically incompatible engine is rejected by the exact instance config type and dynamically discovered database features are revalidated before resource initialization.
   - contract_id: CTR-MEM-ENGINE
     owner: harness_core
     kind: interface
@@ -36,7 +34,7 @@ public_api_inventory:
       required_operations: get, put, delete, list
       optional_operations: searchText, searchVector, searchHybrid, close
       list_options: prefix, limit, opaque cursor
-    execution_semantics: Core passes validated canonical records and scopes; put atomically updates the value and every supplied index representation. Factory literal capabilities drive builder type safety while runtime validation remains mandatory for injected/custom engines and database feature probes.
+    execution_semantics: Core passes validated canonical records and scopes; put atomically updates the value and every supplied index representation. Factory literal capabilities drive instance type safety while runtime validation remains mandatory for injected/custom engines and database feature probes.
   - contract_id: CTR-MEM-RECORD
     owner: harness_core
     kind: data_shape
@@ -90,7 +88,7 @@ public_api_inventory:
       defaults: vector false
       base_runtime: node:sqlite on Node.js and bun:sqlite on Bun
       vector_runtime: sqlite-vec 0.1.9 optional peer
-    execution_semantics: The engine requires FTS5, opens one local connection, applies a versioned schema, and commits canonical record plus FTS5 and optional sqlite-vec representations in one transaction. vector true explicitly permits initialization-time native extension loading and fails build when the peer or platform support is absent.
+    execution_semantics: The engine requires FTS5, opens one local connection, applies a versioned schema, and commits canonical record plus FTS5 and optional sqlite-vec representations in one transaction. vector true explicitly permits initialization-time native extension loading and fails instance creation when the peer or platform support is absent.
   - contract_id: CTR-MEM-NATS
     owner: nats_engine
     kind: factory
@@ -106,9 +104,9 @@ public_api_inventory:
     kind: runtime_binding
     name: AgentRuntimeOptions.memory
     definition:
-      memory: optional MemoryEngine or typed MemoryConfiguration factory compatible with the resolved model map
+      memory: optional MemoryEngine compatible with compiled Harness requirements
       identity_source: EBMessage tenantId and principalId
-    execution_semantics: PURISTA composes the memory definition after models and calls Harness getSession with identity from the validated message envelope.
+    execution_semantics: PURISTA supplies the memory engine while mounted definitions retain their own policy, then calls Harness getSession with identity from the validated message envelope.
 engine_capabilities:
   - memory.kv
   - memory.list

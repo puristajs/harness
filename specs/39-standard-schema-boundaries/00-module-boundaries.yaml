@@ -9,7 +9,7 @@ modules:
   - module_id: harness_runtime
     owner: harness_core
     public_entrypoint: '@purista/harness'
-    owned_concepts: [builders, agents, tools, workflows, sessions]
+    owned_concepts: [definitions, catalogs, harness composition, agents, tools, workflows, sessions]
     allowed_dependencies: [harness_schema]
     forbidden_dependencies: [consumers]
   - module_id: provider_adapters

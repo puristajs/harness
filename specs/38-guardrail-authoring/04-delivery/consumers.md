@@ -39,14 +39,14 @@ card deletion or route rewrite is authorized. Preserve routes, navigation,
 styling, existing component ownership and accessibility.
 
 Use `web/src/data/guardrails-content.ts` for the five phase descriptions and
-inline configuration/build guarantees shared by the page, diagram and Markdown
+inline configuration/compilation guarantees shared by the page, diagram and Markdown
 projection. This is content reuse, not a new site renderer. Handwritten guide
 narrative can differ, but cannot redefine the option schema or lifecycle. Add
 focused assertions to existing `scripts/knowledge-audit.mjs` for
 phase/projection agreement and removed API names. Canonical
 `purista/skills/purista/references/05-ai-harness-runtime.md`, its relevant
 `11-evaluation-scenarios.md` acceptance scenarios, and package overlays follow
-the builder/helper usage and inline-only configuration boundary. Use existing
+the direct-definition usage and inline-only configuration boundary. Use existing
 skill sync/generation scripts, then audit; do not hand-edit generated copies.
 
 ## CTR-GA-CLEANUP

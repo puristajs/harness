@@ -1,6 +1,10 @@
 # Definition readiness review — 2026-08-26
 
-Scope: one inline configuration schema, sound action/codec construction, declarative build preflight, native callback/schema inference, public docs/skills/website and clean consumer alignment. The owner later approved removal of the alternate configuration surface; TICKET-002 must be reimplemented before dependent work. Final scoped manifest binds that authority, not an approval inherited from spec37.
+Scope: one inline configuration schema, sound action/codec construction,
+declarative graph preflight, native callback/schema inference, public
+docs/skills/website, and clean consumer alignment. The v4 definition contract in
+spec 42 supersedes the earlier registration shape while retaining these
+Guardrail behaviors.
 
 Three independent read-only reviewers inspected current source and the proposed contracts: governance/action binding; callback/type inference; documentation/consumers. Root integrated their evidence and walked source contracts, traceability, NFR/operations, reuse/generation and ticket handoff. No reviewer implemented source changes.
 
@@ -13,8 +17,8 @@ Three independent read-only reviewers inspected current source and the proposed 
 | Action/binding | Prepared callback could miss action-local signal | Thunk accepts canonical DecisionExecutionContext from the bounded executor |
 | Action/binding | Error constructors/overloads incompletely frozen | Exact schemas, constructor, reasons, mappings and four overload cases |
 | Action/binding | modelCheckRail ownership split ambiguous | T004 token construction; T005 projection/aggregation; T002 direct aliases |
-| Callback | Heterogeneous registry could not satisfy blanket erasure prohibition | Narrow existing runtime-storage exception behind generic construction/CheckedTools |
-| Callback | Spread could invalidate schema/handler relationship | Mapped registration check of each entry's own schemas |
+| Callback | Heterogeneous runtime projection could not satisfy blanket erasure prohibition | Keep the exception private behind generic definition construction and checked dependency closure |
+| Callback | Composition could invalidate schema/handler relationship | Check each direct definition's own schemas |
 | Callback | Model-facing schema projection used wrong side | Explicit input JSON Schema projection and transform-count tests |
 | Callback | Missing living-wiki factory and error representation | Exact source scope/factory change and closed error metadata/serialization mapping |
 | Docs | Generation repaired stale files before checking | Core compile then addon compile-only/check before full generation |

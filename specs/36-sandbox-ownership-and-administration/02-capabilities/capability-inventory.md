@@ -5,7 +5,7 @@ topology and sharing mode never enter AdapterCapability.
 
 | ID | Consumer and entrypoint | Contract | Lifecycle and proof |
 | --- | --- | --- | --- |
-| CAP-SOWN-POLICY | Definition author; builder and childTasks.start | CTR-SOWN-POLICY | Resolve partition; ACC-SOWN-POLICY |
+| CAP-SOWN-POLICY | Definition author; agent/workflow policy and childTasks.start | CTR-SOWN-POLICY | Resolve partition; ACC-SOWN-POLICY |
 | CAP-SOWN-OWNER | Standalone application; getSession/open | CTR-SOWN-OWNER, CTR-SOWN-OPEN | Register, authorize, lazily allocate; ACC-SOWN-OWNER |
 | CAP-SOWN-DURABLE | Durable runtime; checkpoint/resume | CTR-SOWN-WORKSPACE | Quiesce, pin, commit, restore; ACC-SOWN-DURABLE |
 | CAP-SOWN-ADMIN | Trusted operator; adapter.administration | CTR-SOWN-ADMIN | Inventory, revoke, retry purge; ACC-SOWN-ADMIN |

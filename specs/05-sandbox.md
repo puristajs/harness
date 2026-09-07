@@ -90,14 +90,26 @@ harness, not separately on every sandbox adapter.
 ## Locked behaviors
 
 - **Capabilities are policy.** Each sandbox declares the behavior the harness and user code may rely on. `sandbox.text_search` exposes `searchText(...)` independently of `sandbox.exec`; bounded read-only search never grants arbitrary execution.
-- **Cascaded inference.** Register `.sandbox(adapter)` before `.tools(...)`; tool-handler `ctx.sandbox` inherits its precise capability tuple, including text search, exec, and spawn when declared. Subsequent builder calls and `.use(module)` preserve the tuple. Auto-detection and widened capability arrays expose only guaranteed base operations; narrow with `isTextSearchCapableSession`, `isExecCapableSession`, or `isSpawnCapableSession`. Duplicate sandbox registration fails during configuration.
+- **Definition-first inference.** A portable tool declares its required sandbox
+  capabilities through `defineTool(...)`; agents and workflows reference tools
+  directly and may add a sandbox policy. The compiled graph retains the exact
+  capability tuple. `getInstance({ sandbox, sandboxBinding })` accepts only a
+  binding that satisfies those requirements. Dynamically widened adapters expose
+  only guaranteed base operations; narrow with `isTextSearchCapableSession`,
+  `isExecCapableSession`, or `isSpawnCapableSession`.
 - **Path semantics.** All paths are POSIX style, absolute (must start with `/`). Implementations validate and normalize. Relative paths throw `SandboxError{reason:'invalid_path'}`.
 - **Reserved paths inside the sandbox** (locked, conventions enforced by the harness, not the backend):
   - `/skills/<id>/...` — skill mounts; read-only by convention.
-  - `/memory/session/<key>.json` and `/memory/runs/<runId>/<key>.json` — default `sandboxMemory()` adapter files.
+  - `/memory/` — optional application workspace data only; Harness memory engines
+    do not use sandbox files as their persistence contract.
   - `/workspace/` — free model scratch; default `cwd` for `exec`.
 - **Timeouts.** `exec` honors `opts.timeoutMs` (default `defaults.toolTimeoutMs`); on timeout throws `OperationTimeoutError{scope:'sandbox_run'}`.
-- **`executor === 'unavailable'`.** Indicates this sandbox session has no shell executor. Precise files-only session types do not expose `exec`; dynamically widened sessions that still call `exec` fail with `SandboxNoExecutorError`. The built-in tool registry checks this and disables `bash` automatically; see [07-tools](./07-tools.md) §"Built-in tools".
+- **`executor === 'unavailable'`.** Indicates this sandbox session has no shell
+  executor. Precise files-only session types do not expose `exec`; dynamically
+  widened sessions that still call `exec` fail with `SandboxNoExecutorError`.
+  Selecting the built-in `bash` tool contributes `sandbox.exec`; graph and
+  instance validation reject an incompatible binding before execution. See
+  [07-tools](./07-tools.md) §"Built-in tools".
 - **Text-search semantics.** Requests use an absolute POSIX path without traversal segments and a single-line pattern without NUL/CR/LF. `safe_regex_v1` is a case-sensitive, ASCII-pattern, versioned non-backtracking POSIX-ERE-style subset: literals, `.`, character classes, grouping, alternation, `^`/`$`, and repetition. Backreferences, lookaround, inline flags, named groups, shorthand character classes, recursion, conditionals, Unicode property escapes, and engine-specific extensions are invalid. `literal` performs substring search; with `caseSensitive: false` it folds ASCII `A-Z` only so behavior remains stable across local, container, and remote engines.
 - **Truthful bounds.** Exhausting or skipping a pattern, result, file, aggregate-byte, file-count, or returned-line bound returns `complete: false` with stable `limitReasons`. Timeout and cancellation throw typed operation errors and never return a successful partial result.
 - **Data locality.** Container and remote adapters execute matching where their files live. They must not copy every candidate file through `readText(...)` into Harness. Pattern and path are data, never model-built shell text.
@@ -148,7 +160,10 @@ interface HibernateCapableSandbox {
 }
 ```
 
-`sandbox.snapshot`, `sandbox.resume`, `sandbox.hibernate`, and `sandbox.persistent_fs` are opt-in adapter capabilities. Harness construction fails early when `.requires(...)` names a capability the configured adapters do not provide.
+`sandbox.snapshot`, `sandbox.resume`, `sandbox.hibernate`, and
+`sandbox.persistent_fs` are opt-in adapter capabilities. Definition requirements
+compile into the graph, and instance creation fails before initialization when
+the supplied adapter does not provide them.
 
 These capabilities describe low-level sandbox session behavior only. They do
 not imply production durable replay, retention, encryption, cleanup, or quota
@@ -292,8 +307,8 @@ interface SpawnCapableSandboxSession extends SandboxSessionBase {
 
 Locked behavior:
 
-- `sandbox.spawn` is an opt-in adapter capability gated by `.requires(...)` like
-  the snapshot capabilities. A session that advertises `sandbox.spawn` exposes
+- `sandbox.spawn` is an opt-in adapter capability contributed by a referencing
+  definition like the snapshot capabilities. A compatible session exposes
   `spawn`; sessions without it expose only `exec` (or no executor).
 - A spawned process is owned by the sandbox session. `session.close()` MUST
   terminate every process the session spawned. The host process is never the
@@ -327,9 +342,13 @@ read-only root and writable data mapping for the owning session only. See
 [29-agent-plugins](./29-agent-plugins.md) for the first consumer and its
 Windows/Linux containment requirements.
 
-### Auto-detect
+### Runtime binding
 
-If the user calls `.sandbox()` with no argument or omits `.sandbox()` entirely, the harness auto-detects: tries `bashSandbox()` first and falls back to `inMemorySandbox()` only when the optional peer is absent. Configuration or initialization failures surface normally. Auto-detection does not promise an executor to TypeScript. This auto-detect is locked in [02-harness-config](./02-harness-config.md) §`.sandbox(...)`.
+Harness does not auto-detect or silently grant a sandbox. A graph without
+sandbox requirements forbids `sandbox` and `sandboxBinding` at instance
+creation. A graph with sandbox requirements requires an explicit compatible
+adapter. `inMemorySandbox()` and `bashSandbox()` remain explicit application
+choices; configuration and initialization failures surface normally.
 
 ## Local durable sandbox
 

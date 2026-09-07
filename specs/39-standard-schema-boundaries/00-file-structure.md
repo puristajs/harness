@@ -7,7 +7,7 @@
 | `packages/harness/src/schema/index.ts` | Public `Schema`, `ModelSchema`, `Infer`, `InferIn`; internal async validation and model projection helpers may be re-exported from private sibling files only. |
 | `packages/harness/src/schema/validation.ts` | Single Standard Schema invocation, JSON assertion, privacy-safe issue/error mapping. |
 | `packages/harness/src/schema/json-schema.ts` | Standard JSON Schema input projection, Draft 2020-12 selection, JSON validation, deep freeze. |
-| `packages/harness/src/harness/defineHarness.ts` | Schema-first definitions/builders, private compiled runtime definitions, exact nested inference. |
+| `packages/harness/src/definitions/` and `packages/harness/src/harness/` | Schema-first factories, immutable composition, private compiled runtime graph, exact nested inference. |
 | `packages/harness/src/agents/index.ts` | Agent validation and consumption of cached model schemas; no vendor conversion. |
 | `packages/harness/src/agents/tool-execution.ts` | Tool input/output validation using shared helper. |
 | `packages/harness/src/workflows/index.ts` | Workflow input/output validation using shared helper. |

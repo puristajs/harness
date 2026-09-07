@@ -12,13 +12,14 @@ development, and single-host Node.js/Bun deployments:
 ```ts
 const local = localDurableExecution({ root: '.purista/local' })
 
-const harness = defineHarness()
-  .storage(local.storage)
-  .sandbox(local.sandbox)
-  .workspace(local.workspace)
-  .models(models)
-  .workflows(workflows)
-  .build()
+const definition = defineHarness({ name: 'localDurable' })
+  .addWorkflow(durableWorkflow)
+
+const runtime = await definition.getInstance({
+  storage: local.storage,
+  sandbox: local.sandbox,
+  workspace: local.workspace,
+})
 ```
 
 It combines one native SQLite `HarnessStorage`, one host-directory

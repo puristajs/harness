@@ -29,19 +29,18 @@ interface SessionOptions {
 }
 ```
 
-Builder: `.sandbox(adapter, options?)`, preserving the exact capability tuple of
-`adapter` and literal `groups`. Keep the existing zero-argument `.sandbox()` as
-auto-detection, equivalent to absent binding options; it is not a second port.
-`AgentDefinition`, resolved agent-definition types, `WorkflowDefinition`, and
-`ChildTaskStartOptions` add `sandbox?: SandboxPolicy<ConfiguredGroups<S>>`.
+`getInstance({ sandbox, sandboxBinding })` preserves the exact capability tuple
+of `sandbox` and literal `groups`. There is no zero-argument form and no
+auto-detection. `AgentDefinition`, `WorkflowDefinition`, and
+`ChildTaskStartOptions` accept `sandbox?: SandboxPolicy<ConfiguredGroups>`.
 `getSession(id, options?: SessionOptions)` replaces the bare identity argument.
 The callback is runtime composition only and is not serialized into manifests.
 
 Group IDs: nonempty ASCII `[a-zA-Z][a-zA-Z0-9_.-]{0,63}`, at most 64 configured
 groups, no duplicates. Closed schemas reject unknown properties and unknown group
-values. Module definitions consume the host's group vocabulary; modules cannot
-register another adapter or silently widen group literals to `string`. Static
-module ID-prefixing affects private definition IDs, not explicitly named groups.
+values. Catalog composition preserves the graph's group requirements without
+registering another adapter or silently widening group literals to `string`.
+Explicitly named groups are application runtime values and are never prefixed.
 
 ## CTR-SOWN-OWNER
 

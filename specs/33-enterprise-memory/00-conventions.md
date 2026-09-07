@@ -8,37 +8,50 @@
 - Core composition result: `MemoryAdapter`.
 - Engine-package factories: `sqliteMemoryEngine`, `postgresMemoryEngine`, `redisMemoryEngine`, and `natsMemoryEngine`.
 - Local factory: `inMemoryMemoryEngine`.
-- Typed configuration helper: singular `model`, producing `model.<alias>` symbolic references.
+- Agent memory policy: direct model alias names inside `embedding` and `summary`.
 - Optional features: `embedding` and `summary`; no `profile`, provider id, strategy id, or duplicate alias string.
 
 `user`, `userId`, `sandboxMemory`, `memory.search`, and arbitrary adapter-owned orchestration are removed from the revised public memory contract. There are no aliases or compatibility re-exports.
 
-## Builder conventions
+## Definition and runtime conventions
 
-The builder supports exactly these forms:
+Memory behavior belongs to the agent definition; the concrete engine belongs to
+instance configuration:
 
 ```ts
-defineHarness().models(models).memory(engine)
+const assistant = defineAgent('assistant', {
+  memory: {
+    capabilities: ['memory.kv', 'memory.vector_search'],
+    embedding: { model: 'embeddings' },
+  },
+})
 
-defineHarness().models(models).memory(({ model }) => ({
-  engine,
-  embedding: model.embeddingAlias,
-  summary: model.summaryAlias,
-}))
+const definition = defineHarness({ name: 'support' }).addAgent(assistant)
+const runtime = await definition.getInstance({
+  model: { provider, model: 'chat-model' },
+  models: { embeddings: { provider, model: 'embedding-model' } },
+  memory: engine,
+})
 ```
 
-The callback is required only when a memory feature references a model alias. A plain configuration object is not accepted because it would force strings or untyped handles. Duplicate `.memory(...)` calls fail with the existing duplicate-adapter error pattern.
+The compiled definition derives the exact engine capabilities and model aliases.
+`getInstance(...)` requires the engine only when those needs exceed the baseline
+default and rejects missing or extra model bindings through its exact config
+type. One instance accepts at most one memory engine.
 
 ## Default conventions
 
-- Omitted `.memory(...)`: `inMemoryMemoryEngine()` composed by core.
+- Omitted runtime `memory`: `inMemoryMemoryEngine()` composed by core when it
+  satisfies the graph.
 - Plain engine: key/value, list, delete, TTL, and engine-native text search only.
 - `sqliteMemoryEngine({ file })`: durable local KV, list, TTL, and FTS5 with no third-party runtime dependency. `vector` defaults to `false`.
 - `sqliteMemoryEngine({ file, vector: true })`: additionally requires `sqlite-vec` `0.1.9` and enables exact vector search. The option is explicit because it loads native extension code.
 - `natsMemoryEngine({ servers })`: defaults the bucket to `purista-harness-memory-v1`, creates it when absent, and supports KV/list/delete/lazy TTL only. It never advertises text, semantic, or hybrid search.
 - `embedding` omitted: no embedding calls and no semantic index.
 - `summary` omitted: no summary calls.
-- `embedding: model.<alias>`: dimensions initialize atomically from the first successful vector. An advanced `{ model, dimensions }` form pins and validates dimensions before engine write.
+- `embedding: { model: '<alias>' }`: dimensions initialize atomically from the
+  first successful vector. An advanced `{ model, dimensions }` form pins and
+  validates dimensions before engine write.
 - Search mode omitted: `hybrid` when text and semantic search are effective, `semantic` when only semantic search is effective, and `text` when only text search is effective.
 - Hybrid fusion: core reciprocal-rank fusion with constant `60`, unless the engine advertises native hybrid search.
 - String writes are indexed when an indexing capability is effective. Structured JSON is not indexed without `index: { text }`.
@@ -46,11 +59,14 @@ The callback is required only when a memory feature references a model alias. A 
 
 ## Type conventions
 
-- `model.<alias>` is a frozen branded data reference, never an active model handle.
-- `MemoryEngine<Capabilities>` preserves each factory's readonly literal capability tuple. The memory configuration type accepts `embedding` only when that tuple contains `memory.vector_search`; a base SQLite or NATS engine therefore rejects embedding configuration at typecheck. Custom engines with widened/dynamic capabilities are also validated during Harness build.
-- `embedding` accepts only a reference whose alias includes `embeddings`.
-- `summary` accepts only a reference whose alias includes `object`.
-- Literal model maps flow through the existing `const` builder generic.
+- Model selections are immutable alias values, never active model handles.
+- `MemoryEngine<Capabilities>` preserves each factory's readonly literal
+  capability tuple. A graph declaring vector search requires a compatible
+  engine; base SQLite or NATS bindings are rejected. Custom engines with
+  widened/dynamic capabilities are validated before initialization.
+- `embedding` contributes `embeddings` to the selected alias requirement.
+- `summary` contributes `object` to the selected alias requirement.
+- Literal aliases flow through definition and instance const generics.
 - Public boundaries use closed TypeScript interfaces and `JsonValue`; `any`, `Record<string, unknown>`, and duplicated vendor representations are forbidden at public and persistence boundaries.
 - Vendor packages import owner types from `@purista/harness` and export only their own engine options, factory, and package-specific diagnostics.
 - The PostgreSQL package's PGlite executor is test-private. It is not exported, re-exported, or accepted by the public factory.

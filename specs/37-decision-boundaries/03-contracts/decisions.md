@@ -18,7 +18,7 @@ The recoverable denial constructors use the same evidence projection: `Permissio
 
 ## CTR-DB-LIFECYCLE — one bounded callback executor
 
-Public `DecisionExecutionContext` is `{signal: AbortSignal, deadline: number}` where deadline is epoch milliseconds. Public `runDecisionOperation<T>(context, operation)` invokes `operation(signal)` at most once and resolves its value, throws the normalized parent cancellation/timeout, or throws the existing `OperationTimeoutError` with scope `decision` on its own elapsed deadline. Add `decision` to that error's scope union; do not add a timer-specific error class. The owning decision boundary converts a decision-scoped timeout into `DecisionEvaluationError(callback_timeout)`. No invocation occurs if the signal is already aborted or deadline has passed. Deadline must be finite; invalid configuration rejects at build/compile time. The helper relays abort to a child controller, races non-cooperative callbacks, suppresses late resolution/rejection from continuation, and clears its timers and listeners on every exit. No callback retries occur in this helper.
+Public `DecisionExecutionContext` is `{signal: AbortSignal, deadline: number}` where deadline is epoch milliseconds. Public `runDecisionOperation<T>(context, operation)` invokes `operation(signal)` at most once and resolves its value, throws the normalized parent cancellation/timeout, or throws the existing `OperationTimeoutError` with scope `decision` on its own elapsed deadline. Add `decision` to that error's scope union; do not add a timer-specific error class. The owning decision boundary converts a decision-scoped timeout into `DecisionEvaluationError(callback_timeout)`. No invocation occurs if the signal is already aborted or deadline has passed. Deadline must be finite; invalid configuration rejects during definition or graph compilation. The helper relays abort to a child controller, races non-cooperative callbacks, suppresses late resolution/rejection from continuation, and clears its timers and listeners on every exit. No callback retries occur in this helper.
 
 Core and addon must use this one helper for interceptors, native predicates, exposure predicates, external policies, audit, and rail actions. Approval does not await a callback: it checkpoints and interrupts the run. Existing `runtime/abort.ts` remains the canonical cancellation error classifier and is reused internally by the helper, not copied.
 
@@ -30,7 +30,16 @@ Interceptors receive the actual step, selected model, and effective parsed agent
 
 ## CTR-DB-GOVERNANCE — durable tool approval interruption
 
-Retain the `GovernanceConfig` semantics, native/rule/adapter/exposureRule helpers, default deny for unmatched execution policies, and effect precedence `deny > require_approval > audit > allow`. Spec 42 moves the former late Harness-builder input to the closed `governance` field of `defineAgent`; the removed Harness builder and its `.governance(...)` method are not compatibility APIs in v4. Governance is therefore scoped and typed to the exact tools selected by that agent. `shadow` evaluates/records governance decisions without hiding, denying, or interrupting for governance effects. Coarse agent permissions remain enforced even in shadow mode. Exposure-only configuration never applies execution `defaultEffect` when no execution policies exist.
+Retain the `GovernanceConfig` semantics, native/rule/adapter/exposureRule
+helpers, default deny for unmatched execution policies, and effect precedence
+`deny > require_approval > audit > allow`. Spec 42 replaces the former
+Harness-global policy input with the closed `governance` field of
+`defineAgent`. No compatibility API remains. Governance is scoped and typed to
+the exact tools selected by that agent. `shadow` evaluates/records governance
+decisions without hiding, denying, or interrupting for governance effects.
+Coarse agent permissions remain enforced even in shadow mode. Exposure-only
+configuration never applies execution `defaultEffect` when no execution
+policies exist.
 
 Replace `PermissionMode` with `allow|require_approval|deny`; remove `ask`, `onPermission`, `OnPermission`, `PermissionContext`, and `PermissionDecision`. Preserve existing bash/write/edit allow/deny pattern semantics and default allow. Read-only built-ins remain subject to allowlisting/exposure/governance but cannot be denied through `AgentPermissions`. A permission `require_approval` is collected with governance approval demands, not executed as a separate callback. Any effective permission/policy deny prevents approval. Exactly one approval request covers all remaining approval demands for a tool occurrence. Permission-derived evidence uses source `{kind:'permission',id:canonicalToolId}`.
 

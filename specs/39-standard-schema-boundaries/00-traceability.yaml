@@ -48,19 +48,19 @@ paths:
     capability_ids: [CAP-SS-TYPES]
     requirement_ids: [REQ-SS-TYPES]
     kind: success
-    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-DEFINITIONS]
     acceptance_ids: [AC-SS-TYPES-SUCCESS]
   - path_id: PATH-SS-TYPES-FAILURE
     capability_ids: [CAP-SS-TYPES]
     requirement_ids: [REQ-SS-TYPES]
     kind: validation_failure
-    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-DEFINITIONS]
     acceptance_ids: [AC-SS-TYPES-FAILURE]
   - path_id: PATH-SS-TYPES-RECOVERY
     capability_ids: [CAP-SS-TYPES]
     requirement_ids: [REQ-SS-TYPES]
     kind: recovery
-    contract_refs: [CTR-SS-SCHEMA, CTR-SS-BUILDERS]
+    contract_refs: [CTR-SS-SCHEMA, CTR-SS-DEFINITIONS]
     acceptance_ids: [AC-SS-TYPES-RECOVERY]
   - path_id: PATH-SS-VALIDATION-SUCCESS
     capability_ids: [CAP-SS-VALIDATION]
@@ -187,7 +187,7 @@ acceptance:
     requirement_ids: [REQ-SS-PROJECTION]
     path_ids: [PATH-SS-PROJECTION-SUCCESS]
     verification_refs: [ai-harness/packages/harness/src/schema/json-schema.test.ts]
-    expected_outcome: Draft 2020-12 input projection is frozen and cached once at build.
+    expected_outcome: Draft 2020-12 input projection is frozen and cached once during definition and graph compilation.
   - acceptance_id: AC-SS-PROJECTION-FAILURE
     requirement_ids: [REQ-SS-PROJECTION]
     path_ids: [PATH-SS-PROJECTION-FAILURE]
@@ -197,7 +197,7 @@ acceptance:
     requirement_ids: [REQ-SS-PROJECTION]
     path_ids: [PATH-SS-PROJECTION-RECOVERY]
     verification_refs: [ai-harness/packages/harness/test/build-validation.test.ts]
-    expected_outcome: Corrected schema rebuilds without a partial prior Harness.
+    expected_outcome: Corrected schema produces a fresh definition without a partial prior Harness graph.
   - acceptance_id: AC-SS-PROVIDERS-SUCCESS
     requirement_ids: [REQ-SS-PROVIDERS]
     path_ids: [PATH-SS-PROVIDERS-SUCCESS]

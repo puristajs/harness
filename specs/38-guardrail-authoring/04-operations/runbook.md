@@ -1,7 +1,8 @@
 # Operational contract
 
 Before serving: construct actions/providers/detectors, pass the inline policy to
-`defineGuardrails`, attach definitions, and complete `.build()`. On invalid
+`defineGuardrails`, attach it to an agent definition, compose the Harness, and
+complete `getInstance(...)`. On invalid
 configuration fail startup with the safe config error; correct the application
 composition and rebuild. Do not accept traffic with missing/disabled required
 rails.

@@ -6,7 +6,7 @@ Requirement: REQ-DB-FOUNDATION. Owner: Harness maintainer. Actor: SDK author and
 
 ## CAP-DB-GOVERNANCE
 
-Requirement: REQ-DB-GOVERNANCE. Owner: Harness maintainer. Actor: application policy adapter. SDK entrypoint: `HarnessBuilder.governance and agent permissions`. Outcome: One approved effective demand executes one tool. Contract refs: CTR-DB-GOVERNANCE, CTR-DB-IDENTITY. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `ai-harness/packages/harness/test/governance.test.ts`.
+Requirement: REQ-DB-GOVERNANCE. Owner: Harness maintainer. Actor: application policy adapter. SDK entrypoint: `defineAgent(...).governance and agent permissions`. Outcome: One approved effective demand executes one tool. Contract refs: CTR-DB-GOVERNANCE, CTR-DB-IDENTITY. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `ai-harness/packages/harness/test/governance.test.ts`.
 
 ## CAP-DB-PROVIDERS
 

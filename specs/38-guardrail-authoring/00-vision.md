@@ -41,9 +41,9 @@ explicitly excluded.
 ## Outcomes
 
 Developers author a small, checked configuration next to their actions, see
-action/phase errors during typechecking, reject registry mistakes before
+action/phase errors during typechecking, reject definition-reference mistakes before
 requests, and understand which runtime validation is still necessary.
-Maintainers own one shape per concept, one decision lifecycle, one registry
+Maintainers own one shape per concept, one decision lifecycle, one private runtime index
 validator and one phase-content source per website projection.
 
 Universal Zod compatibility, arbitrary callback dependency discovery, provider

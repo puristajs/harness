@@ -22,25 +22,22 @@ process, network, or MCP execution.
 ## 2. Public configuration
 
 ```ts
-const harness = defineHarness()
-  .storage(storage)
-  .sandbox(sandbox)
-  .workspace(workspace)
-  .requires([
-    'storage.checkpoint',
-    'storage.workspace_checkpoint',
-    'workspace.durable',
-    'workspace.checkpoint',
-    'workspace.resume'
-  ])
-  .models(models)
-  .workflows(workflows)
-  .build()
+const durableWorkflow = defineWorkflow('durableWorkflow', {
+  durable: true,
+  workspace: true,
+  handler: async ctx => ctx.input,
+})
+
+const definition = defineHarness({ name: 'durableWork' })
+  .addWorkflow(durableWorkflow)
+
+const runtime = await definition.getInstance({ storage, workspace })
 ```
 
-The builder method is `.workspace(DurableWorkspace)`. It is optional and may
-be called once. Durable structured execution without files requires only
-`HarnessStorage`; adding a durable workspace requires both contracts.
+`workspace: true` on an agent or workflow declares the need. The compiled graph
+then requires exactly one `DurableWorkspace` binding at `getInstance(...)`.
+Durable structured execution without files requires only `HarnessStorage`;
+declaring a durable workspace requires both contracts.
 
 ## 3. Contract
 

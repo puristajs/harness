@@ -19,6 +19,9 @@ type ModelCapability =
   | 'file_input'
   | 'embeddings'
   | 'rerank'
+  | 'image_generation'
+  | 'speech_generation'
+  | 'video_generation'
 ```
 
 `tool_use`, `vision_input`, `audio_input`, and `file_input` are marker
@@ -40,10 +43,9 @@ aliases during migration, but public docs, exports, examples, and type tests use
 ## Alias config
 
 ```ts
-interface ModelAlias {
+interface ModelRuntimeBinding {
   provider: ModelProvider
   model: string
-  capabilities: readonly ModelCapability[]
   defaults?: ModelDefaults
   retry?: ModelRetrySetting             // default true
   /** Free-form provider-specific options, passed to the provider unchanged. */
@@ -62,9 +64,24 @@ interface ModelDefaults {
 }
 ```
 
-Aliases are registered via repeatable `defineHarness().model(id, definition)`
-or `.models({...})` calls. Each key is the
-alias id referenced by agents (`AgentDefinition.model`) and workflow handlers.
+Definitions name model aliases and thereby compile the exact required capability
+set. Agents use `model` (`'primary'` by default); workflows declare additional
+aliases in their `models` map. Providers and concrete model names are supplied
+only at instance creation. The `primary` alias uses singular `model`; every
+non-primary alias uses the exact `models` record beside it:
+
+```ts
+const runtime = await definition.getInstance({
+  model: { provider, model: 'chat-model' },
+  models: {
+    embeddings: { provider, model: 'embedding-model' },
+  },
+})
+```
+
+The caller does not repeat `capabilities`. Harness injects the frozen capability
+tuple compiled from the graph and validates it against provider methods and,
+when available, provider feature metadata before initializing runtime resources.
 
 ## Provider feature descriptor
 
@@ -89,7 +106,14 @@ interface ModelFeatureSet {
 }
 
 type ContentPartKind = 'text' | 'image' | 'audio' | 'file'
-type OutputMode = 'text' | 'object' | 'embedding' | 'rerank'
+type OutputMode =
+  | 'text'
+  | 'object'
+  | 'embedding'
+  | 'rerank'
+  | 'image'
+  | 'speech'
+  | 'video'
 ```
 
 Provider descriptors may be included in `harness.inspect()` output.
@@ -171,6 +195,10 @@ interface ModelProvider {
 
   embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
   rerank?(req: RerankRequest): Promise<RerankResponse>
+  image?(req: ImageRequest): Promise<ImageResponse>
+  speech?(req: SpeechRequest): Promise<SpeechResponse>
+  video?(req: VideoRequest): Promise<VideoResponse>
+  videoStream?(req: VideoRequest): AsyncIterable<VideoStreamChunk>
 
   close?(): Promise<void>
 }
@@ -185,6 +213,10 @@ abstract class BaseModelProvider implements ModelProvider {
   objectStream<T = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
   embed(req: EmbeddingRequest): Promise<EmbeddingResponse>
   rerank(req: RerankRequest): Promise<RerankResponse>
+  image(req: ImageRequest): Promise<ImageResponse>
+  speech(req: SpeechRequest): Promise<SpeechResponse>
+  video(req: VideoRequest): Promise<VideoResponse>
+  videoStream(req: VideoRequest): AsyncIterable<VideoStreamChunk>
 }
 ```
 
@@ -504,7 +536,7 @@ not support them.
 
 ## Cross-references
 
-- [02-harness-config](./02-harness-config.md) — `.model(...)` and `.models(...)` builder methods.
+- [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md) — model requirements and additive runtime bindings.
 - [09-agents](./09-agents.md) — how the default loop accesses models.
 - [12-streaming](./12-streaming.md) — `RunEvent` variants for model operations.
 - [14-otel-conventions](./14-otel-conventions.md) — GenAI spans and metrics.

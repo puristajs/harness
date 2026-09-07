@@ -20,8 +20,8 @@ stack without coupling standalone Harness packages to PURISTA Core:
 2. `@purista/harness-sandbox-kubernetes` implements the existing `Sandbox`
    contract and returns a coordinated `DurableWorkspace` when durable files
    are enabled.
-3. One PURISTA service instance constructs one shared Harness runtime for all
-   attached agents and workflows, then shuts it down exactly once.
+3. One PURISTA service instance constructs one shared Harness runtime for its
+   mounted roots and private dependency closure, then shuts it down exactly once.
 4. One runnable PURISTA example proves Docker Compose development and
    Kubernetes production deployment from the same application composition.
 
@@ -44,11 +44,15 @@ const execution = kubernetesSandboxRuntime({
   workspace: true,
 })
 
-const service = await serviceBuilder.getInstance(eventBridge, {
+const mountedService = serviceBuilder.mountHarness(productionHarness)
+
+const service = await mountedService.getInstance(eventBridge, {
   ai: {
-    models,
+    model: models.primary,
+    models: models.additional,
     storage,
     sandbox: execution.sandbox,
+    sandboxBinding: sandboxOptions,
     workspace: execution.workspace,
   },
 })
@@ -138,13 +142,14 @@ optional adapter.
 
 ## 6. PURISTA lifecycle and application boundary
 
-The existing `AgentQueueBuilder` integration is the only Framework bridge:
+`ServiceBuilder.mountHarness(...)` is the only Framework bridge:
 
-- one service-local runtime registry collects all attached agents, workflows,
-  workflow-local agents, models, tools, skills, governance, and telemetry;
+- one private service-local runtime index contains mounted root agents and
+  workflows plus their recursively referenced tools, Skills, MCP servers, and
+  child agents;
 - application code supplies adapter instances once through
   `service.getInstance(..., { ai })`; it does not construct the Harness itself;
-- model aliases remain definition-local while private registry ids prevent
+- model aliases remain definition-local while private compiled keys prevent
   collisions inside the shared Harness;
 - validated PURISTA tenant/principal and trace context project into each
   Harness invocation;

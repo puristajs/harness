@@ -15,7 +15,7 @@ CAP-DB-FOUNDATION: actor SDK author and addon; entrypoint `createDecisionEvidenc
 
 ## REQ-DB-GOVERNANCE
 
-CAP-DB-GOVERNANCE: actor application policy adapter; entrypoint `HarnessBuilder.governance and agent permissions`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-GOVERNANCE, CTR-DB-IDENTITY.
+CAP-DB-GOVERNANCE: actor application policy adapter; entrypoint `defineAgent(...).governance and agent permissions`. Reachability: immutable agent definition and runtime execution invoke this boundary; no implicit provider or global service. Contracts: CTR-DB-GOVERNANCE, CTR-DB-IDENTITY.
 
 - PATH-DB-GOVERNANCE-SUCCESS: One approved effective demand executes one tool.
 - PATH-DB-GOVERNANCE-FAILURE: Deny suppresses approval; malformed callback terminates with safe evidence.

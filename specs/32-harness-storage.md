@@ -22,12 +22,14 @@ adapter:
 ```ts
 const storage = sqliteHarnessStorage({ file: '.purista/harness.sqlite' })
 
-const harness = defineHarness({ name: 'support' })
-  .storage(storage)
-  .models(models)
-  .agents(agents)
-  .workflows(workflows)
-  .build()
+const definition = defineHarness({ name: 'support' })
+  .addAgent(assistant)
+  .addWorkflow(resolveCase)
+
+const runtime = await definition.getInstance({
+  model: { provider, model: 'chat-model' },
+  storage,
+})
 ```
 
 `HarnessStorage` owns sessions, conversation messages, one authoritative run
@@ -75,16 +77,15 @@ contracts through separate adapters.
 
 ## 3. Public configuration
 
-The Harness builder exposes:
+Runtime storage is supplied only when the immutable definition becomes an
+instance. The field is required when the compiled graph needs durability and is
+an optional replacement for the process-local default otherwise:
 
 ```ts
-interface HarnessBuilder<S extends BuilderState = {}> {
-  storage(storage: HarnessStorage): HarnessBuilder<S>
-  memory<const Capabilities extends readonly MemoryCapability[]>(
-    engine: MemoryEngine<Capabilities>,
-  ): HarnessBuilder<S>
-  sandbox(sandbox?: Sandbox<any>): HarnessBuilder<S>
-  workspace(workspace: DurableWorkspace): HarnessBuilder<S>
+interface HarnessInstanceConfig {
+  storage?: HarnessStorage
+  memory?: MemoryEngine
+  // sandbox and workspace appear only when the compiled graph requires them.
 }
 ```
 
@@ -92,18 +93,11 @@ The default is `inMemoryHarnessStorage()`. It is process-local and suitable for
 tests and development. It does not advertise persistence or multi-instance
 coordination.
 
-The following builder methods are removed:
-
-- `.state(...)`
-- `.runtime(...)`
-- `.checkpoints(...)`
-- `.externalWait(...)`
-- `.workspaceStore(...)`
-
-The exact typed direct-engine and model-reference callback overloads are owned
-by spec 33; the simplified signature above denotes their shared engine input
-and is not an additional overload. Omitted memory creates
-`inMemoryMemoryEngine()` in core. `HarnessInspection` reports one `storage`
+Definitions never register storage, memory, sandbox, or workspace adapters.
+Their declarative fields compile requirements; `getInstance(...)` validates the
+exact runtime bindings atomically before starting resources. Omitted memory
+creates `inMemoryMemoryEngine()` when the graph's memory needs allow it.
+`HarnessInspection` reports one `storage`
 adapter and, when present, separate `memory`, `sandbox`, and `workspace`
 adapters. It does not report storage's
 internal execution/wait facets as independently configured adapters.
@@ -546,8 +540,9 @@ The Harness does not prescribe application vocabulary such as `summary`,
 
 ## 8. Workspace and local execution
 
-The durable workspace port is renamed to `DurableWorkspace` and configured
-through `.workspace(...)`. It remains separate from structured storage because
+The durable workspace port is `DurableWorkspace`. An agent or workflow opts in
+with `workspace: true`, and instance creation supplies `workspace`. It remains
+separate from structured storage because
 it manages files, snapshots, byte quotas, cleanup, retention, and encryption
 metadata.
 
@@ -590,21 +585,22 @@ PURISTA keeps its existing top-level `stateStore` runtime option unchanged.
 Harness configuration becomes:
 
 ```ts
-type AgentRuntimeOptions<Models> = {
-  models: AgentRuntimeModelBindings<Models>
+type AgentRuntimeOptions = {
+  model?: ModelRuntimeBinding
+  models?: Readonly<Record<string, ModelRuntimeBinding>>
   storage?: HarnessStorage
-  memory?: MemoryEngine<readonly MemoryCapability[]> | MemoryConfigurationFactory<Models>
+  memory?: MemoryEngine
   sandbox?: Sandbox<any>
   workspace?: DurableWorkspace
   onSuspended?: (notice: AgentSuspendedNotice) => Promise<unknown> | unknown
   logger?: PuristaLogger
   telemetry?: TelemetryOptions
-  governance?: GovernanceConfig<any>
 }
 ```
 
-Remove `ai.stateStore`, `ai.runtime`, `ai.externalWait`, `ai.workspaceStore`,
-and `ai.durableWorkflows`. Core passes one `ai.storage` to `.storage(...)`.
+PURISTA passes the service's `ai.storage` to Harness instance creation.
+Definition-local policy and the mounted graph determine whether storage is
+required; the runtime option does not grant durability.
 
 Durability is declared on `AgentQueueBuilder`, never as a deployment boolean:
 
@@ -626,13 +622,12 @@ PURISTA review/domain records remain ordinary application state and commands.
 They are never stored in `HarnessStorage` except for the bounded opaque wait
 reference.
 
-One PURISTA service instance constructs one shared Harness runtime for all of
-its attached agents, workflows, and workflow-local agents. `ai.storage`,
-`ai.workspace`, `ai.sandbox`, model providers, skills, governance, and telemetry
-are registered once and the service shuts that Harness down once. Public model
-aliases and defaults remain attached-definition concepts; the integration uses
-private service-runtime registry ids to prevent collisions without changing
-callback or Framework-event vocabulary.
+One PURISTA service instance constructs one shared Harness runtime for its
+mounted root agents and workflows plus their private dependency closure.
+Runtime adapters are supplied once and the service shuts that Harness down
+once. Public model aliases and defaults remain definition concepts; private
+service runtime indexes prevent collisions without exposing lookup APIs or
+changing Framework event vocabulary.
 
 ## 10. Observability
 
@@ -654,8 +649,8 @@ names after their `harness.storage.*` replacements are tested and documented.
 
 Implementation is incomplete until all of the following pass:
 
-1. Public API/type tests prove `.storage(...)`/`.workspace(...)` and prove every
-   removed symbol/method is absent.
+1. Public API/type tests prove conditional `getInstance(...)` storage/workspace
+   bindings and reject runtime adapters that the compiled graph does not permit.
 2. `harnessStorageContract` passes for in-memory and SQLite implementations.
    It proves strict create requests for all three run kinds, rejection of every
    storage-authored request field, revision-one running frozen returns, exact

@@ -2,10 +2,10 @@
 
 | Owner | Existing / approved new location | Responsibility |
 | --- | --- | --- |
-| Core authoring | `packages/harness/src/harness/defineHarness.ts` | Canonical definitions, helper overloads, input/output aliases |
-| Core requirements | new `packages/harness/src/harness/agent-requirements.ts` | Requirement Zod schema, internal build validator and tool-name resolution; exported through root |
-| Core tool registration | new `packages/harness/src/harness/tool-definition.ts` | Private registration symbol/helper/guard; canonical types stay with existing definitions |
-| Core model validation | `packages/harness/src/models/registry.ts` | Shared capability predicate, no addon coupling |
+| Core authoring | `packages/harness/src/definitions/` and `packages/harness/src/harness/` | Canonical factories, immutable composition, input/output aliases |
+| Core requirements | `packages/harness/src/harness/runtime-requirements.ts` | Requirement schema, private graph compiler and tool-name resolution; exported requirement view through root |
+| Core tool definitions | `packages/harness/src/definitions/tool.ts` | Portable definition factory and private runtime projection |
+| Core model validation | existing model runtime owner | Shared capability predicate and private binding index, no addon coupling |
 | Addon config | `src/config-schema.ts`, `src/config.ts` | Canonical schema/derived types and inline normalization/compilation |
 | Addon actions | new `src/action.ts`, existing `src/rails.ts` | Generic constructor/private token adapter versus coordinator/compile/attach |
 | Addon sensitive actions | existing `src/sensitive-data.ts` | Shared detector algorithms and fixed/singular factories |
@@ -17,4 +17,4 @@ Provider/detector implementation internals are not refactored. New runtime files
 stay TypeScript. No generic shared utility package, contracts package, site
 renderer, file configuration, generated config output, or configuration
 generator. Ticket scopes name exact consumer files or the bounded example/docs
-subtrees that must change because a removed API no longer compiles.
+subtrees that must change to follow the v4 definition contract.

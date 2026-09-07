@@ -4,8 +4,8 @@ modules:
     owner: harness
     public_entrypoint: '@purista/harness'
     owned_concepts:
-      - registry requirements
-      - typed native tool registration
+      - graph requirements
+      - typed native tool definitions
       - decisions
     allowed_dependencies: []
     forbidden_dependencies:

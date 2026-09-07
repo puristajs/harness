@@ -214,7 +214,7 @@ lifecycle extensions.
 - The evaluator passed to `helpers.adapter(...)` and returned by `opaPolicy`
   has exactly `id`, optional `version`, `engine: 'opa'`, the frozen `effects`
   tuple, and `evaluate`. The evaluator itself is frozen. It has no adapter
-  context hook, provider handle, credential, runtime registry, or mutable
+  context hook, provider handle, credential, public runtime index, or mutable
   telemetry slot.
 
 `defineAgent` performs its independent closed-field validation and frozen
@@ -594,8 +594,8 @@ must never be attached to application logs or telemetry.
 Acceptance requires all of the following:
 
 1. **OPA-AC-01 — exact public surface:** the main and testing exports match the
-   declarations in this specification. No `BuilderState`, Harness-builder
-   `.governance(...)`, `HarnessAdapterContext`, or `configureHarnessContext`
+   declarations in this specification. No removed builder-state type,
+   Harness-global governance hook, adapter context, or context configurator
    surface remains.
 2. **OPA-AC-02 — immutable evaluator:** `opaPolicy` validates and snapshots the
    closed options, preserves its exact effects tuple, returns the exact frozen

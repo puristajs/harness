@@ -10,7 +10,9 @@ Status: approved clean-break specification (2026-08-28).
 
 - **DEC-SS-PUBLIC:** Export PURISTA-style `Schema`, `ModelSchema`, `Infer`, and `InferIn` types from `@purista/harness`. Public agent, tool, workflow, and guardrail schema generics must not mention Zod.
 - **DEC-SS-JSON:** Only a schema's validated output (`Infer<S>`) at a Harness boundary extends `JsonValue`; raw `InferIn<S>` remains vendor-exact so defaults, optionals, coercion and transforms work. Raw values never reach persistence or providers. Non-JSON validated outputs are rejected by TypeScript when visible and by one runtime JSON assertion before any handler, persistence or provider use.
-- **DEC-SS-MODEL:** Tool input and default-loop agent output use `ModelSchema`; agent input, custom-handler agent output, tool output, workflow input/output, and guardrail values use `Schema`.
+- **DEC-SS-MODEL:** Tool input and structured agent output use `ModelSchema`;
+  agent input, tool output, workflow input/output, and guardrail values use
+  `Schema`. Agents are configurable model loops and have no custom handler.
 - **DEC-SS-PROJECTION:** Convert model-facing schemas with `~standard.jsonSchema.input({ target: 'draft-2020-12' })` during `build()`, validate the result as `JsonValue`, deep-freeze it, and cache it. Never convert in a run or loop.
 - **DEC-SS-VALIDATION:** One async helper invokes `~standard.validate`; returned issues produce `ValidationError`, validator throws/rejections produce `InternalError`, and successful transformed output is the value used downstream.
 - **DEC-SS-PROVIDERS:** Provider ports continue accepting plain `JsonValue` JSON Schema. Adapters pass schemas through without Zod imports, conversion, keyword stripping, or rewriting.
@@ -25,4 +27,8 @@ Out of scope: replacing Zod in internal configuration/state/error schemas, addin
 
 ## Success
 
-Zod, ArkType, and Valibot examples compile with exact nested types; runtime conformance covers synchronous/asynchronous success, issues, throws, transforms, and non-JSON outputs; model schemas compile once; every adapter receives the exact frozen JSON Schema produced at build; legacy public Zod coupling is absent by source audit.
+Zod, ArkType, and Valibot examples compile with exact nested types; runtime
+conformance covers synchronous/asynchronous success, issues, throws, transforms,
+and non-JSON outputs; model schemas compile once; every adapter receives the
+exact frozen JSON Schema produced during definition/graph compilation; public
+validator coupling is absent by source audit.

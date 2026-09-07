@@ -9,26 +9,34 @@ The default path requires no memory configuration. The Harness creates a depende
 ## User-facing API
 
 ```ts
-const harness = defineHarness({ name: 'support' })
-  .models({
-    assistant: { provider, model: 'chat-model', capabilities: ['text', 'tool_use'] },
-    memoryEmbedding: { provider, model: 'embedding-model', capabilities: ['embeddings'] },
-    memorySummary: { provider, model: 'summary-model', capabilities: ['object'] },
-  })
-  .memory(({ model }) => ({
-    engine: postgresMemoryEngine({ connectionString: process.env.DATABASE_URL! }),
-    embedding: model.memoryEmbedding,
-    summary: model.memorySummary,
-  }))
-  .agent('assistant', {
-    model: 'assistant',
-    instructions: 'Help the customer.',
-  })
-  .build()
+const assistant = defineAgent('assistant', {
+  model: 'assistant',
+  instructions: 'Help the customer.',
+  memory: {
+    capabilities: [
+      'memory.kv',
+      'memory.text_search',
+      'memory.vector_search',
+      'memory.hybrid_search',
+      'memory.persistent',
+    ],
+    embedding: { model: 'memoryEmbedding' },
+    summary: { model: 'memorySummary' },
+  },
+})
 
-const session = await harness.getSession('conversation-42', {
-  tenantId: 'acme',
-  principalId: 'person-7',
+const definition = defineHarness({ name: 'support' }).addAgent(assistant)
+const runtime = await definition.getInstance({
+  models: {
+    assistant: { provider, model: 'chat-model' },
+    memoryEmbedding: { provider, model: 'embedding-model' },
+    memorySummary: { provider, model: 'summary-model' },
+  },
+  memory: postgresMemoryEngine({ connectionString: process.env.DATABASE_URL! }),
+})
+
+const session = await runtime.getSession('conversation-42', {
+  identity: { tenantId: 'acme', principalId: 'person-7' },
 })
 
 await session.memory.write('preferred_locale', 'de-DE')
@@ -36,7 +44,10 @@ await session.memory.write('case', { id: 'CASE-42' }, { index: { text: 'Support 
 const matches = await session.memory.search({ text: 'Which support case is active?' })
 ```
 
-`.memory(postgresMemoryEngine(...))` is the minimal production form when model-backed features are not required. `.memory(...)` is omitted for tests, local development, and applications that do not require shared persistence.
+`getInstance({ memory: postgresMemoryEngine(...) })` is the minimal production
+binding when an agent declares persistent memory without model-backed features.
+The binding is omitted for tests, local development, and graphs whose declared
+memory requirements fit the process-local default.
 
 Local durable use is `sqliteMemoryEngine({ file: '.purista/memory.sqlite' })`. Adding `vector: true` opts into the separately installed `sqlite-vec` peer and exact local vector search. `natsMemoryEngine(...)` is a distributed KV-only choice for existing NATS installations and intentionally has no relevance-search capability.
 
@@ -50,7 +61,9 @@ Local durable use is `sqliteMemoryEngine({ file: '.purista/memory.sqlite' })`. A
 
 ## Success criteria
 
-- Wrong model capabilities fail TypeScript compilation at the `.memory(...)` call.
+- Definitions infer exact memory model aliases and capabilities; missing aliases
+  are type errors at instance creation and incompatible providers fail before
+  runtime resources start.
 - Missing runtime provider methods, index incompatibility, identity mismatch, and engine capability mismatch fail before unsafe database work.
 - Tenant filtering occurs inside the engine query before ranking.
 - Every model call made for memory uses the normal provider adapter, span conventions, token usage, and cost attribution path.

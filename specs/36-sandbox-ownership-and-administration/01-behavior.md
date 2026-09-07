@@ -8,17 +8,17 @@ the baseline includes the preceding sandbox work, not just committed HEAD.
 | Invocation today | Filesystem ownership today |
 | --- | --- |
 | Ordinary top-level agents/workflows in one Harness session | Shared session sandbox |
-| Inline `ctx.agents.*` delegate | Exact parent sandbox |
+| Declared subagent invocation | Exact parent sandbox unless its definition selects another policy |
 | Durable workflow with workspace binding | Run sandbox shared by delegates |
 | Durable workflow without workspace binding | Session sandbox |
 | `childTasks` | Isolated task-run sandbox |
-| Separate PURISTA attached agents | Separate Harness names and namespaced sessions |
-| PURISTA wrapped workflow's inline agents | Parent workflow sandbox |
-| PURISTA `canInvokeAgent` | Separate attached-agent boundary |
+| Separate PURISTA mounted roots | Shared service Harness with namespaced sessions |
+| PURISTA workflow's declared agents | Parent workflow sandbox unless the target selects another policy |
+| PURISTA `canInvokeAgent` | Addressed mounted-agent boundary |
 
 Sources: `packages/harness/src/sessions/index.ts`,
-`runtime/sessionDurable.ts`, `sandbox/lifecycle.ts`, and
-`../purista/packages/core/src/AgentQueueBuilder/runtime/{executor,identity,scopedRuntime}.ts`.
+`runtime/sessionDurable.ts`, `sandbox/lifecycle.ts`, and the PURISTA Harness
+mount runtime.
 Current definition types do not have a sandbox-sharing policy. Current optional
 identity already participates in the sandbox scope key but is not an inventory
 index. Current local TTL fields are not enforced, Docker volumes have no portable
@@ -31,24 +31,24 @@ Policy precedence, from highest to lowest:
 1. `childTasks.start(..., { sandbox: policy })` for that child invocation only.
 2. The target agent/workflow definition's `sandbox` property.
 3. For a background child task, the built-in isolated task-root behavior; for an
-   inline delegate, inherit the caller's resolved partition.
+   subagent, inherit the caller's resolved partition.
 4. For top-level ordinary/durable invocations only, the Harness binding's
    `defaultPolicy`, default `inherit`.
 
-An inline delegated agent uses its own definition policy when present; otherwise
+An invoked subagent uses its own definition policy when present; otherwise
 it inherits the caller's **resolved partition**, not the session's primary
 partition. Top-level `inherit` resolves the owner lifetime's shared partition.
 `private` resolves the target definition's partition; agent/workflow kinds remain
 distinct even with the same ID. Private keys also include the Harness name so
 equally named definitions in different Harnesses do not collide under a shared
 explicit owner. `{ group }` resolves the configured group within
-the same owner and lifetime. Definition IDs are the fully registered IDs after
-static-module namespacing. No runtime string callback chooses a partition.
+the same owner and lifetime. Definition IDs are the exact immutable ids from
+their definitions. No runtime string lookup or callback chooses a partition.
 
 | Call | Inherit | Private | Group |
 | --- | --- | --- | --- |
 | Top-level ordinary invocation | Owner/session shared | Definition partition, reused across turns | Named owner/session partition |
-| Inline delegate | Caller partition | Target definition within current lifetime | Named partition in current lifetime |
+| Subagent | Caller partition | Target definition within current lifetime | Named partition in current lifetime |
 | Durable invocation | Run shared | Definition within run | Named partition within run |
 | Background task, explicit policy | Parent partition | Target definition within parent lifetime | Group within parent lifetime |
 | Background task, no explicit/definition policy | New task-run shared partition | N/A | N/A |

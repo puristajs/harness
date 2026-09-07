@@ -2,13 +2,13 @@
 
 ## Type and API quality
 
-- No known schema flowing through a public builder/result widens to `unknown`/`JsonValue`; private existential constraints may use `any` only where Standard Schema generic variance requires it.
+- No known schema flowing through a public definition/result widens to `unknown`/`JsonValue`; private existential constraints may use `any` only where Standard Schema generic variance requires it.
 - Equality-based type fixtures cover caller input, validated callback input, handler return input, validated result, nested aliases, transforms, defaults/optionals, arrays, and negative cross-alias use for Zod, ArkType, and Valibot.
 - All new exports include TypeDoc-ready TSDoc and non-obvious examples.
 
 ## Performance and capacity
 
-- Model projection count is exactly one per registered tool input/default-loop output per successful `build()`.
+- Model projection count is exactly one per unique tool input or structured agent output during successful definition/graph compilation.
 - Runtime validation count is exactly one per boundary crossing; no duplicate vendor parse follows it.
 - Issue serialization work and output are bounded to 100 issues. Generated schemas are cloned/frozen once, then reused by reference.
 - Existing run/tool/session budget, timeout, and concurrency limits are unchanged.

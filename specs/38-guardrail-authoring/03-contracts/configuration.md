@@ -60,7 +60,7 @@ not duplicate that semantic catalog.
 | --- | --- | --- |
 | TypeScript inline configuration | Action ID/phase correlation and callback types | Arbitrary Zod refinement equivalence |
 | Zod parse/compile | Structural fields, defaults, semantic action/policy checks | Provider availability or arbitrary schema inclusion |
-| Harness `.build()` | Required models/tools/capabilities before invocation | Model, detector, tool, session, sandbox or network invocation |
+| Harness definition/graph compilation | Required models/tools/capabilities before invocation | Model, detector, tool, session, sandbox or network invocation |
 | Invocation | Selected payload parsing and existing decision behavior | Retrofitting semantic compatibility into an unrelated rail |
 
 ## CTR-GA-GENERATION

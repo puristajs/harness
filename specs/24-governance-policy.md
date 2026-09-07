@@ -6,8 +6,10 @@
 
 ## Goals
 
-- Keep default DX unchanged: no `.governance(...)` call means no policy setup and no runtime cost beyond a single undefined check.
-- Reuse the builder type system: native policy predicates receive the selected TypeScript tool's parsed Zod input.
+- Keep default DX unchanged: omitting an agent's `governance` field means no
+  policy setup and no runtime cost beyond a single undefined check.
+- Reuse definition inference: native policy predicates receive the selected
+  TypeScript tool's validated input.
 - Support external ecosystems: OPA adapts through the optional first-party
   `@purista/harness-policy-opa` Data API package; Cedar, Eve-style controls,
   and product-specific rule stores adapt through application-owned
@@ -16,16 +18,24 @@
 - Emit observable policy, exposure, and approval events without placing raw tool input in audit events.
 - Persist approval checkpoints privately and expose a typed interrupt/resume contract.
 
-## Builder surface
+## Agent definition surface
 
-`.governance(...)` is optional and may be called after `.agents(...)` or `.workflows(...)` and before `.build()`.
+Governance is optional and local to the agent whose model-facing capabilities
+it controls. The definition references tools directly, so policy selectors and
+predicate input types derive from the same closed tool map.
 
 ```ts
-defineHarness()
-  .models(...)
-  .tools(...)
-  .agents(...)
-  .governance(({ native, rule, exposureRule, adapter }) => ({
+const transferFunds = defineTool('transferFunds', {
+  description: 'Transfer money between owned accounts.',
+  input: transferInputSchema,
+  output: transferOutputSchema,
+  handler: transferFundsHandler,
+})
+
+const transferAgent = defineAgent('transferAgent', {
+  instructions: 'Help the customer make an allowed transfer.',
+  tools: [transferFunds],
+  governance: ({ native, rule, exposureRule, adapter }) => ({
     mode: 'enforce',
     defaultEffect: 'allow',
     exposure: {
@@ -34,7 +44,7 @@ defineHarness()
         exposureRule({
           id: 'hide-transfers-for-readonly-tenants',
           effect: 'hide',
-          tools: ['transfer_funds'],
+          tools: ['transferFunds'],
           when: ({ metadata }) => metadata.plan === 'readonly'
         })
       ]
@@ -47,15 +57,15 @@ defineHarness()
           rule({
             id: 'large-transfer-approval',
             effect: 'require_approval',
-            tools: ['transfer_funds'],
+            tools: ['transferFunds'],
             when: ({ input }) => input.amount > 1_000
           })
         ]
       }),
       adapter({ id: 'external-engine', evaluate: async (ctx) => undefined })
     ]
-  }))
-  .build()
+  }),
+})
 ```
 
 `rule(...)` narrows `ctx.input` from the selected tool id. For MCP and built-in tools, `ctx.input` is validated JSON-compatible input. For TypeScript tools, `ctx.input` is the parsed Zod input and validation failure occurs before policy evaluation.
@@ -65,7 +75,7 @@ defineHarness()
 ## Config
 
 ```ts
-interface GovernanceConfig<S> {
+interface AgentGovernanceInput<Tools, Skills, Subagents> {
   enabled?: boolean
   mode?: 'enforce' | 'shadow'
   defaultEffect?: 'allow' | 'deny'
@@ -77,7 +87,7 @@ interface GovernanceConfig<S> {
 
 Defaults:
 
-- `enabled`: `true` when `.governance(...)` is configured.
+- `enabled`: `true` when the agent's `governance` field is present.
 - `mode`: `'enforce'`.
 - `defaultEffect`: `'deny'` when execution policies are configured and no policy returns a decision.
 
@@ -119,7 +129,18 @@ When multiple policies match one call, precedence is locked:
 
 The [approved decision-boundary contracts](./37-decision-boundaries/03-contracts/decisions.md) are the single source for runtime ordering, correlated policy types, strict outcomes, combined permission/policy approval, cancellation, audit, safe events and identities. `examples/bank-governance` is the tool-approval interrupt/resume example; broader workflow review is application-owned as specified by [review execution](./37-decision-boundaries/03-contracts/review-execution.md).
 
-Keep duplicate policy/rule IDs, missing native rules, unknown tool references and non-function evaluator validation at build. Native predicates receive parsed effective inputs; exposure predicates have no tool input. External engines translate their own documents to the closed GovernanceDecision; Harness owns no external policy syntax, storage or bundle distribution. [Spec 41](./41-opa-policy-adapter.md) defines the optional typed OPA transport and preserves this boundary: applications still own identity, minimized request/result mapping, Rego/bundles, credentials, topology, and decision-log controls. Cedar and other policy engines continue to use application-owned evaluators.
+Duplicate policy/rule IDs, missing native rules, unknown tool references, and
+non-function evaluators fail synchronously while `defineAgent(...)` compiles its
+frozen definition. Cross-definition model and durability requirements are
+validated before `getInstance(...)` initializes resources. Native predicates
+receive parsed effective inputs; exposure predicates have no tool input.
+External engines translate their own documents to the closed
+`GovernanceDecision`; Harness owns no external policy syntax, storage, or bundle
+distribution. [Spec 41](./41-opa-policy-adapter.md) defines the optional typed OPA
+transport and preserves this boundary: applications still own identity,
+minimized request/result mapping, Rego/bundles, credentials, topology, and
+decision-log controls. Cedar and other policy engines continue to use
+application-owned evaluators.
 
 ## Example
 

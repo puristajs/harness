@@ -14,7 +14,7 @@ Neither package imports the other's private implementation.
 
 The three sharing policies are `inherit`, `private`, and `{ group: name }`.
 Sharing never merges conversation history, tool permissions, identity, or run
-records. Private means private to a registered agent/workflow definition within
+records. Private means private to a selected immutable target definition within
 one owner and lifetime, not a new directory for every invocation.
 
 Owners have exact optional tenant/principal identity, an explicit namespace, and

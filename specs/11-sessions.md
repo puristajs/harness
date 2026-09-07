@@ -32,7 +32,10 @@ shape. The v4 instance closes through `HarnessInstance.close()`; the removed
 - A `getRunSummary(runId)` method.
 - A destructive `destroy()` method and a persistence-preserving `release()` method.
 
-There is no dynamic `session.<workflowId>` property lookup and no `session.agent(...)` method. Direct one-agent execution is available through `session.agents.<agentId>.run(...)` and `.stream(...)`. Multi-agent execution is reachable only through workflows.
+There is no dynamic target property lookup or string-based invocation method.
+Direct one-agent execution is available through
+`session.agents.<agentId>.run(...)` and `.stream(...)`. Multi-agent execution is
+reachable only through workflows.
 
 Application-facing execution is session-centric. The harness owns registries, adapters, and factories, but application code performs work through `harness.getSession(id)` followed by `session.agents.<agentId>.run(...)` / `.stream(...)` for direct agent work or `session.workflows.<workflowId>.run(...)` / `.stream(...)` for orchestration.
 
@@ -183,7 +186,8 @@ Append rules:
 
 `Session.memory` is the session-scoped facade produced by the core memory
 orchestrator around the configured `MemoryEngine`. Memory is not stored in
-`HarnessStorage`. When `.memory(...)` is omitted, core creates and owns
+`HarnessStorage`. When instance configuration omits `memory` and the compiled
+graph needs only baseline memory, core creates and owns
 `inMemoryMemoryEngine()` as specified by
 [spec 33](./33-enterprise-memory/00-conventions.md#default-conventions).
 

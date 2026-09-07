@@ -1,7 +1,7 @@
 traceability_version: 1
 requirements:
   - requirement_id: REQ-MEM-DX
-    statement: The builder provides zero-config memory, direct engine configuration, and capability-safe model references with no duplicate provider or profile configuration.
+    statement: Agent definitions provide zero-config memory and capability-safe model selections while instance creation accepts one optional engine without duplicate provider or profile configuration.
     capability_ids:
       - CAP-MEM-DX
     path_ids:

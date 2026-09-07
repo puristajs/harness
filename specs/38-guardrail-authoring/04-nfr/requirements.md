@@ -1,9 +1,9 @@
 # Nonfunctional requirements
 
 Build/compile validation is deterministic and linear in configured
-phases/actions/declarations and registry references. It performs no callback,
+phases/actions/declarations and direct definition references. It performs no callback,
 network, session, model/detector, MCP or sandbox execution. No new hot-path
-registry traversal: precompute selector sets and compiled model requirements
+definition-graph traversal: precompute selector sets and compiled model requirements
 once. Selected action ordering, evidence ordinals and the existing decision
 timeout/cancellation budget remain unchanged. External dependency availability
 is checked through existing runtime ports, not startup probing.

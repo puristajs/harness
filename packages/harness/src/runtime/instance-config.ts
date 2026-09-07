@@ -41,19 +41,21 @@ export type RequiredField<Needed extends boolean, Key extends PropertyKey, Value
 export type OptionalField<Needed extends boolean, Key extends PropertyKey, Value> = Needed extends true
 	? Readonly<{ [Field in Key]?: Value }>
 	: Readonly<{ [Field in Key]?: never }>
+type OptionalOrRequiredField<Needed extends boolean, Key extends PropertyKey, Value> = Needed extends true
+	? Readonly<{ [Field in Key]: Value }>
+	: Readonly<{ [Field in Key]?: Value }>
 
 type ModelAliases<Requirements extends RuntimeRequirements> = keyof Requirements['models'] & string
 export type ModelFields<Requirements extends RuntimeRequirements> =
 	[ModelAliases<Requirements>] extends [never]
 		? Readonly<{ model?: never; models?: never }>
-		: [ModelAliases<Requirements>] extends ['primary']
-			? ['primary'] extends [ModelAliases<Requirements>]
-				? Readonly<{ model: ModelRuntimeBinding; models?: never }>
-				: never
-			: Readonly<{
-				model?: never
-				models: Readonly<{ [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding }>
-			}>
+		: 'primary' extends ModelAliases<Requirements>
+			? Readonly<{ model: ModelRuntimeBinding } & (
+				[Exclude<ModelAliases<Requirements>, 'primary'>] extends [never]
+					? { models?: never }
+					: { models: Readonly<{ [Alias in Exclude<ModelAliases<Requirements>, 'primary'>]: ModelRuntimeBinding }> }
+			)>
+			: Readonly<{ model?: never; models: Readonly<{ [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding }> }>
 
 export type SandboxBinding<Requirements extends RuntimeRequirements> = Sandbox
 	& (HasMembers<Requirements['sandbox']['capabilities']> extends true
@@ -93,11 +95,8 @@ export type HarnessRuntimeBindingFields<
 			& RequiredField<HasMembers<Requirements['mcpServers']>, 'mcp', Readonly<{
 				[ServerId in Requirements['mcpServers'][number]]: McpBinding
 			}>>
-			& RequiredField<Requirements['storage']['durable'], 'storage', HarnessStorage>
-			& RequiredField<Or<
-				HasMembers<Requirements['memory']['capabilities']>,
-				HasMembers<Requirements['memory']['modelAliases']>
-			>, 'memory', MemoryEngine>
+			& OptionalOrRequiredField<Requirements['storage']['durable'], 'storage', HarnessStorage>
+			& OptionalOrRequiredField<Or<HasMembers<Requirements['memory']['capabilities']>, HasMembers<Requirements['memory']['modelAliases']>>, 'memory', MemoryEngine>
 			& SandboxFields<Requirements, ConfiguredGroups>
 			& RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
 			& RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
@@ -197,15 +196,22 @@ function validateRuntimeConfig(
 	const aliases = Object.keys(requirements.models).sort()
 	const hasModel = own(config, 'model')
 	const hasModels = own(config, 'models')
-	if (hasModel && hasModels) fail('invalid_instance_config', 'model')
 	let selected: Record<string, unknown> = {}
 	if (aliases.length === 0) {
 		if (hasModel) fail('unexpected_runtime_binding', 'model')
 		if (hasModels) fail('unexpected_runtime_binding', 'models')
-	} else if (aliases.length === 1 && aliases[0] === 'primary') {
-		if (hasModels) fail('unexpected_runtime_binding', 'models')
+	} else if (aliases.includes('primary')) {
 		if (!hasModel) fail('missing_runtime_binding', 'model')
 		selected = { primary: config['model'] }
+		const extraAliases = aliases.filter(alias => alias !== 'primary')
+		if (extraAliases.length === 0) {
+			if (hasModels) fail('unexpected_runtime_binding', 'models')
+		} else {
+			if (!hasModels) fail('missing_runtime_binding', 'models')
+			if (!isPlainRecord(config['models'])) fail('invalid_runtime_binding', 'models')
+			validateExactKeys(config['models'], extraAliases, 'models')
+			selected = { ...selected, ...config['models'] }
+		}
 	} else {
 		if (hasModel) fail('unexpected_runtime_binding', 'model')
 		if (!hasModels) fail('missing_runtime_binding', 'models')
@@ -217,14 +223,12 @@ function validateRuntimeConfig(
 
 	const models: Record<string, Readonly<ModelAlias>> = {}
 	for (const alias of aliases) {
-		const path = aliases.length === 1 && alias === 'primary' ? 'model' : `models.${alias}`
+		const path = alias === 'primary' ? 'model' : `models.${alias}`
 		models[alias] = validateModelBinding(selected[alias], requirements.models[alias]!.capabilities, path)
 	}
 
 	const groups = [
 		['mcp', requirements.mcpServers.length > 0],
-		['storage', requirements.storage.durable],
-		['memory', requirements.memory.capabilities.length > 0 || requirements.memory.modelAliases.length > 0],
 		['sandbox', requirements.sandbox.required],
 		['workspace', requirements.workspace],
 		['artifacts', requirements.artifacts],
@@ -232,6 +236,10 @@ function validateRuntimeConfig(
 	for (const [key, needed] of groups) {
 		if (needed && !own(config, key)) fail('missing_runtime_binding', key)
 		if (!needed && own(config, key)) fail('unexpected_runtime_binding', key)
+	}
+	if (requirements.storage.durable && !own(config, 'storage')) fail('missing_runtime_binding', 'storage')
+	if ((requirements.memory.capabilities.length > 0 || requirements.memory.modelAliases.length > 0) && !own(config, 'memory')) {
+		fail('missing_runtime_binding', 'memory')
 	}
 	const needsSandbox = requirements.sandbox.required
 	if (!needsSandbox && own(config, 'sandboxBinding')) fail('unexpected_runtime_binding', 'sandboxBinding')

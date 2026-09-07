@@ -89,18 +89,18 @@ type MultiRequirements = Requirements<Readonly<{
 	fast: Readonly<{ capabilities: readonly ['text_stream'] }>
 }>>
 const multiConfig: HarnessInstanceConfig<MultiRequirements> = {
-	models: { primary: modelBinding, fast: modelBinding },
+	model: modelBinding, models: { fast: modelBinding },
 }
 void multiConfig
 // @ts-expect-error every inferred model alias is required
-const multiMissingAlias: HarnessInstanceConfig<MultiRequirements> = { models: { primary: modelBinding } }
+const multiMissingAlias: HarnessInstanceConfig<MultiRequirements> = { model: modelBinding, models: {} }
 void multiMissingAlias
 const multiExtraAlias: HarnessInstanceConfig<MultiRequirements> = {
 	// @ts-expect-error undeclared model aliases are rejected
-	models: { primary: modelBinding, fast: modelBinding, other: modelBinding },
+	model: modelBinding, models: { fast: modelBinding, other: modelBinding },
 }
 void multiExtraAlias
-// @ts-expect-error multi-model graphs forbid the concise selector
+// @ts-expect-error multi-model graphs still require the non-primary aliases
 const multiConcise: HarnessInstanceConfig<MultiRequirements> = { model: modelBinding }
 void multiConcise
 
@@ -138,8 +138,7 @@ void advancedConfig
 // @ts-expect-error required infrastructure groups cannot be omitted
 const missingAdvanced: HarnessInstanceConfig<AdvancedRequirements> = { model: modelBinding }
 void missingAdvanced
-// @ts-expect-error unused infrastructure is forbidden
-const primaryWithMemory: HarnessInstanceConfig<PrimaryRequirements> = { model: modelBinding, memory }
+const primaryWithMemory: HarnessInstanceConfig<PrimaryRequirements> = { model: modelBinding, memory, storage }
 void primaryWithMemory
 
 type HostRequirements = Requirements<EmptyModels, never, never, never, never, 'invokeCommand'>

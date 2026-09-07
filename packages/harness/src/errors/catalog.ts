@@ -89,6 +89,9 @@ export class ModelAdmissionRejectedError extends HarnessError {
 
 /** Complete agent-loop capacity was not admitted and the caller may retry. */
 export class AgentAdmissionRejectedError extends HarnessError {
+  /** Optional bounded-admission retry hint in milliseconds. */
+  public readonly retryAfterMs?: number
+
   public constructor(options: Readonly<{ retryAfterMs?: number }> = {}) {
     if (!isPlainRecord(options) || Reflect.ownKeys(options).some(key => typeof key !== 'string' || key !== 'retryAfterMs')) {
       throw new HarnessConfigError('Agent admission rejection options are invalid.', {
@@ -106,6 +109,7 @@ export class AgentAdmissionRejectedError extends HarnessError {
       message: 'Agent admission capacity is exhausted.',
       meta: { reason: 'capacity_exhausted', ...(retryAfterMs === undefined ? {} : { retryAfterMs }) },
     })
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs
   }
 }
 

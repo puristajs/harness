@@ -17,3 +17,6 @@ export interface AgentAdmissionLease {
 export interface AgentAdmission {
 	acquire(request: AgentAdmissionRequest): Promise<AgentAdmissionLease>
 }
+
+export { inMemoryAgentAdmission } from '../runtime/agent-admission.js'
+export type { InMemoryAgentAdmissionOptions } from '../runtime/agent-admission.js'

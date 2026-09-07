@@ -86,7 +86,7 @@ describe('exact Harness instance requirements', () => {
 		expect(unknown.meta).toMatchObject({ reason: 'unexpected_runtime_binding', path: 'aaa' })
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, null))).toBe('invalid_instance_config')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, new Date()))).toBe('invalid_instance_config')
-		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { model: {}, models: {} }))).toBe('invalid_instance_config')
+		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { model: {}, models: {} }))).toBe('unexpected_runtime_binding')
 	})
 
 	it('normalizes the primary selector, injects capabilities, and preserves provider identity', () => {
@@ -98,7 +98,7 @@ describe('exact Harness instance requirements', () => {
 		expect(Object.isFrozen(snapshot.models.primary)).toBe(true)
 		expect(Object.isFrozen(snapshot.models.primary?.capabilities)).toBe(true)
 		expect(reasonOf(() => validateHarnessInstanceConfig(required, {}))).toBe('missing_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { primary: {} } }))).toBe('unexpected_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { primary: {} } }))).toBe('missing_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: { provider: modelProvider, model: 'demo', capabilities: [] } }))).toBe('unexpected_runtime_binding')
 		const invalidOptions = errorOf(() => validateHarnessInstanceConfig(required, {
 			model: { provider: modelProvider, model: 'demo', providerOptions: { nested: new Map() } },
@@ -140,13 +140,13 @@ describe('exact Harness instance requirements', () => {
 			fast: { provider: provider({ textStream: async function* () {} }), model: 'fast-model' },
 			primary: { provider: provider({ text: async () => ({}) }), model: 'primary-model' },
 		}
-		expect(Object.keys(validateHarnessInstanceConfig(required, { models: valid }).models)).toEqual(['fast', 'primary'])
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { primary: valid.primary } }))).toBe('missing_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { ...valid, extra: valid.primary } }))).toBe('unexpected_runtime_binding')
-		const mixedAliases = errorOf(() => validateHarnessInstanceConfig(required, { models: { aaa: valid.primary, primary: valid.primary } }))
+		expect(Object.keys(validateHarnessInstanceConfig(required, { model: valid.primary, models: { fast: valid.fast } }).models)).toEqual(['fast', 'primary'])
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: {} }))).toBe('missing_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: { fast: valid.fast, extra: valid.primary } }))).toBe('unexpected_runtime_binding')
+		const mixedAliases = errorOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: { aaa: valid.primary } }))
 		expect(mixedAliases.meta).toMatchObject({ reason: 'unexpected_runtime_binding', path: 'models.aaa' })
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: {
-			...valid, fast: { provider: provider(), model: 'fast-model' },
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: {
+			fast: { provider: provider(), model: 'fast-model' },
 		} }))).toBe('model_capability_mismatch')
 
 		const metadataProvider = provider({
@@ -256,7 +256,8 @@ describe('exact Harness instance requirements', () => {
 		const memoryRequired = requirements({ memory: Object.freeze({ capabilities: Object.freeze(['memory.vector_search']), modelAliases: Object.freeze([]) }) })
 		expect(reasonOf(() => validateHarnessInstanceConfig(memoryRequired, {}))).toBe('missing_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(memoryRequired, { memory: memoryAdapter(() => {}) }))).toBe('missing_required_capability')
-		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { memory: memoryAdapter(() => {}) }))).toBe('unexpected_runtime_binding')
+		expect(validateHarnessInstanceConfig(emptyRequirements, { memory: memoryAdapter(() => {}) }).memory).toBeDefined()
+		expect(validateHarnessInstanceConfig(emptyRequirements, { storage: storageAdapter(() => {}) }).storage).toBeDefined()
 		expect(reasonOf(() => validateHarnessInstanceConfig(requirements({ hostTools: Object.freeze(['invoke']) }), {}))).toBe('standalone_host_tools_unsupported')
 		const runtimeRequired = requirements({ skillRuntimes: Object.freeze(['python']),
 			sandbox: Object.freeze({ capabilities: Object.freeze([]), requiredGroups: Object.freeze([]), required: true }) })

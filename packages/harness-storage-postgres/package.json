@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-storage-postgres",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Distributed PostgreSQL Harness storage for @purista/harness.",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
     "test:coverage": "vitest run --coverage",
     "test:live": "vitest run test-live"
   },
-  "dependencies": { "@purista/harness": "^3.0.0", "pg": "^8.23.0" },
+  "dependencies": { "@purista/harness": "^4.0.0", "pg": "^8.23.0" },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
     "@types/node": "^26.2.0",

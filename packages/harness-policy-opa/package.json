@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-policy-opa",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Typed Open Policy Agent Data API governance adapter for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -46,10 +46,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "peerDependencies": {
-    "@purista/harness": "^3.0.0"
+    "@purista/harness": "^4.0.0"
   },
   "devDependencies": {
-    "@purista/harness": "^3.0.0",
+    "@purista/harness": "^4.0.0",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.11",
     "typescript": "npm:@typescript/typescript6@^6.0.2",

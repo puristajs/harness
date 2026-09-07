@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-guardrails-local-ner",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Optional local Transformers.js NER detector for @purista/harness-guardrails.",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,7 +48,7 @@
   },
   "peerDependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "@purista/harness-guardrails": "^3.0.0"
+    "@purista/harness-guardrails": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
@@ -56,7 +56,7 @@
     }
   },
   "devDependencies": {
-    "@purista/harness-guardrails": "^3.0.0",
+    "@purista/harness-guardrails": "^4.0.0",
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "npm:@typescript/typescript6@^6.0.2",

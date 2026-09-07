@@ -1,6 +1,6 @@
 {
   "name": "@purista/memory-engine-example",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,8 +11,8 @@
     "lint": "npm run typecheck"
   },
   "dependencies": {
-    "@purista/harness": "^3.0.0",
-    "@purista/harness-memory-sqlite": "^3.0.0"
+    "@purista/harness": "^4.0.0",
+    "@purista/harness-memory-sqlite": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

@@ -1,6 +1,6 @@
 {
   "name": "@purista/living-wiki-jaeger-example",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,9 +23,9 @@
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-node": "^0.222.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "@purista/harness": "^3.0.0",
-    "@purista/harness-ai-sdk-ui": "^3.0.0",
-    "@purista/harness-openai": "^3.0.0",
+    "@purista/harness": "^4.0.0",
+    "@purista/harness-ai-sdk-ui": "^4.0.0",
+    "@purista/harness-openai": "^4.0.0",
     "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^6.0.5",
     "ai": "^7.0.90",

@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-agent-plugins",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Safe, data-only Agent Plugins v1 inspection with explicit Skills and MCP bindings for @purista/harness.",
   "type": "module",
   "main": "./dist/index.js",
@@ -52,7 +52,7 @@
     "vitest": "^4.1.11"
   },
   "peerDependencies": {
-    "@purista/harness": "^3.0.0"
+    "@purista/harness": "^4.0.0"
   },
   "engines": {
     "node": ">=24.15.0"

@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-guardrails-native-privacy-win32-x64-msvc",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "cpu": [
     "x64"
   ],

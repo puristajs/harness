@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-sandbox-docker",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Local Docker and OrbStack sandbox adapter for @purista/harness.",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +24,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": { "zod": "^4.4.3" },
-  "peerDependencies": { "@purista/harness": "^3.0.0" },
+  "peerDependencies": { "@purista/harness": "^4.0.0" },
   "devDependencies": { "@types/node": "^26.2.0", "typescript": "npm:@typescript/typescript6@^6.0.2", "vitest": "^4.1.11" },
   "engines": { "node": ">=24.15.0" }
 }

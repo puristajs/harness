@@ -1,6 +1,6 @@
 {
   "name": "@purista/harness-memory-nats",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "NATS JetStream KV memory engine for @purista/harness.",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/kv": "3.4.0",
     "@nats-io/transport-node": "3.4.0",
-    "@purista/harness": "^3.0.0"
+    "@purista/harness": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

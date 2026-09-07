@@ -25,7 +25,7 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - category: `config`
 - retriable: `false`
 - when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.storage(...)` (`reason:'durable_runtime_required'`).
-- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_module'`, `'duplicate_definition'`, `'invalid_module'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
+- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_definition'`, `'catalog_has_no_targets'`, `'agent_cycle'`, `'model_name_collision'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
 
 ### Testing-only errors
 
@@ -176,6 +176,19 @@ tokens, raw headers, or attachments.
 - the operation that would exceed the limit does not start; metadata never
   includes input, output, prompts, messages, tool arguments, or provider data.
 
+### `AgentAdmissionRejectedError`
+- code: `AGENT_ADMISSION_REJECTED`
+- category: `admission`
+- retriable: `true`
+- when: a bounded `AgentAdmission` cannot accept another root execution tree;
+  the built-in in-memory adapter uses this when its FIFO has reached
+  `maxQueued`.
+- message: fixed `Agent admission capacity is exhausted.`
+- meta: exactly `{reason:'capacity_exhausted',retryAfterMs?:number}`; a present
+  retry delay is a positive safe integer.
+- forbidden meta: input, output, queue contents, prompt, message, credentials,
+  tenant/principal values, or provider data.
+
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`
 - category: `validation`
@@ -211,12 +224,12 @@ tokens, raw headers, or attachments.
 - code: `WORKFLOW_CALL_REPLAY_CONFLICT`
 - category: `validation`
 - retriable: `false`
-- when: one workflow invocation reuses a `callId` across direct-agent calls or
-  child-task starts with another operation, target, canonical JSON wire input,
+- when: one workflow invocation reuses a `callId` across direct agent, tool, or
+  model calls or child-task starts with another operation, target, canonical JSON wire input,
   normalized options, or idempotency key. Equal concurrent tuples coalesce and
   do not throw this error.
-- message: fixed `Workflow call id conflicts with an existing logical child call.`
-- meta: exactly `{reason:'operation_mismatch'|'target_mismatch'|'input_mismatch'|'idempotency_key_mismatch'|'options_mismatch',workflow_id:string,call_id:string,expected_operation:'agent_run'|'child_task_start',received_operation:'agent_run'|'child_task_start',expected_target_kind:'agent',expected_target_id:string,received_target_kind:'agent',received_target_id:string}`.
+- message: fixed `Workflow call id conflicts with an existing logical managed call.`
+- meta: exactly `{reason:'operation_mismatch'|'target_mismatch'|'input_mismatch'|'idempotency_key_mismatch'|'options_mismatch',workflow_id:string,call_id:string,expected_operation:WorkflowManagedCallOperation|'child_task_start',received_operation:WorkflowManagedCallOperation|'child_task_start',expected_target_kind:'agent'|'tool'|'model',expected_target_id:string,received_target_kind:'agent'|'tool'|'model',received_target_id:string}`. `WorkflowManagedCallOperation` is the closed operation union in [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 - when multiple fields differ, reason precedence is operation, target, input,
   idempotency key, then remaining normalized options.
 - forbidden meta: input, output, canonical JSON, digests, prompts, messages,
@@ -234,18 +247,27 @@ tokens, raw headers, or attachments.
 - forbidden meta: input, output, call id, idempotency key, queue contents,
   prompts, messages, credentials, and provider payloads.
 
+### `WorkflowManagedCallError`
+- code: `WORKFLOW_MANAGED_CALL_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: an agent, tool, or model selected by a workflow managed call returns or
+  throws a failure after admission. Transported/provider error data remains an
+  untrusted private cause and is never reconstructed as its remote class.
+- message: fixed `Workflow managed call failed.`
+- meta: exactly `{reason:'operation_failed',workflow_id:string,call_id:string,operation:WorkflowManagedCallOperation,target_kind:'agent'|'tool'|'model',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, prompts, credentials, and provider payloads.
+
 ### `WorkflowChildTargetError`
 - code: `WORKFLOW_CHILD_TARGET_FAILED`
 - category: `internal`
 - retriable: `false`
-- when: an agent target selected by a direct workflow call or child task
-  returns a validated `failed` terminal. The transported error remains an
-  untrusted private cause and is never reconstructed as its remote class.
+- when: an agent run owned by a workflow child task returns a validated
+  `failed` terminal. Direct awaited agent/tool/model calls instead use
+  `WorkflowManagedCallError`.
 - message: fixed `Workflow child target failed.`
-- meta: exactly the discriminated union
-  `{reason:'agent_call_failed',workflow_id:string,call_id:string,target_kind:'agent',target_id:string}`
-  or
-  `{reason:'child_task_failed',workflow_id:string,call_id:string,task_id:string,target_kind:'agent',target_id:string}`.
+- meta: exactly `{reason:'child_task_failed',workflow_id:string,call_id:string,task_id:string,target_kind:'agent',target_id:string}`.
 - forbidden meta: transported code, category, message or metadata; input,
   output, canonical JSON, prompts, credentials, and provider payloads.
 

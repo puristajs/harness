@@ -414,11 +414,10 @@ Rules:
   ordering, the provider package sorts before returning.
 - RAG pipelines remain application/workflow code, not a core abstraction.
 
-## Models access on agent/workflow context
+## Model operation surface
 
-The context exposes `models` keyed by registered alias id. Each alias handle
-exposes only the operation shapes allowed by that alias's declared capability
-policy:
+The runtime's private provider binding exposes only operation shapes allowed by
+the alias's declared capability policy:
 
 ```ts
 interface ModelHandle<A extends ModelAlias> {
@@ -433,12 +432,18 @@ interface ModelHandle<A extends ModelAlias> {
 }
 ```
 
-The harness injects `model`, `signal`, trace context, and merged defaults per
+The Harness injects `model`, `signal`, trace context, and merged defaults per
 call. If the alias does not claim the capability for the method invoked, throw
 `ModelCapabilityError`. If the provider does not implement the method, throw
 `ModelCapabilityError` with `meta.reason: 'method_missing'`.
 
-The displayed `ModelHandle` is conceptual. The actual exported type omits every
+The displayed `ModelHandle` is conceptual and is not a raw workflow context
+surface. A v4 workflow declares exact model aliases and receives the managed,
+capability-projected invokers in
+[spec 42 §7](./42-composable-definitions-and-catalogs.md#7-workflows-own-custom-orchestration).
+Those invokers require a stable `callId`, propagate cancellation and identity,
+emit correlated events, and checkpoint/replay provider calls. Application code
+does not supply the raw signal or invoke context. The actual projected type omits every
 method whose operation capability is absent and narrows `TextRequestInputFor`
 and `ObjectRequestInputFor` by marker capabilities.
 

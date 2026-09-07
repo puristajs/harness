@@ -1,9 +1,16 @@
-# Workflows
+# Workflows (historical detail)
 
 > **V4 authoring precedence:** workflow factories, declared agent/model
 > allowlists, and dispatcher-backed child calls are defined by
 > [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 > Old builder registration examples below are not an implementation contract.
+>
+> Do not use inline builder definitions, `delegation`, string ids, all-agent
+> contexts, raw model handles, or undeclared memory examples below. The coherent
+> v4 workflow contract is spec 42 §7: `defineWorkflow` declares exact agent,
+> tool, and model references; every managed call uses a stable `callId`; model
+> invokers propagate cancellation and checkpointing; and memory is accessed only
+> through an explicitly declared tool.
 
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
 >

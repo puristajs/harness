@@ -1,10 +1,17 @@
-# Agents
+# Agents (historical detail)
 
 > **V4 replacement:** agent authoring and subagent dispatch are defined by
 > [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
 > Standalone `defineAgent` is required, arbitrary agent handlers are removed,
 > and old builder registration examples below are not an implementation
 > contract. Unchanged loop, permission, and lifecycle rules remain normative.
+>
+> Do not use any inline builder definition, arbitrary agent handler,
+> model/tool/Skill string id, direct model registry, or custom-loop example
+> below. The coherent v4 agent contract is spec 42 §5–§6: `defineAgent`
+> describes a configurable loop with direct definition references, exact
+> contracts, safe prompt/response inference, typed subagents, and agent-owned
+> policy. Custom orchestration belongs to `defineWorkflow`.
 
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
 >

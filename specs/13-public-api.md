@@ -1,10 +1,13 @@
-# Public API
+# Public API (v4 migration index)
 
-> **V4 replacement in progress:** the exported authoring and host SPI required
+> **V4 replacement:** the exported authoring, target inference, root stream,
+> catalog, runtime, admission, and host SPI required
 > by [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
-> replaces every contradictory v3 export statement below. This file must be
-> regenerated from the implemented v4 declarations before release; removed
-> builder/module symbols are not retained.
+> replaces every contradictory v3 export statement below. Sections below that
+> describe the v3 core main entry are historical inventory only. They cannot
+> add a v4 export or weaken spec 42. The implementation must regenerate this
+> inventory from declarations before release; removed builder/module symbols
+> are not retained.
 
 > **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, model projection, error, provider, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other authoring exports.
 

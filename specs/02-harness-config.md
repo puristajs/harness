@@ -1,8 +1,13 @@
-# Harness configuration
+# Harness configuration (historical detail)
 
 > **V4 replacement:** public construction, definition registration, model
 > requirement inference, and runtime binding are defined by
 > [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+> `defineHarness({name,revision?,defaults?})` composes only immutable
+> agent/workflow roots through `.addAgent`, `.addWorkflow`, and `.use`, then
+> receives providers and adapters through `getInstance`. All chainable model,
+> tool, Skill, MCP, inline agent/workflow, module, `.requires`, and `.build()`
+> syntax below is obsolete historical material and does not define v4 behavior.
 > Builder and static-module APIs described below are removed and are not an
 > implementation contract.
 

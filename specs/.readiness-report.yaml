@@ -702,3 +702,50 @@ clean_builder_and_runtime_api_2026_08_30:
     implementation_wave_readiness:
       status: passed
   implementation_status: implemented
+
+harness_v4_minimal_dx_refinement_2026_09_07:
+  status: needs_independent_review
+  authority: specs/42-composable-definitions-and-catalogs.md
+  human_approval:
+    status: passed
+    approved_at: "2026-09-07"
+    source: "Repository owner approved the minimal immutable catalog/runtime design and requested autonomous spec refinement in the active Codex task."
+  scope:
+    specs:
+      - specs/00-overview.md
+      - specs/02-harness-config.md
+      - specs/03-foundation.md
+      - specs/06-models.md
+      - specs/09-agents.md
+      - specs/10-workflows.md
+      - specs/13-public-api.md
+      - specs/15-error-catalog.md
+      - specs/42-composable-definitions-and-catalogs.md
+      - specs/README.md
+  approval_evidence:
+    scope_digest: "sha256:9c5fdb427f0264de55b6f37f42c38f9e212d78f98e035b4da91980b5a749cc5e"
+    digest_algorithm: "SHA-256 each raw scoped file, byte-sort complete shasum rows, then SHA-256 those rows."
+  confirmed_decisions:
+    - "defineCatalog is the only immutable public registry-like abstraction; direct references grant capabilities and public maps contain explicit exports only."
+    - "Harness composes only explicit agent/workflow roots through addAgent, addWorkflow, and use; recursive closure remains private and non-callable."
+    - "Agents infer prompt, response mode, updates, and exact interrupts; target contracts, definitions, catalogs, and Harness expose one consistent $infer shape."
+    - "Workflows declare exact agent, tool, and model references; managed calls use stable call ids and undeclared memory is unavailable."
+    - "Runtime model configuration uses additive model plus exact non-primary models; storage and memory remain legal optional enhancements when not required."
+    - "Public streams separate exact root events from correlated nested events, expose a typed aggregate result, and support typed approval resume and AI SDK UI v1 projection."
+    - "inMemoryAgentAdmission provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local admission; durable queueing remains host-owned."
+  deterministic_checks:
+    git_diff_check:
+      command: "git diff --check"
+      status: passed
+    scoped_ambiguity_scan:
+      status: passed
+      patterns: "TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort|replacement in progress"
+    strict_spec_checker:
+      command: "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs specs"
+      status: not_applicable_legacy_flat_layout
+      evidence: "The checker requires a scoped spec package with 00-vision, 03-contracts, manifests, and policy artifacts. This repository's historical flat aggregate fails those pre-existing structural requirements; no scoped deterministic finding was hidden."
+  independent_semantic_review:
+    status: pending_final_confirmation
+    evidence: "An independent judge identified exact-event, admission, permission-default, workflow-tool, finite-history, response-mode, and DX gaps. All reported findings were repaired; the spec author cannot self-approve the final semantic gate."
+  blocking_findings_count: 0
+  implementation_status: blocked_on_independent_semantic_confirmation

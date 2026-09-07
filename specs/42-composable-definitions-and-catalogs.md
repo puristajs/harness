@@ -1,8 +1,8 @@
 # Composable definitions and catalogs
 
-**Status:** repository-owner-approved clean-break contract, independently verified.
+**Status:** repository-owner-approved clean-break contract; deterministic checks complete, independent semantic re-review required after this refinement.
 
-**Decision date:** 2026-09-04.
+**Decision date:** 2026-09-07.
 
 This specification replaces the public construction, registration, agent,
 workflow, tool, Skill, module, and runtime-instantiation API described by specs
@@ -82,13 +82,19 @@ Definitions are ordinary imported values. They do not use `BuilderState`,
 callback identity wrappers, `getDefinition()`, `.define()`, `.build()`, or a
 global process registry.
 
-Every fluent `add*` and `use` call returns a new frozen Harness definition and
-never mutates its receiver. Adding an agent or workflow recursively collects
-the branded tool, Skill, MCP server, and agent definitions it references. The
-public catalog view is the flattened, deduplicated dependency closure. Authors
-may add leaf definitions explicitly for reusable catalogs, but never need to
-repeat dependencies reachable from a root. Foreign structural lookalikes and
-different hidden identities with the same `(kind, id)` fail graph compilation.
+Every fluent `addAgent`, `addWorkflow`, and `use` call returns a new frozen
+Harness definition and never mutates its receiver. These are the only Harness
+composition methods. A Harness has an explicit executable-root set and a
+separate recursive dependency closure. Adding an agent or workflow makes only
+that target a root, then recursively collects the branded tool, Skill, MCP
+server, and agent definitions it references. Using a catalog makes only the
+agents and workflows explicitly listed by that catalog roots; its listed leaf
+definitions remain reusable authoring exports and become runtime dependencies
+only when a root references them. Passing a leaf-only catalog to `.use(...)` is
+a compile-time error and an erased-type runtime configuration error because it
+would activate nothing; consumers instead reference its typed leaf maps from an
+agent or workflow. Foreign structural lookalikes and different hidden identities with the
+same `(kind, id)` fail graph compilation.
 
 Each agent and workflow exposes a self-contained `HarnessTargetContract` with
 literal `kind`, literal `id`, optional description, input/output Standard JSON
@@ -130,7 +136,63 @@ interface HarnessTargetContract<
   readonly executionModes: readonly ['run', 'stream']
   readonly updates: Updates
   readonly interrupts: Interrupts
+  readonly $infer: HarnessTargetInference<Input, Output, Updates, Interrupts>
 }
+
+type HarnessInterruptForKinds<
+  Kinds extends readonly HarnessInterruptKind[],
+> =
+  | ('tool-approval' extends Kinds[number] ? ToolApprovalInterrupt : never)
+  | ('external-wait' extends Kinds[number]
+      ? Extract<HarnessInterrupt, { readonly type: 'external-wait' }>
+      : never)
+
+type HarnessUpdateFor<
+  Output extends ModelSchema,
+  Updates extends HarnessOutputUpdateKind,
+> = Updates extends 'text-delta'
+  ? string
+  : Updates extends 'object-snapshot'
+    ? JsonValue
+    : never
+
+interface HarnessTargetInference<
+  Input extends ModelSchema,
+  Output extends ModelSchema,
+  Updates extends HarnessOutputUpdateKind,
+  Interrupts extends readonly HarnessInterruptKind[],
+> {
+  readonly input: InferIn<Input> & JsonValue
+  readonly validatedInput: Infer<Input> & JsonValue
+  readonly output: Infer<Output> & JsonValue
+  readonly update: HarnessUpdateFor<Output, Updates>
+  readonly interrupt: HarnessInterruptForKinds<Interrupts>
+}
+
+interface DefinitionInference<
+  Input extends Schema,
+  Output extends Schema,
+> {
+  readonly input: InferIn<Input> & JsonValue
+  readonly validatedInput: Infer<Input> & JsonValue
+  readonly output: Infer<Output> & JsonValue
+}
+
+type HarnessTargetDefinitionInference<
+  Contract extends AnyHarnessTargetContract,
+> = Contract['$infer']
+
+type McpServerInference<
+  Tools extends Readonly<Record<string, McpToolDefinition<any, any, any>>>,
+> = Readonly<{
+  tools: Readonly<{
+    [Name in keyof Tools]: Tools[Name]['$infer']
+  }>
+}>
+
+type SkillInference<Runtimes extends readonly SkillRuntimeId[]> = Readonly<{
+  runtimes: Runtimes
+}>
 
 type AnyHarnessTargetContract = HarnessTargetContract<
   HarnessTargetKind,
@@ -142,19 +204,33 @@ type AnyHarnessTargetContract = HarnessTargetContract<
 >
 
 type HarnessTargetInput<Target> =
-  Target extends HarnessTargetContract<any, any, infer Input, any, any, any>
-    ? InferIn<Input> & JsonValue
+  Target extends HarnessTargetContract<any, any, any, any, any, any>
+    ? Target['$infer']['input']
     : never
 
 type HarnessValidatedTargetInput<Target> =
-  Target extends HarnessTargetContract<any, any, infer Input, any, any, any>
-    ? Infer<Input> & JsonValue
+  Target extends HarnessTargetContract<any, any, any, any, any, any>
+    ? Target['$infer']['validatedInput']
     : never
 
 type HarnessTargetOutput<Target> =
-  Target extends HarnessTargetContract<any, any, any, infer Output, any, any>
-    ? Infer<Output> & JsonValue
+  Target extends HarnessTargetContract<any, any, any, any, any, any>
+    ? Target['$infer']['output']
     : never
+
+type HarnessTargetRunOutcome<
+  Target extends AnyHarnessTargetContract,
+> = RunOutcome<
+  Target['$infer']['output'],
+  Target['$infer']['interrupt']
+>
+
+type HarnessTargetExecutionTerminalOutcome<
+  Target extends AnyHarnessTargetContract,
+> = ExecutionTerminalOutcome<
+  Target['$infer']['output'],
+  Target['$infer']['interrupt']
+>
 
 const harnessExecutionEventTypesV1 = Object.freeze([
   'run.started',
@@ -238,6 +314,7 @@ type ExecutionEvent<
       type: 'model.completed'
       agentId?: string
       workflowId?: string
+      callId?: string
       modelAlias: string
       streamId?: string
       operation: 'text' | 'object' | 'textStream' | 'objectStream'
@@ -247,6 +324,9 @@ type ExecutionEvent<
   | Readonly<{
       type: 'model.embedding.completed'
       agentId?: string
+      workflowId?: string
+      callId?: string
+      modelAlias: string
       count: number
       dimensions?: number
       usage?: TokenUsage
@@ -254,6 +334,9 @@ type ExecutionEvent<
   | Readonly<{
       type: 'model.rerank.completed'
       agentId?: string
+      workflowId?: string
+      callId?: string
+      modelAlias: string
       count: number
       topN?: number
       usage?: TokenUsage
@@ -263,6 +346,7 @@ type ExecutionEvent<
       id: string
       agentId?: string
       workflowId?: string
+      callId?: string
       modelAlias?: string
       delta: string
     }>
@@ -271,6 +355,7 @@ type ExecutionEvent<
       id: string
       agentId?: string
       workflowId?: string
+      callId?: string
       modelAlias?: string
       value: JsonValue
     }>
@@ -279,6 +364,7 @@ type ExecutionEvent<
       id: string
       agentId?: string
       workflowId?: string
+      callId?: string
       modelAlias: string
       operation: 'image' | 'speech' | 'video'
       artifact: ArtifactReference
@@ -288,6 +374,7 @@ type ExecutionEvent<
       id: string
       agentId?: string
       workflowId?: string
+      callId?: string
       modelAlias: string
       operation: 'video'
       state: 'queued' | 'running'
@@ -417,18 +504,120 @@ type ExecutionEvent<
     }>
   | Readonly<{ type: 'stream.overflow'; at: string; dropped: number }>
 )
+
+type RootExecutionEventCorrelation = Readonly<{
+  eventId: string
+  sequence: number
+  runId: string
+  parentRunId?: never
+  parentInvocationId?: never
+}>
+
+type NestedExecutionEvent = ExecutionEvent & Readonly<{
+  parentRunId: string
+  parentInvocationId: string
+}>
+
+type StripExecutionEventCorrelation<Event> =
+  Event extends ExecutionEventCorrelation & infer Payload
+    ? Payload
+    : never
+
+type ExecutionEventPayload<Output, Interrupt> =
+  StripExecutionEventCorrelation<ExecutionEvent<Output, Interrupt>>
+
+type RootAlwaysEventPayload<Output, Interrupt> = Exclude<
+  ExecutionEventPayload<Output, Interrupt>,
+  | { readonly type: 'run.finished' }
+  | { readonly type: 'output.text.delta' }
+  | { readonly type: 'output.object.snapshot' }
+  | { readonly type: 'approval.requested' | 'approval.responded' }
+  | { readonly type:
+      | 'external_wait.requested'
+      | 'external_wait.waiting'
+      | 'external_wait.resolved' }
+>
+
+type RootUpdateEventPayload<Target extends AnyHarnessTargetContract> =
+  Target['updates'] extends 'text-delta'
+    ? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, {
+        readonly type: 'output.text.delta'
+        readonly delta: string
+      }>
+    : Target['updates'] extends 'object-snapshot'
+      ? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, {
+          readonly type: 'output.object.snapshot'
+          readonly value: JsonValue
+        }>
+      : never
+
+type RootInterruptEventPayload<Target extends AnyHarnessTargetContract> =
+  | ('tool-approval' extends Target['interrupts'][number]
+      ? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, {
+          readonly type: 'approval.requested' | 'approval.responded'
+        }>
+      : never)
+  | ('external-wait' extends Target['interrupts'][number]
+      ? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, {
+          readonly type:
+            | 'external_wait.requested'
+            | 'external_wait.waiting'
+            | 'external_wait.resolved'
+        }>
+      : never)
+
+type RootExecutionEventFor<Target extends AnyHarnessTargetContract> =
+  RootExecutionEventCorrelation & (
+    | RootAlwaysEventPayload<
+        Target['$infer']['output'],
+        Target['$infer']['interrupt']
+      >
+    | RootUpdateEventPayload<Target>
+    | RootInterruptEventPayload<Target>
+    | Readonly<{
+        type: 'run.finished'
+        at: string
+        outcome: HarnessTargetExecutionTerminalOutcome<Target>
+      }>
+  )
+
+type HarnessTargetExecutionEvent<
+  Target extends AnyHarnessTargetContract,
+> = RootExecutionEventFor<Target> | NestedExecutionEvent
 ```
 
-Every target supports aggregate `run` and progressive `stream`. A text agent
-has `updates: 'text-delta'`; an agent with any explicit output schema has
-`updates: 'object-snapshot'`. An agent contract declares
-`interrupts: ['tool-approval']` because its declared permission or governance
-policy may require approval for selected capabilities. A workflow has `updates: 'none'`: it may
-relay child, model, progress, artifact, and terminal events, but its custom
-handler cannot manufacture output updates. A workflow declares
-`interrupts: ['tool-approval', 'external-wait']`. These arrays describe the
-portable protocol families a client must understand; they do not claim that a
-particular run will interrupt.
+Every target supports aggregate `run` and progressive `stream`. An agent whose
+effective response is text has `updates: 'text-delta'`; an agent whose effective
+response is structured has `updates: 'object-snapshot'`. A workflow has
+`updates: 'none'`: it may relay child, model, tool, progress, artifact, and
+terminal events, but its custom handler cannot manufacture output updates.
+
+Interrupt arrays are exact graph facts. An agent includes `tool-approval` only
+when its own permission/governance declarations or a recursively reachable
+subagent can request approval. A workflow includes `tool-approval` only when a
+declared agent or a recursively reachable subagent can request it, and includes
+`external-wait` only when the workflow declares `durable: true` and therefore
+has the external-wait capability. The normalized order is `tool-approval`, then
+`external-wait`; absent families are omitted. `RunOutcome`, `ExecutionEvent`,
+standalone invokers, host exports, and adapters use that exact inferred
+interrupt union rather than the broad global `HarnessInterrupt` union.
+
+Every target contract and every tool, agent, workflow, catalog, and Harness
+definition exposes `$infer`. It is a type-only convenience whose one shared
+runtime value is a non-enumerable frozen empty object. Target inference is
+owned by `HarnessTargetContract.$infer` and contains exactly `input`,
+`validatedInput`, `output`, `update`, and `interrupt`; definition inference
+aliases the same equations rather than copying them. Catalog and Harness
+inference map only their executable roots and add `requirements`. `$infer`
+never enters inspection, serialization, export metadata, hashing, or a provider
+request.
+
+Native, built-in, host-aware, and MCP tool definitions use
+`DefinitionInference<input, output>`. An MCP server uses
+`McpServerInference<tools>`. A Skill uses `SkillInference<runtimes>`. Agent and
+workflow definitions use their exact `contract.$infer`. The factory attaches
+the non-enumerable property before the value is frozen; a public type must never
+declare `$infer` without the corresponding runtime property.
 
 `harnessExecutionEventTypesV1` is the frozen canonical event-type inventory
 used by standalone inspection, host export, and protocol adapters. The exact
@@ -509,9 +698,19 @@ Harness exports immutable built-in tool references through `builtInTools`:
 in the ordinary `tools` array. Each contributes its exact sandbox capabilities;
 `bash` contributes `sandbox.exec`, `grep` contributes `sandbox.text_search`,
 and `read`, `write`, `edit`, `glob`, and `list` contribute `sandbox.fs`.
-Agent permissions constrain selected tools but never
+Agent permissions govern selected tools but never
 select a tool or grant its underlying sandbox capability. A Skill runtime
 requirement never adds a built-in tool automatically.
+
+Built-ins have fixed safe permission defaults. `read`, `glob`, `grep`, and
+`list` default to `allow` inside the already authorized sandbox scope;
+`bash`, `write`, and `edit` default to `require_approval`. `read_skill` keeps
+its separate synthesized `allow` default below. An explicit agent permission
+rule may choose another effect for a selected built-in, so allowing mutation
+or execution without review is a visible application decision. The synthesized
+approval defaults participate in exact approval reachability and make durable
+storage mandatory. They run through the ordinary permission, governance,
+Guardrail, event, and resume pipeline; there is no privileged built-in path.
 
 ### 3.2 Host-aware tools
 
@@ -605,6 +804,9 @@ type McpBinding =
       transport: 'http'
       url: string
       headers?: Readonly<Record<string, string>>
+      resolveHeaders?: (
+        context: McpRequestHeaderContext,
+      ) => Promise<Readonly<Record<string, string>>> | Readonly<Record<string, string>>
     }
   | {
       transport: 'stdio'
@@ -613,12 +815,32 @@ type McpBinding =
       env?: Readonly<Record<string, string>>
       sandbox: SpawnCapableSandbox
     }
+
+interface McpRequestHeaderContext {
+  readonly serverId: string
+  readonly toolId: string
+  readonly sessionId: string
+  readonly runId: string
+  readonly agentId: string
+  readonly callId: string
+  readonly identity?: HarnessIdentity
+  readonly signal: AbortSignal
+}
 ```
 
 It selects `http` or `stdio` and supplies URL,
 authenticated headers, and connection options for HTTP, or command, arguments,
 minimal environment, and a spawn-capable sandbox for stdio. Agents select exact
 MCP tool references.
+For HTTP calls, `resolveHeaders` is an optional per-invocation credential
+projection. It runs after approval and immediately before the request, receives
+only bounded identity and correlation data, and returns string header values.
+Static and resolved maps are copied and merged with resolved values taking
+precedence; neither map is mutated. The callback is never used for startup
+discovery, which uses static headers only, and its function or returned secrets
+never enter inspection, events, logs, telemetry, persistence, or error metadata.
+First-party HTTP transport adapters should support this field so tenant-scoped
+credentials do not require one Harness instance per tenant.
 Core's Streamable HTTP transport disables redirect following for every MCP
 request (`RequestInit.redirect: 'error'`, or an equivalent transport guarantee
 that performs no request to the redirect target). A 3xx response therefore
@@ -880,9 +1102,6 @@ const transactionAnalyst = defineAgent('transactionAnalyst', {
   input: transactionAnalysisInputSchema,
   output: transactionAnalysisOutputSchema,
   instructions: 'Use the supplied facts and return a concise assessment.',
-  prompt: input => [
-    { role: 'user', content: [{ kind: 'text', text: JSON.stringify(input) }] },
-  ],
   tools: [getTransaction],
   skills: [transactionAnalysis],
   guardrails: transactionGuardrails,
@@ -914,14 +1133,15 @@ The definition-time fields are closed and have these requirement effects:
 | `description` | optional nonempty string | none |
 | `model` | `ModelAliasId`, default `primary` | selected output/tool/input capabilities |
 | `input` | Standard JSON Schema; omission means Harness string schema | none |
-| `output` | Standard JSON Schema; omission means text | object/object-stream when present |
+| `output` | Standard JSON Schema; omission means Harness string schema | inferred text or structured mode |
+| `responseMode` | optional `text | structured`; required only for an ambiguous output projection | selected response capabilities |
 | `instructions` | string | none |
-| `prompt` | pure `(input) => UserModelMessage | readonly UserModelMessage[]` | content kinds validated below |
+| `prompt` | optional pure `(input) => UserModelMessage | readonly UserModelMessage[]`; Harness supplies the safe text default below | content kinds validated below |
 | `inputCapabilities` | readonly `vision_input | audio_input | file_input` ids | selected model capabilities |
 | `tools` | readonly branded tool references | tool and adapter requirements |
 | `skills` | readonly Skill references | `tool_use` and scoped reader; runtime-bearing Skills add runtimes, `sandbox.fs`, and `sandbox.readonly_mount` |
 | `guardrails` | `AgentGuardrailsBinding<Requirements>` | its exact declared requirements |
-| `permissions` | existing `AgentPermissions` | restriction only; `require_approval` adds durable storage |
+| `permissions` | existing `AgentPermissions`; omitted occurrences use safe built-in defaults | every effective `require_approval` adds durable storage |
 | `governance` | `AgentGovernanceInput<Tools, Skills, Subagents>` | policies are scoped to this agent's complete model-facing binding map; any declared `require_approval` effect adds durable storage |
 | `subagents` | typed agent map | graph closure and delegation tools |
 | `loop` | closed positive integer limits | none |
@@ -1322,13 +1542,22 @@ Tool, Skill, and subagent properties accept typed definition references, not
 manually synchronized string ids. The Harness compiler converts them into
 provider-facing names and schemas.
 
-If `input` is omitted, it is a string. If `output` is omitted, the agent is a
-text agent and its final output is a string. Supplying `output` makes the agent
-a structured agent. If `model` is omitted, the alias is `primary`. `run`
-aggregates with `text` or `object`; `stream` always uses the provider's real
-`textStream` or `objectStream` operation. Text agents produce text deltas and
-structured agents produce object snapshots. Agent authors do not configure a
-separate `updates` or buffering mode.
+If `input` or `output` is omitted, that boundary uses the Harness string
+schema. If `model` is omitted, the alias is `primary`. The response operation is
+derived from the normalized Standard JSON Schema projection of the validated
+output: an unambiguously string-only top-level schema selects `text` and
+`textStream`; an unambiguously non-string JSON schema selects `object` and
+`objectStream`. A projection whose top-level value family cannot be decided
+statically, including an unresolved `$ref`, an unconstrained schema, or a union
+that includes both string and non-string values, requires the explicit
+`responseMode: 'text' | 'structured'` discriminator. An explicit matching choice is
+also valid for an unambiguous schema; only a semantically incompatible choice
+is rejected during definition compilation. `responseMode: 'structured'` is not a
+portable escape hatch for a string-only schema because first-party structured
+provider contracts require a non-string JSON result. Text mode retains final
+validation through the declared output schema. Text agents produce text deltas
+and structured agents produce object snapshots. Agent authors do not configure
+a separate `updates` or buffering mode.
 
 Output disclosure is derived only from the final-output safety boundary. When
 the agent has no `beforeOutput` Guardrail, `stream` relays text deltas or object
@@ -1359,7 +1588,7 @@ already reached the consumer; only `beforeOutput` is a pre-disclosure output
 safety boundary. Existing stream ids plus `model.completed` delimit provider
 turns for the AI SDK UI projection.
 
-A non-string input must declare a pure prompt mapper:
+A prompt mapper is optional, including for structured JSON input:
 
 ```ts
 const classify = defineAgent('classify', {
@@ -1376,12 +1605,17 @@ The mapper receives validated input and returns one provider-neutral user
 message or a readonly list of user messages. Every returned message has the
 literal role `user`; input cannot create system, assistant, or tool history. It
 cannot access tools, models, agents, storage, resources, or the network.
-Session history is composed after prompt mapping. Omitting `prompt` is
-valid only when `input` is omitted. Supplying any `output` schema, including a
-string schema, selects structured model mode; omit `output` for a text agent.
-For a structured input, `inputCapabilities` statically allow non-text prompt
-parts and contribute to the model requirement. Runtime rejects image, audio, or
-file content returned without its declared capability before provider I/O.
+Session history is composed after prompt mapping. When `prompt` is omitted,
+Harness maps a validated string directly to one user text part and maps every
+other validated JSON value to one user text part containing the canonical JSON
+encoding defined by this specification. This default is deterministic and
+never invokes `toString()` or an application serializer. If
+`inputCapabilities` contains `vision_input`, `audio_input`, or `file_input`, an
+explicit prompt mapper is required so media is projected intentionally rather
+than stringified. Those capabilities statically allow the corresponding
+provider-neutral content parts and contribute to the selected model
+requirement. Runtime rejects image, audio, or file content returned without its
+declared capability before provider I/O.
 
 For each agent, effective model-facing names must be unique across portable
 tools, MCP local tool ids, built-in tools, and subagent object keys. A collision
@@ -1407,10 +1641,13 @@ const answerQuestion = defineAgent('answerQuestion', {
 ```
 
 The object key is the provider-facing delegation name. The referenced agent
-provides its input schema, output schema, and stable identity. The generated
-tool description is the referenced agent's non-empty `description` when one is
-present; otherwise it is exactly `Delegate to the "<agent-id>" agent.`. A long
-form may override only the parent-facing description with a non-empty string:
+provides its input schema, output schema, and stable identity. Direct shorthand
+is accepted only when the referenced child has a non-empty `description`; that
+description becomes the generated delegation-tool description. A child without
+one must use the long form below with a non-empty parent-facing description.
+Harness never invents a generic delegation description because that leaves the
+model without meaningful selection guidance. Long form may also refine a
+child's general description for this parent:
 
 ```ts
 subagents: {
@@ -1494,7 +1731,8 @@ type HarnessTargetDispatchRequest<
   invocation: HarnessNestedTargetDispatchInvocation
 }>
 
-interface HarnessTargetDispatchStream<O> extends AsyncIterable<ExecutionEvent<O>> {
+interface HarnessTargetDispatchStream<Output, Interrupt = HarnessInterrupt>
+  extends AsyncIterable<ExecutionEvent<Output, Interrupt>> {
   cancel(reason?: string): Promise<void>
 }
 
@@ -1521,7 +1759,10 @@ interface HarnessTargetDispatcher {
   ): HarnessTargetRouteReceiptV1
   open<Target extends AnyHarnessTargetContract>(
     request: HarnessTargetDispatchRequest<Target>,
-  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetDispatchStream<
+    Target['$infer']['output'],
+    Target['$infer']['interrupt']
+  >>
   openPersisted(
     request: PersistedHarnessTargetDispatchRequest,
   ): Promise<HarnessTargetDispatchStream<JsonValue>>
@@ -1681,9 +1922,9 @@ const resolveSupportCase = defineWorkflow('resolveSupportCase', {
     classify: classifySupportCase,
     answer: answerQuestion,
   },
+  tools: [saveKnowledgeChunks],
   models: {
     embeddings: {
-      alias: 'embeddings',
       capabilities: ['embeddings'],
     },
   },
@@ -1692,36 +1933,154 @@ const resolveSupportCase = defineWorkflow('resolveSupportCase', {
       context.input,
       { callId: 'classifyCase' },
     )
-    return context.agents.answer.run({
+    const answer = await context.agents.answer.run({
       question: context.input.message,
       classification,
     }, { callId: 'answerCase' })
+    await context.tools.saveKnowledgeChunks.run(
+      { caseId: context.input.id, text: answer.text },
+      { callId: 'storeAnswer' },
+    )
+    return answer
   },
 })
 ```
 
-The `agents` and `models` declarations form the exact typed context allowlist.
+The `agents`, `tools`, and `models` declarations form the exact typed context
+allowlist. `tools` uses the same concise reference array as an agent and the
+context map is derived from each definition's literal id. Duplicate tool ids
+are rejected even when their hidden identities differ; v4 has no tool-alias
+form. Each value is an exact imported definition reference; there are no string
+ids or runtime registry lookups. A workflow model entry's key is its model alias
+by default. An optional `alias` is permitted only as an explicit remap to a
+different runtime alias and is rejected when it redundantly equals the key.
 Workflows may implement sequencing, branching, parallelism, retries, durable
 steps, waits, approvals, embeddings, reranking, media generation, and explicit
-agent calls. They retain the existing bounded fan-out and child-task APIs.
+agent and tool calls. They retain the existing bounded fan-out and child-task APIs.
 Workflow agent calls use the same `HarnessTargetDispatcher` as model-selected
-subagents. A workflow cannot access an undeclared agent or model through a
+subagents. A workflow cannot access an undeclared agent, tool, or model through a
 registry lookup.
 
-Inside a workflow, every agent call requires a stable `callId` identifying one
-logical child call and matching the durable step-id grammar. Re-entering the
-handler with the same `callId`, target, and canonically equivalent JSON wire
-input replays the saved result. Reuse with another target or input fails
-closed. Parallel logical child calls use distinct ids. Workflow child-call ids
-and `context.step` ids occupy separate internal namespaces. Declared invokers
-return the typed child output:
-`context.agents.classify.run(input, { callId }): Promise<ClassifyOutput>`.
+The model declaration and invocation pattern is:
+
+```ts
+type WorkflowModelMap = Readonly<Record<ModelAliasId, Readonly<{
+  readonly alias?: ModelAliasId
+  readonly capabilities: readonly [ModelCapability, ...ModelCapability[]]
+}>>>
+
+interface WorkflowModelCallOptions {
+  readonly callId: string
+  readonly idempotencyKey?: string
+  readonly timeoutMs?: number
+}
+
+const vectors = await context.models.embeddings.embed(
+  { input: chunks.map(chunk => chunk.text) },
+  { callId: 'embedChunks' },
+)
+```
+
+Workflow model invokers retain the capability-projected `text`, `textStream`,
+`object`, `objectStream`, `embed`, `rerank`, `image`, `speech`, `video`, and
+`videoStream` methods from `ModelHandle`, but remove the public `signal` and raw
+model-invoke-context parameters and append `WorkflowModelCallOptions`. Harness
+supplies the workflow signal, identity, trace, run/session/workflow ids,
+admission, defaults, events, and telemetry. Every model call requires a stable
+`callId`; this keeps one pattern for ephemeral and durable workflows and avoids
+a later source rewrite when durability is added. Provider request tools do not
+create an executable loop here: use an agent when a model must select tools.
+
+Every workflow model call is a managed logical call. A completed non-streaming
+result, or the complete validated chunk sequence and terminal result of a
+streaming call, is checkpointed under the workflow call id before the handler
+continues. Re-entry replays that saved value or finite chunk sequence without
+another provider request or charge. A stream interrupted before its valid
+terminal chunk has no completed call result and is retried from the beginning;
+already published events retain deterministic ids so persistence remains
+idempotent. The operation name participates in replay identity, and changing
+method, alias, request, or normalized options for an existing call id fails
+before provider admission.
+
+Embedding, rerank, and media events include `workflowId`, `modelAlias`,
+`callId`, and the existing stable output or operation id. Text and object events
+from direct workflow model calls carry the same workflow correlation. No
+workflow model call exposes a provider object, provider-native stream,
+credential, or general model registry.
+
+The workflow tool surface is exact:
+
+```ts
+type WorkflowToolDefinitions = readonly AnyToolDefinition[]
+
+type WorkflowToolMap<
+  Tools extends WorkflowToolDefinitions | undefined,
+> = Readonly<{
+  [Tool in NonNullable<Tools>[number] as Tool['id']]: Tool
+}>
+
+interface WorkflowToolCallOptions {
+  readonly callId: string
+  readonly idempotencyKey?: string
+  readonly timeoutMs?: number
+}
+
+interface WorkflowToolInvoker<Tool extends AnyToolDefinition> {
+  run(
+    input: Tool['$infer']['input'],
+    options: WorkflowToolCallOptions,
+  ): Promise<Tool['$infer']['output']>
+}
+
+type WorkflowToolInvokers<
+  Tools extends WorkflowToolDefinitions | undefined,
+> =
+  Readonly<{
+    [Name in keyof WorkflowToolMap<Tools>]:
+      WorkflowToolInvoker<WorkflowToolMap<Tools>[Name]>
+  }>
+```
+
+A direct workflow tool call requires a stable `callId` and enters the same
+definition-authentic binding, input/output validation, host overlay, identity,
+trace, timeout, cancellation, event, telemetry, and checkpoint machinery as a
+model-selected tool call. Agent-owned permission, governance, and Guardrail
+policy are not silently borrowed by a workflow; authorization for a host-aware
+tool remains in the host framework's ordinary business guard, and a portable
+tool exposes only its declared requirements. A host-aware tool retains its
+declared nested target calls and resumable interruption behavior. Workflow
+tool calls never invoke a handler directly and never expose the private binding
+registry.
+
+A workflow tool call is trusted application-controlled orchestration: the
+application handler selected the exact imported tool definition and supplied
+its input. It therefore does not run an agent's exposure, permission,
+governance, approval, or agent Guardrail pipeline. It still validates the
+declared input before execution and output before return, applies the declared
+timeout and cancellation, supplies the ordinary portable or host-owned tool
+context, emits correlated tool lifecycle events, and records the managed-call
+checkpoint before the handler continues. A business authorization decision for
+a PURISTA host tool belongs in that tool's service guard. Applications that
+need model-selected policy behavior call an agent instead of weakening this
+workflow boundary.
+
+Inside a workflow, every agent or tool call requires a stable `callId`
+identifying one logical call and matching the durable step-id grammar.
+Re-entering the handler with the same operation, `callId`, target, and
+canonically equivalent JSON wire input replays the saved result. Reuse with a
+different operation, target, input, or normalized options fails closed.
+Parallel logical calls use distinct ids. Workflow call ids and `context.step`
+ids occupy separate internal namespaces. Declared invokers return exact typed
+outputs:
+`context.agents.classify.run(input, { callId }): Promise<ClassifyOutput>` and
+`context.tools.saveKnowledgeChunks.run(input, { callId }): Promise<StoreOutput>`.
 Public Harness
-and host invokers still return `RunOutcome<Output>`. The workflow runtime
+and host invokers still return the target's exact
+`RunOutcome<Output, Interrupt>`. The workflow runtime
 implements the internal convenience by consuming `HarnessTargetDispatcher.open()` and
-checkpointing completed steps. A child interrupt suspends the root outcome;
-resume continues from the child checkpoint and does not repeat completed child
-calls. Arbitrary workflow side effects are replay-safe only when wrapped in
+checkpointing completed calls. A nested interrupt suspends the root outcome;
+resume continues from the nested checkpoint and does not repeat completed agent
+or tool calls. Arbitrary workflow side effects are replay-safe only when wrapped in
 `context.step`; Harness cannot prevent repetition of unmanaged effects when a
 handler is re-entered. Existing child-task fan-out is restricted to the
 workflow's declared agent map and uses the same dispatcher.
@@ -1744,6 +2103,7 @@ type WorkflowContext<
   Input extends ModelSchema,
   Output extends ModelSchema,
   Agents extends WorkflowAgentMap | undefined,
+  Tools extends WorkflowToolDefinitions | undefined,
   Models extends WorkflowModelMap | undefined,
   ChildTaskSandboxGroups extends readonly string[],
   Durable extends true | undefined,
@@ -1751,6 +2111,7 @@ type WorkflowContext<
   Input,
   Output,
   Agents,
+  Tools,
   Models,
   ChildTaskSandboxGroups
 >
@@ -1853,11 +2214,13 @@ type WorkflowContextBase<
   Input extends ModelSchema,
   Output extends ModelSchema,
   Agents extends WorkflowAgentMap | undefined,
+  Tools extends WorkflowToolDefinitions | undefined,
   Models extends WorkflowModelMap | undefined,
   ChildTaskSandboxGroups extends readonly string[],
 > = Readonly<{
   input: Infer<Input> & JsonValue
   agents: WorkflowAgentInvokers<Agents>
+  tools: WorkflowToolInvokers<Tools>
   models: WorkflowModelHandles<Models>
   logger: Logger
   telemetry: TelemetryShim
@@ -1936,65 +2299,85 @@ metadata `{workflow_id,agent_id,reason,limit}`. Reason is `max_calls` or
 `max_parallel`. No v3 delegation-policy allowlist, model override, or depth
 error participates in this budget.
 
-One `callId` namespace covers direct calls and child-task starts. Its identity
+```ts
+type WorkflowManagedCallOperation =
+  | 'agent_run'
+  | 'tool_run'
+  | 'model_text'
+  | 'model_text_stream'
+  | 'model_object'
+  | 'model_object_stream'
+  | 'model_embed'
+  | 'model_rerank'
+  | 'model_image'
+  | 'model_speech'
+  | 'model_video'
+  | 'model_video_stream'
+```
+
+One `callId` namespace covers direct agent calls, direct tool calls, direct
+model calls, and child-task starts. Its identity
 tuple is `(operation,target,canonical JSON wire input,normalized options)`,
-where operation is `agent_run` or `child_task_start`; `signal` is never part of
-identity. Direct options contain `idempotencyKey|null`. Child-task options
+where operation is a `WorkflowManagedCallOperation` or `child_task_start`;
+`signal` is never part of identity. Direct options contain `idempotencyKey|null` and
+`timeoutMs|null`. Child-task options
 contain `mode`, `idempotencyKey|null`, `timeoutMs|null`, and
 `context:'isolated'`. Equal tuples replay or coalesce to the same output or
 handle. Reuse with a changed operation, target, input, options, or idempotency
 key throws `WorkflowCallReplayConflictError` before budget or effects.
 
-Workflow direct-agent replay uses one exact logical record:
+Workflow direct-agent and direct-tool replay use one exact logical record:
 
 ```ts
-type WorkflowAgentCallStoredErrorV1 =
+type WorkflowCallStoredErrorV1 =
   | Readonly<{
-      code: 'WORKFLOW_CHILD_TARGET_FAILED'
-      message: 'Workflow child target failed.'
+      code: 'WORKFLOW_MANAGED_CALL_FAILED'
+      message: 'Workflow managed call failed.'
       category: 'internal'
       retriable: false
       meta: Readonly<{
-        reason: 'agent_call_failed'
+        reason: 'operation_failed'
         workflow_id: string
         call_id: string
-        target_kind: 'agent'
+        operation: WorkflowManagedCallOperation
+        target_kind: 'agent' | 'tool' | 'model'
         target_id: string
       }>
     }>
   | Readonly<{
       code: 'OPERATION_CANCELLED'
-      message: 'Workflow agent call was cancelled.'
+      message: 'Workflow managed call was cancelled.'
       category: 'cancelled'
       retriable: false
-      meta: Readonly<{ scope: 'agent' }>
+      meta: Readonly<{ scope: 'agent' | 'tool' | 'model' }>
     }>
 
-type WorkflowChildCallStoredOutcomeV1 =
+type WorkflowCallStoredOutcomeV1 =
   | Readonly<{ status: 'completed'; output: JsonValue }>
   | Readonly<{
       status: 'failed'
       error: Extract<
-        WorkflowAgentCallStoredErrorV1,
-        { readonly code: 'WORKFLOW_CHILD_TARGET_FAILED' }
+        WorkflowCallStoredErrorV1,
+        { readonly code: 'WORKFLOW_MANAGED_CALL_FAILED' }
       >
     }>
   | Readonly<{
       status: 'cancelled'
       error: Extract<
-        WorkflowAgentCallStoredErrorV1,
+        WorkflowCallStoredErrorV1,
         { readonly code: 'OPERATION_CANCELLED' }
       >
     }>
 
-interface WorkflowChildCallCheckpointV1 {
+interface WorkflowCallCheckpointV1 {
   readonly schemaVersion: 1
-  readonly kind: 'workflow_child_call'
+  readonly kind: 'workflow_call'
   readonly callId: string
-  readonly target: Readonly<{ kind: 'agent'; id: string }>
+  readonly operation: WorkflowManagedCallOperation
+  readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
   readonly input: JsonValue
-  readonly outcome: WorkflowChildCallStoredOutcomeV1
-  readonly lineage: Readonly<{
+  readonly outcome: WorkflowCallStoredOutcomeV1
+  readonly lineage?: Readonly<{
     rootRunId: string
     workflowRunId: string
     workflowInvocationId: string
@@ -2006,17 +2389,18 @@ interface WorkflowChildCallCheckpointV1 {
 
 The persistent checkpoint key is exactly `workflow:call:<callId>`. Managed
 workflow steps use `workflow:step:<stepId>`, so equal public ids never collide.
-The child-call record is stored as the `RunCheckpoint.output`; the enclosing
+The call record is stored as the `RunCheckpoint.output`; the enclosing
 checkpoint remains the single owner of run, session, lease, worker, attempt,
 sequence, and commit-time fields. `RunCheckpoint.input` is exactly the
-validated root workflow handler input; the child wire input exists only in
-`WorkflowChildCallCheckpointV1.input`. Checkpoint metadata is exactly
-`{checkpointKind:'workflow_child_call',schemaVersion:1}`. No new HarnessStorage
+validated root workflow handler input; the call wire input exists only in
+`WorkflowCallCheckpointV1.input`. Checkpoint metadata is exactly
+`{checkpointKind:'workflow_call',schemaVersion:1}`. No new HarnessStorage
 method or second checkpoint registry is introduced. The record's `input` is the caller's JSON wire value
 before the receiving target's Standard Schema validation or transform.
 Equality uses the canonical JSON encoder defined by this specification, so
 object property order is irrelevant. This preserves the dispatcher contract:
-only the receiving target validates and transforms target input, exactly once.
+only a receiving agent target validates and transforms its target input. A tool
+call uses the common tool pipeline's one input validation.
 
 Each active workflow invocation also owns a map from `callId` to the complete
 operation/target/input/options tuple above and one shared pending or completed
@@ -2030,14 +2414,14 @@ invocation keeps this map only for that invocation: equal ids replay or
 coalesce inside the invocation, but a later independent invocation starts a
 new map. Durable invocations load and commit the namespaced `RunCheckpoint`
 record above. A completed terminal returns its stored validated output. A
-failed terminal rejects with the same canonical `WorkflowChildTargetError`, and
+failed terminal rejects with the same canonical `WorkflowManagedCallError`, and
 a cancelled terminal rejects with the same canonical `OperationCancelledError`;
 both are committed before the handler observes the rejection. A handler may
 therefore catch either error and continue, and later handler re-entry rejects
 the equal call from the stored outcome without dispatching again. The stored
 error is validated as the exact local canonical serialization before its fixed
-class is reconstructed; transported remote class, category, and retriable data
-are never trusted. Cancellation before call admission creates no call-table or
+class is reconstructed; provider, tool, and transported remote class, category,
+and retriable data are never trusted. Cancellation before call admission creates no call-table or
 checkpoint entry. Cancellation after admission, whether transported as the
 target terminal or observed locally while consuming it, uses the same
 `cancelled` outcome; durable commit uses the non-aborted lifecycle signal and
@@ -2048,15 +2432,31 @@ not select `InvokeOptions.durable`, because interruption resume is the same
 logical invocation. H4-008 preserves that access as part of root continuation
 ownership and supplies the stored records when the workflow is re-entered.
 
-Tuple mismatch throws this public error and never includes input, hashes, or
-other content in its message or metadata:
+Managed operation failure and tuple mismatch use these public errors. Neither
+includes input, output, hashes, provider content, or other user content in its
+message or metadata:
 
 ```ts
+class WorkflowManagedCallError extends HarnessError {
+  readonly code: 'WORKFLOW_MANAGED_CALL_FAILED'
+  readonly category: 'internal'
+  readonly retriable: false
+  readonly message: 'Workflow managed call failed.'
+  readonly meta: Readonly<{
+    reason: 'operation_failed'
+    workflow_id: string
+    call_id: string
+    operation: WorkflowManagedCallOperation
+    target_kind: 'agent' | 'tool' | 'model'
+    target_id: string
+  }>
+}
+
 class WorkflowCallReplayConflictError extends HarnessError {
   readonly code: 'WORKFLOW_CALL_REPLAY_CONFLICT'
   readonly category: 'validation'
   readonly retriable: false
-  readonly message: 'Workflow call id conflicts with an existing logical child call.'
+  readonly message: 'Workflow call id conflicts with an existing logical managed call.'
   readonly meta: Readonly<{
     reason:
       | 'operation_mismatch'
@@ -2066,11 +2466,11 @@ class WorkflowCallReplayConflictError extends HarnessError {
       | 'options_mismatch'
     workflow_id: string
     call_id: string
-    expected_operation: 'agent_run' | 'child_task_start'
-    received_operation: 'agent_run' | 'child_task_start'
-    expected_target_kind: 'agent'
+    expected_operation: WorkflowManagedCallOperation | 'child_task_start'
+    received_operation: WorkflowManagedCallOperation | 'child_task_start'
+    expected_target_kind: 'agent' | 'tool' | 'model'
     expected_target_id: string
-    received_target_kind: 'agent'
+    received_target_kind: 'agent' | 'tool' | 'model'
     received_target_id: string
   }>
 }
@@ -2084,8 +2484,8 @@ H4-007 extracts H4-006's already implemented target-stream consumption from
 that same module:
 
 ```ts
-interface ConsumedHarnessTarget<Output> {
-  readonly outcome: ExecutionTerminalOutcome<Output, HarnessInterrupt>
+interface ConsumedHarnessTarget<Output, Interrupt> {
+  readonly outcome: ExecutionTerminalOutcome<Output, Interrupt>
   readonly lineage: Readonly<{
     parentRunId: string
     childRunId: string
@@ -2093,13 +2493,13 @@ interface ConsumedHarnessTarget<Output> {
   }>
 }
 
-function consumeHarnessTargetStream<Output>(options: Readonly<{
-  stream: HarnessTargetDispatchStream<Output>
+function consumeHarnessTargetStream<Output, Interrupt>(options: Readonly<{
+  stream: HarnessTargetDispatchStream<Output, Interrupt>
   signal: AbortSignal
   parentRunId: string
   childInvocationId: string
-  relay(event: ExecutionEvent<Output>): Promise<void>
-}>): Promise<ConsumedHarnessTarget<Output>>
+  relay(event: ExecutionEvent<Output, Interrupt>): Promise<void>
+}>): Promise<ConsumedHarnessTarget<Output, Interrupt>>
 ```
 
 It validates correlation and event shapes, requires exactly one terminal for
@@ -2110,26 +2510,33 @@ and stream on failure or cancellation,
 and returns the already target-validated terminal plus lineage without applying
 a caller-specific error mapping. Subagents and workflows both use it. A second
 terminal consumer or copied validation switch is forbidden. The model-facing
-subagent binding retains H4-006's `ToolError` mapping. A direct workflow call
-returns a completed output, maps `failed` to `WorkflowChildTargetError` reason
-`agent_call_failed`, maps `cancelled` to `OperationCancelledError` with fixed
-message `Workflow agent call was cancelled.` and scope `agent`, and maps
+subagent binding retains H4-006's `ToolError` mapping. A direct workflow agent
+call returns a completed output, maps `failed` to `WorkflowManagedCallError`,
+maps `cancelled` to `OperationCancelledError` with fixed message `Workflow
+managed call was cancelled.` and scope `agent`, and maps
 `interrupted` to the existing package-private
 `HarnessChildTargetInterruption` with that lineage. H4-008 alone
 persists and resumes the root interruption tree. Child-task starts can never
 reach this interrupted branch because approval-capable task targets are
 rejected before dispatch. A `failed` envelope that claims a remote timeout is
-still the target-failure wrapper; its code never selects a local error class.
+still the managed-call wrapper; its code never selects a local error class.
+Direct workflow tool and model calls apply the same failed/cancelled storage
+shape with scope `tool` or `model`; input/options validation failures that occur
+before admission create no logical call record and retain their original
+validation error.
 
-`defineWorkflow` has required Standard JSON Schema `input` and `output` plus a
-required `handler`; optional
-`description`, exact typed `agents`, exact typed `models`, exact
+`defineWorkflow` has a required `handler`; omitted `input` and `output` each
+use the Harness string schema. Optional fields are
+`description`, exact typed `agents`, exact typed `tools`, exact typed `models`, exact
 `agentCalls: WorkflowAgentCallLimits`, exact literal
 `childTaskSandboxGroups`, existing sandbox
 policy, positive integer `maxDepth`, literal `workspace: true`, and literal
 `durable: true`. Its model
 entries declare an alias and nonempty capability list. Workspace and durable
-fields contribute the same requirements as agent fields. Harness options
+fields contribute the same requirements as agent fields. Workflow context has
+no undeclared `memory`; memory access must be represented by a declared tool so
+the dependency, identity, authorization, and replay boundary remain explicit.
+Harness options
 contain only `name` and content-free execution defaults; they never contain
 live adapters.
 
@@ -2175,9 +2582,9 @@ interface ResolvedHarnessExecutionDefaults {
   readonly skillTimeoutMs: number
   readonly decisionTimeoutMs: number
   readonly maxParallelToolCalls: number
-  readonly historyWindow?: number
+  readonly historyWindow: number
   readonly contextProjection?: ContextProjectionPolicy
-  readonly historyRetention?: SessionHistoryRetentionPolicy
+  readonly historyRetention: SessionHistoryRetentionPolicy
 }
 ```
 
@@ -2186,9 +2593,11 @@ The resolved constants are `maxSteps:16`, `maxToolCalls:32`,
 `maxWorkflowAgentCalls:32`, `maxParallelWorkflowAgentCalls:8`, `maxDepth:1`,
 `runTimeoutMs:600_000`, `modelTimeoutMs:300_000`,
 `toolTimeoutMs:120_000`, `skillTimeoutMs:60_000`,
-`decisionTimeoutMs:10_000`, and `maxParallelToolCalls:8`.
-`historyWindow`, `contextProjection`, and `historyRetention` are absent by
-default. `defineHarness` rejects unknown default keys and produces one deeply
+`decisionTimeoutMs:10_000`, `maxParallelToolCalls:8`, `historyWindow:32`, and
+`historyRetention:{maxTurns:100,maxBytes:8_388_608}`. `contextProjection` is
+absent by default. The finite history defaults bound provider context and
+durable session growth while retaining complete turns; applications can set
+their own validated limits explicitly. `defineHarness` rejects unknown default keys and produces one deeply
 frozen resolved snapshot. Every integer must be safe. `runTimeoutMs` and
 `historyWindow` accept zero with their existing meanings; every other numeric
 default is positive. Context projection and retention use their existing
@@ -2221,57 +2630,55 @@ Harness-wide. H4-004 Skill/MCP initialization, H4-005 execution, and H4-008
 session assembly consume this same resolved snapshot and do not derive another
 set of fallback values.
 
-## 8. Catalogs and registries
+## 8. Catalogs and private runtime indexes
 
-`defineCatalog` is an optional provider-neutral packaging mechanism:
+`defineCatalog` is the only public registry-like abstraction. It packages
+explicitly exported immutable definitions for reuse:
 
 ```ts
-const bankingAi = defineCatalog('bankingAi', {
+const bankingCapabilities = defineCatalog('bankingCapabilities', {
   tools: [getTransaction],
   skills: [transactionAnalysis],
   mcpServers: [knowledgeMcp],
+})
+
+const bankingTargets = defineCatalog('bankingTargets', {
   agents: [transactionAnalyst, answerQuestion],
   workflows: [resolveSupportCase],
 })
 ```
 
-It returns one frozen typed value with read-only `tools`, `skills`,
-`mcpServers`, `agents`, `workflows`, `contracts`, and `requirements` views. The
-factory accepts concise arrays, then derives exact readonly maps keyed by each
-definition's literal id. For example, `bankingAi.agents.answerQuestion` is the
-original strongly typed definition, and an unknown key is a TypeScript error.
-An empty catalog is valid. The maps contain the original frozen definition
-values, including a native or host tool handler and an agent prompt mapper when
-the application already holds the catalog. They are reusable authoring values,
-not sanitized metadata. Only `inspect()`, service-definition export, and
-documentation projections remove executable functions and prompt material.
+The factory accepts concise arrays and returns one frozen typed value with
+read-only `tools`, `skills`, `mcpServers`, `agents`, `workflows`,
+`contracts`, `requirements`, and `$infer` views. Each map contains exactly
+the definitions explicitly listed in that catalog, keyed by literal id. It does
+not flatten recursive dependencies into those public export maps. An empty or
+leaf-only catalog is valid as a reusable capability package. Its original
+definition references are used directly, for example
+`bankingCapabilities.tools.getTransaction`; an unknown key is a TypeScript
+error.
 
-`catalog.tools` contains non-MCP tool definitions only. MCP tools remain nested
-under their owning entry in `catalog.mcpServers`, because different servers may
-legitimately expose the same local tool id. Adding an MCP tool reference collects
-the exact owning MCP server by hidden identity. Explicitly adding an MCP server
-makes its declared tools available to the graph but grants none of them to an
-agent. Agent and workflow access remains exactly the identity-bearing references
-on that definition.
+The catalog's agents and workflows are its executable roots. Its contracts and
+target inference contain exactly those roots. Its requirements are compiled
+from those roots and their recursive closure; explicitly listed but unreferenced
+leaf definitions contribute no runtime requirement. A leaf-only catalog
+therefore has empty root contracts and no runtime requirements. Passing one to
+Harness `.use(...)` is a compile-time error and an erased-type runtime
+`HarnessConfigError{reason:'catalog_has_no_targets'}`. This fail-fast rule
+catches a likely authoring mistake; leaf catalogs are consumed through direct
+references from an agent or workflow.
 
-The public catalog and inference shapes are:
+`catalog.tools` contains non-MCP tool definitions only. MCP tools remain
+nested under their owning `catalog.mcpServers` entry because different servers
+may expose the same local tool id. Catalog membership never grants an agent or
+workflow access. A direct reference from a root is the capability grant and
+brings the exact owning definition into that root's recursive closure.
 
 ```ts
-type HarnessContracts<
-  Agents extends Readonly<Record<string, AnyAgentDefinition>>,
-  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>>,
-> = Readonly<{
-  agents: Readonly<{ [K in keyof Agents]: Agents[K]['contract'] }>
-  workflows: Readonly<{ [K in keyof Workflows]: Workflows[K]['contract'] }>
-}>
-
 type HarnessTargetInferMap<
   Targets extends Readonly<Record<string, AnyHarnessTargetContract>>,
 > = Readonly<{
-  [K in keyof Targets]: Readonly<{
-    input: HarnessTargetInput<Targets[K]>
-    output: HarnessTargetOutput<Targets[K]>
-  }>
+  [K in keyof Targets]: Targets[K]['$infer']
 }>
 
 type HarnessInfer<
@@ -2283,7 +2690,31 @@ type HarnessInfer<
   requirements: Requirements
 }>
 
-interface HarnessCatalogView<
+interface HarnessCatalogDefinition<
+  Id extends string,
+  Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>>,
+  Skills extends Readonly<Record<string, SkillDefinition>>,
+  McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>>,
+  Agents extends Readonly<Record<string, AnyAgentDefinition>>,
+  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>>,
+  Requirements extends RuntimeRequirements,
+> {
+  readonly kind: 'catalog'
+  readonly id: Id
+  readonly tools: Tools
+  readonly skills: Skills
+  readonly mcpServers: McpServers
+  readonly agents: Agents
+  readonly workflows: Workflows
+  readonly contracts: HarnessContracts<Agents, Workflows>
+  readonly requirements: Requirements
+  readonly $infer: HarnessInfer<
+    HarnessContracts<Agents, Workflows>,
+    Requirements
+  >
+}
+
+interface HarnessGraphView<
   Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>>,
   Skills extends Readonly<Record<string, SkillDefinition>>,
   McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>>,
@@ -2296,60 +2727,64 @@ interface HarnessCatalogView<
   readonly mcpServers: McpServers
   readonly agents: Agents
   readonly workflows: Workflows
-  readonly contracts: HarnessContracts<Agents, Workflows>
   readonly requirements: Requirements
 }
-
-type HarnessCatalogDefinition<
-  Id extends string,
-  View extends HarnessCatalogView<any, any, any, any, any, any>,
-> = Readonly<{ readonly kind: 'catalog'; readonly id: Id }> & View
 ```
 
-`AnyNonMcpToolDefinition` is the closed union of portable, built-in, and
-integrator-owned host tool definitions available in that build. It never includes
-MCP tools. Core exports this named union from the main entry point because it is
-the public bound of `CatalogOptions` and `HarnessCatalogView`; consumers do not
-construct it directly.
-`$infer` is a compile-time phantom; its runtime value is a
-single frozen empty object and is not an alternate metadata tree.
-This catalog is the public definition registry; separate tool, Skill, and agent
-registry factories would duplicate the same composition and are not added.
-Catalogs contain no providers, credentials, running clients, mutable adapters,
-or lifecycle ownership.
+The maps contain original frozen authoring values, including handlers and prompt
+mappers already held by the application. Only `inspect()`, service-definition
+export, and documentation projections remove executable functions and prompt
+material. `AnyNonMcpToolDefinition` remains the closed union of portable,
+built-in, and integrator-owned host tool definitions. Catalogs contain no
+providers, credentials, clients, mutable adapters, or lifecycle ownership.
 
 The five catalog categories are closed. Guardrail actions, complete Guardrails
 bindings, governance evaluators, permissions, subagent aliases, and prompts are
-agent-owned configuration and travel with the referenced agent definition;
-they do not gain parallel registries. Models, queues, storage, sandbox,
-workspace, MCP transport bindings, telemetry, and admission are runtime
-bindings supplied to `getInstance`, not catalog entries. A reusable application
-exports those definition or configuration values from ordinary modules and
-imports them where needed. This preserves reuse without creating a dynamic
-capability lookup API.
+agent-owned configuration and travel with the referenced agent definition.
+Models, queues, storage, memory, sandbox, workspace, MCP transport bindings,
+telemetry, and admission are runtime bindings supplied to `getInstance`, not
+catalog entries. There are no mutable, global, string-addressed, or separate
+tool/Skill/agent registry factories.
 
-`defineHarness(...).use(catalog)` composes catalogs. Direct `.addTool`,
-`.addSkill`, `.addMcpServer`, `.addAgent`, and `.addWorkflow` methods support
-small applications. Both paths feed one compiler and have identical identity,
-typing, validation, and duplicate behavior.
+`defineHarness(...).use(catalog)` activates the catalog's explicit agent and
+workflow roots. `.addAgent(agent)` and `.addWorkflow(workflow)` activate one
+explicit root directly. These are the only Harness composition methods; public
+`.addTool`, `.addSkill`, and `.addMcpServer` do not exist. The same exact
+definition identity may be reused and deduplicates. Distinct definitions with
+the same family/id or two workflow tools with the same id fail deterministically.
 
-The former `defineHarnessModule`, `HarnessModuleBuilder`, module callback,
-`Required`/`Result` builder-state generics, and module provenance format are
-removed. Catalog composition is order-independent except for duplicate errors;
-references resolve against the completed immutable graph.
+The Harness retains two separately typed views:
 
-Internally, each Harness instance compiles private per-kind registries for
-resolved tools, Skills, MCP clients, agents, workflows, models, and runtime
-bindings. No registry is global or mutable after instance creation. Runtime
-contexts never receive a general registry or string-based lookup escape hatch.
+- `contracts` and `$infer` contain executable roots only; these are the only
+  public session invokers, host mount targets, and service exports;
+- `catalog` is a read-only `HarnessGraphView` of the complete recursively
+  compiled closure and exists for host binding inference and authoring
+  inspection. A dependency visible there is not a root and cannot be invoked
+  through the public session target map.
+
+`inspect()` separates `roots` from `dependencies` and reports target contracts
+for roots only. Dependency arrays exclude definitions already listed as roots.
+Sanitized inspection never exposes a handler, prompt, provider, credential,
+hidden identity, route, or callable registry.
+
+Internally, compilation creates immutable per-kind indexes for the resolved
+closure: tools, Skills, MCP servers/clients, agents, workflows, models, and
+runtime bindings. These indexes are private implementation details. They are
+never global, mutable after instance creation, exposed in a context, or
+addressed as a public string service locator. The host dispatcher may route a
+closure target by its hidden authentic contract identity for declared nested
+execution; that does not make the dependency a public root.
 
 Graph compilation is identity-first and has two phases: collect the complete
-dependency closure, then validate collisions, references, agent delegation
-cycles, and model-facing names. Reusing one identity deduplicates it. A distinct
-identity with the same `(kind, id)` fails with `HarnessConfigError`. The stable
-`meta.reason` values are `foreign_definition`, `duplicate_definition`,
-`agent_cycle`, and `model_name_collision`. Only agent-to-subagent edges
-participate in cycle detection; an MCP tool's private exact-owner edge never does.
+dependency closure from explicit roots, then validate collisions, references,
+agent delegation cycles, and model-facing names. Reusing one identity
+deduplicates it. A distinct identity with the same `(kind, id)` fails with
+`HarnessConfigError`. The stable `meta.reason` values are
+`foreign_definition`, `duplicate_definition`, `agent_cycle`, and
+`model_name_collision`. Only agent-to-subagent edges participate in cycle
+detection; an MCP tool's private exact-owner edge never does. Agents cannot
+form recursive loops. Iteration, repeated cooperation, and reciprocal
+coordination belong in a workflow with explicit budgets and call ids.
 
 The compiler also owns the sole recursive approval-reachability projection:
 
@@ -2401,26 +2836,30 @@ lazy or string reference API.
 The catalog supports composition, inspection, documentation, export, and
 deployment validation. It is not an execution service locator. Runtime code
 receives only the definitions or callable capabilities declared on its agent,
-workflow, or host-tool builder. Dynamic administrative lookup, when needed,
+workflow, or host-tool definition. Dynamic administrative lookup, when needed,
 uses sanitized `inspect()` metadata and never exposes handlers or grants an
 invocation capability.
 
 Providing a definition never grants access: agents list their tools, Skills,
-and subagents, and workflows list their agents and models. A host decides how a
+and subagents, and workflows list their agents, tools, and models. A host decides how a
 Harness target is routed or projected to a transport.
 
 An agent or workflow reference always brings the referenced implementation into
-the same completed Harness graph. In PURISTA every graph member is mounted by
-the same owning service version. A remote cross-service agent is not a
-model-selectable subagent in this release; application code calls remote agents
-through address-first host declarations.
+the same completed Harness graph. In PURISTA only explicit roots receive public
+EventBridge target addresses. Recursive target dependencies stay in the same
+owning service version's private dispatcher table so subagent and workflow
+calls still traverse EventBridge without becoming public mount targets. A
+remote cross-service agent is not a model-selectable subagent in this release;
+application code calls remote agents through address-first host declarations.
 
 ## 9. Harness definition and runtime
 
 `defineHarness` requires `{ name }` and returns an immutable typed Harness
 definition directly. The name uses the id grammar in section 2. It has
-`catalog`, `contracts`, `$infer`, `inspect()`, `getInstance(...)`, direct add
-methods, and `.use(catalog)`. There is no terminal `.define()` or `.build()`.
+`catalog`, root-only `contracts`, root-only `$infer`, `inspect()`,
+`getInstance(...)`, `.addAgent(...)`, `.addWorkflow(...)`, and
+`.use(catalog)`. There is no terminal `.define()` or `.build()` and no Harness
+method for adding a leaf definition.
 
 Required model aliases and capabilities are compiled from agent behavior,
 tools, Skills, Guardrails, workflow model declarations, and memory. A selected
@@ -2561,16 +3000,25 @@ type ModelRuntimeBinding = Readonly<Omit<ModelAlias, 'capabilities'>>
 type ModelFields<Requirements extends RuntimeRequirements> =
   [ModelAliases<Requirements>] extends [never]
     ? Readonly<{ model?: never; models?: never }>
-    : [ModelAliases<Requirements>] extends ['primary']
-      ? ['primary'] extends [ModelAliases<Requirements>]
-        ? Readonly<{ model: ModelRuntimeBinding; models?: never }>
-        : never
-      : Readonly<{
-          model?: never
-          models: Readonly<{
-            [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding
-          }>
-        }>
+    : ('primary' extends ModelAliases<Requirements>
+        ? Readonly<{ model: ModelRuntimeBinding }>
+        : Readonly<{ model?: never }>)
+      & ([Exclude<ModelAliases<Requirements>, 'primary'>] extends [never]
+        ? Readonly<{ models?: never }>
+        : Readonly<{
+            models: Readonly<{
+              [Alias in Exclude<ModelAliases<Requirements>, 'primary'>]:
+                ModelRuntimeBinding
+            }>
+          }>)
+
+type RequiredOrOptionalField<
+  Needed extends boolean,
+  Key extends PropertyKey,
+  Value,
+> = Needed extends true
+  ? Readonly<{ [Field in Key]: Value }>
+  : Readonly<{ [Field in Key]?: Value }>
 
 type SandboxBinding<Requirements extends RuntimeRequirements> =
   Sandbox
@@ -2636,8 +3084,8 @@ type HarnessRuntimeBindingFields<
       [ServerId in Requirements['mcpServers'][number]]: McpBinding
     }>
   >
-  & RequiredField<Requirements['storage']['durable'], 'storage', HarnessStorage>
-  & RequiredField<
+  & RequiredOrOptionalField<Requirements['storage']['durable'], 'storage', HarnessStorage>
+  & RequiredOrOptionalField<
     Or<
       HasMembers<Requirements['memory']['capabilities']>,
       HasMembers<Requirements['memory']['modelAliases']>
@@ -2664,12 +3112,14 @@ type HarnessInstanceConfig<
   : never
 ```
 
-The model cases are exact:
+The model cases are exact and additive:
 
 - an empty model-alias set forbids both `model` and `models`;
-- the exact alias set `{ primary }` requires `model` and forbids `models`; and
-- every other nonempty alias set requires an exact `models` record and forbids
-  `model`.
+- a graph requiring `primary` always binds it through `model`;
+- required non-primary aliases always form the exact `models` record beside
+  `model` when primary is also required; and
+- a graph with only non-primary aliases forbids `model` and requires that exact
+  `models` record.
 
 The caller never supplies `capabilities` on a model binding. The compiler
 injects the exact, frozen capability tuple from
@@ -2677,13 +3127,14 @@ injects the exact, frozen capability tuple from
 This keeps capability declarations derived from graph behavior and prevents a
 runtime caller from weakening or widening them.
 
-Each conditional infrastructure group is required when its canonical
-requirement is present and forbidden with `?: never` when it is absent:
+Requirements are minimum runtime needs, not an allowlist of every legal
+deployment enhancement. Conditional infrastructure resolves as follows:
 
 - `mcp` is required exactly when `mcpServers` is nonempty;
-- `storage` is required exactly when `storage.durable` is literal `true`;
+- `storage` is required when `storage.durable` is literal `true` and is an
+  optional replacement for the in-memory default otherwise;
 - `memory` is required when memory capabilities or memory model aliases are
-  nonempty;
+  nonempty and is an optional replacement for the in-memory default otherwise;
 - `sandbox` is required exactly when `sandbox.required` is literal `true`; in
   that case strict `sandboxBinding` options are optional, while both fields are
   forbidden when it is literal `false`;
@@ -2697,13 +3148,21 @@ also rejects a forced or erased-type call for such a graph with
 `standalone_host_tools_unsupported`; only the integrator entry point can supply
 host bindings.
 
+Supplying optional storage or memory changes only the backing implementation and
+operational durability of the facilities already exposed by the runtime. It
+does not make a target durable, enable external waits, grant an agent or tool a
+memory capability, add a model alias, or widen any context type. MCP, sandbox,
+workspace, artifact, and host-tool bindings remain forbidden when their graph
+requirements are absent because merely supplying those values could initialize
+or grant an undeclared executable capability.
+
 Runtime bindings contain concrete providers and deployment infrastructure. A
 graph with multiple aliases therefore uses this shape:
 
 ```ts
 const runtime = await bankingHarness.getInstance({
+  model: { provider: openaiProvider, model: 'gpt-5.5' },
   models: {
-    primary: { provider: openaiProvider, model: 'gpt-5.5' },
     fast: { provider: openaiProvider, model: 'gpt-5-mini' },
     embeddings: { provider: openaiProvider, model: 'text-embedding-3-large' },
   },
@@ -2731,10 +3190,13 @@ const runtime = await bankingHarness.getInstance({
 })
 ```
 
-`McpBinding` is the exact `http | stdio` union in section 3; it has no additional
-timeout, redirect, authentication, working-directory, install, or preparation
-fields. MCP keys must exactly equal the required server ids. HTTP URLs must be
+`McpBinding` is the exact `http | stdio` union in section 3; beyond its static
+and per-request header fields it has no additional timeout, redirect,
+authentication, working-directory, install, or preparation fields. MCP keys
+must exactly equal the required server ids. HTTP URLs must be
 absolute `http:` or `https:` URLs and every header value must be a string. A
+present `resolveHeaders` must be a function; its returned map is validated with
+the same string-value rule on every invocation before network I/O. A
 stdio command must be nonempty, and every argument and environment value must
 be a string. Its nested sandbox must declare `sandbox.spawn`. This transport
 sandbox is validated independently and never satisfies a graph-level sandbox
@@ -2842,7 +3304,9 @@ frozen `ValidatedHarnessInstanceBindings`. It normalizes all supplied model
 bindings into an exact alias-keyed record with the derived capabilities
 injected, and copies and freezes configuration wrappers, arrays, MCP data,
 maps, and plain option records. Caller-owned providers and adapters retain
-their object identity and are never frozen or mutated. The snapshot contains
+their object identity and are never frozen or mutated. The snapshot retains
+the caller-owned `resolveHeaders` callback by identity and never invokes or
+freezes it during validation. It contains
 only validated supplied bindings: it contains no definitions, alternate
 requirement derivation, execution registry, client, process, lifecycle callback,
 or synthesized storage/memory default.
@@ -3169,30 +3633,65 @@ use internal helper types, but it exposes this information without requiring a
 host to inspect compiler state:
 
 ```ts
+type MergeDefinitionMaps<Left, Right> = Readonly<Omit<Left, keyof Right> & Right>
+
+type AnyHarnessCatalogDefinition = HarnessCatalogDefinition<
+  string,
+  Readonly<Record<string, AnyNonMcpToolDefinition>>,
+  Readonly<Record<string, SkillDefinition>>,
+  Readonly<Record<string, McpServerDefinition<any, any>>>,
+  Readonly<Record<string, AnyAgentDefinition>>,
+  Readonly<Record<string, AnyWorkflowDefinition>>,
+  RuntimeRequirements
+>
+
 interface HarnessDefinition<
-  Catalog extends HarnessCatalogView<any, any, any, any, any, any>,
+  AgentRoots extends Readonly<Record<string, AnyAgentDefinition>>,
+  WorkflowRoots extends Readonly<Record<string, AnyWorkflowDefinition>>,
+  Graph extends HarnessGraphView<any, any, any, any, any, any> =
+    HarnessGraphForRoots<AgentRoots, WorkflowRoots>,
 > {
   readonly kind: 'harness'
   readonly name: string
   readonly revision?: string
   readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
-  readonly catalog: Catalog
-  readonly contracts: Catalog['contracts']
-  readonly requirements: Catalog['requirements']
+  readonly catalog: Graph
+  readonly contracts: HarnessContracts<AgentRoots, WorkflowRoots>
+  readonly requirements: Graph['requirements']
   readonly $infer: HarnessInfer<
-    Catalog['contracts'],
-    Catalog['requirements']
+    HarnessContracts<AgentRoots, WorkflowRoots>,
+    Graph['requirements']
   >
-  inspect(): HarnessInspection<Catalog['requirements']>
+  inspect(): HarnessInspection<Graph['requirements']>
   getInstance<const ConfiguredGroups extends readonly string[] = readonly []>(
     config: HarnessInstanceConfig<
-      Catalog['requirements'],
+      Graph['requirements'],
       ConfiguredGroups
     >,
   ): Promise<HarnessInstance<
-    Catalog['contracts'],
-    Catalog['requirements']
+    HarnessContracts<AgentRoots, WorkflowRoots>,
+    Graph['requirements']
   >>
+  addAgent<Agent extends AnyAgentDefinition>(
+    agent: Agent,
+  ): HarnessDefinition<
+    MergeDefinitionMaps<AgentRoots, Readonly<Record<Agent['id'], Agent>>>,
+    WorkflowRoots
+  >
+  addWorkflow<Workflow extends AnyWorkflowDefinition>(
+    workflow: Workflow,
+  ): HarnessDefinition<
+    AgentRoots,
+    MergeDefinitionMaps<WorkflowRoots, Readonly<Record<Workflow['id'], Workflow>>>
+  >
+  use<Catalog extends AnyHarnessCatalogDefinition>(
+    catalog: [keyof Catalog['agents'] | keyof Catalog['workflows']] extends [never]
+      ? never
+      : Catalog,
+  ): HarnessDefinition<
+    MergeDefinitionMaps<AgentRoots, Catalog['agents']>,
+    MergeDefinitionMaps<WorkflowRoots, Catalog['workflows']>
+  >
 }
 ```
 
@@ -3222,20 +3721,35 @@ interface InvokeOptions {
   readonly durable?: DurableInvokeOptions
 }
 
-interface HarnessTargetStream<Output>
-  extends AsyncIterable<ExecutionEvent<Output>> {
+type HarnessTargetApprovalResume<
+  Target extends AnyHarnessTargetContract,
+> = 'tool-approval' extends Target['interrupts'][number]
+  ? ToolApprovalResume
+  : never
+
+type HarnessTargetInvokeOptions<
+  Target extends AnyHarnessTargetContract,
+> = Omit<InvokeOptions, 'resume'> & (
+  [HarnessTargetApprovalResume<Target>] extends [never]
+    ? Readonly<{ resume?: never }>
+    : Readonly<{ resume?: HarnessTargetApprovalResume<Target> }>
+)
+
+interface HarnessTargetStream<Target extends AnyHarnessTargetContract>
+  extends AsyncIterable<HarnessTargetExecutionEvent<Target>> {
+  readonly result: Promise<HarnessTargetRunOutcome<Target>>
   cancel(reason?: string): Promise<void>
 }
 
 interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
   run(
     input: HarnessTargetInput<Target>,
-    options?: InvokeOptions,
-  ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
+    options?: HarnessTargetInvokeOptions<Target>,
+  ): Promise<HarnessTargetRunOutcome<Target>>
   stream(
     input: HarnessTargetInput<Target>,
-    options?: InvokeOptions,
-  ): HarnessTargetStream<HarnessTargetOutput<Target>>
+    options?: HarnessTargetInvokeOptions<Target>,
+  ): HarnessTargetStream<Target>
 }
 
 interface SessionChildTasks {
@@ -3286,6 +3800,23 @@ interface HarnessInstance<
   close(): Promise<void>
 }
 ```
+
+`HarnessTargetStream.result` observes the same execution independently of event
+iteration and settles exactly once with the direct root target's aggregate
+outcome. It never consumes, buffers, or removes an event from the iterable.
+Stopping iteration does not imply cancellation; callers use `cancel()` when
+they no longer want the execution. A protocol or infrastructure failure rejects
+`result`, while an ordinary target failure, cancellation, or interruption uses
+the normal typed outcome.
+
+`RootExecutionEventFor<Target>` has no parent correlation, uses the target's
+exact output-update and interrupt families, keeps text deltas as `string` and
+object snapshots as provisional `JsonValue`, and types `run.finished` with the
+target's exact final output. `NestedExecutionEvent` requires both
+`parentRunId` and `parentInvocationId` and may carry any descendant family.
+This makes root filtering enforceable in host and AI SDK UI adapters: only a
+root event can complete the public target stream, while nested terminal events
+remain status or diagnostic input.
 
 `HarnessTargetStream.cancel(reason?)` is the public execution-cancellation
 operation shared by standalone and hosted target streams. It is idempotent,
@@ -3395,22 +3926,23 @@ interface HarnessInspection<
 > {
   readonly kind: 'harness'
   readonly name: string
-  readonly definitions: Readonly<{
+  readonly roots: Readonly<{
+    agents: readonly HarnessTargetInspection[]
+    workflows: readonly HarnessTargetInspection[]
+  }>
+  readonly dependencies: Readonly<{
     tools: readonly string[]
     skills: readonly string[]
     mcpServers: readonly string[]
     agents: readonly string[]
     workflows: readonly string[]
   }>
-  readonly targets: Readonly<{
-    agents: readonly HarnessTargetInspection[]
-    workflows: readonly HarnessTargetInspection[]
-  }>
   readonly requirements: Requirements
 }
 ```
 
-Every inspection array is lexicographically sorted and frozen. Inspection omits
+Every inspection array is lexicographically sorted and frozen. A target that is
+an explicit root is absent from the matching dependency array. Inspection omits
 handlers, prompt mappers, instructions, Skill directories and content, schemas
 that contain validator functions, providers, transports, credentials, and live
 runtime state.
@@ -3546,29 +4078,38 @@ interface HostedHarnessInstance<
 > {
   runHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
-  ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetRunOutcome<Target>>
   streamHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
-  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetDispatchStream<
+    Target['$infer']['output'], Target['$infer']['interrupt']
+  >>
   streamDispatched<Target extends HostedTargetOf<Contracts>>(
     request: HostedDispatchedTargetRequest<Target, HostInvocation>,
-  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetDispatchStream<
+    Target['$infer']['output'], Target['$infer']['interrupt']
+  >>
   close(): Promise<void>
 }
 
 declare function instantiateHostedHarness<
-  Catalog extends HarnessCatalogView<any, any, any, any, any, any>,
+  AgentRoots extends Readonly<Record<string, AnyAgentDefinition>>,
+  WorkflowRoots extends Readonly<Record<string, AnyWorkflowDefinition>>,
+  Graph extends HarnessGraphView<any, any, any, any, any, any>,
   HostInvocation,
   HostContext,
   const ConfiguredGroups extends readonly string[] = readonly [],
 >(
-  definition: HarnessDefinition<Catalog>,
+  definition: HarnessDefinition<AgentRoots, WorkflowRoots, Graph>,
   config: HostedHarnessInstanceConfig<
-    Catalog['requirements'],
+    Graph['requirements'],
     ConfiguredGroups
   >,
   hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
-): Promise<HostedHarnessInstance<Catalog['contracts'], HostInvocation>>
+): Promise<HostedHarnessInstance<
+  HarnessContracts<AgentRoots, WorkflowRoots>,
+  HostInvocation
+>>
 ```
 
 Hosted execution extends the same private runtime kernel used by standalone
@@ -3593,13 +4134,15 @@ interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
     input: HarnessValidatedTargetInput<Target>,
     options: HostedInvokeOptions,
     environment: TrustedHostedInvocationEnvironment,
-  ): Promise<RunOutcome<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetRunOutcome<Target>>
   streamTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
     input: HarnessValidatedTargetInput<Target>,
     options: HostedInvokeOptions,
     environment: TrustedHostedInvocationEnvironment,
-  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetDispatchStream<
+    Target['$infer']['output'], Target['$infer']['interrupt']
+  >>
   streamDispatchedTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
     input: HarnessValidatedTargetInput<Target> | HarnessTargetInput<Target>,
@@ -3607,7 +4150,9 @@ interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
     invocation: HostedDispatchInvocation,
     resume: ToolApprovalResume | undefined,
     environment: TrustedHostedInvocationEnvironment,
-  ): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+  ): Promise<HarnessTargetDispatchStream<
+    Target['$infer']['output'], Target['$infer']['interrupt']
+  >>
 }
 ```
 
@@ -4081,6 +4626,15 @@ interface AgentAdmission {
     release(): void | Promise<void>
   }>
 }
+
+interface InMemoryAgentAdmissionOptions {
+  readonly maxConcurrent: number
+  readonly maxQueued?: number
+}
+
+function inMemoryAgentAdmission(
+  options: InMemoryAgentAdmissionOptions,
+): AgentAdmission
 ```
 
 `AgentAdmission` admits one root execution tree. Calls carrying the same
@@ -4090,6 +4644,19 @@ deadlocking at capacity one. A distributed adapter coordinates this lease
 across processes. It is released only when the root tree completes, interrupts,
 fails, or cancels. It contains no prompt or model content. `ModelAdmission`
 continues to wrap each provider call independently.
+
+Core exports `inMemoryAgentAdmission(...)` as the zero-dependency starting
+adapter. `maxConcurrent` is a positive safe integer. `maxQueued` is a
+non-negative safe integer and defaults to `maxConcurrent * 4`. New root-run ids
+acquire available capacity immediately or wait in one FIFO. A waiter is removed
+without consuming capacity when its signal aborts or deadline expires. When the
+pending bound is full, acquisition fails immediately with the canonical
+capacity error. Calls with an already admitted `rootRunId` join its
+reference-counted lease even when the queue is full; the final matching release
+returns the slot exactly once. Duplicate release is harmless. This helper is
+process-local and intentionally provides no persistence or cross-process
+coordination. Durable queueing remains host-owned, and distributed admission
+remains an adapter implementation of the same port.
 
 `acquire` may reject capacity only with `AgentAdmissionRejectedError`. Its code
 is `AGENT_ADMISSION_REJECTED`, category is `admission`, fixed message is `Agent
@@ -5332,15 +5899,19 @@ order above.
 ## 11. PURISTA integration
 
 `ServiceBuilder.mountHarness(definition, policy?)` mounts exactly one Harness
-definition per service version. `policy` is optional when defaults are valid.
-The service instance's `ai` configuration is inferred from runtime
+definition per service version. `policy` configures the already declared roots;
+it never selects or publishes additional targets. There is no second `publish`
+allowlist. The service instance's `ai` configuration is inferred from runtime
 requirements.
 
-Every mounted agent and workflow receives a versioned PURISTA address. All
-PURISTA target calls and every workflow/subagent agent dispatch are
-address-first and pass through EventBridge. Portable and host-aware model tool
-handlers execute inside the receiving Harness run; PURISTA operations declared
-inside a host-aware tool pass through EventBridge.
+Every explicit agent and workflow root receives a public versioned PURISTA
+address. Recursive target dependencies receive private immutable dispatcher
+routes owned by the same service version, but are absent from public service
+definitions and direct consumer clients. All public target calls and every
+workflow/subagent nested dispatch are address-first and pass through
+EventBridge. Portable and host-aware model tool handlers execute inside the
+receiving Harness run; PURISTA operations declared inside a host-aware tool pass
+through EventBridge.
 
 `ServiceBuilder.defineTool` creates a Harness-compatible host-aware tool while
 preserving PURISTA command-builder conventions:
@@ -5521,7 +6092,7 @@ The stream projection additionally adds
 | tool/Skill/MCP/agent/workflow definition | branded immutable Harness definition | catalog view, inspection row, provider tool schema | host-owned structural copies or mutable registries |
 | target input/output contract | `HarnessTargetContract` with Standard JSON Schemas | PURISTA exported target, JSON Schema/OpenAPI metadata | importing another service builder for schemas |
 | aggregate execution | `RunOutcome<Output, Interrupt>` | EventBridge command response, HTTP JSON response | adapter-specific outcome unions |
-| progressive execution | `ExecutionEvent<Output>` | EventBridge stream frame, AI SDK UI v1 chunk, persisted audit event | provider-native SSE as the portable contract |
+| progressive execution | `HarnessTargetExecutionEvent<Target>` | EventBridge stream frame, AI SDK UI v1 chunk, persisted audit event | broad root events, provider-native SSE as the portable contract |
 | approval | `ToolApprovalInterrupt` and `ToolApprovalResume` | AI SDK approval parts and descriptor | generic thrown error or UI-only approval state |
 | child dispatch | `HarnessTargetDispatchRequest` and terminal `RunOutcome` | local dispatcher stream, PURISTA EventBridge stream | direct JavaScript child invocation |
 | persisted child route | dispatcher-owned `HarnessTargetRouteReceiptV1` | host continuation and host nested-target checkpoint | address serialization, `(kind,id)` lookup, public registry, or service locator |
@@ -5529,7 +6100,7 @@ The stream projection additionally adds
 | background delivery | host queue receipt | PURISTA enqueue client and worker call | transparent queueing inside `run` or `stream` |
 | hosted runtime configuration | `HostedHarnessInstanceConfig` | validated shared runtime bindings plus host-owned bindings | a second hosted runtime or caller-supplied logger/telemetry |
 | host invocation context | opaque `HostInvocation` projected into one call-scoped handler closure | identity, trace context, and `HostContext` | checkpoint, session, registry, log, model, or inspection storage |
-| host nested target result | `RunCheckpoint.output` containing `HostNestedTargetCheckpointV1` | replayed `nestedTargets.run` result under the root lease | reuse of `WorkflowChildCallCheckpoint`, another storage API, or direct child output as host-tool output |
+| host nested target result | `RunCheckpoint.output` containing `HostNestedTargetCheckpointV1` | replayed `nestedTargets.run` result under the root lease | reuse of `WorkflowCallCheckpointV1`, another storage API, or direct child output as host-tool output |
 | host ownership | factory-authentic `HostOwnerToken` in hidden definition metadata | exact identity comparison at hosted instantiation | id/digest inference, public metadata, serialization, or persistence |
 | Agent Plugin package | addon-owned immutable byte snapshot and canonical package digest | explicitly selected branded Skill/MCP definitions, exact HTTP bindings, separate frozen provenance | executable plugin module, mutable registry, addon fields on Core definitions, or parsing bytes different from the digested snapshot |
 | Guardrail action dependency | hidden tool/model tuples on an authentic `GuardrailAction` | `GuardrailBindingRequirements`, then normalized `RuntimeRequirements` | caller-maintained `requires` copy or phase-only requirement erasure |
@@ -5552,6 +6123,15 @@ durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+Compile-time tests must prove that `HarnessTargetExecutionEvent<Target>`
+discriminates root from nested events: root events reject either parent field,
+nested events require both, text targets expose only string text deltas,
+structured targets expose only `JsonValue` object snapshots, targets with
+`updates:'none'` expose neither root update, and `run.finished` narrows to the
+target's exact output and interrupt union. Runtime adapter tests must prove that
+the AI SDK UI projection treats only parent-free root events as the public
+answer and cannot terminate on a correlated nested `run.finished`.
 
 Addon and adapter implementation tickets align source, tests, examples, and
 public exports while every workspace package manifest, peer range,

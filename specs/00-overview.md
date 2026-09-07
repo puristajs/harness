@@ -1,9 +1,13 @@
-# Overview
+# Overview (v4 reading guide)
 
 > **V4 authoring precedence:** [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
 > replaces builder, module, registration, and runtime-instantiation examples in
 > this file. This file remains normative only for scope and runtime behavior not
 > changed by spec 42.
+>
+> All builder, inline registration, `.build()`, mutable registry, and string
+> reference examples below are obsolete historical material and must not be
+> implemented, documented, generated, or used as a fallback contract.
 
 **Purpose.** `@purista/harness` is a TypeScript-only library for defining and running AI agents and multi-agent workflows in-process. It provides enterprise-grade observability (OpenTelemetry, structured logs, typed errors) with a minimum surface: no HTTP server, no worker daemon, no deployment story. The core package is `@purista/harness` (harness core, in-memory adapters, TS+MCP tools, telemetry, testing helpers). Provider addons are independent packages such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, and `@purista/harness-azure-foundry`.
 

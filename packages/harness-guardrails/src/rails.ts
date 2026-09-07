@@ -16,12 +16,11 @@ import type {
 	AgentExecutionInterceptor,
 	AgentExecutionInterceptorContext,
 	AgentGuardrailsBinding,
-	BuilderState,
 	DecisionEvidence,
 	JsonValue,
 	Logger,
-	ModelMessage,
-	ObjectResponse,
+	ModelAliasId,
+	ModelHandle,
 	TelemetryShim,
 } from '@purista/harness'
 import { z } from 'zod'
@@ -32,7 +31,7 @@ import {
 	prepareGuardrailAction,
 	validateGuardrailValue,
 } from './action.js'
-import type { GuardrailAction, GuardrailActionDefinition, GuardrailEvaluator } from './action.js'
+import type { AnyGuardrailAction, GuardrailAction, GuardrailActionDefinition, GuardrailEvaluator } from './action.js'
 import { GuardrailsConfigError } from './errors.js'
 import {
 	guardrailsConfigSchema,
@@ -43,7 +42,7 @@ import {
 } from './config-schema.js'
 import { sensitiveDataFailureKind, sensitiveDataMetadata } from './sensitive-data.js'
 
-export type { GuardrailAction, GuardrailActionDefinition, GuardrailEvaluator } from './action.js'
+export type { AnyGuardrailAction, GuardrailAction, GuardrailActionDefinition, GuardrailEvaluator } from './action.js'
 
 /** The only transform target allowed for one guardrail phase. */
 export type GuardrailTransformTarget<P extends GuardrailPhase = GuardrailPhase> = P extends 'input'
@@ -97,23 +96,15 @@ export interface GuardrailActionContext<P extends GuardrailPhase = GuardrailPhas
 	readonly modelAlias?: string
 	readonly signal: AbortSignal
 	readonly deadline: number
-	readonly models?: Record<string, GuardrailModelHandle>
+	readonly models?: Readonly<Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>>>
 	/** Internal policy binding supplied only to built-in sensitive-data actions. */
 	readonly sensitiveDataPolicy?: SensitiveDataPolicy
 	readonly telemetry: TelemetryShim
 	readonly logger?: Logger
 }
 
-/** Small provider-neutral model surface available to model-backed rail actions. */
-export interface GuardrailModelHandle {
-	object(
-		request: { messages: readonly ModelMessage[]; schema: JsonValue },
-		signal?: AbortSignal,
-	): Promise<ObjectResponse<JsonValue>>
-}
-
 /** Configured action IDs map to phase-declared application-owned actions. */
-export type GuardrailActions = Readonly<Record<string, GuardrailAction>>
+export type GuardrailActions = Readonly<Record<string, AnyGuardrailAction>>
 
 type GuardrailActionIdsForPhase<A extends GuardrailActions, P extends GuardrailPhase> = Extract<
 	{
@@ -128,7 +119,7 @@ type GuardrailPhaseConfigFor<A extends GuardrailActions, P extends GuardrailPhas
 	GuardrailPhaseConfigInput<P>,
 	'flows'
 > & {
-	readonly flows: GuardrailActionIdsForPhase<A, P>[]
+	readonly flows: readonly GuardrailActionIdsForPhase<A, P>[]
 }
 
 /**
@@ -160,14 +151,17 @@ export interface GuardrailExecutionContext {
 	readonly modelAlias?: string
 	readonly signal?: AbortSignal
 	readonly deadline?: number
-	readonly models?: Record<string, GuardrailModelHandle>
+	readonly models?: Readonly<Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>>>
 	readonly telemetry?: TelemetryShim
 	readonly logger?: Logger
 }
 
 /** Options for compiling canonical guardrail configuration. */
-export interface DefineGuardrailsOptions<A extends GuardrailActions> {
-	readonly config: GuardrailsConfigFor<NoInfer<A>>
+export interface DefineGuardrailsOptions<
+	A extends GuardrailActions,
+	C extends GuardrailsConfigFor<NoInfer<A>> = GuardrailsConfigFor<NoInfer<A>>,
+> {
+	readonly config: C
 	readonly actions: A
 	/** Content-free telemetry and structured logging used outside attached default-loop agents. */
 	readonly observability?: GuardrailsObservability
@@ -175,11 +169,64 @@ export interface DefineGuardrailsOptions<A extends GuardrailActions> {
 	readonly actionTimeoutMs?: number
 }
 
+type AttachedGuardrailPhase = Exclude<GuardrailPhase, 'retrieval'>
+
+type ConfiguredFlowId<C, P extends AttachedGuardrailPhase> = C extends { readonly rails?: infer Rails }
+	? P extends keyof NonNullable<Rails>
+		? NonNullable<NonNullable<Rails>[P]> extends {
+				readonly flows: readonly (infer Id extends string)[]
+			}
+			? Id
+			: never
+		: never
+	: never
+
+type AttachedFlowId<C> = {
+	[P in AttachedGuardrailPhase]: ConfiguredFlowId<C, P>
+}[AttachedGuardrailPhase]
+
+type AttachedAction<A extends GuardrailActions, C> = A[Extract<AttachedFlowId<C>, keyof A>]
+
+type AttachedToolId<A extends GuardrailActions, C> = [AttachedAction<A, C>] extends [never]
+	? never
+	: AttachedAction<A, C> extends GuardrailAction<infer _Phase, infer Tools, infer _Models>
+		? Tools[number]
+		: never
+
+type AttachedModelAlias<A extends GuardrailActions, C> = [AttachedAction<A, C>] extends [never]
+	? never
+	: AttachedAction<A, C> extends GuardrailAction<infer _Phase, infer _Tools, infer Models>
+		? Models[number]
+		: never
+
+type RequiredGuardrailModel<Alias extends ModelAliasId> = Alias extends Alias
+	? Readonly<{ alias: Alias; capabilities: readonly ['object'] }>
+	: never
+
+/** Exact Core runtime requirements contributed by configured attached actions. */
+export type GuardrailBindingRequirements<
+	A extends GuardrailActions,
+	C,
+	ToolId extends string = AttachedToolId<A, C>,
+	ModelAlias extends ModelAliasId = AttachedModelAlias<A, C>,
+> = [ToolId | ModelAlias] extends [never]
+	? undefined
+	: AgentExecutionRequirements<
+			readonly ToolId[],
+			readonly RequiredGuardrailModel<ModelAlias>[],
+			readonly [],
+			readonly [],
+			readonly [],
+			undefined,
+			undefined,
+			undefined
+		>
+
 type SensitiveDataPolicyPhase = 'input' | 'output' | 'retrieval'
 type CompiledRail = {
 	readonly id: string
 	readonly phase: GuardrailPhase
-	readonly action: GuardrailAction
+	readonly action: AnyGuardrailAction
 	readonly ordinal: number
 	readonly sensitiveDataPolicy?: SensitiveDataPolicy
 }
@@ -187,13 +234,15 @@ type RuntimeOutcome = GuardrailOutcome<GuardrailPhase, JsonValue | readonly Json
 const DEFAULT_ACTION_TIMEOUT_MS = 10_000
 
 /** Compiles ordered portable rail configuration into one default-loop interceptor. */
-export class Guardrails<A extends GuardrailActions = GuardrailActions> implements AgentGuardrailsBinding {
+export class Guardrails<A extends GuardrailActions, C extends GuardrailsConfigFor<A>>
+	implements AgentGuardrailsBinding<GuardrailBindingRequirements<A, C>>
+{
 	private readonly rails: ReadonlyMap<GuardrailPhase, readonly CompiledRail[]>
 	private readonly observability: Required<Pick<GuardrailsObservability, 'telemetry'>> &
 		Pick<GuardrailsObservability, 'logger'>
 	private readonly actionTimeoutMs: number
 
-	public constructor(options: DefineGuardrailsOptions<A>) {
+	public constructor(options: DefineGuardrailsOptions<A, C>) {
 		this.observability = {
 			telemetry: options.observability?.telemetry ?? createTelemetryShim(),
 			...(options.observability?.logger ? { logger: options.observability.logger } : {}),
@@ -203,7 +252,7 @@ export class Guardrails<A extends GuardrailActions = GuardrailActions> implement
 	}
 
 	/** Provider-neutral binding consumed by an agent definition's `guardrails` field. */
-	public get [agentGuardrailsBinding](): AgentExecutionInterceptor {
+	public get [agentGuardrailsBinding](): AgentExecutionInterceptor<GuardrailBindingRequirements<A, C>> {
 		return this.interceptor(this.requirementsForAttachedPhases())
 	}
 
@@ -228,7 +277,9 @@ export class Guardrails<A extends GuardrailActions = GuardrailActions> implement
 		return [...current]
 	}
 
-	private interceptor(requirements: AgentExecutionRequirements | undefined): AgentExecutionInterceptor {
+	private interceptor(
+		requirements: GuardrailBindingRequirements<A, C>,
+	): AgentExecutionInterceptor<GuardrailBindingRequirements<A, C>> {
 		return {
 			id: 'purista.guardrails',
 			...(requirements ? { requirements } : {}),
@@ -377,11 +428,16 @@ export class Guardrails<A extends GuardrailActions = GuardrailActions> implement
 		context.telemetry.recordHistogram('harness.guardrail.duration', (Date.now() - started) / 1000, outcomeAttrs)
 	}
 
-	private requirementsForAttachedPhases(): AgentExecutionRequirements | undefined {
-		return compileActionRequirements(this.rails, ['input', 'output', 'tool_input', 'tool_output'])
+	private requirementsForAttachedPhases(): GuardrailBindingRequirements<A, C> {
+		return compileActionRequirements(this.rails, ['input', 'output', 'tool_input', 'tool_output']) as GuardrailBindingRequirements<
+			A,
+			C
+		>
 	}
 
-	private validateStandaloneRetrievalModels(models: Record<string, GuardrailModelHandle> | undefined): void {
+	private validateStandaloneRetrievalModels(
+		models: Readonly<Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>>> | undefined,
+	): void {
 		for (const rail of this.rails.get('retrieval') ?? []) {
 			for (const modelAlias of actionMetadata(rail.action)?.models ?? []) {
 				const handle = models?.[modelAlias]
@@ -396,29 +452,35 @@ export class Guardrails<A extends GuardrailActions = GuardrailActions> implement
 }
 
 /** Compiles configuration and returns the optional guardrail add-on facade. */
-export function defineGuardrails<const A extends GuardrailActions>(options: DefineGuardrailsOptions<A>): Guardrails<A> {
+export function defineGuardrails<
+	const A extends GuardrailActions,
+	const C extends GuardrailsConfigFor<NoInfer<A>>,
+>(options: DefineGuardrailsOptions<A, C>): Guardrails<A, C> {
 	return new Guardrails(options)
 }
 
 const modelCheckResultSchema = z.strictObject({ allow: z.boolean() })
 
 /** Model-backed self-check action using an explicitly configured Harness model alias. */
-export function modelCheckRail<P extends GuardrailPhase>(options: {
+export function modelCheckRail<const P extends GuardrailPhase, const Model extends ModelAliasId>(options: {
 	readonly phase: P
-	readonly model: string
+	readonly model: Model
 	readonly instructions: string
-}): GuardrailAction<P> {
-	return createGuardrailAction<P>({
-		phase: options.phase,
+}): GuardrailAction<P, readonly [], readonly [Model]> {
+	const phase = options.phase
+	const modelAlias = options.model
+	const instructions = options.instructions
+	return createGuardrailAction<P, readonly [], readonly [Model]>({
+		phase,
 		mayTransform: false,
-		models: [options.model],
+		models: [modelAlias],
 		async evaluate(context: GuardrailActionContext<P>) {
-			const model = context.models?.[options.model]
+			const model = context.models?.[modelAlias]
 			if (!model) throw new Error('Configured guardrail model alias is unavailable.')
 			const response = await model.object(
 				{
 					messages: [
-						{ role: 'system', content: options.instructions },
+						{ role: 'system', content: instructions },
 						{ role: 'user', content: JSON.stringify(context.value) },
 					],
 					schema: z.toJSONSchema(modelCheckResultSchema) as JsonValue,
@@ -431,7 +493,7 @@ export function modelCheckRail<P extends GuardrailPhase>(options: {
 	})
 }
 
-function compileConfig(value: GuardrailsConfigInput): GuardrailsConfig {
+function compileConfig(value: unknown): GuardrailsConfig {
 	try {
 		if (!isJsonValue(value)) throw new Error('invalid configuration shape')
 		const parsed = guardrailsConfigSchema.safeParse(value)
@@ -456,12 +518,12 @@ function compileRails(
 	config: GuardrailsConfig,
 	actions: GuardrailActions,
 ): ReadonlyMap<GuardrailPhase, readonly CompiledRail[]> {
+	if (!actions || typeof actions !== 'object' || Array.isArray(actions))
+		throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'actions' })
 	const compiled = new Map<GuardrailPhase, readonly CompiledRail[]>()
 	for (const phase of ['input', 'output', 'tool_input', 'tool_output', 'retrieval'] as const) {
 		const rails = (config.rails[phase]?.flows ?? []).map((id, ordinal) => {
-			const action = actions[id]
-			if (!action || !isGuardrailAction(action))
-				throw new GuardrailsConfigError({ reason: 'invalid_action', field: `flows.${id}`, flowId: id })
+			const action = readAction(actions, id)
 			if (action.phase !== phase)
 				throw new GuardrailsConfigError({ reason: 'invalid_shape', field: `rails.${phase}.flows`, flowId: id })
 			const metadata = actionMetadata(action)
@@ -489,7 +551,21 @@ function compileRails(
 	return compiled
 }
 
-function sensitiveDataPolicyPhase(flowId: string, action: GuardrailAction): SensitiveDataPolicyPhase | undefined {
+function readAction(actions: GuardrailActions, id: string): AnyGuardrailAction {
+	try {
+		if (!Object.hasOwn(actions, id))
+			throw new GuardrailsConfigError({ reason: 'action_missing', field: `flows.${id}`, flowId: id })
+		const action = Reflect.get(actions, id)
+		if (!action || !isGuardrailAction(action))
+			throw new GuardrailsConfigError({ reason: 'invalid_action', field: `flows.${id}`, flowId: id })
+		return action
+	} catch (error) {
+		if (error instanceof GuardrailsConfigError) throw error
+		throw new GuardrailsConfigError({ reason: 'invalid_action', field: `flows.${id}`, flowId: id })
+	}
+}
+
+function sensitiveDataPolicyPhase(flowId: string, action: AnyGuardrailAction): SensitiveDataPolicyPhase | undefined {
 	const reserved: Readonly<Record<string, SensitiveDataPolicyPhase>> = {
 		'detect sensitive data on input': 'input',
 		'mask sensitive data on input': 'input',
@@ -505,7 +581,7 @@ function sensitiveDataPolicyPhase(flowId: string, action: GuardrailAction): Sens
 }
 
 function contextFromAgent<I>(
-	ctx: AgentExecutionInterceptorContext<BuilderState, I>,
+	ctx: AgentExecutionInterceptorContext<I>,
 	phase: Exclude<GuardrailPhase, 'retrieval'>,
 	toolId?: string,
 	callId?: string,
@@ -525,7 +601,7 @@ function contextFromAgent<I>(
 		...(ctx.model ? { modelAlias: ctx.model } : {}),
 		signal: ctx.decision.signal,
 		deadline: ctx.decision.deadline,
-		models: ctx.models as Record<string, GuardrailModelHandle>,
+		models: ctx.models,
 		telemetry: ctx.telemetry,
 		logger: ctx.logger,
 	}
@@ -617,7 +693,7 @@ function targetFor(phase: GuardrailPhase): GuardrailTransformTarget {
 					? 'tool_output'
 					: 'relevant_chunks'
 }
-function isSelectedTool(action: GuardrailAction, toolId: string | undefined): boolean {
+function isSelectedTool(action: AnyGuardrailAction, toolId: string | undefined): boolean {
 	const tools = actionMetadata(action)?.tools
 	return !tools || (toolId !== undefined && tools.includes(toolId))
 }
@@ -626,43 +702,39 @@ function compileActionRequirements(
 	rails: ReadonlyMap<GuardrailPhase, readonly CompiledRail[]>,
 	phases: readonly Exclude<GuardrailPhase, 'retrieval'>[],
 ): AgentExecutionRequirements | undefined {
-	const tools: string[] = []
 	const toolIds = new Set<string>()
-	const models: Array<{ alias: string; capabilities: ['object'] }> = []
 	const modelAliases = new Set<string>()
 
 	for (const phase of phases) {
 		for (const rail of rails.get(phase) ?? []) {
 			const metadata = actionMetadata(rail.action)
 			for (const toolId of metadata?.tools ?? []) {
-				if (!toolIds.has(toolId)) {
-					toolIds.add(toolId)
-					tools.push(toolId)
-				}
+				toolIds.add(toolId)
 			}
 			for (const alias of metadata?.models ?? []) {
-				if (!modelAliases.has(alias)) {
-					modelAliases.add(alias)
-					models.push({ alias, capabilities: ['object'] })
-				}
+				modelAliases.add(alias)
 			}
 		}
 	}
 
-	if (tools.length === 0 && models.length === 0) return undefined
-	return {
+	if (toolIds.size === 0 && modelAliases.size === 0) return undefined
+	const tools = Object.freeze([...toolIds].sort())
+	const models = Object.freeze(
+		[...modelAliases].sort().map(alias => Object.freeze({ alias, capabilities: Object.freeze(['object'] as const) })),
+	)
+	return Object.freeze({
 		...(tools.length > 0 ? { tools } : {}),
 		...(models.length > 0 ? { models } : {}),
-	}
+	})
 }
 
 function projectActionModels(
-	action: GuardrailAction,
-	models: Record<string, GuardrailModelHandle> | undefined,
-): Record<string, GuardrailModelHandle> | undefined {
+	action: AnyGuardrailAction,
+	models: Readonly<Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>>> | undefined,
+): Readonly<Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>>> | undefined {
 	const aliases = actionMetadata(action)?.models ?? []
 	if (aliases.length === 0) return undefined
-	const projected: Record<string, GuardrailModelHandle> = {}
+	const projected: Record<string, ModelHandle<{ readonly capabilities: readonly ['object'] }>> = {}
 	for (const alias of aliases) {
 		const handle = models?.[alias]
 		if (handle !== undefined) projected[alias] = handle

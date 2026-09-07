@@ -1,12 +1,14 @@
 import { SpanStatusCode } from '@opentelemetry/api'
-import { createHash } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   agentGuardrailsBinding,
+  createDecisionEvidence,
   DecisionBlockedError,
+  defineAgent,
   defineHarness,
-  inMemorySandbox,
+  defineTool,
+  defineWorkflow,
   serializeError,
   type HarnessAdapterContext,
   type Schema,
@@ -192,7 +194,57 @@ it('rejects raw and forged action objects before evaluation', () => {
   )
   expect(() =>
     defineGuardrailAction({ phase: 'tool_input', evaluate: () => ({ decision: 'allow' }) } as never),
-  ).toThrow(/Invalid guardrail action definition/)
+  ).toThrow(/Guardrails configuration is invalid/)
+})
+
+it('classifies absent and inherited flows as missing while rejecting present forged tokens', () => {
+  const config = { rails: { input: { flows: ['gate'] } } } as const
+  const expectedMissing = expect.objectContaining({
+    code: 'GUARDRAILS_CONFIG_ERROR',
+    message: 'Guardrails configuration is invalid.',
+    meta: { reason: 'action_missing', field: 'flows.gate', flowId: 'gate' },
+  })
+  expect(() => defineGuardrailsApi({ config, actions: {} } as never)).toThrow(expectedMissing)
+
+  const inherited = Object.create({
+    gate: defineGuardrailAction({ phase: 'input', evaluate: () => ({ decision: 'allow' }) }),
+  }) as Record<string, never>
+  expect(() => defineGuardrailsApi({ config, actions: inherited } as never)).toThrow(expectedMissing)
+  expect(() => defineGuardrailsApi({
+    config,
+    actions: { gate: { phase: 'input', evaluate: () => ({ decision: 'allow' }) } } as never,
+  } as never)).toThrow(expect.objectContaining({
+    code: 'GUARDRAILS_CONFIG_ERROR',
+    message: 'Guardrails configuration is invalid.',
+    meta: { reason: 'invalid_action', field: 'flows.gate', flowId: 'gate' },
+  }))
+})
+
+it('normalizes invalid and hostile action registries without leaking access failures', () => {
+  const config = { rails: { input: { flows: ['gate'] } } } as const
+  const token = defineGuardrailAction({ phase: 'input', evaluate: () => ({ decision: 'allow' }) })
+  const unreadableOwnProperty = new Proxy({}, {
+    getOwnPropertyDescriptor() { throw new Error('private registry descriptor') },
+  })
+  const unreadableValue = new Proxy({ gate: token }, {
+    get(target, property, receiver) {
+      if (property === 'gate') throw new Error('private registry value')
+      return Reflect.get(target, property, receiver)
+    },
+  })
+  for (const actions of [unreadableOwnProperty, unreadableValue]) {
+    expect(() => defineGuardrailsApi({ config, actions } as never)).toThrow(expect.objectContaining({
+      code: 'GUARDRAILS_CONFIG_ERROR',
+      message: 'Guardrails configuration is invalid.',
+      meta: { reason: 'invalid_action', field: 'flows.gate', flowId: 'gate' },
+    }))
+    expect(() => defineGuardrailsApi({ config, actions } as never)).not.toThrow(/private registry/)
+  }
+  expect(() => defineGuardrailsApi({ config, actions: null } as never)).toThrow(expect.objectContaining({
+    code: 'GUARDRAILS_CONFIG_ERROR',
+    message: 'Guardrails configuration is invalid.',
+    meta: { reason: 'invalid_shape', field: 'actions' },
+  }))
 })
 
 it('runs canonical input and output rails with the Harness test adapter', async () => {
@@ -220,20 +272,20 @@ it('runs canonical input and output rails with the Harness test adapter', async 
       },
     },
   })
-  const harness = defineHarness()
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object'] } })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: ({ input }) => `Answer ${input}`,
-      builtinTools: false,
-      guardrails: rails,
-    })
-    .build()
+  const answer = defineAgent('answer', {
+    model: 'assistant',
+    output: z.string(),
+    instructions: 'Answer the supplied question.',
+    guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailsTransform' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
 
   const session = await harness.getSession('guardrails-transform')
   await expect(session.agents.answer.run('unsafe question')).resolves.toMatchObject({ status: 'completed', output: 'safe answer' })
   expect(provider.requests[0]?.messages).toEqual([
-    { role: 'system', content: 'Answer safe question' },
+    { role: 'system', content: 'Answer the supplied question.' },
     { role: 'user', content: 'safe question', toolCalls: undefined },
   ])
 })
@@ -251,28 +303,25 @@ it('blocks a configured tool-input rail before the Harness tool has a side effec
     actions: { 'approve transfer': { phase: 'tool_input', evaluate: () => ({ decision: 'block' }) } },
   })
   let calls = 0
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      transfer: {
-        description: 'Transfer funds.',
-        input: z.object({ amount: z.number() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async () => {
-          calls += 1
-          return { ok: true }
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['transfer'],
-      builtinTools: false,
-      guardrails: rails,
-    })
-    .build()
+  const transfer = defineTool('transfer', {
+    description: 'Transfer funds.',
+    input: z.object({ amount: z.number() }),
+    output: z.object({ ok: z.boolean() }),
+    handler: async () => {
+      calls += 1
+      return { ok: true }
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant',
+    output: z.string(),
+    instructions: 'Answer.',
+    tools: [transfer],
+    guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailsToolBlock' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
 
   const session = await harness.getSession('guardrails-tool-block')
   await expect(session.agents.answer.run('transfer')).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
@@ -327,32 +376,111 @@ it('masks an explicitly selected structured tool-input field before the Harness 
     },
   })
   let receivedMemo: string | undefined
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      transfer: {
-        description: 'Transfer funds.',
-        input: z.object({ amount: z.number(), memo: z.string() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async (_context, { memo }) => {
-          receivedMemo = memo
-          return { ok: true }
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['transfer'],
-      builtinTools: false,
-      guardrails: rails,
-    })
-    .build()
+  const transfer = defineTool('transfer', {
+    description: 'Transfer funds.',
+    input: z.object({ amount: z.number(), memo: z.string() }),
+    output: z.object({ ok: z.boolean() }),
+    handler: async (_context, { memo }) => {
+      receivedMemo = memo
+      return { ok: true }
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant',
+    output: z.string(),
+    instructions: 'Answer.',
+    tools: [transfer],
+    guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailsToolMask' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
 
   const session = await harness.getSession('guardrails-tool-mask')
   await expect(session.agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
   expect(receivedMemo).toBe('refund <MASKED>')
+})
+
+it('snapshots sensitive-data helper options and codec functions while retaining the live detector', async () => {
+  const provider = new FakeModelProvider()
+  provider.enqueue({
+    object: {},
+    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { memo: 'refund test@example.test' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'tool_calls',
+  })
+  provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  let detectorCalls = 0
+  const detector: SensitiveDataDetector = {
+    id: 'mutable-detector',
+    executionMode: 'local',
+    supportedEntities: ['EMAIL_ADDRESS'],
+    async inspect() { return { findings: [] } },
+  }
+  const tools = ['transfer'] as ['transfer']
+  const codec = {
+    id: 'transferMemo',
+    extract: (value: { memo: string }) => [{ id: 'memo', text: value.memo }],
+    replace: (value: { memo: string }, replacements: readonly { start: number; end: number; value: string }[]) => ({
+      memo: replacements.reduce(
+        (memo, replacement) => memo.slice(0, replacement.start) + replacement.value + memo.slice(replacement.end),
+        value.memo,
+      ),
+    }),
+  }
+  const options = {
+    detector,
+    phase: 'tool_input' as const,
+    tools,
+    policy: 'input' as const,
+    operation: 'mask' as const,
+    valueSchema: z.object({ memo: z.string() }),
+    codec,
+  }
+  const action = sensitiveDataToolRail(options)
+  Reflect.set(tools, 0, 'otherTool')
+  Reflect.set(options, 'phase', 'tool_output')
+  Reflect.set(options, 'policy', 'output')
+  Reflect.set(options, 'operation', 'detect')
+  Reflect.set(codec, 'extract', () => [])
+  Reflect.set(codec, 'replace', () => ({ memo: 'mutated' }))
+  const liveInspect: SensitiveDataDetector['inspect'] = async ({ text }) => {
+    detectorCalls += 1
+    const start = text.indexOf('test@example.test')
+    return { findings: start < 0 ? [] : [{ category: 'EMAIL_ADDRESS', start, end: start + 17 }] }
+  }
+  Reflect.set(detector, 'inspect', liveInspect)
+
+  const rails = defineGuardrailsApi({
+    config: {
+      rails: { tool_input: { flows: ['mask memo'] } },
+      sensitiveData: { input: { entities: ['EMAIL_ADDRESS'], maskToken: '<MASKED>', scoreThreshold: 0 } },
+    },
+    actions: { 'mask memo': action },
+  })
+  expect(rails[agentGuardrailsBinding].requirements).toEqual({ tools: ['transfer'] })
+  let receivedMemo: string | undefined
+  const transfer = defineTool('transfer', {
+    description: 'Transfer funds.',
+    input: z.object({ memo: z.string() }),
+    output: z.boolean(),
+    handler: async (_context, input) => {
+      receivedMemo = input.memo
+      return true
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', tools: [transfer], guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'immutableSensitiveDataHelper' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'assistant' } } })
+  const session = await harness.getSession('immutable-sensitive-data-helper')
+
+  await expect(session.agents.answer.run('transfer')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  expect(receivedMemo).toBe('refund <MASKED>')
+  expect(detectorCalls).toBe(1)
+  await harness.close()
 })
 
 it('filters caller-owned retrieval chunks without creating a vector store', async () => {
@@ -394,13 +522,17 @@ it('uses a direct Harness model alias for a model-backed check', async () => {
       }),
     },
   })
-  const harness = defineHarness()
-    .models({
-      assistant: { provider: assistant, model: 'assistant', capabilities: ['object'] },
-      safety: { provider: safety, model: 'safety', capabilities: ['object'] },
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailsModelCheck' })
+    .addAgent(answer)
+    .getInstance({
+      models: {
+        assistant: { provider: assistant, model: 'assistant' },
+        safety: { provider: safety, model: 'safety' },
+      },
     })
-    .agent('answer', { model: 'assistant', instructions: 'Answer.', builtinTools: false, guardrails: rails })
-    .build()
 
   const session = await harness.getSession('guardrails-model-check')
   await expect(session.agents.answer.run('unsafe question')).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
@@ -408,41 +540,275 @@ it('uses a direct Harness model alias for a model-backed check', async () => {
   expect(assistant.requests).toHaveLength(0)
 })
 
-it('derives binding requirements from only active non-retrieval actions', () => {
+it('snapshots model-check helper configuration before caller mutation', async () => {
+  const safety = new FakeModelProvider()
+  safety.enqueue({
+    object: { allow: true },
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'stop',
+  })
+  const assistant = new FakeModelProvider()
+  assistant.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  const options = {
+    phase: 'input' as const,
+    model: 'safety' as const,
+    instructions: 'Use the original safety policy.',
+  }
+  const action = modelCheckRail(options)
+  Reflect.set(options, 'model', 'mutatedModel')
+  Reflect.set(options, 'instructions', 'Use the mutated policy.')
+  const rails = defineGuardrailsApi({
+    config: { rails: { input: { flows: ['self check'] } } },
+    actions: { 'self check': action },
+  })
+  expect(rails[agentGuardrailsBinding].requirements).toEqual({
+    models: [{ alias: 'safety', capabilities: ['object'] }],
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'immutableModelCheckHelper' })
+    .addAgent(answer)
+    .getInstance({
+      models: {
+        assistant: { provider: assistant, model: 'assistant' },
+        safety: { provider: safety, model: 'safety' },
+      },
+    })
+  const session = await harness.getSession('immutable-model-check-helper')
+
+  await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+  expect(safety.requests[0]?.messages[0]).toEqual({ role: 'system', content: 'Use the original safety policy.' })
+  await harness.close()
+})
+
+it('derives a frozen, sorted binding requirement snapshot from only selected attached actions', () => {
   const rails = defineGuardrailsApi({
     config: {
       rails: {
         input: { flows: ['model check'] },
         tool_input: { flows: ['tool check'] },
+        tool_output: { flows: ['second tool check'] },
         retrieval: { flows: ['retrieval check'] },
       },
     },
     actions: {
       'model check': defineGuardrailAction({
         phase: 'input',
-        models: ['safety'],
+        models: ['zetaModel', 'alphaModel'],
         evaluate: () => ({ decision: 'allow' }),
       }),
       'tool check': defineGuardrailAction({
         phase: 'tool_input',
-        tools: ['publish'],
+        tools: ['zetaTool', 'alphaTool'],
+        evaluate: () => ({ decision: 'allow' }),
+      }),
+      'second tool check': defineGuardrailAction({
+        phase: 'tool_output',
+        tools: ['middleTool', 'alphaTool'],
+        models: ['alphaModel'],
         evaluate: () => ({ decision: 'allow' }),
       }),
       'retrieval check': defineGuardrailAction({
         phase: 'retrieval',
-        models: ['retrieval_model'],
+        models: ['retrievalModel'],
+        evaluate: () => ({ decision: 'allow' }),
+      }),
+      'unused check': defineGuardrailAction({
+        phase: 'input',
+        models: ['unusedModel'],
         evaluate: () => ({ decision: 'allow' }),
       }),
     },
   })
 
-  expect(rails[agentGuardrailsBinding]).toMatchObject({
+  const binding = rails[agentGuardrailsBinding]
+  expect(binding).toMatchObject({
     id: 'purista.guardrails',
     requirements: {
-      tools: ['publish'],
-      models: [{ alias: 'safety', capabilities: ['object'] }],
+      tools: ['alphaTool', 'middleTool', 'zetaTool'],
+      models: [
+        { alias: 'alphaModel', capabilities: ['object'] },
+        { alias: 'zetaModel', capabilities: ['object'] },
+      ],
     },
   })
+  expect(Object.isFrozen(binding.requirements)).toBe(true)
+  expect(Object.isFrozen(binding.requirements?.tools)).toBe(true)
+  expect(Object.isFrozen(binding.requirements?.models)).toBe(true)
+  expect(Object.isFrozen(binding.requirements?.models?.[0])).toBe(true)
+  expect(Object.isFrozen(binding.requirements?.models?.[0]?.capabilities)).toBe(true)
+
+  const tool = <const Id extends string>(id: Id) => defineTool(id, {
+    description: `${id} test tool.`, input: z.string(), output: z.string(), handler: async (_context, input) => input,
+  })
+  const answer = defineAgent('requirementsAgent', {
+    model: 'assistant',
+    instructions: 'Answer.',
+    tools: [tool('zetaTool'), tool('alphaTool'), tool('middleTool')],
+    guardrails: rails,
+  })
+  const definition = defineHarness({ name: 'guardrailRequirements' }).addAgent(answer)
+  expect(definition.requirements.models.alphaModel).toEqual({ capabilities: ['object'] })
+  expect(definition.requirements.models.zetaModel).toEqual({ capabilities: ['object'] })
+  expect(definition.requirements.models).not.toHaveProperty('retrievalModel')
+  expect(definition.requirements.models).not.toHaveProperty('unusedModel')
+})
+
+it.each(['input', 'output', 'tool_input', 'tool_output'] as const)(
+  'derives requirements from the selected %s phase independently',
+  (phase) => {
+    const action = phase === 'tool_input' || phase === 'tool_output'
+      ? defineGuardrailAction({
+          phase,
+          tools: ['selectedTool'],
+          models: ['selectedModel'],
+          evaluate: () => ({ decision: 'allow' }),
+        })
+      : defineGuardrailAction({
+          phase,
+          models: ['selectedModel'],
+          evaluate: () => ({ decision: 'allow' }),
+        })
+    const rails = defineGuardrailsApi({
+      config: { rails: { [phase]: { flows: ['selected'] } } },
+      actions: { selected: action },
+    } as never)
+
+    expect(rails[agentGuardrailsBinding].requirements).toEqual({
+      ...(phase === 'tool_input' || phase === 'tool_output' ? { tools: ['selectedTool'] } : {}),
+      models: [{ alias: 'selectedModel', capabilities: ['object'] }],
+    })
+  },
+)
+
+it('omits attached requirements for empty and retrieval-only flow selections', () => {
+  const retrieval = defineGuardrailAction({
+    phase: 'retrieval',
+    models: ['retrievalModel'],
+    evaluate: () => ({ decision: 'allow' }),
+  })
+  expect(defineGuardrailsApi({ config: {}, actions: {} })[agentGuardrailsBinding].requirements).toBeUndefined()
+  expect(defineGuardrailsApi({
+    config: { rails: { retrieval: { flows: ['retrieval'] } } },
+    actions: { retrieval },
+  })[agentGuardrailsBinding].requirements).toBeUndefined()
+})
+
+it('rejects malformed and duplicate action selectors with content-free configuration errors', () => {
+  for (const definition of [
+    { phase: 'input', models: [] },
+    { phase: 'input', models: ['invalid-alias'] },
+    { phase: 'input', models: ['safety', 'safety'] },
+    { phase: 'tool_input', tools: ['transfer', 'transfer'] },
+    { phase: 'tool_input', tools: ['invalid-tool'] },
+    { phase: 'tool_input', tools: [] },
+  ]) {
+    expect(() =>
+      defineGuardrailAction({ ...definition, evaluate: () => ({ decision: 'allow' }) } as never),
+    ).toThrow(expect.objectContaining({
+      code: 'GUARDRAILS_CONFIG_ERROR',
+      message: 'Guardrails configuration is invalid.',
+      meta: { reason: 'invalid_shape', field: 'action' },
+    }))
+  }
+})
+
+it('rejects malformed action callbacks and hidden fields with classified content-free errors', () => {
+  expect(() => defineGuardrailAction({ phase: 'input' } as never)).toThrow(expect.objectContaining({
+    code: 'GUARDRAILS_CONFIG_ERROR',
+    message: 'Guardrails configuration is invalid.',
+    meta: { reason: 'invalid_action', field: 'action' },
+  }))
+
+  const hiddenField = { phase: 'input', evaluate: () => ({ decision: 'allow' }) }
+  Object.defineProperty(hiddenField, 'privatePrompt', { value: 'must not cross the error boundary' })
+  const symbolField = {
+    phase: 'input',
+    evaluate: () => ({ decision: 'allow' }),
+    [Symbol('private')]: true,
+  }
+  for (const definition of [hiddenField, symbolField]) {
+    expect(() => defineGuardrailAction(definition as never)).toThrow(expect.objectContaining({
+      code: 'GUARDRAILS_CONFIG_ERROR',
+      message: 'Guardrails configuration is invalid.',
+      meta: { reason: 'invalid_shape', field: 'action' },
+    }))
+  }
+})
+
+it('snapshots own action fields once and rejects inherited required fields without leaking getters', () => {
+  let evaluateReads = 0
+  const changingGetter = { phase: 'input' }
+  Object.defineProperty(changingGetter, 'evaluate', {
+    enumerable: true,
+    get() {
+      evaluateReads += 1
+      if (evaluateReads > 1) throw new Error('private getter content')
+      return () => ({ decision: 'allow' })
+    },
+  })
+  expect(() => defineGuardrailAction(changingGetter as never)).not.toThrow()
+  expect(evaluateReads).toBe(1)
+
+  const throwingGetter = { phase: 'input' }
+  Object.defineProperty(throwingGetter, 'evaluate', {
+    enumerable: true,
+    get() { throw new Error('private getter content') },
+  })
+  expect(() => defineGuardrailAction(throwingGetter as never)).toThrow(expect.objectContaining({
+    code: 'GUARDRAILS_CONFIG_ERROR',
+    message: 'Guardrails configuration is invalid.',
+    meta: { reason: 'invalid_shape', field: 'action' },
+  }))
+  expect(() => defineGuardrailAction(throwingGetter as never)).not.toThrow(/private getter content/)
+
+  const inheritedBoth = Object.create({
+    phase: 'input',
+    evaluate: () => ({ decision: 'allow' }),
+  })
+  expect(() => defineGuardrailAction(inheritedBoth as never)).toThrow(expect.objectContaining({
+    meta: { reason: 'invalid_shape', field: 'action' },
+  }))
+  const inheritedEvaluate = Object.assign(
+    Object.create({ evaluate: () => ({ decision: 'allow' }) }),
+    { phase: 'input' },
+  )
+  expect(() => defineGuardrailAction(inheritedEvaluate as never)).toThrow(expect.objectContaining({
+    meta: { reason: 'invalid_action', field: 'action' },
+  }))
+
+  let toolReads = 0
+  const tools = new Array<string>(1)
+  Object.defineProperty(tools, 0, {
+    enumerable: true,
+    get() {
+      toolReads += 1
+      return toolReads === 1 ? 'safeTool' : 'invalid-tool'
+    },
+  })
+  let modelReads = 0
+  const models = new Array<string>(1)
+  Object.defineProperty(models, 0, {
+    enumerable: true,
+    get() {
+      modelReads += 1
+      return modelReads === 1 ? 'safeModel' : 'invalid-model'
+    },
+  })
+  const snapshottedSelectors = defineGuardrailAction({
+    phase: 'tool_input', tools, models, evaluate: () => ({ decision: 'allow' }),
+  } as never)
+  const rails = defineGuardrailsApi({
+    config: { rails: { tool_input: { flows: ['selector snapshot'] } } },
+    actions: { 'selector snapshot': snapshottedSelectors },
+  } as never)
+  expect(rails[agentGuardrailsBinding].requirements).toEqual({
+    tools: ['safeTool'],
+    models: [{ alias: 'safeModel', capabilities: ['object'] }],
+  })
+  expect(toolReads).toBe(1)
+  expect(modelReads).toBe(1)
 })
 
 it('fails attached guardrail preflight before provider work when a declared dependency is unavailable', () => {
@@ -463,26 +829,18 @@ it('fails attached guardrail preflight before provider work when a declared depe
     },
   })
 
+  const publish = defineTool('publish', {
+    description: 'Publish.',
+    input: z.object({ message: z.string() }),
+    output: z.boolean(),
+    handler: async () => true,
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
   const error = (() => {
     try {
-      defineHarness()
-        .models({ assistant: { provider, model: 'assistant', capabilities: ['object'] } })
-        .tools({
-          publish: {
-            description: 'Publish.',
-            input: z.object({ message: z.string() }),
-            output: z.boolean(),
-            handler: async () => true,
-          },
-        })
-        .agent('answer', {
-          model: 'assistant',
-          instructions: 'Answer.',
-          tools: [],
-          builtinTools: false,
-          guardrails: rails,
-        })
-        .build()
+      defineHarness({ name: 'missingGuardrailTool' }).addTool(publish).addAgent(answer)
     } catch (value) {
       return value
     }
@@ -492,41 +850,25 @@ it('fails attached guardrail preflight before provider work when a declared depe
   expect(provider.requests).toEqual([])
 })
 
-it.each([
-  { name: 'model alias is missing', model: 'missing', capabilities: ['object'] as const, id: 'missing' },
-  { name: 'model object capability is missing', model: 'safety', capabilities: ['text'] as const, id: 'safety' },
-])('fails attached preflight before provider work when $name', ({ model, capabilities, id }) => {
+it('requires selected action models as exact runtime bindings before provider work', async () => {
   const provider = new FakeModelProvider()
   const rails = defineGuardrailsApi({
     config: { rails: { input: { flows: ['model check'] } } },
     actions: {
       'model check': defineGuardrailAction({
         phase: 'input',
-        models: [model],
+        models: ['safety'],
         evaluate: () => ({ decision: 'allow' }),
       }),
     },
   })
-  const models =
-    model === 'missing'
-      ? { assistant: { provider, model: 'assistant', capabilities: ['object'] as const } }
-      : {
-          assistant: { provider, model: 'assistant', capabilities: ['object'] as const },
-          safety: { provider, model: 'safety', capabilities },
-        }
-
-  const error = (() => {
-    try {
-      defineHarness()
-        .models(models)
-        .agent('answer', { model: 'assistant', instructions: 'Answer.', builtinTools: false, guardrails: rails })
-        .build()
-    } catch (value) {
-      return value
-    }
-    throw new Error('Expected attached requirements to fail build validation.')
-  })()
-  expect(error).toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'invalid_agent', id } })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
+  const definition = defineHarness({ name: 'missingGuardrailModel' }).addAgent(answer)
+  expect(() =>
+    definition.getInstance({ models: { assistant: { provider, model: 'assistant' } } } as never),
+  ).toThrow(expect.objectContaining({ code: 'HARNESS_CONFIG_ERROR' }))
   expect(provider.requests).toEqual([])
 })
 
@@ -555,14 +897,22 @@ it('projects only declared attached action models and rejects unavailable requir
       }),
     },
   })
-  const harness = defineHarness()
-    .models({
-      assistant: { provider: assistant, model: 'assistant', capabilities: ['object'] },
-      safety: { provider: safety, model: 'safety', capabilities: ['object'] },
-      unrelated: { provider: unrelated, model: 'unrelated', capabilities: ['object'] },
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
+  const unrelatedAgent = defineAgent('unrelatedAgent', {
+    model: 'unrelated', output: z.string(), instructions: 'Remain unused.',
+  })
+  const harness = await defineHarness({ name: 'attachedModelProjection' })
+    .addAgent(answer)
+    .addAgent(unrelatedAgent)
+    .getInstance({
+      models: {
+        assistant: { provider: assistant, model: 'assistant' },
+        safety: { provider: safety, model: 'safety' },
+        unrelated: { provider: unrelated, model: 'unrelated' },
+      },
     })
-    .agent('answer', { model: 'assistant', instructions: 'Answer.', builtinTools: false, guardrails: rails })
-    .build()
   const session = await harness.getSession('attached-model-projection')
   try {
     await expect(session.agents.answer.run('question')).resolves.toMatchObject({ status: 'completed', output: 'safe answer' })
@@ -570,10 +920,10 @@ it('projects only declared attached action models and rejects unavailable requir
     expect(actionCalls).toBe(1)
   } finally {
     await session.release()
-    await harness.shutdown()
+    await harness.close()
   }
 
-  for (const capabilities of [undefined, ['text'] as const]) {
+  for (const runtimeSafety of [undefined, { provider: { id: 'no-object', genAiSystem: 'test' }, model: 'safety' }]) {
     let rejectedActionCalls = 0
     const rejectedRails = defineGuardrailsApi({
       config: { rails: { input: { flows: ['model check'] } } },
@@ -588,26 +938,18 @@ it('projects only declared attached action models and rejects unavailable requir
         }),
       },
     })
-    const error = (() => {
-      try {
-        defineHarness()
-          .models({
-            assistant: { provider: assistant, model: 'assistant', capabilities: ['object'] },
-            ...(capabilities ? { safety: { provider: safety, model: 'safety', capabilities } } : {}),
-          })
-          .agent('answer', {
-            model: 'assistant',
-            instructions: 'Answer.',
-            builtinTools: false,
-            guardrails: rejectedRails,
-          })
-          .build()
-      } catch (value) {
-        return value
-      }
-      throw new Error('Expected attached requirements to fail build validation.')
-    })()
-    expect(error).toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'invalid_agent', id: 'safety' } })
+    const rejectedAnswer = defineAgent('rejectedAnswer', {
+      model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rejectedRails,
+    })
+    const rejectedDefinition = defineHarness({ name: 'rejectedModelProjection' }).addAgent(rejectedAnswer)
+    expect(() =>
+      rejectedDefinition.getInstance({
+        models: {
+          assistant: { provider: assistant, model: 'assistant' },
+          ...(runtimeSafety ? { safety: runtimeSafety } : {}),
+        },
+      } as never),
+    ).toThrow(expect.objectContaining({ code: 'HARNESS_CONFIG_ERROR' }))
     expect(rejectedActionCalls).toBe(0)
   }
 })
@@ -849,7 +1191,7 @@ it('supports model-backed retrieval checks through the typed standalone executio
     actions: {
       'retrieval self check': modelCheckRail({
         phase: 'retrieval',
-        model: 'guardrail_model',
+        model: 'guardrailModel',
         instructions: 'Return the allow decision.',
       }),
     },
@@ -858,7 +1200,7 @@ it('supports model-backed retrieval checks through the typed standalone executio
   await expect(
     rails.filterRetrievedChunks(['untrusted'], {
       models: {
-        guardrail_model: {
+        guardrailModel: {
           object: async () => {
             calls += 1
             return {
@@ -874,7 +1216,7 @@ it('supports model-backed retrieval checks through the typed standalone executio
   expect(calls).toBe(1)
 })
 
-it('parents model-backed rail usage under the GUARDRAIL span with standard model and token attributes', async () => {
+it('runs a workflow-provided model handle inside the guardrail span', async () => {
   const telemetry = new RecordingTelemetry()
   class ObservedProvider extends FakeModelProvider {
     public configureHarnessContext(context: HarnessAdapterContext): void {
@@ -902,12 +1244,10 @@ it('parents model-backed rail usage under the GUARDRAIL span with standard model
     },
   })
 
-  const harness = defineHarness({ name: 'guardrails-test' })
-    .sandbox(inMemorySandbox())
-    .models({ safety: { provider, model: 'safety-model', capabilities: ['object'] } })
-    .workflow('review', {
+  const review = defineWorkflow('review', {
       input: z.string(),
       output: z.number(),
+      models: { safety: { alias: 'safety', capabilities: ['object'] } },
       handler: async (ctx) => {
         const chunks = await rails.filterRetrievedChunks([ctx.input], {
           models: ctx.models,
@@ -917,46 +1257,20 @@ it('parents model-backed rail usage under the GUARDRAIL span with standard model
         return chunks.length
       },
     })
-    .build()
+  const harness = await defineHarness({ name: 'guardrailsTest' })
+    .addWorkflow(review)
+    .getInstance({ models: { safety: { provider, model: 'safety-model' } } })
   const session = await harness.getSession('model-backed-retrieval')
   try {
     await expect(session.workflows.review.run('approved source')).resolves.toMatchObject({ status: 'completed', output: 1 })
     expect(provider.requests).toHaveLength(1)
   } finally {
     await session.release()
-    await harness.shutdown()
+    await harness.close()
     vi.restoreAllMocks()
   }
   const guardrailSpan = telemetry.spans.find((span) => span.name === 'evaluate_guardrail safety model')
-  const modelSpan = telemetry.spans.find((span) => span.name === 'chat safety-model')
   expect(guardrailSpan).toMatchObject({ attrs: { 'openinference.span.kind': 'GUARDRAIL' } })
-  expect(modelSpan).toMatchObject({
-    parentId: guardrailSpan?.id,
-    attrs: expect.objectContaining({
-      'openinference.span.kind': 'LLM',
-      'harness.model.alias': 'safety',
-      'gen_ai.request.model': 'safety-model',
-      'llm.model_name': 'safety-model',
-      'gen_ai.usage.input_tokens': 11,
-      'gen_ai.usage.output_tokens': 7,
-      'gen_ai.usage.total_tokens': 18,
-      'llm.token_count.total': 18,
-    }),
-  })
-  expect(telemetry.metrics).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: 'gen_ai.client.token.usage',
-        value: 11,
-        attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }),
-      }),
-      expect.objectContaining({
-        name: 'gen_ai.client.token.usage',
-        value: 7,
-        attrs: expect.objectContaining({ 'harness.model.alias': 'safety' }),
-      }),
-    ]),
-  )
 })
 
 it('masks sensitive retrieval chunks with a provider-neutral detector and content-free child telemetry', async () => {
@@ -1186,36 +1500,30 @@ it('fails closed on extra outcome fields and schema normalization without record
   })
   const provider = new FakeModelProvider()
   provider.enqueue({
-    object: {},
+    object: 'pending',
     toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: '10' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      transfer: {
-        description: 'Transfer.',
-        input: z.object({ amount: z.number() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async () => ({ ok: true }),
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['transfer'],
-      builtinTools: false,
-      guardrails: coercingValueSchema,
-    })
-    .build()
+  const transfer = defineTool('transfer', {
+    description: 'Transfer.',
+    input: z.object({ amount: z.number() }),
+    output: z.object({ ok: z.boolean() }),
+    handler: async () => ({ ok: true }),
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', tools: [transfer], guardrails: coercingValueSchema,
+  })
+  const harness = await defineHarness({ name: 'coercingRail' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
   const session = await harness.getSession('coercing-rail')
   await expect(session.agents.answer.run('transfer')).rejects.toMatchObject({
     code: 'DECISION_EVALUATION_ERROR',
     meta: { failureKind: 'invalid_result' },
   })
   await session.release()
-  await harness.shutdown()
+  await harness.close()
 })
 
 it('blocks final output before model-object delivery or assistant persistence', async () => {
@@ -1225,34 +1533,42 @@ it('blocks final output before model-object delivery or assistant persistence', 
     config: inlineConfig({ rails: { output: { flows: ['final gate'] } } }),
     actions: { 'final gate': { phase: 'output', evaluate: () => ({ decision: 'block', reasonCode: 'restricted' }) } },
   })
-  const harness = defineHarness()
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object'] } })
-    .agent('answer', { model: 'assistant', instructions: 'Answer.', builtinTools: false, guardrails: rails })
-    .build()
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailFinalBlock' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
   const session = await harness.getSession('guardrail-final-block')
   const events = []
-  await expect(async () => {
-    for await (const event of session.agents.answer.observe('question')) events.push(event)
-  }).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
-  expect(events.some((event) => event.type === 'model.object')).toBe(false)
+  for await (const event of session.agents.answer.stream('question')) events.push(event)
+  expect(events.some((event) => event.type === 'output.object.snapshot')).toBe(false)
   expect(events).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ type: 'run.finished', error: expect.objectContaining({ code: 'DECISION_BLOCKED' }) }),
+      expect.objectContaining({
+        type: 'run.finished',
+        outcome: expect.objectContaining({ status: 'failed', error: expect.objectContaining({ code: 'DECISION_BLOCKED' }) }),
+      }),
     ]),
   )
   expect(await session.history.list()).toEqual([])
   await session.release()
-  await harness.shutdown()
+  await harness.close()
 })
 
-it('applies output rails only to the final candidate, including stopWhen finalization', async () => {
+it('applies output rails only to the final candidate after tool execution', async () => {
   const provider = new FakeModelProvider()
   provider.enqueue({
     object: 'intermediate tool text',
     toolCalls: [{ id: 'lookup-1', name: 'lookup', arguments: { id: 'one' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
-  provider.enqueue({ object: 'restricted final', finishReason: 'stop' })
+  provider.enqueue({
+    object: 'restricted final',
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    finishReason: 'stop',
+  })
   let railCalls = 0
   let toolCalls = 0
   const rails = defineGuardrails({
@@ -1267,70 +1583,27 @@ it('applies output rails only to the final candidate, including stopWhen finaliz
       },
     },
   })
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      lookup: {
-        description: 'Lookup.',
-        input: z.object({ id: z.string() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async () => {
-          toolCalls += 1
-          return { ok: true }
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['lookup'],
-      builtinTools: false,
-      guardrails: rails,
-    })
-    .build()
+  const lookup = defineTool('lookup', {
+    description: 'Lookup.',
+    input: z.object({ id: z.string() }),
+    output: z.object({ ok: z.boolean() }),
+    handler: async () => {
+      toolCalls += 1
+      return { ok: true }
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', tools: [lookup], guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailToolFinal' })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
   const session = await harness.getSession('guardrail-tool-final')
   await expect(session.agents.answer.run('lookup')).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
   expect(toolCalls).toBe(1)
   expect(railCalls).toBe(1)
   await session.release()
-  await harness.shutdown()
-
-  const stoppedProvider = new FakeModelProvider()
-  stoppedProvider.enqueue({
-    object: 'restricted stop result',
-    toolCalls: [{ id: 'lookup-2', name: 'lookup', arguments: { id: 'two' } }],
-    finishReason: 'tool_calls',
-  })
-  let stoppedToolCalls = 0
-  const stoppedHarness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider: stoppedProvider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      lookup: {
-        description: 'Lookup.',
-        input: z.object({ id: z.string() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async () => {
-          stoppedToolCalls += 1
-          return { ok: true }
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['lookup'],
-      builtinTools: false,
-      stopWhen: ({ toolCalls }) => toolCalls.length > 0,
-      guardrails: rails,
-    })
-    .build()
-  const stoppedSession = await stoppedHarness.getSession('guardrail-stop-final')
-  await expect(stoppedSession.agents.answer.run('lookup')).rejects.toMatchObject({ code: 'DECISION_BLOCKED' })
-  expect(stoppedToolCalls).toBe(0)
-  await stoppedSession.release()
-  await stoppedHarness.shutdown()
+  await harness.close()
 })
 
 it.each([
@@ -1441,8 +1714,9 @@ it('inherits the enclosing tool deadline and fences a late rail continuation', a
   vi.useFakeTimers()
   const provider = new FakeModelProvider()
   provider.enqueue({
-    object: {},
+    object: 'pending',
     toolCalls: [{ id: 'lookup-timeout', name: 'lookup', arguments: { id: 'one' } }],
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
   let actionSignal: AbortSignal | undefined
@@ -1467,40 +1741,21 @@ it('inherits the enclosing tool deadline and fences a late rail continuation', a
       },
     },
   })
-  const harness = defineHarness()
-    .defaults({ toolTimeoutMs: 10 })
-    .sandbox(inMemorySandbox())
-    .models({ assistant: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      lookup: {
-        description: 'Lookup.',
-        input: z.object({ id: z.string() }),
-        output: z.object({ ok: z.boolean() }),
-        handler: async () => {
-          toolCalls += 1
-          return { ok: true }
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'assistant',
-      instructions: 'Answer.',
-      tools: ['lookup'],
-      builtinTools: false,
-      interceptors: [
-        {
-          id: 'clock-skew',
-          beforeTool: () => {
-            // Advance wall time without advancing the already installed tool timer.
-            // A nested timer clipped to the reported tool deadline would now win.
-            vi.setSystemTime(Date.now() + 5)
-            return { decision: 'allow' }
-          },
-        },
-      ],
-      guardrails: rails,
-    })
-    .build()
+  const lookup = defineTool('lookup', {
+    description: 'Lookup.',
+    input: z.object({ id: z.string() }),
+    output: z.object({ ok: z.boolean() }),
+    handler: async () => {
+      toolCalls += 1
+      return { ok: true }
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'assistant', output: z.string(), instructions: 'Answer.', tools: [lookup], guardrails: rails,
+  })
+  const harness = await defineHarness({ name: 'guardrailToolTimeout', defaults: { toolTimeoutMs: 10 } })
+    .addAgent(answer)
+    .getInstance({ models: { assistant: { provider, model: 'fake' } } })
   try {
     const session = await harness.getSession('guardrail-tool-timeout')
     const result = session.agents.answer.run('lookup').catch((error: unknown) => error)
@@ -1514,7 +1769,7 @@ it('inherits the enclosing tool deadline and fences a late rail continuation', a
     expect(toolCalls).toBe(0)
     await session.release()
   } finally {
-    await harness.shutdown()
+    await harness.close()
     vi.useRealTimers()
   }
 })
@@ -1570,13 +1825,13 @@ it.each([
   if (phase === 'tool_input')
     for (let index = 0; index < count; index += 1) {
       provider.enqueueObject({
-        object: {},
+        object: 'pending',
         toolCalls: [{ id: 'same-call', name: 'lookup', arguments: { id: 'one' } }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
         finishReason: 'tool_calls',
       })
     }
   const contexts: GuardrailActionContext[] = []
-  const occurrences: Array<{ invocationId: string; runId: string }> = []
   const failures: DecisionBlockedError[] = []
   const events: import('@purista/harness').RunEvent[] = []
   let handlers = 0
@@ -1593,104 +1848,95 @@ it.each([
       },
     },
   })
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ fake: { provider, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .tools({
-      lookup: {
-        description: 'Lookup.',
-        input: z.object({ id: z.string() }),
-        output: z.boolean(),
-        handler: async () => {
-          handlers += 1
-          return true
-        },
-      },
-    })
-    .agent('answer', {
-      model: 'fake',
-      instructions: 'Answer.',
-      input: z.string(),
-      output: z.string(),
-      builtinTools: false,
-      tools: ['lookup'],
-      interceptors: [
-        {
-          id: 'occurrence',
-          beforeInput: ({ invocationId, runId }) => {
-            occurrences.push({ invocationId, runId })
-            return { decision: 'allow' }
-          },
-        },
-      ],
-      guardrails: rails,
-    })
-    .workflow('review', {
-      input: z.string(),
-      output: z.string(),
-      delegation: { agents: ['answer'] },
-      handler: async (ctx) => {
-        for (let index = 0; index < count; index += 1) {
-          try {
-            await ctx.agents.answer(ctx.input)
-          } catch (error) {
-            if (!(error instanceof DecisionBlockedError)) throw error
-            failures.push(error)
-          }
+  const lookup = defineTool('lookup', {
+    description: 'Lookup.',
+    input: z.object({ id: z.string() }),
+    output: z.boolean(),
+    handler: async () => {
+      handlers += 1
+      return true
+    },
+  })
+  const answer = defineAgent('answer', {
+    model: 'fake',
+    instructions: 'Answer.',
+    input: z.string(),
+    output: z.string(),
+    prompt: input => ({ role: 'user', content: input }),
+    tools: [lookup],
+    guardrails: rails,
+  })
+  const review = defineWorkflow('review', {
+    input: z.string(),
+    output: z.string(),
+    agents: { answer },
+    handler: async (ctx) => {
+      for (let index = 0; index < count; index += 1) {
+        try {
+          await ctx.agents.answer.run(ctx.input, { callId: `answerCall${index}` })
+        } catch (error) {
+          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'WORKFLOW_CHILD_TARGET_FAILED')
+            throw error
         }
-        return 'done'
-      },
-    })
-    .build()
+      }
+      return 'done'
+    },
+  })
+  const harness = await defineHarness({ name: 'railEvidence' })
+    .addAgent(answer)
+    .addWorkflow(review)
+    .getInstance({ models: { fake: { provider, model: 'fake' } } })
   const session = await harness.getSession(`rail-evidence-${phase}-${mode}`)
   if (mode === 'delegated') {
-    for await (const event of session.workflows.review.observe('question')) events.push(event)
+    for await (const event of session.workflows.review.stream('question')) events.push(event)
   } else {
     try {
-      for await (const event of session.agents.answer.observe('question')) events.push(event)
+      await session.agents.answer.run('question')
     } catch (error) {
       if (!(error instanceof DecisionBlockedError)) throw error
       failures.push(error)
     }
   }
-  expect(failures).toHaveLength(count)
+  const blockedFailures = mode === 'delegated'
+    ? events.flatMap((event) =>
+        event.type === 'agent.finished' && event.error?.code === 'DECISION_BLOCKED'
+          ? [event.error as unknown as DecisionBlockedError]
+          : [],
+      )
+    : failures
+  expect(blockedFailures).toHaveLength(count)
   const started = events.filter((event) => event.type === 'agent.started')
   for (const [index, context] of contexts.entries()) {
-    const { invocationId, runId } = occurrences[index]!
-    expect(context.invocationId).toBe(invocationId)
-    if (mode === 'delegated') expect(invocationId).not.toBe(runId)
-    else expect(invocationId).toBe(runId)
-    if (phase === 'tool_input')
-      expect(invocationId).toBe(mode === 'delegated' ? started[index]?.delegationCallId : started[index]?.runId)
-    const decisionId = `decision_${createHash('sha256')
-      .update(
-        JSON.stringify([
-          runId,
-          invocationId,
-          phase,
-          0,
-          phase === 'tool_input' ? 'lookup' : null,
-          phase === 'tool_input' ? 'same-call' : null,
-          'guardrail',
-          'block second',
-          null,
-          'block second',
-          1,
-        ]),
-      )
-      .digest('hex')}`
-    expect(failures[index]?.meta).toEqual({
-      evidence: {
-        decisionId,
-        source: { kind: 'guardrail', id: 'block second', ruleId: 'block second' },
-        phase,
-        reasonCode: 'restricted',
+    const { invocationId, runId } = context
+    expect(invocationId).toBe(runId)
+    if (mode === 'delegated') {
+      expect(invocationId).toBe(started[index]?.runId)
+    }
+    const evidence = createDecisionEvidence({
+      occurrence: {
+        invocationId,
+        step: context.step,
+        ...(runId ? { runId } : {}),
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        ...(context.toolId ? { toolId: context.toolId } : {}),
+        ...(context.callId ? { callId: context.callId } : {}),
       },
+      source: { kind: 'guardrail', id: 'block second', ruleId: 'block second' },
+      phase,
+      ordinal: 1,
+      reasonCode: 'restricted',
+    })
+    expect(blockedFailures[index]?.meta).toEqual({
+      evidence,
     })
   }
-  if (mode === 'delegated')
-    expect(failures[0]?.meta?.evidence.decisionId).not.toBe(failures[1]?.meta?.evidence.decisionId)
+  if (mode === 'delegated') {
+    expect(new Set(contexts.map((context) => context.invocationId)).size).toBe(count)
+    expect(blockedFailures[0]?.meta?.evidence.decisionId).not.toBe(blockedFailures[1]?.meta?.evidence.decisionId)
+  }
   expect(handlers).toBe(0)
   expect(provider.requests).toHaveLength(phase === 'tool_input' ? count : 0)
-  await harness.shutdown()
+  await harness.close()
 })

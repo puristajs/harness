@@ -1,23 +1,37 @@
 import { isJsonValue } from '@purista/harness'
-import type { Infer, JsonValue, Schema } from '@purista/harness'
+import type { Infer, JsonValue, ModelAliasId, Schema } from '@purista/harness'
 import type { GuardrailPhase } from './config-schema.js'
 import type { GuardrailActionContext, GuardrailOutcome, GuardrailValue } from './rails.js'
+import { GuardrailsConfigError } from './errors.js'
 
 declare const guardrailActionBrand: unique symbol
 
+type GuardrailToolSelector = readonly [string, ...string[]]
+type GuardrailModelSelector = readonly [ModelAliasId, ...ModelAliasId[]]
+
 /** An immutable, opaque action token accepted by `defineGuardrails`. */
-export interface GuardrailAction<P extends GuardrailPhase = GuardrailPhase> {
+export interface GuardrailAction<
+  P extends GuardrailPhase = GuardrailPhase,
+  Tools extends readonly string[] = readonly [],
+  Models extends readonly ModelAliasId[] = readonly [],
+> {
   readonly phase: P
-  readonly [guardrailActionBrand]: true
+  readonly [guardrailActionBrand]: Readonly<{
+    tools: Tools
+    models: Models
+  }>
 }
 
-type AnySchema = Schema<any, any>
+/** Heterogeneous action constraint used by action maps. */
+export type AnyGuardrailAction = GuardrailAction<GuardrailPhase, readonly string[], readonly ModelAliasId[]>
+
+type AnySchema = Schema
 
 /** Rejects a schema whose validated value cannot cross a JSON rail boundary. */
 type JsonOutputSchema<S extends AnySchema> = Infer<S> extends JsonValue ? S : never
 
 type ActionValue<P extends GuardrailPhase, S extends AnySchema | undefined> = S extends AnySchema
-  ? Infer<S>
+  ? Infer<S> & JsonValue
   : GuardrailValue<P>
 
 type ActionResult<P extends GuardrailPhase, V, CanTransform extends boolean> = CanTransform extends false
@@ -33,9 +47,15 @@ export type GuardrailEvaluator<
   context: GuardrailActionContext<P, V>,
 ) => ActionResult<P, V, CanTransform> | Promise<ActionResult<P, V, CanTransform>>
 
-type ToolSelector<P extends GuardrailPhase> = P extends 'tool_input' | 'tool_output'
-  ? { readonly tools: readonly [string, ...string[]] }
+type ToolSelector<P extends GuardrailPhase, Tools extends GuardrailToolSelector | undefined> = P extends
+  | 'tool_input'
+  | 'tool_output'
+  ? { readonly tools: Tools extends GuardrailToolSelector ? Tools : GuardrailToolSelector }
   : { readonly tools?: never }
+
+type ModelSelector<Models extends GuardrailModelSelector | undefined> = Models extends GuardrailModelSelector
+  ? { readonly models: Models }
+  : { readonly models?: undefined }
 
 type ValueSchemaField<S extends AnySchema | undefined> = S extends AnySchema
   ? { readonly valueSchema: S & JsonOutputSchema<S> }
@@ -45,12 +65,14 @@ type ActionDefinitionBase<
   P extends GuardrailPhase,
   S extends AnySchema | undefined,
   CanTransform extends boolean,
-> = ToolSelector<P> &
+  Tools extends GuardrailToolSelector | undefined,
+  Models extends GuardrailModelSelector | undefined,
+> = ToolSelector<P, Tools> &
+  ModelSelector<Models> &
   ValueSchemaField<S> & {
     readonly phase: P
     readonly timeoutMs?: number
     readonly mayTransform?: CanTransform
-    readonly models?: readonly string[]
     readonly evaluate: GuardrailEvaluator<NoInfer<P>, ActionValue<P, S>, CanTransform>
   }
 
@@ -64,7 +86,22 @@ export type GuardrailActionDefinition<
   P extends GuardrailPhase = GuardrailPhase,
   S extends AnySchema | undefined = undefined,
   CanTransform extends boolean = true,
-> = ActionDefinitionBase<P, S, CanTransform>
+> = ActionDefinitionBase<
+  P,
+  S,
+  CanTransform,
+  P extends 'tool_input' | 'tool_output' ? GuardrailToolSelector : undefined,
+  GuardrailModelSelector | undefined
+>
+
+type NormalizedTools<
+  P extends GuardrailPhase,
+  Tools extends GuardrailToolSelector | undefined,
+> = P extends 'tool_input' | 'tool_output' ? Extract<Tools, GuardrailToolSelector> : readonly []
+
+type NormalizedModels<Models extends GuardrailModelSelector | undefined> = Models extends GuardrailModelSelector
+  ? Models
+  : readonly []
 
 type ActionMetadata = Readonly<{
   valueSchema?: AnySchema
@@ -82,54 +119,84 @@ const metadata = new WeakMap<object, ActionMetadata>()
  * retained in a private side table so tokens cannot be forged or executed by
  * configuration consumers.
  */
-export function defineGuardrailAction<const P extends GuardrailPhase, const S extends AnySchema>(
-  definition: GuardrailActionDefinition<P, S, false> & {
+export function defineGuardrailAction<
+  const P extends Exclude<GuardrailPhase, 'tool_input' | 'tool_output'>,
+  const S extends AnySchema,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, S, false, undefined, Models> & {
     readonly valueSchema: S & JsonOutputSchema<S>
     readonly mayTransform: false
   },
-): GuardrailAction<P>
-export function defineGuardrailAction<const P extends 'tool_input' | 'tool_output', const S extends AnySchema>(
-  definition: GuardrailActionDefinition<P, S, false> & {
-    readonly tools: readonly [string, ...string[]]
+): GuardrailAction<P, readonly [], NormalizedModels<Models>>
+export function defineGuardrailAction<
+  const P extends 'tool_input' | 'tool_output',
+  const S extends AnySchema,
+  const Tools extends GuardrailToolSelector,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, S, false, Tools, Models> & {
+    readonly tools: Tools
     readonly valueSchema: S & JsonOutputSchema<S>
     readonly mayTransform: false
   },
-): GuardrailAction<P>
-export function defineGuardrailAction<const P extends GuardrailPhase, const S extends AnySchema>(
-  definition: GuardrailActionDefinition<P, S, true> & {
+): GuardrailAction<P, Tools, NormalizedModels<Models>>
+export function defineGuardrailAction<
+  const P extends Exclude<GuardrailPhase, 'tool_input' | 'tool_output'>,
+  const S extends AnySchema,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, S, true, undefined, Models> & {
     readonly valueSchema: S & JsonOutputSchema<S>
     readonly mayTransform?: true | undefined
   },
-): GuardrailAction<P>
-export function defineGuardrailAction<const P extends 'tool_input' | 'tool_output', const S extends AnySchema>(
-  definition: GuardrailActionDefinition<P, S, true> & {
-    readonly tools: readonly [string, ...string[]]
+): GuardrailAction<P, readonly [], NormalizedModels<Models>>
+export function defineGuardrailAction<
+  const P extends 'tool_input' | 'tool_output',
+  const S extends AnySchema,
+  const Tools extends GuardrailToolSelector,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, S, true, Tools, Models> & {
+    readonly tools: Tools
     readonly valueSchema: S & JsonOutputSchema<S>
     readonly mayTransform?: true | undefined
   },
-): GuardrailAction<P>
-export function defineGuardrailAction<const P extends GuardrailPhase>(
-  definition: GuardrailActionDefinition<P, undefined, false> & {
+): GuardrailAction<P, Tools, NormalizedModels<Models>>
+export function defineGuardrailAction<
+  const P extends GuardrailPhase,
+  const Tools extends GuardrailToolSelector | undefined = undefined,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, undefined, false, Tools, Models> & {
     readonly valueSchema?: undefined
     readonly mayTransform: false
   },
-): GuardrailAction<P>
-export function defineGuardrailAction<const P extends GuardrailPhase>(
-  definition: GuardrailActionDefinition<P, undefined, true> & {
+): GuardrailAction<P, NormalizedTools<P, Tools>, NormalizedModels<Models>>
+export function defineGuardrailAction<
+  const P extends GuardrailPhase,
+  const Tools extends GuardrailToolSelector | undefined = undefined,
+  const Models extends GuardrailModelSelector | undefined = undefined,
+>(
+  definition: ActionDefinitionBase<P, undefined, true, Tools, Models> & {
     readonly valueSchema?: undefined
     readonly mayTransform?: true | undefined
   },
-): GuardrailAction<P>
-export function defineGuardrailAction(definition: unknown): GuardrailAction {
+): GuardrailAction<P, NormalizedTools<P, Tools>, NormalizedModels<Models>>
+export function defineGuardrailAction(definition: unknown): AnyGuardrailAction {
   return createGuardrailAction(definition)
 }
 
 /** Internal constructor used by addon-owned actions after their own validation. */
-export function createGuardrailAction<P extends GuardrailPhase = GuardrailPhase>(
+export function createGuardrailAction<
+  P extends GuardrailPhase = GuardrailPhase,
+  Tools extends readonly string[] = readonly [],
+  Models extends readonly ModelAliasId[] = readonly [],
+>(
   definition: unknown,
-): GuardrailAction<P> {
+): GuardrailAction<P, Tools, Models> {
   const source = validateDefinition(definition)
-  const token = Object.freeze({ phase: source.phase }) as GuardrailAction<P>
+  const token = Object.freeze({ phase: source.phase }) as GuardrailAction<P, Tools, Models>
   metadata.set(
     token,
     Object.freeze({
@@ -144,17 +211,17 @@ export function createGuardrailAction<P extends GuardrailPhase = GuardrailPhase>
   return token
 }
 
-export function isGuardrailAction(value: unknown): value is GuardrailAction {
+export function isGuardrailAction(value: unknown): value is AnyGuardrailAction {
   return typeof value === 'object' && value !== null && metadata.has(value)
 }
 
-export function actionMetadata(action: GuardrailAction): ActionMetadata | undefined {
+export function actionMetadata(action: AnyGuardrailAction): ActionMetadata | undefined {
   return metadata.get(action)
 }
 
 /** Prepares a schema-validated callback thunk without invoking application code. */
 export async function prepareGuardrailAction(
-  action: GuardrailAction,
+  action: AnyGuardrailAction,
   protectedValue: JsonValue | readonly JsonValue[],
 ): Promise<((context: GuardrailActionContext) => ReturnType<GuardrailEvaluator>) | undefined> {
   const entry = metadata.get(action)
@@ -180,33 +247,71 @@ type RuntimeDefinition = Readonly<{
 }>
 
 function validateDefinition(definition: unknown): RuntimeDefinition {
-  if (!definition || typeof definition !== 'object') throw new TypeError('Invalid guardrail action definition.')
-  const source = definition as Record<string, unknown>
-  if (
-    !['input', 'output', 'tool_input', 'tool_output', 'retrieval'].includes(source['phase'] as GuardrailPhase) ||
-    typeof source['evaluate'] !== 'function'
-  ) {
-    throw new TypeError('Invalid guardrail action definition.')
+  try {
+    if (!definition || typeof definition !== 'object') throw invalidActionDefinition()
+    const source = definition as Record<string, unknown>
+    const fields = new Set(['phase', 'valueSchema', 'timeoutMs', 'mayTransform', 'evaluate', 'tools', 'models'])
+    const ownKeys = Reflect.ownKeys(source)
+    if (ownKeys.some((field) => typeof field !== 'string' || !fields.has(field)))
+      throw invalidActionDefinition()
+    const ownFields = new Set(ownKeys)
+    if (!ownFields.has('phase')) throw invalidActionDefinition()
+    if (!ownFields.has('evaluate')) throw invalidActionDefinition('invalid_action')
+    const phaseValue = Reflect.get(source, 'phase')
+    const evaluate = Reflect.get(source, 'evaluate')
+    const valueSchema = ownFields.has('valueSchema') ? Reflect.get(source, 'valueSchema') : undefined
+    const timeoutMs = ownFields.has('timeoutMs') ? Reflect.get(source, 'timeoutMs') : undefined
+    const mayTransform = ownFields.has('mayTransform') ? Reflect.get(source, 'mayTransform') : undefined
+    const toolSelector = ownFields.has('tools') ? Reflect.get(source, 'tools') : undefined
+    const modelSelector = ownFields.has('models') ? Reflect.get(source, 'models') : undefined
+    if (!['input', 'output', 'tool_input', 'tool_output', 'retrieval'].includes(phaseValue as GuardrailPhase))
+      throw invalidActionDefinition()
+    if (typeof evaluate !== 'function') throw invalidActionDefinition('invalid_action')
+    if (mayTransform !== undefined && typeof mayTransform !== 'boolean')
+      throw invalidActionDefinition()
+    if (
+      timeoutMs !== undefined &&
+      (typeof timeoutMs !== 'number' ||
+        !Number.isSafeInteger(timeoutMs) ||
+        timeoutMs <= 0)
+    )
+      throw invalidActionDefinition()
+    const phase = phaseValue as GuardrailPhase
+    let tools: readonly string[] | undefined
+    if (isToolPhase(phase)) {
+      if (!Array.isArray(toolSelector)) throw invalidActionDefinition()
+      const snapshot: unknown[] = [...toolSelector]
+      if (snapshot.length === 0 || !uniqueStableIds(snapshot))
+        throw invalidActionDefinition()
+      tools = Object.freeze(snapshot as string[])
+    } else if (toolSelector !== undefined) {
+      throw invalidActionDefinition()
+    }
+    let models: readonly string[] | undefined
+    if (modelSelector !== undefined) {
+      if (!Array.isArray(modelSelector)) throw invalidActionDefinition()
+      const snapshot: unknown[] = [...modelSelector]
+      if (snapshot.length === 0 || !uniqueModelAliases(snapshot)) throw invalidActionDefinition()
+      models = Object.freeze(snapshot as string[])
+    }
+    if (valueSchema !== undefined && !isSchema(valueSchema)) throw invalidActionDefinition()
+    return Object.freeze({
+      phase,
+      evaluate: evaluate as GuardrailEvaluator,
+      ...(valueSchema === undefined ? {} : { valueSchema }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(mayTransform === undefined ? {} : { mayTransform }),
+      ...(tools === undefined ? {} : { tools }),
+      ...(models === undefined ? {} : { models }),
+    })
+  } catch (error) {
+    if (error instanceof GuardrailsConfigError) throw error
+    throw invalidActionDefinition()
   }
-  if (source['mayTransform'] !== undefined && typeof source['mayTransform'] !== 'boolean')
-    throw new TypeError('Invalid guardrail action definition.')
-  if (
-    source['timeoutMs'] !== undefined &&
-    (typeof source['timeoutMs'] !== 'number' || !Number.isSafeInteger(source['timeoutMs']) || source['timeoutMs'] <= 0)
-  )
-    throw new TypeError('Invalid guardrail action definition.')
-  const phase = source['phase'] as GuardrailPhase
-  if (isToolPhase(phase)) {
-    if (!Array.isArray(source['tools']) || source['tools'].length === 0 || !uniqueStableIds(source['tools']))
-      throw new TypeError('Invalid guardrail action definition.')
-  } else if (source['tools'] !== undefined) {
-    throw new TypeError('Invalid guardrail action definition.')
-  }
-  if (source['models'] !== undefined && (!Array.isArray(source['models']) || !uniqueStableIds(source['models'])))
-    throw new TypeError('Invalid guardrail action definition.')
-  if (source['valueSchema'] !== undefined && !isSchema(source['valueSchema']))
-    throw new TypeError('Invalid guardrail action definition.')
-  return source as RuntimeDefinition
+}
+
+function invalidActionDefinition(reason: 'invalid_shape' | 'invalid_action' = 'invalid_shape'): GuardrailsConfigError {
+  return new GuardrailsConfigError({ reason, field: 'action' })
 }
 
 function isSchema(value: unknown): value is AnySchema {
@@ -241,14 +346,25 @@ function isToolPhase(phase: GuardrailPhase): phase is 'tool_input' | 'tool_outpu
   return phase === 'tool_input' || phase === 'tool_output'
 }
 
-function uniqueStableIds(values: readonly string[]): boolean {
+function uniqueStableIds(values: readonly unknown[]): boolean {
   const ids = new Set<string>()
   return values.every(
     (value) =>
       typeof value === 'string' &&
-      /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(value) &&
+      /^[a-z][A-Za-z0-9]{0,63}$/.test(value) &&
       !ids.has(value) &&
       (ids.add(value), true),
+  )
+}
+
+function uniqueModelAliases(values: readonly unknown[]): boolean {
+  const aliases = new Set<string>()
+  return values.every(
+    (value) =>
+      typeof value === 'string' &&
+      /^[a-z][A-Za-z0-9]{0,63}$/.test(value) &&
+      !aliases.has(value) &&
+      (aliases.add(value), true),
   )
 }
 

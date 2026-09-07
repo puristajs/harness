@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { defineHarness, type ModelProvider, type RunOutcome, type Schema } from '@purista/harness'
+import { defineAgent, defineHarness, type JsonValue, type ModelProvider, type RunOutcome, type Schema } from '@purista/harness'
 import {
 	defineGuardrailAction,
 	defineGuardrails,
@@ -16,7 +16,7 @@ const inputAction = defineGuardrailAction({
 })
 void inputAction
 
-const asynchronousStringSchema: Schema<unknown, string> = {
+const asynchronousStringSchema: Schema<JsonValue, string> = {
 	'~standard': {
 		version: 1,
 		vendor: 'guardrails-type-test',
@@ -30,11 +30,11 @@ const standardSchemaAction = defineGuardrailAction({
 })
 void standardSchemaAction
 
-const nonJsonSchema: Schema<unknown, Date> = {
+const nonJsonSchema = {
 	'~standard': {
 		version: 1,
 		vendor: 'guardrails-type-test',
-		validate: async value => ({ value: value as Date }),
+		validate: async (value: JsonValue) => ({ value: value as unknown as Date }),
 	},
 }
 // @ts-expect-error rail schemas must validate to strict JSON values.
@@ -138,17 +138,17 @@ defineGuardrails({
 
 declare const provider: ModelProvider
 const rails = defineGuardrails({ config: { rails: {} }, actions: {} })
-const harness = defineHarness()
-	.models({ assistant: { provider, model: 'test', capabilities: ['object'] } })
-	.agent('answer', {
+const answer = defineAgent('answer', {
 		model: 'assistant',
 		input: z.string(),
 		output: z.object({ answer: z.string() }),
-		builtinTools: false,
-		instructions: ({ input }) => input.toUpperCase(),
+		instructions: 'Answer the question.',
+		prompt: input => ({ role: 'user', content: input.toUpperCase() }),
 		guardrails: rails,
 	})
-	.build()
+const harness = await defineHarness({ name: 'attachedTypes' })
+	.addAgent(answer)
+	.getInstance({ models: { assistant: { provider, model: 'test' } } })
 const session = await harness.getSession('attached-types')
 const outcome: RunOutcome<{ answer: string }> = await session.agents.answer.run('question')
 if (outcome.status === 'completed') {

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { createGuardrailAction } from './action.js'
 import { GuardrailsConfigError } from './errors.js'
 import type { SensitiveDataPolicy } from './config-schema.js'
-import type { GuardrailAction, GuardrailActionContext, GuardrailOutcome, GuardrailValue } from './rails.js'
+import type { AnyGuardrailAction, GuardrailAction, GuardrailActionContext, GuardrailOutcome, GuardrailValue } from './rails.js'
 import type { GuardrailPhase } from './config-schema.js'
 
 /** Whether the detector keeps inspection local or sends data to an application-selected cloud service. */
@@ -77,7 +77,7 @@ export interface SensitiveDataValueCodec<T extends JsonValue = JsonValue> {
 }
 
 /** Configures one selected structured tool rail with a schema-bound codec. */
-type AnySchema = Schema<any, any>
+type AnySchema = Schema
 type JsonOutputSchema<S extends AnySchema> = Infer<S> extends JsonValue ? S : never
 
 export interface SensitiveDataToolRailOptions<P extends 'tool_input' | 'tool_output', S extends AnySchema> {
@@ -87,7 +87,7 @@ export interface SensitiveDataToolRailOptions<P extends 'tool_input' | 'tool_out
   readonly policy: 'input' | 'output'
   readonly operation: Operation
   readonly valueSchema: S & JsonOutputSchema<S>
-  readonly codec: SensitiveDataValueCodec<Infer<S>>
+  readonly codec: SensitiveDataValueCodec<Infer<S> & JsonValue>
 }
 
 /** Factory options for the built-in provider-neutral sensitive-data rail actions. */
@@ -101,7 +101,7 @@ type SensitiveDataMetadata = Readonly<{ policyPhase: PolicyPhase; supportedEntit
 const metadata = new WeakMap<object, SensitiveDataMetadata>()
 
 /** Internal rail compiler metadata for sensitive-data tokens. */
-export function sensitiveDataMetadata(action: GuardrailAction): SensitiveDataMetadata | undefined {
+export function sensitiveDataMetadata(action: AnyGuardrailAction): SensitiveDataMetadata | undefined {
   return metadata.get(action)
 }
 
@@ -156,11 +156,15 @@ export function createSensitiveDataActions(options: CreateSensitiveDataActionsOp
   }
 }
 
-function bindSensitiveDataMetadata<P extends GuardrailPhase>(
-  action: GuardrailAction<P>,
+function bindSensitiveDataMetadata<
+  P extends GuardrailPhase,
+  Tools extends readonly string[],
+  Models extends readonly string[],
+>(
+  action: GuardrailAction<P, Tools, Models>,
   detector: SensitiveDataDetector,
   policyPhase: PolicyPhase,
-): GuardrailAction<P> {
+): GuardrailAction<P, Tools, Models> {
   metadata.set(
     action,
     Object.freeze({
@@ -265,25 +269,43 @@ function retrievalAction(detector: SensitiveDataDetector, operation: Operation):
 }
 
 /** Creates one schema-bound sensitive-data action for explicitly selected tools. */
+export function sensitiveDataToolRail<
+  const P extends 'tool_input' | 'tool_output',
+  const S extends AnySchema,
+  const Tools extends readonly [string, ...string[]],
+>(
+  options: SensitiveDataToolRailOptions<P, S> & { readonly tools: Tools },
+): GuardrailAction<P, Tools, readonly []>
 export function sensitiveDataToolRail<const P extends 'tool_input' | 'tool_output', const S extends AnySchema>(
   options: SensitiveDataToolRailOptions<P, S>,
-): GuardrailAction<P> {
-  validateDetector(options.detector)
-  if (!isStableId(options.codec.id)) throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'codec.id' })
-  const evaluate = async (ctx: GuardrailActionContext<P, Infer<S>>): Promise<GuardrailOutcome<P, Infer<S>>> => {
+): GuardrailAction<P, readonly [string, ...string[]], readonly []> {
+  const detector = options.detector
+  const phase = options.phase
+  const tools = Object.freeze([...options.tools]) as unknown as readonly [string, ...string[]]
+  const policyPhase = options.policy
+  const operation = options.operation
+  const valueSchema = options.valueSchema
+  const codecId = options.codec.id
+  const extract = options.codec.extract
+  const replace = options.codec.replace
+  validateDetector(detector)
+  if (!isStableId(codecId)) throw new GuardrailsConfigError({ reason: 'invalid_shape', field: 'codec.id' })
+  const evaluate = async (
+    ctx: GuardrailActionContext<P, Infer<S> & JsonValue>,
+  ): Promise<GuardrailOutcome<P, Infer<S> & JsonValue>> => {
     const policy = policyFor(ctx)
     let segments: readonly SensitiveDataTextSegment[]
     try {
-      segments = options.codec.extract(ctx.value)
+      segments = extract(ctx.value)
       validateSegments(segments)
     } catch {
       throw codecError(ctx)
     }
     const replacements: SensitiveDataReplacement[] = []
     for (const segment of segments) {
-      const outcome = await inspect(options.detector, options.operation, ctx, policy, segment.text)
+      const outcome = await inspect(detector, operation, ctx, policy, segment.text)
       if (outcome.findings.length === 0) continue
-      if (options.operation === 'detect') return blocked()
+      if (operation === 'detect') return blocked()
       replacements.push(
         ...outcome.findings.map((finding) => ({
           id: segment.id,
@@ -295,28 +317,28 @@ export function sensitiveDataToolRail<const P extends 'tool_input' | 'tool_outpu
     }
     if (replacements.length === 0) return allow()
     try {
-      const value = options.codec.replace(ctx.value, replacements)
-      return transformed(options.phase, value)
+      const value = replace(ctx.value, replacements)
+      return transformed(phase, value)
     } catch {
       throw codecError(ctx)
     }
   }
   const action =
-    options.operation === 'detect'
-      ? createGuardrailAction<P>({
-          phase: options.phase,
-          tools: options.tools,
-          valueSchema: options.valueSchema,
+    operation === 'detect'
+      ? createGuardrailAction<P, typeof tools>({
+          phase,
+          tools,
+          valueSchema,
           mayTransform: false,
           evaluate,
         })
-      : createGuardrailAction<P>({
-          phase: options.phase,
-          tools: options.tools,
-          valueSchema: options.valueSchema,
+      : createGuardrailAction<P, typeof tools>({
+          phase,
+          tools,
+          valueSchema,
           evaluate,
         })
-  return bindSensitiveDataMetadata(action, options.detector, options.policy)
+  return bindSensitiveDataMetadata(action, detector, policyPhase)
 }
 
 async function evaluateText<P extends 'input' | 'output'>(

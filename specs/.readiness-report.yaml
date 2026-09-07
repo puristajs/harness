@@ -414,12 +414,12 @@ follow_up_waves:
       production_provider_gate: unchanged
       release_prerequisites: "Fresh authorized local Docker evidence and strict packed Core consumer declarations; existing dependency failures are not waived."
   - id: "2026-09-04-composable-definitions-and-catalogs"
-    status: needs_independent_review
+    status: approved
     human_approval:
       status: approved
       approved_at: "2026-09-07"
       approver: "repo owner (active interactive Codex task)"
-      source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval; the current active goal explicitly reaffirms end-to-end implementation and source-of-truth cleanup. This approval remains valid while the authoritative v4 specifications have been consolidated and now require a fresh independent semantic review before implementation."
+      source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, and autonomous implementation. The content-bound third-pass independent hard gate subsequently passed with zero implementation-blocking decisions."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
       scope_digest: "sha256:aaf706483140980bf2918ca6770be04efd406473f983ba67776fa7ed0cf5a46b"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
@@ -464,7 +464,7 @@ follow_up_waves:
     summary:
       updated_at: "2026-09-07"
       purpose: "Approve the Harness v4 composition model and its PURISTA host boundary: standalone immutable tool, Skill, MCP server, agent, workflow, catalog, and Harness definitions; exact inferred runtime requirements; typed local and hosted target dispatch; standard streaming and approval behavior; and address-first PURISTA mounting."
-      implementation_status: blocked_on_independent_semantic_review
+      implementation_status: approved_for_planning_and_implementation
     precedence: "Spec 42 supersedes conflicting Harness construction, registration, module, agent, workflow, tool, Skill, runtime-instantiation, and host-binding APIs. PURISTA spec 88 is the authoritative companion projection of the same contracts into ServiceBuilder, EventBridge, Hono, CLI, export metadata, and testing."
     compatibility: "Clean break: no legacy aliases, deprecated overloads, wrappers, shims, dual behavior, migration runtime, or backward-compatible builder/module surface. Migration material contains source rewrites only."
     independent_reviews:
@@ -514,8 +514,15 @@ follow_up_waves:
         status: passed_after_contract_repair
         evidence: "PASS after deterministic plugin path/order/precedence and diagnostics, exact header and timer bounds, content-free OPA construction/runtime errors, content-bound Agent Plugins schemas and pinned OPA conformance artifact, representation ownership, and atomic release staging were closed. No implementation behavior remains to be invented."
       - review: "independent post-second-judge-repair v4 semantic review"
-        status: pending
-        evidence: "Required after repairing raw standalone versus Core-wrapped aggregate outcomes, private compiled-closure visibility, authoring-catalog handler retention, the integrator export path, v4 evaluation/session contracts, and PURISTA queue receipt typing in addition to the first judge repairs."
+        status: passed
+        reviewed_at: "2026-09-07"
+        reviewer: "independent third-pass hard gate"
+        harness_commit: "7dcc024ba4cd5014f9aadb3e426da030f03f082f"
+        purista_commit: "1f3b469fa6ca409e837ed9b8d90114af31566be2"
+        scope_digest: "sha256:aaf706483140980bf2918ca6770be04efd406473f983ba67776fa7ed0cf5a46b"
+        refinement_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
+        blocking_findings_count: 0
+        evidence: "PASS with zero implementation-blocking decisions after exact root/private hosted dispatch, caller-correlated event and workflow-model streaming authority, terminal/session/ancestry semantics, MCP header conformance, lifecycle and policy ownership, legacy API cleanup, raw standalone versus Core-wrapped aggregate outcomes, private closure and authoring-catalog handler visibility, the package-real integrator path, v4 evaluation/session usage, and exact PURISTA queue receipt typing were verified together."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -574,11 +581,11 @@ follow_up_waves:
       scope_digest:
         status: passed
       independent_readiness_reviews:
-        status: pending
-        completed_count: 15
-        pending_count: 1
+        status: passed
+        completed_count: 16
+        pending_count: 0
       contradiction_check:
-        status: pending
+        status: passed
       strong_boundary_type_gate:
         status: passed
       clean_rebuild_boundary_gate:
@@ -594,7 +601,7 @@ follow_up_waves:
       current_dependency_research_gate:
         status: passed
       implementation_wave_readiness:
-        status: pending
+        status: passed
 
 decision_boundary_refactor_2026_08_26:
   status: approved
@@ -636,7 +643,7 @@ clean_builder_and_runtime_api_2026_08_30:
   evidence: "This record describes the prior builder-based release and grants no active API, compatibility path, or implementation authority."
 
 harness_v4_minimal_dx_refinement_2026_09_07:
-  status: needs_independent_review
+  status: approved
   authority: specs/42-composable-definitions-and-catalogs.md
   human_approval:
     status: passed
@@ -762,10 +769,16 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       evidence: "The only textual match is the Standard Schema acceptance rule that explicitly prohibits TODOs; it is a requirement, not an unresolved marker."
     strict_spec_checker:
       command: "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs specs"
-      status: expected_failure_legacy_flat_layout_and_pending_review
-      evidence: "The checker requires a structured spec package and reports the repository's pre-existing flat-layout omissions. It also correctly detects this record's pending independent-review marker; targeted scope, link, stale-API, ambiguity, YAML, and whitespace checks remain authoritative for this cleanup."
+      status: expected_failure_legacy_flat_layout_and_root_readiness_shape
+      evidence: "The checker reports the repository's pre-existing flat-layout artifacts and legacy root readiness shape, including unrelated unresolved markers and missing modern root gates. Targeted scope, link, stale-API, ambiguity, YAML, whitespace, digest, and content-bound independent semantic checks are authoritative for this approved refinement."
   independent_semantic_review:
-    status: pending_post_second_judge_repair_review
-    evidence: "The second independent judge found residual outcome-ownership, closure-visibility, catalog-handler, package-path, evaluation-contract, and queue-receipt blockers. Those findings are repaired, but a fresh independent controller review must confirm the complete contract; the spec authors do not self-approve this gate."
-  blocking_findings_count: pending
-  implementation_status: blocked_on_independent_semantic_confirmation
+    status: passed
+    reviewed_at: "2026-09-07"
+    reviewer: "independent third-pass hard gate"
+    harness_commit: "7dcc024ba4cd5014f9aadb3e426da030f03f082f"
+    purista_commit: "1f3b469fa6ca409e837ed9b8d90114af31566be2"
+    scope_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
+    blocking_findings_count: 0
+    evidence: "PASS after all first-, second-, and third-pass repairs were reviewed as one content-bound Harness/PURISTA contract, including hosted closure dispatch, event and workflow stream authority, session and terminal identity, policy and MCP behavior, private graph/catalog visibility, aggregate projection ownership, evaluation APIs, and queue typing."
+  blocking_findings_count: 0
+  implementation_status: approved_for_planning_and_implementation

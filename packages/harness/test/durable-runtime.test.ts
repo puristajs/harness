@@ -51,6 +51,29 @@ async function acquire(storage: HarnessStorage, record: { runId: string; session
   })
 }
 
+async function finalize(
+  storage: HarnessStorage,
+  lease: Awaited<ReturnType<typeof acquire>>,
+  patch: { status: 'succeeded'; output: RunCheckpoint['input'] } | { status: 'failed' | 'cancelled'; error: { code: string; message: string } },
+): Promise<void> {
+  const at = new Date().toISOString()
+  const sequence = (await storage.listEvents(lease.runId)).length + 1
+  const type = 'run.finished' as const
+  const id = `event_${createHash('sha256').update(canonicalJson(['harness.event.v1', lease.runId, sequence, type])).digest('hex')}`
+  const outcome = patch.status === 'succeeded'
+    ? { status: 'completed' as const }
+    : { status: patch.status, error: patch.error }
+  await storage.finalizeRun({
+    runId: lease.runId,
+    sessionId: lease.sessionId,
+    leaseId: lease.leaseId,
+    workerId: lease.workerId,
+    patch: { ...patch, finishedAt: at },
+    terminalEvent: { id, sequence, runId: lease.runId, at, type, payload: { outcome } },
+    checkpointDisposition: 'delete-all',
+  })
+}
+
 describe('InMemoryHarnessStorage durability', () => {
   it('fails after checkpoint N and resumes from checkpoint N', async () => {
     const runtime = inMemoryHarnessStorage({ failAfterCheckpoint: 2 })
@@ -76,6 +99,11 @@ describe('InMemoryHarnessStorage durability', () => {
       output: { sequence: 2 }
     }))
 
+    const interrupted = await runtime.getRun('run-1')
+    expect(interrupted).toMatchObject({ status: 'interrupted', revision: 5 })
+    expect(Object.isFrozen(interrupted)).toBe(true)
+    expect(Object.isFrozen(interrupted?.input)).toBe(true)
+
     const retryLease = await acquire(runtime, {
       runId: 'run-1',
       sessionId: 'session-1',
@@ -86,6 +114,9 @@ describe('InMemoryHarnessStorage durability', () => {
 
     expect(retryLease.resumed).toBe(true)
     expect(retryLease.attempt).toBe(2)
+    expect(retryLease.run.revision).toBe(6)
+    expect(Object.isFrozen(retryLease.run)).toBe(true)
+    expect(Object.isFrozen(retryLease.run.input)).toBe(true)
     expect(retryLease.checkpoint).toEqual(expect.objectContaining({
       sequence: 2,
       stepId: 'step-2'
@@ -102,8 +133,7 @@ describe('InMemoryHarnessStorage durability', () => {
       input: 'payload'
     })
 
-    await lease.release()
-    await runtime.finishRun(lease.runId, { status: 'succeeded', output: 'done' })
+    await finalize(runtime, lease, { status: 'succeeded', output: 'done' })
 
     expect(isTerminalRunStatus('succeeded')).toBe(true)
     await expect(acquire(runtime, {
@@ -139,8 +169,7 @@ describe('InMemoryHarnessStorage durability', () => {
     expect(retry.resumed).toBe(true)
     expect(retry.attempt).toBe(lease.attempt + 1)
     expect(retry.checkpoint).toEqual(expect.objectContaining({ stepId: 'step-1' }))
-    await retry.release()
-    await runtime.finishRun(retry.runId, { status: 'failed', error: { code: 'INTERNAL_ERROR', message: 'boom' } })
+    await finalize(runtime, retry, { status: 'failed', error: { code: 'INTERNAL_ERROR', message: 'boom' } })
     await expect(acquire(runtime, { runId: retry.runId, sessionId: retry.sessionId, workerId: 'worker-3', stepId: 'step-0', input: 'payload' }))
       .rejects.toBeInstanceOf(DurableTerminalRunError)
   })

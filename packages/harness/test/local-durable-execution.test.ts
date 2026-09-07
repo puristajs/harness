@@ -7,7 +7,6 @@ import { z } from 'zod'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DurableRunLeaseError,
-  DurableStepError,
   DurableTerminalRunError,
   isReadOnlyMountCapableSession,
   localDirectorySandbox,
@@ -47,6 +46,29 @@ async function acquireRun(storage: HarnessStorage, runId: string, sessionId: str
   const acquisitionId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', mode, runId,
     sessionId, workerId, run.revision, expectedStatus, selectedStep, checkpoint?.sequence ?? null, null])).digest('hex')}`
   return storage.acquireRun({ ...request, acquisitionId })
+}
+
+async function finalizeStoredRun(
+  storage: HarnessStorage,
+  lease: Awaited<ReturnType<typeof acquireRun>>,
+  patch: { status: 'succeeded'; output: JsonValue } | { status: 'cancelled' | 'failed'; error: { code: string; message: string } },
+): Promise<void> {
+  const at = new Date().toISOString()
+  const sequence = (await storage.listEvents(lease.runId)).length + 1
+  const type = 'run.finished' as const
+  const id = `event_${createHash('sha256').update(canonicalJson(['harness.event.v1', lease.runId, sequence, type])).digest('hex')}`
+  const outcome = patch.status === 'succeeded'
+    ? { status: 'completed' as const }
+    : { status: patch.status, error: patch.error }
+  await storage.finalizeRun({
+    runId: lease.runId,
+    sessionId: lease.sessionId,
+    leaseId: lease.leaseId,
+    workerId: lease.workerId,
+    patch: { ...patch, finishedAt: at },
+    terminalEvent: { id, sequence, runId: lease.runId, at, type, payload: { outcome } },
+    checkpointDisposition: 'delete-all',
+  })
 }
 
 function durableOwner(sessionId: string) {
@@ -732,8 +754,7 @@ describe('local durable execution', () => {
       replay: workspaceCheckpoint,
     })
 
-    await lease.release()
-    await local.storage.finishRun('run-otel', { status: 'succeeded', output: { ok: true } })
+    await finalizeStoredRun(local.storage, lease, { status: 'succeeded', output: { ok: true } })
     await local.workspace.inspectWorkspace?.({ workspaceRef: handle.workspaceRef })
     await local.workspace.cleanupWorkspace({
       workspaceRef: handle.workspaceRef,
@@ -748,7 +769,6 @@ describe('local durable execution', () => {
         'harness.storage.acquire_run',
         'harness.storage.load_checkpoint',
         'harness.storage.commit_checkpoint',
-        'harness.storage.finish_run',
         'harness.workspace.start',
         'harness.workspace.pause',
         'harness.workspace.inspect',
@@ -883,7 +903,9 @@ describe('SQLite Harness storage durability', () => {
     let nowMs = 1_700_000_000_000
     const runtime = sqliteHarnessStorage({ file: await tempFile(), leaseTtlMs: 1_000, now: () => nowMs })
     await start(runtime, 'worker-1')
-    await expect(start(runtime, 'worker-2')).rejects.toBeInstanceOf(DurableRunLeaseError)
+    await expect(start(runtime, 'worker-2')).rejects.toMatchObject({
+      code: 'STATE_ERROR', meta: { op: 'acquireRun', reason: 'lease_conflict' },
+    })
     nowMs += 1_500
     const takeover = await start(runtime, 'worker-2')
     expect(takeover.workerId).toBe('worker-2')
@@ -908,7 +930,9 @@ describe('SQLite Harness storage durability', () => {
     })
     // Past the original expiry but inside the renewed window: still owned.
     nowMs += 400
-    await expect(start(runtime, 'worker-2')).rejects.toBeInstanceOf(DurableRunLeaseError)
+    await expect(start(runtime, 'worker-2')).rejects.toMatchObject({
+      code: 'STATE_ERROR', meta: { op: 'acquireRun', reason: 'lease_conflict' },
+    })
     // Past the renewed expiry: takeover succeeds and the stale lease loses write access.
     nowMs += 1_000
     await start(runtime, 'worker-2')
@@ -945,7 +969,7 @@ describe('SQLite Harness storage durability', () => {
     await runtime.commitCheckpoint(checkpoint)
     await expect(runtime.commitCheckpoint(checkpoint)).resolves.toBeUndefined()
     await expect(runtime.commitCheckpoint({ ...checkpoint, output: { value: 2 } })).rejects.toMatchObject({
-      code: 'WORKSPACE_ERROR',
+      code: 'STATE_ERROR',
       meta: { reason: 'checkpoint_conflict' },
     })
     await runtime.close()
@@ -955,15 +979,13 @@ describe('SQLite Harness storage durability', () => {
     const runtime = sqliteHarnessStorage({ file: await tempFile() })
 
     const succeeded = await start(runtime, 'worker-1', 'run-success', 'session-success')
-    await succeeded.release()
-    await runtime.finishRun(succeeded.runId, { status: 'succeeded', output: { ok: true } })
+    await finalizeStoredRun(runtime, succeeded, { status: 'succeeded', output: { ok: true } })
     await expect(start(runtime, 'worker-1', 'run-success', 'session-success')).rejects.toBeInstanceOf(
       DurableTerminalRunError,
     )
 
     const cancelled = await start(runtime, 'worker-1', 'run-cancelled', 'session-cancelled')
-    await cancelled.release()
-    await runtime.finishRun(cancelled.runId, {
+    await finalizeStoredRun(runtime, cancelled, {
       status: 'cancelled',
       error: { code: 'OPERATION_CANCELLED', message: 'stop' },
     })
@@ -1008,7 +1030,7 @@ describe('SQLite Harness storage durability', () => {
         sequence: 1,
         output: cyclic as unknown as JsonValue,
       }),
-    ).rejects.toBeInstanceOf(DurableStepError)
+    ).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'commitCheckpoint', reason: 'checkpoint_conflict' } })
     await expect(runtime.loadCheckpoint(lease.runId)).resolves.toBeUndefined()
     await runtime.close()
   })
@@ -1050,8 +1072,7 @@ describe('SQLite Harness storage durability', () => {
           },
         ])
       }
-      await lease.release()
-      await local.storage.finishRun(runId, { status: 'succeeded', output: { done: true } })
+      await finalizeStoredRun(local.storage, lease, { status: 'succeeded', output: { done: true } })
     }
     await Promise.all([runFor(1), runFor(2), runFor(3)])
     await expect(local.storage.listMessages('session-1')).resolves.toHaveLength(5)

@@ -5,11 +5,15 @@ durable, multi-instance scoped KV, pagination, TTL, PostgreSQL full-text
 search, vector search, and hybrid retrieval.
 
 ```ts
+import { defineHarness } from '@purista/harness'
 import { postgresMemoryEngine } from '@purista/harness-memory-postgres'
 
 const memory = postgresMemoryEngine({
   connectionString: process.env.DATABASE_URL!
 })
+
+const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
+const harness = await definition.getInstance({ model, memory })
 ```
 
 Alternatively pass an application-owned `pg` pool. Exactly one connection mode

@@ -30,6 +30,7 @@ import {
   type RunCheckpoint
 } from './execution.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
+import { assertStoredRunRecord, normalizeFinishRunPatch, normalizeRunCheckpoint, sameInstalledRunCheckpoint } from './run-record-validation.js'
 
 class Mutex {
   private current = Promise.resolve()
@@ -203,17 +204,19 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
-    return this.storageSpan('finish_run', { 'harness.run.id': runId, 'harness.run.status': patch.status }, async () => {
+    const normalized = normalizeFinishRunPatch(patch, () => this.now().toISOString(), finishRunConflict)
+    return this.storageSpan('finish_run', { 'harness.run.id': runId, 'harness.run.status': normalized.status }, async () => {
       const run = this.runs.get(runId)
       if (!run) return
-      if (this.runLeases.has(runId)) throw new StateError('An active lease requires atomic finalization.', { op: 'finishRun', reason: 'active_lease_requires_finalize' })
-      this.runs.set(runId, deepFreeze({ ...run, ...copyJson(patch), revision: run.revision + 1 }) as RunRecord)
-      if (patch.status !== 'running') this.releaseRunLease(runId)
+      if (this.runLeases.has(runId) || run.attempt !== undefined) throw new StateError('A durable run requires atomic finalization.', { op: 'finishRun', reason: 'active_lease_requires_finalize' })
+      this.runs.set(runId, deepFreeze({ ...run, ...normalized, revision: run.revision + 1 }) as RunRecord)
+      if (normalized.status !== 'running') this.releaseRunLease(runId)
     })
   }
 
   public async getRun(runId: string): Promise<RunRecord | undefined> {
     const record = this.runs.get(runId)
+    if (record) assertStoredRunRecord(record, malformedRun)
     return record
   }
 
@@ -233,20 +236,24 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       rows = rows.slice(0, opts.limit)
     }
 
+    for (const row of rows) assertStoredRunRecord(row, malformedRun)
     return rows
   }
 
   public async appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
     const current = this.events.get(runId) ?? []
     const next = [...current]
-    for (const proposed of events) {
-      const event = normalizePersistedEvent(proposed, runId)
+    const normalized = events.map((event) => normalizePersistedEvent(event, runId))
+    for (let index = 1; index < normalized.length; index += 1) {
+      if (normalized[index]!.sequence <= normalized[index - 1]!.sequence) throw eventSequenceConflict()
+    }
+    for (const event of normalized) {
       const existing = next.find(row => row.sequence === event.sequence || row.id === event.id)
       if (existing) {
         if (canonicalJson(existing) !== canonicalJson(event)) throw new StateError('Run event conflicts with an existing event.', { op: 'appendEvents', reason: 'event_conflict' })
         continue
       }
-      if (event.sequence !== next.length + 1) throw new StateError('Run event sequence is not contiguous.', { op: 'appendEvents', reason: 'event_sequence_conflict' })
+      if (event.sequence !== next.length + 1) throw eventSequenceConflict()
       next.push(event)
     }
     this.events.set(runId, next)
@@ -273,7 +280,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     const normalized = normalizeAcquireRunRequest(request)
     return this.storageSpan('acquire_run', { 'harness.run.id': normalized.runId }, () => this.withSessionLock(normalized.sessionId, async () => {
       const run = this.runs.get(normalized.runId)
-      if (!run) throw new StateError('Durable run must be created before acquisition.', { op: 'createRun', reason: 'run_not_found' })
+      if (!run) throw new StateError('Durable run must be created before acquisition.', { op: 'acquireRun', reason: 'run_not_found' })
       if (run.sessionId !== normalized.sessionId) throw new StateError('Run acquisition conflicts with the logical run.', { op: 'acquireRun', reason: 'acquisition_conflict' })
       if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
         throw new DurableTerminalRunError(normalized.runId, run.status)
@@ -287,7 +294,8 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       }
       if (run.revision !== normalized.expected.revision || run.status !== normalized.expected.status
         || (selected?.sequence ?? null) !== normalized.expected.checkpoint.sequence
-        || (normalized.mode === 'initial' && (run.revision !== 1 || run.attempt !== undefined || selected !== undefined))) {
+        || (normalized.mode === 'initial' && (run.revision !== 1 || run.attempt !== undefined || run.workerId !== undefined || (this.checkpoints.get(normalized.runId)?.size ?? 0) > 0))
+        || (normalized.mode === 'resume' && run.attempt === undefined)) {
         throw new StateError('Run acquisition conflicts with the observed state.', { op: 'acquireRun', reason: 'acquisition_conflict' })
       }
       if (activeRun) throw new StateError('Run lease is already held.', { op: 'acquireRun', reason: 'lease_conflict' })
@@ -379,28 +387,38 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async commitCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
+    const normalized = normalizeRunCheckpoint(checkpoint, commitCheckpointConflict)
     await this.storageSpan('commit_checkpoint', {
-      'harness.run.id': checkpoint.runId,
-      'harness.storage.sequence': checkpoint.sequence
-    }, () => this.withSessionLock(checkpoint.sessionId, async () => {
-      const lease = this.runLeases.get(checkpoint.runId)
-      if (!lease || lease.leaseId !== checkpoint.leaseId || lease.workerId !== checkpoint.workerId) {
-        throw new DurableRunLeaseError(`Durable run "${checkpoint.runId}" is not owned by this lease.`)
+      'harness.run.id': normalized.runId,
+      'harness.storage.sequence': normalized.sequence
+    }, () => this.withSessionLock(normalized.sessionId, async () => {
+      const lease = this.runLeases.get(normalized.runId)
+      if (!lease || lease.sessionId !== normalized.sessionId || lease.leaseId !== normalized.leaseId || lease.workerId !== normalized.workerId) {
+        throw new DurableRunLeaseError(`Durable run "${normalized.runId}" is not owned by this lease.`)
       }
-      const run = this.runs.get(checkpoint.runId)
-      if (!run || run.status !== 'running') throw new DurableRunLeaseError(`Durable run "${checkpoint.runId}" is not running.`)
-      const checkpoints = this.checkpoints.get(checkpoint.runId) ?? new Map<string, RunCheckpoint>()
-      const existing = checkpoints.get(checkpoint.stepId)
-      if (existing && JSON.stringify(existing.output) !== JSON.stringify(checkpoint.output)) {
-        throw new StateError('Durable checkpoint step already has a different output.', { op: 'finishRun', reason: 'checkpoint_conflict' })
+      const run = this.runs.get(normalized.runId)
+      if (!run || run.sessionId !== normalized.sessionId || run.status !== 'running'
+        || run.attempt !== normalized.attempt || canonicalJson(run.input) !== canonicalJson(normalized.input)) {
+        throw commitCheckpointConflict()
       }
-      checkpoints.set(checkpoint.stepId, deepFreeze({ ...copyJson(checkpoint), committedAt: checkpoint.committedAt ?? this.now().toISOString() }) as RunCheckpoint)
-      this.checkpoints.set(checkpoint.runId, checkpoints)
-      this.runs.set(checkpoint.runId, deepFreeze({ ...run, revision: run.revision + 1 }))
+      const checkpoints = this.checkpoints.get(normalized.runId) ?? new Map<string, RunCheckpoint>()
+      const existing = checkpoints.get(normalized.stepId)
+      if (existing) {
+        if (sameInstalledRunCheckpoint(existing, normalized)) return
+        throw commitCheckpointConflict()
+      }
+      checkpoints.set(normalized.stepId, deepFreeze({ ...normalized, committedAt: normalized.committedAt ?? this.now().toISOString() }) as RunCheckpoint)
+      this.checkpoints.set(normalized.runId, checkpoints)
+      const checkpointedRun = deepFreeze({ ...run, revision: run.revision + 1 }) as RunRecord
+      this.runs.set(normalized.runId, checkpointedRun)
       this.checkpointCommitCount += 1
       if (this.options.failAfterCheckpoint === this.checkpointCommitCount) {
-        this.releaseRunLease(checkpoint.runId)
-        this.runs.set(checkpoint.runId, { ...run, status: 'interrupted' })
+        this.runs.set(normalized.runId, deepFreeze({
+          ...checkpointedRun,
+          status: 'interrupted',
+          revision: checkpointedRun.revision + 1,
+        }))
+        this.releaseRunLease(normalized.runId)
         throw new Error(`Injected Harness storage failure after checkpoint ${this.checkpointCommitCount}.`)
       }
     }))
@@ -429,6 +447,8 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       const run = this.runs.get(validated.runId)
       if (!run || run.sessionId !== validated.sessionId) throw new ExternalWaitError('External wait run binding is invalid.', 'invalid_request')
       if (run.status !== 'running') throw new ExternalWaitError('External waits can only suspend a running durable run.', 'durable_required')
+      const lease = this.runLeases.get(validated.runId)
+      if (!lease || lease.sessionId !== validated.sessionId) throw new ExternalWaitError('External wait run binding is invalid.', 'durable_required')
       const stored: StoredExternalWait = {
         ...projectExternalWaitRequest(validated),
         runId: validated.runId,
@@ -438,7 +458,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       }
       this.waits.set(validated.waitId, stored)
       this.waitSignals.set(validated.waitId, new Set())
-      this.runs.set(validated.runId, { ...run, status: 'waiting' })
+      this.runs.set(validated.runId, deepFreeze({ ...run, status: 'waiting', revision: run.revision + 1 }))
       this.releaseRunLease(validated.runId)
       return { created: true, snapshot: externalSnapshot(stored) }
     }))
@@ -538,7 +558,8 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       release: async () => {
         await this.withSessionLock(request.sessionId, async () => {
           const currentLease = this.runLeases.get(request.runId)
-          if (currentLease?.leaseId !== active.leaseId || currentLease.acquisitionId !== request.acquisitionId) return
+          if (currentLease?.leaseId !== active.leaseId || currentLease.acquisitionId !== request.acquisitionId
+            || currentLease.sessionId !== request.sessionId || currentLease.workerId !== request.workerId) return
           this.releaseRunLease(request.runId)
           const current = this.runs.get(request.runId)
           if (current?.status === 'running') this.runs.set(request.runId, deepFreeze({ ...current, status: 'interrupted', revision: current.revision + 1 }))
@@ -621,6 +642,7 @@ function normalizeCreateRunRequest(value: CreateRunRequest): CreateRunRequest {
   if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'metadata'])
     || !validId(value.id) || !validId(value.sessionId) || !validId(value.target)
     || !['agent', 'workflow', 'child_task'].includes(value.kind) || !validTimestamp(value.startedAt)
+    || (Object.hasOwn(value, 'metadata') && value.metadata === undefined)
     || (value.metadata !== undefined && !plain(value.metadata))) throw runConflict()
   try {
     canonicalJson(value.input)
@@ -638,6 +660,7 @@ function normalizeAcquireRunRequest(value: AcquireRunRequest): AcquireRunRequest
     || !['running', 'waiting', 'interrupted'].includes(value.expected.status) || !plain(value.expected.checkpoint)
     || !exactKeys(value.expected.checkpoint, ['stepId', 'sequence']) || !validId(value.expected.checkpoint.stepId)
     || (value.expected.checkpoint.sequence !== null && !positive(value.expected.checkpoint.sequence))
+    || (Object.hasOwn(value, 'requestedAttempt') && value.requestedAttempt === undefined)
     || (value.requestedAttempt !== undefined && !positive(value.requestedAttempt))) throw invalid()
   const expectedId = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', value.mode, value.runId, value.sessionId, value.workerId,
     value.expected.revision, value.expected.status, value.expected.checkpoint.stepId, value.expected.checkpoint.sequence, value.requestedAttempt ?? null])).digest('hex')}`
@@ -769,6 +792,10 @@ function runCreationBytes(value: CreateRunRequest | RunRecord): string {
     Object.prototype.hasOwnProperty.call(value, 'metadata'), value.metadata ?? null])
 }
 function runConflict(): StateError { return new StateError('Run creation conflicts with an existing logical run.', { op: 'createRun', reason: 'run_conflict' }) }
+function malformedRun(): StateError { return new StateError('Harness run record is malformed.', { op: 'getRun', reason: 'invalid_record' }) }
+function eventSequenceConflict(): StateError { return new StateError('Run event sequence is not contiguous.', { op: 'appendEvents', reason: 'event_sequence_conflict' }) }
+function commitCheckpointConflict(): StateError { return new StateError('Durable checkpoint conflicts with the installed record.', { op: 'commitCheckpoint', reason: 'checkpoint_conflict' }) }
+function finishRunConflict(): StateError { return new StateError('Run transition is invalid.', { op: 'finishRun', reason: 'run_conflict' }) }
 function checkpointConflict(): StateError { return new StateError('Checkpoint replacement conflicts with stored state.', { op: 'replaceCheckpoint', reason: 'checkpoint_conflict' }) }
 function finalizeConflict(reason: 'run_conflict' | 'run_not_found' | 'lease_conflict' | 'event_conflict'): StateError {
   return new StateError('Run finalization conflicts with stored state.', { op: 'finalizeRun', reason })

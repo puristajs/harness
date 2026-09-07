@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { vector } from '@electric-sql/pglite-pgvector'
-import { memoryEngineContract } from '@purista/harness/testing'
-import type { MemoryEngineContext, MemoryScope } from '@purista/harness'
+import { FakeModelProvider, memoryEngineContract } from '@purista/harness/testing'
+import { defineAgent, defineHarness, type MemoryEngineContext, type MemoryScope } from '@purista/harness'
 import { postgresMemoryEngine } from './index.js'
 
 function pglitePool() {
@@ -18,6 +18,28 @@ function pglitePool() {
 memoryEngineContract(() => postgresMemoryEngine({ pool: pglitePool() as never }))
 
 describe('postgresMemoryEngine', () => {
+  it('publishes exact frozen metadata and binds without transferring pool ownership', async () => {
+    let ended = 0
+    const pool = pglitePool()
+    const engine = postgresMemoryEngine({ pool: { ...pool, end: async () => { ended += 1 } } as never })
+    expect(engine.info).toEqual({ id: 'postgres_memory', packageName: '@purista/harness-memory-postgres' })
+    expect(engine.capabilities).toEqual([
+      'memory.kv', 'memory.list', 'memory.delete', 'memory.ttl', 'memory.text_search',
+      'memory.vector_search', 'memory.hybrid_search', 'memory.persistent', 'memory.multi_instance',
+    ])
+    expect(Object.isFrozen(engine.info)).toBe(true)
+    expect(Object.isFrozen(engine.capabilities)).toBe(true)
+    const close = vi.spyOn(engine, 'close')
+    const agent = defineAgent('memoryReader', { instructions: 'Remember.', memory: { capabilities: ['memory.kv'] } })
+    const instance = await defineHarness({ name: 'postgresMemoryHarness' }).addAgent(agent)
+      .getInstance({ model: { provider: new FakeModelProvider(), model: 'fake' }, memory: engine })
+    await instance.close()
+    expect(close).not.toHaveBeenCalled()
+    await engine.close?.()
+    expect(ended).toBe(0)
+    await pool.end()
+  })
+
   it('requires exactly one connection ownership mode', () => {
     expect(() => postgresMemoryEngine({})).toThrow(/exactly one/i)
     expect(() => postgresMemoryEngine({ connectionString: 'postgres://example', pool: pglitePool() as never })).toThrow(/exactly one/i)

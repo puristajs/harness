@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { HarnessConfigError, type MemoryEngineContext, type MemoryIndexDescriptor, type MemoryRecord, type MemoryScope } from '@purista/harness'
-import { memoryEngineContract } from '@purista/harness/testing'
+import { describe, expect, it, vi } from 'vitest'
+import { defineAgent, defineHarness, HarnessConfigError, type MemoryEngineContext, type MemoryIndexDescriptor, type MemoryRecord, type MemoryScope } from '@purista/harness'
+import { FakeModelProvider, memoryEngineContract } from '@purista/harness/testing'
 import { redisMemoryEngine, type RedisMemoryClient } from './index.js'
 
 const scope: MemoryScope = { kind: 'session', scopeKey: 'tenant-a/session-1', sessionId: 'session-1' }
@@ -8,6 +8,29 @@ const scope: MemoryScope = { kind: 'session', scopeKey: 'tenant-a/session-1', se
 memoryEngineContract(() => redisMemoryEngine({ client: new FakeRedisClient() }))
 
 describe('redisMemoryEngine', () => {
+  it('publishes exact frozen base/vector metadata and binds as borrowed memory', async () => {
+    const client = new FakeRedisClient()
+    const engine = redisMemoryEngine({ client })
+    expect(engine.info).toEqual({ id: 'redis_memory', packageName: '@purista/harness-memory-redis' })
+    expect(engine.capabilities).toEqual([
+      'memory.kv', 'memory.list', 'memory.delete', 'memory.ttl', 'memory.text_search',
+      'memory.persistent', 'memory.multi_instance',
+    ])
+    const vectorCapabilities = redisMemoryEngine({ client: new FakeRedisClient(), vector: { dimensions: 2 } }).capabilities
+    expect(vectorCapabilities).toEqual([
+      ...engine.capabilities, 'memory.vector_search', 'memory.hybrid_search',
+    ])
+    expect(Object.isFrozen(vectorCapabilities)).toBe(true)
+    expect(Object.isFrozen(engine.info)).toBe(true)
+    expect(Object.isFrozen(engine.capabilities)).toBe(true)
+    const close = vi.spyOn(engine, 'close')
+    const agent = defineAgent('memoryReader', { instructions: 'Remember.', memory: { capabilities: ['memory.kv'] } })
+    const instance = await defineHarness({ name: 'redisMemoryHarness' }).addAgent(agent)
+      .getInstance({ model: { provider: new FakeModelProvider(), model: 'fake' }, memory: engine })
+    await instance.close()
+    expect(close).not.toHaveBeenCalled()
+  })
+
   it('uses one atomic script for the canonical record, scope list, TTL, and Search-indexed fields', async () => {
     const client = new FakeRedisClient()
     const engine = redisMemoryEngine({ client })

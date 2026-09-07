@@ -6,9 +6,11 @@ Persistent, scoped key/value memory for `@purista/harness` using the official NA
 import { defineHarness } from '@purista/harness'
 import { natsMemoryEngine } from '@purista/harness-memory-nats'
 
-const harness = defineHarness({ name: 'support' })
-  .memory(natsMemoryEngine({ servers: 'nats://127.0.0.1:4222' }))
-  .build()
+const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
+const harness = await definition.getInstance({
+  model,
+  memory: natsMemoryEngine({ servers: 'nats://127.0.0.1:4222' }),
+})
 ```
 
 The engine creates the `purista-harness-memory-v1` bucket by default with file storage, history `1`, and one replica. It stores one canonical memory record per opaque key (`m.<scope hash>.<key hash>`); subjects never contain logical keys, tenant ids, or principal ids.

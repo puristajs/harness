@@ -11,11 +11,10 @@ const storage = postgresHarnessStorage({
   connectionString: process.env.DATABASE_URL!,
 })
 
-const harness = defineHarness({ name: 'worker' })
-  .storage(storage)
-  .requires(['storage.persistent', 'storage.multi_instance'])
-  // models, agents, and workflows
-  .build()
+const definition = defineHarness({ name: 'worker', revision: '2026-09-07' })
+  .addWorkflow(durableWorkflow)
+
+const harness = await definition.getInstance({ storage })
 ```
 
 Pass either `connectionString` or a caller-owned `pg.Pool`, never both. The

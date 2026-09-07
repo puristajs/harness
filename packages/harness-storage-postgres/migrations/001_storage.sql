@@ -5,7 +5,7 @@ create table if not exists purista_harness_storage_schema (
 );
 
 insert into purista_harness_storage_schema(id, version)
-values (1, 1)
+values (1, 2)
 on conflict (id) do nothing;
 
 create table if not exists purista_harness_sessions (
@@ -41,10 +41,12 @@ create table if not exists purista_harness_runs (
   started_at timestamptz not null,
   finished_at timestamptz,
   status text not null,
-  input_json jsonb,
+  revision bigint not null check (revision > 0),
+  input_json jsonb not null,
   output_json jsonb,
   error_json jsonb,
-  attempt integer,
+  approval_receipt_json jsonb,
+  attempt bigint check (attempt > 0),
   worker_id text,
   initial_step_id text,
   metadata_json jsonb
@@ -55,14 +57,16 @@ create index if not exists purista_harness_runs_session_order
 
 create table if not exists purista_harness_run_events (
   id text primary key,
+  sequence bigint not null check (sequence > 0),
   run_id text not null,
-  observed_at timestamptz not null,
+  at timestamptz not null,
   type text not null,
-  payload_json jsonb not null
+  payload_json jsonb not null,
+  unique(run_id, sequence)
 );
 
 create index if not exists purista_harness_run_events_run_order
-  on purista_harness_run_events(run_id, id);
+  on purista_harness_run_events(run_id, sequence);
 
 create table if not exists purista_harness_run_checkpoints (
   run_id text not null,
@@ -71,8 +75,8 @@ create table if not exists purista_harness_run_checkpoints (
   worker_id text not null,
   step_id text not null,
   input_json jsonb not null,
-  attempt integer not null,
-  sequence integer not null,
+  attempt bigint not null check (attempt > 0),
+  sequence bigint not null check (sequence > 0),
   output_json jsonb,
   replay_json jsonb,
   metadata_json jsonb,
@@ -87,6 +91,9 @@ create table if not exists purista_harness_run_leases (
   run_id text primary key,
   session_id text not null,
   worker_id text not null,
+  acquisition_id text not null unique,
+  request_json jsonb not null,
+  acquired_revision bigint not null check (acquired_revision > 0),
   lease_id text not null,
   expires_at timestamptz not null
 );

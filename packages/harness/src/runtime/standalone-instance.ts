@@ -1198,8 +1198,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			await updateSessionRunCount(session)
 		} catch (error) {
 			if (error instanceof ExternalWaitPendingError) {
-				if (lease) await lease.release()
-				await storage.finishRun(runId, { status: 'waiting' })
+				if (!lease) await storage.finishRun(runId, { status: 'waiting' })
 				await workspaceAttempt?.suspend()
 				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({
 					status: 'interrupted' as const, runId, interrupt: externalWaitInterrupt(error),

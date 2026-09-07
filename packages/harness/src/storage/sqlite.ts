@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { HarnessConfigError, StateError, WorkspaceError } from '../errors/index.js'
+import { HarnessConfigError, StateError } from '../errors/index.js'
 import { sameHarnessIdentity } from '../identity/index.js'
 import type { JsonValue } from '../models/json.js'
 import type { Message, PersistedFinalRunEvent, PersistedRunEvent, RunRecord, RunStatus, SerializedError, SessionRecord } from '../models/state.js'
@@ -39,7 +39,7 @@ import {
   type DurableTerminalRunStatus,
   type RunCheckpoint
 } from './execution.js'
-import { DurableStepError } from '../runtime/steps.js'
+import { assertStoredRunRecord, normalizeFinishRunPatch, normalizeRunCheckpoint, sameInstalledRunCheckpoint } from './run-record-validation.js'
 
 type SqlValue = string | number | null
 type SqlRow = Record<string, SqlValue>
@@ -155,7 +155,7 @@ function requiredNumber(row: SqlRow, key: string, op: StateOp): number {
  * @example
  * ```ts
  * const storage = sqliteHarnessStorage({ file: '.purista/harness.sqlite' })
- * const harness = defineHarness().storage(storage).models(models).build()
+ * const harness = await definition.getInstance({ storage, model })
  * ```
  */
 export class SqliteHarnessStorage implements HarnessStorage {
@@ -330,14 +330,18 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
+    const normalized = normalizeFinishRunPatch(patch, () => this.nowIso(), finishRunConflict)
     return this.storageSpan('finish_run', {
       'harness.run.id': runId,
-      'harness.run.status': patch.status
+      'harness.run.status': normalized.status
     }, async () => this.transaction(() => {
-      if (this.stmt('select run_id from harness_run_leases where run_id = ?').get(runId)) throw new StateError('An active lease requires atomic finalization.', { op: 'finishRun', reason: 'active_lease_requires_finalize' })
+      const run = this.loadRun(runId)
+      if (run?.attempt !== undefined || this.stmt('select run_id from harness_run_leases where run_id = ?').get(runId)) {
+        throw new StateError('A durable run requires atomic finalization.', { op: 'finishRun', reason: 'active_lease_requires_finalize' })
+      }
       this.stmt('update harness_runs set status = coalesce(?, status), finished_at = coalesce(?, finished_at), output_json = coalesce(?, output_json), error_json = coalesce(?, error_json), revision = revision + 1 where id = ?')
-        .run(patch.status ?? null, patch.finishedAt ?? null, stringify(patch.output), stringify(patch.error), runId)
-      if (patch.status !== 'running') this.stmt('delete from harness_run_leases where run_id = ?').run(runId)
+        .run(normalized.status, normalized.finishedAt ?? null, stringify(normalized.output), stringify(normalized.error), runId)
+      if (normalized.status !== 'running') this.stmt('delete from harness_run_leases where run_id = ?').run(runId)
     }))
   }
 
@@ -358,17 +362,20 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
+    const normalized = events.map((event) => normalizePersistedEvent(event, runId))
+    for (let index = 1; index < normalized.length; index += 1) {
+      if (normalized[index]!.sequence <= normalized[index - 1]!.sequence) throw eventSequenceConflict()
+    }
     await this.transaction(() => {
       const insert = this.stmt('insert into harness_run_events(id, sequence, run_id, at, type, payload_json) values(?, ?, ?, ?, ?, ?)')
-      for (const proposed of events) {
-        const event = normalizePersistedEvent(proposed, runId)
+      for (const event of normalized) {
         const existing = this.stmt('select * from harness_run_events where run_id = ? and (sequence = ? or id = ?)').get(runId, event.sequence, event.id)
         if (existing) {
           if (canonicalJson(this.rowToEvent(existing)) !== canonicalJson(event)) throw new StateError('Run event conflicts with an existing event.', { op: 'appendEvents', reason: 'event_conflict' })
           continue
         }
         const max = this.stmt('select max(sequence) as sequence from harness_run_events where run_id = ?').get(runId)?.['sequence'] ?? 0
-        if (event.sequence !== Number(max) + 1) throw new StateError('Run event sequence is not contiguous.', { op: 'appendEvents', reason: 'event_sequence_conflict' })
+        if (event.sequence !== Number(max) + 1) throw eventSequenceConflict()
         insert.run(event.id, event.sequence, runId, event.at, event.type, JSON.stringify(event.payload))
       }
     })
@@ -391,23 +398,27 @@ export class SqliteHarnessStorage implements HarnessStorage {
       'harness.session.id': record.sessionId
     }, (recordAttrs) => this.withSessionLock(record.sessionId, async () => this.transaction(() => {
       const current = this.loadRun(record.runId)
-      if (!current) throw new StateError('Durable run must be created before acquisition.', { op: 'createRun', reason: 'run_not_found' })
+      if (!current) throw new StateError('Durable run must be created before acquisition.', { op: 'acquireRun', reason: 'run_not_found' })
       if (current.sessionId !== record.sessionId) throw acquisitionConflict()
       if (isResumeBlockingRunStatus(current.status)) {
         throw new DurableTerminalRunError(record.runId, current.status as DurableTerminalRunStatus)
       }
       const selected = this.stmt('select * from harness_run_checkpoints where run_id = ? and step_id = ?').get(record.runId, record.expected.checkpoint.stepId)
+      const anyCheckpoint = this.stmt('select step_id from harness_run_checkpoints where run_id = ? limit 1').get(record.runId)
       const selectedSequence = selected ? requiredNumber(selected, 'sequence', 'loadCheckpoint') : null
       const requestJson = canonicalJson(record)
       const existingLease = this.stmt('select * from harness_run_leases where run_id = ?').get(record.runId)
       if (existingLease && existingLease['acquisition_id'] === record.acquisitionId && existingLease['request_json'] === requestJson
-        && existingLease['acquired_revision'] === current.revision && selectedSequence === record.expected.checkpoint.sequence) {
+        && existingLease['acquired_revision'] === current.revision
+        && Date.parse(requiredString(existingLease, 'expires_at', 'acquireRun')) > this.clock()
+        && selectedSequence === record.expected.checkpoint.sequence) {
         return this.toLease(record, requiredString(existingLease, 'lease_id', 'acquireRun'))
       }
       if (current.revision !== record.expected.revision || current.status !== record.expected.status
         || selectedSequence !== record.expected.checkpoint.sequence
-        || (record.mode === 'initial' && (current.revision !== 1 || current.attempt !== undefined || selected !== undefined))) throw acquisitionConflict()
-      this.assertLeaseAvailable(record.runId, record.sessionId, record.workerId)
+        || (record.mode === 'initial' && (current.revision !== 1 || current.attempt !== undefined || current.workerId !== undefined || anyCheckpoint !== undefined))
+        || (record.mode === 'resume' && current.attempt === undefined)) throw acquisitionConflict()
+      this.assertLeaseAvailable(record.runId, record.sessionId)
       const attempt = Math.max((current.attempt ?? 0) + 1, record.requestedAttempt ?? 1)
       this.stmt('update harness_runs set attempt = ?, worker_id = ?, initial_step_id = coalesce(initial_step_id, ?), status = ?, revision = revision + 1 where id = ?')
         .run(attempt, record.workerId, record.mode === 'initial' ? record.expected.checkpoint.stepId : null, 'running', record.runId)
@@ -425,7 +436,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
   public async replaceCheckpoint(request: ReplaceCheckpointRequest): Promise<void> {
     const normalized = normalizeReplaceCheckpointRequest(request)
     await this.withSessionLock(normalized.sessionId, async () => this.transaction(() => {
-      const lease = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and lease_id = ? and worker_id = ? and expires_at >= ?')
+      const lease = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and lease_id = ? and worker_id = ? and expires_at > ?')
         .get(normalized.runId, normalized.sessionId, normalized.leaseId, normalized.workerId, this.nowIso())
       const run = this.loadRun(normalized.runId)
       const currentRow = this.stmt('select * from harness_run_checkpoints where run_id = ? and step_id = ?').get(normalized.runId, normalized.stepId)
@@ -463,7 +474,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
         if (eventRow && canonicalJson(this.rowToEvent(eventRow)) === canonicalJson(normalized.terminalEvent)) return
         throw finalizeConflict('event_conflict')
       }
-      const lease = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and lease_id = ? and worker_id = ? and expires_at >= ?')
+      const lease = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and lease_id = ? and worker_id = ? and expires_at > ?')
         .get(normalized.runId, normalized.sessionId, normalized.leaseId, normalized.workerId, this.nowIso())
       if (!lease) throw finalizeConflict('lease_conflict')
       const maximum = Number(this.stmt('select max(sequence) as sequence from harness_run_events where run_id = ?').get(normalized.runId)?.['sequence'] ?? 0)
@@ -492,44 +503,38 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async commitCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
+    const normalized = normalizeRunCheckpoint(checkpoint, commitCheckpointConflict)
     return this.storageSpan('commit_checkpoint', {
-      'harness.storage.attempt': checkpoint.attempt,
-      'harness.storage.sequence': checkpoint.sequence,
-      'harness.storage.step_id': checkpoint.stepId,
-      'harness.run.id': checkpoint.runId,
-      'harness.session.id': checkpoint.sessionId
-    }, () => this.withSessionLock(checkpoint.sessionId, async () => {
-      // Serialize before any SQLite write so non-serializable payloads are
-      // rejected without mutating storage (spec 22 §3).
-      let inputJson: string
-      let outputJson: string | null
-      let replayJson: string | null
-      let metadataJson: string | null
-      try {
-        inputJson = JSON.stringify(checkpoint.input)
-        outputJson = stringify(checkpoint.output)
-        replayJson = stringify(checkpoint.replay)
-        metadataJson = stringify(checkpoint.metadata)
-      } catch (error) {
-        throw new DurableStepError(`Durable checkpoint for step "${checkpoint.stepId}" is not JSON-serializable.`)
-      }
+      'harness.storage.attempt': normalized.attempt,
+      'harness.storage.sequence': normalized.sequence,
+      'harness.storage.step_id': normalized.stepId,
+      'harness.run.id': normalized.runId,
+      'harness.session.id': normalized.sessionId
+    }, () => this.withSessionLock(normalized.sessionId, async () => {
+      const inputJson = canonicalJson(normalized.input)
+      const outputJson = normalized.output === undefined ? null : canonicalJson(normalized.output)
+      const replayJson = normalized.replay === undefined ? null : canonicalJson(normalized.replay)
+      const metadataJson = normalized.metadata === undefined ? null : canonicalJson(normalized.metadata)
       return this.transaction(() => {
-        const lease = this.stmt('select * from harness_run_leases where run_id = ? and lease_id = ? and worker_id = ?').get(checkpoint.runId, checkpoint.leaseId, checkpoint.workerId)
-        if (!lease) throw new DurableRunLeaseError(`Durable run "${checkpoint.runId}" is not owned by this lease.`)
-        // Heartbeat: each checkpoint by the owning lease renews the TTL so
-        // long runs are not taken over mid-flight.
-        this.stmt('update harness_run_leases set expires_at = ? where run_id = ? and lease_id = ?')
-          .run(new Date(this.clock() + this.leaseTtlMs).toISOString(), checkpoint.runId, checkpoint.leaseId)
+        const lease = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and lease_id = ? and worker_id = ? and expires_at > ?')
+          .get(normalized.runId, normalized.sessionId, normalized.leaseId, normalized.workerId, this.nowIso())
+        if (!lease) throw new DurableRunLeaseError(`Durable run "${normalized.runId}" is not owned by this lease.`)
+        const run = this.loadRun(normalized.runId)
+        if (!run || run.sessionId !== normalized.sessionId || run.status !== 'running'
+          || run.attempt !== normalized.attempt || canonicalJson(run.input) !== canonicalJson(normalized.input)) {
+          throw commitCheckpointConflict()
+        }
         const existing = this.stmt('select * from harness_run_checkpoints where run_id = ? and step_id = ?').get(checkpoint.runId, checkpoint.stepId)
         if (existing) {
-          if (existing['output_json'] !== outputJson || existing['replay_json'] !== replayJson || existing['sequence'] !== checkpoint.sequence || existing['attempt'] !== checkpoint.attempt) {
-            throw new WorkspaceError('Durable checkpoint idempotency conflict.', { reason: 'checkpoint_conflict', run_id: checkpoint.runId, session_id: checkpoint.sessionId })
-          }
-          return
+          if (sameInstalledRunCheckpoint(this.rowToCheckpoint(existing), normalized)) return
+          throw commitCheckpointConflict()
         }
+        // Heartbeat only for a newly installed checkpoint; an exact retry is a no-op.
+        this.stmt('update harness_run_leases set expires_at = ? where run_id = ? and session_id = ? and lease_id = ? and worker_id = ?')
+          .run(new Date(this.clock() + this.leaseTtlMs).toISOString(), normalized.runId, normalized.sessionId, normalized.leaseId, normalized.workerId)
         this.stmt('insert into harness_run_checkpoints(run_id, session_id, lease_id, worker_id, step_id, input_json, attempt, sequence, output_json, replay_json, metadata_json, committed_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(checkpoint.runId, checkpoint.sessionId, checkpoint.leaseId, checkpoint.workerId, checkpoint.stepId, inputJson, checkpoint.attempt, checkpoint.sequence, outputJson, replayJson, metadataJson, checkpoint.committedAt ?? this.nowIso())
-        this.stmt('update harness_runs set revision = revision + 1 where id = ?').run(checkpoint.runId)
+          .run(normalized.runId, normalized.sessionId, normalized.leaseId, normalized.workerId, normalized.stepId, inputJson, normalized.attempt, normalized.sequence, outputJson, replayJson, metadataJson, normalized.committedAt ?? this.nowIso())
+        this.stmt('update harness_runs set revision = revision + 1 where id = ?').run(normalized.runId)
       })
     }))
   }
@@ -562,6 +567,9 @@ export class SqliteHarnessStorage implements HarnessStorage {
       if (!run || run.sessionId !== validated.sessionId || run.status !== 'running') {
         throw new ExternalWaitError('External wait run binding is invalid.', 'durable_required')
       }
+      const lease = this.stmt('select run_id from harness_run_leases where run_id = ? and session_id = ? and expires_at > ?')
+        .get(validated.runId, validated.sessionId, this.nowIso())
+      if (!lease) throw new ExternalWaitError('External wait run binding is invalid.', 'durable_required')
       const snapshot = validateExternalWaitSnapshot({
         ...projectExternalWaitRequest(validated),
         status: 'waiting',
@@ -569,7 +577,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       })
       this.stmt('insert into harness_external_waits(wait_id, run_id, session_id, kind, schema_version, definition_version, deadline, status, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(snapshot.waitId, validated.runId, validated.sessionId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
-      this.stmt('update harness_runs set status = ? where id = ?').run('waiting', validated.runId)
+      this.stmt('update harness_runs set status = ?, revision = revision + 1 where id = ?').run('waiting', validated.runId)
       this.stmt('delete from harness_run_leases where run_id = ?').run(validated.runId)
       return { created: true, snapshot }
     }))
@@ -749,16 +757,16 @@ export class SqliteHarnessStorage implements HarnessStorage {
     })
   }
 
-  private assertLeaseAvailable(runId: string, sessionId: string, workerId: string): void {
+  private assertLeaseAvailable(runId: string, sessionId: string): void {
     const nowIso = this.nowIso()
     // Scoped expiry: only clear stale leases for the contested run/session so
     // an unrelated long-running lease is never deleted by another start.
-    this.stmt('delete from harness_run_leases where run_id = ? and expires_at < ?').run(runId, nowIso)
-    this.stmt('delete from harness_run_leases where session_id = ? and expires_at < ?').run(sessionId, nowIso)
+    this.stmt('delete from harness_run_leases where run_id = ? and expires_at <= ?').run(runId, nowIso)
+    this.stmt('delete from harness_run_leases where session_id = ? and expires_at <= ?').run(sessionId, nowIso)
     const runLease = this.stmt('select * from harness_run_leases where run_id = ?').get(runId)
-    if (runLease && runLease['worker_id'] !== workerId) throw new DurableRunLeaseError(`Durable run "${runId}" is already owned by worker "${runLease['worker_id']}".`)
+    if (runLease) throw leaseConflict()
     const sessionLease = this.stmt('select * from harness_run_leases where session_id = ? and run_id != ?').get(sessionId, runId)
-    if (sessionLease && sessionLease['worker_id'] !== workerId) throw new DurableRunLeaseError(`Durable session "${sessionId}" is already owned by another worker.`)
+    if (sessionLease) throw leaseConflict()
   }
 
   private toLease(request: AcquireRunRequest, leaseId: string): DurableRunLease {
@@ -780,9 +788,11 @@ export class SqliteHarnessStorage implements HarnessStorage {
       checkpoints: Object.freeze(checkpoints),
       release: async () => {
         await this.transaction(() => {
-          const deleted = this.stmt('select * from harness_run_leases where run_id = ? and lease_id = ? and acquisition_id = ?').get(request.runId, leaseId, request.acquisitionId)
+          const deleted = this.stmt('select * from harness_run_leases where run_id = ? and session_id = ? and worker_id = ? and lease_id = ? and acquisition_id = ? and expires_at > ?')
+            .get(request.runId, request.sessionId, request.workerId, leaseId, request.acquisitionId, this.nowIso())
           if (!deleted) return
-          this.stmt('delete from harness_run_leases where run_id = ? and lease_id = ? and acquisition_id = ?').run(request.runId, leaseId, request.acquisitionId)
+          this.stmt('delete from harness_run_leases where run_id = ? and session_id = ? and worker_id = ? and lease_id = ? and acquisition_id = ?')
+            .run(request.runId, request.sessionId, request.workerId, leaseId, request.acquisitionId)
           this.stmt('update harness_runs set status = ?, revision = revision + 1 where id = ? and status = ?').run('interrupted', request.runId, 'running')
         })
       }
@@ -823,7 +833,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
     const error = parseJson<SerializedError>(row['error_json'])
     const input = parseJson<JsonValue>(row['input_json'])
     if (input === undefined) throw new StateError('SQLite run input is invalid.', { op: 'getRun', reason: 'invalid_record' })
-    return deepFreeze({
+    const record = {
       id: requiredString(row, 'id', 'getRun'),
       sessionId: requiredString(row, 'session_id', 'getRun'),
       kind: requiredString(row, 'kind', 'getRun') as RunRecord['kind'],
@@ -840,7 +850,9 @@ export class SqliteHarnessStorage implements HarnessStorage {
       ...optional('workerId', typeof row['worker_id'] === 'string' ? row['worker_id'] : undefined),
       ...optional('initialStepId', typeof row['initial_step_id'] === 'string' ? row['initial_step_id'] : undefined),
       ...optional('metadata', parseJson<Record<string, JsonValue>>(row['metadata_json']))
-    })
+    } as RunRecord
+    assertStoredRunRecord(record, () => new StateError('SQLite run record is invalid.', { op: 'getRun', reason: 'invalid_record' }))
+    return deepFreeze(record)
   }
 
   private rowToEvent(row: SqlRow): PersistedRunEvent {
@@ -918,7 +930,8 @@ const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 function normalizeCreateRunRequest(value: CreateRunRequest): CreateRunRequest {
   if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'metadata'])
     || !validId(value.id) || !validId(value.sessionId) || !validId(value.target) || !['agent', 'workflow', 'child_task'].includes(value.kind)
-    || !validTimestamp(value.startedAt) || (value.metadata !== undefined && !plain(value.metadata))) throw runConflict()
+    || !validTimestamp(value.startedAt) || (Object.hasOwn(value, 'metadata') && value.metadata === undefined)
+    || (value.metadata !== undefined && !plain(value.metadata))) throw runConflict()
   try { canonicalJson(value.input); if (value.metadata !== undefined) canonicalJson(value.metadata) } catch { throw runConflict() }
   return deepFreeze(structuredClone(value))
 }
@@ -929,6 +942,7 @@ function normalizeAcquireRunRequest(value: AcquireRunRequest): AcquireRunRequest
     || !positive(value.expected.revision) || !['running', 'waiting', 'interrupted'].includes(value.expected.status)
     || !plain(value.expected.checkpoint) || !exactKeys(value.expected.checkpoint, ['stepId', 'sequence']) || !validId(value.expected.checkpoint.stepId)
     || (value.expected.checkpoint.sequence !== null && !positive(value.expected.checkpoint.sequence))
+    || (Object.hasOwn(value, 'requestedAttempt') && value.requestedAttempt === undefined)
     || (value.requestedAttempt !== undefined && !positive(value.requestedAttempt))) throw acquisitionConflict()
   const id = `acq_${createHash('sha256').update(canonicalJson(['harness-run-acquisition-v1', value.mode, value.runId, value.sessionId, value.workerId,
     value.expected.revision, value.expected.status, value.expected.checkpoint.stepId, value.expected.checkpoint.sequence, value.requestedAttempt ?? null])).digest('hex')}`
@@ -1055,6 +1069,10 @@ function validSerializedError(value: unknown): boolean {
 }
 function runCreationBytes(value: CreateRunRequest | RunRecord): string { return canonicalJson(['harness-run-create-v1', value.id, value.sessionId, value.kind, value.target, value.startedAt, value.input, Object.prototype.hasOwnProperty.call(value, 'metadata'), value.metadata ?? null]) }
 function runConflict(): StateError { return new StateError('Run creation conflicts with an existing logical run.', { op: 'createRun', reason: 'run_conflict' }) }
+function leaseConflict(): StateError { return new StateError('Run or session lease is already held.', { op: 'acquireRun', reason: 'lease_conflict' }) }
+function eventSequenceConflict(): StateError { return new StateError('Run event sequence is not contiguous.', { op: 'appendEvents', reason: 'event_sequence_conflict' }) }
+function commitCheckpointConflict(): StateError { return new StateError('Durable checkpoint conflicts with the installed record.', { op: 'commitCheckpoint', reason: 'checkpoint_conflict' }) }
+function finishRunConflict(): StateError { return new StateError('Run transition is invalid.', { op: 'finishRun', reason: 'run_conflict' }) }
 function acquisitionConflict(): StateError { return new StateError('Run acquisition conflicts with the observed state.', { op: 'acquireRun', reason: 'acquisition_conflict' }) }
 function checkpointConflict(): StateError { return new StateError('Checkpoint replacement conflicts with stored state.', { op: 'replaceCheckpoint', reason: 'checkpoint_conflict' }) }
 function finalizeConflict(reason: 'run_conflict' | 'run_not_found' | 'lease_conflict' | 'event_conflict'): StateError {

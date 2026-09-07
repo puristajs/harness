@@ -3,11 +3,16 @@
 Local durable memory for `@purista/harness`, using the SQLite implementation
 built into current Node.js and Bun. It provides scoped KV, pagination, TTL,
 and FTS5 text search with no required third-party runtime dependency.
+Use it for local, single-host deployments; choose a distributed adapter when
+multiple application instances must share memory concurrently.
 
 ```ts
+import { defineHarness } from '@purista/harness'
 import { sqliteMemoryEngine } from '@purista/harness-memory-sqlite'
 
 const memory = sqliteMemoryEngine({ file: '.purista/memory.sqlite' })
+const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
+const harness = await definition.getInstance({ model, memory })
 ```
 
 For exact local vector search, install the optional peer and opt in explicitly:

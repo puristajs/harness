@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { memoryEngineContract } from '@purista/harness/testing'
-import type { MemoryEngineContext, MemoryRecord, MemoryScope } from '@purista/harness'
+import { FakeModelProvider, memoryEngineContract } from '@purista/harness/testing'
+import { defineAgent, defineHarness, type MemoryEngineContext, type MemoryRecord, type MemoryScope } from '@purista/harness'
 import type { NatsConnection } from '@nats-io/transport-node'
 
 const fixture = vi.hoisted(() => {
@@ -116,6 +116,19 @@ describe('natsMemoryEngine', () => {
     await engine.put(scope, record('a'), context())
     await engine.put(scope, { ...record('a'), value: { revision: 2 } }, context())
     await expect(engine.get(scope, 'a', context())).resolves.toMatchObject({ value: { revision: 2 } })
+  })
+
+  it('publishes frozen metadata and binds as a borrowed v4 runtime adapter', async () => {
+    const engine = natsMemoryEngine({ connection })
+    expect(engine.info).toEqual({ id: 'nats_memory', packageName: '@purista/harness-memory-nats' })
+    expect(Object.isFrozen(engine.info)).toBe(true)
+    expect(Object.isFrozen(engine.capabilities)).toBe(true)
+    const close = vi.spyOn(engine, 'close')
+    const agent = defineAgent('memoryReader', { instructions: 'Remember.', memory: { capabilities: ['memory.kv'] } })
+    const instance = await defineHarness({ name: 'natsMemoryHarness' }).addAgent(agent)
+      .getInstance({ model: { provider: new FakeModelProvider(), model: 'fake' }, memory: engine })
+    await instance.close()
+    expect(close).not.toHaveBeenCalled()
   })
 
   it('lists bounded, sorted logical keys with an opaque last-key-hash cursor', async () => {

@@ -15,6 +15,7 @@ import type { AgentPermissions, PermissionMode, PermissionPolicy } from '../agen
 import type { JsonValue } from '../models/json.js'
 import { governancePolicyResultSchema, permissionPolicySchema } from '../decisions/schemas.js'
 import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
+import { normalizeHarnessTraceContext } from '../telemetry/trace-context.js'
 import type { AgentEventSink } from '../definitions/execution-events.js'
 import type { GovernanceConfig, GovernanceContext, GovernanceEffect, GovernanceExposureEffect, GovernancePolicyEvaluator } from './types.js'
 
@@ -473,7 +474,16 @@ async function withPolicyTelemetry<T>(
 }
 
 function contextFor(invocation: ToolInvocation, signal: AbortSignal, deadline: number): GovernanceContext {
-  return {
+  const currentTraceparent = invocation.telemetry?.currentTraceparent()
+  let traceparent: string | undefined
+  if (currentTraceparent !== undefined) {
+    try {
+      traceparent = normalizeHarnessTraceContext({ traceparent: currentTraceparent }).traceparent
+    } catch {
+      traceparent = undefined
+    }
+  }
+  return Object.freeze({
     toolId: invocation.toolId as never,
     input: invocation.input as never,
     callId: invocation.callId,
@@ -484,9 +494,10 @@ function contextFor(invocation: ToolInvocation, signal: AbortSignal, deadline: n
     ...(invocation.workflowId ? { workflowId: invocation.workflowId } : {}),
     step: invocation.step,
     metadata: invocation.metadata,
+    ...(traceparent === undefined ? {} : { traceparent }),
     signal,
     deadline,
-  } as GovernanceContext
+  }) as GovernanceContext
 }
 
 function parseDecisionResult<T>(schema: z.ZodType<T>, value: unknown, evidence: DecisionEvidence): T {

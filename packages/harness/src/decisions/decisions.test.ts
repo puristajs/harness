@@ -175,6 +175,7 @@ describe('decision foundation', () => {
           },
           {
             id: 'external-policy',
+            effects: ['allow'],
             evaluate: callback,
           },
         ],
@@ -188,7 +189,7 @@ describe('decision foundation', () => {
 
     expect(() =>
       governanceConfigSchema.parse({
-        policies: [{ id: 'governance.default', evaluate: callback }],
+        policies: [{ id: 'governance.default', effects: ['allow'], evaluate: callback }],
       }),
     ).toThrow()
     expect(() =>
@@ -198,9 +199,21 @@ describe('decision foundation', () => {
     ).toThrow()
     expect(() =>
       governanceConfigSchema.parse({
-        policies: [{ id: 'transfer-policy', evaluate: 'not a callback' }],
+        policies: [{ id: 'transfer-policy', effects: ['allow'], evaluate: 'not a callback' }],
       }),
     ).toThrow()
+		expect(() => governanceConfigSchema.parse({
+			policies: [{ id: 'external-policy', evaluate: callback }],
+		})).toThrow()
+		expect(() => governanceConfigSchema.parse({
+			policies: [{ id: 'external-policy', effects: [], evaluate: callback }],
+		})).toThrow()
+		expect(() => governanceConfigSchema.parse({
+			policies: [{ id: 'external-policy', effects: ['allow', 'allow'], evaluate: callback }],
+		})).toThrow()
+		expect(() => governanceConfigSchema.parse({
+			policies: [{ id: 'external-policy', effects: ['allow'], evaluate: callback, configureHarnessContext: callback }],
+		})).toThrow()
   })
 
   it('runs a callback once with a child signal and cleans up after resolution', async () => {

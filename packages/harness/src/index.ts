@@ -60,6 +60,8 @@ export { JsonLogger } from './logger/index.js'
 export type { Logger, LogLevel } from './logger/index.js'
 export { createTelemetryShim } from './telemetry/index.js'
 export type { Metrics, SpanAttrs, TelemetryShim } from './telemetry/index.js'
+export { normalizeHarnessTraceContext } from './telemetry/trace-context.js'
+export type { HarnessTraceContext } from './telemetry/trace-context.js'
 export { ulid } from './ulid/index.js'
 export { HARNESS_VERSION } from './version.js'
 export { projectToolResults, validateContextProjection } from './context-projection.js'
@@ -493,6 +495,7 @@ export type {
   AgentSubagentMap,
   AgentSubagentReference,
   AnyAgentDefinition,
+  AnyNonMcpToolDefinition,
   AnyToolDefinition,
   BuiltInToolDefinition,
   ChildTaskContextPolicy,

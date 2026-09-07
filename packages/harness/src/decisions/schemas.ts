@@ -127,6 +127,11 @@ const governancePolicyFields = {
   engine: configurationIdentifier.optional(),
 }
 const governanceExposureEffectSchema = z.enum(['expose', 'hide'])
+const governanceEffectsSchema = z
+  .array(governanceDecisionSchema.shape.effect)
+  .min(1)
+  .refine(values => new Set(values).size === values.length, 'Governance effects must be unique.')
+  .readonly()
 
 /** Internal validation of closed configuration; generic callback typing stays in the builder. */
 export const governanceConfigSchema = z.strictObject({
@@ -144,8 +149,8 @@ export const governanceConfigSchema = z.strictObject({
         }),
         z.strictObject({
           ...governancePolicyFields,
+          effects: governanceEffectsSchema,
           evaluate: callbackSchema,
-          configureHarnessContext: callbackSchema.optional(),
         }),
       ]),
     )

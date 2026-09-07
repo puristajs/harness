@@ -412,12 +412,11 @@ function invalidSandbox(id: string): HarnessConfigError {
 }
 
 function snapshotGuardrails(binding: AgentGuardrailsBinding | undefined, id: string): AgentGuardrailsBinding | undefined {
-	if (!isPlainObject(binding) || !(agentGuardrailsBinding in binding)) {
-		if (binding === undefined) return undefined
-		throw invalidGuardrails(id)
-	}
+	if (binding === undefined) return undefined
+	if (typeof binding !== 'object' || binding === null) throw invalidGuardrails(id)
 	let interceptor: unknown
 	try {
+		if (!(agentGuardrailsBinding in binding)) throw invalidGuardrails(id)
 		interceptor = binding[agentGuardrailsBinding]
 	} catch {
 		throw invalidGuardrails(id)

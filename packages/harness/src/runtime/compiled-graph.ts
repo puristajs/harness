@@ -277,12 +277,12 @@ function validateAgentNamesAndReferences(definitions: Iterable<DefinitionNode>):
 			? undefined
 			: agentExecutionRequirementsSchema.safeParse(declaredRequirements)
 		if (parsedRequirements !== undefined && !parsedRequirements.success) {
-			throw graphError('foreign_definition', `agent.${agent.id}.guardrails.requirements`, agent.id)
+			throw graphError('invalid_agent', `agent.${agent.id}.guardrails.requirements`, agent.id)
 		}
 		const requiredTools = parsedRequirements?.data.tools ?? []
 		for (const required of requiredTools) {
 			if (!(agent.tools ?? []).some(tool => tool.id === required)) {
-				throw graphError('foreign_definition', `agent.${agent.id}.guardrails.tools.${required}`, required)
+				throw graphError('invalid_agent', `agent.${agent.id}.guardrails.requirements.tools.${required}`, required)
 			}
 		}
 	}

@@ -19,6 +19,7 @@ import type { HarnessAdapterContext } from '../src/harness/adapter-context.js'
 import { canonicalJson } from '../src/runtime/canonical-json.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { compiledGraphTargetPolicyPreimage } from '../src/runtime/standalone-instance.js'
+import { agentExecutionRequirementsSchema } from '../src/harness/agent-requirements.js'
 
 const input = z.object({ message: z.string() })
 const output = z.object({ answer: z.string() })
@@ -66,6 +67,12 @@ function fixture() {
 }
 
 describe('catalog composition and graph compilation', () => {
+	it('accepts the read-only mount capability in interceptor requirements', () => {
+		expect(agentExecutionRequirementsSchema.parse({
+			sandbox: ['sandbox.readonly_mount'],
+		})).toEqual({ sandbox: ['sandbox.readonly_mount'] })
+	})
+
 	it('keeps child-task sandbox groups out of the workflow target-policy digest tuple', () => {
 		const worker = defineAgent('digestWorker', { instructions: 'Work.' })
 		const workflow = defineWorkflow('digestWorkflow', { input: z.string(), output: z.string(), agents: { worker },
@@ -127,7 +134,7 @@ describe('catalog composition and graph compilation', () => {
 				id: 'fullRequirements',
 				requirements: {
 					tools: ['selected'], models: [{ alias: 'guardModel', capabilities: ['text'] }],
-					memory: ['memory.text_search'], sandbox: ['sandbox.fs'], skillRuntimes: ['node'],
+					memory: ['memory.text_search'], sandbox: ['sandbox.fs', 'sandbox.readonly_mount'], skillRuntimes: ['node'],
 					durable: true, workspace: true, artifacts: true,
 				},
 			} },
@@ -135,7 +142,7 @@ describe('catalog composition and graph compilation', () => {
 		const requirements = defineHarness({ name: 'guardedHarness', revision: 'v1' }).addAgent(guarded).requirements
 		expect(requirements.models.guardModel).toEqual({ capabilities: ['text'] })
 		expect(requirements.memory.capabilities).toEqual(['memory.text_search'])
-		expect(requirements.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.workspace_binding'])
+		expect(requirements.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.readonly_mount', 'sandbox.workspace_binding'])
 		expect(requirements.skillRuntimes).toEqual(['node'])
 		expect(requirements.storage.durable).toBe(true)
 		expect(requirements.workspace).toBe(true)
@@ -266,7 +273,7 @@ describe('catalog composition and graph compilation', () => {
 			const original = defineAgent('copied', { instructions: 'Original.' })
 			return defineCatalog('copied', { agents: [{ ...original }] as never })
 		}],
-		['foreign_definition', () => {
+		['invalid_agent', () => {
 			const guarded = defineAgent('guarded', {
 				instructions: 'Guarded.',
 				guardrails: { [agentGuardrailsBinding]: { id: 'requiresMissing', requirements: { tools: ['missing'] } } },
@@ -301,6 +308,20 @@ describe('catalog composition and graph compilation', () => {
 		}],
 	] as const)('fails graph validation with stable reason %s', (reason, create) => {
 		expect(reasonOf(create)).toBe(reason)
+	})
+
+	it('reports an absent Guardrail tool under the agent requirements path', () => {
+		const guarded = defineAgent('guarded', {
+			instructions: 'Guarded.',
+			guardrails: { [agentGuardrailsBinding]: { id: 'requiresMissing', requirements: { tools: ['missing'] } } },
+		})
+		expect(() => defineCatalog('missingGuardrailTool', { agents: [guarded] })).toThrow(expect.objectContaining({
+			meta: {
+				reason: 'invalid_agent',
+				path: 'agent.guarded.guardrails.requirements.tools.missing',
+				id: 'missing',
+			},
+		}))
 	})
 
 	it('detects forged cycles through only the package-private dependency-reader seam', () => {

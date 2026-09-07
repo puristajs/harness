@@ -146,6 +146,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'validateSandboxTextSearchRequest',
   'messageStorageBytes',
   'modelAdmissionKey',
+  'normalizeHarnessTraceContext',
   'withoutObjectTool',
   'evaluationResultToFeedbackRecords',
   'withSandboxTelemetry',
@@ -186,6 +187,19 @@ const EXPECTED_TESTING_EXPORTS = [
 ]
 
 describe('v4 public API export surface', () => {
+	it('publishes the canonical frozen trace-context normalizer', () => {
+		const carrier = mainEntry.normalizeHarnessTraceContext({
+			traceparent: '00-00000000000000000000000000000001-0000000000000001-03',
+			tracestate: 'vendor=value',
+		})
+		expect(carrier).toEqual({
+			traceparent: '00-00000000000000000000000000000001-0000000000000001-03',
+			tracestate: 'vendor=value',
+		})
+		expect(Object.isFrozen(carrier)).toBe(true)
+		expect(() => mainEntry.normalizeHarnessTraceContext({ traceparent: 'invalid' })).toThrow(mainEntry.HarnessConfigError)
+	})
+
 	it('publishes the canonical cancellable target event stream from the root', () => {
 		expectTypeOf<HarnessTargetStream<string>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
 		expectTypeOf<HarnessTargetStream<string>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()

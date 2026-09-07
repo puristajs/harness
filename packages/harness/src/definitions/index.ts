@@ -16,6 +16,7 @@ export type {
 	AgentSubagentMap,
 	AgentSubagentReference,
 	AnyAgentDefinition,
+	AnyNonMcpToolDefinition,
 	AnyToolDefinition,
 	BuiltInToolDefinition,
 	ChildTaskContextPolicy,

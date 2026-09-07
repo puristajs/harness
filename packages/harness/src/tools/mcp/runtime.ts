@@ -162,7 +162,10 @@ const defaultMcpRuntimeDependencies: McpRuntimeDependencies = Object.freeze({
 	async createHttpTransport(binding: Extract<McpBinding, { transport: 'http' }>) {
 		const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client')
 		return new StreamableHTTPClientTransport(new URL(binding.url), {
-			...(binding.headers === undefined ? {} : { requestInit: { headers: { ...binding.headers } } }),
+			requestInit: {
+				redirect: 'error',
+				...(binding.headers === undefined ? {} : { headers: { ...binding.headers } }),
+			},
 		})
 	},
 	createStdioTransport(process: SandboxProcess) { return createSandboxProcessTransport(process) },

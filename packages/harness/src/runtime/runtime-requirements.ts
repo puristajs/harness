@@ -79,7 +79,7 @@ type GuardrailArrayMember<Agent, Key extends keyof AgentExecutionRequirements> =
 	AgentGuardrailRequirements<Agent> extends infer Requirements
 		? Requirements extends AgentExecutionRequirements
 			? Key extends keyof Requirements
-				? Requirements[Key] extends readonly (infer Member)[] ? Member : never
+				? NonNullable<Requirements[Key]> extends readonly (infer Member)[] ? Member : never
 				: never
 			: never
 		: never

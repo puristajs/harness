@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { HarnessConfigError } from '../src/errors/index.js'
-import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
+import { agentGuardrailsBinding, type AgentGuardrailsBinding } from '../src/agents/guardrails.js'
 import {
 	defineAgent,
 	defineMcpServer,
@@ -16,6 +16,18 @@ const inputSchema = z.object({ message: z.string() })
 const outputSchema = z.object({ answer: z.string() })
 
 describe('composable definition factories', () => {
+	it('accepts an addon class that implements the opaque Guardrails binding', () => {
+		class AddonGuardrails implements AgentGuardrailsBinding {
+			public readonly [agentGuardrailsBinding] = Object.freeze({ id: 'addonGuardrails' })
+		}
+		const rails = new AddonGuardrails()
+		const agent = defineAgent('classBoundAgent', { instructions: 'Answer safely.', guardrails: rails })
+
+		expect(agent.guardrails).not.toBe(rails)
+		expect(agent.guardrails?.[agentGuardrailsBinding]).toBe(rails[agentGuardrailsBinding])
+		expect(Object.isFrozen(agent.guardrails)).toBe(true)
+	})
+
 	it.each([
 		['tool', () => defineTool('NotLowerCamel', { description: 'test', input: inputSchema, output: outputSchema, async handler(_context, input) { return { answer: input.message } } })],
 		['MCP server', () => defineMcpServer('with-hyphen', { tools: { lookup: { remoteName: 'lookup', description: 'test', input: inputSchema, output: outputSchema } } })],

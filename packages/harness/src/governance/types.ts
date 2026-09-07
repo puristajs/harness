@@ -55,6 +55,7 @@ export type GovernanceContext<Tools extends GovernanceToolMap = GovernanceToolMa
 		workflowId?: string
 		step: number
 		metadata: Readonly<Record<string, JsonValue>>
+		traceparent?: string
 		signal: AbortSignal
 		deadline: number
 	}> : never

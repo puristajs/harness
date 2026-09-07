@@ -27,6 +27,8 @@ describe('v4 agent execution definitions', () => {
 	it.each([
 		{ policies: [{ kind: 'native', id: 'policy', rules: [{ id: '', effect: 'allow' }] }] },
 		{ policies: [{ kind: 'native', id: 'policy', version: '', rules: [{ id: 'rule', effect: 'allow' }] }] },
+		{ policies: [{ id: 'external', effects: [], evaluate: () => ({ effect: 'allow' }) }] },
+		{ policies: [{ id: 'external', effects: ['allow', 'allow'], evaluate: () => ({ effect: 'allow' }) }] },
 		{ policies: [{ id: 'external', engine: '\u0000bad', effects: ['allow'], evaluate: () => ({ effect: 'allow' }) }] },
 		{ policies: [{ kind: 'native', id: 'policy', rules: [{ id: 'rule', description: ' ', effect: 'allow' }] }] },
 		{ policies: [{ kind: 'native', id: 'policy', rules: [{ id: 'rule', effect: 'allow', reasonCode: 'Bad-Code' }] }] },

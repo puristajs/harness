@@ -32,19 +32,50 @@ export type {
 const require = createRequire(import.meta.url)
 const SKILL_RUNTIME_IDS = Object.freeze(['node', 'python', 'shell'] as const)
 
-/** @internal Validates, canonicalizes, and freezes explicit runtime metadata. */
+/**
+ * Validates and canonicalizes runtime declarations for sandbox adapters.
+ *
+ * Adapter authors can use this helper to reject unsupported or duplicate skill
+ * runtimes and to expose a stable, sorted, frozen runtime list.
+ *
+ * @example
+ * ```ts
+ * const runtimes = normalizeSkillRuntimes(options.runtimes, execCapable)
+ * ```
+ *
+ * @throws {HarnessConfigError} When runtime declarations are invalid or require
+ * an executor that the adapter does not provide.
+ */
 export function normalizeSkillRuntimes(value: readonly SkillRuntimeId[] | undefined, execCapable: boolean, pathName = 'sandbox.runtimes'): readonly SkillRuntimeId[] {
   const runtimes = value ?? []
-  if (!Array.isArray(runtimes) || runtimes.some(runtime => !SKILL_RUNTIME_IDS.includes(runtime))) {
+  if (!Array.isArray(runtimes)) {
     throw new HarnessConfigError('Sandbox runtimes are invalid.', { reason: 'invalid_runtime_binding', path: pathName })
   }
-  if (new Set(runtimes).size !== runtimes.length) {
+  const snapshot: SkillRuntimeId[] = []
+  try {
+    const length = runtimes.length
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.hasOwn(runtimes, index)) {
+        throw new HarnessConfigError('Sandbox runtimes are invalid.', { reason: 'invalid_runtime_binding', path: pathName })
+      }
+      const runtime = runtimes[index]
+      if (!SKILL_RUNTIME_IDS.includes(runtime!)) {
+        throw new HarnessConfigError('Sandbox runtimes are invalid.', { reason: 'invalid_runtime_binding', path: pathName })
+      }
+      snapshot.push(runtime!)
+    }
+  }
+  catch (error) {
+    if (error instanceof HarnessConfigError) throw error
+    throw new HarnessConfigError('Sandbox runtimes are invalid.', { reason: 'invalid_runtime_binding', path: pathName })
+  }
+  if (new Set(snapshot).size !== snapshot.length) {
     throw new HarnessConfigError('Sandbox runtimes must be unique.', { reason: 'invalid_runtime_binding', path: pathName })
   }
-  if (runtimes.length > 0 && !execCapable) {
+  if (snapshot.length > 0 && !execCapable) {
     throw new HarnessConfigError('Sandbox runtimes require an exec-capable adapter.', { reason: 'invalid_runtime_binding', path: pathName })
   }
-  return Object.freeze([...runtimes].sort())
+  return Object.freeze(snapshot.sort())
 }
 
 export interface SandboxSessionBase {

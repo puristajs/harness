@@ -235,6 +235,7 @@ describe('v4 public API export surface', () => {
   })
 
   it('main entry exports exactly the locked value list', () => {
+    expect('normalizeSkillRuntimes' in mainEntry).toBe(false)
     expect(Object.keys(mainEntry).sort()).toEqual([...EXPECTED_MAIN_EXPORTS].sort())
   })
 

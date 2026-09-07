@@ -14,6 +14,7 @@ export {
   validateSandboxScope,
   validateSandboxTerminateOptions,
 } from '../sandbox/lifecycle.js'
+export { normalizeSkillRuntimes } from '../sandbox/index.js'
 export {
   asExternalWaitResolved,
   createExternalWaitCancellation,

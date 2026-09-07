@@ -81,18 +81,18 @@ CAP-DB-REVIEW: actor application reviewer and worker; entrypoint `reviewPayment 
 
 ## REQ-DB-CONSUMERS
 
-CAP-DB-CONSUMERS: actor PURISTA service and app author; entrypoint `AgentQueueBuilder executor and SSE projection`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-CONSUMERS.
+CAP-DB-CONSUMERS: actor PURISTA service and app author; entrypoint `ServiceBuilder.mountHarness, address-first target clients, queue worker, and SSE projection`. Reachability: explicit Harness mounting and typed address declarations invoke this boundary; no implicit provider or global service. Contracts: CTR-DB-CONSUMERS.
 
 - PATH-DB-CONSUMERS-SUCCESS: New public contracts forward through Core with no provider dependency.
 - PATH-DB-CONSUMERS-FAILURE: Removed hook/type/event fields fail consumer compile or config validation.
 - PATH-DB-CONSUMERS-RECOVERY: Existing queue/run idempotency and scoped resource authorization remain intact.
 - Data/state/effects: transient values and safe decision records; only existing tool/domain handlers perform business effects; wait capabilities use existing storage transactions.
 - Permissions: no approval or transform grants authority; application guards remain mandatory. Errors and recovery follow the cited contract. Observability uses the evidence projection and existing correlated spans; no raw content is logged. Final states are the three outcomes above.
-- Acceptance: AC-DB-CONSUMERS-SUCCESS, AC-DB-CONSUMERS-FAILURE, AC-DB-CONSUMERS-RECOVERY; verification `purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts`. Runtime owner is the owning package maintainer.
+- Acceptance: AC-DB-CONSUMERS-SUCCESS, AC-DB-CONSUMERS-FAILURE, AC-DB-CONSUMERS-RECOVERY; verification uses the PURISTA Core mounted-Harness contract suite. Runtime owner is the owning package maintainer.
 
 ## REQ-DB-DOCS
 
-CAP-DB-DOCS: actor developer and operator; entrypoint `handbook package docs canonical skills examples`. Reachability: application builder/runtime registration invokes this boundary; no implicit provider or global service. Contracts: CTR-DB-DOCS.
+CAP-DB-DOCS: actor developer and operator; entrypoint `handbook package docs canonical skills examples`. Reachability: explicit definition composition and `mountHarness` invoke this boundary; no implicit provider or global service. Contracts: CTR-DB-DOCS.
 
 - PATH-DB-DOCS-SUCCESS: One example composes content rails, durable tool approval interruption/resume, and workflow review ownership.
 - PATH-DB-DOCS-FAILURE: No recipe presents guardrail block as approval request or durable suspension.

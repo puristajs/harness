@@ -46,7 +46,7 @@ assets:
     extension_policy: Add deterministic embedding and summary fixtures through existing fake provider patterns.
   - asset_id: ASSET-PURISTA-IDENTITY
     kind: runtime
-    path: ../purista/packages/core/src/AgentQueueBuilder/runtime/identity.ts
+    path: ../purista/packages/core/src/ServiceBuilder/harness/identity.ts
     public_export: PURISTA message tenantId and principalId propagation
     owner: purista_core
     stability: existing_internal

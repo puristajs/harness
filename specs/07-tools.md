@@ -136,7 +136,11 @@ HTTP credential projection runs after approval and immediately before the
 request. It receives bounded identity and correlation data. Headers and
 callbacks never enter inspection, events, logs, metrics, telemetry, or
 persistence. HTTP redirects are disabled so credentials cannot be forwarded to
-another origin.
+another origin. Every first-party HTTP transport MUST support per-call
+`resolveHeaders`. A configured callback against a transport that cannot apply
+it fails atomic instance validation as
+`HarnessConfigError{reason:'invalid_runtime_binding',path:
+'mcp.<id>.resolveHeaders'}`; it is never ignored.
 
 Stdio execution requires an explicitly spawn-capable sandbox and a minimal
 environment. One client, transport, and process bundle is initialized per
@@ -149,13 +153,13 @@ the runtime binding. It does not expose the legacy HTTP+SSE transport or
 stateful fallback behavior. MCP SDK loading is isolated to the MCP runtime so
 applications without MCP definitions do not initialize it.
 
-## One execution pipeline
+## Agent-selected tool pipeline
 
-Every model-selected native, built-in, MCP, subagent, and host-aware tool
+Every agent-selected native, built-in, MCP, subagent, and host-aware tool
 occurrence follows the same ordered boundary:
 
-1. resolve the selected definition from the current agent or workflow's
-   immutable allowlist;
+1. resolve the selected definition from the current agent's immutable
+   allowlist;
 2. apply input Guardrails and validate the effective wire and parsed inputs;
 3. evaluate permissions and governance;
 4. return a typed approval interruption when approval is required;
@@ -168,8 +172,10 @@ Direct workflow tool calls use the same authentic binding, input/output
 validation, host overlay, timeout, cancellation, event, telemetry, and managed
 checkpoint machinery. They do not borrow any agent's exposure, permissions,
 governance, approval, or Guardrails. The workflow handler already selected the
-exact imported capability; business authorization for a PURISTA host tool
-belongs in that tool's service guard.
+exact imported capability. For a PURISTA host tool, every command, stream,
+queue, event, agent, or workflow operation invoked by its handler retains that
+operation's ordinary business guard. Authorization for the mounted workflow
+root may additionally be enforced by its own PURISTA before guard.
 
 Tool calls from an agent carry
 `{kind:'agent',agentId,workflowId?}`; direct calls from a workflow carry

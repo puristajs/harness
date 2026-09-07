@@ -123,13 +123,15 @@ dependencies.
 
 ## Execution boundaries
 
-- A native tool, built-in tool, MCP tool, subagent, and host-aware tool all
-  pass through the same validation, decision, approval, timeout,
+- Native, built-in, MCP, subagent, and host-aware tools selected by an agent
+  pass through the complete validation, decision, approval, timeout,
   cancellation, event, telemetry, and output pipeline.
 - Workflow calls to agents always use the target dispatcher. A host integrator
   may route that dispatcher through a distributed transport.
-- Direct workflow tool calls use the same tool pipeline and carry workflow
-  caller correlation rather than pretending to be agent calls.
+- Direct workflow tool calls reuse the authentic binding, validation, host
+  overlay, timeout, cancellation, event, telemetry, and checkpoint stages.
+  They deliberately exclude agent-owned exposure, permissions, governance,
+  approval, and Guardrails because no agent selected the call.
 - Model access is through capability-scoped invokers, never a raw provider
   registry.
 - Durable queue delivery is host-owned and explicit. Admission controls

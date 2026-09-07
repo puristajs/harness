@@ -242,7 +242,7 @@ An idempotent `.stream(...)` replay yields the stored `run.started` followed by
 the stored `run.finished{output}` from the recorded result; it performs no state
 write or live emission and yields no model or tool events.
 
-`HarnessDefaults.historyRetention` optionally retains newest complete turns:
+`HarnessExecutionDefaults.historyRetention` optionally retains newest complete turns:
 
 ```ts
 { historyRetention: { maxTurns?: number, maxBytes?: number } }
@@ -256,7 +256,7 @@ policy requires atomic `HarnessStorage.replaceMessages`.
 
 ### History window
 
-`HarnessDefaults.historyWindow` (see [02-harness-config](./02-harness-config.md)) caps how many conversation messages are passed into model calls. `InvokeOptions.historyWindow` overrides it for a single call. Locked semantics:
+`HarnessExecutionDefaults.historyWindow` (see [02-harness-config](./02-harness-config.md)) caps how many conversation messages are passed into model calls. `InvokeOptions.historyWindow` overrides it for a single call. Locked semantics:
 
 - `undefined` ⇒ pass all messages.
 - `0` ⇒ pass system messages only (no prior turns).

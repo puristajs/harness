@@ -30,7 +30,7 @@ Requirement: REQ-DB-REVIEW. Owner: application. Actor: application reviewer and 
 
 ## CAP-DB-CONSUMERS
 
-Requirement: REQ-DB-CONSUMERS. Owner: Harness maintainer. Actor: PURISTA service and app author. SDK entrypoint: `AgentQueueBuilder executor and SSE projection`. Outcome: New public contracts forward through Core with no provider dependency. Contract refs: CTR-DB-CONSUMERS. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification: `purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts`.
+Requirement: REQ-DB-CONSUMERS. Owner: Harness maintainer. Actor: PURISTA service and app author. SDK entrypoint: `ServiceBuilder.mountHarness, address-first target clients, queue worker, and SSE projection`. Outcome: New public contracts forward through Core with no provider dependency. Contract refs: CTR-DB-CONSUMERS. The exact success/failure/recovery edges and acceptance IDs are in `00-traceability.yaml`; verification follows the mounted-Harness Core contract suite.
 
 ## CAP-DB-DOCS
 

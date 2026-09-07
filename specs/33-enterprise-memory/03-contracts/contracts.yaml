@@ -102,11 +102,11 @@ public_api_inventory:
   - contract_id: CTR-MEM-PURISTA
     owner: purista_core
     kind: runtime_binding
-    name: AgentRuntimeOptions.memory
+    name: ServiceBuilder mounted Harness ai.memory binding
     definition:
       memory: optional MemoryEngine compatible with compiled Harness requirements
       identity_source: EBMessage tenantId and principalId
-    execution_semantics: PURISTA supplies the memory engine while mounted definitions retain their own policy, then calls Harness getSession with identity from the validated message envelope.
+    execution_semantics: PURISTA supplies the memory engine through the mounted service instance configuration while definitions retain their own policy, then enters the hosted Harness with identity projected from the trusted message envelope.
 engine_capabilities:
   - memory.kv
   - memory.list

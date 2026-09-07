@@ -55,14 +55,14 @@ Apply breaking changes directly to current source, tests, examples, docs and
 package exports. Delete obsolete NeMo types, metadata parsing, alias indirection,
 directory discovery/scanning, file configuration APIs, the `yaml` dependency and
 lockfile entries, schema/reference artifacts, generator/check scripts,
-configuration-validation scripts, raw native tool overloads, permissive action
-boolean/variance branches, sensitive tool flow-name options, duplicate resolved
-definitions and stale examples. No deprecated aliases, alternate parser modes,
+configuration-validation scripts, obsolete native-tool overloads, permissive
+action boolean/variance branches, sensitive tool flow-name options, duplicate
+resolved definitions and stale examples. No deprecated aliases, alternate parser modes,
 compatibility wrappers, migration guides, migration commands, old schema readers,
 or data resets.
 
 Retain the exact existing `scripts/verify-decision-consumers.mjs` guarantees:
-Core AgentQueueBuilder source-overlay compilation and runtime tests plus the
+Core mounted-Harness source-overlay compilation and runtime tests plus the
 separate strict freshly built public-declaration/runtime smoke. The consumer
 script's explicit scope excludes Voyage. **Voyage is excluded from reads, writes,
 tests and acceptance.** No unrelated sandbox/evaluation/storage refactor or

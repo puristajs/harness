@@ -18,7 +18,7 @@ The PostgreSQL package's PGlite and pgvector test fixture remains private test s
 
 ## PURISTA repository
 
-- `packages/core/src/AgentQueueBuilder/` owns runtime option typing and propagation of PURISTA message `tenantId` and `principalId` into the Harness session binding.
+- `packages/core/src/ServiceBuilder/harness/` owns mounted-Harness runtime option typing and projection of PURISTA message `tenantId` and `principalId` into the hosted Harness invocation.
 - `examples/agent-example/` contains one attached-agent memory example using the default engine and fake model testing path.
 - `web/src/content/handbook-cards/harness/agents-workflows-storage.mdx` links the concepts without duplicating the developer guide.
 - `web/src/content/handbook-cards/harness/memory.mdx` is the detailed developer guide for setup, scope, search, summaries, tests, security, operations, and migration.

@@ -43,8 +43,8 @@ assets:
     extension_policy: Keep public-only imports and private engine journal.
   - asset_id: REUSE-SOWN-framework
     kind: builder
-    path: ../purista/packages/core/src/AgentQueueBuilder
-    public_export: AgentQueueBuilder
+    path: ../purista/packages/core/src/ServiceBuilder/harness
+    public_export: ServiceBuilder mounted Harness integration
     owner: purista
     stability: existing
     consumers: [application, tests]

@@ -672,7 +672,7 @@ acceptance:
     path_ids:
       - "PATH-DB-CONSUMERS-SUCCESS"
     verification_refs:
-      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+      - "purista/packages/core/src/ServiceBuilder/harness/harnessMount.test.ts"
     expected_outcome: "New public contracts forward through Core with no provider dependency"
   - acceptance_id: "AC-DB-CONSUMERS-FAILURE"
     requirement_ids:
@@ -680,7 +680,7 @@ acceptance:
     path_ids:
       - "PATH-DB-CONSUMERS-FAILURE"
     verification_refs:
-      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+      - "purista/packages/core/src/ServiceBuilder/harness/harnessMount.test.ts"
     expected_outcome: "Removed hook/type/event fields fail consumer compile or config validation"
   - acceptance_id: "AC-DB-CONSUMERS-RECOVERY"
     requirement_ids:
@@ -688,7 +688,7 @@ acceptance:
     path_ids:
       - "PATH-DB-CONSUMERS-RECOVERY"
     verification_refs:
-      - "purista/packages/core/src/AgentQueueBuilder/agentQueueBuilder.test.ts"
+      - "purista/packages/core/src/ServiceBuilder/harness/harnessMount.test.ts"
     expected_outcome: "Existing queue/run idempotency and scoped resource authorization remain intact"
   - acceptance_id: "AC-DB-DOCS-SUCCESS"
     requirement_ids:

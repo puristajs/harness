@@ -31,7 +31,9 @@ is validated once before it becomes the workflow outcome.
 const ingestKnowledge = defineWorkflow('ingestKnowledge', {
   input: ingestInputSchema,
   output: ingestOutputSchema,
-  agents: [extractKnowledge],
+  agents: {
+    extract: extractKnowledge,
+  },
   tools: [saveKnowledgeChunks],
   models: {
     embeddings: {
@@ -39,7 +41,7 @@ const ingestKnowledge = defineWorkflow('ingestKnowledge', {
     },
   },
   async handler(ctx) {
-    const extracted = await ctx.agents.extractKnowledge.run(
+    const extracted = await ctx.agents.extract.run(
       { content: ctx.input.content },
       { callId: 'extractKnowledge' },
     )
@@ -96,7 +98,9 @@ A direct workflow tool call uses the same authentic binding, input/output
 validation, host overlay, timeout, cancellation, event, telemetry, and managed
 checkpoint machinery as an agent-selected call. It does not borrow an agent's
 exposure, permission, governance, approval, or Guardrail policy. Business
-authorization for a PURISTA host tool belongs in that tool's service guard.
+authorization remains in each PURISTA command, stream, queue, event, agent, or
+workflow operation invoked by the host tool; the mounted workflow root may
+also have its own before guard.
 Its caller is `{ kind: 'workflow', workflowId }`. It does not use a synthetic
 agent id.
 An agent call made inside a workflow keeps
@@ -163,8 +167,14 @@ root events plus explicitly correlated nested events. Only the direct
 workflow's root `run.finished` settles its public stream result.
 
 Workflow outputs do not pretend to be token streams. Their contract update kind
-is `none`; model/agent child output remains correlated nested activity. A
-transport adapter may project progress and status without treating a nested
+is `none`. A managed direct `textStream` call emits
+`model.output.text.delta`; a managed direct `objectStream` call emits
+`model.output.object.snapshot`. Each is model activity on the workflow run and
+carries the exact workflow caller, required managed `callId`, model alias, and
+stable stream id. It is not a root target update and does not create a fake
+child run. Events from invoked agents retain their real nested run correlation.
+A transport adapter may project this activity as status or diagnostics but
+must not present it as the workflow's assistant answer or treat a nested
 terminal event as the root answer.
 
 ## Cancellation and cleanup

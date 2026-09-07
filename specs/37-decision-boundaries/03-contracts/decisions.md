@@ -118,9 +118,39 @@ Context projection and `beforeModel` may edit system/user/plain-text assistant m
 
 ## Model accounting owner
 
-Only the session-context model wrapper in `sessions/index.ts` emits `model.completed`; the agent loop and provider adapters never emit it. Cover each successful `text`, `object`, and terminal finish of `textStream`/`objectStream`, including nested rails, direct ctx.models calls and context-projection fallback calls. Embedding and reranking retain their existing operation events and do not count as generative model calls. A failed attempt emits no model.completed; a successful retry emits once. A stream emits at most once on successful finish, never on partial chunks, cancellation, or failed completion. `emitRunEvents:false` suppresses content/chunk events only, not this accounting event. Low-level adapter calls outside session context retain spans but have no run event.
+Only the session-context model wrapper emits `model.completed`; the agent loop
+and provider adapters never emit it. It covers each successful `text`, `object`,
+and terminal finish of `textStream` or `objectStream`, including nested rails,
+direct workflow model calls, and context-projection fallback calls. Embedding
+and reranking retain their operation events and do not count as generative model
+calls. A failed attempt emits no completion; a successful retry emits once. A
+stream emits at most once after successful finish, never on a partial chunk,
+cancellation, or failed completion. The package-private agent-loop suppression
+flag prevents duplicate provider output events but never suppresses this
+accounting event; there is no public `emitRunEvents` option. Low-level adapter
+calls outside a session context retain spans but have no run event.
 
-Add the exact flat RunEvent member `{type:'model.completed';runId:string;agentId?:string;workflowId?:string;modelAlias:string;streamId?:string;operation:'text'|'object'|'textStream'|'objectStream';usage?:TokenUsage;finishReason?:FinishReason}`. Existing validated TokenUsage and FinishReason remain canonical. streamId is present for streaming calls only and equals the existing stream identity. RunEvent has no new envelope or sessionId field; persisted EventRecord retains its separate existing session/run/event envelope. Emit after response validation before content hooks. Run summary counts only exact model.completed for generative modelCalls. Sum usage from model.completed plus existing model.embedding.completed and model.rerank.completed into tokenTotals, each once; object output events contribute neither calls nor tokens. Provider spans remain sole token metrics. Direct model content events remain outside automatic rail coverage. In the v4 default agent loop, provisional stream output is live and non-persisted only when `beforeOutput` is absent; configuring `beforeOutput` suppresses it until the protected terminal value passes. Test direct, nested, streamed, retried, blocked, embedding/reranking and tool-turn accounting.
+[Spec 42 section 2](../../42-composable-definitions-and-catalogs.md#2-shared-definition-contracts)
+owns the sole exact `ExecutionEvent` union. This specification does not add a
+flat event variant. `model.completed` uses `ModelExecutionCorrelation`: an
+agent caller has `{kind:'agent',agentId,workflowId?}` and optional `callId`; a
+direct workflow caller has `{kind:'workflow',workflowId}`, forbids `agentId`,
+and requires `callId`. `streamId` is present for streaming calls and equals the
+stable stream identity. Existing validated `TokenUsage` and `FinishReason`
+remain canonical.
+
+Emit completion after response validation and successful provider stream finish.
+Run summaries count only `model.completed` for generative `modelCalls`. They sum
+usage from `model.completed`, `model.embedding.completed`, and
+`model.rerank.completed` exactly once; output activity contributes neither
+calls nor tokens. Provider spans remain the sole token metrics. Direct workflow
+stream activity uses the workflow-only `model.output.text.delta` and
+`model.output.object.snapshot` events from spec 42 and remains outside automatic
+agent rail coverage. In the default agent loop, provisional target output is
+live and non-persisted only when `beforeOutput` is absent; configuring
+`beforeOutput` suppresses it until the protected terminal value passes. Test
+agent and workflow callers, nested and streamed execution, retries, blocking,
+embedding/reranking, and tool-turn accounting.
 
 ## Exact wait states
 

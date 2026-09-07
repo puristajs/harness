@@ -189,9 +189,10 @@ distributed enterprise backend.
 
 ## 11. PURISTA integration
 
-PURISTA exposes the same contract as `ai.workspace`. An attached agent that
-declares a durable workspace must also declare `.setDurability(...)`; service
-startup requires `ai.storage`, `ai.workspace`, and all manifest capabilities.
+PURISTA exposes the same contract as `ai.workspace`. A mounted agent or
+workflow declares `durable: true` and `workspace: true` directly in its Harness
+definition; service startup then requires `ai.storage`, `ai.workspace`, and all
+compiled capabilities.
 PURISTA's general top-level `StateStore` remains unrelated and unchanged.
 
 See [32-harness-storage](./32-harness-storage.md) for the structured storage and

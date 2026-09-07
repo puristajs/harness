@@ -127,10 +127,10 @@ assets:
       - "CAP-DB-DOCS"
       - "CAP-DB-CLEANUP"
     extension_policy: "keep compiler and codecs; reuse core primitives"
-  - asset_id: "purista.agent"
+  - asset_id: "purista.harness_mount"
     kind: "module"
-    path: "purista/packages/core/src/AgentQueueBuilder/runtime/executor.ts"
-    public_export: "AgentQueueBuilder runtime"
+    path: "purista/packages/core/src/ServiceBuilder/harness"
+    public_export: "ServiceBuilder mounted Harness integration"
     owner: "purista"
     stability: "stable"
     consumers:

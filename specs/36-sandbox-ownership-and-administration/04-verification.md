@@ -70,15 +70,16 @@ capacity. Tests: `test/sandbox-retention.test.ts`,
 
 Different trusted identities with equal conversation/durable keys receive distinct
 hashed IDs. Separate attached agents share only an explicit authorized owner;
-local delegates obey policies and `canInvokeAgent` doesn't transfer handles.
-`enabled: false` and a per-agent adapter override fail validation; an in-memory
-files-only adapter stays explicit at service composition.
+local delegates obey policies and address-first remote target declarations do
+not transfer sandbox handles. Unknown or forbidden runtime binding keys fail
+validation; an in-memory files-only adapter stays explicit at service
+composition.
 Prompt and stream duplicates return persisted terminal outputs after compute
 purge with zero model/sandbox opens. Suspended/retryable runs retain files; a
 cleanup failure cannot replace terminal success/error. Borrowed owner completion
 does not delete shared files. No-Harness custom handlers allocate no sandbox.
-Tests: PURISTA `AgentQueueBuilder/runtime/identity.test.ts`, `executor.test.ts`,
-`scopedRuntime.test.ts`, and `agentQueueBuilder.test.ts` plus a public smoke fixture.
+Tests: PURISTA mounted-Harness identity, hosted executor, scoped runtime, queue,
+and public smoke fixtures.
 
 ## ACC-SOWN-SAFETY — errors, telemetry, and dependency boundaries
 

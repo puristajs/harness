@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval; the current active goal explicitly reaffirms end-to-end implementation and source-of-truth cleanup. This approval remains valid while the authoritative v4 specifications have been consolidated and now require a fresh independent semantic review before implementation."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:50402b0e0e5b8c959edb26d8be429bc2540d773adf195391705688ec333a9417"
+      scope_digest: "sha256:c4d4359a40462f57c62fc91a4f16d30ae227a6fc94e53df063722c8c088976e4"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -510,9 +510,9 @@ follow_up_waves:
       - review: "independent v4 addon semantic readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after deterministic plugin path/order/precedence and diagnostics, exact header and timer bounds, content-free OPA construction/runtime errors, content-bound Agent Plugins schemas and pinned OPA conformance artifact, representation ownership, and atomic release staging were closed. No implementation behavior remains to be invented."
-      - review: "independent post-cleanup v4 semantic review"
+      - review: "independent post-judge-repair v4 semantic review"
         status: pending
-        evidence: "Required after authoritative topic consolidation and exact caller-correlation and stream-terminal contract repair."
+        evidence: "Required after repairing compiled-closure hosted dispatch, event authority, workflow model streaming, PURISTA session/terminal/ancestry behavior, MCP headers, lifecycle ordering, policy ownership, and stale active APIs."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -653,6 +653,7 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       - specs/09-agents.md
       - specs/10-workflows.md
       - specs/11-sessions.md
+      - specs/12-streaming.md
       - specs/13-public-api.md
       - specs/15-error-catalog.md
       - specs/16-testing.md
@@ -663,27 +664,39 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       - specs/23-provider-outcomes-and-retry.md
       - specs/24-governance-policy.md
       - specs/25-static-harness-modules.md
+      - specs/26-context-projection-and-compaction.md
       - specs/32-harness-storage.md
       - specs/33-enterprise-memory/00-architecture-overview.md
       - specs/33-enterprise-memory/00-conventions.md
+      - specs/33-enterprise-memory/00-file-structure.md
+      - specs/33-enterprise-memory/00-module-boundaries.yaml
       - specs/33-enterprise-memory/00-policy-profile.yaml
+      - specs/33-enterprise-memory/00-reuse-inventory.yaml
       - specs/33-enterprise-memory/00-traceability.yaml
       - specs/33-enterprise-memory/00-vision.md
       - specs/33-enterprise-memory/02-capabilities/capability-inventory.md
       - specs/33-enterprise-memory/03-contracts/contracts.yaml
+      - specs/33-enterprise-memory/03-contracts/generation-map.yaml
       - specs/33-enterprise-memory/03-flows/e2e-coverage.md
       - specs/33-enterprise-memory/04-delivery/migration-requirements.md
+      - specs/36-sandbox-ownership-and-administration/00-file-structure.md
+      - specs/36-sandbox-ownership-and-administration/00-module-boundaries.yaml
+      - specs/36-sandbox-ownership-and-administration/00-reuse-inventory.yaml
       - specs/36-sandbox-ownership-and-administration/00-vision.md
       - specs/36-sandbox-ownership-and-administration/01-behavior.md
       - specs/36-sandbox-ownership-and-administration/02-capabilities/capability-inventory.md
       - specs/36-sandbox-ownership-and-administration/03-contracts/api.md
       - specs/36-sandbox-ownership-and-administration/03-flows/e2e-coverage.md
+      - specs/36-sandbox-ownership-and-administration/04-delivery.md
       - specs/36-sandbox-ownership-and-administration/04-verification.md
       - specs/36-sandbox-ownership-and-administration/05-purista.md
       - specs/37-decision-boundaries/00-conventions.md
+      - specs/37-decision-boundaries/00-reuse-inventory.yaml
+      - specs/37-decision-boundaries/00-traceability.yaml
       - specs/37-decision-boundaries/02-capabilities/capability-inventory.md
       - specs/37-decision-boundaries/03-contracts/decisions.md
       - specs/37-decision-boundaries/03-flows/e2e-coverage.md
+      - specs/37-decision-boundaries/04-delivery/consumers.md
       - specs/38-guardrail-authoring/00-architecture-overview.md
       - specs/38-guardrail-authoring/00-conventions.md
       - specs/38-guardrail-authoring/00-file-structure.md
@@ -718,16 +731,19 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       - specs/43-distributed-production-reference-stack.md
       - specs/README.md
   approval_evidence:
-    scope_digest: "sha256:dc6faf70bc4faf03b19c35cdadc1b43d7f3e80b33fa8d2cff0dca0935fdf233d"
+    scope_digest: "sha256:7f06869f9155ac845bc4ed8c6b54757b3fc6381e0ac66a7ca9938e0f93e9be46"
     digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
   confirmed_decisions:
     - "defineCatalog is the only immutable public registry-like abstraction; direct references grant capabilities and public maps contain explicit exports only."
     - "Harness composes only explicit agent/workflow roots through addAgent, addWorkflow, and use; recursive closure remains private and non-callable."
+    - "Hosted runHosted and streamHosted accept only explicit roots; streamDispatched retains the compiled graph type and alone admits authentic dependency-only targets for nested delivery."
     - "Agents infer prompt, response mode, updates, and exact interrupts; target contracts, definitions, catalogs, and Harness expose one consistent $infer shape."
     - "Workflows declare exact agent, tool, and model references; managed calls use stable call ids and undeclared memory is unavailable."
     - "Runtime model configuration uses additive model plus exact non-primary models; storage and memory remain legal optional enhancements when not required."
     - "Every model, output, tool, native-tool, host-tool, and MCP call uses one closed caller union: an agent caller may retain workflowId, while a direct workflow caller has workflowId and forbids agentId."
+    - "Direct workflow model streams use workflow-only model.output activity with required callId on the existing workflow run; they never become target output or AI SDK assistant content."
     - "Public and dispatcher streams resolve result with the exact completed, interrupted, failed, or cancelled terminal event; the sole package-private root adapter forwards result and cancellation while narrowing events."
+    - "PURISTA resolves omitted public session ids once from its Core-generated root invocation id, retains identity isolation, and uses complete RFC 8785 terminal equality plus exact XOR nested ancestry."
     - "inMemoryAgentAdmission provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local admission; durable queueing remains host-owned."
   deterministic_checks:
     git_diff_check:
@@ -742,7 +758,7 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       status: expected_failure_legacy_flat_layout_and_pending_review
       evidence: "The checker requires a structured spec package and reports the repository's pre-existing flat-layout omissions. It also correctly detects this record's pending independent-review marker; targeted scope, link, stale-API, ambiguity, YAML, and whitespace checks remain authoritative for this cleanup."
   independent_semantic_review:
-    status: pending_post_cleanup_review
-    evidence: "The authoritative v4 topic set and caller/stream contracts were repaired after the prior review. A fresh independent controller review must confirm the consolidated contract; the spec authors do not self-approve this gate."
+    status: pending_post_judge_repair_review
+    evidence: "The final judge found cross-spec hosted-dispatch, event, workflow-stream, PURISTA transport, lifecycle, policy, MCP, and stale-API blockers. Those findings are repaired, but a fresh independent controller review must confirm the complete contract; the spec authors do not self-approve this gate."
   blocking_findings_count: pending
   implementation_status: blocked_on_independent_semantic_confirmation

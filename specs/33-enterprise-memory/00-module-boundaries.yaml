@@ -2,7 +2,7 @@ module_boundary_version: 1
 modules:
   - module_id: harness_core
     owner: harness_core
-    public_entrypoint: @purista/harness
+    public_entrypoint: "@purista/harness"
     owned_concepts:
       - memory orchestration
       - identity binding
@@ -20,7 +20,7 @@ modules:
       - purista_core
   - module_id: harness_testing
     owner: harness_core
-    public_entrypoint: @purista/harness/testing
+    public_entrypoint: "@purista/harness/testing"
     owned_concepts:
       - engine contract
       - fake engine
@@ -34,7 +34,7 @@ modules:
       - nats_engine
   - module_id: sqlite_engine
     owner: harness_adapters
-    public_entrypoint: @purista/harness-memory-sqlite
+    public_entrypoint: "@purista/harness-memory-sqlite"
     owned_concepts:
       - SQLite memory schema
       - FTS5 queries
@@ -48,7 +48,7 @@ modules:
       - purista_core
   - module_id: postgres_engine
     owner: harness_adapters
-    public_entrypoint: @purista/harness-memory-postgres
+    public_entrypoint: "@purista/harness-memory-postgres"
     owned_concepts:
       - PostgreSQL schema
       - PostgreSQL queries
@@ -62,7 +62,7 @@ modules:
       - purista_core
   - module_id: redis_engine
     owner: harness_adapters
-    public_entrypoint: @purista/harness-memory-redis
+    public_entrypoint: "@purista/harness-memory-redis"
     owned_concepts:
       - Redis schema
       - Redis commands
@@ -76,7 +76,7 @@ modules:
       - purista_core
   - module_id: nats_engine
     owner: harness_adapters
-    public_entrypoint: @purista/harness-memory-nats
+    public_entrypoint: "@purista/harness-memory-nats"
     owned_concepts:
       - NATS JetStream KV bucket and key schema
       - compare-and-set writes
@@ -90,7 +90,7 @@ modules:
       - purista_core
   - module_id: purista_core
     owner: purista_core
-    public_entrypoint: @purista/core
+    public_entrypoint: "@purista/core"
     owned_concepts:
       - message identity propagation
       - attached agent composition

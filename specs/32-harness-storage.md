@@ -581,42 +581,20 @@ distributed guarantees.
 
 ## 9. PURISTA integration
 
-PURISTA keeps its existing top-level `stateStore` runtime option unchanged.
-Harness configuration becomes:
+PURISTA keeps its unrelated top-level `stateStore` runtime option unchanged.
+A service mounts one immutable Harness definition with
+`ServiceBuilder.mountHarness(...)`; its `getInstance(...)` `ai.storage`,
+`ai.memory`, `ai.sandbox`, and `ai.workspace` fields bind the exact compiled
+Harness requirements. The host supplies logger and telemetry through the
+integrator bindings rather than accepting them as user `ai` fields.
 
-```ts
-type AgentRuntimeOptions = {
-  model?: ModelRuntimeBinding
-  models?: Readonly<Record<string, ModelRuntimeBinding>>
-  storage?: HarnessStorage
-  memory?: MemoryEngine
-  sandbox?: Sandbox<any>
-  workspace?: DurableWorkspace
-  onSuspended?: (notice: AgentSuspendedNotice) => Promise<unknown> | unknown
-  logger?: PuristaLogger
-  telemetry?: TelemetryOptions
-}
-```
-
-PURISTA passes the service's `ai.storage` to Harness instance creation.
-Definition-local policy and the mounted graph determine whether storage is
-required; the runtime option does not grant durability.
-
-Durability is declared on `AgentQueueBuilder`, never as a deployment boolean:
-
-```ts
-.setDurability({
-  mode: 'required',
-  runIdPath: ['reviewRunId']
-})
-```
-
-`runIdPath` resolves a non-empty application-owned stable identifier from the
-validated payload. PURISTA namespaces it by service version and agent. Queue
-retries and later approval-triggered enqueues with the same identifier reuse
-the same Harness run even when the queue job id changes. A durable workspace
-policy implies required durability. Startup fails when required storage or
-workspace guarantees are absent.
+Durability is declared by `durable: true` on an agent or workflow definition;
+`workspace: true` additionally requires durable workspace support. A queue
+binding supplies a stable delivery identity through the ordinary typed Harness
+invocation options. Queue retries and approval continuation reuse that same
+resolved session, run, and invocation identity. Startup fails when the compiled
+storage or workspace requirements are absent or incompatible. Runtime bindings
+never grant an undeclared capability.
 
 PURISTA review/domain records remain ordinary application state and commands.
 They are never stored in `HarnessStorage` except for the bounded opaque wait

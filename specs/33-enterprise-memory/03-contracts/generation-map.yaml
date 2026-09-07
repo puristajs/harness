@@ -29,7 +29,7 @@ sources:
   - source_id: GEN-PURISTA-TYPES
     contract_refs:
       - CTR-MEM-PURISTA
-    source: purista/packages/core/src/AgentQueueBuilder
+    source: purista/packages/core/src/ServiceBuilder/harness
     generated_outputs:
       - purista/packages/core/dist
     generator: PURISTA core TypeScript build

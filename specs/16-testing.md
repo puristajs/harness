@@ -241,14 +241,19 @@ The harness package additionally has integration tests:
 - HarnessStorage workflow checkpoints: write/read/list/delete, process-style
   restart, ordering by sequence, kind filtering, payload JSON serialization
   rejection, delete idempotency, capability gates, and OTel/log privacy.
-- Durable run state ordering: durable lease acquisition happens before `HarnessStorage.createRun`; retrying the same durable `runId` is idempotent for non-terminal state and does not overwrite terminal state.
+- Durable run state ordering: Harness creates or reads the authoritative run and
+  root checkpoint before submitting the initial `AcquireRunRequest`; retrying
+  the same durable `runId` is idempotent for non-terminal state and does not
+  overwrite terminal state.
 - History window: `historyWindow=undefined` passes all messages; `historyWindow=0` keeps only system messages; `historyWindow=N` keeps the most recent `N` non-system messages plus all system messages.
-- Streaming generator (replaces the deleted Stream contract suite):
-  1. `stream()` yields `run.started` first and `run.finished` last.
+- Target stream (replaces the deleted Stream contract suite):
+  1. `stream()` returns `HarnessTargetStream<Target>`, yields `run.started`
+     first and the direct `run.finished` last, and resolves `result` with that
+     exact completed, interrupted, failed, or cancelled terminal outcome.
   2. Slow consumers do not pace the producer; bounded queues emit sanitized overflow notifications when non-terminal live events are dropped.
   3. Events emitted before consumer attaches are not replayed.
-  4. Breaking out of a stream iterator detaches that consumer but does not cancel the underlying run; explicit `opts.signal` cancellation still aborts the run.
-  5. Consumer `take()` throwing logs `STREAM_SUBSCRIBER_FAILED` and removes the subscription; the run continues.
+  4. Breaking out of a stream iterator detaches that consumer but does not cancel the underlying run; `stream.cancel(reason?)` and the invocation signal abort it.
+  5. An internal live-delivery subscriber rejection logs `STREAM_SUBSCRIBER_FAILED` and removes that subscription; application iterator-body errors remain outside Harness and the run continues.
   6. Per-run total ordering matches the rules in [12-streaming](./12-streaming.md).
   7. Persistence: every emitted event is written to `storage.appendEvents`; `appendEvents` failure increments `harness.events.persist_errors` without failing the run.
 - Provider runtime parity:
@@ -263,8 +268,11 @@ The harness package additionally has integration tests:
   6. First-party adapters disable hidden official-SDK retries by default where
      supported and allow explicit SDK retry options as provider-specific escape
      hatches.
-  7. Persisted `model.delta`, `model.object.partial`, `model.object`, `model.embedding.completed`, and `model.rerank.completed` events omit content in every telemetry content capture mode.
-  8. Opted-in model stream events carry generated `streamId` values that are stable within one stream invocation and distinct across parallel stream invocations; public invocation context does not accept caller-provided stream ids or UI labels.
+  7. Persisted `output.text.delta`, `output.object.snapshot`,
+     `model.output.text.delta`, `model.output.object.snapshot`,
+     `model.embedding.completed`, and `model.rerank.completed` events omit
+     content in every telemetry content capture mode.
+  8. Agent target updates and workflow-managed model activity carry Harness-generated stream ids that are stable within one stream invocation and distinct across parallel invocations; public invocation context does not accept caller-provided stream ids or UI labels.
 - Adapter capability policy:
   1. Compiled definition requirements reject missing adapter capabilities during
      atomic instance configuration.

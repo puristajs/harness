@@ -241,6 +241,8 @@ const harnessExecutionEventTypesV1 = Object.freeze([
   'model.completed',
   'model.embedding.completed',
   'model.rerank.completed',
+  'model.output.text.delta',
+  'model.output.object.snapshot',
   'output.text.delta',
   'output.object.snapshot',
   'output.file',
@@ -298,6 +300,16 @@ type ModelExecutionCorrelation =
       caller: Extract<HarnessExecutionCaller, { kind: 'workflow' }>
       callId: string
     }>
+
+type AgentModelExecutionCorrelation = Extract<
+  ModelExecutionCorrelation,
+  { caller: { kind: 'agent' } }
+>
+
+type WorkflowModelExecutionCorrelation = Extract<
+  ModelExecutionCorrelation,
+  { caller: { kind: 'workflow' } }
+>
 
 type ExecutionEvent<
   Output = JsonValue,
@@ -359,17 +371,29 @@ type ExecutionEvent<
       usage?: TokenUsage
     }> & ModelExecutionCorrelation)
   | (Readonly<{
+      type: 'model.output.text.delta'
+      id: string
+      modelAlias: string
+      delta: string
+    }> & WorkflowModelExecutionCorrelation)
+  | (Readonly<{
+      type: 'model.output.object.snapshot'
+      id: string
+      modelAlias: string
+      value: JsonValue
+    }> & WorkflowModelExecutionCorrelation)
+  | (Readonly<{
       type: 'output.text.delta'
       id: string
       modelAlias?: string
       delta: string
-    }> & ModelExecutionCorrelation)
+    }> & AgentModelExecutionCorrelation)
   | (Readonly<{
       type: 'output.object.snapshot'
       id: string
       modelAlias?: string
       value: JsonValue
-    }> & ModelExecutionCorrelation)
+    }> & AgentModelExecutionCorrelation)
   | (Readonly<{
       type: 'output.file'
       id: string
@@ -536,6 +560,8 @@ type RootAlwaysEventPayload<Output, Interrupt> = Exclude<
   | { readonly type: 'run.finished' }
   | { readonly type: 'output.text.delta' }
   | { readonly type: 'output.object.snapshot' }
+  | { readonly type: 'model.output.text.delta' }
+  | { readonly type: 'model.output.object.snapshot' }
   | { readonly type: 'approval.requested' | 'approval.responded' }
   | { readonly type:
       | 'external_wait.requested'
@@ -555,6 +581,16 @@ type RootUpdateEventPayload<Target extends AnyHarnessTargetContract> =
           readonly value: JsonValue
         }>
       : never
+
+type RootWorkflowModelActivityPayload<
+  Target extends AnyHarnessTargetContract,
+> = Target['kind'] extends 'workflow'
+  ? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, {
+      readonly type:
+        | 'model.output.text.delta'
+        | 'model.output.object.snapshot'
+    }>
+  : never
 
 type RootInterruptEventPayload<Target extends AnyHarnessTargetContract> =
   | ('tool-approval' extends Target['interrupts'][number]
@@ -578,6 +614,7 @@ type RootExecutionEventFor<Target extends AnyHarnessTargetContract> =
         Target['$infer']['interrupt']
       >
     | RootUpdateEventPayload<Target>
+    | RootWorkflowModelActivityPayload<Target>
     | RootInterruptEventPayload<Target>
     | Readonly<{
         type: 'run.finished'
@@ -606,7 +643,12 @@ Every target supports aggregate `run` and progressive `stream`. An agent whose
 effective response is text has `updates: 'text-delta'`; an agent whose effective
 response is structured has `updates: 'object-snapshot'`. A workflow has
 `updates: 'none'`: it may relay child, model, tool, progress, artifact, and
-terminal events, but its custom handler cannot manufacture output updates.
+terminal events, but its custom handler cannot manufacture target output
+updates. Direct workflow `textStream` and `objectStream` calls use the distinct
+`model.output.text.delta` and `model.output.object.snapshot` activity families.
+Those events carry the workflow caller and required managed `callId` on the
+workflow's ordinary root run correlation. They are not target updates and do
+not require fake child ancestry.
 
 Interrupt arrays are exact graph facts. An agent includes `tool-approval` only
 when its own permission/governance declarations or a recursively reachable
@@ -644,6 +686,8 @@ and decision semantics. The clean v4 name replacements are: `model.delta` become
 `output.object.snapshot`, `model.artifact` becomes `output.file`,
 `model.media.progress` becomes `output.progress`, and `approval.finished`
 becomes `approval.responded`. There are no aliases for the replaced names.
+The two `model.output.*` families are new workflow-managed model activity,
+not aliases for the removed events and not agent target output.
 For `output.text.delta`, `id` is the model stream id. For
 `output.object.snapshot`, the former partial or object value is normalized to
 `value`; `id` is the stable model stream id, or a Harness-derived stable output
@@ -855,8 +899,13 @@ Static and resolved maps are copied and merged with resolved values taking
 precedence; neither map is mutated. The callback is never used for startup
 discovery, which uses static headers only, and its function or returned secrets
 never enter inspection, events, logs, telemetry, persistence, or error metadata.
-First-party HTTP transport adapters should support this field so tenant-scoped
-credentials do not require one Harness instance per tenant.
+Every conforming first-party HTTP transport adapter MUST support this field so
+tenant-scoped credentials do not require one Harness instance per tenant. A
+binding that supplies `resolveHeaders` to a transport without that capability
+fails atomic instance validation with
+`HarnessConfigError{reason:'invalid_runtime_binding',path:
+'mcp.<id>.resolveHeaders'}` before discovery, credential projection, or
+network I/O; silently ignoring the callback is forbidden.
 Core's Streamable HTTP transport disables redirect following for every MCP
 request (`RequestInit.redirect: 'error'`, or an equivalent transport guarantee
 that performs no request to the redirect target). A 3xx response therefore
@@ -2019,11 +2068,20 @@ idempotent. The operation name participates in replay identity, and changing
 method, alias, request, or normalized options for an existing call id fails
 before provider admission.
 
-Embedding, rerank, and media events include `workflowId`, `modelAlias`,
-`callId`, and the existing stable output or operation id. Text and object events
-from direct workflow model calls carry the same workflow correlation. No
-workflow model call exposes a provider object, provider-native stream,
-credential, or general model registry.
+Embedding, rerank, and media events use `ModelExecutionCorrelation` with the
+workflow caller, `modelAlias`, required `callId`, and the existing stable output
+or operation id. A direct workflow `textStream` emits ordered
+`model.output.text.delta` activity; `objectStream` emits ordered
+`model.output.object.snapshot` activity. Both carry the exact
+`{kind:'workflow',workflowId}` caller, required managed `callId`, model alias,
+and stable stream id in `id`. They use the workflow run's root correlation when
+that workflow is the invoked target; when the workflow itself is relayed as a
+child, the ordinary dispatcher adds the exact `parentRunId` and
+`parentInvocationId` correlation. They never use
+`output.text.delta` or `output.object.snapshot`, never alter the workflow
+target's `updates:'none'`, and never create synthetic child runs. No workflow
+model call exposes a provider object, provider-native stream, credential, or
+general model registry.
 
 The workflow tool surface is exact:
 
@@ -2062,9 +2120,10 @@ A direct workflow tool call requires a stable `callId` and enters the same
 definition-authentic binding, input/output validation, host overlay, identity,
 trace, timeout, cancellation, event, telemetry, and checkpoint machinery as a
 model-selected tool call. Agent-owned permission, governance, and Guardrail
-policy are not silently borrowed by a workflow; authorization for a host-aware
-tool remains in the host framework's ordinary business guard, and a portable
-tool exposes only its declared requirements. A host-aware tool retains its
+policy are not silently borrowed by a workflow. For a host-aware tool, every
+host operation invoked by its handler retains that operation's ordinary
+business guard; a portable tool exposes only its declared requirements. A
+host-aware tool retains its
 declared nested target calls and resumable interruption behavior. Workflow
 tool calls never invoke a handler directly and never expose the private binding
 registry.
@@ -2076,10 +2135,12 @@ governance, approval, or agent Guardrail pipeline. It still validates the
 declared input before execution and output before return, applies the declared
 timeout and cancellation, supplies the ordinary portable or host-owned tool
 context, emits correlated tool lifecycle events, and records the managed-call
-checkpoint before the handler continues. A business authorization decision for
-a PURISTA host tool belongs in that tool's service guard. Applications that
-need model-selected policy behavior call an agent instead of weakening this
-workflow boundary.
+checkpoint before the handler continues. Authorization for a mounted PURISTA
+workflow may be enforced by that workflow root's before guard; each command,
+stream, queue, event, agent, or workflow operation invoked inside its host tool
+independently retains its own business guard. Applications that need
+model-selected policy behavior call an agent instead of weakening this workflow
+boundary.
 
 Inside a workflow, every agent or tool call requires a stable `callId`
 identifying one logical call and matching the durable step-id grammar.
@@ -3632,7 +3693,8 @@ interface AgentEventSink {
 H4-008 adds the executing `runId`, optional parent correlation, event sequence,
 persistence, and bounded delivery. It is the sole owner of `run.started`,
 `run.finished`, `model.completed`, external-wait, fanout, child-task, media,
-embedding, reranking, and overflow events. The session model wrapper calls the
+embedding, reranking, direct-workflow `model.output.*`, and overflow events. The
+session model wrapper calls the
 agent loop with provider run-event emission disabled and emits exactly one
 `model.completed` after each valid non-stream response or valid stream finish.
 H4-005 never emits it. A logical agent emits one `agent.started`; approval
@@ -4059,6 +4121,10 @@ type HostedTargetOf<Contracts extends HarnessContracts<any, any>> =
   | Contracts['agents'][keyof Contracts['agents']]
   | Contracts['workflows'][keyof Contracts['workflows']]
 
+type CompiledTargetOf<
+  Graph extends HarnessGraphView<any, any, any, any, any, any>,
+> = HostedTargetOf<HarnessContracts<Graph['agents'], Graph['workflows']>>
+
 type HostedHarnessInstanceConfig<
   Requirements extends RuntimeRequirements,
   const ConfiguredGroups extends readonly string[] = readonly [],
@@ -4120,6 +4186,7 @@ type HostedDispatchedTargetRequest<
 
 interface HostedHarnessInstance<
   Contracts extends HarnessContracts<any, any>,
+  Graph extends HarnessGraphView<any, any, any, any, any, any>,
   HostInvocation,
 > {
   runHosted<Target extends HostedTargetOf<Contracts>>(
@@ -4128,7 +4195,7 @@ interface HostedHarnessInstance<
   streamHosted<Target extends HostedTargetOf<Contracts>>(
     request: HostedTargetRequest<Target, HostInvocation>,
   ): Promise<HarnessTargetStream<Target>>
-  streamDispatched<Target extends HostedTargetOf<Contracts>>(
+  streamDispatched<Target extends CompiledTargetOf<Graph>>(
     request: HostedDispatchedTargetRequest<Target, HostInvocation>,
   ): Promise<HarnessTargetDispatchStream<
     Target['$infer']['output'], Target['$infer']['interrupt']
@@ -4152,6 +4219,7 @@ declare function instantiateHostedHarness<
   hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
 ): Promise<HostedHarnessInstance<
   HarnessContracts<AgentRoots, WorkflowRoots>,
+  Graph,
   HostInvocation
 >>
 ```
@@ -4172,7 +4240,10 @@ interface TrustedHostedInvocationEnvironment {
   readonly hostToolBindings: ReadonlyMap<object, AgentExecutableBinding>
 }
 
-interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
+interface HarnessRuntimeKernel<
+  Contracts extends HarnessContracts<any, any>,
+  Graph extends HarnessGraphView<any, any, any, any, any, any>,
+> {
   runTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
     input: HarnessValidatedTargetInput<Target>,
@@ -4185,7 +4256,7 @@ interface HarnessRuntimeKernel<Contracts extends HarnessContracts<any, any>> {
     options: HostedInvokeOptions,
     environment: TrustedHostedInvocationEnvironment,
   ): Promise<HarnessTargetStream<Target>>
-  streamDispatchedTrusted<Target extends HostedTargetOf<Contracts>>(
+  streamDispatchedTrusted<Target extends CompiledTargetOf<Graph>>(
     target: Target,
     input: HarnessValidatedTargetInput<Target> | HarnessTargetInput<Target>,
     wireInput: HarnessTargetInput<Target>,
@@ -4230,9 +4301,11 @@ in inspection, serialization, persistence, or a digest. `runHosted`,
 `streamHosted`, and `streamDispatched` are the only integrator entry points
 that accept `HostInvocation`. They verify the target contract identity
 before starting or reopening the named session. `runHosted` and `streamHosted`
-receive an already validated logical input. `streamDispatched` receives the
-closed fresh/resume union below. Harness does not parse or transform either
-hosted input shape again.
+accept only explicit root contracts from `Contracts` and receive an already
+validated logical input. `streamDispatched` accepts any authentic agent or
+workflow from the retained compiled `Graph`, including a private
+dependency-only target, and receives the closed fresh/resume union below.
+Harness does not parse or transform either hosted input shape again.
 
 `runHosted` and `streamHosted` start or resume an application-facing root and
 therefore derive its root invocation identity through the ordinary hosted
@@ -4841,6 +4914,10 @@ closes the active step, and emits the final message finish. Guarded terminal
 output is valid after its `model.completed` event and before `run.finished`;
 the matching stream id keeps it in that same turn. This state machine represents
 `text -> tool -> text` as ordinary AI SDK steps without inventing custom chunks.
+Workflow-only `model.output.text.delta` and
+`model.output.object.snapshot` are orchestration activity rather than the root
+assistant answer. The v1 adapter reports them only through `onIgnoredEvent` and
+never opens an AI SDK step or emits `text-*` or `data-output` chunks for them.
 
 `@purista/harness-ai-sdk-ui/v1` exports the versioned boundary:
 
@@ -5009,6 +5086,7 @@ The v1 event mapping is fixed:
 | first output or `model.completed` for a model stream id | close the prior turn when present, then `start-step` for this provider turn |
 | `output.text.delta` | one `text-start` per stream id, then ordered `text-delta`; `text-end` when the provider turn or run closes |
 | `output.object.snapshot` | transient `data-output` with stable run/output id |
+| `model.output.text.delta` or `model.output.object.snapshot` | no UI chunk; report the type through `onIgnoredEvent` |
 | `tool.input.available` | standard dynamic `tool-input-available` |
 | `tool.started` | `data-status{phase:'tool-running'}` |
 | successful `tool.finished` | standard dynamic `tool-output-available` |
@@ -6175,9 +6253,12 @@ discriminates root from nested events: root events reject either parent field,
 nested events require both, text targets expose only string text deltas,
 structured targets expose only `JsonValue` object snapshots, targets with
 `updates:'none'` expose neither root update, and `run.finished` narrows to the
-target's exact output and interrupt union. Runtime adapter tests must prove that
+target's exact output and interrupt union. Workflow roots admit their
+workflow-correlated `model.output.*` activity while agent roots reject those
+families without nested correlation. Runtime adapter tests must prove that
 the AI SDK UI projection treats only parent-free root events as the public
-answer and cannot terminate on a correlated nested `run.finished`.
+answer, ignores workflow `model.output.*` as assistant content, and cannot
+terminate on a correlated nested `run.finished`.
 
 Caller-correlation type tests must prove that every model, output, and tool
 event accepts exactly one `HarnessExecutionCaller`; an agent may retain an
@@ -6195,6 +6276,12 @@ before a trustworthy terminal rejects. Public root adaptation must forward
 `result` and `cancel` unchanged while narrowing only the iterable event
 type; nested terminals cannot settle either result.
 
+Hosted type tests must prove that `runHosted` and `streamHosted` accept only
+explicit root contracts, while `streamDispatched` and its private trusted
+kernel accept authentic targets from the retained compiled graph, including a
+dependency-only target. `instantiateHostedHarness` must retain that graph type
+in its returned instance; copied and out-of-graph targets fail before dispatch.
+
 Addon and adapter implementation tickets align source, tests, examples, and
 public exports while every workspace package manifest, peer range,
 `HARNESS_VERSION`, and lockfile remains at the currently aligned 3.0.0 release.
@@ -6211,8 +6298,10 @@ and no host invocation persistence or registry exposure; identity and trace
 projection exactly once per entry and again with the fresh invocation on
 resume, with deterministic validation order and sanitized projector failures;
 root, workflow, subagent, and host nested target dispatch through the host
-dispatcher while portable and host tools share the common policy, approval,
-validation, event, timeout, cancellation, and telemetry pipeline; conservative
+dispatcher while agent-selected portable and host tools share the complete
+policy and approval pipeline, and direct workflow tools use the exact reduced
+binding/validation/host/event/timeout/cancellation/telemetry/checkpoint
+pipeline; conservative
 durable-storage and revision requirements for every host-aware graph; exact
 host-call and host-step checkpoint keys, schemas, replay, equal-call
 coalescing, target-before-input conflicts, terminal failure/cancellation replay,

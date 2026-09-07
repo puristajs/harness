@@ -71,8 +71,9 @@ Persisted session bindings stay in `models/state.ts` and the existing storage
 implementations. Workspace additions stay in `ports/workspace.ts` and
 `runtime/sessionDurable.ts`, with a private focused checkpoint coordinator for
 aggregate barriers and pin ordering. No generic resource graph, event bus, distributed scheduler, or extra
-package is introduced. PURISTA changes stay inside AgentQueueBuilder integration,
-Service AI configuration, public exports, tests, and directly affected guidance.
+package is introduced. PURISTA changes stay inside the ServiceBuilder Harness
+mount and address-first target integration, service `ai` configuration, public
+exports, tests, and directly affected guidance.
 
 ## Autonomous execution constraints
 

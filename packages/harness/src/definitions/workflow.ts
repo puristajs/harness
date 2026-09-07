@@ -94,6 +94,9 @@ export function defineWorkflow<
 		updates: 'none' as const,
 		interrupts: Object.freeze(['tool-approval', 'external-wait'] as const),
 	}, identity)
+	Object.defineProperty(contract, '$infer', {
+		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
+	})
 	Object.freeze(contract)
 
 	const value = {

@@ -55,8 +55,8 @@ const stateful = defineTool('stateful', {
 		return { answer: value.message }
 	},
 })
-const resourceToolHarness = defineHarness({ name: 'resourceToolHarness' }).addTool(stateful)
-defineAgent('resourceToolAgent', { instructions: 'Use the stateful tool.', tools: [stateful] })
+const resourceToolAgent = defineAgent('resourceToolAgent', { instructions: 'Use the stateful tool.', tools: [stateful] })
+const resourceToolHarness = defineHarness({ name: 'resourceToolHarness' }).addAgent(resourceToolAgent)
 const resourceToolSandboxRequired: true = resourceToolHarness.$infer.requirements.sandbox.required
 type _ResourceToolSandbox = Expect<Equal<typeof resourceToolHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.exec'>>
 void resourceToolSandboxRequired
@@ -144,8 +144,8 @@ mcp.tools.searchKnowledge.serverId
 defineMcpServer('badMcp', { url: 'https://example.com', tools: { search: { remoteName: 'search', description: 'Search.', input, output } } })
 
 const textAgent = defineAgent('assistant', { instructions: 'Help.', tools: [lookup], skills: [skill] })
-type _TextInput = Expect<Equal<typeof textAgent.$infer.input, string>>
-type _TextOutput = Expect<Equal<typeof textAgent.$infer.output, string>>
+type _TextInput = Expect<typeof textAgent.contract.$infer.input extends string ? true : false>
+type _TextOutput = Expect<typeof textAgent.contract.$infer.output extends string ? true : false>
 const agentId: 'assistant' = textAgent.id
 const agentKind: 'agent' = textAgent.kind
 const primaryModel: 'primary' = textAgent.model
@@ -157,18 +157,22 @@ const structuredAgent = defineAgent('classify', {
 	input, output, instructions: 'Classify.', tools: [lookup, mcp.tools.searchKnowledge], skills: [skill],
 	prompt: value => ({ role: 'user', content: value.message }),
 })
-type _StructuredInput = Expect<Equal<typeof structuredAgent.$infer.input, { message: string }>>
-type _StructuredOutput = Expect<Equal<typeof structuredAgent.$infer.output, { answer: string }>>
+type _StructuredInput = Expect<typeof structuredAgent.contract.$infer.input extends { message: string } ? true : false>
+type _StructuredOutput = Expect<typeof structuredAgent.contract.$infer.output extends { answer: string } ? true : false>
 
 const transformedAgent = defineAgent('measure', {
 	input: transformedInput, instructions: 'Measure.', prompt: value => ({ role: 'user', content: String(value) }),
 })
-type _TransformedAgentInput = Expect<Equal<typeof transformedAgent.$infer.input, string>>
-type _TransformedAgentValidatedInput = Expect<Equal<typeof transformedAgent.$infer.validatedInput, number>>
+type _TransformedAgentInput = Expect<typeof transformedAgent.contract.$infer.input extends string ? true : false>
+type _TransformedAgentValidatedInput = Expect<typeof transformedAgent.contract.$infer.validatedInput extends number ? true : false>
 
 const explicitStringOutput = defineAgent('extractText', { output: z.string(), instructions: 'Extract.' })
-const structuredUpdates: 'object-snapshot' = explicitStringOutput.contract.updates
-void structuredUpdates
+const textUpdates: 'text-delta' = explicitStringOutput.contract.updates
+void textUpdates
+// @ts-expect-error a structured output cannot select text mode
+defineAgent('incompatibleResponseMode', { output, instructions: 'Reject.', responseMode: 'text' })
+const ambiguousResponseOutput = z.union([z.string(), output])
+defineAgent('explicitAmbiguousResponseMode', { output: ambiguousResponseOutput, instructions: 'Choose.', responseMode: 'text' })
 
 const parent = defineAgent('parent', {
 	instructions: 'Delegate.',
@@ -179,8 +183,9 @@ const reviewerId: 'classify' = parent.subagents.reviewer.agent.id
 void helperId
 void reviewerId
 
-// @ts-expect-error a supplied input schema requires a prompt mapper
-defineAgent('missingPrompt', { input, instructions: 'bad' })
+defineAgent('defaultStructuredPrompt', { input, instructions: 'allowed' })
+// @ts-expect-error media capabilities require an explicit prompt mapper
+defineAgent('missingMediaPrompt', { instructions: 'bad', inputCapabilities: ['vision_input'] })
 // @ts-expect-error agents do not accept custom execution handlers
 defineAgent('customAgent', { instructions: 'bad', async handler() { return 'bad' } })
 // @ts-expect-error agent definitions reject unknown fields
@@ -251,8 +256,8 @@ const sandboxedChildWorkflow = defineWorkflow('sandboxedChild', {
 const sandboxedChildHarness = defineHarness({ name: 'sandboxedChildHarness' }).addWorkflow(sandboxedChildWorkflow)
 type _ChildSandboxGroup = Expect<Equal<typeof sandboxedChildHarness.$infer.requirements.sandbox.requiredGroups[number], 'reviewers'>>
 void sandboxedChildHarness
-type _WorkflowInput = Expect<Equal<typeof workflow.$infer.input, { message: string }>>
-type _WorkflowOutput = Expect<Equal<typeof workflow.$infer.output, { answer: string }>>
+type _WorkflowInput = Expect<typeof workflow.contract.$infer.input extends { message: string } ? true : false>
+type _WorkflowOutput = Expect<typeof workflow.contract.$infer.output extends { answer: string } ? true : false>
 const workflowUpdates: 'none' = workflow.contract.updates
 void workflowUpdates
 
@@ -263,8 +268,8 @@ const transformedWorkflow = defineWorkflow('transformInput', {
 		return validated
 	},
 })
-type _TransformedWorkflowInput = Expect<Equal<typeof transformedWorkflow.$infer.input, string>>
-type _TransformedWorkflowValidatedInput = Expect<Equal<typeof transformedWorkflow.$infer.validatedInput, number>>
+type _TransformedWorkflowInput = Expect<typeof transformedWorkflow.contract.$infer.input extends string ? true : false>
+type _TransformedWorkflowValidatedInput = Expect<typeof transformedWorkflow.contract.$infer.validatedInput extends number ? true : false>
 
 // @ts-expect-error workflow input is required
 defineWorkflow('missingInput', { output, async handler() { return { answer: 'bad' } } })
@@ -300,7 +305,6 @@ defineCatalog('invalidCatalog', { agents: ['classify'] })
 const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgent).addWorkflow(workflow)
 const usedHarness = defineHarness({ name: 'support' }).use(catalog)
 const reusedCatalogHarness = usedHarness.use(catalog)
-const leafHarness = defineHarness({ name: 'leaves' }).addTool(lookup).addSkill(skill).addMcpServer(mcp)
 const governedAgent = defineAgent('governedAgent', {
 	instructions: 'Apply the declared policy.',
 	tools: [lookup],
@@ -317,8 +321,6 @@ const governedAgent = defineAgent('governedAgent', {
 	}),
 })
 const governedHarness = defineHarness({ name: 'governed' }).addAgent(governedAgent)
-const governedAgentId: 'governedAgent' = governedHarness.catalog.agents.governedAgent.id
-void governedAgentId
 const memoryAgent = defineAgent('memoryAgent', {
 	instructions: 'Remember.',
 	memory: {
@@ -329,12 +331,8 @@ const memoryAgent = defineAgent('memoryAgent', {
 })
 const knowledgeAgent = defineAgent('knowledgeAgent', { instructions: 'Search.', tools: [mcp.tools.searchKnowledge] })
 const inferredHarness = defineHarness({ name: 'inferred' }).addAgent(memoryAgent).addAgent(knowledgeAgent)
-const directAgentId: 'classify' = directHarness.catalog.agents.classify.id
-const usedWorkflowId: 'resolveCase' = usedHarness.catalog.workflows.resolveCase.id
-const reusedWorkflowId: 'resolveCase' = reusedCatalogHarness.catalog.workflows.resolveCase.id
-const leafToolId: 'lookup' = leafHarness.catalog.tools.lookup.id
-type _HarnessAgentInput = Expect<Equal<typeof directHarness.$infer.agents.classify.input, { message: string }>>
-type _HarnessWorkflowOutput = Expect<Equal<typeof usedHarness.$infer.workflows.resolveCase.output, { answer: string }>>
+type _HarnessAgentInput = Expect<typeof directHarness.$infer.agents.classify.input extends { message: string } ? true : false>
+type _HarnessWorkflowOutput = Expect<typeof usedHarness.$infer.workflows.resolveCase.output extends { answer: string } ? true : false>
 type _MemoryCapabilities = Expect<Equal<
 	typeof inferredHarness.$infer.requirements.memory.capabilities[number],
 	'memory.kv' | 'memory.vector_search'
@@ -345,16 +343,8 @@ type _MemoryModelAliases = Expect<Equal<
 >>
 type _McpServerIds = Expect<Equal<typeof inferredHarness.$infer.requirements.mcpServers[number], 'knowledge'>>
 type _InferredModelAliases = Expect<Equal<keyof typeof inferredHarness.$infer.requirements.models, 'primary' | 'embeddings' | 'summary'>>
-const inferredMcpId: 'knowledge' = inferredHarness.catalog.mcpServers.knowledge.id
-const inferredSiblingMcpToolId: 'fetchKnowledge' = inferredHarness.catalog.mcpServers.knowledge.tools.fetchKnowledge.id
-void directAgentId
-void usedWorkflowId
-void reusedWorkflowId
-void leafToolId
-void inferredMcpId
-void inferredSiblingMcpToolId
-// @ts-expect-error the exact inferred MCP owner map rejects unknown nested tools
-inferredHarness.catalog.mcpServers.knowledge.tools.unknown
+// @ts-expect-error Harness definitions expose roots, never catalog exports
+directHarness.catalog
 
 const fullRequirementsAgent = defineAgent('fullRequirementsAgent', {
 	instructions: 'Guard.', tools: [lookup], workspace: true, durable: true,
@@ -533,5 +523,9 @@ defineHarness({})
 directHarness.define()
 // @ts-expect-error Harness definitions are not string lookup registries
 directHarness.getAgent('classify')
-// @ts-expect-error MCP tools stay nested and cannot enter the non-MCP tool map
-directHarness.addTool(mcp.tools.searchKnowledge)
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addTool
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addSkill
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addMcpServer

@@ -5,6 +5,7 @@ import { agentPermissionsSchema } from '../decisions/schemas.js'
 import { agentGuardrailsBinding, type AgentGuardrailsBinding, type AgentPermissions } from '../agents/guardrails.js'
 import { agentExecutionRequirementsSchema } from '../harness/agent-requirements.js'
 import type { Infer, JsonSchemaBoundary, ModelSchema } from '../schema/index.js'
+import { canonicalJson } from '../runtime/canonical-json.js'
 import {
 	assertDefinitionId,
 	assertKnownFields,
@@ -21,6 +22,7 @@ import type {
 	AgentMemoryPolicy,
 	AgentOptions,
 	AgentPrompt,
+	AgentResponseMode,
 	AgentSubagentMap,
 	AnyToolDefinition,
 	SkillDefinition,
@@ -40,18 +42,18 @@ const supportedMemoryCapabilities: readonly MemoryCapability[] = Object.freeze([
 const agentFields = [
 	'description', 'model', 'input', 'output', 'instructions', 'prompt', 'inputCapabilities', 'tools', 'skills',
 	'guardrails', 'permissions', 'subagents', 'loop', 'memory', 'sandbox', 'workspace', 'durable',
-	'governance',
+	'governance', 'responseMode',
 ] as const
 
 type ResolvedInput<Input extends ModelSchema | undefined> = Input extends ModelSchema ? Input : typeof defaultStringInput
 type ResolvedOutput<Output extends ModelSchema | undefined> = Output extends ModelSchema ? Output : typeof defaultStringOutput
-type ResolvedUpdates<Output extends ModelSchema | undefined> = Output extends ModelSchema ? 'object-snapshot' : 'text-delta'
+type ResolvedUpdates<Output extends ModelSchema | undefined, Mode extends AgentResponseMode | undefined> =
+	Mode extends 'text' ? 'text-delta' : Mode extends 'structured' ? 'object-snapshot'
+		: Output extends ModelSchema ? [Infer<Output>] extends [string] ? 'text-delta' : 'object-snapshot' : 'text-delta'
 type ResolvedPrompt<
 	Input extends ModelSchema | undefined,
 	Capabilities extends readonly AgentInputCapability[],
-> = [Input] extends [undefined]
-	? undefined
-	: AgentPrompt<Infer<ResolvedInput<Input>>, Capabilities>
+> = AgentPrompt<Infer<ResolvedInput<Input>>, Capabilities>
 type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args: never[]) => infer Config ? Config : Value>
 
 /**
@@ -80,8 +82,9 @@ type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args:
  */
 export function defineAgent<
 	const Id extends string,
-	Input extends ModelSchema | undefined = undefined,
-	Output extends ModelSchema | undefined = undefined,
+	const Input extends ModelSchema | undefined = undefined,
+	const Output extends ModelSchema | undefined = undefined,
+	const ResponseMode extends AgentResponseMode | undefined = undefined,
 	const Model extends string = 'primary',
 	const Tools extends readonly AnyToolDefinition[] | undefined = undefined,
 	const Skills extends readonly SkillDefinition[] | undefined = undefined,
@@ -97,6 +100,7 @@ export function defineAgent<
 >(
 	id: Id,
 	options: AgentOptions<Input, Output, Model, Tools, Skills, Subagents, Capabilities, Memory, Guardrails, Permissions, Governance, Workspace, Durable, Sandbox>
+		& Readonly<{ responseMode?: ResponseMode }>
 		& ([Input] extends [ModelSchema] ? Readonly<{ input: JsonSchemaBoundary<Extract<Input, ModelSchema>> }> : unknown)
 		& ([Output] extends [ModelSchema] ? Readonly<{ output: JsonSchemaBoundary<Extract<Output, ModelSchema>> }> : unknown),
 ): AgentDefinition<
@@ -108,7 +112,7 @@ export function defineAgent<
 	Skills,
 	Subagents,
 	Capabilities,
-	ResolvedUpdates<Output>,
+	ResolvedUpdates<Output, ResponseMode>,
 	ResolvedPrompt<Input, Capabilities>,
 	Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 > {
@@ -125,7 +129,7 @@ export function defineAgent<
 	const output = options.output ?? defaultStringOutput
 	assertModelSchema(input, 'agent.input', id)
 	assertModelSchema(output, 'agent.output', id)
-	if (options.input !== undefined && typeof options.prompt !== 'function') {
+	if ((options.inputCapabilities?.length ?? 0) > 0 && typeof options.prompt !== 'function') {
 		throw new HarnessConfigError('An agent with an input schema requires a prompt mapper.', {
 			reason: 'missing_agent_prompt', path: 'agent.prompt', id,
 		})
@@ -133,8 +137,9 @@ export function defineAgent<
 
 	const capabilities = copyInputCapabilities(options.inputCapabilities, id)
 	const prompt = options.prompt === undefined
-		? undefined
+		? defaultPrompt as unknown as AgentPrompt<Infer<ResolvedInput<Input>>, Capabilities>
 		: wrapPrompt(options.prompt as unknown as AgentPrompt<unknown, readonly AgentInputCapability[]>, capabilities ?? [], id)
+	const updates = resolveUpdates(output, options.responseMode, id) as ResolvedUpdates<Output, ResponseMode>
 	const tools = options.tools === undefined ? undefined : Object.freeze([...options.tools]) as Tools
 	const skills = options.skills === undefined ? undefined : Object.freeze([...options.skills]) as Skills
 	const subagents = copySubagents(options.subagents, id) as Subagents
@@ -157,9 +162,12 @@ export function defineAgent<
 		input,
 		output,
 		executionModes: Object.freeze(['run', 'stream'] as const),
-		updates: (options.output === undefined ? 'text-delta' : 'object-snapshot') as ResolvedUpdates<Output>,
+		updates,
 		interrupts: Object.freeze(['tool-approval'] as const),
 	}, identity)
+	Object.defineProperty(contract, '$infer', {
+		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
+	})
 	Object.freeze(contract)
 
 	const value = {
@@ -171,7 +179,7 @@ export function defineAgent<
 		output,
 		instructions: options.instructions,
 		...(capabilities === undefined ? {} : { inputCapabilities: capabilities }),
-		...(prompt === undefined ? {} : { prompt }),
+		prompt,
 		...(tools === undefined ? {} : { tools }),
 		...(skills === undefined ? {} : { skills }),
 		...(guardrails === undefined ? {} : { guardrails }),
@@ -187,8 +195,39 @@ export function defineAgent<
 	}
 	return freezeDefinition(value, identity) as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
-		ResolvedUpdates<Output>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
+		ResolvedUpdates<Output, ResponseMode>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 	>
+}
+
+const defaultPrompt: AgentPrompt<unknown, readonly AgentInputCapability[]> = input => ({
+	role: 'user', content: typeof input === 'string' ? input : canonicalJson(input),
+})
+
+function resolveUpdates(output: ModelSchema, responseMode: AgentResponseMode | undefined, id: string): 'text-delta' | 'object-snapshot' {
+	const family = outputFamily(output)
+	if (family === 'ambiguous' && responseMode === undefined) {
+		throw new HarnessConfigError('An ambiguous agent output schema requires responseMode.', {
+			reason: 'missing_agent_response_mode', path: 'agent.responseMode', id,
+		})
+	}
+	if (responseMode !== undefined && family !== 'ambiguous' && responseMode !== family) {
+		throw new HarnessConfigError('Agent responseMode is incompatible with the output schema.', {
+			reason: 'invalid_agent_response_mode', path: 'agent.responseMode', id,
+		})
+	}
+	return (responseMode ?? family) === 'text' ? 'text-delta' : 'object-snapshot'
+}
+
+function outputFamily(output: ModelSchema): AgentResponseMode | 'ambiguous' {
+	try {
+		const schema = output['~standard'].jsonSchema.output({ target: 'draft-2020-12' })
+		const type = schema['type']
+		if (type === 'string' || (Array.isArray(type) && type.length === 1 && type[0] === 'string')) return 'text'
+		if (typeof type === 'string' || (Array.isArray(type) && type.every(entry => entry !== 'string'))) return 'structured'
+	} catch {
+		// A converter that cannot classify a top-level family is deliberately ambiguous.
+	}
+	return 'ambiguous'
 }
 
 function copyInputCapabilities<const C extends readonly AgentInputCapability[]>(

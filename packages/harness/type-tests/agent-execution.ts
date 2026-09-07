@@ -4,14 +4,23 @@ import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import type { Schema } from '../src/schema/index.js'
+import type { HarnessExecutionCaller } from '../src/definitions/index.js'
 
 const lookup = defineTool('lookup', { description: 'Lookup.', input: z.object({ id: z.string() }), output: z.object({ value: z.string() }), async handler(_context, input) { return { value: input.id } } })
 const agent = defineAgent('typed', { instructions: 'Lookup.', tools: [lookup], output: z.string(), governance: ({ native, rule }) => ({
 	policies: [native({ id: 'policy', rules: [rule({ id: 'allow', tools: ['lookup'], effect: 'allow' })] })],
 }) })
-const update: 'object-snapshot' = agent.contract.updates
-const output: string = null as never as typeof agent.$infer.output
+const update: 'text-delta' = agent.contract.updates
+const output: string = null as never as typeof agent.contract.$infer.output
 void update; void output
+
+const agentCaller: HarnessExecutionCaller = { kind: 'agent', agentId: 'typed', workflowId: 'owner' }
+const workflowCaller: HarnessExecutionCaller = { kind: 'workflow', workflowId: 'orchestrate' }
+// @ts-expect-error workflow callers cannot contain an agent id
+const mixedCaller: HarnessExecutionCaller = { kind: 'workflow', workflowId: 'orchestrate', agentId: 'typed' }
+// @ts-expect-error an execution caller always names exactly one owning kind
+const absentCaller: HarnessExecutionCaller = { kind: 'agent' }
+void agentCaller; void workflowCaller; void mixedCaller; void absentCaller
 
 defineAgent('badTool', { instructions: 'Bad.', tools: [lookup], governance: ({ native, rule }) => ({ policies: [native({ id: 'p', rules: [rule({
 	id: 'r',

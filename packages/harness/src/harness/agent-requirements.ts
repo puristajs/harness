@@ -55,7 +55,7 @@ const requiredModelSchema = z.object({
 /**
  * Declarative model and tool dependencies required by an agent interceptor.
  *
- * The Harness validates these declarations during `.build()` only. They never
+ * The Harness validates these declarations during immutable graph compilation. They never
  * grant tool access, add models, or cause provider, sandbox, or MCP work.
  */
 export const agentExecutionRequirementsSchema = z.object({

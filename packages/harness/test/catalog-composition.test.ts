@@ -110,17 +110,41 @@ describe('catalog composition and graph compilation', () => {
 		expect(reasonOf(() => harness.use({ ...catalog } as never))).toBe('foreign_definition')
 		expect(reasonOf(() => harness.use({ kind: 'catalog', id: 'fake', ...catalog } as never))).toBe('foreign_definition')
 		expect(reasonOf(() => harness.use(Object.freeze(Object.create(catalog)) as never))).toBe('foreign_definition')
-		expect(harness.use(catalog).catalog.requirements).toEqual(catalog.requirements)
+		expect(() => harness.use(catalog)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'catalog_has_no_targets' }) }))
 	})
 
 	it('retains catalog identity provenance across immutable Harness composition', () => {
-		const first = defineCatalog('sharedCatalog', {})
-		const conflicting = defineCatalog('sharedCatalog', {})
+		const root = defineAgent('sharedRoot', { instructions: 'Help.' })
+		const first = defineCatalog('sharedCatalog', { agents: [root] })
+		const conflicting = defineCatalog('sharedCatalog', { agents: [root] })
 		const harness = defineHarness({ name: 'catalogConsumer' }).use(first)
 
 		expect(() => harness.use(first)).not.toThrow()
 		expect(reasonOf(() => harness.use(conflicting))).toBe('duplicate_definition')
 		expect(() => harness.use(conflicting)).toThrow(HarnessConfigError)
+	})
+
+	it('keeps catalog exports explicit and exposes Harness roots without a public closure', () => {
+		const leaf = defineTool('catalogLeaf', {
+			description: 'Leaf.', input, output,
+			async handler(_context, value) { return { answer: value.message } },
+		})
+		const dependency = defineAgent('catalogDependency', { instructions: 'Help.' })
+		const root = defineAgent('catalogRoot', { instructions: 'Delegate.', subagents: { helper: { agent: dependency, description: 'Help.' } } })
+		const catalog = defineCatalog('explicitOnly', { tools: [leaf], agents: [root] })
+		const harness = defineHarness({ name: 'rootOnly', revision: 'v1' }).use(catalog)
+
+		expect(catalog.tools.catalogLeaf).toBe(leaf)
+		expect(catalog.agents.catalogRoot).toBe(root)
+		expect(catalog.agents).not.toHaveProperty('catalogDependency')
+		expect(catalog.requirements.models).toHaveProperty('primary')
+		expect(harness.contracts.agents).toHaveProperty('catalogRoot')
+		expect(harness.contracts.agents).not.toHaveProperty('catalogDependency')
+		expect(harness).not.toHaveProperty('catalog')
+		expect(harness.inspect()).toMatchObject({
+			roots: { agents: [{ id: 'catalogRoot' }], workflows: [] },
+			dependencies: { agents: ['catalogDependency'], tools: [], skills: [], mcpServers: [], workflows: [] },
+		})
 	})
 
 	it('merges every Guardrail runtime requirement and freezes the normalized view', () => {
@@ -218,11 +242,10 @@ describe('catalog composition and graph compilation', () => {
 		const catalog = defineCatalog('bankingAi', { workflows: [value.resolve] })
 
 		expect(catalog.workflows.resolve).toBe(value.resolve)
-		expect(catalog.agents.assistant).toBe(value.assistant)
-		expect(catalog.agents.helper).toBe(value.helper)
-		expect(catalog.tools.lookup).toBe(value.lookup)
-		expect(catalog.skills['support-policy']).toBe(value.policy)
-		expect(catalog.mcpServers.knowledge).toBe(value.knowledge)
+		expect(catalog.agents).toEqual({})
+		expect(catalog.tools).toEqual({})
+		expect(catalog.skills).toEqual({})
+		expect(catalog.mcpServers).toEqual({})
 		expect(catalog.tools).not.toHaveProperty('search')
 		expect(catalog.requirements).toEqual({
 			models: {
@@ -253,7 +276,7 @@ describe('catalog composition and graph compilation', () => {
 			tools: [value.lookup, value.lookup], agents: [value.assistant, value.assistant],
 		})
 		expect(Object.keys(catalog.tools)).toEqual(['lookup'])
-		expect(Object.keys(catalog.agents)).toEqual(['assistant', 'helper'])
+		expect(Object.keys(catalog.agents)).toEqual(['assistant'])
 	})
 
 	it('allows equal MCP local names on distinct owning servers and preserves both owners', () => {
@@ -264,7 +287,7 @@ describe('catalog composition and graph compilation', () => {
 		expect(catalog.mcpServers.first.tools.search).toBe(first.tools.search)
 		expect(catalog.mcpServers.second.tools.search).toBe(second.tools.search)
 		expect(catalog.tools).not.toHaveProperty('search')
-		expect(catalog.requirements.mcpServers).toEqual(['first', 'second'])
+		expect(catalog.requirements.mcpServers).toEqual([])
 	})
 
 	it.each([
@@ -354,9 +377,8 @@ describe('catalog composition and graph compilation', () => {
 		const viaCatalog = base.use(packaged)
 		const direct = base.addWorkflow(value.resolve)
 
-		expect(viaCatalog.catalog).toEqual(direct.catalog)
 		expect(viaCatalog.requirements).toEqual(direct.requirements)
-		expect(base.catalog.workflows).toEqual({})
+		expect(base.contracts.workflows).toEqual({})
 		expect(Object.isFrozen(base)).toBe(true)
 		expect(Object.isFrozen(viaCatalog)).toBe(true)
 		expect(viaCatalog.contracts.workflows.resolve).toBe(value.resolve.contract)
@@ -405,7 +427,7 @@ describe('catalog composition and graph compilation', () => {
 		expect(() => defineHarness({ name: 'NotLowerCamel' })).toThrow(HarnessConfigError)
 		expect(() => defineCatalog('invalid', null as never)).toThrow(HarnessConfigError)
 		const harness = defineHarness({ name: 'empty' })
-		expect(harness.catalog).toMatchObject({ tools: {}, agents: {}, workflows: {} })
+		expect(harness.contracts).toMatchObject({ agents: {}, workflows: {} })
 		expect(harness.$infer).toEqual({})
 		expect(Object.isFrozen(harness.$infer)).toBe(true)
 	})
@@ -466,8 +488,8 @@ describe('catalog composition and graph compilation', () => {
 		})
 		const definition = defineHarness({ name: 'lazySessionHarness', revision: 'v1' }).addWorkflow(echo)
 		const model = new FakeModelProvider({ strict: true })
-		model.enqueueObject({ object: 'one', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		model.enqueueObject({ object: 'two', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		model.enqueueText({ content: 'one', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		model.enqueueText({ content: 'two', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		const firstInstance = await definition.getInstance({ storage, sandbox, model: { provider: model, model: 'fake' } })
 		const first = await firstInstance.getSession('shared-session')
 		const secondFacade = await firstInstance.getSession('shared-session')
@@ -584,7 +606,7 @@ describe('catalog composition and graph compilation', () => {
 	it('fences an approval-capable root before effects and persists its interruption', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueObject({ object: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
 		let executions = 0
 		const transfer = defineTool('bash', { description: 'Transfer funds.', input: z.string(), output: z.string(),
@@ -625,9 +647,9 @@ describe('catalog composition and graph compilation', () => {
 			return appendEvents(runId, events)
 		}
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueObject({ object: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueObject({ object: 'transferred', toolCalls: [],
+		provider.enqueueText({ content: 'transferred', toolCalls: [],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		let executions = 0
 		let rootParses = 0
@@ -677,7 +699,7 @@ describe('catalog composition and graph compilation', () => {
 	it('rejects a forged post-approval cursor that no longer owns its decision set', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueObject({ object: '', toolCalls: [{ id: 'cursor-call', name: 'bash', arguments: 'input' }],
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'cursor-call', name: 'bash', arguments: 'input' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
 		let afterModel = 0
 		const effect = defineTool('bash', { description: 'Effect.', input: z.string(), output: z.string(), async handler() { return 'unused' } })
@@ -799,9 +821,9 @@ describe('catalog composition and graph compilation', () => {
 	it('re-enters a durable workflow through its saved agent call and restores the cumulative call budget', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueObject({ object: '', toolCalls: [{ id: 'effect-call', name: 'bash', arguments: 'approved input' }],
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: 'bash', arguments: 'approved input' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueObject({ object: 'child done', toolCalls: [],
+		provider.enqueueText({ content: 'child done', toolCalls: [],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		let effects = 0
 		let handlerEntries = 0
@@ -868,19 +890,19 @@ describe('catalog composition and graph compilation', () => {
 		const inspection = defineHarness({ name: 'banking', revision: 'v1' }).addWorkflow(value.resolve).inspect()
 		const serialized = JSON.stringify(inspection)
 
-		expect(inspection.definitions).toEqual({
+		expect(inspection.dependencies).toEqual({
 			tools: ['lookup'], skills: ['support-policy'], mcpServers: ['knowledge'],
-			agents: ['assistant', 'helper'], workflows: ['resolve'],
+			agents: ['assistant', 'helper'], workflows: [],
 		})
-		expect(inspection.targets.agents.map(target => target.id)).toEqual(['assistant', 'helper'])
-		expect(inspection.targets.workflows.map(target => target.id)).toEqual(['resolve'])
-		expect(inspection.targets.workflows[0]?.interrupts).toEqual(['external-wait', 'tool-approval'])
+		expect(inspection.roots.agents).toEqual([])
+		expect(inspection.roots.workflows.map(target => target.id)).toEqual(['resolve'])
+		expect(inspection.roots.workflows[0]?.interrupts).toEqual(['external-wait', 'tool-approval'])
 		expect(serialized).not.toContain('Answer.')
 		expect(serialized).not.toContain('support-policy/')
 		expect(serialized).not.toContain('handler')
 		expect(serialized).not.toContain('prompt')
 		expect(Object.isFrozen(inspection)).toBe(true)
-		expect(Object.isFrozen(inspection.targets.agents)).toBe(true)
+		expect(Object.isFrozen(inspection.roots.agents)).toBe(true)
 	})
 })
 

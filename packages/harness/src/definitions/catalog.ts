@@ -62,10 +62,7 @@ type AnyHarnessTargetContract = HarnessTargetContract<any, any, ModelSchema, Mod
 
 /** Input and output types inferred from an exact map of target contracts. */
 export type HarnessTargetInferMap<Targets extends Readonly<Record<string, AnyHarnessTargetContract>>> = Readonly<{
-	[Key in keyof Targets]: Readonly<{
-		input: InferIn<Targets[Key]['input']>
-		output: Infer<Targets[Key]['output']>
-	}>
+	[Key in keyof Targets]: Targets[Key]['$infer']
 }>
 
 /** Compile-time invocation and runtime-requirement projection of a Harness. */
@@ -100,7 +97,11 @@ export interface HarnessCatalogView<
 export type HarnessCatalogDefinition<
 	Id extends string,
 	View extends HarnessCatalogView,
-> = Readonly<{ readonly kind: 'catalog'; readonly id: Id }> & View & DefinitionReference<'catalog', Id> & HarnessCatalogBrand<Id>
+> = Readonly<{
+	readonly kind: 'catalog'
+	readonly id: Id
+	readonly $infer: HarnessInfer<View['contracts'], View['requirements']>
+}> & View & DefinitionReference<'catalog', Id> & HarnessCatalogBrand<Id>
 
 /** Concise array authoring input for one reusable catalog. */
 export interface CatalogOptions<
@@ -127,11 +128,10 @@ export type CatalogViewForRoots<
 	ToolDefinitions = AllTools<Tools, AgentDefinitions>,
 	NonMcpTools extends AnyNonMcpToolDefinition = AllNonMcpTools<Tools, AgentDefinitions>,
 	McpTools extends McpToolDefinition = AllMcpTools<Tools, AgentDefinitions>,
-	ToolMap extends Readonly<Record<string, AnyNonMcpToolDefinition>> = UnionIdMap<NonMcpTools>,
-	SkillMap extends Readonly<Record<string, SkillDefinition>> = UnionIdMap<AllSkills<Skills, AgentDefinitions>>,
-	ExplicitMcpMap extends Readonly<Record<string, McpServerDefinition<any, any>>> = IdMap<McpServers>,
-	McpMap extends Readonly<Record<string, McpServerDefinition<any, any>>> = MergeMaps<InferredMcpServers<McpTools>, ExplicitMcpMap>,
-	AgentMap extends Readonly<Record<string, AnyAgentDefinition>> = UnionIdMap<AgentDefinitions>,
+	ToolMap extends Readonly<Record<string, AnyNonMcpToolDefinition>> = IdMap<Tools>,
+	SkillMap extends Readonly<Record<string, SkillDefinition>> = IdMap<Skills>,
+	McpMap extends Readonly<Record<string, McpServerDefinition<any, any>>> = IdMap<McpServers>,
+	AgentMap extends Readonly<Record<string, AnyAgentDefinition>> = IdMap<Agents>,
 	WorkflowMap extends Readonly<Record<string, AnyWorkflowDefinition>> = IdMap<Workflows>,
 > = HarnessCatalogView<
 	ToolMap,
@@ -139,7 +139,12 @@ export type CatalogViewForRoots<
 	McpMap,
 	AgentMap,
 	WorkflowMap,
-	RuntimeRequirementsFor<ToolMap, SkillMap, McpMap, AgentMap, WorkflowMap, McpTools>
+	RuntimeRequirementsFor<
+		UnionIdMap<AllNonMcpTools<undefined, AgentDefinitions>>,
+		UnionIdMap<AllSkills<undefined, AgentDefinitions>>,
+		InferredMcpServers<McpTools>,
+		UnionIdMap<AgentDefinitions>, WorkflowMap, McpTools
+	>
 >
 
 /**
@@ -178,30 +183,40 @@ export function defineCatalog<
 		}
 	}
 	const graph = compileDefinitionGraph(options as DefinitionGraphRoots)
-	return freezeDefinition(
-		{ kind: 'catalog' as const, id, ...createCatalogView(graph) },
-		createDefinitionIdentity('catalog', id),
-	) as HarnessCatalogDefinition<
+	const value = { kind: 'catalog' as const, id, ...createCatalogView(graph, options as DefinitionGraphRoots) }
+	Object.defineProperty(value, '$infer', {
+		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
+	})
+	return freezeDefinition(value, createDefinitionIdentity('catalog', id)) as HarnessCatalogDefinition<
 		Id,
 		CatalogViewForRoots<Tools, Skills, McpServers, Agents, Workflows>
 	>
 }
 
 /** @internal Builds a public authoring view from one private compiled graph. */
-export function createCatalogView(graph: CompiledDefinitionGraph): HarnessCatalogView {
+export function createCatalogView(graph: CompiledDefinitionGraph, roots: DefinitionGraphRoots): HarnessCatalogView {
+	const tools = explicitMap(roots.tools)
+	const skills = explicitMap(roots.skills)
+	const mcpServers = explicitMap(roots.mcpServers)
+	const agents = explicitMap(roots.agents)
+	const workflows = explicitMap(roots.workflows)
 	const agentContracts = Object.freeze(Object.fromEntries(
-		Object.entries(graph.agents).map(([id, agent]) => [id, agent.contract]),
+		Object.entries(agents).map(([id, agent]) => [id, agent.contract]),
 	))
 	const workflowContracts = Object.freeze(Object.fromEntries(
-		Object.entries(graph.workflows).map(([id, workflow]) => [id, workflow.contract]),
+		Object.entries(workflows).map(([id, workflow]) => [id, workflow.contract]),
 	))
 	return Object.freeze({
-		tools: graph.tools,
-		skills: graph.skills,
-		mcpServers: graph.mcpServers,
-		agents: graph.agents,
-		workflows: graph.workflows,
+		tools,
+		skills,
+		mcpServers,
+		agents,
+		workflows,
 		contracts: Object.freeze({ agents: agentContracts, workflows: workflowContracts }),
 		requirements: graph.requirements,
 	})
+}
+
+function explicitMap<Definition extends { readonly id: string }>(definitions: readonly Definition[] | undefined): Readonly<Record<string, Definition>> {
+	return Object.freeze(Object.fromEntries((definitions ?? []).map(definition => [definition.id, definition])))
 }

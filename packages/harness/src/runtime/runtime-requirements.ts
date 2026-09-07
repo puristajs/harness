@@ -140,6 +140,8 @@ type IsPresent<Value> = [Value] extends [never] ? false : true
 type AgentSelectedToolIds<Agent> = Agent extends { readonly tools: readonly (infer Tool)[] }
 	? Tool extends { readonly id: infer Id extends string } ? Id : never
 	: never
+type AgentSelectedTools<Agent> = Agent extends { readonly tools: readonly (infer Tool)[] } ? Tool : never
+type AgentSelectedSkills<Agent> = Agent extends { readonly skills: readonly (infer Skill)[] } ? Skill : never
 type ApprovalPermission<Value> = Extract<Value, 'require_approval' | { readonly mode: 'require_approval' }> extends never ? never : true
 type AgentApproval<Agent> = Agent extends { readonly permissions: infer Permissions }
 	? AgentSelectedToolIds<Agent> extends infer Id
@@ -196,21 +198,21 @@ export type RuntimeRequirementsFor<
 	SelectedMcpTools = never,
 > = RuntimeRequirements<
 	RequirementModels<AgentModelEntries<Values<Agents>> | WorkflowModelEntries<Values<Workflows>>>,
-	(keyof McpServers & string) | McpOwnerIds<SelectedMcpTools>,
-		SkillRuntimes<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'skillRuntimes'>, SkillRuntimeId>,
-		ToolMemoryCapabilities<Values<Tools>> | AgentMemoryCapabilities<Values<Agents>> | Extract<GuardrailArrayMember<Values<Agents>, 'memory'>, MemoryCapability>,
+	(keyof McpServers & string) | McpOwnerIds<SelectedMcpTools | Extract<AgentSelectedTools<Values<Agents>>, McpToolDefinition>>,
+		SkillRuntimes<Values<Skills> | Extract<AgentSelectedSkills<Values<Agents>>, SkillDefinition>> | Extract<GuardrailArrayMember<Values<Agents>, 'skillRuntimes'>, SkillRuntimeId>,
+		ToolMemoryCapabilities<Values<Tools> | Extract<AgentSelectedTools<Values<Agents>>, AnyNonMcpToolDefinition>> | AgentMemoryCapabilities<Values<Agents>> | Extract<GuardrailArrayMember<Values<Agents>, 'memory'>, MemoryCapability>,
 	AgentMemoryAliases<Values<Agents>>,
-		ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
+		ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<Values<Agents>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<Values<Agents>>, SkillDefinition>> | Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>,
 		SandboxGroupOf<Values<Agents> | Values<Workflows>> | WorkflowChildSandboxGroups<Values<Workflows>>,
 		IsPresent<
-			ToolSandboxCapabilities<Values<Tools>> | RuntimeSkillSandboxCapabilities<Values<Skills>>
+			ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<Values<Agents>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<Values<Agents>>, SkillDefinition>>
 			| Extract<GuardrailArrayMember<Values<Agents>, 'sandbox'>, SandboxCapabilityId>
 			| WorkspaceSandboxCapability<Values<Agents>, Values<Workflows>>
 			| HasExplicitSandboxPolicy<Values<Agents> | Values<Workflows>>
 			| HasWorkflowChildSandboxGroups<Values<Workflows>>
 		>,
-		HostToolIds<Values<Tools>>,
+		HostToolIds<Values<Tools> | Extract<AgentSelectedTools<Values<Agents>>, AnyNonMcpToolDefinition>>,
 		IsTrue<AgentDurability<Values<Agents>> | WorkflowDurability<Values<Workflows>>>,
 		IsTrue<AgentWorkspace<Values<Agents>> | WorkflowWorkspace<Values<Workflows>>>,
 		IsTrue<GuardrailArtifacts<Values<Agents>> | AgentMedia<Values<Agents>> | WorkflowMedia<Values<Workflows>>>

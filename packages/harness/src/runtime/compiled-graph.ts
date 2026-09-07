@@ -119,10 +119,32 @@ export function compileDefinitionGraph(
 	const mcpServers = definitionMap(byToken.values(), ['mcp-server']) as Readonly<Record<string, McpServerDefinition<any, any>>>
 	const agents = definitionMap(byToken.values(), ['agent']) as Readonly<Record<string, AnyAgentDefinition>>
 	const workflows = definitionMap(byToken.values(), ['workflow']) as Readonly<Record<string, AnyWorkflowDefinition>>
-	const approval = compileApprovalInventory(agents, workflows)
-	const requirements = deriveRuntimeRequirements({ tools, skills, mcpServers, agents, workflows }, approval)
+	const executable = collectExecutableClosure(roots, dependencyReader)
+	const executableTools = definitionMap(executable, ['tool', 'built-in-tool', 'host-tool']) as Readonly<Record<string, AnyNonMcpToolDefinition>>
+	const executableSkills = definitionMap(executable, ['skill']) as Readonly<Record<string, SkillDefinition>>
+	const executableMcpServers = definitionMap(executable, ['mcp-server']) as Readonly<Record<string, McpServerDefinition<any, any>>>
+	const executableAgents = definitionMap(executable, ['agent']) as Readonly<Record<string, AnyAgentDefinition>>
+	const executableWorkflows = definitionMap(executable, ['workflow']) as Readonly<Record<string, AnyWorkflowDefinition>>
+	const approval = compileApprovalInventory(executableAgents, executableWorkflows)
+	const requirements = deriveRuntimeRequirements({
+		tools: executableTools, skills: executableSkills, mcpServers: executableMcpServers,
+		agents: executableAgents, workflows: executableWorkflows,
+	}, approval)
 
 	return Object.freeze({ tools, skills, mcpServers, agents, workflows, requirements, approval })
+}
+
+function collectExecutableClosure(roots: DefinitionGraphRoots, dependencyReader: DefinitionDependencyReader): Iterable<DefinitionNode> {
+	const byToken = new Map<object, DefinitionNode>()
+	const pending: DefinitionNode[] = [...(roots.agents ?? []), ...(roots.workflows ?? [])]
+	while (pending.length > 0) {
+		const definition = pending.pop()!
+		const identity = requireIdentity(definition)
+		if (byToken.has(identity.token)) continue
+		byToken.set(identity.token, definition)
+		pending.push(...dependencyReader(definition).dependencies)
+	}
+	return Object.freeze([...byToken.values()])
 }
 
 function compileApprovalInventory(

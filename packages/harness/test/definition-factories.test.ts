@@ -88,9 +88,13 @@ describe('composable definition factories', () => {
 			kind: 'agent', id: 'assistant', executionModes: ['run', 'stream'],
 			updates: 'text-delta', interrupts: ['tool-approval'],
 		})
+		const infer = Object.getOwnPropertyDescriptor(agent.contract, '$infer')
+		expect(infer).toMatchObject({ enumerable: false, configurable: false, writable: false })
+		expect(Object.isFrozen(infer?.value)).toBe(true)
+		expect(Object.keys(agent.contract)).not.toContain('$infer')
 	})
 
-	it('derives structured mode from any explicit output schema and retains schema identity', () => {
+	it('derives text mode from an explicit string output schema and retains schema identity', () => {
 		const explicitStringOutput = z.string()
 		const agent = defineAgent('classify', {
 			input: inputSchema,
@@ -102,7 +106,32 @@ describe('composable definition factories', () => {
 		expect(agent.input).toBe(inputSchema)
 		expect(agent.output).toBe(explicitStringOutput)
 		expect(agent.contract.output).toBe(explicitStringOutput)
-		expect(agent.contract.updates).toBe('object-snapshot')
+		expect(agent.contract.updates).toBe('text-delta')
+	})
+
+	it('requires an explicit ambiguous response mode and rejects incompatible modes', () => {
+		const ambiguous = z.union([z.string(), outputSchema])
+		expect(() => defineAgent('ambiguousOutput', {
+			output: ambiguous, instructions: 'Choose a response.', responseMode: undefined,
+		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_agent_response_mode' }) }))
+		expect(() => defineAgent('wrongStringMode', {
+			output: outputSchema, instructions: 'Respond.', responseMode: 'text',
+		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_agent_response_mode' }) }))
+		expect(defineAgent('explicitTextMode', {
+			output: z.string(), instructions: 'Respond.', responseMode: 'text',
+		}).contract.updates).toBe('text-delta')
+	})
+
+	it('uses a deterministic default prompt for structured JSON input and requires a mapper for media', () => {
+		const structured = defineAgent('defaultStructuredPrompt', {
+			input: inputSchema,
+			output: outputSchema,
+			instructions: 'Classify.',
+		})
+		expect(structured.prompt?.({ message: 'hello' })).toEqual({ role: 'user', content: '{"message":"hello"}' })
+		expect(() => defineAgent('mediaNeedsPrompt', {
+			instructions: 'Describe.', inputCapabilities: ['vision_input'],
+		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_agent_prompt' }) }))
 	})
 
 	it('validates prompt messages before they can reach a provider', () => {

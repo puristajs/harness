@@ -29,6 +29,30 @@ export type HarnessOutputUpdateKind = 'none' | 'text-delta' | 'object-snapshot'
 /** Resumable interruption families a target may produce. */
 export type HarnessInterruptKind = 'tool-approval' | 'external-wait'
 
+/** Exact update value emitted by one target contract. */
+export type HarnessUpdateFor<Output extends ModelSchema, Updates extends HarnessOutputUpdateKind> =
+	Updates extends 'text-delta' ? string : Updates extends 'object-snapshot' ? Infer<Output> & JsonValue : never
+
+/** Exact interruption union declared by one target contract. */
+type HarnessInterruptForKind<Kind extends HarnessInterruptKind> =
+	Kind extends 'tool-approval' ? import('../approvals/index.js').ToolApprovalInterrupt
+		: Extract<import('../runtime/outcomes.js').HarnessInterrupt, { readonly type: 'external-wait' }>
+export type HarnessInterruptForKinds<Kinds extends readonly HarnessInterruptKind[]> = HarnessInterruptForKind<Kinds[number]>
+
+/** Sole portable invocation inference owned by a target contract. */
+export interface HarnessTargetInference<
+	Input extends ModelSchema,
+	Output extends ModelSchema,
+	Updates extends HarnessOutputUpdateKind,
+	Interrupts extends readonly HarnessInterruptKind[],
+> {
+	readonly input: InferIn<Input> & JsonValue
+	readonly validatedInput: Infer<Input> & JsonValue
+	readonly output: Infer<Output> & JsonValue
+	readonly update: HarnessUpdateFor<Output, Updates>
+	readonly interrupt: HarnessInterruptForKinds<Interrupts>
+}
+
 /** Portable data-only contract exposed by an executable Harness target. */
 export interface HarnessTargetContract<
 	Kind extends HarnessTargetKind,
@@ -46,6 +70,8 @@ export interface HarnessTargetContract<
 	readonly executionModes: readonly ['run', 'stream']
 	readonly updates: Updates
 	readonly interrupts: Interrupts
+	/** Type-only invocation contract. The frozen runtime value is non-enumerable. */
+	readonly $infer: HarnessTargetInference<Input, Output, Updates, Interrupts>
 }
 
 /** Type-only input, validated-input, and output projection on a definition. */
@@ -54,6 +80,11 @@ export interface DefinitionInference<Input extends Schema, Output extends Schema
 	readonly validatedInput: Infer<Input>
 	readonly output: Infer<Output>
 }
+
+/** One execution caller always has exactly one owning target family. */
+export type HarnessExecutionCaller =
+	| Readonly<{ kind: 'agent'; agentId: string; workflowId?: string }>
+	| Readonly<{ kind: 'workflow'; workflowId: string; agentId?: never }>
 
 /** Runtime capabilities required before a portable tool can execute. */
 export interface ToolRequirements<
@@ -302,7 +333,6 @@ export type AnyAgentDefinition = Readonly<{
 	workspace?: true | undefined
 	durable?: true | undefined
 	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', readonly ['tool-approval']>
-	readonly $infer: { readonly input: any; readonly validatedInput: any; readonly output: any }
 }> & DefinitionReference<'agent', string>
 /** Direct child-agent reference or its parent-facing description override. */
 export type AgentSubagentReference = AnyAgentDefinition | Readonly<{ agent: AnyAgentDefinition; description?: string }>
@@ -311,11 +341,19 @@ export type AgentSubagentMap = Readonly<Record<string, AgentSubagentReference>>
 
 type AgentPromptField<I extends ModelSchema | undefined, C extends readonly AgentInputCapability[]> =
 	I extends ModelSchema
-		? { readonly input: I; readonly prompt: AgentPrompt<Infer<I>, C> }
-		: { readonly input?: never; readonly prompt?: AgentPrompt<string, C> }
+		? C[number] extends never ? { readonly input: I; readonly prompt?: AgentPrompt<Infer<I>, C> } : { readonly input: I; readonly prompt: AgentPrompt<Infer<I>, C> }
+		: C[number] extends never ? { readonly input?: never; readonly prompt?: AgentPrompt<string, C> } : { readonly input?: never; readonly prompt: AgentPrompt<string, C> }
 type AgentOutputField<O extends ModelSchema | undefined> = O extends ModelSchema
 	? { readonly output: O }
 	: { readonly output?: never }
+/** Explicit discriminator for an output schema whose top-level family is ambiguous. */
+export type AgentResponseMode = 'text' | 'structured'
+type ResponseModeFor<Output extends ModelSchema | undefined> = Output extends ModelSchema
+	? [Infer<Output>] extends [string] ? 'text' : [Extract<Infer<Output>, string>] extends [never] ? 'structured' : AgentResponseMode
+	: 'text'
+type AgentResponseModeField<Output extends ModelSchema | undefined> = ResponseModeFor<Output> extends infer Mode extends AgentResponseMode
+	? [Mode] extends ['text'] | ['structured'] ? { readonly responseMode?: Mode } : { readonly responseMode: Mode }
+	: never
 
 /** Closed authoring fields for a configurable standard-loop agent. */
 export type AgentOptions<
@@ -333,7 +371,7 @@ export type AgentOptions<
 	Workspace extends true | undefined = undefined,
 	Durable extends true | undefined = undefined,
 	Sandbox extends SandboxPolicy | undefined = undefined,
-> = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & {
+> = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & AgentResponseModeField<Output> & {
 	readonly description?: string
 	readonly model?: Model
 	readonly instructions: string
@@ -385,7 +423,6 @@ export type AgentDefinition<
 	inputCapabilities?: Capabilities
 	loop?: AgentLoopOptions
 	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, readonly ['tool-approval']>
-	readonly $infer: DefinitionInference<Input, Output>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
 	& PresentField<'memory', Memory>
 	& PresentField<'guardrails', Guardrails>
@@ -410,9 +447,9 @@ export type WorkflowModelMap = Readonly<Record<string, WorkflowModelRequirement>
 type WorkflowAgentInvokers<Agents extends WorkflowAgentMap | undefined> = Agents extends WorkflowAgentMap
 	? { readonly [K in keyof Agents]: {
 		readonly run: (
-			input: Agents[K]['$infer']['input'],
+			input: Agents[K]['contract']['$infer']['input'],
 			options: Readonly<{ callId: string; signal?: AbortSignal; idempotencyKey?: string }>,
-		) => Promise<Agents[K]['$infer']['output']>
+		) => Promise<Agents[K]['contract']['$infer']['output']>
 	} }
 	: Record<never, never>
 
@@ -488,14 +525,14 @@ export interface WorkflowAgentCallLimits {
 export interface WorkflowChildTasks<Agents extends WorkflowAgentMap | undefined, ChildTaskSandboxGroups extends readonly string[] = readonly []> {
 	start<K extends keyof NonNullable<Agents>>(
 		agent: K,
-		input: NonNullable<Agents>[K]['$infer']['input'],
+		input: NonNullable<Agents>[K]['contract']['$infer']['input'],
 		options: ContinuableChildTaskStartOptions<ChildTaskSandboxGroups>,
-	): Promise<ContinuableChildTaskHandle<NonNullable<Agents>[K]['$infer']['input'], NonNullable<Agents>[K]['$infer']['output']>>
+	): Promise<ContinuableChildTaskHandle<NonNullable<Agents>[K]['contract']['$infer']['input'], NonNullable<Agents>[K]['contract']['$infer']['output']>>
 	start<K extends keyof NonNullable<Agents>>(
 		agent: K,
-		input: NonNullable<Agents>[K]['$infer']['input'],
+		input: NonNullable<Agents>[K]['contract']['$infer']['input'],
 		options: ChildTaskStartOptions<ChildTaskSandboxGroups>,
-	): Promise<ChildTaskHandle<NonNullable<Agents>[K]['$infer']['output']>>
+	): Promise<ChildTaskHandle<NonNullable<Agents>[K]['contract']['$infer']['output']>>
 }
 
 type WorkflowExternalWait<Durable extends true | undefined> = Durable extends true
@@ -573,7 +610,6 @@ export type WorkflowDefinition<
 	maxDepth?: number
 	handler: WorkflowOptions<Input, Output, Agents, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>['handler']
 	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', readonly ['tool-approval', 'external-wait']>
-	readonly $infer: DefinitionInference<Input, Output>
 }> & PresentField<'agents', Agents> & PresentField<'models', Models>
 	& PresentField<'childTaskSandboxGroups', ChildTaskSandboxGroups extends readonly [] ? undefined : ChildTaskSandboxGroups>
 	& PresentField<'workspace', Workspace> & PresentField<'durable', Durable>
@@ -597,5 +633,4 @@ export type AnyWorkflowDefinition = Readonly<{
 	durable?: true | undefined
 	handler: (...args: any[]) => Promise<any>
 	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', readonly ['tool-approval', 'external-wait']>
-	readonly $infer: { readonly input: any; readonly validatedInput: any; readonly output: any }
 }> & DefinitionReference<'workflow', string>

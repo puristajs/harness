@@ -27,13 +27,10 @@ import {
 } from './catalog.js'
 import type {
 	AnyAgentDefinition,
-	AnyNonMcpToolDefinition,
 	AnyWorkflowDefinition,
 	HarnessInterruptKind,
 	HarnessOutputUpdateKind,
 	HarnessTargetKind,
-	McpServerDefinition,
-	SkillDefinition,
 } from './types.js'
 
 type MergeMaps<Left, Right> = Readonly<Omit<Left, keyof Right> & Right>
@@ -51,20 +48,11 @@ type MergeCatalogViews<Left extends HarnessCatalogView, Right extends HarnessCat
 	MergedAgents<Left, Right>,
 	MergedWorkflows<Left, Right>,
 	RuntimeRequirementsFor<
-		MergedTools<Left, Right>, MergedSkills<Left, Right>, MergedMcp<Left, Right>,
+		Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
 		MergedAgents<Left, Right>, MergedWorkflows<Left, Right>
 	>
 >
 
-type WithTool<Catalog extends HarnessCatalogView, Tool extends AnyNonMcpToolDefinition> = MergeCatalogViews<
-	Catalog, CatalogViewForRoots<readonly [Tool], undefined, undefined, undefined, undefined>
->
-type WithSkill<Catalog extends HarnessCatalogView, Skill extends SkillDefinition> = MergeCatalogViews<
-	Catalog, CatalogViewForRoots<undefined, readonly [Skill], undefined, undefined, undefined>
->
-type WithMcp<Catalog extends HarnessCatalogView, Server extends McpServerDefinition<any, any>> = MergeCatalogViews<
-	Catalog, CatalogViewForRoots<undefined, undefined, readonly [Server], undefined, undefined>
->
 type WithAgent<Catalog extends HarnessCatalogView, Agent extends AnyAgentDefinition> = MergeCatalogViews<
 	Catalog, CatalogViewForRoots<undefined, undefined, undefined, readonly [Agent], undefined>
 >
@@ -94,16 +82,16 @@ export interface HarnessTargetInspection {
 export interface HarnessInspection<Requirements extends RuntimeRequirements = RuntimeRequirements> {
 	readonly kind: 'harness'
 	readonly name: string
-	readonly definitions: Readonly<{
+	readonly roots: Readonly<{
+		agents: readonly HarnessTargetInspection[]
+		workflows: readonly HarnessTargetInspection[]
+	}>
+	readonly dependencies: Readonly<{
 		tools: readonly string[]
 		skills: readonly string[]
 		mcpServers: readonly string[]
 		agents: readonly string[]
 		workflows: readonly string[]
-	}>
-	readonly targets: Readonly<{
-		agents: readonly HarnessTargetInspection[]
-		workflows: readonly HarnessTargetInspection[]
 	}>
 	readonly requirements: Requirements
 }
@@ -114,7 +102,6 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 	readonly name: Name
 	readonly revision?: string
 	readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
-	readonly catalog: Catalog
 	readonly contracts: Catalog['contracts']
 	readonly requirements: Catalog['requirements']
 	readonly $infer: HarnessInfer<Catalog['contracts'], Catalog['requirements']>
@@ -123,9 +110,6 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 		config: HarnessInstanceConfig<Catalog['requirements'], AdditionalGroups>,
 	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
 	use<Other extends HarnessCatalogView>(catalog: HarnessCatalogDefinition<string, Other>): HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name>
-	addTool<Tool extends AnyNonMcpToolDefinition>(tool: Tool): HarnessDefinition<WithTool<Catalog, Tool>, Name>
-	addSkill<Skill extends SkillDefinition>(skill: Skill): HarnessDefinition<WithSkill<Catalog, Skill>, Name>
-	addMcpServer<Server extends McpServerDefinition<any, any>>(server: Server): HarnessDefinition<WithMcp<Catalog, Server>, Name>
 	addAgent<Agent extends AnyAgentDefinition>(agent: Agent): HarnessDefinition<WithAgent<Catalog, Agent>, Name>
 	addWorkflow<Workflow extends AnyWorkflowDefinition>(workflow: Workflow): HarnessDefinition<WithWorkflow<Catalog, Workflow>, Name>
 } & DefinitionReference<'harness', Name> & HarnessDefinitionBrand<Name>
@@ -181,7 +165,7 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 	defaults: Readonly<ResolvedHarnessExecutionDefaults> = resolveHarnessExecutionDefaults(),
 ): HarnessDefinition<Catalog, Name> {
 	const graph = compileDefinitionGraph(roots)
-	const catalog = createCatalogView(graph) as Catalog
+	const catalog = createCatalogView(graph, roots) as Catalog
 	if (catalog.requirements.storage.durable && revision === undefined) {
 		throw new HarnessConfigError('A deployment revision is required for a resumable Harness.', {
 			reason: 'missing_harness_revision', path: 'harness.revision', id: name,
@@ -195,11 +179,10 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		name,
 		...(revision === undefined ? {} : { revision }),
 		defaults,
-		catalog,
 		contracts: catalog.contracts,
 		requirements: catalog.requirements,
 		$infer: inferPhantom as HarnessInfer<Catalog['contracts'], Catalog['requirements']>,
-		inspect: () => inspectHarness(name, catalog),
+		inspect: () => inspectHarness(name, catalog, graph),
 		getInstance: (config: HarnessInstanceConfig<Catalog['requirements'], readonly string[]>) => instantiateStandaloneHarness({
 			name, ...(revision === undefined ? {} : { revision }), defaults, graph,
 			bindings: validateHarnessInstanceConfig(graph.requirements, config),
@@ -207,14 +190,15 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		use: (other: HarnessCatalogDefinition<string, HarnessCatalogView>) => {
 			const identity = getDefinitionIdentity(other)
 			if (identity?.kind !== 'catalog' || !Object.isFrozen(other)) throw foreignCatalog()
+			if (Object.keys(other.agents).length === 0 && Object.keys(other.workflows).length === 0) throw emptyCatalog()
 			return withRoots(catalogRoots(other), addCatalogProvenance(catalogProvenance, other)) as never
 		},
-		addTool: (tool: AnyNonMcpToolDefinition) => withRoots({ tools: [tool] }) as never,
-		addSkill: (skill: SkillDefinition) => withRoots({ skills: [skill] }) as never,
-		addMcpServer: (server: McpServerDefinition<any, any>) => withRoots({ mcpServers: [server] }) as never,
 		addAgent: (agent: AnyAgentDefinition) => withRoots({ agents: [agent] }) as never,
 		addWorkflow: (workflow: AnyWorkflowDefinition) => withRoots({ workflows: [workflow] }) as never,
 	}
+	Object.defineProperty(value, '$infer', {
+		value: inferPhantom, enumerable: false, configurable: false, writable: false,
+	})
 	Object.defineProperty(value, harnessRuntimeBlueprint, {
 		value: Object.freeze({ name, ...(revision === undefined ? {} : { revision }), defaults, graph }),
 		enumerable: false, configurable: false, writable: false,
@@ -239,8 +223,7 @@ function addCatalogProvenance(
 
 function catalogRoots(catalog: HarnessCatalogView): DefinitionGraphRoots {
 	return {
-		tools: Object.values(catalog.tools), skills: Object.values(catalog.skills),
-		mcpServers: Object.values(catalog.mcpServers), agents: Object.values(catalog.agents),
+		agents: Object.values(catalog.agents),
 		workflows: Object.values(catalog.workflows),
 	}
 }
@@ -248,9 +231,6 @@ function catalogRoots(catalog: HarnessCatalogView): DefinitionGraphRoots {
 function mergeRoots(catalog: HarnessCatalogView, addition: DefinitionGraphRoots): DefinitionGraphRoots {
 	const roots = catalogRoots(catalog)
 	return {
-		tools: [...(roots.tools ?? []), ...(addition.tools ?? [])],
-		skills: [...(roots.skills ?? []), ...(addition.skills ?? [])],
-		mcpServers: [...(roots.mcpServers ?? []), ...(addition.mcpServers ?? [])],
 		agents: [...(roots.agents ?? []), ...(addition.agents ?? [])],
 		workflows: [...(roots.workflows ?? []), ...(addition.workflows ?? [])],
 	}
@@ -259,6 +239,7 @@ function mergeRoots(catalog: HarnessCatalogView, addition: DefinitionGraphRoots)
 function inspectHarness<Requirements extends RuntimeRequirements>(
 	name: string,
 	catalog: HarnessCatalogView<any, any, any, any, any, Requirements>,
+	graph: ReturnType<typeof compileDefinitionGraph>,
 ): HarnessInspection<Requirements> {
 	const targetRows = (contracts: Readonly<Record<string, HarnessContracts['agents'][string]>>) => Object.freeze(
 		Object.values(contracts).map(contract => Object.freeze({
@@ -269,20 +250,16 @@ function inspectHarness<Requirements extends RuntimeRequirements>(
 			interrupts: Object.freeze([...contract.interrupts].sort()),
 		})),
 	)
-	const definitions = Object.freeze({
-		tools: frozenKeys(catalog.tools),
-		skills: frozenKeys(catalog.skills),
-		mcpServers: frozenKeys(catalog.mcpServers),
-		agents: frozenKeys(catalog.agents),
-		workflows: frozenKeys(catalog.workflows),
-	})
 	return Object.freeze({
 		kind: 'harness' as const,
 		name,
-		definitions,
-		targets: Object.freeze({
+		roots: Object.freeze({
 			agents: targetRows(catalog.contracts.agents),
 			workflows: targetRows(catalog.contracts.workflows),
+		}),
+		dependencies: Object.freeze({
+			tools: frozenKeys(graph.tools), skills: frozenKeys(graph.skills), mcpServers: frozenKeys(graph.mcpServers),
+			agents: frozenDifference(graph.agents, catalog.agents), workflows: frozenDifference(graph.workflows, catalog.workflows),
 		}),
 		requirements: catalog.requirements,
 	})
@@ -290,6 +267,10 @@ function inspectHarness<Requirements extends RuntimeRequirements>(
 
 function frozenKeys(value: Readonly<Record<string, unknown>>): readonly string[] {
 	return Object.freeze(Object.keys(value).sort())
+}
+
+function frozenDifference(value: Readonly<Record<string, unknown>>, roots: Readonly<Record<string, unknown>>): readonly string[] {
+	return Object.freeze(Object.keys(value).filter(key => !(key in roots)).sort())
 }
 
 function invalidHarnessOptions(): HarnessConfigError {
@@ -309,5 +290,11 @@ function assertRevision(value: unknown): asserts value is string {
 function foreignCatalog(): HarnessConfigError {
 	return new HarnessConfigError('Harness catalogs must be created by defineCatalog.', {
 		reason: 'foreign_definition', path: 'harness.catalog',
+	})
+}
+
+function emptyCatalog(): HarnessConfigError {
+	return new HarnessConfigError('A catalog used by Harness must expose an executable target.', {
+		reason: 'catalog_has_no_targets', path: 'harness.use',
 	})
 }

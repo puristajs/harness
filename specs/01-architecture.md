@@ -1,171 +1,166 @@
 # Architecture
 
-> **V4 composition precedence:** [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
-> replaces the public builder/module topology in this file. Dependency
-> direction and package-family isolation remain normative.
+**Status:** active v4 architecture.
 
-**Purpose.** Describes the layering, dependency direction, and package layout. Implementation agents must respect the dependency rules; violations are bugs.
+## Layers
 
-## Layering
-
-```
-   ┌────────────────────────────────────────────┐
-   │  User code (defineHarness().…build())      │
-   └────────────────────────────────────────────┘
-                       │
-   ┌────────────────────────────────────────────┐
-   │  Public API   (factories, types, errors)   │
-   └────────────────────────────────────────────┘
-                       │
-   ┌────────────────────────────────────────────┐
-   │  Orchestrators (Sessions, Runs, Loops)     │
-   └────────────────────────────────────────────┘
-        │           │            │           │
-   ┌────────┐  ┌─────────┐  ┌──────────┐  ┌──────┐
-   │ Agents │  │ Workflows│  │ Models   │  │ Tools│
-   └────────┘  └─────────┘  └──────────┘  └──────┘
-                       │
-   ┌────────────────────────────────────────────┐
-   │ Foundation ports (storage, sandbox, memory,│
-   │  model provider) + logger + telemetry      │
-   └────────────────────────────────────────────┘
-                       │
-   ┌────────────────────────────────────────────┐
-   │  In-memory implementations (in-package)    │
-   └────────────────────────────────────────────┘
+```text
+application definitions
+  defineTool / defineMcpServer / defineSkill
+  defineAgent / defineWorkflow / defineCatalog
+                    ↓
+immutable Harness definition and graph compiler
+                    ↓
+session, run, agent-loop, workflow, and tool orchestration
+                    ↓
+provider-neutral model, storage, memory, sandbox, workspace,
+admission, policy, artifact, logging, and telemetry ports
+                    ↓
+in-package defaults or separately published adapters
 ```
 
-Streaming is an internal concern of the harness; there is no separate `Stream` port and no separate stream package.
+The dependency direction is downward. Ports never import orchestrators.
+Provider and infrastructure adapters depend only on public Harness ports and
+shared helpers. Harness core never imports PURISTA. PURISTA consumes the public
+Harness contract and its narrow host-integrator SPI.
 
-## Dependency direction
+Streaming is part of execution and has no separate foundation port or stream
+registry.
 
-- Higher layers may import lower layers; the reverse is forbidden.
-- All layers may import error types and the logger interface.
-- Non-core packages follow the convention `@purista/harness-{addon}`. The harness is published independently from the wider PuristaJS framework so it can be consumed standalone or composed inside [PuristaJS](https://purista.dev).
-- Provider and adapter packages MUST NOT depend on harness internals; they use public `@purista/harness` ports and their official provider SDKs, except for the explicitly approved public contract-owner edges below.
-- Provider and adapter packages MUST NOT depend on each other (no provider-to-provider or adapter-to-adapter imports).
-- [Spec 31](./31-sensitive-data-guardrails.md) owns the provider-neutral detector
-  port in `@purista/harness-guardrails`. Exactly the `harness-guardrails-local-ner`,
-  `harness-guardrails-native-privacy`, and `harness-guardrails-presidio` packages
-  may depend on that public contract owner. This does not authorize reverse
-  edges, detector-to-detector imports, or other addon-to-addon dependencies.
-  Docker and other sandbox adapters continue to consume only public Harness
-  exports. Dependency checks cover runtime, peer, development, and optional
-  dependencies equally.
-- The harness package is the only package that may depend on `@modelcontextprotocol/client` v2 (optional peer, scoped to the MCP tool runners).
-- `@purista/harness-agent-plugins` is an opt-in first-party addon. It depends
-  only on public core APIs and local parsing/validation dependencies; it does
-  not import harness internals, providers, or another addon. Core does not
-  depend on it. Core's MCP SDK peer remains the single protocol dependency;
-  the addon projects portable entries onto that runtime.
-- Static harness modules are imported application/addon code that calls only the
-  public builder API. They neither load code dynamically nor add a runtime
-  container. Optional capability families follow the port → provider adapter →
-  consumer module → conformance-fixture rule in
-  [25-static-harness-modules](./25-static-harness-modules.md).
+## Definition graph
+
+Definitions are frozen, identity-bearing values. Agents reference their tools,
+Skills, Guardrails, and subagents directly. Workflows reference the agents,
+tools, and model requirements they may use. Catalogs package explicit exports
+for reuse. A Harness exposes only explicitly selected agent and workflow roots.
+
+Graph compilation:
+
+1. starts from explicit roots;
+2. recursively collects their direct-reference dependency closure;
+3. validates authentic identities, duplicate ids, model-facing names, schema
+   boundaries, requirements, and agent delegation cycles;
+4. derives one immutable `RuntimeRequirements` value;
+5. creates private per-kind execution indexes.
+
+Those indexes are local implementation details. They are never mutable,
+process-global, public string service locators, or capability-granting
+registries.
+
+## Definition and runtime separation
+
+Authoring definitions contain schemas, instructions, handlers where the concept
+owns a handler, and direct definition references. They contain no live model
+provider, credential, queue, storage, memory, sandbox, workspace, MCP
+connection, logger, or telemetry instance.
+
+`getInstance` accepts an exact runtime configuration derived from the compiled
+requirements. It validates the complete configuration before opening a
+resource, then initializes owned resources transactionally. Initialization
+failure rolls back in reverse order. `close` is idempotent and closes only
+resources owned by the instance.
+
+Definitions can therefore be imported by standalone applications, host
+frameworks, tests, catalogs, and contract exporters without initializing
+infrastructure.
+
+## Core and addon boundaries
+
+The core package owns:
+
+- immutable definitions, graph compilation, exact inference, and invocation;
+- the agent loop, workflow runtime, sessions, streaming, interruption, and
+  replay semantics;
+- provider-neutral ports and common execution pipelines;
+- built-in tools and process-local safe defaults;
+- errors, logging, telemetry helpers, contract suites, and testing fakes;
+- the narrow host-integrator and adapter-author surfaces.
+
+Focused packages own:
+
+- model-provider SDK adapters;
+- production storage, memory, sandbox, and workspace adapters;
+- Guardrails and sensitive-data adapters;
+- external governance adapters such as OPA;
+- Agent Plugin inspection and projection;
+- AI SDK UI Message Stream v1 projection.
+
+An addon may import public Harness entry points only. Core has no dependency on
+an addon. Optional packages must not register themselves globally or mutate a
+Harness definition.
 
 ## Package layout
 
-```
+```text
 packages/
-  harness/                 # @purista/harness
+  harness/
     src/
-      index.ts             # public surface (see 13-public-api.md)
-      testing/index.ts     # exposed as @purista/harness/testing subpath export
-    package.json           # exports map: "." and "./testing"
-  harness-openai/          # @purista/harness-openai
-  harness-google/          # @purista/harness-google (Gemini API)
-  harness-anthropic/       # @purista/harness-anthropic
-  harness-bedrock/         # @purista/harness-bedrock
-  harness-azure-foundry/   # @purista/harness-azure-foundry
-  harness-agent-plugins/   # @purista/harness-agent-plugins; local Agent Plugins client
-  harness-policy-opa/      # @purista/harness-policy-opa; typed OPA Data API governance adapter
-  harness-storage-postgres/ # @purista/harness-storage-postgres; distributed HarnessStorage
-  harness-sandbox-kubernetes/ # @purista/harness-sandbox-kubernetes; self-hosted execution/workspace runtime
-  harness-memory-*/        # future external memory adapters; not part of core
-    src/
-      index.ts
-    package.json
+      definitions/       # identity-bearing factories and contracts
+      graph/             # closure compiler and requirement derivation
+      runtime/           # instances, sessions, dispatch, replay
+      agents/            # standard model loop
+      workflows/         # orchestration runtime
+      tools/             # built-ins, portable tools, MCP execution
+      skills/            # immutable loader and scoped reader
+      models/            # provider-neutral invocation and admission
+      storage/           # HarnessStorage port and local implementation
+      memory/            # MemoryEngine orchestration and local default
+      sandbox/           # Sandbox port and local defaults
+      governance/        # provider-neutral decisions
+      telemetry/
+      errors/
+      integration/       # narrow host SPI
+      adapter/           # narrow adapter-author helpers
+      testing/
+  harness-<addon>/
 examples/
-  quickstart/              # private, not published; minimal entry point
-  ...                      # other spec-approved private examples
+specs/
 ```
 
-Published packages are the core `@purista/harness` package plus independent
-provider and capability addons under the `@purista/harness-*` convention. Private example
-workspaces are allowed under `examples/` when backed by specs. No `services/`
-or `apps/` package is part of v3. Workspace tool is locked to npm workspaces.
+Folders describe ownership, not mandatory filenames. The implementation plan
+may refine placement without creating duplicate public concepts or reverse
+dependencies.
 
-The `harness` package contains:
-- core harness (`defineHarness` chainable builder, `Harness`, `Session`)
-- types and errors
-- structured JSON logger (built-in, no external deps)
-- OpenTelemetry deep integration (peer dep `@opentelemetry/api`)
-- in-memory `HarnessStorage` default plus native SQLite local storage
-- two default `Sandbox` factories: `inMemorySandbox()` (files plus bounded text search) and `bashSandbox()` (the same filesystem/search contract plus `just-bash` execution)
-- memory adapter port plus `sandboxMemory()` reference adapter
-- built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox
-- custom TS tools
-- MCP stdio + MCP http tools (optional peer dep `@modelcontextprotocol/client` v2)
-- generic prepared MCP stdio launch bridge used by capability addons; it does
-  not know the Agent Plugins format
-- testing utilities (port contract test factories, fake provider, fake sandbox), exposed via the `./testing` subpath, never via the main entry
+## Execution boundaries
 
-## Dependency table
+- A native tool, built-in tool, MCP tool, subagent, and host-aware tool all
+  pass through the same validation, decision, approval, timeout,
+  cancellation, event, telemetry, and output pipeline.
+- Workflow calls to agents always use the target dispatcher. A host integrator
+  may route that dispatcher through a distributed transport.
+- Direct workflow tool calls use the same tool pipeline and carry workflow
+  caller correlation rather than pretending to be agent calls.
+- Model access is through capability-scoped invokers, never a raw provider
+  registry.
+- Durable queue delivery is host-owned and explicit. Admission controls
+  concurrency but does not provide delivery, retry, or dead-letter semantics.
+- Approval is a typed interrupted result. It is never translated into a
+  generic runtime error.
 
-| Package             | Harness deps             | Peer deps                                                                  |
-|---------------------|--------------------------|----------------------------------------------------------------------------|
-| `@purista/harness`        | `re2js@^1`, `@standard-schema/spec@^1.1`, `zod@^4`, `yaml@^2`, `@opentelemetry/semantic-conventions@^1` | `typescript@>=5.4`, `@opentelemetry/api@^1`, `@modelcontextprotocol/client@^2` (optional, only required when MCP tools are used), `just-bash@^3` (optional, only required when `bashSandbox()` is used), `vitest@^4` (peer of `@purista/harness/testing`) |
-| `@purista/harness-openai` | `@purista/harness`       | `typescript@>=5.4`, `openai@^4`                                            |
-| `@purista/harness-google` | `@purista/harness`       | `typescript@>=5.4`, `@google/genai`                                       |
-| `@purista/harness-anthropic` | `@purista/harness`    | `typescript@>=5.4`, `@anthropic-ai/sdk`                                    |
-| `@purista/harness-bedrock` | `@purista/harness`      | `typescript@>=5.4`, `@aws-sdk/client-bedrock-runtime`                      |
-| `@purista/harness-azure-foundry` | `@purista/harness` | `typescript@>=5.4`, `@azure-rest/ai-inference`, `@azure/core-auth`, `@azure/core-sse` |
-| `@purista/harness-agent-plugins` | `@purista/harness` | `typescript@>=5.4` plus local parsing/schema-validation dependencies only; no provider SDK or MCP SDK dependency |
-| `@purista/harness-policy-opa` | `@purista/harness` | `typescript@>=5.4`; platform `fetch`, no OPA SDK or addon dependency |
-| `@purista/harness-storage-postgres` | `@purista/harness`, `pg` | `typescript@>=5.4`; PostgreSQL 16+ at runtime |
-| `@purista/harness-sandbox-kubernetes` | `@purista/harness`, `@kubernetes/client-node` | `typescript@>=5.4`; Kubernetes API, PVC CSI, and optional VolumeSnapshot API at runtime |
-| `@purista/harness-memory-*` | `@purista/harness` | `typescript@>=5.4` plus the adapter's official backend SDK only |
+## Security and privacy
 
-Dev deps for every package: `typescript@>=5.4`, `vitest@^2`, `@types/node`. Provider packages may add only their official provider SDK dependencies.
+Definitions grant no authority merely by existing in a graph or catalog.
+Agent/workflow allowlists, sandbox ownership, permissions, governance, and
+Guardrails are enforced independently.
 
-## Module shape inside the harness package
+Prompts, model output, tool input/output, Skill bodies, credentials, headers,
+provider continuation, and host invocation context are excluded from
+content-free inspection, logs, metrics, and persisted events unless a
+deliberate documented content-capture mode permits the specific field.
 
-```
-src/
-  index.ts              # public API barrel (see 13-public-api.md)
-  testing/
-    index.ts            # subpath @purista/harness/testing
-  errors/               # error catalog (see 15-error-catalog.md)
-  logger/               # Logger interface + default JSON logger
-  telemetry/            # OTel shims, attribute keys, span/metric helpers
-  ulid/                 # internal ULID utility
-  ports/                # state, sandbox, memory, model-provider
-  state/in-memory/      # default HarnessStorage impl
-  memory/sandbox/       # sandboxMemory() reference MemoryAdapter
-  sandbox/              # port, bounded text-search contract, and built-in adapters
-  sandbox/in-memory/    # inMemorySandbox() — files plus bounded text search
-  sandbox/bash/         # bashSandbox() — files/search plus just-bash execution
-  models/               # alias registry, capability gate
-  tools/builtin/        # bash, read, write, edit, glob, grep, list + alias dispatch
-  tools/                # ts tool runner, tool registry, MCP stdio + http runners
-  skills/               # SKILL.md frontmatter loader, mount-at-/skills/<name>
-  sessions/             # session impl, run lifecycle, internal streaming generator
-  agents/               # default loop, agent registry
-  workflows/            # workflow registry
-  harness/              # defineHarness, config schema, wiring
-```
+Host-aware tool context is created per invocation, is not retained in an
+instance index or checkpoint, and is never exposed to portable definitions.
 
-## Build & module format
+## Runtime portability
 
-- ESM only. `"type": "module"` in every package.
-- Output: `dist/index.js` + `dist/index.d.ts`. `dist/testing/index.js` + `dist/testing/index.d.ts` for the testing subpath. No CJS dual build.
-- Target: `ES2022`. `module: NodeNext`.
-- No bundling; ship raw `.js` + `.d.ts` files.
+The package supports modern Node.js and Bun according to package manifests and
+CI. Core uses Web-standard APIs where practical. Runtime-specific imports stay
+behind adapters. Package entry points are ESM and declaration output must
+compile in supported consumer projects without deep imports.
 
-## Cross-references
+## References
 
-- [00-overview](./00-overview.md)
-- [02-harness-config](./02-harness-config.md)
-- [13-public-api](./13-public-api.md)
-- [17-implementation-plan](./17-implementation-plan.md)
+- [42 — complete v4 composition and runtime contract](./42-composable-definitions-and-catalogs.md)
+- [13 — public API index](./13-public-api.md)
+- [16 — verification contract](./16-testing.md)
+- [43 — distributed production reference stack](./43-distributed-production-reference-stack.md)

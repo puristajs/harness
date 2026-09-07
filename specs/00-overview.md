@@ -1,202 +1,166 @@
-# Overview (v4 reading guide)
+# Overview
 
-> **V4 authoring precedence:** [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
-> replaces builder, module, registration, and runtime-instantiation examples in
-> this file. This file remains normative only for scope and runtime behavior not
-> changed by spec 42.
->
-> All builder, inline registration, `.build()`, mutable registry, and string
-> reference examples below are obsolete historical material and must not be
-> implemented, documented, generated, or used as a fallback contract.
+**Status:** active v4 overview.
 
-**Purpose.** `@purista/harness` is a TypeScript-only library for defining and running AI agents and multi-agent workflows in-process. It provides enterprise-grade observability (OpenTelemetry, structured logs, typed errors) with a minimum surface: no HTTP server, no worker daemon, no deployment story. The core package is `@purista/harness` (harness core, in-memory adapters, TS+MCP tools, telemetry, testing helpers). Provider addons are independent packages such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, and `@purista/harness-azure-foundry`.
+`@purista/harness` is a provider-neutral TypeScript library for defining and
+running AI agents and workflows either as a standalone library or through a
+host framework such as PURISTA. It owns the agent loop, model and tool
+boundaries, streaming events, approval interruption, persistence, sandboxing,
+memory, telemetry, and typed orchestration contracts. It does not own an HTTP
+server, a deployment control plane, authentication, business authorization, or
+a client component library.
+
+[Spec 42](./42-composable-definitions-and-catalogs.md) is the detailed owner of
+the v4 authoring, composition, inference, runtime, streaming, and host
+integration contract. Topic specifications own the runtime behavior linked
+from that contract.
 
 ## Mental model
 
+Applications define immutable values and connect them with direct references:
+
+```text
+tools, MCP servers, and Skills
+              ↓
+        agents and workflows
+              ↓
+       optional typed catalogs
+              ↓
+            Harness
+              ↓
+       configured runtime instance
 ```
-Harness
-  ├─ Foundation: telemetry, logging, state, sandbox (FS + exec), memory, durable storage, durable workspace, context checkpoints
-  ├─ Models       (alias → provider + capabilities + default settings)
-  ├─ Built-in tools (bash, read, write, edit, glob, grep, list — operate on the sandbox)
-  ├─ Custom tools (TS+Standard Schema; Zod default, MCP stdio, MCP http)
-  ├─ Skills       (directory + SKILL.md frontmatter; mounted at /skills/<name>/ in sandbox)
-  ├─ Agents       (input/output schema, allowed tools+skills, permissions, default loop)
-  └─ Workflows    (handler with agents context)
-```
 
-Reusable local TypeScript modules may contribute to this one builder graph;
-they are static composition helpers, not a plugin runtime. See
-[25-static-harness-modules](./25-static-harness-modules.md).
+Definitions contain schemas and behavior. Runtime configuration contains live
+providers, credentials, storage, memory, sandbox, workspace, admission, MCP
+transport bindings, logging, and telemetry. A capability is available to an
+agent or workflow only when its definition references that capability.
 
-Approved, local Agent Plugins are a separate opt-in first-party addon. They
-project portable Agent Skills and explicitly selected MCP tools into the same
-normal builder registries, without executing plugin code or weakening typed
-agent allowlists. See [29-agent-plugins](./29-agent-plugins.md).
+The Harness compiler keeps two views:
 
-**Progressive disclosure.** Skills follow the Agent Skills client model: Level 1 — the harness injects only compact metadata (`name`, `description`, location, and optional compatibility) into the system prompt. Level 2 — when the model decides a skill is relevant, it reads `/skills/<name>/SKILL.md` via the built-in `read` tool. Level 3 — supporting files (`scripts/`, `references/`, `assets/`, or any other bundled files) are accessed on demand. The harness never auto-injects skill bodies.
+- executable roots are the agents and workflows explicitly added to a Harness
+  or exported by a used catalog;
+- the private dependency closure contains everything those roots reference.
 
-Streaming is an internal concern of the harness (no `stream` foundation port); per-run events flow through an in-process buffered queue.
+Only roots appear in public session invokers and host contracts. Dependency
+collection never creates a public service locator.
 
-## Usage shape
-
-The harness is constructed via a chainable `HarnessBuilder`. Each builder method narrows the type of the next, so cross-key references (e.g. `agent.model`, `agent.tools`) are checked at compile time.
+## Minimal use
 
 ```ts
-import { z } from 'zod'
-import { defineHarness } from '@purista/harness'
+import { defineAgent, defineHarness } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 
-export const harness = defineHarness()
-  .model('fast', {
-    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-    model: 'gpt-4o-mini',
-    capabilities: ['text', 'object', 'tool_use'],
-  })
-  .tool('lookup_user', {
-    description: 'Look up a user by id',
-    input: z.object({ id: z.string() }),
-    output: z.object({ name: z.string() }),
-    handler: async (_ctx, input) => ({ name: 'Alice' }),
-  })
-  .agent('triage', {
-    input: z.object({ message: z.string() }),
-    output: z.object({ label: z.enum(['bug', 'feature', 'question']) }),
-    model: 'fast',
-    tools: ['lookup_user'],
-    instructions: 'Classify the request.',
-  })
-  .workflow('handle_ticket', {
-    input: z.object({ ticket: z.string() }),
-    output: z.object({ resolution: z.string() }),
-    delegation: { agents: ['triage'] },
-    handler: async ctx => {
-      const result = await ctx.agents.triage({ message: ctx.input.ticket })
-      return { resolution: result.label }
-    },
-  })
-  .build()
+const assistant = defineAgent('assistant', {
+  instructions: 'Answer clearly and concisely.',
+})
 
-const session = await harness.getSession('user:42')
-const out = await session.workflows.handle_ticket.run({ ticket: 'cannot login' })
+const assistantHarness = defineHarness({ name: 'assistant' })
+  .addAgent(assistant)
+
+const runtime = await assistantHarness.getInstance({
+  model: {
+    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
+    model: 'gpt-5-mini',
+  },
+})
+
+const session = await runtime.getSession('conversation-1')
+const outcome = await session.agents.assistant.run('How can I reset my PIN?')
+await session.release()
+await runtime.close()
 ```
 
-The `HarnessBuilder` is the SOLE supported construction path. Standalone `defineAgent`/`defineWorkflow`/`defineTool`/`defineSkill`/`defineModel` definers are NOT exported; only inline-in-builder definitions achieve the cross-key type constraints.
+This form defaults to model alias `primary`, string input and output, streaming
+text updates, a bounded model loop, process-local storage and memory, and
+content-free production telemetry. Adding schemas, tools, Skills, subagents,
+Guardrails, workflows, persistence, admission, or custom adapters extends the
+same pattern.
 
-Public agent, TypeScript-tool, workflow, and guardrail value schemas follow [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md). Zod remains the standard documentation choice, but any Standard Schema V1 validator is accepted. Tool input and default-loop agent output additionally implement Standard JSON Schema V1 because providers consume JSON Schema rather than validator objects.
+One session represents one conversation thread. Applications that offer
+several threads create a stable session id for each thread. See
+[sessions](./11-sessions.md).
 
-**One session equals one conversation thread.** Apps that need multiple chat threads per user create multiple sessions, e.g. `session_id = \`${userId}:${threadId}\``. Conversation history is stored on the session; the harness does not model thread/conversation as a separate entity in v3. See [11-sessions](./11-sessions.md) §"Conversation history and threads".
+## Capability map
 
-## In scope
+- Immutable factories: `defineTool`, `defineMcpServer`, `defineSkill`,
+  `defineAgent`, `defineWorkflow`, `defineCatalog`, and `defineHarness`.
+- Composition: `addAgent`, `addWorkflow`, and `use` for catalogs with
+  explicit roots.
+- Models: text, structured output, embeddings, reranking, image generation,
+  speech generation, video generation, and multimodal input through the
+  provider-neutral port in [spec 06](./06-models.md).
+- Tools: built-in sandbox tools, portable native tools, host-aware tools, and
+  explicitly selected MCP tools in [spec 07](./07-tools.md).
+- Skills: progressively disclosed Agent Skill directories with explicit runtime
+  requirements and read-only mounting in [spec 08](./08-skills.md).
+- Agents: configurable model loops with direct tool, Skill, Guardrail, and
+  subagent references in [spec 09](./09-agents.md).
+- Workflows: typed application orchestration over explicitly declared agents,
+  tools, and model capabilities in [spec 10](./10-workflows.md).
+- Aggregate and progressive invocation: exact `RunOutcome` and
+  `HarnessTargetExecutionEvent` contracts, including typed approval
+  interruption and resume, in [spec 42](./42-composable-definitions-and-catalogs.md).
+- Storage, durability, sandbox, memory, governance, evaluation, and telemetry:
+  the linked topic specifications in [the specification index](./README.md).
 
-- Harness configuration via the chainable `HarnessBuilder` (synchronous `defineHarness().…build()`).
-- Foundation: telemetry, logging, Harness storage, sandbox (in-memory files/bounded-search adapter or `just-bash`-backed bash emulator in v3), and memory adapter.
-- Model registry (aliases to providers, capability-gated).
-- Provider-neutral model outcomes and bounded active retry for transient model
-  failures/rate limits, with long provider retry instructions surfaced as
-  typed deferred retry errors instead of hidden sleeps. See
-  [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md).
-- Built-in tools (bash, read, write, edit, glob, grep, list) operating on the sandbox.
-- Custom tools: inline TypeScript, MCP stdio, and MCP HTTP.
-- Skills: directory + `SKILL.md` frontmatter, mounted at `/skills/<name>/` in the sandbox; progressive disclosure to the model.
-- Agents and multi-agent workflows; per-agent permission policy for `bash`/`write`/`edit`.
-- Optional policy-driven governance for tool exposure and tool calls, including typed native rules, external policy adapters, shadow rollout, audit events, and approval gates. See [24-governance-policy](./24-governance-policy.md).
-- Sessions with persisted conversation history (one session = one thread) and pluggable memory via `SessionMemory`; the default `sandboxMemory()` adapter stores session memory in the sandbox.
-- Durable storage checkpoints and durable workspace replay through explicit opt-in adapters. Durable workspace support covers production workspace lifecycle, checkpoint references, retention, encryption, cleanup, quota, and fallback policy surfaces. See [21-durable-workspaces](./21-durable-workspaces.md).
-- One topology-transparent, lifecycle-aware Sandbox port with adapter-private
-  generations, leases, fencing, provider references, retention, and cleanup.
-  Harness and PURISTA business logic do not branch on local versus distributed
-  operation. Process-local adapters implement the same contract as a
-  development/test edge case; production adapters prove multi-client behavior
-  in their conformance tests. Durable workspace files are the recovery
-  guarantee; HarnessStorage adds session-incarnation and conditional-write
-  integrity, not sandbox lifecycle storage. See
-  [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md).
-- Local durable execution through `localDurableExecution({ root })`, which composes SQLite-backed runtime persistence, a host-directory durable workspace, a workspace-bound sandbox, and optional context checkpoints without external infrastructure. See [22-local-durable-execution](./22-local-durable-execution.md).
-- OpenTelemetry spans, metrics, logs (full enumeration in [14-otel-conventions](./14-otel-conventions.md)).
-- Typed error taxonomy (full enumeration in [15-error-catalog](./15-error-catalog.md)).
-- Harness-owned runtime telemetry foundations plus the approved generic
-  evaluation run/result substrate: versioned identities, multiple scorers,
-  per-case evidence, deterministic aggregation, bounded execution, safe
-  telemetry, and feedback projection. See
-  [19-ai-eval-core](./19-ai-eval-core.md) and
-  [35-generic-evaluation-runs](./35-generic-evaluation-runs.md). The obsolete
-  aggregate evaluator and standalone scorer API are removed as a clean break.
-- Opt-in transient context projection and one bounded context-length recovery;
-  durable history remains unchanged. See
-  [26-context-projection-and-compaction](./26-context-projection-and-compaction.md).
-- Sanitized, offline-only provider replay and explicit development diagnostic
-  invariants under `@purista/harness/testing`. See
-  [27-test-replay-and-diagnostic-invariants](./27-test-replay-and-diagnostic-invariants.md).
-- First-party, opt-in Agent Plugins 1.0.0 support through
-  `@purista/harness-agent-plugins`: local inspection, explicit trust/digest
-  review, portable skills, and selected MCP bindings. See
-  [29-agent-plugins](./29-agent-plugins.md).
-- Optional typed guardrails through `@purista/harness-guardrails`: a strict
-  NeMo-shaped YAML subset, application-owned actions, generic default-loop
-  interception, explicit retrieval filtering, and a provider-neutral
-  sensitive-data detector port. Optional Presidio sidecar and native privacy
-  packages remain composition-root-selected addons. See
-  [30-guardrails](./30-guardrails.md) and
-  [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
+## Scope boundaries
+
+Harness core stays independent of PURISTA and provider SDKs. Provider,
+storage, memory, sandbox, policy, UI-protocol, and framework integrations live
+in focused packages. Core exposes the ports and narrow integrator SPI required
+for those packages.
+
+Portable Harness definitions run standalone and in a host. Host-aware tools are
+an explicit exception: their definition graph requires the matching host
+integrator and cannot be instantiated by the ordinary standalone entry point.
+
+Agent Skills are instruction and resource packages. They do not execute by
+being declared. Scripts become executable only through an independently
+authorized sandbox operation or a typed tool. The Skill's `allowed-tools`
+frontmatter is descriptive and never grants a Harness capability.
+
+Streaming uses Harness events internally. The optional AI SDK UI adapter
+projects root events to AI SDK UI Message Stream v1 so existing client
+libraries can render text, status, tools, artifacts, and approval flows without
+a Harness-specific client library.
 
 ## Non-goals
 
-- No HTTP server, RPC layer, gateway, or deployable service.
-- No worker process; no daemon; no scheduler.
-- No definition bundle format, signed catalog, marketplace, or remote loading.
-  `@purista/harness-agent-plugins` loads only application-approved local Agent
-  Plugins and is not a general code/plugin loader.
-- No hosted approval lifecycle, policy-language runtime, policy bundle store, or governance UI. Core owns only optional tool-exposure filtering, the tool-call governance hook, and the adapter contract in [24-governance-policy](./24-governance-policy.md).
-- No multi-tenant authentication, billing, or quota engine.
-- No time-travel debugger or visual replay UI. Durable workspace replay is an adapter contract for resumable execution state, not a debugger product.
-- No production/SaaS example apps. Spec-approved private examples may exist
-  under `examples/`, with quickstart remaining the minimal entry point.
-- No pluggable stream adapter — the streaming generator is internal.
-- No Cloudgrid adapter package, Cloudgrid HTTP API, dataset store,
-  prompt-version store, or experiment database in this repository.
-- No evaluation dataset UI, annotation queue, experiment dashboard, hosted
-  judge, or vendor evaluation SDK in Harness core.
-- No Python/Colang runtime, implicit safety provider, vector store, or guardrail
-  server. The optional guardrails addon is in-process only; its separately
-  configured Presidio adapter may call an application-owned internal sidecar as
-  specified in [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md).
+- a global or mutable definition registry;
+- public string lookup of tools, agents, workflows, or Skills;
+- implicit remote loading, plugin execution, capability discovery, or
+  permission grants;
+- hidden durable queueing inside `run` or `stream`;
+- arbitrary agent handlers or custom agent-loop callbacks;
+- an HTTP server, RPC gateway, scheduler, worker daemon, authentication system,
+  governance UI, or hosted approval service;
+- a vendor-specific model contract or provider-native portable stream format;
+- a vector database, business database, or application-domain state model.
 
-## Glossary
+## Terms
 
-| Term            | Meaning |
-|-----------------|---------|
-| Harness         | Result of `defineHarness()...build()`. Owns adapters, registries, factories. |
-| HarnessBuilder  | The chainable builder returned by `defineHarness()`. See [13-public-api](./13-public-api.md). |
-| Session         | A conversation thread with persisted history and a `SessionMemory` facade. Indexed by user-supplied id. One session = one thread. |
-| Run             | A single `prompt`/`stream` invocation. Has its own id, span, lifecycle. |
-| Agent           | A unit with typed input/output, an instructions string, and (optionally) a handler. |
-| Workflow        | A user-authored handler that orchestrates agents. |
-| Tool            | A callable function exposed to a model: built-in (`bash`, `read`, `write`, `edit`, `glob`, `grep`, `list`), TS, MCP stdio, or MCP http. |
-| Skill           | A directory containing `SKILL.md` (YAML frontmatter + markdown) plus arbitrary supporting files; mounted at `/skills/<name>/` in the sandbox. |
-| Sandbox         | An isolated FS + bounded text search + optional shell-exec environment. v3 ships a non-executable in-memory adapter and a `just-bash`-backed bash emulator. |
-| Model alias     | A user-defined string id resolving to `(provider, model name, capabilities, defaults)`. |
-| Model outcome   | Provider-neutral finish metadata that preserves the normalized finish reason plus provider-specific finish/status details. |
-| Active retry    | A short, bounded retry performed inside the current model invocation. |
-| Deferred retry  | A long retry instruction surfaced as typed metadata for a durable storage, queue, or application scheduler to handle later. |
-| Durable workspace | Production replay workspace state that links storage checkpoints to persisted sandbox/workspace state through opaque references. |
-| Local durable execution | First-party adapter bundle that persists durable storage state in SQLite and maps a sandbox `/workspace` to a durable host-directory workspace. |
-| Context checkpoint | A typed, payload-bearing handoff or summary record written explicitly by application/agent code to support long-horizon work without hidden prompt rewriting. |
-| Port            | An interface a harness depends on (state, sandbox, memory, durable storage, durable workspace, model provider). |
-| Adapter         | A concrete implementation of a port. Core ships in-memory/default implementations plus the sandbox-backed memory reference adapter; non-core adapters live in independent packages. |
-| ULID            | Lexicographically sortable id format. Harness mints `${kind}_${ulid}`. |
-| `$infer`        | Phantom value on `Harness` exposing compile-time keys/types of registered models, tools, skills, agents, workflows. |
+| Term | Meaning |
+| --- | --- |
+| Definition | Frozen, branded authoring value with stable identity and schemas. |
+| Catalog | Optional immutable package of explicitly exported definitions; it grants no capability by itself. |
+| Root | Agent or workflow explicitly exposed by a Harness. |
+| Dependency closure | Private recursively collected definitions needed by roots. |
+| Harness definition | Immutable compiled definition returned directly by `defineHarness`. |
+| Runtime instance | Live providers and adapters bound through `getInstance`. |
+| Session | One conversation thread and its scoped runtime invokers. |
+| Agent | Configurable provider-neutral model loop. |
+| Workflow | Typed application-owned orchestration handler. |
+| Tool | Model-callable operation with a validated input/output contract. |
+| Skill | Agent Skill directory disclosed progressively to selected agents. |
+| Interruption | Typed non-error terminal outcome that requires caller action before resume. |
+| Admission | Optional bounded concurrency/rate control, separate from durable queue delivery. |
 
-## Cross-references
+## Authoritative references
 
-- [01-architecture](./01-architecture.md) — package layout and dependency direction.
-- [02-harness-config](./02-harness-config.md) — full builder configuration.
-- [11-sessions](./11-sessions.md) — conversation history and threads.
-- [13-public-api](./13-public-api.md) — authoritative export list and `$infer` namespace.
-- [17-implementation-plan](./17-implementation-plan.md) — build order.
-- [19-ai-eval-core](./19-ai-eval-core.md) — runtime telemetry and evaluation foundation boundary.
-- [20-memory-adapters](./20-memory-adapters.md) — pluggable memory adapter contract.
-- [21-durable-workspaces](./21-durable-workspaces.md) — durable workspace replay contract.
-- [22-local-durable-execution](./22-local-durable-execution.md) — local SQLite/host-directory durable execution bundle.
-- [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) — provider finish outcomes, active/deferred retry, and rate-limit metadata.
-- [24-governance-policy](./24-governance-policy.md) — optional tool-exposure and tool-call governance, approvals, and external policy adapters.
-- [30-guardrails](./30-guardrails.md) — optional typed NeMo-shaped guardrails addon.
+- [42 — composable definitions and catalogs](./42-composable-definitions-and-catalogs.md)
+- [01 — architecture](./01-architecture.md)
+- [02 — Harness runtime configuration](./02-harness-config.md)
+- [13 — public API index](./13-public-api.md)
+- [15 — error catalog](./15-error-catalog.md)
+- [16 — testing](./16-testing.md)

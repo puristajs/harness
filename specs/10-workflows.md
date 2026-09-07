@@ -1,242 +1,202 @@
-# Workflows (historical detail)
+# Workflows
 
-> **V4 authoring precedence:** workflow factories, declared agent/model
-> allowlists, and dispatcher-backed child calls are defined by
-> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
-> Old builder registration examples below are not an implementation contract.
->
-> Do not use inline builder definitions, `delegation`, string ids, all-agent
-> contexts, raw model handles, or undeclared memory examples below. The coherent
-> v4 workflow contract is spec 42 §7: `defineWorkflow` declares exact agent,
-> tool, and model references; every managed call uses a stable `callId`; model
-> invokers propagate cancellation and checkpointing; and memory is accessed only
-> through an explicitly declared tool.
+**Status:** active v4 topic contract.
 
-> **Approved schema update (2026-08-28):** [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) supersedes schema typing, validation, error, and cleanup rules in this document. [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) remains authoritative for other callback rules.
->
-> **Approved registration update (2026-08-30):** [40-declarative-registration-and-guardrails-binding](./40-declarative-registration-and-guardrails-binding.md) supersedes workflow callback-helper registration in this document and spec 38.
+A workflow is the Harness application-orchestration primitive. It owns a
+custom typed handler and can coordinate explicitly declared agents, native or
+host-aware tools, and model capabilities. An agent owns a standard model loop;
+a workflow owns branching, iteration, fan-out, deterministic data processing,
+ingestion, and long-running application flow.
 
-**Purpose.** Defines the inline `WorkflowDefinition` shape used in
-`defineHarness().workflow(id, definition)` and `.workflows({...})`, the
-`WorkflowContext`, parallel agent invocation rules, and cancellation semantics.
-Both registration methods are repeatable and share one accumulated registry.
-There is no standalone `defineWorkflow` factory; builder-owned registration
-preserves the workflow handler's exact `ctx.agents` keys.
+[Spec 42 §7](./42-composable-definitions-and-catalogs.md) owns the exact types,
+managed-call protocol, replay behavior, and execution context.
 
-## `WorkflowDefinition` (inline in builder)
+## Minimal definition
 
 ```ts
-interface WorkflowDefinition<
-  S,
-  I extends Schema = Schema,
-  O extends Schema = Schema,
-> {
-  input?: I                              // default: z.string()
-  output?: O                             // default: z.string()
-  delegation?: WorkflowDelegationPolicy<S>
-  handler: (ctx: WorkflowContext<S, Infer<I>, InferIn<O>>) => Promise<InferIn<O>>   // REQUIRED
-}
-
-interface WorkflowDelegationPolicy<S> {
-  enabled?: boolean
-  agents?: readonly (keyof S['agents'] & string)[]
-  maxChildAgentCalls?: number
-  maxParallelChildAgentCalls?: number
-  maxDepth?: number
-  modelAliases?: readonly (keyof S['models'] & string)[]
-  agentModelAliases?: Partial<Record<keyof S['agents'] & string, readonly (keyof S['models'] & string)[]>>
-}
+const normalizeInput = defineWorkflow('normalizeInput', {
+  async handler({ input }) {
+    return input.trim()
+  },
+})
 ```
 
-A workflow MUST provide `handler`. There is no default workflow loop.
+Input and output default to the Harness string schema. The handler receives
+validated input and must return the output schema's input type. The final value
+is validated once before it becomes the workflow outcome.
 
-## `WorkflowContext`
+## Declare capabilities
 
 ```ts
-interface WorkflowContext<S, I, O> {
-  input: I
-  agents: { [K in keyof S['agents']]: (input: AgentInput<S, K>, opts?: InvokeOptions & { model?: keyof S['models'] & string }) => Promise<AgentOutput<S, K>> }
-  logger: Logger
-  telemetry: TelemetryShim
-  signal: AbortSignal
-  runId: string
-  sessionId: string
-  metadata: Readonly<Record<string, JsonValue>>
-  memory: MemoryFacade
-  metrics: Metrics
-  /** Runs `fn` as a durable step. See "Durable steps". */
-  step<T extends JsonValue>(stepId: string, fn: () => Promise<T>): Promise<T>
-  /** Bounded, cancellation-aware parallel work preserving input order. */
-  fanOut<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R>, options?: { concurrency?: number }): Promise<R[]>
-  /** Workflow-owned isolated background and continuable child tasks. */
-  childTasks: WorkflowChildTasks<S>
-}
+const ingestKnowledge = defineWorkflow('ingestKnowledge', {
+  input: ingestInputSchema,
+  output: ingestOutputSchema,
+  agents: [extractKnowledge],
+  tools: [saveKnowledgeChunks],
+  models: {
+    embeddings: {
+      capabilities: ['embeddings'],
+    },
+  },
+  async handler(ctx) {
+    const extracted = await ctx.agents.extractKnowledge.run(
+      { content: ctx.input.content },
+      { callId: 'extractKnowledge' },
+    )
+
+    const vectors = await ctx.models.embeddings.embed(
+      { input: extracted.chunks.map(chunk => chunk.text) },
+      { callId: 'embedChunks' },
+    )
+
+    await ctx.tools.saveKnowledgeChunks.run(
+      {
+        chunks: extracted.chunks,
+        vectors,
+      },
+      { callId: 'saveChunks' },
+    )
+
+    return {
+      stored: extracted.chunks.length,
+    }
+  },
+})
 ```
 
-`AgentInput<S, K>` uses `InferIn` from the agent input schema and `AgentOutput<S, K>` uses `Infer` from its output schema (both default to `string` when omitted), mirroring workflow derivation in [13-public-api](./13-public-api.md).
+The context exposes exact maps derived from these declarations. An undeclared
+agent, tool, or model alias does not exist on the type and cannot be resolved
+through a string lookup.
 
-- All registered agents are typed on `agents`. `WorkflowDefinition.delegation`
-  can restrict which agents a workflow may call at runtime.
-- Embedders that wrap a workflow definition outside a direct
-  `defineHarness().agents(...).workflows(...)` chain MUST register the intended
-  harness-local agent definitions before registering the workflow. Otherwise
-  `ctx.agents` is empty or missing the referenced agent keys at runtime.
-- `ctx.memory` exposes run/session/user/tenant memory scopes as defined in [20-memory-adapters](./20-memory-adapters.md). Workflow contexts do not expose `ctx.memory.agent` because no single agent id owns the workflow run.
-- Each `agents[id](input)` call:
-  - Validates `input` against the agent's `input` schema. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_input'}.
-  - Opens a child `invoke_agent {agent.name}` span (linked to the workflow's `harness.workflow.run` span).
-  - Executes the agent (default loop or custom handler).
-  - Validates the agent's output. Failure → [`ValidationError`](./15-error-catalog.md){where:'agent_output'}.
-  - Returns the validated output.
-  - Errors are thrown directly (not wrapped) to allow the workflow to handle them.
+Workflow model entries state required capabilities. Their object key is the
+runtime model alias unless an explicit `alias` remaps it. The context exposes
+capability-scoped invokers for text, structured output, embeddings, reranking,
+image, speech, and video operations. It never exposes a raw provider or general
+model index.
 
-`ctx.fanOut` is a small bounded-concurrency primitive, not a second workflow
-language. Its effective concurrency is clamped to
-`maxParallelChildAgentCalls`, it preserves item order, and it emits
-content-free fan-out lifecycle events. `ctx.childTasks.start` starts a separate
-child-task run using a registered agent. Background task turns queue under the
-same delegation parallel ceiling rather than rejecting solely because the
-ceiling is occupied. `{ mode: 'continuable' }` retains an isolated task-owned
-sandbox and private turn history until `close()`; it is in-process only and is
-rejected from durable workflow invocation. See
-[28-workflow-child-tasks](./28-workflow-child-tasks.md).
+Workflow memory access is not implicit. A workflow that needs application or
+vector data uses an explicitly declared tool so identity, authorization,
+resource ownership, validation, events, and replay stay visible.
 
-## Delegation policy
+## Managed calls and stable ids
 
-Workflows may orchestrate child agents through `ctx.agents`; agents do not spawn
-other agents directly. Child-agent delegation is disabled unless either:
+Every managed agent, tool, or model operation requires a stable `callId`.
+The id identifies one logical effect for durability, retry, and replay. It is
+not generated from array position, source line, or mutable control flow.
 
-- the workflow declares `delegation`; or
-- `defaults.delegation.enabled` is set to `true`.
+Managed invokers automatically propagate:
 
-A workflow-level `delegation` object enables that workflow unless it sets
-`enabled: false`. Once enabled, the harness applies these safe defaults per
-workflow run:
+- cancellation and the nearest deadline;
+- tenant/principal identity and trace context;
+- workflow/run/session correlation;
+- idempotency and deterministic checkpoint data;
+- content-safe lifecycle events and telemetry.
 
-- `maxChildAgentCalls: 32`
-- `maxParallelChildAgentCalls: 8`
-- `maxDepth: 1`
+A direct workflow tool call uses the same authentic binding, input/output
+validation, host overlay, timeout, cancellation, event, telemetry, and managed
+checkpoint machinery as an agent-selected call. It does not borrow an agent's
+exposure, permission, governance, approval, or Guardrail policy. Business
+authorization for a PURISTA host tool belongs in that tool's service guard.
+Its caller is `{ kind: 'workflow', workflowId }`. It does not use a synthetic
+agent id.
+An agent call made inside a workflow keeps
+`{ kind: 'agent', agentId, workflowId }`.
 
-`WorkflowDefinition.delegation` can override the numeric budgets, disable the
-workflow with `enabled: false`, restrict the child agent ids with `agents`, and
-restrict the model aliases child-agent calls may run with. `modelAliases`
-applies to **every** child-agent call in the workflow — both calls that use the
-agent's default `model` and calls passing a per-call `{ model }` override. A
-workflow with `modelAliases: ['cheap']` cannot invoke an agent whose selected
-alias (default or override) is not in that list; the call throws
-`DelegationPolicyError{reason:'model_alias_not_allowed'}`. `agentModelAliases`
-replaces that set for the named child agent.
+Repeating a committed call with an equal operation, target, input, options, and
+idempotency identity returns the checkpointed result without another effect.
+Reusing a `callId` for a changed logical operation fails with
+`WorkflowCallReplayConflictError`.
+
+## Agent calls
 
 ```ts
-delegation: {
-  agents: ['planner', 'reviewer'],
-  maxChildAgentCalls: 4,
-  maxParallelChildAgentCalls: 2,
-  agentModelAliases: { reviewer: ['deep_review'] }
-}
+const answer = await ctx.agents.answerQuestion.run(
+  { question: ctx.input.question },
+  { callId: 'answerQuestion' },
+)
 ```
 
-`ctx.agents.reviewer(input, { model: 'deep_review' })` runs the reviewer agent
-with that configured model alias for this call only; the agent definition's
-default `model` remains unchanged.
+The workflow receives the validated completed output. A failed child maps to
+`WorkflowManagedCallError`; cancellation maps to
+`OperationCancelledError`; approval interruption suspends the root
+invocation tree through the package-private interruption control path. The
+workflow handler does not accidentally treat an interruption as output.
 
-Builder validation rejects unknown agent ids, unknown model aliases, and invalid
-numeric budgets. Runtime violations throw
-[`DelegationPolicyError`](./15-error-catalog.md).
+Agent calls use the target dispatcher. In a hosted PURISTA runtime, every call
+uses EventBridge and can reach another service instance. There is no direct
+in-process fallback.
 
-Task-specific idempotency, recovery, and session-owner lookup rules are
-defined in [28-workflow-child-tasks](./28-workflow-child-tasks.md).
+## Parallel work and fan-out
 
-The workflow's own input and handler return are awaited through the shared Standard Schema validator before user code and before completion respectively. Failures throw [`ValidationError`](./15-error-catalog.md){where:'workflow_input'|'workflow_output'}.
+Independent managed calls may run through `Promise.all` within the declared
+parallel limits. For data-driven fan-out, the workflow context exposes the
+bounded fan-out and child-task facilities specified by
+[spec 28](./28-workflow-child-tasks.md). Bounds cover total calls, parallel
+calls, depth, and child-task admission.
 
-## Durable steps
+Output order follows input order where the fan-out API promises an ordered
+result, regardless of completion order. A failure cancels unfinished siblings
+according to the child-task contract and preserves every cleanup failure.
 
-`ctx.step(stepId, fn, options?)` marks a JSON-serializable boundary in a workflow handler.
-Its behavior depends purely on how the workflow is invoked:
+## Durability
 
-- **Durable invocation** (`opts.durable` supplied and a `.storage(...)` adapter is
-  configured — see [21-durable-workspaces](./21-durable-workspaces.md) §16.1): a
-  step committed on a prior attempt returns its stored output **without re-running
-  `fn`** or re-committing a checkpoint. A new step runs `fn`, validates that the
-  output is JSON-serializable (`DurableStepError` otherwise), commits a runtime
-  checkpoint, and — when a workspace is configured — links a durable
-  workspace checkpoint committed before the storage checkpoint.
-- **Ephemeral invocation** (no `opts.durable`, or no configured runtime):
-  `ctx.step(stepId, fn)` is a transparent pass-through — it simply awaits `fn` and
-  returns its value with no checkpointing.
+`durable: true` contributes durable Harness storage. `workspace: true`
+also requires a durable workspace binding. External waits and durable child
+tasks likewise make storage requirements explicit.
 
-Locked rules:
+At each managed call boundary Harness records the stable call identity and
+validated wire data needed for replay. Model calls use the same checkpoint
+discipline as agents and tools and include model alias plus `callId` in
+embedding, rerank, and media events. Workflow code never calls a provider
+directly or reconstructs checkpoint logic.
 
-- `stepId` matches `/^[A-Za-z0-9_.:-]{1,128}$/`; an invalid id throws
-  `DurableStepError`.
-- A duplicate `stepId` within one run throws `DurableStepError`.
-- `options.retry` retries `fn` before any checkpoint is committed. `true`
-  means three total attempts with exponential backoff. A policy object can set
-  `maxAttempts`, `minDelayMs`, `maxDelayMs`, `backoff`, and `shouldRetry`.
-  Committed replayed steps never re-run retry logic.
-- The same workflow body therefore runs durably or ephemerally with no code
-  change; durability is an invocation-time decision, not a handler concern.
+Long-running deployment changes use the Harness application `revision`. A
+durable graph requires it. A changed handler, schema, policy, prompt, or
+orchestration contract must use a new revision so suspended work cannot resume
+against different behavior.
 
-## Long-running workflow versions
+## Streaming
 
-The harness does not own deployment pinning, HTTP workers, or queues. Long-lived
-applications should treat explicit step outputs and workflow return values as
-versioned migration boundaries:
+A workflow may emit progress through managed agent, tool, model, artifact,
+fan-out, child-task, and wait events. The public target stream contains exact
+root events plus explicitly correlated nested events. Only the direct
+workflow's root `run.finished` settles its public stream result.
 
-- include an application `workflowVersion` in invoke metadata or workflow input
-  when a run may outlive one deployment;
-- keep each durable step output schema backward-compatible, or migrate it in the
-  next step before handing it to an agent;
-- prefer chaining a new durable run with a new `runId` when a workflow needs to
-  self-upgrade after a major code change;
-- store the old run id in the new run metadata so UI and audit views can link
-  the logical process across runs.
+Workflow outputs do not pretend to be token streams. Their contract update kind
+is `none`; model/agent child output remains correlated nested activity. A
+transport adapter may project progress and status without treating a nested
+terminal event as the root answer.
 
-This is an application pattern, not a core scheduler feature. Core guarantees
-only stable durable checkpoints, state-store run/event history, cancellation,
-and typed workflow boundaries.
+## Cancellation and cleanup
 
-## Parallel invocation
+Cancellation propagates to active child targets, model calls, tools, storage,
+sandbox, waits, and live event delivery. Workflow code should pass no separate
+AbortSignal because the managed invokers already carry the current signal.
 
-Workflows may call agents in parallel via standard `Promise.all`/`Promise.allSettled`. Locked rules:
+Cleanup runs under the lifecycle contracts even if the handler fails. A
+cleanup failure is aggregated and observed but does not repeat a committed
+business effect.
 
-1. The same `signal` is propagated to every parallel agent call. Aborting the workflow aborts all in-flight agent calls.
-2. Persisted message ordering follows completion time, not invocation time. Each agent call appends its messages atomically (per the HarnessStorage guarantee), but interleaving is permitted.
-3. The session's serial-execution rule (see [11-sessions](./11-sessions.md)) applies at the session boundary, not within a workflow run. Within a single workflow run, parallel agent calls share the run id and are allowed.
+## Required verification
 
-## Cancellation
+- omitted and explicit schemas retain exact inference;
+- undeclared agents, tools, models, and memory access fail statically and at
+  erased runtime boundaries;
+- stable call-id equality, replay, conflicts, cancellation, and deadlines;
+- workflow and nested-agent caller correlation without synthetic identities;
+- every direct tool call uses the common pipeline;
+- model capability projection and embedding/rerank/media correlation;
+- dispatcher-only agent execution in standalone and hosted runtimes;
+- bounded sequential, parallel, fan-out, child-task, durable, and external-wait
+  paths;
+- nested events cannot settle the root stream.
 
-- The workflow's `signal` is wired to:
-  - The run's `runTimeoutMs` — when elapsed, abort the controller and throw `OperationTimeoutError`. `runTimeoutMs === 0` disables the run timeout; negative values are rejected at config parse time. `InvokeOptions.timeoutMs` overrides the default for a single call (same `>0/0/<0` semantics; negative throws `ValidationError`).
-  - External cancellation passed to `session.workflows[id].run(input, {signal})`.
-- Aborts propagate down to every active agent, model, tool, skill, and memory adapter call. Each layer translates abort into `OperationCancelledError`.
-- The harness races the workflow handler against the workflow signal. A
-  non-cooperative handler cannot block timeout/cancel finalization, but any
-  in-process work it started may keep running until that application code
-  observes `ctx.signal` or returns.
-- After `signal.aborted`, the workflow handler MUST NOT start new agent calls; doing so throws `OperationCancelledError` synchronously.
+## References
 
-## Errors
-
-- Errors from agent, model, and tool calls bubble up unchanged unless caught.
-- A handler error is preserved by identity (it is not re-wrapped), so failure
-  terminalization never masks the original failure. When the error is not a
-  `HarnessError`, it is persisted with code `INTERNAL_ERROR` via `serializeError`,
-  but the original error instance is what the caller receives.
-- `WorkflowNotFoundError` is thrown by the session API when a workflow id doesn't exist; never thrown from inside a handler.
-
-## Telemetry
-
-- Span `harness.workflow.run`, attributes `harness.workflow.id`, `harness.session.id`, `harness.run.id`.
-- Histogram `harness.run.duration` (unit `s`, recorded on workflow finish) with attributes `harness.workflow.id`, `harness.session.id`, `error.type` (when error).
-- RunEvents emitted: `run.started`, `agent.started`/`agent.finished` per child agent, `run.finished`.
-  Child-agent lifecycle events include `workflowId`, `delegationCallId`,
-  `delegationDepth`, and `modelAlias`.
-
-## Cross-references
-
-- [09-agents](./09-agents.md) — agent execution.
-- [11-sessions](./11-sessions.md) — session-level concurrency rule.
-- [12-streaming](./12-streaming.md) — `RunEvent` shapes.
-- [14-otel-conventions](./14-otel-conventions.md), [15-error-catalog](./15-error-catalog.md).
-- [20-memory-adapters](./20-memory-adapters.md) — workflow memory facade.
+- [06 — models](./06-models.md)
+- [07 — tools](./07-tools.md)
+- [12 — streaming](./12-streaming.md)
+- [21 — durable workspaces](./21-durable-workspaces.md)
+- [28 — workflow child tasks](./28-workflow-child-tasks.md)
+- [32 — Harness storage](./32-harness-storage.md)
+- [42 — exact workflow contract](./42-composable-definitions-and-catalogs.md)

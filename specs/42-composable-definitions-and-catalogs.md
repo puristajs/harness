@@ -277,6 +277,28 @@ type ExecutionEventCorrelation = Readonly<{
   parentInvocationId?: string
 }>
 
+type HarnessExecutionCaller =
+  | Readonly<{
+      kind: 'agent'
+      agentId: string
+      workflowId?: string
+    }>
+  | Readonly<{
+      kind: 'workflow'
+      workflowId: string
+      agentId?: never
+    }>
+
+type ModelExecutionCorrelation =
+  | Readonly<{
+      caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>
+      callId?: string
+    }>
+  | Readonly<{
+      caller: Extract<HarnessExecutionCaller, { kind: 'workflow' }>
+      callId: string
+    }>
+
 type ExecutionEvent<
   Output = JsonValue,
   Interrupt = HarnessInterrupt,
@@ -309,94 +331,77 @@ type ExecutionEvent<
       output?: JsonValue
       error?: SerializedError
     }>
-  | Readonly<{ type: 'model.message'; agentId: string; message: Message }>
   | Readonly<{
+      type: 'model.message'
+      caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>
+      message: Message
+    }>
+  | (Readonly<{
       type: 'model.completed'
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias: string
       streamId?: string
       operation: 'text' | 'object' | 'textStream' | 'objectStream'
       usage?: TokenUsage
       finishReason?: FinishReason
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'model.embedding.completed'
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias: string
       count: number
       dimensions?: number
       usage?: TokenUsage
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'model.rerank.completed'
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias: string
       count: number
       topN?: number
       usage?: TokenUsage
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'output.text.delta'
       id: string
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias?: string
       delta: string
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'output.object.snapshot'
       id: string
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias?: string
       value: JsonValue
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'output.file'
       id: string
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias: string
       operation: 'image' | 'speech' | 'video'
       artifact: ArtifactReference
-    }>
-  | Readonly<{
+    }> & ModelExecutionCorrelation)
+  | (Readonly<{
       type: 'output.progress'
       id: string
-      agentId?: string
-      workflowId?: string
-      callId?: string
       modelAlias: string
       operation: 'video'
       state: 'queued' | 'running'
       progress?: number
-    }>
+    }> & ModelExecutionCorrelation)
   | Readonly<{
       type: 'tool.input.available'
-      agentId: string
+      caller: HarnessExecutionCaller
       toolId: string
       callId: string
       input: JsonValue
     }>
   | Readonly<{
       type: 'tool.started'
-      agentId: string
+      caller: HarnessExecutionCaller
       toolId: string
       callId: string
       input: JsonValue
     }>
   | Readonly<{
       type: 'tool.finished'
-      agentId: string
+      caller: HarnessExecutionCaller
       toolId: string
       callId: string
       output?: JsonValue
@@ -585,6 +590,17 @@ type HarnessTargetExecutionEvent<
   Target extends AnyHarnessTargetContract,
 > = RootExecutionEventFor<Target> | NestedExecutionEvent
 ```
+
+`HarnessExecutionCaller` is the single caller projection used by model,
+output, and tool events, native and host tool context, and MCP request-header
+projection. An agent running as a workflow child retains both its `agentId`
+and `workflowId`. A direct workflow-managed model or tool call contains only
+`{kind:'workflow',workflowId}`; it never receives a synthetic agent id. Such
+a workflow model call also requires its stable `callId`, while an agent-loop
+model event may omit one. The union is copied and frozen at the call boundary.
+Exactly one member is valid, and erased inputs containing fields from both
+members fail before policy, credential projection, model/tool execution, or
+event publication.
 
 Every target supports aggregate `run` and progressive `stream`. An agent whose
 effective response is text has `updates: 'text-delta'`; an agent whose effective
@@ -821,7 +837,7 @@ interface McpRequestHeaderContext {
   readonly toolId: string
   readonly sessionId: string
   readonly runId: string
-  readonly agentId: string
+  readonly caller: HarnessExecutionCaller
   readonly callId: string
   readonly identity?: HarnessIdentity
   readonly signal: AbortSignal
@@ -830,8 +846,8 @@ interface McpRequestHeaderContext {
 
 It selects `http` or `stdio` and supplies URL,
 authenticated headers, and connection options for HTTP, or command, arguments,
-minimal environment, and a spawn-capable sandbox for stdio. Agents select exact
-MCP tool references.
+minimal environment, and a spawn-capable sandbox for stdio. Agents and
+workflows select exact MCP tool references.
 For HTTP calls, `resolveHeaders` is an optional per-invocation credential
 projection. It runs after approval and immediately before the request, receives
 only bounded identity and correlation data, and returns string header values.
@@ -1733,6 +1749,7 @@ type HarnessTargetDispatchRequest<
 
 interface HarnessTargetDispatchStream<Output, Interrupt = HarnessInterrupt>
   extends AsyncIterable<ExecutionEvent<Output, Interrupt>> {
+  readonly result: Promise<ExecutionTerminalOutcome<Output, Interrupt>>
   cancel(reason?: string): Promise<void>
 }
 
@@ -2505,10 +2522,12 @@ function consumeHarnessTargetStream<Output, Interrupt>(options: Readonly<{
 It validates correlation and event shapes, requires exactly one terminal for
 the directly dispatched target, accepts correlated descendant runs with their
 own terminals, rejects an event after the terminal of its own run, relays every
-valid event in order including each terminal exactly once, cleans up iterator
-and stream on failure or cancellation,
-and returns the already target-validated terminal plus lineage without applying
-a caller-specific error mapping. Subagents and workflows both use it. A second
+valid event in order including each terminal exactly once, and then requires
+`stream.result` to resolve to the canonically equal direct-target terminal.
+It cleans up iterator and stream on failure or cancellation and returns that
+already target-validated terminal plus lineage without applying a
+caller-specific error mapping. A missing, duplicate, unequal, or rejected
+terminal is a protocol failure. Subagents and workflows both use it. A second
 terminal consumer or copied validation switch is forbidden. The model-facing
 subagent binding retains H4-006's `ToolError` mapping. A direct workflow agent
 call returns a completed output, maps `failed` to `WorkflowManagedCallError`,
@@ -3341,7 +3360,7 @@ type AgentBindingKind =
   | 'subagent'
   | 'host'
 
-interface AgentToolInvocationContext {
+interface ToolInvocationContextBase {
   readonly harnessName: string
   readonly sessionId: string
   readonly runId: string
@@ -3351,9 +3370,6 @@ interface AgentToolInvocationContext {
   readonly invocationId: string
   readonly depth: number
   readonly remainingDepth: number
-  readonly agentId: string
-  readonly workflowId?: string
-  readonly step: number
   readonly toolId: string
   readonly callId: string
   readonly idempotencyKey?: string
@@ -3372,6 +3388,17 @@ interface AgentToolInvocationContext {
   readonly checkpointStep: HarnessCheckpointStep
 }
 
+type ToolInvocationContext = Readonly<ToolInvocationContextBase> & (
+  | Readonly<{
+      caller: Extract<HarnessExecutionCaller, { kind: 'agent' }>
+      step: number
+    }>
+  | Readonly<{
+      caller: Extract<HarnessExecutionCaller, { kind: 'workflow' }>
+      step?: never
+    }>
+)
+
 interface AgentExecutableBinding<
   Input extends ModelSchema = ModelSchema,
   Output extends Schema = Schema,
@@ -3385,7 +3412,7 @@ interface AgentExecutableBinding<
   readonly contractDigest: string
   readonly outputValidation: 'required' | 'already-validated-target'
   invokeValidated(
-    context: AgentToolInvocationContext,
+    context: ToolInvocationContext,
     input: Infer<Input> & JsonValue,
     wireInput: InferIn<Input> & JsonValue,
   ): Promise<unknown>
@@ -3494,7 +3521,7 @@ returned binding. It also requires
 `outputValidation:'required'` for every other implementation kind. H4-004
 binding factories, H4-006 subagent bindings, and H4-009 host bindings all use
 this helper; none reimplement digest or freeze rules.
-`AgentToolInvocationContext` is package-private. Binding factories project its
+`ToolInvocationContext` is package-private. Binding factories project its
 memory and sandbox handles to a portable tool's declared requirement type. A
 subagent binding uses `targetDispatcher` and relays every child event through
 `relayChildEvent`, which preserves the child correlation already added by
@@ -3737,7 +3764,7 @@ type HarnessTargetInvokeOptions<
 
 interface HarnessTargetStream<Target extends AnyHarnessTargetContract>
   extends AsyncIterable<HarnessTargetExecutionEvent<Target>> {
-  readonly result: Promise<HarnessTargetRunOutcome<Target>>
+  readonly result: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
   cancel(reason?: string): Promise<void>
 }
 
@@ -3802,12 +3829,15 @@ interface HarnessInstance<
 ```
 
 `HarnessTargetStream.result` observes the same execution independently of event
-iteration and settles exactly once with the direct root target's aggregate
-outcome. It never consumes, buffers, or removes an event from the iterable.
-Stopping iteration does not imply cancellation; callers use `cancel()` when
-they no longer want the execution. A protocol or infrastructure failure rejects
-`result`, while an ordinary target failure, cancellation, or interruption uses
-the normal typed outcome.
+iteration and settles exactly once with the direct root target's
+`ExecutionTerminalOutcome`. Completed and interrupted executions carry the
+same exact `RunOutcome` members returned by aggregate `run`; ordinary target
+failure and cancellation resolve the corresponding terminal members already
+carried by `run.finished`. Only a protocol or infrastructure failure that
+prevents a trustworthy terminal outcome rejects `result`. It never consumes,
+buffers, or removes an event from the iterable. Stopping iteration does not
+imply cancellation; callers use `cancel()` when they no longer want the
+execution.
 
 `RootExecutionEventFor<Target>` has no parent correlation, uses the target's
 exact output-update and interrupt families, keeps text deltas as `string` and
@@ -3825,7 +3855,10 @@ observation, and resolves after that cancellation request has been accepted.
 Calling the async iterator's optional `return()` only stops that iterator and
 does not cancel execution. Adapters that own a browser or transport stream call
 `cancel()` when their consumer disconnects. `HarnessTargetDispatchStream`
-extends this public contract with no additional members.
+has the same iterable, terminal-result, and cancellation semantics over its
+generic output and interrupt types. A public root adapter narrows its event
+iterable to `HarnessTargetExecutionEvent<Target>`; it forwards the dispatch
+stream's `result` and `cancel` without translating terminal status.
 
 `SessionOptionsFor` projects the existing closed sandbox-ownership contract
 from spec 36 `CTR-SOWN-POLICY`. Identity remains available for every session.
@@ -3981,6 +4014,7 @@ type HarnessHostContextRequest<HostInvocation> = Readonly<{
   hostInvocation: HostInvocation
   target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
   tool: Readonly<{ id: string; callId: string }>
+  caller: HarnessExecutionCaller
   sessionId: string
   runId: string
   rootRunId: string
@@ -4260,8 +4294,11 @@ discarded afterward. Hosted instance config omits public `logger` and
 `Metrics` from the bound telemetry. Application callers cannot supply or
 override host-only keys.
 
-For a host tool selected by one agent turn, `tool.callId` is the provider's
-stable tool-call id and `invocationId` is the owning agent invocation id.
+For a host tool selected by an agent turn, `tool.callId` is the provider's
+stable tool-call id and `invocationId` is the owning agent invocation id. For
+a direct workflow tool call, both are stable workflow managed-call
+identifiers. `caller` uses the exact shared `HarnessExecutionCaller` union in either
+case.
 Harness derives the occurrence id once as `invocation_` plus lowercase SHA-256
 of the canonical JSON tuple
 `['harness.host-tool-invocation.v1',rootRunId,runId,invocationId,tool.id,tool.callId]`.
@@ -4381,7 +4418,7 @@ interface HostNestedTargetCheckpointV1 {
   readonly outcome: HostNestedTargetStoredOutcomeV1
   readonly lineage: Readonly<{
     rootRunId: string
-    agentRunId: string
+    callerRunId: string
     hostToolInvocationId: string
     childRunId: string
     childInvocationId: string
@@ -4465,7 +4502,7 @@ frame:
 interface SuspendedHostToolFrameV1 {
   readonly kind: 'host-tool'
   readonly runId: string
-  readonly agentId: string
+  readonly caller: HarnessExecutionCaller
   readonly invocationId: string
   readonly hostToolInvocationId: string
   readonly toolId: string
@@ -4488,8 +4525,9 @@ interface SuspendedHostToolFrameV1 {
 }
 ```
 
-The root-to-leaf path is ordered agent frame, host-tool frame, then child agent
-or workflow continuation. Resume validates exact binding identity and digest,
+The root-to-leaf path is ordered caller target frame, host-tool frame, then
+child agent or workflow continuation. Resume validates the exact caller,
+binding identity, and digest,
 requires the frame's child run/invocation and target to match that continuation,
 requires its child interrupt id and revision to match the child's resume
 descriptor,
@@ -4836,7 +4874,7 @@ type HarnessUIStatus =
   | Readonly<{
       phase: 'tool-running'
       runId: string
-      agentId: string
+      caller: HarnessExecutionCaller
       toolId: string
       callId: string
     }>
@@ -6132,6 +6170,22 @@ structured targets expose only `JsonValue` object snapshots, targets with
 target's exact output and interrupt union. Runtime adapter tests must prove that
 the AI SDK UI projection treats only parent-free root events as the public
 answer and cannot terminate on a correlated nested `run.finished`.
+
+Caller-correlation type tests must prove that every model, output, and tool
+event accepts exactly one `HarnessExecutionCaller`; an agent may retain an
+optional owning workflow, while a direct workflow caller rejects `agentId`.
+Workflow model events require `callId`; agent-loop model events may omit it.
+Native, MCP, and host-tool context tests must observe the byte-equivalent frozen
+caller, and erased neither/both caller shapes must fail before credential
+projection or execution. Durable host-tool tests must persist and compare the
+same caller union and `callerRunId` without a synthetic agent.
+
+Stream tests must prove that public and dispatcher `result` resolve the exact
+terminal value from the one direct-target `run.finished` for completed,
+interrupted, failed, and cancelled runs, independently of iteration. A failure
+before a trustworthy terminal rejects. Public root adaptation must forward
+`result` and `cancel` unchanged while narrowing only the iterable event
+type; nested terminals cannot settle either result.
 
 Addon and adapter implementation tickets align source, tests, examples, and
 public exports while every workspace package manifest, peer range,

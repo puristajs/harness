@@ -42,8 +42,13 @@ The Harness compiler keeps two views:
   or exported by a used catalog;
 - the private dependency closure contains everything those roots reference.
 
-Only roots appear in public session invokers and host contracts. Dependency
-collection never creates a public service locator.
+Only roots appear in public session invokers and host contracts. A
+`defineCatalog(...)` value publicly retains only the definitions explicitly
+listed in that authoring catalog, including their original frozen behavior.
+The Harness has no public `catalog` or graph property; its recursively compiled
+closure remains package-private metadata used for runtime assembly and typed
+host checks. Dependency collection never creates a public service locator or
+makes a dependency-only target callable.
 
 ## Minimal use
 

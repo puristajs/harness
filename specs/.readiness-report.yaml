@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, the clean breaking v4 release, removal of legacy and compatibility APIs, standard AI SDK UI Message Stream v1 interoperability, and autonomous implementation under standing approval; the current active goal explicitly reaffirms end-to-end implementation and source-of-truth cleanup. This approval remains valid while the authoritative v4 specifications have been consolidated and now require a fresh independent semantic review before implementation."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:c4d4359a40462f57c62fc91a4f16d30ae227a6fc94e53df063722c8c088976e4"
+      scope_digest: "sha256:aaf706483140980bf2918ca6770be04efd406473f983ba67776fa7ed0cf5a46b"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -438,6 +438,7 @@ follow_up_waves:
         - specs/13-public-api.md
         - specs/15-error-catalog.md
         - specs/17-implementation-plan.md
+        - specs/19-ai-eval-core.md
         - specs/22-local-durable-execution.md
         - specs/25-static-harness-modules.md
         - specs/28-workflow-child-tasks.md
@@ -455,6 +456,8 @@ follow_up_waves:
         - specs/41-opa-policy-adapter.md
         - specs/37-decision-boundaries/03-contracts/decisions.md
         - specs/37-decision-boundaries/03-contracts/provider-continuation.md
+        - specs/39-standard-schema-boundaries/03-contracts/model-projection.md
+        - specs/39-standard-schema-boundaries/03-contracts/schema-types.md
         - specs/42-composable-definitions-and-catalogs.md
         - specs/README.md
         - ../purista/specs/20-agents/88-harness-first-service-integration.md
@@ -510,9 +513,9 @@ follow_up_waves:
       - review: "independent v4 addon semantic readiness review"
         status: passed_after_contract_repair
         evidence: "PASS after deterministic plugin path/order/precedence and diagnostics, exact header and timer bounds, content-free OPA construction/runtime errors, content-bound Agent Plugins schemas and pinned OPA conformance artifact, representation ownership, and atomic release staging were closed. No implementation behavior remains to be invented."
-      - review: "independent post-judge-repair v4 semantic review"
+      - review: "independent post-second-judge-repair v4 semantic review"
         status: pending
-        evidence: "Required after repairing compiled-closure hosted dispatch, event authority, workflow model streaming, PURISTA session/terminal/ancestry behavior, MCP headers, lifecycle ordering, policy ownership, and stale active APIs."
+        evidence: "Required after repairing raw standalone versus Core-wrapped aggregate outcomes, private compiled-closure visibility, authoring-catalog handler retention, the integrator export path, v4 evaluation/session contracts, and PURISTA queue receipt typing in addition to the first judge repairs."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -659,6 +662,7 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       - specs/16-testing.md
       - specs/17-implementation-plan.md
       - specs/18-living-wiki-jaeger-example.md
+      - specs/19-ai-eval-core.md
       - specs/21-durable-workspaces.md
       - specs/22-local-durable-execution.md
       - specs/23-provider-outcomes-and-retry.md
@@ -731,11 +735,12 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       - specs/43-distributed-production-reference-stack.md
       - specs/README.md
   approval_evidence:
-    scope_digest: "sha256:7f06869f9155ac845bc4ed8c6b54757b3fc6381e0ac66a7ca9938e0f93e9be46"
+    scope_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
     digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
   confirmed_decisions:
     - "defineCatalog is the only immutable public registry-like abstraction; direct references grant capabilities and public maps contain explicit exports only."
     - "Harness composes only explicit agent/workflow roots through addAgent, addWorkflow, and use; recursive closure remains private and non-callable."
+    - "A Harness exposes no catalog or compiled graph property; an unexported invariant phantom retains the exact private graph type for hosted binding checks, while authoring catalogs retain only explicitly listed original definitions and handlers."
     - "Hosted runHosted and streamHosted accept only explicit roots; streamDispatched retains the compiled graph type and alone admits authentic dependency-only targets for nested delivery."
     - "Agents infer prompt, response mode, updates, and exact interrupts; target contracts, definitions, catalogs, and Harness expose one consistent $infer shape."
     - "Workflows declare exact agent, tool, and model references; managed calls use stable call ids and undeclared memory is unavailable."
@@ -743,7 +748,9 @@ harness_v4_minimal_dx_refinement_2026_09_07:
     - "Every model, output, tool, native-tool, host-tool, and MCP call uses one closed caller union: an agent caller may retain workflowId, while a direct workflow caller has workflowId and forbids agentId."
     - "Direct workflow model streams use workflow-only model.output activity with required callId on the existing workflow run; they never become target output or AI SDK assistant content."
     - "Public and dispatcher streams resolve result with the exact completed, interrupted, failed, or cancelled terminal event; the sole package-private root adapter forwards result and cancellation while narrowing events."
+    - "Standalone target run returns the raw RunOutcome; only PURISTA Core owns the generated address-first aggregate wrapper that pairs the resolved sessionId with that unchanged outcome."
     - "PURISTA resolves omitted public session ids once from its Core-generated root invocation id, retains identity isolation, and uses complete RFC 8785 terminal equality plus exact XOR nested ancestry."
+    - "PURISTA queue bindings infer payload from the exact target input, expose enqueue only through an explicitly queued contract, and settle the typed receipt with the unchanged Core HarnessTargetRunResult and resolved session id."
     - "inMemoryAgentAdmission provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local admission; durable queueing remains host-owned."
   deterministic_checks:
     git_diff_check:
@@ -758,7 +765,7 @@ harness_v4_minimal_dx_refinement_2026_09_07:
       status: expected_failure_legacy_flat_layout_and_pending_review
       evidence: "The checker requires a structured spec package and reports the repository's pre-existing flat-layout omissions. It also correctly detects this record's pending independent-review marker; targeted scope, link, stale-API, ambiguity, YAML, and whitespace checks remain authoritative for this cleanup."
   independent_semantic_review:
-    status: pending_post_judge_repair_review
-    evidence: "The final judge found cross-spec hosted-dispatch, event, workflow-stream, PURISTA transport, lifecycle, policy, MCP, and stale-API blockers. Those findings are repaired, but a fresh independent controller review must confirm the complete contract; the spec authors do not self-approve this gate."
+    status: pending_post_second_judge_repair_review
+    evidence: "The second independent judge found residual outcome-ownership, closure-visibility, catalog-handler, package-path, evaluation-contract, and queue-receipt blockers. Those findings are repaired, but a fresh independent controller review must confirm the complete contract; the spec authors do not self-approve this gate."
   blocking_findings_count: pending
   implementation_status: blocked_on_independent_semantic_confirmation

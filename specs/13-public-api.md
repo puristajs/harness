@@ -15,7 +15,7 @@ declarations before release.
 - All packages are ESM.
 - Public declarations compile with `skipLibCheck: false`.
 - Consumers use package exports only; documented deep imports are forbidden.
-- Core exposes `.`, `./testing`, `./adapter`, and `./integration` only
+- Core exposes `.`, `./testing`, `./adapter`, and `./integrator` only
   where the owning specification assigns symbols to that subpath.
 
 ## `@purista/harness`
@@ -33,9 +33,11 @@ declarations before release.
 - the Core-owned opaque `agentGuardrailsBinding`
 
 The corresponding definition, contract, `$infer`, prompt, response,
-subagent, catalog, graph-view, runtime-requirement, and invocation types are
+subagent, authoring-catalog, runtime-requirement, and invocation types are
 public exactly as specified by spec 42. A definition, target contract, catalog,
-and Harness use the same non-enumerable frozen `$infer` convention.
+and Harness use the same non-enumerable frozen `$infer` convention. The
+compiled graph view and recursive dependency closure are package-private and
+are absent from every public value surface.
 
 The Harness surface contains `addAgent`, `addWorkflow`, `use`,
 `inspect`, and `getInstance`. A runtime instance contains `getSession` and
@@ -121,7 +123,7 @@ Every public error class, code, category, retry flag, and safe metadata shape is
 owned by [spec 15](./15-error-catalog.md). No package creates an alias for an
 old error or returns an untyped object in place of the canonical class.
 
-## `@purista/harness/integration`
+## `@purista/harness/integrator`
 
 This narrow subpath exists for host frameworks. It exports only the authentic
 host-owner, host-tool, hosted-instance, target-dispatch, and hosted

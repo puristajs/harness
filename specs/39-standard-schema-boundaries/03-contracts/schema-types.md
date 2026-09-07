@@ -49,7 +49,11 @@ therefore accepts any `Schema` whose validated output is JSON.
 
 Each definition exposes its exact `contract.$infer`. `defineHarness(...)`
 preserves only explicit root agents and workflows in its public `$infer`; the
-recursive dependency closure stays private but strongly typed. Workflow
+recursive dependency closure stays private but strongly typed through the
+Harness definition's unexported graph-inference marker. A public
+`defineCatalog(...)` value retains only definitions explicitly listed in that
+authoring catalog; Harness composition never publishes the expanded closure as
+`harness.catalog` or another graph property. Workflow
 `ctx.agents`, `ctx.tools`, and `ctx.models`, plus `session.agents` and
 `session.workflows`, preserve alias-specific arguments and results. A bare
 `Schema` annotation may intentionally be unknown; no known schema flowing

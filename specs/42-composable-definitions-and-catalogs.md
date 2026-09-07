@@ -2833,14 +2833,20 @@ explicit root directly. These are the only Harness composition methods; public
 definition identity may be reused and deduplicates. Distinct definitions with
 the same family/id or two workflow tools with the same id fail deterministically.
 
-The Harness retains two separately typed views:
+The Harness retains two separately typed layers:
 
-- `contracts` and `$infer` contain executable roots only; these are the only
-  public session invokers, host mount targets, and service exports;
-- `catalog` is a read-only `HarnessGraphView` of the complete recursively
-  compiled closure and exists for host binding inference and authoring
-  inspection. A dependency visible there is not a root and cannot be invoked
-  through the public session target map.
+- public `contracts`, `requirements`, and `$infer` contain executable roots and
+  their normalized runtime needs; these are the only public session invokers,
+  host mount targets, and service exports;
+- the complete recursively compiled `HarnessGraphView` is package-private
+  metadata. Its generic remains attached through an unexported type marker so
+  host binding and mount checks retain exact dependency types without exposing
+  a `harness.catalog` property or another callable surface.
+
+Only a value returned directly by `defineCatalog(...)` has public catalog maps.
+Those maps contain exactly the definitions explicitly listed in that authoring
+catalog. Composing the catalog into a Harness does not replace or widen them
+with recursive dependencies.
 
 `inspect()` separates `roots` from `dependencies` and reports target contracts
 for roots only. Dependency arrays exclude definitions already listed as roots.
@@ -2913,11 +2919,12 @@ public factories cannot construct. Production composition always uses the
 default identity-aware reader. This test seam is not exported and does not add a
 lazy or string reference API.
 
-The catalog supports composition, inspection, documentation, export, and
-deployment validation. It is not an execution service locator. Runtime code
-receives only the definitions or callable capabilities declared on its agent,
-workflow, or host-tool definition. Dynamic administrative lookup, when needed,
-uses sanitized `inspect()` metadata and never exposes handlers or grants an
+An authoring catalog supports reuse and composition. Sanitized `inspect()`
+metadata supports documentation, service export, and deployment validation.
+Neither is an execution service locator. Runtime code receives only the
+definitions or callable capabilities declared on its agent, workflow, or
+host-tool definition. Dynamic administrative lookup, when needed, uses
+sanitized `inspect()` metadata and never exposes handlers or grants an
 invocation capability.
 
 Providing a definition never grants access: agents list their tools, Skills,
@@ -2936,10 +2943,11 @@ application code calls remote agents through address-first host declarations.
 
 `defineHarness` requires `{ name }` and returns an immutable typed Harness
 definition directly. The name uses the id grammar in section 2. It has
-`catalog`, root-only `contracts`, root-only `$infer`, `inspect()`,
-`getInstance(...)`, `.addAgent(...)`, `.addWorkflow(...)`, and
-`.use(catalog)`. There is no terminal `.define()` or `.build()` and no Harness
-method for adding a leaf definition.
+root-only `contracts`, normalized `requirements`, root-only `$infer`,
+`inspect()`, `getInstance(...)`, `.addAgent(...)`, `.addWorkflow(...)`, and
+`.use(catalog)`. It has no public `catalog` or dependency-graph property. There
+is no terminal `.define()` or `.build()` and no Harness method for adding a
+leaf definition.
 
 Required model aliases and capabilities are compiled from agent behavior,
 tools, Skills, Guardrails, workflow model declarations, and memory. A selected
@@ -3734,6 +3742,8 @@ type AnyHarnessCatalogDefinition = HarnessCatalogDefinition<
   RuntimeRequirements
 >
 
+declare const harnessCompiledGraphType: unique symbol
+
 interface HarnessDefinition<
   AgentRoots extends Readonly<Record<string, AnyAgentDefinition>>,
   WorkflowRoots extends Readonly<Record<string, AnyWorkflowDefinition>>,
@@ -3744,7 +3754,8 @@ interface HarnessDefinition<
   readonly name: string
   readonly revision?: string
   readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
-  readonly catalog: Graph
+  /** Package-private invariant inference marker; no runtime graph value. */
+  readonly [harnessCompiledGraphType]: (graph: Graph) => Graph
   readonly contracts: HarnessContracts<AgentRoots, WorkflowRoots>
   readonly requirements: Graph['requirements']
   readonly $infer: HarnessInfer<
@@ -3783,6 +3794,14 @@ interface HarnessDefinition<
   >
 }
 ```
+
+`harnessCompiledGraphType` is not exported from any package subpath. Its value is
+a declaration-only invariant phantom used to preserve the exact `Graph` generic
+for integrator inference; it does not create an enumerable or reflectable
+runtime property. The compiled definitions and indexes live only in a private
+`WeakMap` keyed by the authentic Harness definition. Public code can observe
+root contracts, normalized requirements, `$infer`, and sanitized `inspect()`
+metadata, never the recursive graph or dependency handlers.
 
 The standalone public runtime surface is exact. It exposes only definition-keyed
 target invokers and session facilities; model handles, compiled registries,
@@ -4226,8 +4245,9 @@ declare function instantiateHostedHarness<
 
 Hosted execution extends the same private runtime kernel used by standalone
 execution. The Harness definition retains its compiled graph in package-private
-metadata; hosted instantiation consumes that exact graph and never recompiles a
-public catalog projection. The private extension is semantically equivalent to:
+metadata; hosted instantiation consumes that exact graph and never recompiles
+sanitized inspection metadata or a public authoring-catalog projection. The
+private extension is semantically equivalent to:
 
 ```ts
 declare const trustedHostedInvocationBrand: unique symbol
@@ -6082,12 +6102,14 @@ defineHostTool<Id, Input, Output, HostContext>(hostOwner, id, {
 })
 ```
 
-The handler is embedded in the definition but excluded from catalog and
-inspection metadata. Core uses this factory internally and supplies the
-run-scoped PURISTA context as an opaque generic host context; Harness never
-imports or inspects PURISTA types. `ServiceBuilder.defineTool(...).setHandler()`
-returns the final frozen definition, which is listed directly in an agent's
-`tools` array. Users do not manually bind it during mount.
+The handler is embedded in the frozen definition. An explicit authoring catalog
+that lists that definition retains the original definition and handler exactly;
+sanitized Harness inspection and service-definition exports omit the handler.
+Core uses this factory internally and supplies the run-scoped PURISTA context
+as an opaque generic host context; Harness never imports or inspects PURISTA
+types. `ServiceBuilder.defineTool(...).setHandler()` returns the final frozen
+definition, which is listed directly in an agent's `tools` array. Users do not
+manually bind it during mount.
 
 An integrator may attach an opaque host-owner brand when it creates a host
 tool. Harness compares that brand during hosted graph compilation without
@@ -6185,8 +6207,13 @@ The clean first-release CLI contract is intentionally narrow:
 `command/run<AgentPascal>/run<AgentPascal>CommandBuilder.ts`, exposed as
 `POST ai/<agent-kebab>`. Its JSON payload is `{ input: string, sessionId?:
 string }`; it declares the address-first agent contract and returns the
-aggregate `RunOutcome`. Its colocated test mocks the address-first agent client
-and verifies input/session mapping and interrupted outcomes. `--http stream` generates protected stream target
+Core-owned generated wrapper `{ sessionId, outcome }`, where `outcome` is the
+exact Harness `RunOutcome`. This wrapper belongs only to PURISTA's public
+address-first client and HTTP projection so a caller can reuse a Core-resolved
+session id. Standalone `session.agents.<id>.run(...)` and
+`session.workflows.<id>.run(...)` continue to return the raw `RunOutcome` with
+no wrapper. Its colocated test mocks the address-first agent client and verifies
+input/session mapping and interrupted outcomes. `--http stream` generates protected stream target
 `stream<AgentPascal>` at
 `stream/stream<AgentPascal>/stream<AgentPascal>StreamBuilder.ts`, exposed at the
 same POST path. It accepts the standard AI SDK UI request schema, parses it with
@@ -6213,9 +6240,10 @@ The stream projection additionally adds
 
 | Semantic value | Canonical owner | Valid projections | Forbidden duplication |
 | --- | --- | --- | --- |
-| tool/Skill/MCP/agent/workflow definition | branded immutable Harness definition | catalog view, inspection row, provider tool schema | host-owned structural copies or mutable registries |
+| tool/Skill/MCP/agent/workflow definition | branded immutable Harness definition | explicit authoring-catalog reference, sanitized inspection row, provider tool schema | expanded public closure, host-owned structural copies, or mutable registries |
 | target input/output contract | `HarnessTargetContract` with Standard JSON Schemas | PURISTA exported target, JSON Schema/OpenAPI metadata | importing another service builder for schemas |
-| aggregate execution | `RunOutcome<Output, Interrupt>` | EventBridge command response, HTTP JSON response | adapter-specific outcome unions |
+| standalone aggregate execution | `RunOutcome<Output, Interrupt>` | `HarnessSession` agent/workflow `.run(...)` result and hosted Harness outcome | session-id wrapper or adapter-specific outcome union inside Harness |
+| PURISTA aggregate projection | Core-owned `{sessionId,outcome: RunOutcome<Output,Interrupt>}` | EventBridge command response, generated address-first client, HTTP JSON response | changing the nested Harness outcome or adding this wrapper to standalone Harness |
 | progressive execution | `HarnessTargetExecutionEvent<Target>` | EventBridge stream frame, AI SDK UI v1 chunk, persisted audit event | broad root events, provider-native SSE as the portable contract |
 | approval | `ToolApprovalInterrupt` and `ToolApprovalResume` | AI SDK approval parts and descriptor | generic thrown error or UI-only approval state |
 | child dispatch | `HarnessTargetDispatchRequest` and terminal `RunOutcome` | local dispatcher stream, PURISTA EventBridge stream | direct JavaScript child invocation |

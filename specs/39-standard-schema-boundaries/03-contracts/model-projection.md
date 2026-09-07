@@ -9,14 +9,17 @@ core:
 2. Calls it exactly once with `{ target: 'draft-2020-12' }`.
 3. Rejects missing conversion, thrown conversion, or a non-`JsonValue` result with `CTR-SS-ERRORS` metadata.
 4. Deep-clones to a null/prototype-safe JSON value if required by the existing JSON utilities, then recursively freezes the owned copy.
-5. Stores the result in the private compiled tool or agent definition.
+5. Stores the result in the package-private compiled tool or agent definition,
+   never on a public Harness graph or authoring-catalog projection.
 
 The input projection is mandatory for both tool arguments and structured agent
 output because the model produces a value that the validation schema consumes.
 Output projection is not used. No projection occurs in instance creation,
 session creation, replay, retries, agent steps, or tool loops. Compilation-cache
 tests instrument the converter and assert one call per unique definition
-boundary across catalog reuse, multiple runs, and retries.
+boundary across authoring-catalog reuse, private Harness compilation, multiple
+runs, and retries. A public catalog continues to expose only its explicitly
+listed original frozen definitions; it is not the compiled cache.
 
 The memory summarization request in `sessions/index.ts` must pass an actual `JsonValue` JSON Schema to `ModelHandle.object`; passing a Zod schema through a cast is forbidden and covered by regression test.
 

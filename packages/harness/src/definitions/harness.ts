@@ -44,6 +44,44 @@ type MergedAgents<Left extends HarnessCatalogView, Right extends HarnessCatalogV
 type MergedWorkflows<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = MergeMaps<Left['workflows'], Right['workflows']>
 type MergedDependencyClosure<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = CatalogDependencyClosure<Left> | CatalogDependencyClosure<Right>
 type ClosureAgentMap<Closure> = Readonly<Record<string, Extract<Closure, AnyAgentDefinition>>>
+type MapValue<Map> = Map extends Readonly<Record<string, unknown>> ? Map[keyof Map] : never
+type ArrayValue<Values> = Values extends readonly unknown[] ? Values[number] : never
+type ReferencedAgent<Reference> = Reference extends AnyAgentDefinition
+	? Reference
+	: Reference extends { readonly agent: infer Agent extends AnyAgentDefinition } ? Agent : never
+type DirectSubagents<Agent> = Agent extends { readonly subagents: infer Subagents extends Readonly<Record<string, unknown>> }
+	? ReferencedAgent<MapValue<Subagents>>
+	: never
+type AgentClosure<Agent, SeenIds extends string = never> = Agent extends AnyAgentDefinition
+	? Agent['id'] extends SeenIds ? never : Agent | AgentClosure<DirectSubagents<Agent>, SeenIds | Agent['id']>
+	: never
+type WorkflowAgents<Workflow> = Workflow extends { readonly agents: infer Agents extends readonly AnyAgentDefinition[] }
+	? ArrayValue<Agents>
+	: never
+type CompiledAgents<Catalog extends HarnessCatalogView> = AgentClosure<
+	MapValue<Catalog['agents']> | WorkflowAgents<MapValue<Catalog['workflows']>>
+>
+/** @internal Exact recursively compiled graph retained for hosted target inference. */
+export interface HarnessGraphView<
+	Tools extends HarnessCatalogView['tools'] = HarnessCatalogView['tools'],
+	Skills extends HarnessCatalogView['skills'] = HarnessCatalogView['skills'],
+	McpServers extends HarnessCatalogView['mcpServers'] = HarnessCatalogView['mcpServers'],
+	Agents extends HarnessCatalogView['agents'] = HarnessCatalogView['agents'],
+	Workflows extends HarnessCatalogView['workflows'] = HarnessCatalogView['workflows'],
+	Requirements extends RuntimeRequirements = RuntimeRequirements,
+> {
+	readonly tools: Tools
+	readonly skills: Skills
+	readonly mcpServers: McpServers
+	readonly agents: Agents
+	readonly workflows: Workflows
+	readonly requirements: Requirements
+}
+type HarnessGraphForCatalog<Catalog extends HarnessCatalogView> = HarnessGraphView<
+	Catalog['tools'], Catalog['skills'], Catalog['mcpServers'],
+	ClosureAgentMap<CompiledAgents<Catalog>>, Catalog['workflows'], Catalog['requirements']
+>
+declare const harnessCompiledGraphType: unique symbol
 type MergeCatalogViews<Left extends HarnessCatalogView, Right extends HarnessCatalogView> = HarnessCatalogView<
 	MergedTools<Left, Right>,
 	MergedSkills<Left, Right>,
@@ -115,13 +153,19 @@ export interface HarnessInspection<Requirements extends RuntimeRequirements = Ru
 }
 
 /** Immutable composable Harness definition. Runtime binding is added by the instance configuration layer. */
-export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends string = string> = {
+export type HarnessDefinition<
+	Catalog extends HarnessCatalogView,
+	Name extends string = string,
+	Graph extends HarnessGraphView = HarnessGraphForCatalog<Catalog>,
+> = {
 	readonly kind: 'harness'
 	readonly name: Name
 	readonly revision?: string
 	readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
 	readonly contracts: Catalog['contracts']
 	readonly requirements: Catalog['requirements']
+	/** @internal Invariant type-only marker for the exact recursively compiled graph. */
+	readonly [harnessCompiledGraphType]: (graph: Graph) => Graph
 	readonly $infer: HarnessInfer<Catalog['contracts'], Catalog['requirements']>
 	inspect(): HarnessInspection<Catalog['requirements']>
 	getInstance<const AdditionalGroups extends readonly string[] = readonly []>(

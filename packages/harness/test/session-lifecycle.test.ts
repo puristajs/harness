@@ -686,11 +686,13 @@ describe('v4 session lifecycle', () => {
 		let effects = 0
 		let authorizations = 0
 		let authorizationsAtEffect = 0
+		let approvedEffectCaller: unknown
 		const inspectGroup = defineTool('inspectInheritedGroup', { description: 'Inspect inherited group state.', input: z.string(), output: z.boolean(),
 			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) { const exists = await context.sandbox.exists(input); visibility.push(exists); return exists } })
 		const approvedEffect = defineTool('bash', { description: 'Inspect private state after approval.', input: z.string(), output: z.boolean(),
 			requires: { sandbox: ['sandbox.fs'] }, async handler(context, input) {
 				authorizationsAtEffect = authorizations
+				approvedEffectCaller = context.caller
 				effects += 1
 				const exists = await context.sandbox.exists(input)
 				visibility.push(exists)
@@ -717,6 +719,10 @@ describe('v4 session lifecycle', () => {
 		const session = await harness.getSession('nested-approval', { identity: owner.identity, sandboxOwner: owner })
 		const interrupted = await session.workflows.nestedApprovalScope.run('/approval.txt')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected nested approval')
+		const leafRunId = interrupted.interrupt.requests[0]!.agentRunId
+		const freshLeafEvents = await storage.listEvents(leafRunId)
+		expect(freshLeafEvents.find(event => event.type === 'model.completed')).toMatchObject({ runId: leafRunId,
+			payload: { caller: { kind: 'agent', agentId: reviewer.id, workflowId: workflow.id } } })
 		expect(visibility).toEqual([true])
 		expect(effects).toBe(0)
 		const privateScopesBefore = sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
@@ -729,8 +735,17 @@ describe('v4 session lifecycle', () => {
 			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }],
 		} })).resolves.toMatchObject({ status: 'completed', output: 'middle complete' })
 		expect(effects).toBe(1)
+		expect(approvedEffectCaller).toEqual({ kind: 'agent', agentId: reviewer.id, workflowId: workflow.id })
 		expect(authorizationsAtEffect).toBeGreaterThan(beforeResume)
 		expect(visibility).toEqual([true, false])
+		const nestedEvents = await storage.listEvents(leafRunId)
+		const transitiveCallerEvents = nestedEvents.filter(event => ['model.completed', 'tool.input.available', 'tool.started', 'tool.finished'].includes(event.type)
+			&& (event.payload as { caller?: { kind?: string; agentId?: string } }).caller?.kind === 'agent')
+		expect(transitiveCallerEvents.length).toBeGreaterThan(0)
+		for (const event of transitiveCallerEvents) {
+			expect(event).toMatchObject({ runId: leafRunId,
+				payload: { caller: { kind: 'agent', agentId: reviewer.id, workflowId: workflow.id } } })
+		}
 		expect(sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
 			.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
 		await session.destroy()
@@ -772,6 +787,15 @@ describe('v4 session lifecycle', () => {
 		await effectEntered
 		const joined = session.agents.concurrentApprovalAgent.run('start', { resume })
 		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+			...resume, interruptId: 'different-interrupt', decisions: [],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+			...resume, revision: 'different-revision', decisions: [],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+			...resume, eventId: 'different-event', decisions: [],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
 			...resume, decisions: [{ approvalId: request.approvalId, approved: false }],
 		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
 		for (const decisions of [
@@ -794,6 +818,153 @@ describe('v4 session lifecycle', () => {
 			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
 		await harness.close()
 	})
+
+	it('replays one identical event sequence to concurrent resume streams that reach a second interruption', async () => {
+		let effects = 0
+		const effect = defineTool('bash', { description: 'Apply.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const agent = defineAgent('secondApprovalAgent', { instructions: 'Request two effects.', tools: [effect],
+			permissions: { bash: 'require_approval' } })
+		const provider = new FakeModelProvider({ strict: true })
+		const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'first-call', name: effect.id, arguments: 'first' }], usage, finishReason: 'tool_calls' })
+		provider.enqueueTextStream([
+			{ kind: 'tool_call', call: { id: 'second-call', name: effect.id, arguments: 'second' } },
+			{ kind: 'finish', usage, finishReason: 'tool_calls' },
+		])
+		const storage = persistentStorage()
+		const harness = await defineHarness({ name: 'secondApprovalHarness', revision: 'v1' }).addAgent(agent)
+			.getInstance({ storage, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('second-approval-session')
+		const firstInterrupt = await session.agents.secondApprovalAgent.run('start')
+		if (firstInterrupt.status !== 'interrupted' || firstInterrupt.interrupt.type !== 'tool-approval') throw new Error('expected first approval')
+		const resume: ToolApprovalResume = { type: 'tool-approval', runId: firstInterrupt.runId,
+			interruptId: firstInterrupt.interrupt.id, revision: firstInterrupt.interrupt.revision, eventId: 'first-resume',
+			decisions: firstInterrupt.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
+		const first = session.agents.secondApprovalAgent.stream('start', { resume })
+		const joined = session.agents.secondApprovalAgent.stream('start', { resume })
+		const collect = async (stream: typeof first) => {
+			const events = []
+			for await (const event of stream) events.push(event)
+			return events
+		}
+		const [firstEvents, joinedEvents, firstResult, joinedResult] = await Promise.all([
+			collect(first), collect(joined), first.result, joined.result,
+		])
+		expect(joinedEvents).toEqual(firstEvents)
+		expect(joinedResult).toEqual(firstResult)
+		expect(firstResult).toMatchObject({ status: 'interrupted', runId: firstInterrupt.runId,
+			interrupt: { type: 'tool-approval' } })
+		expect(effects).toBe(1)
+		expect(provider.requests).toHaveLength(2)
+		await session.destroy()
+		await harness.close()
+	})
+
+	it('batches a direct provider multi-tool turn into one ordered approval interruption before effects', async () => {
+		const effects: string[] = []
+		const bash = defineTool('bash', { description: 'Apply.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects.push(input); return input } })
+		const agent = defineAgent('multiApprovalAgent', { instructions: 'Apply both.', tools: [bash],
+			permissions: { bash: 'require_approval' } })
+		const provider = new FakeModelProvider({ strict: true })
+		const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+		provider.enqueueText({ content: '', toolCalls: [
+			{ id: 'batch-call-1', name: bash.id, arguments: 'first' },
+			{ id: 'batch-call-2', name: bash.id, arguments: 'second' },
+		], usage, finishReason: 'tool_calls' })
+		provider.enqueueText({ content: 'complete', toolCalls: [], usage, finishReason: 'stop' })
+		const storage = persistentStorage()
+		const harness = await defineHarness({ name: 'multiApprovalHarness', revision: 'v1' }).addAgent(agent)
+			.getInstance({ storage, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('multi-approval-session')
+		const interrupted = await session.agents.multiApprovalAgent.run('start')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval batch')
+		expect(interrupted.interrupt.requests.map(request => request.callId)).toEqual(['batch-call-1', 'batch-call-2'])
+		expect(new Set(interrupted.interrupt.requests.map(request => request.approvalId)).size).toBe(2)
+		expect(effects).toEqual([])
+		await expect(session.agents.multiApprovalAgent.run('start', { resume: {
+			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+			revision: interrupted.interrupt.revision, eventId: 'multi-approval-resume',
+			decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })),
+		} })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
+		expect(effects).toEqual(['first', 'second'])
+		expect(provider.requests).toHaveLength(2)
+		await session.destroy()
+		await harness.close()
+	})
+
+	it.each(['completed', 'failed', 'cancelled'] as const)(
+		'replays a terminal approval receipt for a %s root without reopening provider or tool effects', async terminalStatus => {
+			let effects = 0
+			let cancelReady!: () => void
+			const cancellationReady = new Promise<void>(resolve => { cancelReady = resolve })
+			const bash = defineTool('bash', { description: 'Apply.', input: z.string(), output: z.string(),
+				async handler(_context, input) { effects += 1; return input } })
+			const agent = defineAgent(`receiptAgent${terminalStatus}`, { instructions: 'Apply.', tools: [bash],
+				permissions: { bash: 'require_approval' } })
+			const workflow = defineWorkflow(`receiptWorkflow${terminalStatus}`, { agents: [agent],
+				async handler({ agents, signal }) {
+					const output = await agents[agent.id].run('start', { callId: 'receipt-child' })
+					if (terminalStatus === 'failed') throw new Error('private workflow failure')
+					if (terminalStatus === 'cancelled') {
+						cancelReady()
+						await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+					}
+					return output
+				},
+			})
+			const provider = new FakeModelProvider({ strict: true })
+			const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+			provider.enqueueText({ content: '', toolCalls: [{ id: 'receipt-call', name: bash.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' })
+			provider.enqueueText({ content: 'child complete', toolCalls: [], usage, finishReason: 'stop' })
+			const storage = persistentStorage()
+			const harness = await defineHarness({ name: `receiptHarness${terminalStatus}`, revision: 'v1' }).addWorkflow(workflow)
+				.getInstance({ storage, model: { provider, model: 'fake' } })
+			const session = await harness.getSession(`receipt-session-${terminalStatus}`)
+			const interrupted = await session.workflows[workflow.id].run('start')
+			if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+			const resume: ToolApprovalResume = { type: 'tool-approval', runId: interrupted.runId,
+				interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision,
+				eventId: `receipt-resume-${terminalStatus}`,
+				decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
+			const controller = new AbortController()
+			const first = session.workflows[workflow.id].stream('start', { resume, signal: controller.signal })
+			const firstEventsPromise = (async () => { const events = []; for await (const event of first) events.push(event); return events })()
+			if (terminalStatus === 'cancelled') { await cancellationReady; controller.abort('stop') }
+			const [firstOutcome] = await Promise.all([first.result, firstEventsPromise])
+			expect(firstOutcome.status).toBe(terminalStatus)
+			const requests = provider.requests.length
+			await expect(session.workflows[workflow.id].run('start', { resume: {
+				...resume, eventId: `${resume.eventId}-wrong`, decisions: [],
+			} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+			const replay = session.workflows[workflow.id].stream('start', { resume })
+			const replayEvents = []
+			for await (const event of replay) replayEvents.push(event)
+			await expect(replay.result).resolves.toEqual(firstOutcome)
+			expect(replayEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
+			expect(replayEvents[1]).toMatchObject({ outcome: firstOutcome })
+			expect(provider.requests).toHaveLength(requests)
+			expect(effects).toBe(1)
+			const persisted = await storage.listEvents(interrupted.runId)
+			expect(persisted.filter(event => event.type === 'run.started')).toHaveLength(1)
+			const persistedTerminals = persisted.filter(event => event.type === 'run.finished')
+			expect(persistedTerminals.filter(event => (event.payload as { outcome?: { status?: string } }).outcome?.status === 'interrupted')).toHaveLength(1)
+			expect(persistedTerminals.filter(event => (event.payload as { outcome?: { status?: string } }).outcome?.status === terminalStatus)).toHaveLength(1)
+			if (terminalStatus === 'completed') {
+				await expect(session.workflows[workflow.id].run('start', { resume })).resolves.toEqual(firstOutcome)
+			} else if (terminalStatus === 'failed') {
+				await expect(session.workflows[workflow.id].run('start', { resume })).rejects.toBeInstanceOf(InternalError)
+			} else {
+				await expect(session.workflows[workflow.id].run('start', { resume })).rejects.toBeInstanceOf(OperationCancelledError)
+			}
+			expect(provider.requests).toHaveLength(requests)
+			expect(effects).toBe(1)
+			expect(await storage.listEvents(interrupted.runId)).toEqual(persisted)
+			await session.destroy()
+			await harness.close()
+		},
+	)
 
 	it.each([
 		['agent', 'run'], ['agent', 'stream'], ['workflow', 'run'], ['workflow', 'stream'],
@@ -849,38 +1020,32 @@ describe('v4 session lifecycle', () => {
 		await harness.close()
 	})
 
-	it('streams nested workflow events with exact immediate-parent correlation in execution order', async () => {
+	it('protects the bounded public stream with direct-root run boundaries', async () => {
 		const leaf = defineAgent('eventLeaf', { instructions: 'Finish.' })
-		const middle = defineAgent('eventMiddle', { instructions: 'Delegate.', subagents: { leaf } })
-		const workflow = defineWorkflow('eventWorkflow', { input: z.string(), output: z.string(), agents: [middle],
-			async handler({ agents, input }) { return agents.eventMiddle.run(input, { callId: 'middle' }) } })
+		const workflow = defineWorkflow('eventWorkflow', { input: z.string(), output: z.string(), agents: [leaf],
+			async handler({ agents, input }) {
+				let output = input
+				for (let index = 0; index < 64; index += 1) output = await agents.eventLeaf.run(input, { callId: `nested-${index}` })
+				return output
+			} })
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'child' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'leaf complete', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		provider.enqueueText({ content: 'middle complete', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		const harness = await defineHarness({ name: 'nestedEventCorrelation', revision: 'v1', defaults: { maxDepth: 3 } })
+		for (let index = 0; index < 64; index += 1) provider.enqueueText({ content: `leaf-${index}`,
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const harness = await defineHarness({ name: 'nestedEventCorrelation', revision: 'v1',
+			defaults: { maxDepth: 3, maxWorkflowAgentCalls: 64 } })
 			.addWorkflow(workflow).getInstance({ storage: persistentStorage(), model: { provider, model: 'fake' } })
 		const session = await harness.getSession('nested-events')
 		const events: Array<{ type: string; runId: string; parentRunId?: string; parentInvocationId?: string }> = []
 		for await (const event of session.workflows.eventWorkflow.stream('start')) events.push(event)
-		const rootStarted = events.find(event => event.type === 'run.started' && event.parentRunId === undefined)!
-		const directStarted = events.find(event => event.type === 'run.started' && event.parentRunId === rootStarted.runId)!
-		const descendantStarted = events.find(event => event.type === 'run.started' && event.parentRunId === directStarted.runId)!
+		const rootStarted = events.find(event => event.type === 'run.started')!
 		expect(rootStarted.parentInvocationId).toBeUndefined()
-		expect(directStarted.parentInvocationId).toBe(directStarted.runId)
-		expect(descendantStarted.parentInvocationId).toBe(descendantStarted.runId)
-		const tuples = [rootStarted, directStarted, descendantStarted].map(event => [event.runId, event.parentRunId, event.parentInvocationId])
-		expect(tuples).toEqual([
-			[rootStarted.runId, undefined, undefined],
-			[directStarted.runId, rootStarted.runId, directStarted.runId],
-			[descendantStarted.runId, directStarted.runId, descendantStarted.runId],
-		])
-		const terminalIndex = (runId: string) => events.findIndex(event => event.type === 'run.finished' && event.runId === runId)
-		expect(events.indexOf(rootStarted)).toBeLessThan(events.indexOf(directStarted))
-		expect(events.indexOf(directStarted)).toBeLessThan(events.indexOf(descendantStarted))
-		expect(terminalIndex(descendantStarted.runId)).toBeLessThan(terminalIndex(directStarted.runId))
-		expect(terminalIndex(directStarted.runId)).toBeLessThan(terminalIndex(rootStarted.runId))
+		expect(rootStarted.parentRunId).toBeUndefined()
+		expect(new Set(events.map(event => event.runId))).toEqual(new Set([rootStarted.runId]))
+		expect(events.every(event => event.parentRunId === undefined && event.parentInvocationId === undefined)).toBe(true)
+		expect(events.filter(event => event.type === 'run.finished')).toHaveLength(1)
+		expect(events.at(-1)).toMatchObject({ type: 'run.finished', runId: rootStarted.runId,
+			outcome: { status: 'completed', output: 'leaf-63' } })
+		expect(provider.requests).toHaveLength(64)
 		await session.destroy()
 		await harness.close()
 	})

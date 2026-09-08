@@ -193,7 +193,14 @@ export async function consumeHarnessTargetStream<Output extends JsonValue, Inter
 		}
 		if (terminal === undefined) throw malformedTerminal('missing_terminal')
 		let result: unknown
-		try { result = await producerResult }
+		try {
+			const producerState = await Promise.race([
+				producerResult.then(value => Object.freeze({ settled: true as const, value })),
+				Promise.resolve().then(() => Object.freeze({ settled: false as const })),
+			])
+			if (!producerState.settled) throw malformedTerminal('missing_terminal')
+			result = producerState.value
+		}
 		catch (error) { throw error }
 		if (!validTerminalOutcome(result, childRunId)
 			|| canonicalJson(result) !== canonicalJson(terminal.outcome)) throw malformedTerminal('invalid_terminal')

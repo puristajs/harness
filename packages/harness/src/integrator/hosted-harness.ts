@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 import type { ToolApprovalResume } from '../approvals/index.js'
 import type { HarnessCatalogView, HarnessContracts } from '../definitions/catalog.js'
-import { getHarnessRuntimeBlueprint, type HarnessDefinition } from '../definitions/harness.js'
+import { getHarnessRuntimeBlueprint, type HarnessDefinition, type HarnessGraphView } from '../definitions/harness.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { HarnessExecutionCaller, HostToolDefinition } from '../definitions/types.js'
 import type { HarnessTargetStream } from '../definitions/execution-events.js'
@@ -83,6 +83,9 @@ export interface HarnessHostBindings<HostInvocation, HostContext> {
 }
 
 type HostedTargetOf<Contracts extends HarnessContracts> = Contracts['agents'][keyof Contracts['agents']] | Contracts['workflows'][keyof Contracts['workflows']]
+type CompiledTargetOf<Graph extends HarnessGraphView> =
+	| Graph['agents'][keyof Graph['agents']]['contract']
+	| Graph['workflows'][keyof Graph['workflows']]['contract']
 
 /** Runtime adapters required by a compiled graph; logger and telemetry remain host owned. */
 export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements, ConfiguredGroups extends readonly string[] = readonly []> = Readonly<
@@ -133,25 +136,27 @@ export type HostedDispatchedTargetRequest<Target extends AnyHarnessTargetContrac
 	}>
 
 /** Hosted execution facade retaining exact graph target types. */
-export interface HostedHarnessInstance<Contracts extends HarnessContracts, HostInvocation> {
+export interface HostedHarnessInstance<Contracts extends HarnessContracts, Graph extends HarnessGraphView, HostInvocation> {
 	runHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetRunOutcome<Target>>
 	streamHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetStream<Target>>
 	/** Accepts the receiving side of a trusted target dispatch while preserving its exact child identity. */
-	streamDispatched<Target extends HostedTargetOf<Contracts>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
+	streamDispatched<Target extends CompiledTargetOf<Graph>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 	close(): Promise<void>
 }
 
 /** Creates one hosted Harness runtime using only host-owned projection and dispatch bindings. */
 export async function instantiateHostedHarness<
 	Catalog extends HarnessCatalogView,
+	Name extends string,
+	Graph extends HarnessGraphView,
 	HostInvocation,
 	HostContext,
 	const ConfiguredGroups extends readonly string[] = readonly [],
 >(
-	definition: HarnessDefinition<Catalog>,
-	config: HostedHarnessInstanceConfig<Catalog['requirements'], ConfiguredGroups>,
+	definition: HarnessDefinition<Catalog, Name, Graph>,
+	config: HostedHarnessInstanceConfig<Graph['requirements'], ConfiguredGroups>,
 	hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
-): Promise<HostedHarnessInstance<Catalog['contracts'], HostInvocation>> {
+): Promise<HostedHarnessInstance<Catalog['contracts'], Graph, HostInvocation>> {
 	const blueprint = getHarnessRuntimeBlueprint(definition)
 	if (blueprint === undefined) throw new HarnessConfigError('Hosted Harness definition is invalid.', { reason: 'foreign_definition', path: 'definition' })
 	validateHostBindings(hostBindings)
@@ -194,7 +199,7 @@ export async function instantiateHostedHarness<
 	}
 	const prepare = async <Target extends AnyHarnessTargetContract>(request: HostedTargetRequest<Target, HostInvocation>) => {
 		if (closed) throw new InternalError('Hosted Harness instance is closed.')
-		const invokeOptions = validateHostedRequest(request, blueprint.graph)
+		const invokeOptions = validateHostedRequest(request, definition.contracts)
 		if (invokeOptions.signal?.aborted) throw abortError(invokeOptions.signal, 'run', 'Hosted run was cancelled.')
 		return Object.freeze({ environment: await projectEnvironment(request.hostInvocation), invokeOptions })
 	}
@@ -207,7 +212,7 @@ export async function instantiateHostedHarness<
 			const prepared = await prepare(request)
 			return kernel.streamTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment)
 		},
-		async streamDispatched<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>) {
+		async streamDispatched<Target extends CompiledTargetOf<Graph>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>) {
 			if (closed) throw new InternalError('Hosted Harness instance is closed.')
 			const validated = validateHostedDispatchedRequest(request, blueprint.graph, blueprint.defaults.maxDepth)
 			if (validated.invocation.signal.aborted) throw abortError(validated.invocation.signal, request.target.kind, 'Hosted target dispatch was cancelled.')
@@ -459,7 +464,7 @@ function hostFailure(context: ToolInvocationContext, definition: HostToolDefinit
 			target_kind: target.kind, target_id: target.id }) })
 }
 
-function validateHostedRequest(value: unknown, graph: NonNullable<ReturnType<typeof getHarnessRuntimeBlueprint>>['graph']): HostedInvokeOptions {
+function validateHostedRequest(value: unknown, contracts: HarnessContracts): HostedInvokeOptions {
 	if (!plain(value)) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request' } })
 	for (const field of ['target', 'input', 'invokeOptions', 'hostInvocation']) if (!Object.prototype.hasOwnProperty.call(value, field)) {
 		throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request', field } })
@@ -468,8 +473,8 @@ function validateHostedRequest(value: unknown, graph: NonNullable<ReturnType<typ
 	if (unknown !== undefined) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request', field: unknown } })
 	const target = value['target'] as AnyHarnessTargetContract
 	const identity = getDefinitionIdentity(target)
-	const known = identity === undefined ? undefined : [...Object.values(graph.agents), ...Object.values(graph.workflows)]
-		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate.contract === target)
+	const known = identity === undefined ? undefined : [...Object.values(contracts.agents), ...Object.values(contracts.workflows)]
+		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate === target)
 	if (known === undefined) throw new ValidationError('Hosted target is not part of this Harness graph.', { where: 'invoke_options', issues: { reason: 'unknown_hosted_target' } })
 	if (!isJsonValue(value['input'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
 	const invokeOptions = value['invokeOptions']

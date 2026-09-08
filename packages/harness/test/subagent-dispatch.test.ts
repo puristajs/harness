@@ -328,6 +328,19 @@ describe('subagent execution', () => {
 		expect(close).toHaveBeenCalledTimes(1)
 	})
 
+	it('rejects and cleans up when iteration ends after a terminal but producer result remains pending', async () => {
+		const child = defineAgent('pendingResultChild', { instructions: 'Help.' })
+		const tracked = trackedStream([{ type: 'run.finished', runId: 'r', at: 'x',
+			outcome: { status: 'completed', runId: 'r', output: 'event-output' } }])
+		Object.defineProperty(tracked.stream, 'result', { value: new Promise<never>(() => {}) })
+		const runtime = context(async () => tracked.stream)
+		await expect(createSubagentBinding('pendingResultDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'missing_terminal' } } })
+		expect(runtime.relayChildEvent).not.toHaveBeenCalled()
+		expect(tracked.cancel).toHaveBeenCalledTimes(1)
+		expect(tracked.close).toHaveBeenCalledTimes(1)
+	})
+
 	it.each([
 		['both parent fields missing', { __preserveParent: true }],
 		['parent invocation missing', { parentRunId: 'parent-run' }],
@@ -340,6 +353,25 @@ describe('subagent execution', () => {
 		await expect(createSubagentBinding('parentCorrelationDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
 			.rejects.toBeInstanceOf(ValidationError)
 		expect(runtime.relayChildEvent).not.toHaveBeenCalled()
+	})
+
+	it('relays nested child-task lifecycle only with exact immediate-parent correlation', async () => {
+		const child = defineAgent('nestedTaskCorrelationChild', { instructions: 'Help.' })
+		const tracked = trackedStream([
+			{ type: 'run.started', sequence: 1, runId: 'r', at: 'x' },
+			{ type: 'run.started', sequence: 1, runId: 'nested', parentRunId: 'r', parentInvocationId: 'nested-invocation', at: 'x' },
+			{ type: 'child_task.started', sequence: 2, runId: 'nested', parentRunId: 'r', parentInvocationId: 'nested-invocation',
+				taskId: 'task', at: 'x', workflowId: 'flow', agentId: 'worker', contextPolicy: 'isolated', mode: 'one_shot' },
+			{ type: 'run.finished', sequence: 3, runId: 'nested', parentRunId: 'r', parentInvocationId: 'nested-invocation', at: 'x',
+				outcome: { status: 'completed', runId: 'nested', output: 'nested-output' } },
+			{ type: 'run.finished', sequence: 2, runId: 'r', at: 'x', outcome: { status: 'completed', runId: 'r', output: 'output' } },
+		])
+		const runtime = context(async () => tracked.stream)
+		await expect(createSubagentBinding('nestedTaskCorrelationDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.resolves.toBe('output')
+		const childTask = runtime.relayChildEvent.mock.calls.map(([event]) => event)
+			.find(event => event.type === 'child_task.started')
+		expect(childTask).toMatchObject({ runId: 'nested', parentRunId: expect.any(String), parentInvocationId: 'nested-invocation' })
 	})
 
 	it('cleans up iterator and relay failures without masking the primary error', async () => {

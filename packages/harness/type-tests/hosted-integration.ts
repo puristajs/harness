@@ -36,7 +36,10 @@ const lookup = defineHostTool(owner, 'lookupAccount', {
 const agent = defineAgent('accountAssistant', { instructions: 'Help.', tools: [lookup] })
 const workflow = defineWorkflow('hostedWorkflow', { input: z.string(), output: z.number(),
 	async handler({ input }) { return input.length } })
-const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow)
+const dependencyAgent = defineAgent('dependencyAgent', { instructions: 'Dependency only.' })
+const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
+	async handler() { return 'done' } })
+const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow).addWorkflow(dependencyWorkflow)
 
 declare const provider: ModelProvider
 declare const storage: HarnessStorage
@@ -88,11 +91,27 @@ hostedInstance.then(instance => {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
 	}, hostInvocation: { authorization: 'token' } })
+	const dependencyStream = instance.streamDispatched({ delivery: 'fresh', target: dependencyAgent.contract,
+		wireInput: 'hello', input: 'hello', invocation: {
+			sessionId: 'dependency-session', invocationId: 'dependency-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			parentWorkflowId: dependencyWorkflow.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+		}, hostInvocation: { authorization: 'token' } })
 	type _AgentRun = Expect<Equal<typeof agentRun, Promise<HarnessTargetRunOutcome<typeof agent.contract>>>>
 	type _WorkflowRun = Expect<Equal<typeof workflowRun, Promise<HarnessTargetRunOutcome<typeof workflow.contract>>>>
 	type _AgentStream = Expect<Equal<typeof agentStream, Promise<HarnessTargetStream<typeof agent.contract>>>>
 	type _DispatchedStream = Expect<Equal<typeof dispatchedStream,
 		Promise<HarnessTargetDispatchStream<typeof agent.contract.$infer.output, typeof agent.contract.$infer.interrupt>>>>
+	type _DependencyStream = Expect<Equal<typeof dependencyStream,
+		Promise<HarnessTargetDispatchStream<typeof dependencyAgent.contract.$infer.output, typeof dependencyAgent.contract.$infer.interrupt>>>>
+	// @ts-expect-error dependency-only targets are not application-facing hosted roots
+	instance.runHosted({ target: dependencyAgent.contract, input: 'hello', invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' } })
+	// @ts-expect-error targets outside the retained compiled graph cannot be dispatched
+	instance.streamDispatched({ delivery: 'fresh', target: defineAgent('outsideDependency', { instructions: 'Outside.' }).contract,
+		wireInput: 'hello', input: 'hello', invocation: {
+			sessionId: 'outside-session', invocationId: 'outside-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			parentWorkflowId: dependencyWorkflow.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+		}, hostInvocation: { authorization: 'token' } })
 	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello',
 		// @ts-expect-error a dispatched child has exactly one parent target kind
 		invocation: { sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',

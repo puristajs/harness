@@ -268,6 +268,38 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 }
 
 describe('hosted Harness runtime', () => {
+	it('dispatches an authentic dependency-only graph target while keeping hosted root entrypoints root-only', async () => {
+		const dependency = defineAgent('hostedDependencyOnly', { instructions: 'Answer.' })
+		const root = defineWorkflow('hostedDependencyRoot', { agents: [dependency], async handler() { return 'root' } })
+		const definition = defineHarness({ name: 'hostedDependencyGraph', revision: 'v1' }).addWorkflow(root)
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: 'dependency answer', toolCalls: [], usage, finishReason: 'stop' })
+		const unused = defineAgent('hostedDependencyDispatcherUnused', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const owner = createHostOwnerToken<object>()
+		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' } }, {
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
+		})
+		const opened = await instance.streamDispatched({ delivery: 'fresh', target: dependency.contract,
+			wireInput: 'question', input: 'question', invocation: {
+				sessionId: 'dependency-session', invocationId: 'dependency-run', rootRunId: 'root-run', parentRunId: 'root-run',
+				parentWorkflowId: root.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+			}, hostInvocation: {} })
+		await expect(opened.result).resolves.toMatchObject({ status: 'completed', runId: 'dependency-run', output: 'dependency answer' })
+		for await (const _event of opened) void _event
+		await expect(instance.runHosted({ target: dependency.contract, input: 'question',
+			invokeOptions: { sessionId: 'root-only-session' }, hostInvocation: {} } as never))
+			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'unknown_hosted_target' } } })
+		await expect(instance.streamDispatched({ delivery: 'fresh', target: { ...dependency.contract },
+			wireInput: 'question', input: 'question', invocation: {
+				sessionId: 'copied-session', invocationId: 'copied-run', rootRunId: 'root-run', parentRunId: 'root-run',
+				parentWorkflowId: root.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+			}, hostInvocation: {} } as never))
+			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'unknown_hosted_target' } } })
+		await instance.close()
+	})
+
 	it('owns exact terminal results for hosted root and dispatched streams independently of iteration', async () => {
 		const workflow = defineWorkflow('hostedResultWorkflow', { input: z.string(), output: z.string(),
 			async handler({ input }) { return `done:${input}` } })

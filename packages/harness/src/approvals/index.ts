@@ -78,16 +78,16 @@ export class ToolApprovalPendingError extends HarnessError {
     requests: readonly ToolApprovalRequest[],
     public readonly toolCalls: readonly ToolCallSpec[],
   ) {
-    const sorted = [...requests].sort((left, right) => left.approvalId.localeCompare(right.approvalId))
-    const first = sorted[0]
+    const ordered = [...requests]
+    const first = ordered[0]
     if (!first) throw new TypeError('At least one approval request is required.')
     const id = `approval_batch_${createHash('sha256')
-      .update(JSON.stringify([first.runId, first.invocationId, first.step, sorted.map(request => request.approvalId)]))
+      .update(JSON.stringify([first.runId, first.invocationId, first.step, ordered.map(request => request.approvalId)]))
       .digest('hex')}`
     const revision = createHash('sha256')
       .update(
         JSON.stringify(
-          sorted.map(request => [
+          ordered.map(request => [
             request.approvalId,
             request.toolId,
             request.callId,
@@ -102,13 +102,13 @@ export class ToolApprovalPendingError extends HarnessError {
       category: 'state',
       retriable: true,
       message: 'Tool execution is waiting for approval.',
-      meta: { interruptId: id, revision, requestCount: sorted.length },
+      meta: { interruptId: id, revision, requestCount: ordered.length },
     })
     this.interrupt = Object.freeze({
       type: 'tool-approval',
       id,
       revision,
-      requests: Object.freeze(sorted),
+      requests: Object.freeze(ordered),
     })
   }
 

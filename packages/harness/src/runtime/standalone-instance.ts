@@ -408,9 +408,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	const retainedPublicationPoisons = new Map<string, RetainedPublicationPoison>()
 	const directAgentRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
 	const activeApprovalResumes = new Map<string, Readonly<{
-		sessionId: string; targetKind: 'agent' | 'workflow'; targetId: string; input: string; eventId: string; decisions: string
+		sessionId: string; targetKind: 'agent' | 'workflow'; targetId: string; input: string
+		interruptId: string; revision: string; eventId: string; decisions: string
 		approvalIds: readonly string[]
 		promise: Promise<RunOutcome<JsonValue>>
+		stream?: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>
 	}>>()
 	const directStreamSettlers = new Map<string, Readonly<{
 		resolve: (outcome: RunOutcome<JsonValue>) => void
@@ -607,8 +609,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const childSandboxHandoff = childSandboxPolicies.get(invocation.invocationId)
 		if (childSandboxHandoff !== undefined) childSandboxPolicies.delete(invocation.invocationId)
 		if (childSandboxHandoff !== undefined) await authorizeSessionOwner(childSandboxHandoff.source.authorizationRecord)
+		let owningWorkflowId = invocation.parentWorkflowId
 		if (invocation.parentRunId !== undefined) {
 			const root = await storage.getRun(invocation.rootRunId)
+			if (owningWorkflowId === undefined && root?.kind === 'workflow') owningWorkflowId = root.target
 			const parentSession = root === undefined ? undefined : sessions.get(root.sessionId)
 			if (parentSession !== undefined) await authorizeSessionOwner(parentSession.record)
 		}
@@ -752,7 +756,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			catch { throw new ValidationError('Execution event caller is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } }) }
 			const expected = definition.kind === 'agent'
 				? projectHarnessExecutionCaller({ kind: 'agent', agentId: definition.id,
-					...(invocation.parentWorkflowId === undefined ? {} : { workflowId: invocation.parentWorkflowId }) })
+					...(owningWorkflowId === undefined ? {} : { workflowId: owningWorkflowId }) })
 				: projectHarnessExecutionCaller({ kind: 'workflow', workflowId: definition.id })
 			if (canonicalJson(caller as unknown as JsonValue) !== canonicalJson(expected as unknown as JsonValue)) {
 				throw new ValidationError('Execution event caller is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } })
@@ -1019,7 +1023,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const frame = path![index]!.frame
 				if (frame.kind === 'workflow') return frame.workflowId
 			}
-			return invocation.parentWorkflowId
+			return owningWorkflowId
 		}
 		const resumeTargetNode = async (node: SuspensionNodeValue, expectedRunId: string): Promise<JsonValue> => {
 			if ((node.frame.kind !== 'agent' && node.frame.kind !== 'workflow') || node.frame.runId !== expectedRunId) {
@@ -1238,7 +1242,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					stepId: string, handler: () => Promise<T>, stepOptions?: import('./steps.js').DurableStepOptions,
 				): Promise<T> => agentCheckpointContext === undefined ? handler() : agentCheckpointContext.step(stepId, handler, stepOptions)
 				const agentCaller = projectHarnessExecutionCaller({ kind: 'agent', agentId: definition.id,
-					...(invocation.parentWorkflowId === undefined ? {} : { workflowId: invocation.parentWorkflowId }) })
+					...(owningWorkflowId === undefined ? {} : { workflowId: owningWorkflowId }) })
 				if (agentCaller.kind !== 'agent') throw new InternalError('Agent caller projection is invalid.')
 				const agentToolContext = Object.freeze({ caller: agentCaller, harnessName: options.name, sessionId: invocation.sessionId, runId,
 					rootRunId: invocation.rootRunId, ...(parentEventRunId === undefined ? {} : { parentRunId: parentEventRunId }),
@@ -1259,7 +1263,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					if (parentNode === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 					if (parentNode.frame.kind !== 'host-tool') return resumeTargetNode(node, entry.childRunId)
 					const expectedAgentCaller = projectHarnessExecutionCaller({ kind: 'agent', agentId: definition.id,
-						...(invocation.parentWorkflowId === undefined ? {} : { workflowId: invocation.parentWorkflowId }) })
+						...(owningWorkflowId === undefined ? {} : { workflowId: owningWorkflowId }) })
 					if (checkpointLease === undefined || parentNode.frame.runId !== runId
 						|| canonicalJson(parentNode.frame.caller as unknown as JsonValue) !== canonicalJson(expectedAgentCaller as unknown as JsonValue)
 						|| parentNode.frame.invocationId !== invocation.invocationId
@@ -2138,21 +2142,24 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			if (active === undefined) return undefined
 			if (active.sessionId !== state.record.id || active.targetKind !== definition.kind || active.targetId !== definition.id) throw new ApprovalResumeError('run_mismatch')
 			if (active.input !== canonicalJson(input)) throw new ApprovalResumeError('input_mismatch')
+			if (active.interruptId !== resume.interruptId) throw new ApprovalResumeError('stale_continuation')
+			if (active.revision !== resume.revision) throw new ApprovalResumeError('interrupt_mismatch')
+			if (active.eventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 			const normalizedDecisions = normalizeResumeDecisions(resume)
 			assertDecisionSet(normalizedDecisions, active.approvalIds)
 			const decisions = canonicalJson(normalizedDecisions as unknown as JsonValue)
-			if (active.eventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 			if (active.decisions !== decisions) throw new ApprovalResumeError('event_conflict')
 			return active
 		}
-		const registerApprovalResume = (input: JsonValue, invokeOptions: InvokeOptions, promise: Promise<RunOutcome<JsonValue>>) => {
+		const registerApprovalResume = (input: JsonValue, invokeOptions: InvokeOptions, promise: Promise<RunOutcome<JsonValue>>,
+			stream?: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>) => {
 			const resume = invokeOptions.resume
 			if (resume === undefined) return
 			const decisions = normalizeResumeDecisions(resume)
 			activeApprovalResumes.set(resume.runId, Object.freeze({ sessionId: state.record.id, targetKind: definition.kind, targetId: definition.id,
-				input: canonicalJson(input), eventId: resume.eventId,
+				input: canonicalJson(input), interruptId: resume.interruptId, revision: resume.revision, eventId: resume.eventId,
 				approvalIds: Object.freeze(decisions.map(decision => decision.approvalId)),
-				decisions: canonicalJson(decisions as unknown as JsonValue), promise }))
+				decisions: canonicalJson(decisions as unknown as JsonValue), promise, ...(stream === undefined ? {} : { stream }) }))
 			const lifecycle = state.activeRoots.get(resume.runId)?.settled ?? Promise.resolve()
 			void Promise.allSettled([promise, lifecycle]).then(() => {
 				if (activeApprovalResumes.get(resume.runId)?.promise === promise) activeApprovalResumes.delete(resume.runId)
@@ -2223,7 +2230,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const normalized = normalizeInvokeOptions(invokeOptions)
 				if (normalized.resume !== undefined) normalizeResumeDecisions(normalized.resume)
 				const joined = joinedApprovalResume(input, normalized)
-				if (joined !== undefined) return toHarnessTargetStream(definition.contract, replayRunAfter(joined.promise, normalized.resume!.runId))
+				if (joined !== undefined) return toHarnessTargetStream(definition.contract,
+					joined.stream ?? replayRunAfter(joined.promise, normalized.resume!.runId))
 				if (definition.kind === 'agent' && normalized.idempotencyKey !== undefined) {
 					if (!isJsonValue(input)) throw new ValidationError('Harness target input must be JSON.', {
 						where: 'agent_input', issues: { reason: 'non_json_input' },
@@ -2252,11 +2260,12 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					}).catch(() => {})
 					return toHarnessTargetStream(definition.contract, opened)
 				}
-				const opened = start('stream', input, normalized)
+				const started = start('stream', input, normalized)
+				const opened = normalized.resume === undefined ? started : replayableDispatchStream(started)
 				if (normalized.resume !== undefined) {
 					const promise = opened.result.then(outcome => terminalOutcome(outcome, definition))
 					void promise.catch(() => {})
-					registerApprovalResume(input, normalized, promise)
+					registerApprovalResume(input, normalized, promise, opened)
 				}
 				return toHarnessTargetStream(definition.contract, opened)
 			}
@@ -2301,11 +2310,13 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			settled: Promise<RunOutcome<JsonValue>>,
 			runId: string,
 		): HarnessTargetDispatchStream<JsonValue, HarnessInterrupt> {
-			const replay = settled.catch(() => undefined).then(async () => {
+			const replay = settled.then(outcome => outcome, () => undefined).then(async outcome => {
 				const stored = await storage.getRun(runId)
 				if (stored === undefined) throw new StateError('Idempotent run replay is unavailable.', { op: 'getRun', reason: 'run_not_found' })
 				const boundaries = requirePersistedBoundaries(await storage.listEvents(runId), stored)
-				return Object.freeze({ started: restoreStartedEvent(boundaries.started), terminal: restoreTerminalEvent(boundaries.terminal, stored) })
+				return Object.freeze({ started: restoreStartedEvent(boundaries.started),
+					terminal: restoreTerminalEvent(boundaries.terminal, stored,
+						outcome?.status === 'interrupted' && outcome.interrupt.type === 'tool-approval' ? outcome.interrupt : undefined) })
 			})
 			const result = replay.then(boundaries => boundaries.terminal.outcome)
 			void result.catch(() => {})
@@ -2531,6 +2542,7 @@ class EventQueue<Output extends JsonValue, Interrupt = HarnessInterrupt> impleme
 	}
 	public push(value: ExecutionEvent<Output, Interrupt>) {
 		if (this.done) return
+		if (value.runId !== this.directRunId) return
 		if (value.type === 'run.finished' && value.runId === this.directRunId) {
 			if (this.terminal !== undefined) {
 				this.fail(new InternalError('Harness target execution produced more than one terminal event.'))
@@ -2605,6 +2617,54 @@ function lazyDispatchStream<Output extends JsonValue, Interrupt = HarnessInterru
 	})
 }
 
+function replayableDispatchStream<Output extends JsonValue, Interrupt>(
+	source: HarnessTargetDispatchStream<Output, Interrupt>,
+): HarnessTargetDispatchStream<Output, Interrupt> {
+	const maxBufferedEvents = 256
+	const history: ExecutionEvent<Output, Interrupt>[] = []
+	const cursors = new Set<{ index: number }>()
+	const waiters: Array<() => void> = []
+	let started = false
+	let done = false
+	let failure: unknown
+	const wake = () => { for (const waiter of waiters.splice(0)) waiter() }
+	const pump = () => {
+		if (started) return
+		started = true
+		void (async () => {
+			try {
+				for await (const event of source) {
+					if (history.length === maxBufferedEvents) {
+						const dropped = history.findIndex(candidate => candidate.type !== 'run.started' && candidate.type !== 'run.finished')
+						if (dropped < 0) throw new InternalError('Approval resume replay buffer cannot admit another protected event.')
+						history.splice(dropped, 1)
+						for (const cursor of cursors) if (cursor.index > dropped) cursor.index -= 1
+					}
+					history.push(event)
+					wake()
+				}
+			} catch (error) { failure = error }
+			finally { done = true; wake() }
+		})()
+	}
+	return Object.freeze({
+		result: source.result,
+		cancel: (reason?: string) => source.cancel(reason),
+		async *[Symbol.asyncIterator](): AsyncIterator<ExecutionEvent<Output, Interrupt>> {
+			const cursor = { index: 0 }
+			cursors.add(cursor)
+			pump()
+			try {
+				while (!done || cursor.index < history.length) {
+					if (cursor.index >= history.length) await new Promise<void>(resolve => waiters.push(resolve))
+					while (cursor.index < history.length) yield history[cursor.index++]!
+				}
+				if (failure !== undefined) throw failure
+			} finally { cursors.delete(cursor) }
+		},
+	})
+}
+
 function toHarnessTargetStream<Target extends AnyTargetContract>(
 	target: Target,
 	stream: HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>,
@@ -2616,14 +2676,16 @@ function toHarnessTargetStream<Target extends AnyTargetContract>(
 			let rootRunId: string | undefined
 			for await (const event of stream) {
 				const childTaskEvent = event.type === 'child_task.started' || event.type === 'child_task.settled'
-				const hasParentRun = !childTaskEvent && event.parentRunId !== undefined
+				const hasParentRun = event.parentRunId !== undefined
 				const hasParentInvocation = event.parentInvocationId !== undefined
-				if (hasParentRun !== hasParentInvocation) throw new InternalError('Harness target stream event correlation is invalid.')
+				const rootChildTask = childTaskEvent && hasParentRun && !hasParentInvocation
+				if (!rootChildTask && hasParentRun !== hasParentInvocation) throw new InternalError('Harness target stream event correlation is invalid.')
+				if (rootChildTask && event.parentRunId !== event.runId) throw new InternalError('Harness target stream child-task correlation is invalid.')
 				if (rootRunId === undefined) {
-					if (event.type !== 'run.started' || hasParentRun) throw new InternalError('Harness target stream must begin with its root run start.')
+					if (event.type !== 'run.started' || hasParentRun || hasParentInvocation) throw new InternalError('Harness target stream must begin with its root run start.')
 					rootRunId = event.runId
 				}
-				if (!hasParentInvocation) {
+				if (!hasParentInvocation || rootChildTask) {
 					if (event.runId !== rootRunId || !rootEventAllowed(target, event)) {
 						throw new InternalError('Harness target stream contains an event outside its root contract.')
 					}
@@ -3243,9 +3305,9 @@ function validateTerminalResume(
 	if (receipt.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
 	if (receipt.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
 	if (receipt.rootTarget.kind !== target.kind || receipt.rootTarget.id !== target.id) throw new ApprovalResumeError('run_mismatch')
+	if (receipt.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 	const decisions = normalizeResumeDecisions(resume)
 	assertDecisionSet(decisions, receipt.decisions.map(decision => decision.approvalId))
-	if (receipt.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 	if (canonicalJson(receipt.decisions as unknown as JsonValue) !== canonicalJson(decisions as unknown as JsonValue)) throw new ApprovalResumeError('event_conflict')
 }
 
@@ -3269,26 +3331,30 @@ function validateApprovalResume(
 		throw new ApprovalResumeError('run_mismatch')
 	}
 	if (!isPendingInterruptionValue(value)) {
-		const decisions = normalizeResumeDecisions(resume)
-		assertDecisionSet(decisions, value.decisions.map(decision => decision.approvalId))
 		if (value.interruptId !== resume.interruptId || value.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 		if (value.deploymentRevision !== options.revision) throw new ApprovalResumeError('revision_mismatch')
 		if (value.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
 		if (value.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
-		if (canonicalJson(value.decisions as unknown as JsonValue) !== canonicalJson(decisions as unknown as JsonValue)) throw new ApprovalResumeError('event_conflict')
 		const rootFrame = value.continuation.frame
 		if (rootFrame.runId !== run.id || (target.kind === 'agent'
 			? rootFrame.kind !== 'agent' || rootFrame.state.agentId !== target.id
 			: rootFrame.kind !== 'workflow' || rootFrame.workflowId !== target.id)) throw new ApprovalResumeError('run_mismatch')
+		const decisions = normalizeResumeDecisions(resume)
+		assertDecisionSet(decisions, value.decisions.map(decision => decision.approvalId))
+		if (canonicalJson(value.decisions as unknown as JsonValue) !== canonicalJson(decisions as unknown as JsonValue)) throw new ApprovalResumeError('event_conflict')
 		return Object.freeze({ checkpoint, value })
 	}
 	if (value.rootTarget.kind !== target.kind || value.rootTarget.id !== target.id) throw new ApprovalResumeError('run_mismatch')
 	if (value.interrupt.id !== resume.interruptId) {
 		const prior = value.priorResumeReceipt
 		if (!prior || prior.interruptId !== resume.interruptId) throw new ApprovalResumeError('stale_continuation')
+		if (prior.deploymentRevision !== options.revision) throw new ApprovalResumeError('revision_mismatch')
+		if (prior.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
+		if (prior.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
+		if (prior.rootTarget.kind !== target.kind || prior.rootTarget.id !== target.id) throw new ApprovalResumeError('run_mismatch')
+		if (prior.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 		const decisions = normalizeResumeDecisions(resume)
 		assertDecisionSet(decisions, prior.decisions.map(decision => decision.approvalId))
-		if (prior.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 		if (canonicalJson(prior.decisions as unknown as JsonValue) !== canonicalJson(decisions as unknown as JsonValue)) {
 			throw new ApprovalResumeError('event_conflict')
 		}

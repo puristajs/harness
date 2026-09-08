@@ -81,9 +81,6 @@ export class ToolApprovalPendingError extends HarnessError {
     const ordered = [...requests]
     const first = ordered[0]
     if (!first) throw new TypeError('At least one approval request is required.')
-    const id = `approval_batch_${createHash('sha256')
-      .update(JSON.stringify([first.runId, first.invocationId, first.step, ordered.map(request => request.approvalId)]))
-      .digest('hex')}`
     const revision = createHash('sha256')
       .update(
         JSON.stringify(
@@ -97,6 +94,8 @@ export class ToolApprovalPendingError extends HarnessError {
         ),
       )
       .digest('hex')
+    // The interrupt id authenticates compact receipts that do not repeat the request batch.
+    const id = `approval_batch_${revision}`
     super({
       code: 'TOOL_APPROVAL_PENDING',
       category: 'state',

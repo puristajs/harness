@@ -406,13 +406,14 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	const childSandboxPolicies = new Map<string, ChildSandboxHandoff>()
 	const effectiveSandboxScopes = new Map<string, EffectiveSandboxLaunchSource>()
 	const retainedPublicationPoisons = new Map<string, RetainedPublicationPoison>()
+	const workflowOwnerByRunId = new Map<string, string>()
 	const directAgentRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
 	const activeApprovalResumes = new Map<string, Readonly<{
 		sessionId: string; targetKind: 'agent' | 'workflow'; targetId: string; input: string
 		interruptId: string; revision: string; eventId: string; decisions: string
 		approvalIds: readonly string[]
 		promise: Promise<RunOutcome<JsonValue>>
-		stream?: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>
+		stream: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>
 	}>>()
 	const directStreamSettlers = new Map<string, Readonly<{
 		resolve: (outcome: RunOutcome<JsonValue>) => void
@@ -585,6 +586,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
+				workflowOwnerByRunId.delete(runId)
 				childSandboxPolicies.delete(invocation.invocationId)
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
@@ -610,6 +612,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		if (childSandboxHandoff !== undefined) childSandboxPolicies.delete(invocation.invocationId)
 		if (childSandboxHandoff !== undefined) await authorizeSessionOwner(childSandboxHandoff.source.authorizationRecord)
 		let owningWorkflowId = invocation.parentWorkflowId
+			?? (invocation.depth === 0 ? undefined : workflowOwnerByRunId.get(invocation.parentRunId))
 		if (invocation.parentRunId !== undefined) {
 			const root = await storage.getRun(invocation.rootRunId)
 			if (owningWorkflowId === undefined && root?.kind === 'workflow') owningWorkflowId = root.target
@@ -626,6 +629,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				startedAt: existing?.startedAt ?? new Date().toISOString(), input: persistedInput,
 				...(invokeOptions.metadata === undefined ? {} : { metadata: invokeOptions.metadata }) })
 			: requireResumeRun(existing, resume, invocation.sessionId, definition, persistedInput)
+		const activeWorkflowOwner = definition.kind === 'workflow' ? definition.id : owningWorkflowId
+		if (activeWorkflowOwner !== undefined) workflowOwnerByRunId.set(runId, activeWorkflowOwner)
 		const resumingExternalWait = resume === undefined && run.status === 'waiting'
 		if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
 			if (resume !== undefined) validateTerminalResume(run, resume, options, graphDigest, session.record, definition)
@@ -637,6 +642,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			rootInputs.delete(runId)
 			rootOptions.delete(runId)
 			rootModes.delete(runId)
+			workflowOwnerByRunId.delete(runId)
 			rootSettled.get(runId)?.()
 			rootSettled.delete(runId)
 			return
@@ -655,6 +661,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
+				workflowOwnerByRunId.delete(runId)
 				childSandboxPolicies.delete(invocation.invocationId)
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
@@ -1722,6 +1729,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			rootInputs.delete(runId)
 			rootOptions.delete(runId)
 			rootModes.delete(runId)
+			workflowOwnerByRunId.delete(runId)
 			childSandboxPolicies.delete(invocation.invocationId)
 			rootSettled.get(runId)?.()
 			rootSettled.delete(runId)
@@ -2151,15 +2159,13 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			if (active.decisions !== decisions) throw new ApprovalResumeError('event_conflict')
 			return active
 		}
-		const registerApprovalResume = (input: JsonValue, invokeOptions: InvokeOptions, promise: Promise<RunOutcome<JsonValue>>,
-			stream?: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>) => {
-			const resume = invokeOptions.resume
-			if (resume === undefined) return
+		const registerApprovalResume = (input: JsonValue, resume: ToolApprovalResume, promise: Promise<RunOutcome<JsonValue>>,
+			stream: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>) => {
 			const decisions = normalizeResumeDecisions(resume)
 			activeApprovalResumes.set(resume.runId, Object.freeze({ sessionId: state.record.id, targetKind: definition.kind, targetId: definition.id,
 				input: canonicalJson(input), interruptId: resume.interruptId, revision: resume.revision, eventId: resume.eventId,
 				approvalIds: Object.freeze(decisions.map(decision => decision.approvalId)),
-				decisions: canonicalJson(decisions as unknown as JsonValue), promise, ...(stream === undefined ? {} : { stream }) }))
+				decisions: canonicalJson(decisions as unknown as JsonValue), promise, stream }))
 			const lifecycle = state.activeRoots.get(resume.runId)?.settled ?? Promise.resolve()
 			void Promise.allSettled([promise, lifecycle]).then(() => {
 				if (activeApprovalResumes.get(resume.runId)?.promise === promise) activeApprovalResumes.delete(resume.runId)
@@ -2219,6 +2225,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
+				workflowOwnerByRunId.delete(runId)
 				rootHostedEnvironments.delete(runId)
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
@@ -2230,8 +2237,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const normalized = normalizeInvokeOptions(invokeOptions)
 				if (normalized.resume !== undefined) normalizeResumeDecisions(normalized.resume)
 				const joined = joinedApprovalResume(input, normalized)
-				if (joined !== undefined) return toHarnessTargetStream(definition.contract,
-					joined.stream ?? replayRunAfter(joined.promise, normalized.resume!.runId))
+				if (joined !== undefined) return toHarnessTargetStream(definition.contract, joined.stream)
 				if (definition.kind === 'agent' && normalized.idempotencyKey !== undefined) {
 					if (!isJsonValue(input)) throw new ValidationError('Harness target input must be JSON.', {
 						where: 'agent_input', issues: { reason: 'non_json_input' },
@@ -2265,7 +2271,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				if (normalized.resume !== undefined) {
 					const promise = opened.result.then(outcome => terminalOutcome(outcome, definition))
 					void promise.catch(() => {})
-					registerApprovalResume(input, normalized, promise, opened)
+					registerApprovalResume(input, normalized.resume, promise, opened)
 				}
 				return toHarnessTargetStream(definition.contract, opened)
 			}
@@ -2300,8 +2306,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						if (directAgentRuns.get(deliveryId)?.promise === promise) directAgentRuns.delete(deliveryId)
 					}
 				}
-				const promise = consumeRun(start('run', input, normalized), definition)
-				registerApprovalResume(input, normalized, promise)
+				const started = start('run', input, normalized)
+				const opened = normalized.resume === undefined ? started : replayableDispatchStream(started)
+				const promise = consumeRun(opened, definition)
+				if (normalized.resume !== undefined) registerApprovalResume(input, normalized.resume, promise, opened)
 				return promise
 			}
 		})
@@ -3301,6 +3309,7 @@ function validateTerminalResume(
 ): void {
 	const receipt = run.approvalReceipt
 	if (!receipt || receipt.interruptId !== resume.interruptId) throw new ApprovalResumeError('stale_continuation')
+	assertApprovalInterruptRevision(receipt.interruptId, resume.revision)
 	if (receipt.deploymentRevision !== options.revision) throw new ApprovalResumeError('revision_mismatch')
 	if (receipt.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
 	if (receipt.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
@@ -3331,7 +3340,9 @@ function validateApprovalResume(
 		throw new ApprovalResumeError('run_mismatch')
 	}
 	if (!isPendingInterruptionValue(value)) {
-		if (value.interruptId !== resume.interruptId || value.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
+		if (value.interruptId !== resume.interruptId) throw new ApprovalResumeError('stale_continuation')
+		assertApprovalInterruptRevision(value.interruptId, resume.revision)
+		if (value.resumeEventId !== resume.eventId) throw new ApprovalResumeError('stale_continuation')
 		if (value.deploymentRevision !== options.revision) throw new ApprovalResumeError('revision_mismatch')
 		if (value.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
 		if (value.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
@@ -3348,6 +3359,7 @@ function validateApprovalResume(
 	if (value.interrupt.id !== resume.interruptId) {
 		const prior = value.priorResumeReceipt
 		if (!prior || prior.interruptId !== resume.interruptId) throw new ApprovalResumeError('stale_continuation')
+		assertApprovalInterruptRevision(prior.interruptId, resume.revision)
 		if (prior.deploymentRevision !== options.revision) throw new ApprovalResumeError('revision_mismatch')
 		if (prior.compiledGraphDigest !== graphDigest) throw new ApprovalResumeError('graph_mismatch')
 		if (prior.sessionIdentityDigest !== identityDigest(session.identity)) throw new ApprovalResumeError('session_identity_mismatch')
@@ -3367,6 +3379,11 @@ function validateApprovalResume(
 	const decisions = normalizeResumeDecisions(resume)
 	assertDecisionSet(decisions, value.interrupt.requests.map(request => request.approvalId))
 	return Object.freeze({ checkpoint, value })
+}
+
+function assertApprovalInterruptRevision(interruptId: string, revision: string): void {
+	const match = /^approval_batch_([0-9a-f]{64})$/.exec(interruptId)
+	if (match?.[1] !== revision) throw new ApprovalResumeError('interrupt_mismatch')
 }
 
 function assertDecisionSet(decisions: readonly AppliedApprovalDecisionV1[], approvalIds: readonly string[]): void {

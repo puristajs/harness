@@ -22,6 +22,7 @@ import {
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { OtelTelemetryShim } from '../src/telemetry/shim.js'
+import type { JsonValue } from '../src/models/json.js'
 
 function persistentStorage(): TrackingHarnessStorage {
 	const storage = new TrackingHarnessStorage()
@@ -855,8 +856,60 @@ describe('v4 session lifecycle', () => {
 		expect(joinedResult).toEqual(firstResult)
 		expect(firstResult).toMatchObject({ status: 'interrupted', runId: firstInterrupt.runId,
 			interrupt: { type: 'tool-approval' } })
+		await expect(session.agents.secondApprovalAgent.run('start', { resume: {
+			...resume, revision: 'tampered-prior-receipt-revision', decisions: [],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
 		expect(effects).toBe(1)
 		expect(provider.requests).toHaveLength(2)
+		await session.destroy()
+		await harness.close()
+	})
+
+	it('shares one cancellable resume execution between run and a concurrent stream join', async () => {
+		let effects = 0
+		let entered!: () => void
+		const effectEntered = new Promise<void>(resolve => { entered = resolve })
+		const effect = defineTool('bash', { description: 'Wait for cancellation.', input: z.string(), output: z.string(),
+			async handler(context) {
+				effects += 1
+				entered()
+				await new Promise<void>((_resolve, reject) => context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true }))
+				return 'unreachable'
+			} })
+		const agent = defineAgent('crossModeApprovalAgent', { instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' } })
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'cross-mode-effect', name: effect.id, arguments: 'approved' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		const storage = persistentStorage()
+		const harness = await defineHarness({ name: 'crossModeApprovalHarness', revision: 'v1' }).addAgent(agent)
+			.getInstance({ storage, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('cross-mode-approval-session')
+		const interrupted = await session.agents.crossModeApprovalAgent.run('start')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+		const resume: ToolApprovalResume = { type: 'tool-approval', runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'cross-mode-resume',
+			decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
+		const aggregate = session.agents.crossModeApprovalAgent.run('start', { resume })
+		const aggregateRejection = expect(aggregate).rejects.toBeInstanceOf(OperationCancelledError)
+		await effectEntered
+		const joined = session.agents.crossModeApprovalAgent.stream('start', { resume })
+		const joinedEventsPromise = (async () => { const events = []; for await (const event of joined) events.push(event); return events })()
+		await joined.cancel('joined observer cancelled')
+		await aggregateRejection
+		await expect(joined.result).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		const joinedEvents = await joinedEventsPromise
+		expect(joinedEvents[0]?.type).toBe('run.started')
+		expect(joinedEvents.filter(event => event.type === 'run.finished')).toHaveLength(1)
+		expect(joinedEvents.at(-1)).toMatchObject({ outcome: { status: 'cancelled', runId: interrupted.runId } })
+		expect(effects).toBe(1)
+		expect(provider.requests).toHaveLength(1)
+		const replay = session.agents.crossModeApprovalAgent.stream('start', { resume })
+		const replayEvents = []
+		for await (const event of replay) replayEvents.push(event)
+		await expect(replay.result).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		expect(replayEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
+		expect(effects).toBe(1)
 		await session.destroy()
 		await harness.close()
 	})
@@ -938,6 +991,9 @@ describe('v4 session lifecycle', () => {
 			await expect(session.workflows[workflow.id].run('start', { resume: {
 				...resume, eventId: `${resume.eventId}-wrong`, decisions: [],
 			} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+			await expect(session.workflows[workflow.id].run('start', { resume: {
+				...resume, revision: `${resume.revision}-tampered`, decisions: [],
+			} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
 			const replay = session.workflows[workflow.id].stream('start', { resume })
 			const replayEvents = []
 			for await (const event of replay) replayEvents.push(event)
@@ -965,6 +1021,41 @@ describe('v4 session lifecycle', () => {
 			await harness.close()
 		},
 	)
+
+	it('authenticates the originating interrupt revision from a post-approval checkpoint before decisions', async () => {
+		const storage = persistentStorage()
+		let effects = 0
+		const effect = defineTool('bash', { description: 'Apply.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const agent = defineAgent('postApprovalRevisionAgent', { instructions: 'Apply.', tools: [effect],
+			permissions: { bash: 'require_approval' } })
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'post-approval-call', name: effect.id, arguments: 'approved' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		const harness = await defineHarness({ name: 'postApprovalRevisionHarness', revision: 'v1' }).addAgent(agent)
+			.getInstance({ storage, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('post-approval-revision-session')
+		const interrupted = await session.agents.postApprovalRevisionAgent.run('start')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+		const checkpoint = await storage.loadCheckpoint(interrupted.runId, 'harness:interrupt:v1')
+		if (checkpoint === undefined || checkpoint.output === undefined) throw new Error('expected approval checkpoint')
+		const pending = checkpoint.output as Readonly<Record<string, JsonValue>>
+		const decisions = interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true }))
+		const postApproval = Object.freeze({ schemaVersion: 1, kind: 'harness_post_approval', rootRunId: pending['rootRunId'],
+			sessionId: pending['sessionId'], interruptId: interrupted.interrupt.id, resumeEventId: 'post-approval-resume', decisions,
+			deploymentRevision: pending['deploymentRevision'], compiledGraphDigest: pending['compiledGraphDigest'],
+			sessionIdentityDigest: pending['sessionIdentityDigest'], continuation: pending['continuation'],
+			nextEventSequence: pending['nextEventSequence'], startedAgentRunIds: pending['startedAgentRunIds'] })
+		vi.spyOn(storage, 'loadCheckpoint').mockResolvedValue(Object.freeze({ ...checkpoint, output: postApproval }))
+		await expect(session.agents.postApprovalRevisionAgent.run('start', { resume: {
+			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+			revision: 'tampered-post-approval-revision', eventId: 'post-approval-resume', decisions: [],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+		expect(effects).toBe(0)
+		expect(provider.requests).toHaveLength(1)
+		await session.destroy()
+		await harness.close()
+	})
 
 	it.each([
 		['agent', 'run'], ['agent', 'stream'], ['workflow', 'run'], ['workflow', 'stream'],

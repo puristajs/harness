@@ -6,6 +6,7 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
+import type { HarnessExecutionCaller } from '../src/definitions/types.js'
 import {
 	HarnessConfigError, HarnessTargetRouteReceiptMismatchError, HostNestedTargetError, InternalError,
 	OperationCancelledError, ValidationError,
@@ -24,6 +25,7 @@ import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { createTelemetryShim } from '../src/telemetry/index.js'
 import { canonicalJson } from '../src/runtime/canonical-json.js'
 import type { RunCheckpoint } from '../src/storage/execution.js'
+import type { JsonValue } from '../src/models/json.js'
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 const trace = Object.freeze({
@@ -1313,17 +1315,21 @@ describe('hosted Harness runtime', () => {
 			async handler(_context, input) { approvedEffects += 1; return `approved:${input}` } })
 		const leaf = defineAgent('workflowApprovalLeaf', { input: z.string(), output: z.string(), instructions: 'Use effect.',
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
-		const workflow = defineWorkflow('hostedApprovalWorkflow', { input: z.string(), output: z.string(), agents: [leaf], durable: true,
-			async handler(context) { return context.agents.workflowApprovalLeaf.run(context.input, { callId: 'workflow-leaf' }) } })
+		const middle = defineAgent('workflowApprovalMiddle', { input: z.string(), output: z.string(), instructions: 'Delegate.',
+			subagents: { leaf }, prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('hostedApprovalWorkflow', { input: z.string(), output: z.string(), agents: [middle], durable: true,
+			async handler(context) { return context.agents.workflowApprovalMiddle.run(context.input, { callId: 'workflow-middle' }) } })
 		const hostTool = defineHostTool(owner, 'workflowHostTool', { description: 'Invoke workflow.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(workflow.contract, input, { callId: 'host-workflow' }) } })
 		const parentAgent = defineAgent('workflowHostParent', { input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool],
 			prompt: input => ({ role: 'user', content: input }) })
-		const receiverDefinition = defineHarness({ name: 'workflowHostReceiver', revision: 'v1', defaults: { maxDepth: 3 } }).addAgent(leaf).addWorkflow(workflow)
+		const receiverDefinition = defineHarness({ name: 'workflowHostReceiver', revision: 'v1', defaults: { maxDepth: 4 } })
+			.addAgent(leaf).addAgent(middle).addWorkflow(workflow)
 		const parentDefinition = defineHarness({ name: 'workflowHostCaller', revision: 'v1', defaults: { maxDepth: 3 } })
-			.addAgent(leaf).addWorkflow(workflow).addAgent(parentAgent)
+			.addAgent(leaf).addAgent(middle).addWorkflow(workflow).addAgent(parentAgent)
 		const routes = new Map<AnyHarnessTargetContract, HarnessTargetRouteReceiptV1>([
-			[leaf.contract, routeFor(leaf.contract, '1')], [workflow.contract, routeFor(workflow.contract, '2')],
+			[leaf.contract, routeFor(leaf.contract, '1')], [middle.contract, routeFor(middle.contract, '2')],
+			[workflow.contract, routeFor(workflow.contract, '3')],
 		])
 		const persistedTraces: unknown[] = []
 		let receiver: Awaited<ReturnType<typeof instantiateHostedHarness>> | undefined
@@ -1336,10 +1342,10 @@ describe('hosted Harness runtime', () => {
 			async open(request) {
 				if (receiver === undefined) throw new Error('receiver unavailable')
 				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
-				if (request.target === workflow.contract) {
-					return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'fresh', target: workflow.contract,
-						wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
-				}
+				if (request.target === workflow.contract) return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'fresh',
+					target: workflow.contract, wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
+				if (request.target === middle.contract) return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'fresh',
+					target: middle.contract, wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
 				return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'fresh', target: leaf.contract,
 					wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
 			},
@@ -1347,10 +1353,10 @@ describe('hosted Harness runtime', () => {
 				if (receiver === undefined) throw new Error('receiver unavailable')
 				persistedTraces.push(request.invocation.trace)
 				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
-				if (request.route.target.kind === 'workflow') {
-					return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'resume', target: workflow.contract,
-						wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
-				}
+				if (request.route.target.kind === 'workflow') return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'resume',
+					target: workflow.contract, wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
+				if (request.route.target.id === middle.id) return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'resume',
+					target: middle.contract, wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
 				return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'resume', target: leaf.contract,
 					wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
 			},
@@ -1359,6 +1365,7 @@ describe('hosted Harness runtime', () => {
 			projectTraceContext: () => trace, createHostContext: (request: HarnessHostContextRequest<object>) => ({ nestedTargets: request.nestedTargets }),
 			logger: logger(), telemetry: createTelemetryShim() }
 		const firstReceiverProvider = new FakeModelProvider({ strict: true })
+		firstReceiverProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-leaf-call', name: 'leaf', arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		firstReceiverProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-effect-call', name: effect.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
 			{ model: { provider: firstReceiverProvider, model: 'fake' }, storage }, bindings)
@@ -1369,11 +1376,42 @@ describe('hosted Harness runtime', () => {
 		const interrupted = await firstParent.runHosted({ target: parentAgent.contract, input: 'transfer',
 			invokeOptions: { sessionId: 'workflow-host-session', idempotencyKey: 'workflow-host-root' }, hostInvocation: {} })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow leaf approval.')
+		const checkpoint = await storage.loadCheckpoint(interrupted.runId, 'harness:interrupt:v1')
+		if (checkpoint?.output === undefined) throw new Error('Expected workflow approval checkpoint.')
+		const agentRuns = new Map<string, string>()
+		type AgentRunNode = Readonly<{ frame?: Readonly<{ kind?: string; runId?: string; state?: Readonly<{ agentId?: string }> }>; children?: readonly JsonValue[] }>
+		const visit = (value: JsonValue): void => {
+			if (value === null || typeof value !== 'object') return
+			const node = value as AgentRunNode
+			if (node.frame?.kind === 'agent' && node.frame.runId !== undefined && node.frame.state?.agentId !== undefined) {
+				agentRuns.set(node.frame.state.agentId, node.frame.runId)
+			}
+			for (const child of node.children ?? []) visit(child)
+		}
+		const continuation = (checkpoint.output as Readonly<{ continuation?: JsonValue }>).continuation
+		if (continuation === undefined) throw new Error('Expected nested approval continuation.')
+		visit(continuation)
+		const middleRunId = agentRuns.get(middle.id)
+		const leafRunId = agentRuns.get(leaf.id)
+		if (middleRunId === undefined || leafRunId === undefined) throw new Error('Expected nested agent frames.')
+		const freshEventCounts = new Map<string, number>()
+		for (const [agentId, childRunId] of [[middle.id, middleRunId], [leaf.id, leafRunId]] as const) {
+			const events = await storage.listEvents(childRunId)
+			freshEventCounts.set(childRunId, events.length)
+			const callerEvents = events.filter(event => ['model.completed', 'tool.input.available', 'tool.started'].includes(event.type))
+			expect(callerEvents.length).toBeGreaterThan(0)
+			for (const event of callerEvents) {
+				expect((event.payload as Readonly<{ caller?: HarnessExecutionCaller }>).caller)
+					.toEqual({ kind: 'agent', agentId, workflowId: workflow.id })
+				expect(event.runId).toBe(childRunId)
+			}
+		}
 		await firstParent.close()
 		await receiver.close()
 
 		const resumedReceiverProvider = new FakeModelProvider({ strict: true })
 		resumedReceiverProvider.enqueueText({ content: 'workflow-leaf-complete', toolCalls: [], usage, finishReason: 'stop' })
+		resumedReceiverProvider.enqueueText({ content: 'workflow-middle-complete', toolCalls: [], usage, finishReason: 'stop' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
 			{ model: { provider: resumedReceiverProvider, model: 'fake' }, storage }, bindings)
 		const resumedParentProvider = new FakeModelProvider({ strict: true })
@@ -1389,10 +1427,20 @@ describe('hosted Harness runtime', () => {
 			},
 		}, hostInvocation: {} })).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'workflow-parent-complete' })
 		expect(approvedEffects).toBe(1)
-		expect(resumedReceiverProvider.requests).toHaveLength(1)
+		expect(resumedReceiverProvider.requests).toHaveLength(2)
 		expect(persistedTraces.length).toBeGreaterThan(0)
 		expect(persistedTraces).toEqual(persistedTraces.map(() => trace))
 		expect(resumedParentProvider.requests).toHaveLength(1)
+		for (const [agentId, childRunId] of [[middle.id, middleRunId], [leaf.id, leafRunId]] as const) {
+			const events = (await storage.listEvents(childRunId)).slice(freshEventCounts.get(childRunId))
+			const callerEvents = events.filter(event => ['model.completed', 'tool.input.available', 'tool.started', 'tool.finished'].includes(event.type))
+			expect(callerEvents.length).toBeGreaterThan(0)
+			for (const event of callerEvents) {
+				expect((event.payload as Readonly<{ caller?: HarnessExecutionCaller }>).caller)
+					.toEqual({ kind: 'agent', agentId, workflowId: workflow.id })
+				expect(event.runId).toBe(childRunId)
+			}
+		}
 		await resumedParent.close()
 		await receiver.close()
 	})

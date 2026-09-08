@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow } from '../src/definitions/index.js'
 import { defineCatalog } from '../src/definitions/catalog.js'
 import { defineHarness } from '../src/definitions/harness.js'
+import type { HarnessCatalogDefinition, HarnessCatalogView } from '../src/definitions/catalog.js'
+import type { AnyAgentDefinition } from '../src/definitions/types.js'
 import type { HarnessUpdateFor, ToolRequirements } from '../src/definitions/index.js'
 import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
@@ -325,14 +327,57 @@ defineHarness({ name: 'mcpOnlyConsumer' }).use(mcpOnlyCatalog)
 // @ts-expect-error combined leaf-only catalogs cannot supply executable Harness roots
 defineHarness({ name: 'combinedLeafConsumer' }).use(combinedLeafCatalog)
 
+const durableRootWorkflow = defineWorkflow('durableRootWorkflow', {
+	durable: true,
+	async handler({ input }) { return input },
+})
 const agentRootCatalog = defineCatalog('agentRootCatalog', { tools: [lookup], agents: [structuredAgent] })
-const workflowRootCatalog = defineCatalog('workflowRootCatalog', { skills: [skill], workflows: [workflow] })
+const workflowRootCatalog = defineCatalog('workflowRootCatalog', { skills: [skill], workflows: [durableRootWorkflow] })
 const agentRootHarness = defineHarness({ name: 'agentRootConsumer' }).use(agentRootCatalog)
-const workflowRootHarness = defineHarness({ name: 'workflowRootConsumer' }).use(workflowRootCatalog)
+const workflowRootHarness = defineHarness({ name: 'workflowRootConsumer', revision: 'v1' }).use(workflowRootCatalog)
 type _AgentRootCatalogInference = Expect<Equal<keyof typeof agentRootHarness.$infer.agents, 'classify'>>
 type _AgentRootCatalogHasNoWorkflow = Expect<Equal<keyof typeof agentRootHarness.$infer.workflows, never>>
-type _WorkflowRootCatalogInference = Expect<Equal<keyof typeof workflowRootHarness.$infer.workflows, 'resolveCase'>>
+type _WorkflowRootCatalogInference = Expect<Equal<keyof typeof workflowRootHarness.$infer.workflows, 'durableRootWorkflow'>>
 type _WorkflowRootCatalogHasNoAgent = Expect<Equal<keyof typeof workflowRootHarness.$infer.agents, never>>
+
+const widenedEmptyAgentCatalog = defineCatalog('widenedEmptyAgentCatalog', {
+	agents: [] as readonly AnyAgentDefinition[],
+})
+declare const broadCatalog: HarnessCatalogDefinition<string, HarnessCatalogView>
+declare const catalogBranch: boolean
+const mixedLeafRootCatalog = catalogBranch ? emptyLeafCatalog : agentRootCatalog
+// @ts-expect-error a widened empty agent array does not prove an executable root
+defineHarness({ name: 'widenedEmptyAgentConsumer' }).use(widenedEmptyAgentCatalog)
+// @ts-expect-error a broad catalog view has indeterminate string keys rather than a proven root
+defineHarness({ name: 'broadCatalogConsumer' }).use(broadCatalog)
+// @ts-expect-error every member of a catalog union must prove an executable root
+defineHarness({ name: 'mixedLeafRootConsumer' }).use(mixedLeafRootCatalog)
+
+const disjointRootedCatalog = catalogBranch ? agentRootCatalog : workflowRootCatalog
+const rootedUnionBase = defineHarness({ name: 'rootedUnionConsumer', revision: 'v1' })
+const exactAgentRootHarness = rootedUnionBase.use(agentRootCatalog)
+const exactWorkflowRootHarness = rootedUnionBase.use(workflowRootCatalog)
+const disjointRootedHarness = rootedUnionBase.use(disjointRootedCatalog)
+type _DisjointRootedContracts = Expect<Equal<
+	typeof disjointRootedHarness.contracts,
+	typeof exactAgentRootHarness.contracts | typeof exactWorkflowRootHarness.contracts
+>>
+type _DisjointRootedRequirements = Expect<Equal<
+	typeof disjointRootedHarness.requirements,
+	typeof exactAgentRootHarness.requirements | typeof exactWorkflowRootHarness.requirements
+>>
+type _DisjointRootedInference = Expect<Equal<
+	typeof disjointRootedHarness.$infer,
+	typeof exactAgentRootHarness.$infer | typeof exactWorkflowRootHarness.$infer
+>>
+type RootInterruptTuples<Contracts> = Contracts extends {
+	readonly agents: infer Agents extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>
+	readonly workflows: infer Workflows extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>
+} ? Agents[keyof Agents]['interrupts'] | Workflows[keyof Workflows]['interrupts'] : never
+type _DisjointRootedInterrupts = Expect<Equal<
+	RootInterruptTuples<typeof disjointRootedHarness.contracts>,
+	readonly [] | readonly ['external-wait']
+>>
 
 const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgent).addWorkflow(workflow)
 const usedHarness = defineHarness({ name: 'support' }).use(catalog)

@@ -63,8 +63,19 @@ type WithAgent<Catalog extends HarnessCatalogView, Agent extends AnyAgentDefinit
 type WithWorkflow<Catalog extends HarnessCatalogView, Workflow extends AnyWorkflowDefinition> = MergeCatalogViews<
 	Catalog, CatalogViewForRoots<undefined, undefined, undefined, undefined, readonly [Workflow]>
 >
+type HasExplicitRoot<Roots extends Readonly<Record<string, AnyAgentDefinition | AnyWorkflowDefinition>>> = [keyof Roots] extends [never]
+	? false
+	: string extends keyof Roots ? false : true
+type CatalogHasExecutableRoot<Catalog extends HarnessCatalogView> = Catalog extends HarnessCatalogView
+	? HasExplicitRoot<Catalog['agents']> extends true ? true : HasExplicitRoot<Catalog['workflows']>
+	: false
+type EveryCatalogHasExecutableRoot<Catalog extends HarnessCatalogView> = [Catalog] extends [never]
+	? false
+	: [CatalogHasExecutableRoot<Catalog>] extends [true] ? true : false
 type ExecutableCatalogDefinition<Id extends string, Catalog extends HarnessCatalogView> =
-	[keyof Catalog['agents'] | keyof Catalog['workflows']] extends [never] ? never : HarnessCatalogDefinition<Id, Catalog>
+	EveryCatalogHasExecutableRoot<Catalog> extends true ? HarnessCatalogDefinition<Id, Catalog> : never
+type UsedCatalogDefinition<Catalog extends HarnessCatalogView, Other extends HarnessCatalogView, Name extends string> =
+	Other extends HarnessCatalogView ? HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name> : never
 
 type EmptyCatalogView = HarnessCatalogView<
 	Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
@@ -118,7 +129,7 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
 	use<Other extends HarnessCatalogView>(
 		catalog: ExecutableCatalogDefinition<string, Other>,
-	): HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name>
+	): UsedCatalogDefinition<Catalog, Other, Name>
 	addAgent<Agent extends AnyAgentDefinition>(agent: Agent): HarnessDefinition<WithAgent<Catalog, Agent>, Name>
 	addWorkflow<Workflow extends AnyWorkflowDefinition>(workflow: Workflow): HarnessDefinition<WithWorkflow<Catalog, Workflow>, Name>
 } & DefinitionReference<'harness', Name> & HarnessDefinitionBrand<Name>

@@ -77,6 +77,14 @@ type RootEventBody<Output extends JsonValue = JsonValue> =
 
 const recoverableEventPublicationErrors = new WeakSet<object>()
 
+interface RetainedPublicationPoison {
+	readonly kind: 'non_managed' | 'managed_marker'
+	readonly error: unknown
+	readonly event: ExecutionEvent<JsonValue>
+	readonly persisted: PersistedRunEvent
+	readonly markerStepId?: string
+}
+
 interface PendingInterruptionValue {
 	readonly schemaVersion: 1
 	readonly rootRunId: string
@@ -378,6 +386,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	const rootHostedEnvironments = new Map<string, TrustedHostedInvocationEnvironment>()
 	const childSandboxPolicies = new Map<string, ChildSandboxHandoff>()
 	const effectiveSandboxScopes = new Map<string, EffectiveSandboxLaunchSource>()
+	const retainedPublicationPoisons = new Map<string, RetainedPublicationPoison>()
 	const directAgentRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
 	const directStreamSettlers = new Map<string, Readonly<{
 		resolve: (outcome: RunOutcome<JsonValue>) => void
@@ -688,6 +697,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
 		const recoverablePublicationErrors = new Set<unknown>()
+		let recoveredNonManagedPoison: RetainedPublicationPoison | undefined
 		const markRecoverablePublicationError = (error: unknown) => {
 			recoverablePublicationErrors.add(error)
 			if (error !== null && (typeof error === 'object' || typeof error === 'function')) recoverableEventPublicationErrors.add(error)
@@ -708,6 +718,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		let eventSequenceTail = Promise.resolve()
 		let reservedManagedEvent: Readonly<{ eventId: string; release: () => void }> | undefined
 		const acquireEventSequence = async (): Promise<() => void> => {
+			const poison = retainedPublicationPoisons.get(runId)
+			if (poison !== undefined) throw poison.error
 			const prior = eventSequenceTail
 			let release!: () => void
 			eventSequenceTail = new Promise<void>(resolve => { release = resolve })
@@ -743,9 +755,17 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			}
 		}
 		const abortManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>,
-			phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack') => {
+			phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack',
+			failure?: Readonly<{ error: unknown; stepId: string }>) => {
 			if (reservedManagedEvent?.eventId !== allocation.event.eventId) return
 			if (phase === 'marker_absent' && sequence === allocation.event.sequence) sequence -= 1
+			if (phase === 'marker_unknown' && failure !== undefined) {
+				const persisted = Object.freeze<PersistedRunEvent>({ id: allocation.event.eventId, sequence: allocation.event.sequence,
+					runId, at: allocation.persistedAt, type: allocation.event.type, payload: privacySafeEventPayload(allocation.event) })
+				retainedPublicationPoisons.set(runId, Object.freeze({ kind: 'managed_marker', error: failure.error,
+					event: allocation.event, persisted, markerStepId: failure.stepId }))
+				markRecoverablePublicationError(failure.error)
+			}
 			reservedManagedEvent.release()
 			reservedManagedEvent = undefined
 		}
@@ -759,19 +779,29 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const release = await acquireEventSequence()
 			try {
 				sequence += 1
-				const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
+				const recovered = recoveredNonManagedPoison
+				const eventBody = recovered !== undefined && 'at' in body
+					? Object.freeze({ ...body, at: recovered.persisted.at }) : body
+				const event = correlatedEvent(runId, sequence, eventBody, parentEventRunId, parentInvocationId)
 				const existingEvent = event.type === 'model.completed'
 					? (await storage.listEvents(runId)).find(candidate => candidate.id === event.eventId)
 					: undefined
 				const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
 					at: existingEvent?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
 					payload: privacySafeEventPayload(event) })
+				if (recovered !== undefined && canonicalJson(persisted) !== canonicalJson(recovered.persisted)) {
+					retainedPublicationPoisons.set(runId, recovered)
+					markRecoverablePublicationError(recovered.error)
+					throw recovered.error
+				}
 				try { await storage.appendEvents(runId, [persisted]) } catch (error) {
 					let stored: PersistedRunEvent | undefined
 					try {
 						const events = await storage.listEvents(runId)
 						stored = events.find(candidate => candidate.id === persisted.id || candidate.sequence === persisted.sequence)
 					} catch {
+						retainedPublicationPoisons.set(runId, Object.freeze({ kind: 'non_managed', error,
+							event, persisted }))
 						markRecoverablePublicationError(error)
 						throw error
 					}
@@ -788,6 +818,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						throw conflict
 					}
 				}
+				recoveredNonManagedPoison = undefined
 				queue.push(event)
 			} finally { release() }
 		}
@@ -797,6 +828,34 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				await persistAndQueue({ type: 'stream.overflow', at: new Date().toISOString(), dropped })
 			}
 			await persistAndQueue(body)
+		}
+		const reconcileRetainedPublicationPoison = async () => {
+			const poison = retainedPublicationPoisons.get(runId)
+			if (poison === undefined) return
+			markRecoverablePublicationError(poison.error)
+			if (poison.kind === 'managed_marker') {
+				if (poison.markerStepId === undefined) throw poison.error
+				let marker: RunCheckpoint | undefined
+				try { marker = await storage.loadCheckpoint(runId, poison.markerStepId) }
+				catch { throw poison.error }
+				if (marker !== undefined) {
+					const output = marker.output
+					const allocation = isPlainRecord(output) ? output['allocation'] : undefined
+					if (!isPlainRecord(allocation) || canonicalJson(allocation) !== canonicalJson(Object.freeze({
+						event: poison.event, persistedAt: poison.persisted.at,
+					}))) throw poison.error
+				}
+			} else {
+				let events: readonly PersistedRunEvent[]
+				try { events = priorEvents ?? await storage.listEvents(runId) }
+				catch { throw poison.error }
+				const stored = events.find(candidate => candidate.id === poison.persisted.id
+					|| candidate.sequence === poison.persisted.sequence)
+				if (stored !== undefined && canonicalJson(stored) !== canonicalJson(poison.persisted)) throw poison.error
+				recoveredNonManagedPoison = poison
+			}
+			sequence = poison.event.sequence - 1
+			retainedPublicationPoisons.delete(runId)
 		}
 		const relayChildEvent = async (event: ExecutionEvent<JsonValue>) => {
 			const rootRelay = invocation.depth === 0 ? undefined : rootChildEventRelays.get(invocation.rootRunId)
@@ -1020,6 +1079,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		effectiveSandboxScopes.set(invocation.invocationId, effectiveSandboxSource)
 		let deferredPublicationError: unknown
 		try {
+			await reconcileRetainedPublicationPoison()
 			await telemetry.span('harness.session.run', {
 			'harness.name': options.name, 'harness.session.id': invocation.sessionId, 'harness.run.id': runId,
 			...(definition.kind === 'workflow' ? { 'harness.workflow.id': definition.id } : {}),

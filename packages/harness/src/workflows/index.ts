@@ -64,7 +64,8 @@ export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefi
 	/** @internal Appends an already allocated event without changing its identity. */
 	readonly appendManagedEvent?: (allocation: ManagedEventAllocation) => Promise<void>
 	/** @internal Releases a managed event reservation after a publication storage failure. */
-	readonly abortManagedEvent?: (allocation: ManagedEventAllocation, phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack') => void
+	readonly abortManagedEvent?: (allocation: ManagedEventAllocation, phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack',
+		failure?: Readonly<{ error: unknown; stepId: string }>) => void
 	/** @internal Releases a managed event reservation after durable acknowledgement. */
 	readonly completeManagedEvent?: (allocation: ManagedEventAllocation) => void
 	/** @internal Delivers an already appended event to the live stream. */
@@ -682,7 +683,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 						}
 					} catch { phase = 'marker_unknown' }
 					managedEventAllocations.delete(allocationKey)
-					options.abortManagedEvent?.(allocation, phase)
+					options.abortManagedEvent?.(allocation, phase, Object.freeze({ error, stepId }))
 					throw error
 				}
 			} else {
@@ -707,7 +708,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				} else if (acknowledged !== undefined) assertPublicationAckCheckpoint(acknowledged, ackStepId, options.checkpoint?.rootInput,
 					record, eventIndex, marker.allocation.event.eventId, eventDigest)
 			} catch (error) {
-				options.abortManagedEvent?.(marker.allocation, failurePhase)
+				options.abortManagedEvent?.(marker.allocation, failurePhase, Object.freeze({ error, stepId }))
 				throw error
 			}
 			options.completeManagedEvent?.(marker.allocation)
@@ -823,6 +824,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				at: record.finishedAt!, parentRunId: parsed.descriptor.parentRunId, workflowId: parsed.descriptor.workflowId,
 				agentId: parsed.descriptor.agentId, status: record.status,
 				...(record.error === undefined ? {} : { error: record.error }) })
+			await options.onChildTaskTerminal?.(opaqueId('session', [options.sessionId, record.id]))
 		}
 		return terminalTaskHandle(parsed.descriptor, record)
 	}
@@ -1089,12 +1091,8 @@ class LiveWorkflowChildTask {
 	private async commitTerminal(status: 'succeeded' | 'failed' | 'cancelled', finishedAt: string, output: JsonValue | undefined, error: SerializedError | undefined, terminalRejection: unknown): Promise<void> {
 		try {
 			await this.values.storage?.finishRun(this.values.descriptor.id, { status, finishedAt, ...(output === undefined ? {} : { output }), ...(error === undefined ? {} : { error }) })
-			try {
-				await this.values.emit?.({ type: 'child_task.settled', runId: this.values.descriptor.id, taskId: this.values.descriptor.id, at: finishedAt,
-					parentRunId: this.values.descriptor.parentRunId, workflowId: this.values.workflowId, agentId: this.values.agent.id, status, ...(error === undefined ? {} : { error }) })
-			} catch (emitError) {
-				if (this.values.storage === undefined) throw emitError
-			}
+			await this.values.emit?.({ type: 'child_task.settled', runId: this.values.descriptor.id, taskId: this.values.descriptor.id, at: finishedAt,
+				parentRunId: this.values.descriptor.parentRunId, workflowId: this.values.workflowId, agentId: this.values.agent.id, status, ...(error === undefined ? {} : { error }) })
 			await this.values.onTerminal?.(this.values.childSessionId)
 			this.lifecycle = 'committed'
 			this.terminalRejection = terminalRejection
@@ -1102,6 +1100,14 @@ class LiveWorkflowChildTask {
 			if (status === 'succeeded') this.resolveResult(output as JsonValue)
 			else this.rejectResult(terminalRejection)
 		} catch (commitError) {
+			if (this.values.isRecoverableEventError?.(commitError) === true) {
+				this.lifecycle = 'commit_failed'
+				this.terminalRejection = commitError
+				this.statusValue = Object.freeze({ descriptor: this.values.descriptor, status: 'failed', finishedAt,
+					error: serializeHarnessError(lifecycleFailure(commitError)) })
+				this.rejectResult(commitError)
+				return
+			}
 			const normalized = lifecycleFailure(commitError)
 			this.lifecycle = 'commit_failed'
 			this.terminalRejection = normalized

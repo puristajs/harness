@@ -208,6 +208,164 @@ describe('v4 durable session execution', () => {
 			await instance.close()
 		})
 
+	it('replays a durable child settlement publication before completing the parent', async () => {
+		const storage = persistentStorage()
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: 'settled output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const sentinel = new Error('child settlement publication failed')
+		let fail = true
+		const originalAppend = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			if (fail && events.some(event => event.type === 'child_task.settled')) { fail = false; throw sentinel }
+			return originalAppend(runId, events)
+		}
+		const child = defineAgent('settlementReplayChild', { input: z.string(), output: z.string(), durable: true,
+			instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('settlementReplayParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
+			async handler({ input, childTasks }) {
+				const task = await childTasks.start('settlementReplayChild', input, { callId: 'settle-call', idempotencyKey: 'settle-key' })
+				return task.result()
+			} })
+		const instance = await defineHarness({ name: 'settlementReplayHarness', revision: 'v1' })
+			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+		const session = await instance.getSession('settlement-replay-session')
+		const invoke = { durable: { runId: 'settlement-replay-run' } } as const
+		await expect(session.workflows.settlementReplayParent.run('value', invoke)).rejects.toBe(sentinel)
+		const childRecord = (await storage.listRuns('settlement-replay-session')).find(record => record.kind === 'child_task')
+		expect(childRecord).toMatchObject({ status: 'succeeded', output: 'settled output' })
+		await expect(storage.getRun(invoke.durable.runId)).resolves.toMatchObject({ status: 'interrupted' })
+		expect((await storage.listEvents(invoke.durable.runId)).filter(event => event.type === 'child_task.settled')).toHaveLength(0)
+		await expect(session.workflows.settlementReplayParent.run('value', invoke))
+			.resolves.toMatchObject({ status: 'completed', output: 'settled output' })
+		expect(provider.requests).toHaveLength(1)
+		const events = await storage.listEvents(invoke.durable.runId)
+		expect(events.filter(event => event.type === 'child_task.started')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'child_task.settled')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'run.finished')).toHaveLength(1)
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('poisons an inconclusive non-managed append until fresh acquisition (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const sentinel = new Error(`inconclusive fanout ${persisted ? 'persisted' : 'absent'}`)
+		const readback = new Error('fanout reconciliation read failed')
+		let failAppend = true
+		let failReadback = false
+		let allocatedEventId: string | undefined
+		let workers = 0
+		let firstCaught: unknown
+		let fencedCaught: unknown
+		const originalAppend = storage.appendEvents.bind(storage)
+		const originalList = storage.listEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const target = failAppend ? events.find(event => event.type === 'fanout.started') : undefined
+			if (target !== undefined) {
+				failAppend = false
+				failReadback = true
+				allocatedEventId = target.id
+				if (persisted) await originalAppend(runId, events)
+				throw sentinel
+			}
+			return originalAppend(runId, events)
+		}
+		storage.listEvents = async runId => {
+			if (failReadback) { failReadback = false; throw readback }
+			return originalList(runId)
+		}
+		const workflow = defineWorkflow('poisonedFanout', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input, fanOut }) {
+				try { await fanOut([input], async value => { workers += 1; return value }) } catch (error) { firstCaught = error }
+				try { await fanOut([input], async value => { workers += 1; return value }) } catch (error) { fencedCaught = error }
+				return input
+			} })
+		const instance = await defineHarness({ name: persisted ? 'poisonedFanoutAfter' : 'poisonedFanoutBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('poisoned-fanout-session')
+		const invoke = { durable: { runId: 'poisoned-fanout-run' } } as const
+		await expect(session.workflows.poisonedFanout.run('value', invoke)).rejects.toBe(sentinel)
+		expect(firstCaught).toBe(sentinel)
+		expect(fencedCaught).toBe(sentinel)
+		expect(workers).toBe(0)
+		await expect(storage.getRun(invoke.durable.runId)).resolves.toMatchObject({ status: 'interrupted' })
+		expect((await originalList(invoke.durable.runId)).some(event => event.type === 'run.finished')).toBe(false)
+		firstCaught = undefined
+		fencedCaught = undefined
+		await expect(session.workflows.poisonedFanout.run('value', invoke)).resolves.toMatchObject({ status: 'completed', output: 'value' })
+		expect(workers).toBe(2)
+		const events = await originalList(invoke.durable.runId)
+		const starts = events.filter(event => event.type === 'fanout.started')
+		expect(starts).toHaveLength(2)
+		expect(starts[0]?.id).toBe(allocatedEventId)
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('poisons an inconclusive managed marker until fresh acquisition (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const sentinel = new Error(`inconclusive marker ${persisted ? 'persisted' : 'absent'}`)
+		const readback = new Error('marker reconciliation read failed')
+		let failMarker = true
+		let failReadback = false
+		let allocatedEventId: string | undefined
+		let effects = 0
+		let firstCaught: unknown
+		let fencedCaught: unknown
+		const originalCommit = storage.commitCheckpoint.bind(storage)
+		const originalLoad = storage.loadCheckpoint.bind(storage)
+		storage.commitCheckpoint = async checkpoint => {
+			if (failMarker && checkpoint.metadata?.['checkpointKind'] === 'workflow_call_publication') {
+				failMarker = false
+				failReadback = true
+				const output = checkpoint.output
+				if (typeof output === 'object' && output !== null && !Array.isArray(output)) {
+					const allocation = output['allocation']
+					if (typeof allocation === 'object' && allocation !== null && !Array.isArray(allocation)) {
+						const event = allocation['event']
+						if (typeof event === 'object' && event !== null && !Array.isArray(event) && typeof event['eventId'] === 'string') allocatedEventId = event['eventId']
+					}
+				}
+				if (persisted) await originalCommit(checkpoint)
+				throw sentinel
+			}
+			return originalCommit(checkpoint)
+		}
+		storage.loadCheckpoint = async (runId, stepId) => {
+			if (failReadback && stepId.startsWith('workflow:publication:')) { failReadback = false; throw readback }
+			return originalLoad(runId, stepId)
+		}
+		const tool = defineTool('poisonedMarkerTool', { description: 'Complete once.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const workflow = defineWorkflow('poisonedMarker', { input: z.string(), output: z.string(), durable: true, tools: [tool],
+			async handler({ input, tools, fanOut }) {
+				try { return await tools.poisonedMarkerTool.run(input, { callId: 'marker-call' }) }
+				catch (error) { firstCaught = error }
+				try { await fanOut([input], async value => value) } catch (error) { fencedCaught = error }
+				return input
+			} })
+		const instance = await defineHarness({ name: persisted ? 'poisonedMarkerAfter' : 'poisonedMarkerBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('poisoned-marker-session')
+		const invoke = { durable: { runId: 'poisoned-marker-run' } } as const
+		await expect(session.workflows.poisonedMarker.run('value', invoke)).rejects.toBe(sentinel)
+		expect(firstCaught).toBe(sentinel)
+		expect(fencedCaught).toBe(sentinel)
+		expect(effects).toBe(0)
+		await expect(storage.getRun(invoke.durable.runId)).resolves.toMatchObject({ status: 'interrupted' })
+		expect((await storage.listEvents(invoke.durable.runId)).some(event => event.type === 'run.finished')).toBe(false)
+		firstCaught = undefined
+		fencedCaught = undefined
+		await expect(session.workflows.poisonedMarker.run('value', invoke)).resolves.toMatchObject({ status: 'completed', output: 'value' })
+		expect(effects).toBe(1)
+		const events = await storage.listEvents(invoke.durable.runId)
+		expect(events.find(event => event.sequence === 2)?.id).toBe(allocatedEventId)
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		await session.destroy()
+		await instance.close()
+	})
+
 	it.each([
 		{ boundary: 'marker' as const, persisted: false }, { boundary: 'marker' as const, persisted: true },
 		{ boundary: 'append' as const, persisted: false }, { boundary: 'append' as const, persisted: true },

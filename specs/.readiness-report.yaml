@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, autonomous implementation, the trusted-host integrator target visitor, the strict hosted fresh/resume and request-authorizer boundary, the explicit same-tenant stored-run-owner approval-resume mode, canonical HarnessDefinition generic order, invariant phantom inference, and nominal branded remote target contracts. Earlier content-bound review evidence remains historical; the repaired digest passed fresh independent review on 2026-09-09."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
+      scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -472,10 +472,10 @@ follow_up_waves:
       requested_at: "2026-09-08"
       source_revision: "72462ce1d68ddc2f39efd6c6b7718f878759bbfe"
       changed_spec: "specs/42-composable-definitions-and-catalogs.md"
-      changed_spec_digest: "sha256:74a1f21715cdd95cb4542d2d2d319c05e5f18e93904086c6109c21997aa9b38f"
+      changed_spec_digest: "sha256:3876bb800140976d5f7e04a355bc35d957b8d913ca5d0d5db41ab95e5923cd76"
       companion_spec: "../purista/specs/20-agents/88-harness-first-service-integration.md"
       companion_spec_digest: "sha256:1192a1f4bad919108680cd089149d3c2cc1051cf4d8953069cf738d889bfdef2"
-      scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
+      scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
       evidence: "The independently reviewed amendment closes the reported Harness and PURISTA companion blockers: canonical public inference with the full invariant schema witness; nominal local, remote, and queue authenticity; trusted closure visitation; strict hosted fresh/resume authorization and stored-owner privacy; durable validatedInput retention and terminal receipt re-read; generated validation-only remote contracts; and server-side AI SDK UI Message Stream v1 protocol projection without a client library. The exact source set contains no excluded product reference, compiled-graph exposure, or compatibility API."
       repaired_findings:
         count: 6
@@ -558,6 +558,13 @@ follow_up_waves:
         scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
         blocking_findings_count: 0
         evidence: "PASS with zero blockers after review of public target inference and its full invariant schema witness, nominal remote and queue authenticity, strict fresh/resume authorization, durable validatedInput creation identity and terminal receipt re-read, trusted closure visitation, server-side protocol versus UI-client separation, and zero excluded product references."
+      - review: "independent existential target wildcard and downstream compile-scope amendment review"
+        status: passed
+        reviewed_at: "2026-09-09"
+        reviewer: "independent TypeScript contract hard gate"
+        scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
+        blocking_findings_count: 0
+        evidence: "PASS under TypeScript 6.0.3. The existing AnyHarnessTargetContract uses seventh-generic any only as TypeScript's existential consumer wildcard; exact concrete targets retain invariant wire, validated-input, output, update, and interrupt inference plus runtime authenticity. The implementation scope includes every compile-affected execution-event, AI SDK UI adapter, example, and OPA consumer, with zero excluded-repository references."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -617,7 +624,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        completed_count: 17
+        completed_count: 18
         pending_count: 0
       contradiction_check:
         status: passed

@@ -313,13 +313,7 @@ type AnyHarnessTargetContract = HarnessTargetContract<
   ModelSchema,
   HarnessOutputUpdateKind,
   readonly HarnessInterruptKind[],
-  HarnessTargetInferenceShape<
-    any,
-    any,
-    any,
-    any,
-    any
-  >
+  any
 >
 
 type HarnessTargetInput<Target> =
@@ -746,6 +740,19 @@ type HarnessTargetExecutionEvent<
   Target extends AnyHarnessTargetContract,
 > = RootExecutionEventFor<Target> | NestedExecutionEvent
 ```
+
+The `any` seventh argument is the TypeScript existential wildcard used only by
+this existing consumer/top-type alias. It allows an exact invariant target to
+satisfy the common target constraint without pretending one structural
+inference shape is a supertype of every invariant tuple. It is not an
+inference-authority API: every concrete local or trusted remote target still
+carries its constrained invariant `HarnessTargetInferenceFor` projection and
+must pass the target-authenticity boundary. No producer factory, application,
+remote payload, or public helper may supply `any` as target inference.
+Compile tests must prove exact local and trusted remote targets satisfy
+`AnyHarnessTargetContract`, while every consumer helper preserves and indexes
+its concrete `Target` generic rather than widening input, validated input,
+output, update, or interrupt types through the wildcard.
 
 `HarnessExecutionCaller` is the single caller projection used by model,
 output, and tool events, native and host tool context, and MCP request-header
@@ -6875,6 +6882,7 @@ absent, and no compatibility constructor or overload is public.
 
 The later H4-027 remediation owns this complete contract slice. Its exact scope
 must include `packages/harness/src/definitions/types.ts`,
+`packages/harness/src/definitions/execution-events.ts`,
 `packages/harness/src/definitions/harness.ts`,
 `packages/harness/src/definitions/catalog.ts`,
 `packages/harness/src/definitions/index.ts`,
@@ -6895,6 +6903,10 @@ must include `packages/harness/src/definitions/types.ts`,
 `packages/harness/src/testing/harnessStorageContract.ts`,
 `packages/harness/src/testing/fakeHarnessStorage.ts`,
 `packages/harness/src/index.ts`,
+`packages/harness-ai-sdk-ui/src/v1/index.ts`,
+`packages/harness-ai-sdk-ui/test/v1.test.ts`,
+`packages/harness-policy-opa/test/opa.test.ts`,
+`examples/living-wiki-jaeger/src/backend/app.ts`,
 `packages/harness/test/definition-factories.test.ts`,
 `packages/harness/test/portable-definition.test.ts`,
 `packages/harness/test/hosted-runtime.test.ts`,
@@ -6923,6 +6935,10 @@ privacy assertions frozen here and in specs 11, 22, and 32. Every scoped direct
 `createRun` fixture must supply the required validated input for an
 agent/workflow and must not add it to a child task; fixture compilation may not
 be recovered with an optional field, default, cast, or compatibility overload.
+The AI SDK UI adapter, living-wiki backend, and OPA test additions are limited
+to downstream clean-break compile and API remediation for the exact target and
+execution-event contracts; they do not own another target, storage, protocol,
+or policy design.
 The removed-v3 declaration fixture must change its positive
 `HarnessTargetInference` import into an exact clean-break negative while
 retaining `HarnessTargetInferenceFor` as the only public construction helper.

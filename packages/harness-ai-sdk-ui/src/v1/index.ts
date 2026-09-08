@@ -455,7 +455,38 @@ function statusChunk(runId: string, data: HarnessUIStatus): UIMessageChunk<unkno
   return { type: 'data-status', id: `harness-status:${runId}`, data }
 }
 function sameTerminalOutcome(left: unknown, right: unknown): boolean {
-  try { return JSON.stringify(left) === JSON.stringify(right) } catch { return false }
+  try { return canonicalJson(left) === canonicalJson(right) } catch { return false }
+}
+function codePointCompare(left: string, right: string): number {
+  const leftPoints = Array.from(left, character => character.codePointAt(0)!)
+  const rightPoints = Array.from(right, character => character.codePointAt(0)!)
+  const length = Math.min(leftPoints.length, rightPoints.length)
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftPoints[index]! - rightPoints[index]!
+    if (difference !== 0) return difference
+  }
+  return leftPoints.length - rightPoints.length
+}
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value)
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Canonical JSON numbers must be finite.')
+    return JSON.stringify(value)
+  }
+  if (Array.isArray(value)) {
+    const keys = new Set<PropertyKey>(['length', ...Array.from({ length: value.length }, (_unused, index) => String(index))])
+    if (Reflect.ownKeys(value).some(key => !keys.has(key))
+      || Array.from({ length: value.length }, (_unused, index) => index).some(index => !(index in value))) {
+      throw new TypeError('Canonical JSON arrays must be dense.')
+    }
+    return `[${value.map(canonicalJson).join(',')}]`
+  }
+  if (typeof value !== 'object' || value === null || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+    throw new TypeError('Canonical JSON objects must be plain records.')
+  }
+  if (Reflect.ownKeys(value).some(key => typeof key !== 'string')) throw new TypeError('Canonical JSON objects must not contain symbol keys.')
+  const entries = Object.entries(value as Record<string, unknown>).sort(([leftKey], [rightKey]) => codePointCompare(leftKey, rightKey))
+  return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(',')}}`
 }
 function isSubagentEvent(event: Extract<ExecutionEvent, { type: 'agent.started' | 'agent.finished' }>): event is SubagentEvent {
   return typeof event.parentAgentId === 'string' && typeof event.delegationCallId === 'string' && typeof event.delegationDepth === 'number'

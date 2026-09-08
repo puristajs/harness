@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import { isJsonValue, type JsonValue } from '../../models/json.js'
 import type { McpServerDefinition, McpToolDefinition } from '../../definitions/types.js'
 import type { McpBinding } from '../../runtime/instance-config.js'
@@ -33,7 +35,10 @@ export interface McpRuntimeClient {
 /** @internal Explicit dependency seam used by H4-008 and fake-transport tests. */
 export interface McpRuntimeDependencies {
 	createClient(serverId: string): McpRuntimeClient | Promise<McpRuntimeClient>
-	createHttpTransport(binding: Readonly<Omit<Extract<McpBinding, { transport: 'http' }>, 'resolveHeaders'>>): object | Promise<object>
+	createHttpTransport(
+		binding: Readonly<Omit<Extract<McpBinding, { transport: 'http' }>, 'resolveHeaders'>>,
+		currentAuthorization: () => string | undefined,
+	): object | Promise<object>
 	createStdioTransport(process: SandboxProcess): object
 }
 
@@ -77,6 +82,7 @@ async function initializeServer(
 	options: InitializeMcpRuntimeOptions,
 	dependencies: McpRuntimeDependencies,
 ): Promise<McpRuntimeBundle> {
+	const authorizationScope = new AsyncLocalStorage<string | undefined>()
 	let client: McpRuntimeClient
 	try { client = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => dependencies.createClient(server.id)) }
 	catch (error) {
@@ -104,7 +110,9 @@ async function initializeServer(
 		if (binding.transport === 'http') {
 			const transportBinding = Object.freeze({ transport: binding.transport, url: binding.url,
 				...(binding.headers === undefined ? {} : { headers: binding.headers }) })
-			transport = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => dependencies.createHttpTransport(transportBinding))
+			transport = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => (
+				dependencies.createHttpTransport(transportBinding, () => authorizationScope.getStore())
+			))
 		} else {
 			stdioSandbox = binding.sandbox
 			const owner = { namespace: `${options.harnessName}.mcp`, id: server.id, instanceId: options.harnessInstanceId }
@@ -141,7 +149,7 @@ async function initializeServer(
 			if (JSON.stringify(declared) !== JSON.stringify(remote)) throw protocol(localId, binding.transport, 'list')
 			tools[localId] = bindMcpTool(definition, async (context, remoteName, input) => {
 				const caller = projectHarnessExecutionCaller(context.caller)
-				let headers: Readonly<Record<string, string>> | undefined
+				let requestHeaders: McpRequestHeaders = Object.freeze({})
 				if (binding.transport === 'http') {
 					try {
 						const resolverContext: McpRequestHeaderContext = Object.freeze({
@@ -151,7 +159,7 @@ async function initializeServer(
 							signal: context.signal,
 						})
 						const resolved = binding.resolveHeaders === undefined ? undefined : await binding.resolveHeaders(resolverContext)
-						headers = mergeMcpRequestHeaders(binding.headers, resolved)
+						requestHeaders = mergeMcpRequestHeaders(binding.headers, resolved)
 					} catch (error) {
 						if (isOperationControlError(error)) throw error
 						if (context.signal.aborted) throw abortError(context.signal, 'tool', 'MCP tool operation was cancelled.')
@@ -160,10 +168,13 @@ async function initializeServer(
 				}
 				let result: unknown
 				try {
-					result = await client.callTool(remoteName, input, {
+					const invoke = () => client.callTool(remoteName, input, {
 						...(context.signal ? { signal: context.signal } : {}),
-						...(headers === undefined ? {} : { headers }),
+						...(requestHeaders.headers === undefined ? {} : { headers: requestHeaders.headers }),
 					})
+					result = binding.transport === 'http'
+						? await authorizationScope.run(requestHeaders.authorization, invoke)
+						: await invoke()
 				} catch (error) {
 					if (isOperationControlError(error)) throw error
 					if (context.signal?.aborted) throw abortError(context.signal, 'tool', 'MCP tool operation was cancelled.')
@@ -194,10 +205,19 @@ export function normalizeMcpOutput(result: unknown, toolId: string, transport: '
 	return Object.freeze({ content: normalized })
 }
 
+type McpRequestHeaders = Readonly<{
+	authorization?: string
+	headers?: Readonly<Record<string, string>>
+}>
+
+const MCP_RESERVED_REQUEST_HEADERS = new Set([
+	'accept', 'authorization', 'content-type', 'last-event-id', 'mcp-method', 'mcp-name', 'mcp-protocol-version', 'mcp-session-id',
+])
+
 function mergeMcpRequestHeaders(
 	staticHeaders: Readonly<Record<string, string>> | undefined,
 	resolvedHeaders: unknown,
-): Readonly<Record<string, string>> | undefined {
+): McpRequestHeaders {
 	if (resolvedHeaders !== undefined && !isPlain(resolvedHeaders)) throw new TypeError('MCP resolved headers are invalid.')
 	const merged = new Map<string, readonly [name: string, value: string]>()
 	for (const source of [staticHeaders, resolvedHeaders] as const) {
@@ -212,10 +232,16 @@ function mergeMcpRequestHeaders(
 			merged.set(normalizedName, [key, value])
 		}
 	}
-	if (merged.size === 0) return undefined
-	const headers: Record<string, string> = {}
-	for (const [, [name, value]] of [...merged].sort(([left], [right]) => left.localeCompare(right))) headers[name] = value
-	return Object.freeze(headers)
+	const authorization = merged.get('authorization')?.[1]
+	const entries = [...merged]
+		.filter(([normalizedName]) => !MCP_RESERVED_REQUEST_HEADERS.has(normalizedName))
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([, entry]) => entry)
+	const headers = entries.length === 0 ? undefined : Object.freeze(Object.fromEntries(entries))
+	return Object.freeze({
+		...(authorization === undefined ? {} : { authorization }),
+		...(headers === undefined ? {} : { headers }),
+	})
 }
 
 function normalizeContentBlock(block: unknown): JsonValue {
@@ -257,17 +283,47 @@ const defaultMcpRuntimeDependencies: McpRuntimeDependencies = Object.freeze({
 			close: async () => sdk.close(),
 		}
 	},
-	async createHttpTransport(binding: Extract<McpBinding, { transport: 'http' }>) {
+	async createHttpTransport(binding: Extract<McpBinding, { transport: 'http' }>, currentAuthorization: () => string | undefined) {
 		const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client')
-		return new StreamableHTTPClientTransport(new URL(binding.url), {
+		const endpoint = new URL(binding.url)
+		const endpointHref = endpoint.href
+		const platformFetch = globalThis.fetch.bind(globalThis)
+		const transportFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			if (mcpRequestHref(input) !== endpointHref) throw new TypeError('MCP transport refused a request outside its configured endpoint.')
+			const headers = cloneMcpFetchHeaders(input, init)
+			for (const [name, value] of Object.entries(binding.headers ?? {})) {
+				if (!headers.has(name)) headers.set(name, value)
+			}
+			const authorization = currentAuthorization()
+			if (authorization !== undefined) headers.set('authorization', authorization)
+			return platformFetch(input, { ...init, headers, redirect: 'error' })
+		}
+		return new StreamableHTTPClientTransport(endpoint, {
 			requestInit: {
 				redirect: 'error',
-				...(binding.headers === undefined ? {} : { headers: { ...binding.headers } }),
+				...(binding.headers === undefined ? {} : { headers: Object.entries(binding.headers) }),
 			},
+			fetch: transportFetch,
 		})
 	},
 	createStdioTransport(process: SandboxProcess) { return createSandboxProcessTransport(process) },
 })
+
+function mcpRequestHref(input: string | URL | Request): string {
+	try {
+		if (input instanceof URL) return input.href
+		if (typeof input === 'string') return new URL(input).href
+		return new URL(input.url).href
+	} catch {
+		throw new TypeError('MCP transport refused an invalid request URL.')
+	}
+}
+
+function cloneMcpFetchHeaders(input: string | URL | Request, init: RequestInit | undefined): Headers {
+	const headers = new Headers(input instanceof Request ? input.headers : undefined)
+	if (init?.headers !== undefined) new Headers(init.headers).forEach((value, name) => headers.set(name, value))
+	return headers
+}
 
 /** @internal Creates the content-sanitizing transport used by the production stdio dependency. */
 export function createSandboxProcessTransport(process: SandboxProcess): object {

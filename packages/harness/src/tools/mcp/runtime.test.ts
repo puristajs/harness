@@ -105,11 +105,123 @@ describe('MCP Streamable HTTP transport', () => {
 		expect((transports[0] as Record<string, unknown>)).not.toHaveProperty('resolveHeaders')
 		expect(Object.isFrozen(transports[0])).toBe(true)
 		expect(calls).toEqual([{ name: 'lookup_remote', input: { id: 'record-1' }, options: {
-			signal: context.signal, headers: { authorization: 'Bearer tenant', 'x-static': 'one', 'x-tenant': 'tenant-1' },
+			signal: context.signal, headers: { 'x-static': 'one', 'x-tenant': 'tenant-1' },
 		} }])
 		expect(Object.isFrozen((calls[0] as { options: { headers: object } }).options.headers)).toBe(true)
 		expect(authorizationReads).toBe(1)
 		expect(staticHeaders).toEqual({ Authorization: 'Bearer static', 'x-static': 'one' })
+	})
+
+	it('isolates concurrent resolved Authorization through one real pinned SDK client and transport', async () => {
+		const endpoint = 'mcp+https://pinned-sdk.test/mcp'
+		const requestRows: Array<Readonly<{ method: string; rpcMethod?: string; callId?: string; headers: Readonly<Record<string, string>> }>> = []
+		let activeToolCalls = 0
+		let maxActiveToolCalls = 0
+		const simulatedFetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+			const url = input instanceof URL ? input.href : typeof input === 'string' ? input : input.url
+			expect(url).toBe(endpoint)
+			expect(init?.redirect).toBe('error')
+			const method = init?.method ?? 'GET'
+			const headers = Object.freeze(Object.fromEntries(new Headers(init?.headers).entries()))
+			const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { id?: string | number; method?: string; params?: { arguments?: { id?: string } } } : undefined
+			const callId = body?.method === 'tools/call' ? body.params?.arguments?.id : undefined
+			requestRows.push(Object.freeze({ method, ...(body?.method === undefined ? {} : { rpcMethod: body.method }),
+				...(callId === undefined ? {} : { callId }), headers }))
+			if (method === 'GET') return new Response(null, { status: 405 })
+			if (body?.id === undefined) return new Response(null, { status: 202 })
+			if (body.method === 'server/discover') return mcpJsonResponse(body.id, {
+				supportedVersions: ['2026-07-28'], capabilities: { tools: {} },
+			})
+			if (body.method === 'initialize') return mcpJsonResponse(body.id, {
+				protocolVersion: '2026-07-28', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1.0.0' },
+			})
+			if (body.method === 'tools/list') return mcpJsonResponse(body.id, { resultType: 'complete', ttlMs: 0, cacheScope: 'private', tools: [{
+				name: 'lookup_remote', description: 'Look up one record.',
+				inputSchema: projectModelSchema(mcpDefinition().tools.lookup.input, 'tool_input', 'lookup'),
+			}] })
+			if (body.method === 'tools/call') {
+				activeToolCalls += 1
+				maxActiveToolCalls = Math.max(maxActiveToolCalls, activeToolCalls)
+				await new Promise(resolve => setTimeout(resolve, 5))
+				activeToolCalls -= 1
+				return mcpJsonResponse(body.id, { resultType: 'complete', structuredContent: { value: callId }, content: [] })
+			}
+			throw new Error('Unexpected MCP fixture request.')
+		})
+		vi.stubGlobal('fetch', simulatedFetch)
+		const staticHeaders = Object.freeze(Object.fromEntries([
+			['Authorization', 'Bearer static'], ['x-static', 'static'], ['__proto__', 'static-prototype-value'],
+		]))
+		const bundles = await initializeMcpRuntimeBundles({
+			harnessName: 'pinnedSdkHarness', harnessInstanceId: 'instance', servers: { knowledge: mcpDefinition() }, timeoutMs: 1_000,
+			bindings: { knowledge: { transport: 'http', url: endpoint, headers: staticHeaders, resolveHeaders: context => Object.freeze(Object.fromEntries([
+				['authorization', `Bearer ${context.callId}`], ['x-call', context.callId], ['__proto__', `prototype-${context.callId}`],
+			])) } },
+		})
+		const first = toolContext({ callId: 'call-1' })
+		const second = toolContext({ callId: 'call-2', invocationId: 'invocation-2' })
+		await expect(Promise.all([
+			bundles[0]!.tools.lookup!.invokeValidated(first as never, { id: 'call-1' }, { id: 'call-1' }),
+			bundles[0]!.tools.lookup!.invokeValidated(second as never, { id: 'call-2' }, { id: 'call-2' }),
+		])).resolves.toEqual([{ value: 'call-1' }, { value: 'call-2' }])
+		await bundles[0]!.close()
+
+		expect(maxActiveToolCalls).toBe(2)
+		const discovery = requestRows.filter(row => row.rpcMethod !== 'tools/call')
+		expect(discovery.length).toBeGreaterThan(0)
+		expect(requestRows.filter(row => row.rpcMethod === 'server/discover')).toHaveLength(1)
+		for (const row of discovery) {
+			expect(row.headers['authorization']).toBe('Bearer static')
+			expect(row.headers['x-static']).toBe('static')
+			expect(row.headers['__proto__']).toBe('static-prototype-value')
+		}
+		const calls = requestRows.filter(row => row.rpcMethod === 'tools/call').sort((left, right) => left.callId!.localeCompare(right.callId!))
+		expect(calls).toHaveLength(2)
+		for (const row of calls) {
+			expect(row.headers['authorization']).toBe(`Bearer ${row.callId}`)
+			expect(row.headers['x-call']).toBe(row.callId)
+			expect(row.headers['x-static']).toBe('static')
+			expect(row.headers['__proto__']).toBe(`prototype-${row.callId}`)
+		}
+		expect(Object.getOwnPropertyDescriptor(staticHeaders, '__proto__')?.value).toBe('static-prototype-value')
+		expect(Object.isFrozen(staticHeaders)).toBe(true)
+	})
+
+	it('sanitizes a real pinned SDK transport failure without retaining resolved credentials', async () => {
+		const endpoint = 'https://pinned-sdk-failure.test/mcp'
+		const secret = 'Bearer resolved-secret-that-must-not-leak'
+		const simulatedFetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+			const url = input instanceof URL ? input.href : typeof input === 'string' ? input : input.url
+			expect(url).toBe(endpoint)
+			expect(init?.redirect).toBe('error')
+			const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { id?: string | number; method?: string } : undefined
+			if (body?.id === undefined) return new Response(null, { status: 202 })
+			if (body.method === 'server/discover') return mcpJsonResponse(body.id, {
+				supportedVersions: ['2026-07-28'], capabilities: { tools: {} },
+			})
+			if (body.method === 'tools/list') return mcpJsonResponse(body.id, { resultType: 'complete', ttlMs: 0, cacheScope: 'private', tools: [{
+				name: 'lookup_remote', description: 'Look up one record.',
+				inputSchema: projectModelSchema(mcpDefinition().tools.lookup.input, 'tool_input', 'lookup'),
+			}] })
+			if (body.method === 'tools/call') {
+				expect(new Headers(init.headers).get('authorization')).toBe(secret)
+				throw new Error(secret)
+			}
+			throw new Error('Unexpected MCP fixture request.')
+		})
+		vi.stubGlobal('fetch', simulatedFetch)
+		const bundles = await initializeMcpRuntimeBundles({
+			harnessName: 'pinnedSdkFailureHarness', harnessInstanceId: 'instance', servers: { knowledge: mcpDefinition() }, timeoutMs: 1_000,
+			bindings: { knowledge: { transport: 'http', url: endpoint, resolveHeaders: () => ({ Authorization: secret }) } },
+		})
+
+		const failure = await bundles[0]!.tools.lookup!.invokeValidated(toolContext() as never, { id: 'record-1' }, { id: 'record-1' })
+			.catch(error => error)
+		await bundles[0]!.close()
+
+		expect(failure).toMatchObject({ code: 'MCP_PROTOCOL_ERROR', meta: { tool_id: 'lookup', transport: 'http', phase: 'call' } })
+		expect((failure as Error & { cause?: unknown }).cause).toBeUndefined()
+		expect(`${String(failure)}${JSON.stringify(failure)}`).not.toContain(secret)
 	})
 
 	it.each([
@@ -163,7 +275,7 @@ describe('MCP Streamable HTTP transport', () => {
 			expect((failure as Error & { cause?: unknown }).cause).toBeUndefined()
 			expect(`${String(failure)}${JSON.stringify(failure)}`).not.toContain(secret)
 			expect(calls).toEqual(mode === 'resolver' ? [] : [{ name: 'lookup_remote', input: { id: 'record-1' }, options: {
-				signal: expect.any(AbortSignal), headers: { authorization: secret },
+				signal: expect.any(AbortSignal),
 			} }])
 		}
 	})
@@ -227,6 +339,12 @@ function mcpDefinition(id = 'knowledge') {
 		remoteName: 'lookup_remote', description: 'Look up one record.',
 		input: z.object({ id: z.string() }), output: z.object({ value: z.string() }),
 	} } })
+}
+
+function mcpJsonResponse(id: string | number, result: unknown): Response {
+	return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
+		status: 200, headers: { 'content-type': 'application/json' },
+	})
 }
 
 function fakeDependencies(options: { calls: unknown[]; transports?: unknown[]; onCreateClient?: () => void; discovered?: readonly { name: string; inputSchema?: unknown }[]; callError?: Error; close?: () => Promise<void> }) {

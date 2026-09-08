@@ -305,12 +305,17 @@ describe('exact Harness instance requirements', () => {
 		expect(snapshot.mcp?.knowledge?.transport).toBe('stdio')
 		const resolveHeaders = () => Object.freeze({ authorization: 'Bearer current' })
 		let headerReads = 0
-		const headers = Object.defineProperty({}, 'authorization', { enumerable: true,
+		const headers = Object.create(null) as Record<string, string>
+		Object.defineProperty(headers, 'authorization', { enumerable: true,
 			get() { headerReads += 1; return 'Bearer static' } })
+		Object.defineProperty(headers, '__proto__', { enumerable: true, value: 'static-prototype-value' })
 		const httpSnapshot = validateHarnessInstanceConfig(required, { mcp: {
 			knowledge: { transport: 'http', url: 'https://example.com/mcp', headers, resolveHeaders },
 		} })
 		expect(httpSnapshot.mcp?.knowledge).toMatchObject({ transport: 'http', resolveHeaders })
+		const snapshottedHeaders = (httpSnapshot.mcp?.knowledge as { headers?: Readonly<Record<string, string>> }).headers
+		expect(Object.hasOwn(snapshottedHeaders ?? {}, '__proto__')).toBe(true)
+		expect(snapshottedHeaders?.['__proto__']).toBe('static-prototype-value')
 		expect(headerReads).toBe(1)
 		expect(Object.isFrozen(httpSnapshot.mcp?.knowledge)).toBe(true)
 		expect(errorOf(() => validateHarnessInstanceConfig(required, { mcp: {

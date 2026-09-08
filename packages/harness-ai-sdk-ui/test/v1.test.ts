@@ -280,6 +280,20 @@ describe('AI SDK UI Message Stream v1', () => {
     }
   })
 
+  it('compares terminal results by canonical JSON content rather than insertion order', async () => {
+    const events = completedEvents()
+    const equivalent = Object.freeze({ output: 'Hello', runId: 'run-1', status: 'completed' } as const)
+    const source = { ...stream(events), result: Promise.resolve(equivalent) } as HarnessTargetStream<UITestTarget>
+
+    await expect(collectAsync(createHarnessUIMessageSseEvents(source, { sessionId: 'session-1' })))
+      .resolves.toContainEqual({ event: 'data', data: '[DONE]' })
+
+    const different = Object.freeze({ output: 'Different', runId: 'run-1', status: 'completed' } as const)
+    const mismatch = { ...stream(completedEvents()), result: Promise.resolve(different) } as HarnessTargetStream<UITestTarget>
+    await expect(collectAsync(createHarnessUIMessageSseEvents(mismatch, { sessionId: 'session-1' })))
+      .rejects.toThrow(/does not match/i)
+  })
+
   it('cancels target execution and closes iterator observation on disconnect', async () => {
     const cancel = vi.fn(async (_reason?: string) => {})
     const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))

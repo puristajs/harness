@@ -476,7 +476,7 @@ function validateTelemetry(value: unknown): Readonly<TelemetryOptions> {
 
 function stringRecord(value: unknown, path: string): Readonly<Record<string, string>> {
 	if (!isPlainRecord(value)) fail('invalid_runtime_binding', path)
-	const result: Record<string, string> = {}
+	const entries: Array<readonly [string, string]> = []
 	const names = new Set<string>()
 	for (const key of Object.keys(value).sort()) {
 		const normalizedName = key.toLowerCase()
@@ -484,9 +484,9 @@ function stringRecord(value: unknown, path: string): Readonly<Record<string, str
 		names.add(normalizedName)
 		const child = value[key]
 		if (typeof child !== 'string') fail('invalid_runtime_binding', `${path}.${key}`)
-		result[key] = child
+		entries.push([key, child])
 	}
-	return Object.freeze(result)
+	return Object.freeze(Object.fromEntries(entries))
 }
 
 function unknownKey(value: PlainRecord, allowed: readonly string[], path: string): void {

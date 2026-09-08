@@ -12,6 +12,7 @@ import type { TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 
 class TestProvider extends BaseModelProvider {
+  public declare readonly object: NonNullable<BaseModelProvider['object']>
   public error: unknown
   public errors: unknown[] = []
   public delayMs = 0
@@ -43,6 +44,8 @@ class TestProvider extends BaseModelProvider {
 }
 
 class TestStreamProvider extends BaseModelProvider {
+  public declare readonly textStream: NonNullable<BaseModelProvider['textStream']>
+  public declare readonly objectStream: NonNullable<BaseModelProvider['objectStream']>
   /** Errors thrown before the first chunk, one per attempt. */
   public errorsBeforeFirstChunk: unknown[] = []
   /** Error thrown after the first chunk was yielded. */
@@ -106,6 +109,18 @@ class AllOperationsProvider extends BaseModelProvider {
   protected override async *doVideoStream(_req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> { throw new Error('unused') }
 }
 
+class ClassFieldProvider extends BaseModelProvider {
+  public declare readonly text: NonNullable<BaseModelProvider['text']>
+  protected override doText = async (_req: TextRequest): Promise<TextResponse> => ({
+    content: 'class field', usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 }, finishReason: 'stop',
+  })
+
+  public constructor() {
+    super({ id: 'class-field', genAiSystem: 'test' })
+    this.finalizeOperations()
+  }
+}
+
 async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   const chunks: T[] = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -137,6 +152,14 @@ describe('BaseModelProvider', () => {
     expect(methods.filter(method => typeof streamsOnly[method] === 'function')).toEqual(['textStream', 'objectStream'])
     const all = new AllOperationsProvider()
     expect(methods.filter(method => typeof all[method] === 'function')).toEqual(methods)
+  })
+
+  it('finalizes protected class-field operations after derived initialization', async () => {
+    const provider = new ClassFieldProvider()
+    expect(typeof provider.text).toBe('function')
+    expect('object' in provider).toBe(false)
+    await expect(provider.text({ model: 'demo', messages: [], signal: new AbortController().signal }))
+      .resolves.toMatchObject({ content: 'class field' })
   })
 
   it('normalizes raw provider failures into ModelError', async () => {

@@ -17,6 +17,61 @@ const request = {
 } as const
 
 describe('v4 durable external waits', () => {
+	it('restores a persisted poisoned wait request when registration skips its producer', async () => {
+		const storage = new InMemoryHarnessStorage()
+		const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+		Object.defineProperties(storage, { capabilities: { value: capabilities }, info: { value: Object.freeze({ ...storage.info, capabilities }) } })
+		const sentinel = new Error('wait request append result unavailable')
+		const readback = new Error('wait request readback unavailable')
+		let failAppend = true
+		let failReadback = false
+		let requestedEventId: string | undefined
+		const appendEvents = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const requested = failAppend ? events.find(event => event.type === 'external_wait.requested') : undefined
+			await appendEvents(runId, events)
+			if (requested !== undefined) {
+				failAppend = false
+				failReadback = true
+				requestedEventId = requested.id
+				throw sentinel
+			}
+		}
+		const listEvents = storage.listEvents.bind(storage)
+		storage.listEvents = async runId => {
+			if (failReadback) {
+				failReadback = false
+				throw readback
+			}
+			return listEvents(runId)
+		}
+		const workflow = defineWorkflow('poisonedWaitRequest', { input: z.string(), output: z.string(), durable: true,
+			async handler(context) { await context.externalWait.wait({ ...request, waitId: 'poisoned-request' }); return context.input } })
+		const instance = await defineHarness({ name: 'poisonedWaitRequestHarness', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('poisoned-wait-request-session')
+		const invoke = { durable: { runId: 'poisoned-wait-request-run' } } as const
+
+		await expect(session.workflows.poisonedWaitRequest.run('value', invoke)).rejects.toBe(sentinel)
+		const beforeRecovery = await listEvents(invoke.durable.runId)
+		expect(beforeRecovery.filter(event => event.type === 'external_wait.requested')).toEqual([
+			expect.objectContaining({ id: requestedEventId, sequence: 2 }),
+		])
+		const live: string[] = []
+		for await (const event of session.workflows.poisonedWaitRequest.stream('value', invoke)) live.push(event.type)
+		expect(live.filter(type => type === 'run.started')).toHaveLength(1)
+		expect(live.filter(type => type === 'external_wait.requested')).toHaveLength(1)
+		expect(live.filter(type => type === 'external_wait.waiting')).toHaveLength(1)
+		expect(live.filter(type => type === 'run.finished')).toHaveLength(1)
+		const events = await listEvents(invoke.durable.runId)
+		expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4])
+		expect(events.filter(event => event.type === 'external_wait.requested')).toEqual([
+			expect.objectContaining({ id: requestedEventId, sequence: 2 }),
+		])
+		await session.destroy()
+		await instance.close()
+	})
+
 	it.each([false, true])('reconciles an external-wait event append (persisted=%s)', async persisted => {
 		const storage = new InMemoryHarnessStorage()
 		const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)

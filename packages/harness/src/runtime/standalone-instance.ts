@@ -697,7 +697,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
 		const recoverablePublicationErrors = new Set<unknown>()
-		let recoveredNonManagedPoison: RetainedPublicationPoison | undefined
+		let recoveredAbsentNonManagedPoison: RetainedPublicationPoison | undefined
+		let satisfiedPresentNonManagedPoison: RetainedPublicationPoison | undefined
 		const markRecoverablePublicationError = (error: unknown) => {
 			recoverablePublicationErrors.add(error)
 			if (error !== null && (typeof error === 'object' || typeof error === 'function')) recoverableEventPublicationErrors.add(error)
@@ -724,6 +725,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			let release!: () => void
 			eventSequenceTail = new Promise<void>(resolve => { release = resolve })
 			await prior
+			const retainedAfterWait = retainedPublicationPoisons.get(runId)
+			if (retainedAfterWait !== undefined) {
+				release()
+				throw retainedAfterWait.error
+			}
 			return release
 		}
 		const allocateManagedEvent = async (body: UncorrelatedExecutionEvent) => {
@@ -778,8 +784,22 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const persistAndQueue = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
 			const release = await acquireEventSequence()
 			try {
+				const recoveredPresent = satisfiedPresentNonManagedPoison
+				if (recoveredPresent !== undefined) {
+					const candidateBody = 'at' in body
+						? Object.freeze({ ...body, at: recoveredPresent.persisted.at }) : body
+					const candidateEvent = correlatedEvent(runId, recoveredPresent.event.sequence, candidateBody,
+						parentEventRunId, parentInvocationId)
+					const candidatePersisted: PersistedRunEvent = Object.freeze({ id: candidateEvent.eventId,
+						sequence: candidateEvent.sequence, runId, at: recoveredPresent.persisted.at, type: candidateEvent.type,
+						payload: privacySafeEventPayload(candidateEvent) })
+					if (canonicalJson(candidatePersisted) === canonicalJson(recoveredPresent.persisted)) {
+						satisfiedPresentNonManagedPoison = undefined
+						return
+					}
+				}
 				sequence += 1
-				const recovered = recoveredNonManagedPoison
+				const recovered = recoveredAbsentNonManagedPoison
 				const eventBody = recovered !== undefined && 'at' in body
 					? Object.freeze({ ...body, at: recovered.persisted.at }) : body
 				const event = correlatedEvent(runId, sequence, eventBody, parentEventRunId, parentInvocationId)
@@ -787,7 +807,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					? (await storage.listEvents(runId)).find(candidate => candidate.id === event.eventId)
 					: undefined
 				const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
-					at: existingEvent?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
+					at: recovered?.persisted.at ?? existingEvent?.at
+						?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
 					payload: privacySafeEventPayload(event) })
 				if (recovered !== undefined && canonicalJson(persisted) !== canonicalJson(recovered.persisted)) {
 					retainedPublicationPoisons.set(runId, recovered)
@@ -818,7 +839,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						throw conflict
 					}
 				}
-				recoveredNonManagedPoison = undefined
+				recoveredAbsentNonManagedPoison = undefined
 				queue.push(event)
 			} finally { release() }
 		}
@@ -845,16 +866,22 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						event: poison.event, persistedAt: poison.persisted.at,
 					}))) throw poison.error
 				}
+				sequence = poison.event.sequence - 1
 			} else {
 				let events: readonly PersistedRunEvent[]
 				try { events = priorEvents ?? await storage.listEvents(runId) }
 				catch { throw poison.error }
 				const stored = events.find(candidate => candidate.id === poison.persisted.id
 					|| candidate.sequence === poison.persisted.sequence)
-				if (stored !== undefined && canonicalJson(stored) !== canonicalJson(poison.persisted)) throw poison.error
-				recoveredNonManagedPoison = poison
+				if (stored === undefined) {
+					recoveredAbsentNonManagedPoison = poison
+					sequence = poison.event.sequence - 1
+				} else {
+					if (canonicalJson(stored) !== canonicalJson(poison.persisted)) throw poison.error
+					satisfiedPresentNonManagedPoison = poison
+					sequence = Math.max(sequence, poison.event.sequence)
+				}
 			}
-			sequence = poison.event.sequence - 1
 			retainedPublicationPoisons.delete(runId)
 		}
 		const relayChildEvent = async (event: ExecutionEvent<JsonValue>) => {
@@ -1107,6 +1134,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const started = (priorEvents ?? await storage.listEvents(runId)).find(event => event.sequence === 1)
 			if (!started) throw new ApprovalResumeError('invalid_checkpoint')
 			queue.push(restoreStartedEvent(started))
+		}
+		if (satisfiedPresentNonManagedPoison !== undefined
+			&& satisfiedPresentNonManagedPoison.event.type !== 'run.started') {
+			queue.push(satisfiedPresentNonManagedPoison.event)
 		}
 		await telemetry.span(definition.kind === 'agent' ? `invoke_agent ${definition.id}` : 'harness.workflow.run', {
 			'harness.name': options.name, 'harness.session.id': invocation.sessionId, 'harness.run.id': runId,

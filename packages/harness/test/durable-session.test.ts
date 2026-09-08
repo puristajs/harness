@@ -8,6 +8,7 @@ import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { FakeSandbox } from '../src/testing/fakeSandbox.js'
 import type { AcquireRunRequest } from '../src/storage/types.js'
 import type { DurableRunLease } from '../src/storage/execution.js'
 import { canonicalJson } from '../src/runtime/canonical-json.js'
@@ -243,6 +244,180 @@ describe('v4 durable session execution', () => {
 		expect(events.filter(event => event.type === 'child_task.settled')).toHaveLength(1)
 		expect(events.filter(event => event.type === 'run.finished')).toHaveLength(1)
 		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		await session.destroy()
+		await instance.close()
+	})
+
+	it('restores a persisted poisoned child settlement when reconstruction skips its producer', async () => {
+		const storage = persistentStorage()
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: 'persisted settlement', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const sandbox = new FakeSandbox()
+		let sandboxCloses = 0
+		const openSandbox = sandbox.open.bind(sandbox)
+		sandbox.open = async options => {
+			const opened = await openSandbox(options)
+			const close = opened.session.close.bind(opened.session)
+			Object.defineProperty(opened.session, 'close', { value: async () => { sandboxCloses += 1; await close() } })
+			return opened
+		}
+		const sentinel = new Error('persisted child settlement append failed')
+		const readback = new Error('persisted child settlement readback failed')
+		let failSettlement = true
+		let failReadback = false
+		let settlementEventId: string | undefined
+		const appendEvents = storage.appendEvents.bind(storage)
+		const listEvents = storage.listEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const settlement = failSettlement ? events.find(event => event.type === 'child_task.settled') : undefined
+			if (settlement !== undefined) {
+				failSettlement = false
+				settlementEventId = settlement.id
+				await appendEvents(runId, events)
+				failReadback = true
+				throw sentinel
+			}
+			return appendEvents(runId, events)
+		}
+		storage.listEvents = async runId => {
+			if (failReadback) { failReadback = false; throw readback }
+			return listEvents(runId)
+		}
+		const child = defineAgent('persistedSettlementChild', { input: z.string(), output: z.string(), durable: true,
+			sandbox: 'private', instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('persistedSettlementParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
+			async handler({ input, childTasks }) {
+				const task = await childTasks.start('persistedSettlementChild', input, { callId: 'persisted-settle-call', idempotencyKey: 'persisted-settle-key' })
+				return task.result()
+			} })
+		const instance = await defineHarness({ name: 'persistedSettlementHarness', revision: 'v1' })
+			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, sandbox, storage })
+		const session = await instance.getSession('persisted-settlement-session')
+		const invoke = { durable: { runId: 'persisted-settlement-run' } } as const
+		await expect(session.workflows.persistedSettlementParent.run('value', invoke)).rejects.toBe(sentinel)
+		expect(sandboxCloses).toBe(0)
+		expect(provider.requests).toHaveLength(1)
+		expect((await listEvents(invoke.durable.runId)).filter(event => event.type === 'child_task.settled')).toHaveLength(1)
+		const recoveredLive: string[] = []
+		for await (const event of session.workflows.persistedSettlementParent.stream('value', invoke)) recoveredLive.push(event.type)
+		expect(provider.requests).toHaveLength(1)
+		expect(sandboxCloses).toBe(1)
+		expect(recoveredLive.filter(type => type === 'run.started')).toHaveLength(1)
+		expect(recoveredLive.filter(type => type === 'child_task.settled')).toHaveLength(1)
+		expect(recoveredLive.filter(type => type === 'run.finished')).toHaveLength(1)
+		const events = await listEvents(invoke.durable.runId)
+		expect(events.filter(event => event.type === 'child_task.settled')).toEqual([
+			expect.objectContaining({ id: settlementEventId, sequence: 3 }),
+		])
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		await session.destroy()
+		await instance.close()
+	})
+
+	it('retains a persisted poisoned run start when reconstruction skips lifecycle publication', async () => {
+		const storage = persistentStorage()
+		const sentinel = new Error('persisted lifecycle append failed')
+		const readback = new Error('persisted lifecycle readback failed')
+		let failStart = true
+		let failReadback = false
+		let startEventId: string | undefined
+		let effects = 0
+		const appendEvents = storage.appendEvents.bind(storage)
+		const listEvents = storage.listEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const start = failStart ? events.find(event => event.type === 'run.started') : undefined
+			if (start !== undefined) {
+				failStart = false
+				startEventId = start.id
+				await appendEvents(runId, events)
+				failReadback = true
+				throw sentinel
+			}
+			return appendEvents(runId, events)
+		}
+		storage.listEvents = async runId => {
+			if (failReadback) { failReadback = false; throw readback }
+			return listEvents(runId)
+		}
+		const workflow = defineWorkflow('persistedLifecycle', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input }) { effects += 1; return input } })
+		const instance = await defineHarness({ name: 'persistedLifecycleHarness', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('persisted-lifecycle-session')
+		const invoke = { durable: { runId: 'persisted-lifecycle-run' } } as const
+		await expect(session.workflows.persistedLifecycle.run('value', invoke)).rejects.toBe(sentinel)
+		expect(effects).toBe(0)
+		const live: string[] = []
+		for await (const event of session.workflows.persistedLifecycle.stream('value', invoke)) live.push(event.type)
+		expect(effects).toBe(1)
+		expect(live).toEqual(['run.started', 'run.finished'])
+		expect(await listEvents(invoke.durable.runId)).toEqual([
+			expect.objectContaining({ id: startEventId, sequence: 1, type: 'run.started' }),
+			expect.objectContaining({ sequence: 2, type: 'run.finished' }),
+		])
+		await session.destroy()
+		await instance.close()
+	})
+
+	it('rechecks poisoned publication state after a queued producer acquires the sequencer', async () => {
+		const storage = persistentStorage()
+		const sentinel = new Error('concurrent fanout append failed')
+		const readback = new Error('concurrent fanout readback failed')
+		let failFirstStart = true
+		let failReadback = false
+		let enteredAppend!: () => void
+		let releaseAppend!: () => void
+		const appendEntered = new Promise<void>(resolve => { enteredAppend = resolve })
+		const appendReleased = new Promise<void>(resolve => { releaseAppend = resolve })
+		const appendAttempts: Array<Readonly<{ sequence: number; type: string }>> = []
+		let results: PromiseSettledResult<string[]>[] = []
+		let workers = 0
+		const appendEvents = storage.appendEvents.bind(storage)
+		const listEvents = storage.listEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			appendAttempts.push(...events.map(event => Object.freeze({ sequence: event.sequence, type: event.type })))
+			const firstStart = failFirstStart ? events.find(event => event.type === 'fanout.started') : undefined
+			if (firstStart !== undefined) {
+				failFirstStart = false
+				await appendEvents(runId, events)
+				failReadback = true
+				enteredAppend()
+				await appendReleased
+				throw sentinel
+			}
+			return appendEvents(runId, events)
+		}
+		storage.listEvents = async runId => {
+			if (failReadback) { failReadback = false; throw readback }
+			return listEvents(runId)
+		}
+		const workflow = defineWorkflow('queuedPoisonFanout', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input, fanOut }) {
+				const first = fanOut([input], async value => { workers += 1; return value })
+				await appendEntered
+				const second = fanOut([input], async value => { workers += 1; return value })
+				releaseAppend()
+				results = await Promise.allSettled([first, second])
+				return input
+			} })
+		const instance = await defineHarness({ name: 'queuedPoisonFanoutHarness', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('queued-poison-fanout-session')
+		const invoke = { durable: { runId: 'queued-poison-fanout-run' } } as const
+		await expect(session.workflows.queuedPoisonFanout.run('value', invoke)).rejects.toBe(sentinel)
+		expect(results).toEqual([
+			expect.objectContaining({ status: 'rejected', reason: sentinel }),
+			expect.objectContaining({ status: 'rejected', reason: sentinel }),
+		])
+		expect(workers).toBe(0)
+		expect(appendAttempts.some(attempt => attempt.sequence === 3)).toBe(false)
+		expect((await listEvents(invoke.durable.runId)).map(event => event.sequence)).toEqual([1, 2])
+		await expect(session.workflows.queuedPoisonFanout.run('value', invoke))
+			.resolves.toMatchObject({ status: 'completed', output: 'value' })
+		expect(workers).toBe(2)
+		const events = await listEvents(invoke.durable.runId)
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		expect(events.filter(event => event.type === 'fanout.started')).toHaveLength(2)
 		await session.destroy()
 		await instance.close()
 	})

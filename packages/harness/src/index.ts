@@ -546,8 +546,11 @@ export type {
   WorkflowContext,
   WorkflowDefinition,
   WorkflowModelMap,
+  WorkflowModelCallOptions,
   WorkflowModelRequirement,
   WorkflowOptions,
+  WorkflowToolCallOptions,
+  WorkflowToolDefinitions,
 } from './definitions/index.js'
 export type { DefinitionReference } from './definitions/identity.js'
 export type {

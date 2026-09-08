@@ -4,7 +4,7 @@ import type { ToolApprovalResume } from '../approvals/index.js'
 import type { HarnessCatalogView, HarnessContracts } from '../definitions/catalog.js'
 import { getHarnessRuntimeBlueprint, type HarnessDefinition } from '../definitions/harness.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
-import type { HostToolDefinition } from '../definitions/types.js'
+import type { HarnessExecutionCaller, HostToolDefinition } from '../definitions/types.js'
 import {
 	AgentLoopBudgetError, HarnessConfigError, HostNestedTargetError, HostNestedTargetReplayConflictError, InternalError,
 	HarnessTargetRouteReceiptMismatchError, OperationCancelledError, ValidationError,
@@ -21,7 +21,7 @@ import type { Infer } from '../schema/index.js'
 import type { HostNestedTargetCheckpointV1, HostNestedTargetStoredOutcomeV1 } from '../storage/execution.js'
 import type { TelemetryShim } from '../telemetry/index.js'
 import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telemetry/trace-context.js'
-import { bindHostTool, type AgentExecutableBinding, type AgentToolInvocationContext } from '../tools/bindings.js'
+import { bindHostTool, type AgentExecutableBinding, type ToolInvocationContext } from '../tools/bindings.js'
 import { canonicalJson } from '../runtime/canonical-json.js'
 import { abortError } from '../runtime/abort.js'
 import {
@@ -55,6 +55,7 @@ export type HarnessHostContextRequest<HostInvocation> = Readonly<{
 	hostInvocation: HostInvocation
 	target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
 	tool: Readonly<{ id: string; callId: string }>
+	caller: HarnessExecutionCaller
 	sessionId: string
 	runId: string
 	rootRunId: string
@@ -254,13 +255,13 @@ function createHostBindingOverlay<HostInvocation, HostContext>(
 						const known = local.get(key)
 						if (known !== undefined) {
 							if (known.target.kind !== target.kind || known.target.id !== target.id) throw new HostNestedTargetReplayConflictError({
-								reason: 'target_mismatch', agent_id: context.agentId, tool_id: definition.id,
+								reason: 'target_mismatch', caller: context.caller, caller_run_id: context.runId, tool_id: definition.id,
 								tool_call_id: context.callId, call_id: nestedOptions.callId,
 								expected_target_kind: known.target.kind, expected_target_id: known.target.id,
 								received_target_kind: target.kind, received_target_id: target.id,
 							})
 							if (known.canonicalInput !== canonicalInput) throw new HostNestedTargetReplayConflictError({
-								reason: 'input_mismatch', agent_id: context.agentId, tool_id: definition.id,
+								reason: 'input_mismatch', caller: context.caller, caller_run_id: context.runId, tool_id: definition.id,
 								tool_call_id: context.callId, call_id: nestedOptions.callId,
 								expected_target_kind: known.target.kind, expected_target_id: known.target.id,
 								received_target_kind: target.kind, received_target_id: target.id,
@@ -280,10 +281,11 @@ function createHostBindingOverlay<HostInvocation, HostContext>(
 					finally { activeDistinct = undefined }
 				},
 			})
-			const target = Object.freeze(context.workflowId === undefined
-				? { kind: 'agent' as const, id: context.agentId }
-				: { kind: 'workflow' as const, id: context.workflowId })
+			const target = Object.freeze(context.caller.kind === 'agent'
+				? { kind: 'agent' as const, id: context.caller.agentId }
+				: { kind: 'workflow' as const, id: context.caller.workflowId })
 			const request = Object.freeze({ hostInvocation, target, tool: Object.freeze({ id: definition.id, callId: context.callId }),
+				caller: context.caller,
 				sessionId: context.sessionId, runId: context.runId, rootRunId: context.rootRunId, invocationId: context.invocationId,
 				hostToolInvocationId, ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
 				depth: context.depth, remainingDepth: context.remainingDepth, ...(context.deadline === undefined ? {} : { deadline: context.deadline }),
@@ -298,18 +300,22 @@ function createHostBindingOverlay<HostInvocation, HostContext>(
 }
 
 async function executeNestedTarget(options: Readonly<{
-	context: AgentToolInvocationContext; definition: HostToolDefinition<any, any, any, any>; binding: AgentExecutableBinding; hostToolInvocationId: string
+	context: ToolInvocationContext; definition: HostToolDefinition<any, any, any, any>; binding: AgentExecutableBinding; hostToolInvocationId: string
 	target: AnyHarnessTargetContract; route: HarnessTargetRouteReceiptV1; input: JsonValue; hostToolWireInput: JsonValue; callId: string
 }>): Promise<HostNestedTargetCheckpointV1> {
 	const { context, definition, binding, hostToolInvocationId, target, route, input, hostToolWireInput, callId } = options
-	if (context.remainingDepth === 0) throw new AgentLoopBudgetError('Agent delegation depth budget exceeded.', {
-		agent_id: context.agentId, reason: 'max_depth', limit: context.depth + context.remainingDepth,
-	})
+	if (context.remainingDepth === 0) {
+		if (context.caller.kind === 'agent') throw new AgentLoopBudgetError('Agent delegation depth budget exceeded.', {
+			agent_id: context.caller.agentId, reason: 'max_depth', limit: context.depth + context.remainingDepth,
+		})
+		throw new ValidationError('Workflow delegation depth budget exceeded.', { where: 'invoke_options',
+			issues: { reason: 'max_depth', limit: context.depth + context.remainingDepth } })
+	}
 	const childInvocationId = opaqueId('invocation', ['harness.host-child-invocation.v1', hostToolInvocationId, callId, target.kind, target.id])
 	const childSessionId = opaqueId('session', ['harness.host-child-session.v1', context.sessionId, context.rootRunId, childInvocationId, target.kind, target.id])
 	const stream = await context.targetDispatcher.open({ target, input, invocation: Object.freeze({ sessionId: childSessionId,
 		invocationId: childInvocationId, rootRunId: context.rootRunId, parentRunId: context.runId,
-		...(context.workflowId === undefined ? { parentAgentId: context.agentId } : { parentWorkflowId: context.workflowId }),
+		...(context.caller.kind === 'agent' ? { parentAgentId: context.caller.agentId } : { parentWorkflowId: context.caller.workflowId }),
 		depth: context.depth + 1, remainingDepth: Math.max(0, context.remainingDepth - 1),
 		...(context.identity === undefined ? {} : { identity: context.identity }), ...(context.trace === undefined ? {} : { trace: context.trace }),
 		...(context.deadline === undefined ? {} : { deadline: context.deadline }), signal: context.signal }) })
@@ -318,7 +324,7 @@ async function executeNestedTarget(options: Readonly<{
 	if (consumed.outcome.status === 'interrupted') {
 		const interruption = createHarnessChildTargetInterruption(childInvocationId, consumed.outcome)
 		throw attachHarnessChildTargetHostFrame(interruption, Object.freeze({ kind: 'host-tool', runId: context.runId,
-			agentId: context.agentId, invocationId: context.invocationId, hostToolInvocationId, toolId: definition.id,
+			caller: context.caller, invocationId: context.invocationId, hostToolInvocationId, toolId: definition.id,
 			callId: context.callId, input: hostToolWireInput, bindingId: binding.id, bindingContractDigest: binding.contractDigest,
 			toolStarted: true, activeNestedCall: Object.freeze({ callId,
 				target: Object.freeze({ kind: target.kind, id: target.id }), route, input,
@@ -335,22 +341,22 @@ async function executeNestedTarget(options: Readonly<{
 			: Object.freeze({ status: 'failed', error: hostFailure(context, definition, callId, target) })
 	return Object.freeze({ schemaVersion: 1, kind: 'host_nested_target', toolCallId: context.callId, callId,
 		target: Object.freeze({ kind: target.kind, id: target.id }), route, input, outcome,
-		lineage: Object.freeze({ rootRunId: context.rootRunId, agentRunId: context.runId, hostToolInvocationId,
+		lineage: Object.freeze({ rootRunId: context.rootRunId, callerRunId: context.runId, hostToolInvocationId,
 			childRunId: consumed.lineage.childRunId, childInvocationId }) })
 }
 
 function replayHostRecord(record: HostNestedTargetCheckpointV1, target: AnyHarnessTargetContract, route: HarnessTargetRouteReceiptV1, canonicalInput: string,
-	callId: string, hostToolInvocationId: string, context: AgentToolInvocationContext,
+	callId: string, hostToolInvocationId: string, context: ToolInvocationContext,
 	definition: HostToolDefinition<any, any, any, any>): JsonValue {
 	const parsed = parseHostRecord(record)
 	const expectedChildInvocationId = opaqueId('invocation', ['harness.host-child-invocation.v1', hostToolInvocationId,
 		parsed.callId, parsed.target.kind, parsed.target.id])
 	if (parsed.toolCallId !== context.callId || parsed.callId !== callId
-		|| parsed.lineage.rootRunId !== context.rootRunId || parsed.lineage.agentRunId !== context.runId
+		|| parsed.lineage.rootRunId !== context.rootRunId || parsed.lineage.callerRunId !== context.runId
 		|| parsed.lineage.hostToolInvocationId !== hostToolInvocationId
 		|| parsed.lineage.childInvocationId !== expectedChildInvocationId) invalidHostRecord()
 	if (parsed.target.kind !== target.kind || parsed.target.id !== target.id) throw new HostNestedTargetReplayConflictError({
-		reason: 'target_mismatch', agent_id: context.agentId, tool_id: definition.id, tool_call_id: context.callId, call_id: parsed.callId,
+		reason: 'target_mismatch', caller: context.caller, caller_run_id: context.runId, tool_id: definition.id, tool_call_id: context.callId, call_id: parsed.callId,
 		expected_target_kind: parsed.target.kind, expected_target_id: parsed.target.id,
 		received_target_kind: target.kind, received_target_id: target.id,
 	})
@@ -359,7 +365,7 @@ function replayHostRecord(record: HostNestedTargetCheckpointV1, target: AnyHarne
 			target_kind: target.kind, target_id: target.id })
 	}
 	if (canonicalJson(parsed.input) !== canonicalInput) throw new HostNestedTargetReplayConflictError({
-		reason: 'input_mismatch', agent_id: context.agentId, tool_id: definition.id, tool_call_id: context.callId, call_id: parsed.callId,
+		reason: 'input_mismatch', caller: context.caller, caller_run_id: context.runId, tool_id: definition.id, tool_call_id: context.callId, call_id: parsed.callId,
 		expected_target_kind: parsed.target.kind, expected_target_id: parsed.target.id,
 		received_target_kind: target.kind, received_target_id: target.id,
 	})
@@ -369,7 +375,8 @@ function replayHostRecord(record: HostNestedTargetCheckpointV1, target: AnyHarne
 		throw new OperationCancelledError('Host nested target call was cancelled.', parsed.outcome.error.meta)
 	}
 	const meta = parsed.outcome.error.meta
-	if (meta.agent_id !== context.agentId || meta.tool_id !== definition.id || meta.tool_call_id !== context.callId
+	if (canonicalJson(meta.caller as unknown as JsonValue) !== canonicalJson(context.caller as unknown as JsonValue)
+		|| meta.caller_run_id !== context.runId || meta.tool_id !== definition.id || meta.tool_call_id !== context.callId
 		|| meta.call_id !== parsed.callId || meta.target_kind !== parsed.target.kind || meta.target_id !== parsed.target.id) invalidHostRecord()
 	throw new HostNestedTargetError(parsed.outcome.error.meta)
 }
@@ -384,8 +391,8 @@ function parseHostRecord(value: unknown): HostNestedTargetCheckpointV1 {
 		|| !['agent', 'workflow'].includes(String(target['kind'])) || !nonempty(target['id'])) invalidHostRecord()
 	if (!validRouteReceipt(value['route'], target as { kind: 'agent' | 'workflow'; id: string })) invalidHostRecord()
 	const lineage = value['lineage']
-	if (!plain(lineage) || !exactKeys(lineage, ['rootRunId', 'agentRunId', 'hostToolInvocationId', 'childRunId', 'childInvocationId'])
-		|| !['rootRunId', 'agentRunId', 'hostToolInvocationId', 'childRunId', 'childInvocationId'].every(key => nonempty(lineage[key]))) invalidHostRecord()
+	if (!plain(lineage) || !exactKeys(lineage, ['rootRunId', 'callerRunId', 'hostToolInvocationId', 'childRunId', 'childInvocationId'])
+		|| !['rootRunId', 'callerRunId', 'hostToolInvocationId', 'childRunId', 'childInvocationId'].every(key => nonempty(lineage[key]))) invalidHostRecord()
 	const outcome = value['outcome']
 	if (!plain(outcome) || typeof outcome['status'] !== 'string') invalidHostRecord()
 	if (outcome['status'] === 'completed') {
@@ -403,8 +410,8 @@ function validStoredHostFailure(value: unknown): boolean {
 		|| value['code'] !== 'HOST_NESTED_TARGET_FAILED' || value['message'] !== 'Host nested target failed.'
 		|| value['category'] !== 'internal' || value['retriable'] !== false) return false
 	const meta = value['meta']
-	return plain(meta) && exactKeys(meta, ['reason', 'agent_id', 'tool_id', 'tool_call_id', 'call_id', 'target_kind', 'target_id'])
-		&& meta['reason'] === 'target_failed' && nonempty(meta['agent_id']) && nonempty(meta['tool_id'])
+	return plain(meta) && exactKeys(meta, ['reason', 'caller', 'caller_run_id', 'tool_id', 'tool_call_id', 'call_id', 'target_kind', 'target_id'])
+		&& meta['reason'] === 'target_failed' && validCaller(meta['caller']) && nonempty(meta['caller_run_id']) && nonempty(meta['tool_id'])
 		&& nonempty(meta['tool_call_id']) && nonempty(meta['call_id'])
 		&& ['agent', 'workflow'].includes(String(meta['target_kind'])) && nonempty(meta['target_id'])
 }
@@ -437,10 +444,17 @@ function validRouteReceipt(value: unknown, target: Readonly<{ kind: 'agent' | 'w
 
 function invalidHostRecord(): never { throw new InternalError('Stored host nested target checkpoint is invalid.') }
 
-function hostFailure(context: AgentToolInvocationContext, definition: HostToolDefinition<any, any, any, any>, callId: string, target: AnyHarnessTargetContract) {
+function validCaller(value: unknown): value is HarnessExecutionCaller {
+	if (!plain(value)) return false
+	if (value['kind'] === 'workflow') return exactKeys(value, ['kind', 'workflowId']) && nonempty(value['workflowId'])
+	return value['kind'] === 'agent' && exactKeys(value, value['workflowId'] === undefined ? ['kind', 'agentId'] : ['kind', 'agentId', 'workflowId'])
+		&& nonempty(value['agentId']) && (value['workflowId'] === undefined || nonempty(value['workflowId']))
+}
+
+function hostFailure(context: ToolInvocationContext, definition: HostToolDefinition<any, any, any, any>, callId: string, target: AnyHarnessTargetContract) {
 	return Object.freeze({ code: 'HOST_NESTED_TARGET_FAILED' as const, message: 'Host nested target failed.' as const,
 		category: 'internal' as const, retriable: false as const, meta: Object.freeze({ reason: 'target_failed' as const,
-			agent_id: context.agentId, tool_id: definition.id, tool_call_id: context.callId, call_id: callId,
+			caller: context.caller, caller_run_id: context.runId, tool_id: definition.id, tool_call_id: context.callId, call_id: callId,
 			target_kind: target.kind, target_id: target.id }) })
 }
 

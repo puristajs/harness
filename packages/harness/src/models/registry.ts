@@ -59,10 +59,18 @@ import type {
 } from '../ports/model-admission.js'
 import { modelAdmissionKey } from '../ports/model-admission.js'
 import type { HarnessExecutionCaller } from '../definitions/types.js'
+import type { HarnessIdentity } from '../identity/index.js'
+import type { HarnessTraceContext } from '../telemetry/trace-context.js'
 
 export interface ModelInvokeContext {
 	/** Exact validated owner of this model effect. */
 	caller: HarnessExecutionCaller
+  /** Stable logical call id used across replay, events, and telemetry. */
+  callId?: string
+  /** Trusted identity inherited from the owning Harness invocation. */
+  identity?: HarnessIdentity
+  /** Trusted trace carrier inherited from the owning Harness invocation. */
+  trace?: HarnessTraceContext
   /** Harness instance name used for telemetry and run-event attribution. */
   harnessName?: string
   /** Session id used for telemetry and run-event attribution. */
@@ -119,7 +127,7 @@ type ModelMessageFor<A> =
 type TextRequestInputFor<A> = Omit<TextRequest, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
   messages: ModelMessageFor<A>[]
 } & ToolInputFor<A>
-type ObjectRequestInputFor<A, T extends JsonValue = JsonValue> = Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
+export type ModelObjectRequestInput<A, T extends JsonValue = JsonValue> = Omit<ObjectRequest<T>, 'model' | 'signal' | 'defaults' | 'messages' | 'tools'> & {
   messages: ModelMessageFor<A>[]
 } & ToolInputFor<A>
 
@@ -135,12 +143,12 @@ type TextStreamModelMethods<A> = {
 
 type ObjectModelMethods<A> = {
   /** Executes a single structured object generation request. */
-  object<T extends JsonValue = JsonValue>(req: ObjectRequestInputFor<A, T>, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<ObjectResponse<T>>
+  object<T extends JsonValue = JsonValue>(req: ModelObjectRequestInput<A, T>, signal: AbortSignal, ctx?: ModelInvokeContext): Promise<ObjectResponse<T>>
 }
 
 type ObjectStreamModelMethods<A> = {
   /** Executes a streaming structured object generation request. */
-  objectStream<T extends JsonValue = JsonValue>(req: ObjectRequestInputFor<A, T>, signal: AbortSignal, ctx?: ModelInvokeContext): AsyncIterable<ObjectStreamChunk<T>>
+  objectStream<T extends JsonValue = JsonValue>(req: ModelObjectRequestInput<A, T>, signal: AbortSignal, ctx?: ModelInvokeContext): AsyncIterable<ObjectStreamChunk<T>>
 }
 
 type EmbeddingModelMethods = {
@@ -238,7 +246,7 @@ function createHandle(
         ...(mergeDefaults(alias, req.call) ? { defaults: mergeDefaults(alias, req.call) } : {}),
         ...(req.tools ? { tools: req.tools } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmission(options.admission, alias, 'text', signal, () =>
         withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq)),
@@ -254,7 +262,7 @@ function createHandle(
         ...(mergeDefaults(alias, req.call) ? { defaults: mergeDefaults(alias, req.call) } : {}),
         ...(req.tools ? { tools: req.tools } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmissionStream(options.admission, alias, 'text_stream', signal, () =>
         withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq)),
@@ -272,7 +280,7 @@ function createHandle(
         schema: req.schema,
         ...(req.schemaName ? { schemaName: req.schemaName } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmission(options.admission, alias, 'object', signal, () =>
         withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq)),
@@ -290,7 +298,7 @@ function createHandle(
         schema: req.schema,
         ...(req.schemaName ? { schemaName: req.schemaName } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmissionStream(options.admission, alias, 'object_stream', signal, () =>
         withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq)),
@@ -305,7 +313,7 @@ function createHandle(
         ...(req.dimensions !== undefined ? { dimensions: req.dimensions } : {}),
         ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmission(options.admission, alias, 'embeddings', signal, () =>
         withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
@@ -323,7 +331,7 @@ function createHandle(
         ...(req.topN !== undefined ? { topN: req.topN } : {}),
         ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
         signal,
-        traceparent: req.traceparent ?? options.telemetry?.currentTraceparent()
+        traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
       return withModelAdmission(options.admission, alias, 'rerank', signal, () =>
         withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
@@ -335,7 +343,7 @@ function createHandle(
       ensureCapabilities(aliasKey, alias, 'image_generation', req)
       if (!alias.provider.image) throw methodMissing(aliasKey, 'image')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'image')
-      const fullReq: ImageRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const fullReq: ImageRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
       const response = await withModelAdmission(options.admission, alias, 'image_generation', signal, () =>
         withModelSpan(options, aliasKey, alias, 'image_generation', ctx, () => alias.provider.image!(fullReq)),
       )
@@ -354,7 +362,7 @@ function createHandle(
       ensureCapabilities(aliasKey, alias, 'speech_generation', req)
       if (!alias.provider.speech) throw methodMissing(aliasKey, 'speech')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'speech')
-      const fullReq: SpeechRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const fullReq: SpeechRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
       const response = await withModelAdmission(options.admission, alias, 'speech_generation', signal, () =>
         withModelSpan(options, aliasKey, alias, 'speech_generation', ctx, () => alias.provider.speech!(fullReq)),
       )
@@ -364,7 +372,7 @@ function createHandle(
       ensureCapabilities(aliasKey, alias, 'video_generation', req)
       if (!alias.provider.video) throw methodMissing(aliasKey, 'video')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'video')
-      const fullReq: VideoRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const fullReq: VideoRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
       const response = await withModelAdmission(options.admission, alias, 'video_generation', signal, () =>
         withModelSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.video!(fullReq)),
       )
@@ -374,7 +382,7 @@ function createHandle(
       ensureCapabilities(aliasKey, alias, 'video_generation', req)
       if (!alias.provider.videoStream) throw methodMissing(aliasKey, 'videoStream')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'videoStream')
-      const fullReq: VideoRequest = mediaRequest(alias, req, signal, options.telemetry)
+      const fullReq: VideoRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
       return publishVideoStream(
         withModelAdmissionStream(options.admission, alias, 'video_generation', signal, () =>
           withModelStreamSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.videoStream!(fullReq)),
@@ -395,6 +403,7 @@ function mediaRequest<T extends ImageRequest | SpeechRequest | VideoRequest>(
   alias: ModelAlias,
   req: Omit<T, 'model' | 'signal'>,
   signal: AbortSignal,
+  ctx?: ModelInvokeContext,
   telemetry?: TelemetryShim,
 ): T {
   return {
@@ -402,7 +411,7 @@ function mediaRequest<T extends ImageRequest | SpeechRequest | VideoRequest>(
     model: alias.model,
     ...(mergeCallOptions(alias, req.call) ? { call: mergeCallOptions(alias, req.call) } : {}),
     signal,
-    traceparent: req.traceparent ?? telemetry?.currentTraceparent(),
+    traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? telemetry?.currentTraceparent(),
   } as T
 }
 
@@ -681,6 +690,7 @@ function modelSpanAttrs(
     'harness.name': ctx?.harnessName ?? options.harnessName,
     'harness.session.id': ctx?.sessionId,
     'harness.run.id': ctx?.runId,
+    'harness.call.id': ctx?.callId,
     'harness.workflow.id': ctx?.caller.workflowId,
     'harness.agent.id': ctx?.caller.kind === 'agent' ? ctx.caller.agentId : undefined,
     'harness.model.alias': aliasKey,

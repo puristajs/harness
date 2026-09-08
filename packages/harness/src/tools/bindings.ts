@@ -166,13 +166,13 @@ export function bindPortableTool<Id extends string, Input extends ModelSchema, O
 /** @internal Prepares a built-in implementation supplied by the runtime. */
 export function bindBuiltInTool<Input extends ModelSchema, Output extends Schema>(
 	definition: BuiltInToolDefinition<string, Input, Output>,
-	invoke: (context: AgentToolInvocationContext, input: Infer<Input>) => Promise<unknown>,
+	invoke: (context: ToolInvocationContext, input: Infer<Input>) => Promise<unknown>,
 ): AgentExecutableBinding<Input, Output> {
 	const identity = requireIdentity(definition, 'built-in-tool')
 	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
 		implementationKind: 'built-in', definitionIdentity: identity, digestDefinition: ['built-in-tool', definition.id],
 		mcpOwner: null, remoteMcpName: null, outputValidation: 'required', invokeValidated: invoke,
-		invokeWorkflowValidated: (context, input) => invoke(context as unknown as AgentToolInvocationContext, input as Infer<Input>) })
+		invokeWorkflowValidated: (context, input) => invoke(context, input as Infer<Input>) })
 }
 
 /** @internal Creates the generated reader owned by one exact agent definition. */
@@ -192,7 +192,7 @@ export function bindReadSkillTool<Input extends ModelSchema, Output extends Sche
 /** @internal Prepares one selected MCP tool against its owning server bundle. */
 export function bindMcpTool<Input extends ModelSchema, Output extends Schema>(
 	definition: McpToolDefinition<string, Input, Output>,
-	invoke: (context: AgentToolInvocationContext, remoteName: string, input: Infer<Input>) => Promise<unknown>,
+	invoke: (context: ToolInvocationContext, remoteName: string, input: Infer<Input>) => Promise<unknown>,
 ): AgentExecutableBinding<Input, Output> {
 	const identity = requireIdentity(definition, 'mcp-tool')
 	const owner = getDefinitionIdentity(identity.owner)
@@ -202,20 +202,20 @@ export function bindMcpTool<Input extends ModelSchema, Output extends Schema>(
 		mcpOwner: ['mcp-server', owner.id], remoteMcpName: definition.remoteName,
 		outputValidation: 'required',
 		invokeValidated: (context, value) => invoke(context, definition.remoteName, value),
-		invokeWorkflowValidated: (context, value) => invoke(context as unknown as AgentToolInvocationContext, definition.remoteName, value as Infer<Input>) })
+		invokeWorkflowValidated: (context, value) => invoke(context, definition.remoteName, value as Infer<Input>) })
 }
 
 /** @internal Creates one run-scoped host-aware binding through the canonical finalizer. */
 export function bindHostTool(
 	definition: HostToolDefinition<any, any, any, any>,
-	invoke: (context: AgentToolInvocationContext, input: JsonValue, wireInput: JsonValue) => Promise<unknown>,
+	invoke: (context: ToolInvocationContext, input: JsonValue, wireInput: JsonValue) => Promise<unknown>,
 ): AgentExecutableBinding {
 	const identity = requireIdentity(definition, 'host-tool')
 	return createAgentExecutableBinding({ id: definition.id, description: definition.description, input: definition.input, output: definition.output,
 		implementationKind: 'host', definitionIdentity: identity, digestDefinition: ['host-tool', definition.id],
 		mcpOwner: null, remoteMcpName: null, outputValidation: 'required',
 		invokeValidated: invoke,
-		invokeWorkflowValidated: (context, input, wireInput) => invoke(context as unknown as AgentToolInvocationContext, input, wireInput) })
+		invokeWorkflowValidated: (context, input, wireInput) => invoke(context, input, wireInput) })
 }
 
 /** @internal Reserves a host-aware binding without a standalone call path. */

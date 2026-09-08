@@ -245,32 +245,124 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 
 describe('hosted Harness runtime', () => {
 	it('runs a workflow-declared host tool with workflow target context and caller events', async () => {
-		interface HostContext { readonly marker: string }
+		interface HostContext { readonly marker: string; readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
 		let hostEffects = 0
+		const child = defineAgent('directWorkflowHostChild', { input: z.string(), output: z.string(), instructions: 'Child.', prompt: input => ({ role: 'user', content: input }) })
 		const hosted = defineHostTool(owner, 'workflowHostEffect', { description: 'Run a host effect.', input: z.string(), output: z.string(),
-			async handler(context, input) { hostEffects += 1; return `${context.marker}:${input}` } })
+			async handler(context, input) { hostEffects += 1; const first = await context.nestedTargets.run(child.contract, input, { callId: 'nested' }); const replay = await context.nestedTargets.run(child.contract, input, { callId: 'nested' }); return `${context.marker}:${first}:${replay}` } })
 		const workflow = defineWorkflow('directHostedWorkflow', { input: z.string(), output: z.string(), tools: [hosted], durable: true,
 			async handler({ input, tools }) { return tools.workflowHostEffect.run(input, { callId: 'host-effect' }) } })
 		const definition = defineHarness({ name: 'directHostedWorkflowHarness', revision: 'v1' }).addWorkflow(workflow)
-		const unused = defineAgent('unusedHostedWorkflowTarget', { instructions: 'Unused.' })
-		const { dispatcher } = dispatcherFor(unused, () => {})
+		const { dispatcher, counts } = dispatcherFor(child, () => {})
 		const storage = persistentStorage()
-		const projectedTargets: unknown[] = []
+		const projectedTargets: unknown[] = []; const projectedCallers: unknown[] = []
 		const instance = await instantiateHostedHarness(definition, { storage }, {
 			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => trace,
-			createHostContext: request => { projectedTargets.push(request.target); return { marker: 'host' } },
+			createHostContext: request => { projectedTargets.push(request.target); projectedCallers.push(request.caller); return { marker: 'host', nestedTargets: request.nestedTargets } },
 			logger: logger(), telemetry: createTelemetryShim(),
 		})
 		const result = await instance.runHosted({ target: workflow.contract, input: 'value', invokeOptions: { sessionId: 'workflow-host-session' }, hostInvocation: {} })
-		expect(result).toMatchObject({ status: 'completed', output: 'host:value' })
+		expect(result).toMatchObject({ status: 'completed', output: 'host:child-answer:child-answer' })
 		expect(hostEffects).toBe(1)
+		expect(counts().opens).toBe(1)
 		expect(projectedTargets).toEqual([{ kind: 'workflow', id: 'directHostedWorkflow' }])
+		expect(projectedCallers).toEqual([{ kind: 'workflow', workflowId: 'directHostedWorkflow' }])
 		const events = await storage.listEvents(result.runId)
 		expect(events).toEqual(expect.arrayContaining([
 			expect.objectContaining({ type: 'tool.started', payload: expect.objectContaining({ caller: { kind: 'workflow', workflowId: 'directHostedWorkflow' }, toolId: 'workflowHostEffect', callId: 'host-effect' }) }),
 		]))
 		await instance.close()
+	})
+
+	it('preserves workflow caller lineage for failed nested-target replay', async () => {
+		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
+		const owner = createHostOwnerToken<HostContext>()
+		const child = defineAgent('workflowFailureChild', { input: z.string(), output: z.string(), instructions: 'Fail.', prompt: input => ({ role: 'user', content: input }) })
+		let opens = 0
+		const dispatcher: HarnessTargetDispatcher = {
+			assertTarget: target => routeFor(target, 'f'),
+			async open(request) { opens += 1; const runId = request.invocation.invocationId; return {
+				async cancel() {}, async *[Symbol.asyncIterator]() { yield { type: 'run.finished', eventId: `${runId}:1`, sequence: 1, runId,
+					parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId, at: 'now',
+					outcome: { status: 'failed', runId, error: { code: 'REMOTE', message: 'secret', category: 'internal', retriable: false } } } as ExecutionEvent<string> },
+			} },
+			async openPersisted() { throw new Error('unexpected persisted open') },
+		}
+		const tool = defineHostTool(owner, 'workflowFailureHost', { description: 'Fail nested.', input: z.string(), output: z.string(), async handler(context, input) {
+			for (let attempt = 0; attempt < 2; attempt += 1) await expect(context.nestedTargets.run(child.contract, input, { callId: 'failed' })).rejects.toMatchObject({
+				code: 'HOST_NESTED_TARGET_FAILED', meta: { caller: { kind: 'workflow', workflowId: 'workflowFailure' }, caller_run_id: expect.any(String) },
+			})
+			return 'handled'
+		} })
+		const workflow = defineWorkflow('workflowFailure', { input: z.string(), output: z.string(), tools: [tool], durable: true,
+			async handler({ input, tools }) { return tools.workflowFailureHost.run(input, { callId: 'host' }) } })
+		const instance = await instantiateHostedHarness(defineHarness({ name: 'workflowFailureHarness', revision: 'v1' }).addWorkflow(workflow), { storage: persistentStorage() }, {
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+			createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
+		})
+		await expect(instance.runHosted({ target: workflow.contract, input: 'go', invokeOptions: { sessionId: 'workflow-failure-session' }, hostInvocation: {} }))
+			.resolves.toMatchObject({ status: 'completed', output: 'handled' })
+		expect(opens).toBe(1)
+		await instance.close()
+	})
+
+	it('resumes a workflow-originated interrupted host child with workflow caller lineage', async () => {
+		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
+		const owner = createHostOwnerToken<HostContext>()
+		let approvedEffects = 0
+		const effect = defineTool('bash', { description: 'Approve.', input: z.string(), output: z.string(),
+			async handler(_context, input) { approvedEffects += 1; return input } })
+		const child = defineAgent('workflowInterruptedChild', { input: z.string(), output: z.string(), instructions: 'Approve.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
+		const hostTool = defineHostTool(owner, 'workflowInterruptedHost', { description: 'Call child.', input: z.string(), output: z.string(),
+			async handler(context, input) { return context.nestedTargets.run(child.contract, input, { callId: 'nested-child' }) } })
+		const workflow = defineWorkflow('workflowInterrupted', { input: z.string(), output: z.string(), tools: [hostTool], durable: true,
+			async handler({ input, tools }) { return tools.workflowInterruptedHost.run(input, { callId: 'host-call' }) } })
+		const definition = defineHarness({ name: 'workflowInterruptedHarness', revision: 'v1', defaults: { maxDepth: 3 } }).addAgent(child).addWorkflow(workflow)
+		const storage = persistentStorage(); const route = routeFor(child.contract, '9')
+		let current: Awaited<ReturnType<typeof instantiateHostedHarness>> | undefined
+		const callers: unknown[] = []
+		const dispatcher: HarnessTargetDispatcher = {
+			assertTarget(target) { if (target !== child.contract) throw new Error('unexpected target'); return route },
+			async open(request) {
+				if (current === undefined) throw new Error('runtime unavailable')
+				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
+				return correlateRemoteStream(await current.streamDispatched({ delivery: 'fresh', target: child.contract,
+					wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
+			},
+			async openPersisted(request) {
+				if (current === undefined) throw new Error('runtime unavailable')
+				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
+				return correlateRemoteStream(await current.streamDispatched({ delivery: 'resume', target: child.contract,
+					wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
+			},
+		}
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => trace,
+			createHostContext: (request: HarnessHostContextRequest<object>) => { callers.push(request.caller); return { nestedTargets: request.nestedTargets } },
+			logger: logger(), telemetry: createTelemetryShim() }
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: effect.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
+		current = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const interrupted = await current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
+			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root',
+		}, hostInvocation: {} })
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow host interruption.')
+		await current.close()
+		const resumedProvider = new FakeModelProvider({ strict: true })
+		resumedProvider.enqueueText({ content: 'child-complete', toolCalls: [], usage, finishReason: 'stop' })
+		current = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		const approval = interrupted.interrupt.requests[0]!
+		await expect(current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
+			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root', resume: {
+				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+				revision: interrupted.interrupt.revision, eventId: 'workflow-interrupted-resume',
+				decisions: [{ approvalId: approval.approvalId, approved: true }],
+			},
+		}, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed', output: 'child-complete' })
+		expect(approvedEffects).toBe(1)
+		expect(callers).toEqual(callers.map(() => ({ kind: 'workflow', workflowId: 'workflowInterrupted' })))
+		await current.close()
 	})
 
 	it('requires factory-authentic owners and rejects a different owner before runtime initialization', async () => {
@@ -508,7 +600,7 @@ describe('hosted Harness runtime', () => {
 				schemaVersion: 1, kind: 'host_nested_target', toolCallId: 'host-tool-call', callId: 'stable-child',
 				target: { kind: 'agent', id: child.id }, input: 'child-input',
 				outcome: { status: 'completed', output: 'child-answer' },
-				lineage: { agentRunId: expect.any(String), hostToolInvocationId: expect.any(String),
+				lineage: { callerRunId: expect.any(String), hostToolInvocationId: expect.any(String),
 					childRunId: expect.any(String), childInvocationId: expect.any(String) },
 			} })
 		expect(Object.keys(capturedCall?.metadata ?? {})).toEqual(['checkpointKind', 'schemaVersion'])

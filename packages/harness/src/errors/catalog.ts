@@ -550,7 +550,7 @@ export interface HostNestedTargetStoredErrorV1 {
 	readonly category: 'internal'
 	readonly retriable: false
 	readonly meta: Readonly<{
-		reason: 'target_failed'; agent_id: string; tool_id: string; tool_call_id: string; call_id: string
+		reason: 'target_failed'; caller: import('../definitions/types.js').HarnessExecutionCaller; caller_run_id: string; tool_id: string; tool_call_id: string; call_id: string
 		target_kind: 'agent' | 'workflow'; target_id: string
 	}>
 }
@@ -566,7 +566,7 @@ export class HostNestedTargetError extends HarnessError {
 /** A host nested call id was reused with another target or input. */
 export class HostNestedTargetReplayConflictError extends HarnessError {
 	public constructor(meta: {
-		reason: 'target_mismatch' | 'input_mismatch'; agent_id: string; tool_id: string; tool_call_id: string; call_id: string
+		reason: 'target_mismatch' | 'input_mismatch'; caller: import('../definitions/types.js').HarnessExecutionCaller; caller_run_id: string; tool_id: string; tool_call_id: string; call_id: string
 		expected_target_kind: 'agent' | 'workflow'; expected_target_id: string
 		received_target_kind: 'agent' | 'workflow'; received_target_id: string
 	}) {

@@ -54,6 +54,27 @@ defineWorkflow('modelScope', {
 	},
 })
 
+defineWorkflow('structuredModelScope', {
+	input: z.string(), output: z.string(),
+	models: { structured: { capabilities: ['object', 'object_stream'] } },
+	async handler(context) {
+		const response = await context.models.structured.object<{ answer: string }>({ messages: [], schema: {} }, { callId: 'object' })
+		const exact: string = response.object.answer
+		// @ts-expect-error structured response retains the requested property type
+		const wrong: number = response.object.answer
+		void exact; void wrong
+		for await (const chunk of context.models.structured.objectStream<{ answer: string }>({ messages: [], schema: {} }, { callId: 'stream' })) {
+			if (chunk.kind === 'finish') {
+				const answer: string = chunk.object.answer
+				// @ts-expect-error structured stream finish retains the requested property type
+				const bad: number = chunk.object.answer
+				void answer; void bad
+			}
+		}
+		return context.input
+	},
+})
+
 // @ts-expect-error workflow agent-call limits are positive numbers, not strings
 defineWorkflow('badBudget', { input: z.string(), output: z.string(), agentCalls: { maxCalls: '2' }, async handler({ input }) { return input } })
 // @ts-expect-error workflow child-task options cannot override model selection

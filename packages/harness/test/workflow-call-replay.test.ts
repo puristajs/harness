@@ -32,6 +32,103 @@ function runtime(open: HarnessTargetDispatcher['open'], checkpoint?: { load(step
 }
 
 describe('v4 workflow direct-call replay', () => {
+	const modelWorkflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
+	function modelRuntime(handle: unknown, options: { commit?: (stepId: string, output: any, metadata: any) => Promise<void>; emit?: (event: any) => Promise<void> } = {}) {
+		return createWorkflowExecutionRuntime({ workflow: modelWorkflow, models: { scoped: handle } as never,
+			toolContext: { caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness' } as never,
+			targetDispatcher: { open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
+			sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
+			identity: { tenantId: 'tenant' }, trace: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
+			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 },
+			...(options.commit === undefined ? {} : { checkpoint: { rootInput: 'root', load: async () => undefined, commit: options.commit } }),
+			...(options.emit === undefined ? {} : { emit: options.emit }) })
+	}
+
+	it('rejects every incomplete or malformed finite workflow model stream before checkpointing', async () => {
+		const finish = { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+		const cases = [
+			['textStream', []],
+			['textStream', [{ kind: 'unknown' }]],
+			['textStream', [finish, finish]],
+			['textStream', [finish, { kind: 'delta', text: 'late' }]],
+			['objectStream', []],
+			['objectStream', [{ kind: 'unknown' }]],
+			['objectStream', [{ ...finish, object: {} }, { ...finish, object: {} }]],
+			['objectStream', [{ ...finish, object: {} }, { kind: 'partial', partial: {} }]],
+		] as const
+		for (const [index, [method, chunks]] of cases.entries()) {
+			let commits = 0
+			const handle = { async *[method]() { yield* chunks } }
+			const model = (modelRuntime(handle, { commit: async () => { commits += 1 } }).models as any).scoped
+			const consume = async () => { for await (const _chunk of model[method]({ messages: [], schema: {} }, { callId: `${method}-${index}` })) void _chunk }
+			await expect(consume()).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'model_response' } })
+			expect(commits).toBe(0)
+		}
+	})
+
+	it('folds object deltas into ordered snapshots and emits completion only after a valid finish', async () => {
+		const events: any[] = []; const order: string[] = []
+		const handle = { async *objectStream() {
+			yield { kind: 'partial', partial: { answer: { value: 1 } } }
+			yield { kind: 'delta', path: ['answer', 'value'], value: 2 }
+			yield { kind: 'finish', object: { answer: { value: 2 } }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+		} }
+		const model = (modelRuntime(handle, { commit: async () => { order.push('checkpoint') }, emit: async event => { events.push(event); order.push(event.type) } }).models as any).scoped
+		const chunks = []; for await (const chunk of model.objectStream({ messages: [], schema: {} }, { callId: 'object-delta' })) chunks.push(chunk)
+		expect(chunks).toHaveLength(3)
+		expect(events.filter(event => event.type === 'model.output.object.snapshot').map(event => event.value)).toEqual([
+			{ answer: { value: 1 } }, { answer: { value: 2 } },
+		])
+		expect(events.filter(event => event.type === 'model.completed')).toHaveLength(1)
+		expect(order).toEqual(['checkpoint', 'model.output.object.snapshot', 'model.output.object.snapshot', 'model.completed'])
+	})
+
+	it('preserves nested raw data, propagates model correlation, and uses artifact ids in output events', async () => {
+		let observed: any; const events: any[] = []
+		const handle = {
+			async object(_request: unknown, _signal: AbortSignal, context: unknown) { observed = context; return { object: { raw: 'application-data' }, raw: { provider: true }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' } },
+			async image() { return { artifacts: [{ id: 'artifact-one', url: 'https://example.test/one', mediaType: 'image/png' }] } },
+		}
+		const model = (modelRuntime(handle, { emit: async event => { events.push(event) } }).models as any).scoped
+		await expect(model.object({ messages: [], schema: {} }, { callId: 'structured' })).resolves.toEqual(expect.objectContaining({ object: { raw: 'application-data' } }))
+		expect(observed).toMatchObject({ callId: 'structured', caller: { kind: 'workflow', workflowId: 'modelFlow' }, identity: { tenantId: 'tenant' }, trace: { traceparent: expect.any(String) } })
+		expect(observed).not.toHaveProperty('raw')
+		await model.image({ prompt: 'image' }, { callId: 'image' })
+		expect(events.find(event => event.type === 'output.file')).toMatchObject({ id: 'artifact-one', artifact: { id: 'artifact-one' }, callId: 'image' })
+	})
+
+	it('never recasts successful checkpoint or event persistence failures as operation failures', async () => {
+		const response = { content: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+		for (const failureAt of ['checkpoint', 'event'] as const) {
+			const sentinel = new Error(`${failureAt}-failed`); let commits = 0
+			const model = (modelRuntime({ async text() { return response } }, {
+				commit: async () => { commits += 1; if (failureAt === 'checkpoint') throw sentinel },
+				emit: async () => { if (failureAt === 'event') throw sentinel },
+			}).models as any).scoped
+			await expect(model.text({ messages: [] }, { callId: failureAt })).rejects.toBe(sentinel)
+			expect(commits).toBe(1)
+		}
+	})
+
+	it('commits a successful workflow tool at most once when checkpoint or terminal-event persistence fails', async () => {
+		const tool = defineTool('persistenceTool', { description: 'Persist.', input: z.string(), output: z.string(), async handler(_context, input) { return input } })
+		const workflow = defineWorkflow('persistenceFlow', { input: z.string(), output: z.string(), tools: [tool], async handler({ input }) { return input } })
+		for (const failureAt of ['checkpoint', 'event'] as const) {
+			const sentinel = new Error(`${failureAt}-failed`); let commits = 0
+			const value = createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { persistenceTool: bindPortableTool(tool) },
+				toolContext: { caller: { kind: 'workflow', workflowId: 'persistenceFlow' }, harnessName: 'harness',
+					telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
+				targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+				sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+				defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', load: async () => undefined,
+					commit: async () => { commits += 1; if (failureAt === 'checkpoint') throw sentinel } },
+				emit: async event => { if (failureAt === 'event' && event.type === 'tool.finished') throw sentinel },
+			})
+			await expect(value.tools.persistenceTool.run('ok', { callId: failureAt })).rejects.toBe(sentinel)
+			expect(commits).toBe(1)
+		}
+	})
+
 	it('persists and replays every scoped model operation with exact workflow caller context', async () => {
 		const artifact = { id: 'artifact', url: 'https://example.test/artifact', mediaType: 'application/octet-stream' }
 		const cases = [

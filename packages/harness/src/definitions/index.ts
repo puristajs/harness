@@ -60,8 +60,11 @@ export type {
 	WorkflowContext,
 	WorkflowDefinition,
 	WorkflowModelMap,
+	WorkflowModelCallOptions,
 	WorkflowModelRequirement,
 	WorkflowOptions,
+	WorkflowToolCallOptions,
+	WorkflowToolDefinitions,
 } from './types.js'
 export type { DefinitionReference } from './identity.js'
 export type { SkillOptions } from './skill.js'

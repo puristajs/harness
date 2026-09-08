@@ -13,11 +13,26 @@ import type {
 	WorkflowCallStoredErrorV1,
 	WorkflowCallStoredOutcomeV1,
 	WorkflowManagedCallOperation,
+	WorkflowModelCallOptions,
+	WorkflowToolCallOptions,
+	WorkflowToolDefinitions,
 } from '../src/index.js'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import * as mainEntry from '../src/index.js'
 import * as testingEntry from '../src/testing/index.js'
+import type {
+	WorkflowModelCallOptions as DefinitionsWorkflowModelCallOptions,
+	WorkflowToolCallOptions as DefinitionsWorkflowToolCallOptions,
+	WorkflowToolDefinitions as DefinitionsWorkflowToolDefinitions,
+} from '../src/definitions/index.js'
+
+type PublicWorkflowTypes = readonly [
+	WorkflowToolDefinitions, WorkflowToolCallOptions, WorkflowModelCallOptions,
+	DefinitionsWorkflowToolDefinitions, DefinitionsWorkflowToolCallOptions, DefinitionsWorkflowModelCallOptions,
+]
+const publicWorkflowTypes: PublicWorkflowTypes | undefined = undefined
+void publicWorkflowTypes
 
 /**
  * Locked value-export surface of `@purista/harness` for the v4 clean break.

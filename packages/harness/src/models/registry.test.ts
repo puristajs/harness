@@ -5,6 +5,7 @@ import type { ArtifactPublishRequest } from '../ports/artifact-store.js'
 import type { ImageRequest, ModelProvider, TextRequest, TextResponse, VideoRequest } from '../ports/model-provider.js'
 import type { ModelAdmissionRequest } from '../ports/model-admission.js'
 import { createModelRegistry, resolveModelHandleCallOptions } from './registry.js'
+import { RecordingTelemetry } from '../testing/index.js'
 
 class FakeProvider implements ModelProvider {
   public readonly id = 'fake'
@@ -22,6 +23,19 @@ class FakeProvider implements ModelProvider {
 }
 
 describe('createModelRegistry', () => {
+	it('records the stable workflow call id on provider telemetry', async () => {
+		const telemetry = new RecordingTelemetry()
+		const provider = new FakeProvider()
+		const registry = createModelRegistry({ a: { provider, model: 'm', capabilities: ['text'] } }, { telemetry })
+		const traceparent = '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'
+		await registry.a!.text({ messages: [], traceparent: 'caller-controlled' }, new AbortController().signal, {
+			caller: { kind: 'workflow', workflowId: 'flow' }, callId: 'stable-call', runId: 'workflow-run', trace: { traceparent },
+		})
+		expect(telemetry.spans.find(span => span.name.includes('chat'))?.attrs).toMatchObject({
+			'harness.call.id': 'stable-call', 'harness.workflow.id': 'flow', 'harness.run.id': 'workflow-run',
+		})
+		expect(provider.requests[0]?.traceparent).toBe(traceparent)
+	})
   it('gates missing capability', async () => {
     const registry = createModelRegistry({
       a: { provider: new FakeProvider(), model: 'm', capabilities: ['object'] }

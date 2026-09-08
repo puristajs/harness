@@ -6,6 +6,7 @@ import { abortError } from './abort.js'
 import type { RunOutcome } from './outcomes.js'
 import type { SuspendedAgentTurnStateV1 } from '../approvals/prepared-tool-checkpoint.js'
 import { ToolApprovalPendingError, type ToolApprovalInterrupt } from '../approvals/index.js'
+import type { HarnessExecutionCaller } from '../definitions/types.js'
 
 const harnessChildTargetInterruptionBrand: unique symbol = Symbol('harness.child-target-interruption')
 const harnessChildTargetInterruptionGroupBrand: unique symbol = Symbol('harness.child-target-interruption-group')
@@ -44,7 +45,7 @@ export interface ChildApprovalResumeDescriptorV1 {
 export interface SuspendedHostToolFrameV1 {
 	readonly kind: 'host-tool'
 	readonly runId: string
-	readonly agentId: string
+	readonly caller: HarnessExecutionCaller
 	readonly invocationId: string
 	readonly hostToolInvocationId: string
 	readonly toolId: string
@@ -165,7 +166,7 @@ export interface HarnessCheckpointStep {
 export interface WorkflowChildCheckpointAccess {
 	readonly rootInput: JsonValue
 	load(stepId: string): Promise<RunCheckpoint | undefined>
-	commit(stepId: string, output: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call'; schemaVersion: 1 }>): Promise<void>
+	commit(stepId: string, output: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'host_nested_target'; schemaVersion: 1 }>): Promise<void>
 }
 
 /** @internal Persistable cumulative workflow agent-call budget owned by H4-008 continuation state. */

@@ -114,7 +114,7 @@ export interface HostNestedTargetCheckpointV1 {
 	readonly input: JsonValue
 	readonly outcome: HostNestedTargetStoredOutcomeV1
 	readonly lineage: Readonly<{
-		rootRunId: string; agentRunId: string; hostToolInvocationId: string; childRunId: string; childInvocationId: string
+		rootRunId: string; callerRunId: string; hostToolInvocationId: string; childRunId: string; childInvocationId: string
 	}>
 }
 

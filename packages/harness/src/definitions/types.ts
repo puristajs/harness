@@ -1,10 +1,10 @@
 import type { Logger } from '../logger/index.js'
 import type { HarnessIdentity } from '../identity/index.js'
 import type { JsonValue } from '../models/json.js'
-import type { ModelHandle } from '../models/registry.js'
+import type { ModelHandle, ModelObjectRequestInput } from '../models/registry.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
 import type { MemoryCapability, MemoryScopeKind, SessionMemory } from '../ports/memory/types.js'
-import type { ModelCapability, ContentPart } from '../ports/model-provider.js'
+import type { ModelCapability, ContentPart, ObjectResponse, ObjectStreamChunk } from '../ports/model-provider.js'
 import type {
 	ExecCapableSandboxSession,
 	SandboxSessionBase,
@@ -506,13 +506,21 @@ type WorkflowToolInvokers<Tools extends WorkflowToolDefinitions | undefined> = {
 	}
 }
 
-type WorkflowScopedModelHandle<Requirement extends WorkflowModelRequirement> = {
-	readonly [Method in keyof ModelHandle<Requirement>]: ModelHandle<Requirement>[Method] extends (
+type WorkflowNonStructuredModelHandle<Requirement extends WorkflowModelRequirement> = {
+	readonly [Method in Exclude<keyof ModelHandle<Requirement>, 'object' | 'objectStream'>]: ModelHandle<Requirement>[Method] extends (
 		req: infer Request,
 		signal: AbortSignal,
 		context?: infer _Context,
 	) => infer Result ? (request: Request, options: WorkflowModelCallOptions) => Result : never
 }
+
+type WorkflowScopedModelHandle<Requirement extends WorkflowModelRequirement> = WorkflowNonStructuredModelHandle<Requirement>
+	& ('object' extends Requirement['capabilities'][number] ? Readonly<{
+		object<T extends JsonValue = JsonValue>(request: ModelObjectRequestInput<Requirement, T>, options: WorkflowModelCallOptions): Promise<ObjectResponse<T>>
+	}> : {})
+	& ('object_stream' extends Requirement['capabilities'][number] ? Readonly<{
+		objectStream<T extends JsonValue = JsonValue>(request: ModelObjectRequestInput<Requirement, T>, options: WorkflowModelCallOptions): AsyncIterable<ObjectStreamChunk<T>>
+	}> : {})
 
 type WorkflowModelHandles<Models extends WorkflowModelMap | undefined> = Models extends WorkflowModelMap
 	? { readonly [K in keyof Models]: WorkflowScopedModelHandle<Models[K]> }

@@ -88,6 +88,29 @@ type CompiledTargetOf<Graph extends HarnessGraphView> =
 	| Graph['agents'][keyof Graph['agents']]['contract']
 	| Graph['workflows'][keyof Graph['workflows']]['contract']
 
+/**
+ * Verifies that every host-aware tool in an authentic Harness definition was
+ * created by the supplied host owner.
+ *
+ * The assertion is a pure composition preflight. It exposes no compiled graph
+ * or owner metadata and performs no runtime initialization.
+ */
+export function assertHarnessHostToolOwner<
+	Catalog extends HarnessCatalogView,
+	Name extends string,
+	Graph extends HarnessGraphView,
+	HostContext,
+>(definition: HarnessDefinition<Catalog, Name, Graph>, owner: HostOwnerToken<HostContext>): void {
+	const blueprint = getHarnessRuntimeBlueprint(definition)
+	if (blueprint === undefined) throw new HarnessConfigError('Hosted Harness definition is invalid.', {
+		reason: 'foreign_definition', path: 'definition',
+	})
+	if (!isHostOwnerToken(owner)) throw new HarnessConfigError('Host owner token is invalid.', {
+		reason: 'invalid_host_binding', path: 'hostOwner',
+	})
+	assertCompiledHostToolOwner(blueprint.graph, owner)
+}
+
 /** Runtime adapters required by a compiled graph; logger and telemetry remain host owned. */
 export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements, ConfiguredGroups extends readonly string[] = readonly []> = Readonly<
 	HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & { readonly logger?: never; readonly telemetry?: never }
@@ -161,13 +184,7 @@ export async function instantiateHostedHarness<
 	const blueprint = getHarnessRuntimeBlueprint(definition)
 	if (blueprint === undefined) throw new HarnessConfigError('Hosted Harness definition is invalid.', { reason: 'foreign_definition', path: 'definition' })
 	validateHostBindings(hostBindings)
-	for (const tool of Object.values(blueprint.graph.tools).sort((a, b) => codePointCompare(a.id, b.id))) {
-		if (getDefinitionIdentity(tool)?.kind === 'host-tool' && hostToolOwner(tool) !== hostBindings.hostOwner) {
-			throw new HarnessConfigError('Host tool owner does not match the hosted Harness owner.', {
-				reason: 'host_owner_mismatch', path: 'hostBindings.hostOwner', id: tool.id,
-			})
-		}
-	}
+	assertHarnessHostToolOwner(definition, hostBindings.hostOwner)
 	const validated = validateHostedHarnessInstanceConfig(blueprint.graph.requirements, config)
 	const kernel = await instantiateHarnessRuntime<Catalog['contracts'], Catalog['requirements']>({
 		name: blueprint.name, ...(blueprint.revision === undefined ? {} : { revision: blueprint.revision }),
@@ -228,6 +245,19 @@ export async function instantiateHostedHarness<
 		},
 		async close() { closed = true; await kernel.instance.close() },
 	})
+}
+
+function assertCompiledHostToolOwner(
+	graph: CompiledDefinitionGraph,
+	owner: HostOwnerToken<unknown>,
+): void {
+	for (const tool of Object.values(graph.tools).sort((a, b) => codePointCompare(a.id, b.id))) {
+		if (getDefinitionIdentity(tool)?.kind === 'host-tool' && hostToolOwner(tool) !== owner) {
+			throw new HarnessConfigError('Host tool owner does not match the hosted Harness owner.', {
+				reason: 'host_owner_mismatch', path: 'hostOwner', id: tool.id,
+			})
+		}
+	}
 }
 
 function createHostBindingOverlay<HostInvocation, HostContext>(

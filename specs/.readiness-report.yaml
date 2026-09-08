@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, and autonomous implementation. The content-bound third-pass independent hard gate subsequently passed with zero implementation-blocking decisions."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:aaf706483140980bf2918ca6770be04efd406473f983ba67776fa7ed0cf5a46b"
+      scope_digest: "sha256:71d2ff8ad62b47f3d20144ba8e7cfd5ff233f9b65bcd5d739854603d7d553338"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -519,7 +519,7 @@ follow_up_waves:
         reviewer: "independent third-pass hard gate"
         harness_commit: "7dcc024ba4cd5014f9aadb3e426da030f03f082f"
         purista_commit: "1f3b469fa6ca409e837ed9b8d90114af31566be2"
-        scope_digest: "sha256:aaf706483140980bf2918ca6770be04efd406473f983ba67776fa7ed0cf5a46b"
+        scope_digest: "sha256:71d2ff8ad62b47f3d20144ba8e7cfd5ff233f9b65bcd5d739854603d7d553338"
         refinement_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
         blocking_findings_count: 0
         evidence: "PASS with zero implementation-blocking decisions after exact root/private hosted dispatch, caller-correlated event and workflow-model streaming authority, terminal/session/ancestry semantics, MCP header conformance, lifecycle and policy ownership, legacy API cleanup, raw standalone versus Core-wrapped aggregate outcomes, private closure and authoring-catalog handler visibility, the package-real integrator path, v4 evaluation/session usage, and exact PURISTA queue receipt typing were verified together."

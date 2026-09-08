@@ -265,12 +265,11 @@ const EXPECTED_ADAPTER_EXPORTS = [
 
 /** Locked v4 value-export surface of `@purista/harness/integrator`. */
 const EXPECTED_INTEGRATOR_EXPORTS = [
+  'assertHarnessHostToolOwner',
   'createHostOwnerToken',
   'defineHostTool',
-  'hostToolOwner',
   'instantiateHostedHarness',
   'isHarnessTargetContract',
-  'isHostOwnerToken',
 ]
 
 describe('v4 public API export surface', () => {

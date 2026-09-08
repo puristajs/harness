@@ -3,7 +3,7 @@ import type { JsonSchemaBoundary, ModelSchema, Schema } from '../schema/index.js
 import type { Infer, InferIn } from '../schema/index.js'
 import {
 	assertDefinitionId, assertKnownFields, assertModelSchema, assertNonemptyText, assertSchema,
-	attachDefinitionInference, createDefinitionIdentity, freezeDefinition, getDefinitionIdentity,
+	attachDefinitionInference, createDefinitionIdentity, freezeDefinition,
 } from '../definitions/identity.js'
 import type { HostToolDefinition } from '../definitions/types.js'
 
@@ -14,12 +14,16 @@ export type HostOwnerToken<HostContext = unknown> = Readonly<{
 }>
 
 const runtimeHostOwnerBrand = Symbol('@purista/harness/host-owner')
+const authenticHostOwners = new WeakSet<object>()
+const authenticHostTools = new WeakMap<object, HostOwnerToken<unknown>>()
 
 /** Creates one immutable owner token for a host integration and its host-aware tools. */
 export function createHostOwnerToken<HostContext>(): HostOwnerToken<HostContext> {
 	const value = {}
 	Object.defineProperty(value, runtimeHostOwnerBrand, { value: true, enumerable: false, configurable: false, writable: false })
-	return Object.freeze(value) as HostOwnerToken<HostContext>
+	const owner = Object.freeze(value) as HostOwnerToken<HostContext>
+	authenticHostOwners.add(owner)
+	return owner
 }
 
 /** Definition-time contract for a host-aware tool implemented with host-owned context. */
@@ -61,17 +65,19 @@ export function defineHostTool<
 	const value = { kind: 'tool' as const, id, description: options.description, input: options.input,
 		output: options.output, handler: options.handler }
 	attachDefinitionInference(value)
-	return freezeDefinition(value, createDefinitionIdentity('host-tool', id, owner)) as unknown as HostToolDefinition<Id, Input, Output, HostContext>
+	const definition = freezeDefinition(value, createDefinitionIdentity('host-tool', id)) as unknown as HostToolDefinition<Id, Input, Output, HostContext>
+	authenticHostTools.set(definition, owner)
+	return definition
 }
 
 /** @internal */
 export function isHostOwnerToken(value: unknown): value is HostOwnerToken<unknown> {
-	return typeof value === 'object' && value !== null && Object.isFrozen(value)
-		&& Object.prototype.hasOwnProperty.call(value, runtimeHostOwnerBrand)
+	return typeof value === 'object' && value !== null && Object.isFrozen(value) && authenticHostOwners.has(value)
 }
 
 /** @internal */
 export function hostToolOwner(value: unknown): HostOwnerToken<unknown> | undefined {
-	const identity = getDefinitionIdentity(value)
-	return identity?.kind === 'host-tool' && isHostOwnerToken(identity.owner) ? identity.owner : undefined
+	if (typeof value !== 'object' || value === null) return undefined
+	const owner = authenticHostTools.get(value)
+	return owner !== undefined && isHostOwnerToken(owner) ? owner : undefined
 }

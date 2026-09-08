@@ -4087,6 +4087,16 @@ type HostOwnerToken<HostContext = unknown> = Readonly<{
 declare function createHostOwnerToken<HostContext>():
   HostOwnerToken<HostContext>
 
+declare function assertHarnessHostToolOwner<
+  Catalog extends HarnessCatalogView,
+  Name extends string,
+  Graph extends HarnessGraphView,
+  HostContext,
+>(
+  definition: HarnessDefinition<Catalog, Name, Graph>,
+  owner: HostOwnerToken<HostContext>,
+): void
+
 interface HarnessNestedTargetInvoker {
   run<Target extends AnyHarnessTargetContract>(
     target: Target,
@@ -4309,13 +4319,19 @@ host tools. Host dispatchers, logger, telemetry, context-factory dependencies,
 and opaque invocation values are borrowed and are never closed by Harness.
 
 `@purista/harness/integrator` exports `createHostOwnerToken`,
-`defineHostTool(hostOwner, id, definition)`, and the hosted types above. The
+`defineHostTool(hostOwner, id, definition)`,
+`assertHarnessHostToolOwner(definition, owner)`, and the hosted types above. The
 same opaque owner token is attached to every host tool from one host builder
 and supplied in `HarnessHostBindings`. Only `createHostOwnerToken` can create a
 factory-authentic token, and `defineHostTool` stores that exact object plus a
 hidden definition-identity token in package-private metadata. Hosted
 instantiation compares exact token identity for every host tool before runtime
-resource initialization. A forged token, structurally copied host tool,
+resource initialization. `assertHarnessHostToolOwner` exposes that same pure,
+sorted preflight to framework integrators so composition can fail before the
+host registers routes or queues. It authenticates the Harness definition and
+owner token, returns no graph or identity data, and `instantiateHostedHarness`
+uses the shared check rather than duplicating it. The assertion is absent from
+the package root. A forged token, structurally copied host tool,
 different owner, or mixed-owner graph fails closed. Neither token participates
 in inspection, serialization, persistence, or a digest. `runHosted`,
 `streamHosted`, and `streamDispatched` are the only integrator entry points

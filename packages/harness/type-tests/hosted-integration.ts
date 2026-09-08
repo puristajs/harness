@@ -4,9 +4,10 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import {
-	createHostOwnerToken, defineHostTool, instantiateHostedHarness, isHarnessTargetContract,
+	assertHarnessHostToolOwner, createHostOwnerToken, defineHostTool, instantiateHostedHarness, isHarnessTargetContract,
 	type HarnessHostBindings, type HostedHarnessInstanceConfig, type HostedInvokeOptions,
 } from '../src/integrator/index.js'
+import * as integratorExports from '../src/integrator/index.js'
 import * as rootExports from '../src/index.js'
 import type { AnyHarnessTargetContract } from '../src/ports/target-dispatcher.js'
 import type { ModelProvider } from '../src/ports/model-provider.js'
@@ -56,6 +57,15 @@ const dependencyAgent = defineAgent('dependencyAgent', { instructions: 'Dependen
 const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
 	async handler() { return 'done' } })
 const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow).addWorkflow(dependencyWorkflow)
+assertHarnessHostToolOwner(harness, owner)
+// @ts-expect-error host ownership assertion requires a factory-authentic owner token
+assertHarnessHostToolOwner(harness, {})
+// @ts-expect-error host ownership assertion is intentionally absent from the package root
+rootExports.assertHarnessHostToolOwner
+// @ts-expect-error host-owner inspection remains package private
+integratorExports.hostToolOwner
+// @ts-expect-error host-owner authentication remains package private
+integratorExports.isHostOwnerToken
 
 declare const provider: ModelProvider
 declare const storage: HarnessStorage

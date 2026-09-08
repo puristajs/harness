@@ -1,4 +1,5 @@
-export * from './host-tool.js'
+export { createHostOwnerToken, defineHostTool } from './host-tool.js'
+export type { HostOwnerToken, HostToolOptions } from './host-tool.js'
 export * from './hosted-harness.js'
 export * from './target-contract.js'
 export type {

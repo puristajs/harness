@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { createHash } from 'node:crypto'
 
 import { defineAgent } from '../src/definitions/agent.js'
-import { defineHarness } from '../src/definitions/harness.js'
+import { defineHarness, getHarnessRuntimeBlueprint } from '../src/definitions/harness.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import type { HarnessExecutionCaller } from '../src/definitions/types.js'
@@ -12,9 +12,10 @@ import {
 	OperationCancelledError, ValidationError,
 } from '../src/errors/index.js'
 import {
-	createHostOwnerToken, defineHostTool, instantiateHostedHarness,
+	assertHarnessHostToolOwner, createHostOwnerToken, defineHostTool, instantiateHostedHarness,
 	type HarnessHostContextRequest, type HarnessNestedTargetInvoker,
 } from '../src/integrator/index.js'
+import { hostToolOwner, isHostOwnerToken } from '../src/integrator/host-tool.js'
 import type { ExecutionEvent } from '../src/definitions/execution-events.js'
 import type {
 	AnyHarnessTargetContract, HarnessTargetDispatcher, HarnessTargetDispatchRequest, HarnessTargetDispatchStream,
@@ -47,6 +48,23 @@ function logger() {
 		child() { return value },
 	}
 	return value
+}
+
+function descriptorGraphContains(root: unknown, target: unknown): boolean {
+	const pending = [root]
+	const seen = new WeakSet<object>()
+	while (pending.length > 0) {
+		const current = pending.pop()
+		if (current === target) return true
+		if ((typeof current !== 'object' || current === null) && typeof current !== 'function') continue
+		if (seen.has(current)) continue
+		seen.add(current)
+		for (const key of Reflect.ownKeys(current)) {
+			const descriptor = Object.getOwnPropertyDescriptor(current, key)
+			if (descriptor && 'value' in descriptor) pending.push(descriptor.value)
+		}
+	}
+	return false
 }
 
 function checkpointKey(kind: 'call' | 'step', hostToolInvocationId: string, id: string): string {
@@ -603,8 +621,81 @@ describe('hosted Harness runtime', () => {
 			hostOwner: otherOwner, targetDispatcher: dispatcher,
 			projectIdentity: () => undefined, projectTraceContext: () => undefined,
 			createHostContext: () => ({ nestedTargets: {} as HarnessNestedTargetInvoker }), logger: logger(), telemetry: createTelemetryShim(),
-		})).rejects.toMatchObject({ meta: { reason: 'host_owner_mismatch', path: 'hostBindings.hostOwner', id: 'hostedLookup' } })
+		})).rejects.toMatchObject({ meta: { reason: 'host_owner_mismatch', path: 'hostOwner', id: 'hostedLookup' } })
 		expect(initialized).toBe(0)
+
+		const copiedOwner = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(owner)))
+		const portable = defineHarness({ name: 'portableHostedOwner' }).addAgent(defineAgent('portableHostedOwnerAgent', {
+			instructions: 'Answer.',
+		}))
+		let configReads = 0
+		const unreadConfig = new Proxy({}, { get() { configReads += 1; throw new Error('runtime config was read') } })
+		await expect(instantiateHostedHarness(portable, unreadConfig as never, {
+			hostOwner: copiedOwner as never, targetDispatcher: dispatcher,
+			projectIdentity: () => undefined, projectTraceContext: () => undefined,
+			createHostContext: () => ({ nestedTargets: {} as HarnessNestedTargetInvoker }), logger: logger(), telemetry: createTelemetryShim(),
+		})).rejects.toMatchObject({ meta: { reason: 'invalid_host_binding', path: 'hostBindings.hostOwner' } })
+		expect(configReads).toBe(0)
+		expect(initialized).toBe(0)
+	})
+
+	it('authenticates host-tool ownership with the same sorted preflight used by hosted instantiation', () => {
+		const owner = createHostOwnerToken<object>()
+		const otherOwner = createHostOwnerToken<object>()
+		const owned = defineHostTool(owner, 'zOwned', {
+			description: 'Owned.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
+		})
+		const foreign = defineHostTool(otherOwner, 'aForeign', {
+			description: 'Foreign.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
+		})
+		const ownedDefinition = defineHarness({ name: 'ownedPreflight', revision: 'v1' }).addAgent(defineAgent('ownedPreflightAgent', {
+			instructions: 'Call.', tools: [owned],
+		}))
+		const blueprint = getHarnessRuntimeBlueprint(ownedDefinition)!
+		const inspection = ownedDefinition.inspect()
+		expect(descriptorGraphContains(ownedDefinition, blueprint)).toBe(false)
+		expect(descriptorGraphContains(ownedDefinition, blueprint.graph)).toBe(false)
+		expect(ownedDefinition.inspect()).toEqual(inspection)
+		const definition = defineHarness({ name: 'ownerPreflight', revision: 'v1' }).addAgent(defineAgent('ownerPreflightAgent', {
+			instructions: 'Call.', tools: [owned, foreign],
+		}))
+
+		expect(assertHarnessHostToolOwner(ownedDefinition, owner)).toBeUndefined()
+		expect(() => assertHarnessHostToolOwner(definition, owner)).toThrowError(expect.objectContaining({
+			meta: { reason: 'host_owner_mismatch', path: 'hostOwner', id: 'aForeign' },
+		}))
+		expect(() => assertHarnessHostToolOwner({ ...definition } as never, owner)).toThrowError(expect.objectContaining({
+			meta: { reason: 'foreign_definition', path: 'definition' },
+		}))
+		expect(() => assertHarnessHostToolOwner(definition, {} as never)).toThrowError(expect.objectContaining({
+			meta: { reason: 'invalid_host_binding', path: 'hostOwner' },
+		}))
+		const copiedOwner = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(owner)))
+		expect(isHostOwnerToken(copiedOwner)).toBe(false)
+		expect(() => defineHostTool(copiedOwner as never, 'copiedOwnerTool', {
+			description: 'Copied owner.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
+		})).toThrowError(expect.objectContaining({ meta: { reason: 'invalid_host_binding', path: 'hostOwner' } }))
+		const portableDefinition = defineHarness({ name: 'portableOwnerPreflight' }).addAgent(defineAgent('portableOwnerAgent', {
+			instructions: 'Answer.',
+		}))
+		expect(() => assertHarnessHostToolOwner(portableDefinition, copiedOwner as never)).toThrowError(expect.objectContaining({
+			meta: { reason: 'invalid_host_binding', path: 'hostOwner' },
+		}))
+		expect(() => assertHarnessHostToolOwner(ownedDefinition, copiedOwner as never)).toThrowError(expect.objectContaining({
+			meta: { reason: 'invalid_host_binding', path: 'hostOwner' },
+		}))
+		const copiedTool = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(owned)))
+		expect(hostToolOwner(copiedTool)).toBeUndefined()
+		const copiedToolDefinition = defineHarness({ name: 'copiedToolPreflight', revision: 'v1' }).addAgent(defineAgent('copiedToolAgent', {
+			instructions: 'Call.', tools: [copiedTool as never],
+		}))
+		expect(() => assertHarnessHostToolOwner(copiedToolDefinition, owner)).toThrowError(expect.objectContaining({
+			meta: { reason: 'host_owner_mismatch', path: 'hostOwner', id: 'zOwned' },
+		}))
+		const copiedDefinition = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(ownedDefinition)))
+		expect(() => assertHarnessHostToolOwner(copiedDefinition as never, owner)).toThrowError(expect.objectContaining({
+			meta: { reason: 'foreign_definition', path: 'definition' },
+		}))
 	})
 
 	it('validates hosted requests before projecting, projects once, and does not reparse validated root input', async () => {

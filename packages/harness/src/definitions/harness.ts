@@ -187,7 +187,7 @@ export interface HarnessOptions<Name extends string = string> {
 }
 
 type CatalogProvenance = readonly HarnessCatalogDefinition<string, HarnessCatalogView>[]
-const harnessRuntimeBlueprint = Symbol('@purista/harness/runtime-blueprint')
+const authenticHarnessBlueprints = new WeakMap<object, HarnessRuntimeBlueprint>()
 
 /** @internal Exact compiled state retained by a package-owned Harness definition. */
 export interface HarnessRuntimeBlueprint {
@@ -200,7 +200,7 @@ export interface HarnessRuntimeBlueprint {
 /** @internal Reads the private compiled graph without recompiling the public catalog. */
 export function getHarnessRuntimeBlueprint(value: unknown): HarnessRuntimeBlueprint | undefined {
 	if (getDefinitionIdentity(value)?.kind !== 'harness' || typeof value !== 'object' || value === null) return undefined
-	return (value as { readonly [harnessRuntimeBlueprint]?: HarnessRuntimeBlueprint })[harnessRuntimeBlueprint]
+	return authenticHarnessBlueprints.get(value)
 }
 
 /**
@@ -260,11 +260,10 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		addWorkflow: (workflow: AnyWorkflowDefinition) => withRoots({ workflows: [workflow] }) as never,
 	}
 	attachDefinitionInference(value)
-	Object.defineProperty(value, harnessRuntimeBlueprint, {
-		value: Object.freeze({ name, ...(revision === undefined ? {} : { revision }), defaults, graph }),
-		enumerable: false, configurable: false, writable: false,
-	})
-	return freezeDefinition(value, createDefinitionIdentity('harness', name)) as unknown as HarnessDefinition<Catalog, Name>
+	const blueprint = Object.freeze({ name, ...(revision === undefined ? {} : { revision }), defaults, graph })
+	const definition = freezeDefinition(value, createDefinitionIdentity('harness', name)) as unknown as HarnessDefinition<Catalog, Name>
+	authenticHarnessBlueprints.set(definition, blueprint)
+	return definition
 }
 
 function addCatalogProvenance(

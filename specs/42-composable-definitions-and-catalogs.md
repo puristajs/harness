@@ -127,6 +127,14 @@ interface HarnessTargetContract<
   Output extends ModelSchema,
   Updates extends HarnessOutputUpdateKind,
   Interrupts extends readonly HarnessInterruptKind[],
+  Inference extends HarnessTargetInferenceShape<
+    any,
+    any,
+    Infer<Output> & JsonValue,
+    Updates,
+    Interrupts
+  > =
+    HarnessTargetInference<Input, Output, Updates, Interrupts>,
 > {
   readonly kind: Kind
   readonly id: Id
@@ -136,7 +144,7 @@ interface HarnessTargetContract<
   readonly executionModes: readonly ['run', 'stream']
   readonly updates: Updates
   readonly interrupts: Interrupts
-  readonly $infer: HarnessTargetInference<Input, Output, Updates, Interrupts>
+  readonly $infer: Inference
 }
 
 type HarnessInterruptForKinds<
@@ -156,18 +164,122 @@ type HarnessUpdateFor<
     ? JsonValue
     : never
 
-interface HarnessTargetInference<
+declare const harnessTargetInferenceInvariant: unique symbol
+
+type HarnessTargetInferenceInvariantTuple<
+  WireInput extends JsonValue,
+  ValidatedInput extends JsonValue,
+  Output extends JsonValue,
+  Updates extends HarnessOutputUpdateKind,
+  Interrupts extends readonly HarnessInterruptKind[],
+> = readonly [WireInput, ValidatedInput, Output, Updates, Interrupts]
+
+type HarnessTargetInferenceFor<
+  WireInput extends JsonValue,
+  ValidatedInput extends JsonValue,
+  Output extends JsonValue,
+  Updates extends HarnessOutputUpdateKind,
+  Interrupts extends readonly HarnessInterruptKind[],
+> = Readonly<{
+  readonly input: WireInput
+  readonly validatedInput: ValidatedInput
+  readonly output: Output
+  readonly update: HarnessUpdateFor<ModelSchema, Updates>
+  readonly interrupt: HarnessInterruptForKinds<Interrupts>
+  readonly [harnessTargetInferenceInvariant]: (
+    value: HarnessTargetInferenceInvariantTuple<
+      WireInput,
+      ValidatedInput,
+      Output,
+      Updates,
+      Interrupts
+    >,
+  ) => HarnessTargetInferenceInvariantTuple<
+    WireInput,
+    ValidatedInput,
+    Output,
+    Updates,
+    Interrupts
+  >
+}>
+
+type HarnessTargetInference<
   Input extends ModelSchema,
   Output extends ModelSchema,
   Updates extends HarnessOutputUpdateKind,
   Interrupts extends readonly HarnessInterruptKind[],
-> {
-  readonly input: InferIn<Input> & JsonValue
-  readonly validatedInput: Infer<Input> & JsonValue
-  readonly output: Infer<Output> & JsonValue
-  readonly update: HarnessUpdateFor<Output, Updates>
-  readonly interrupt: HarnessInterruptForKinds<Interrupts>
-}
+> = HarnessTargetInferenceFor<
+  InferIn<Input> & JsonValue,
+  Infer<Input> & JsonValue,
+  Infer<Output> & JsonValue,
+  Updates,
+  Interrupts
+>
+
+type HarnessTargetInferenceShape<
+  WireInput extends JsonValue,
+  ValidatedInput extends JsonValue,
+  Output extends JsonValue,
+  Updates extends HarnessOutputUpdateKind,
+  Interrupts extends readonly HarnessInterruptKind[],
+> = HarnessTargetInferenceFor<
+  WireInput,
+  ValidatedInput,
+  Output,
+  Updates,
+  Interrupts
+>
+
+The seventh `Inference` parameter is an exact phantom projection and defaults
+to the schema-derived `HarnessTargetInference<Input, Output, Updates,
+Interrupts>`. Every authentic local agent and workflow contract uses that
+default. It therefore retains the target input schema's exact wire input and
+validated output without another handwritten type declaration. Its hidden
+function-position witness makes the exact tuple `[wire input, validated input,
+output, update kind, interrupt kinds]` invariant rather than relying on the
+structural assignability of the five readable fields. A narrower `string` is
+therefore not substitutable for `JsonValue`, and `never` is not substitutable
+for a non-empty interrupt family in either direction.
+The seventh-generic constraint binds its output, update kind, and interrupt
+kinds exactly to the contract's `Output`, `Updates`, and `Interrupts`
+discriminants. Only wire and validated input remain factory-derived so a trusted
+remote contract can retain its distinct producer validation result. A changed
+output, update kind, or interrupt tuple therefore fails at the contract generic
+before a dispatcher helper can observe `$infer`.
+
+`HarnessTargetInferenceFor<WireInput, ValidatedInput, Output, Updates,
+Interrupts>` is the only exported type constructor for this inference. Core
+uses that type alias for generated remote input, validated-input, output,
+update, and interrupt witnesses. The `harnessTargetInferenceInvariant` symbol,
+`HarnessTargetInferenceInvariantTuple`, `HarnessTargetInference`, and
+`HarnessTargetInferenceShape` are package-private and absent from every export
+barrel. Because the symbol cannot be imported or named, an application cannot
+hand-author a structurally valid witness. Type assertions do not create
+authentic target-contract identity and remain rejected by the runtime boundary.
+
+A trusted host may hydrate a branded remote target contract from producer-owned
+export metadata. That contract may use a validation-only
+`ModelSchema<Wire, Wire>` for the transported input and supply the producer's
+exact inference as `Inference`, including its distinct `validatedInput`. The
+remote schema validates only the transported JSON wire representation; neither
+hydration nor dispatch claims, serializes, or executes the producer's transform
+in the receiving process. The producer remains the sole owner of that
+transform. Core derives the exact seventh generic with
+`HarnessTargetInferenceFor` from its generated producer witnesses; it neither
+redeclares nor casts the hidden invariant. `HarnessTargetInput`,
+`HarnessValidatedTargetInput`,
+`HarnessTargetOutput`, dispatcher requests, hosted requests, and target-event
+helpers continue to read only the contract's `$infer` projection.
+
+Only the trusted branded remote-contract factory may supply a non-default
+`Inference`. A structural object or application-authored contract cannot opt
+into it and fails the existing target-authenticity boundary. At runtime every
+factory still assigns the same non-enumerable frozen empty object to `$infer`.
+The invariant symbol and function exist only in declaration space: neither is
+a property of that empty object, serialized, inspected, hashed, or emitted as
+export metadata, and neither carries validator or runtime authority. This is
+one clean contract extension with no parallel legacy overload, schema cast,
+local-transform fallback, or compatibility path.
 
 interface DefinitionInference<
   Input extends Schema,
@@ -200,21 +312,28 @@ type AnyHarnessTargetContract = HarnessTargetContract<
   ModelSchema,
   ModelSchema,
   HarnessOutputUpdateKind,
-  readonly HarnessInterruptKind[]
+  readonly HarnessInterruptKind[],
+  HarnessTargetInferenceShape<
+    any,
+    any,
+    any,
+    any,
+    any
+  >
 >
 
 type HarnessTargetInput<Target> =
-  Target extends HarnessTargetContract<any, any, any, any, any, any>
+  Target extends AnyHarnessTargetContract
     ? Target['$infer']['input']
     : never
 
 type HarnessValidatedTargetInput<Target> =
-  Target extends HarnessTargetContract<any, any, any, any, any, any>
+  Target extends AnyHarnessTargetContract
     ? Target['$infer']['validatedInput']
     : never
 
 type HarnessTargetOutput<Target> =
-  Target extends HarnessTargetContract<any, any, any, any, any, any>
+  Target extends AnyHarnessTargetContract
     ? Target['$infer']['output']
     : never
 
@@ -663,12 +782,13 @@ interrupt union rather than the broad global `HarnessInterrupt` union.
 Every target contract and every tool, agent, workflow, catalog, and Harness
 definition exposes `$infer`. It is a type-only convenience whose one shared
 runtime value is a non-enumerable frozen empty object. Target inference is
-owned by `HarnessTargetContract.$infer` and contains exactly `input`,
-`validatedInput`, `output`, `update`, and `interrupt`; definition inference
-aliases the same equations rather than copying them. Catalog and Harness
-inference map only their executable roots and add `requirements`. `$infer`
-never enters inspection, serialization, export metadata, hashing, or a provider
-request.
+owned by `HarnessTargetContract.$infer` and exposes exactly the five named
+fields `input`, `validatedInput`, `output`, `update`, and `interrupt`; its
+unnamed invariant witness exists only in TypeScript declaration space.
+Definition inference aliases the same equations rather than copying them.
+Catalog and Harness inference map only their executable roots and add
+`requirements`. `$infer` never enters inspection, serialization, export
+metadata, hashing, or a provider request.
 
 Native, built-in, host-aware, and MCP tool definitions use
 `DefinitionInference<input, output>`. An MCP server uses
@@ -676,6 +796,8 @@ Native, built-in, host-aware, and MCP tool definitions use
 workflow definitions use their exact `contract.$infer`. The factory attaches
 the non-enumerable property before the value is frozen; a public type must never
 declare `$infer` without the corresponding runtime property.
+`DefinitionInference` remains the tool-level input/output projection and is not
+a substitute for the invariant target inference helper.
 
 `harnessExecutionEventTypesV1` is the frozen canonical event-type inventory
 used by standalone inspection, host export, and protocol adapters. The exact
@@ -1847,21 +1969,25 @@ A PURISTA EventBridge receiver validates the raw transported value before it
 enters the hosted Harness. Output is validated by the executing target before
 it crosses the dispatcher boundary.
 
-Every dispatcher owns an immutable binding table keyed by the target contract's
-hidden library identity. The standalone compiler binds contracts from its
-completed graph to local definitions. A host binds completed graph contracts
-and explicitly declared remote contracts to host-private routes. `open` rejects
-an unknown or structurally copied contract before dispatch and never resolves
-solely by `(kind, id)`. Route values are opaque to Harness; PURISTA stores the
-service/version/target address in its dispatcher table.
+Every dispatcher owns an immutable binding table keyed by an authenticated
+target-contract identity. The standalone compiler accepts only Harness's hidden
+local contract identity and binds contracts from its completed graph to local
+definitions. A trusted host may additionally accept its own branded remote
+contract identity and bind explicitly declared remote contracts to host-private
+routes. Harness's integrator authenticity predicate continues to recognize only
+authentic local Harness contracts; it does not authenticate or mint the host's
+remote brand. `open` rejects an unknown, unbranded, or structurally copied
+contract before dispatch and never resolves solely by `(kind, id)`. Route
+values are opaque to Harness; PURISTA stores the service/version/target address
+in its dispatcher table.
 
-`assertTarget` performs that exact hidden-identity membership check and returns
-the canonical deeply frozen receipt already owned by that binding-table entry. It does so without
-opening a stream, resolving an address, allocating an id, or producing any
-other effect. It uses the same immutable table and canonical unknown-target
-error as `open`; `open` still repeats the check at its own boundary. Durable
-callers invoke `assertTarget` before checkpoint lookup so replay cannot return
-saved output for an undeclared capability.
+`assertTarget` performs that exact authenticated-identity membership check and
+returns the canonical deeply frozen receipt already owned by that binding-table
+entry. It does so without opening a stream, resolving an address, allocating an
+id, or producing any other effect. It uses the same immutable table and
+canonical unknown-target error as `open`; `open` still repeats the check at its
+own boundary. Durable callers invoke `assertTarget` before checkpoint lookup so
+replay cannot return saved output for an undeclared capability.
 
 `bindingDigest` is `sha256:` plus lowercase hexadecimal SHA-256 over
 `['harness.target-route-binding.v1',dispatcherNamespace,
@@ -1890,7 +2016,8 @@ delivery with the original `wireInput`, exact runtime-authored invocation,
 and child resume. It does not run the target schema or input transform again.
 The receiver then performs its normal raw-input, run, checkpoint, graph,
 identity, event, and decision validation and restores the validated logical
-input from its continuation. A local dispatcher supplies the same wire input
+input from the child root's required authoritative `RunRecord.validatedInput`.
+A local dispatcher supplies the same wire input
 and resume to the local receiving target. `openPersisted` never falls back to `(kind,id)`,
 enumerates routes, or exposes the route address. A receipt is inert JSON and is
 never exposed to a model, agent, workflow, tool, inspection, or ordinary
@@ -2770,17 +2897,43 @@ type HarnessInfer<
   requirements: Requirements
 }>
 
-interface HarnessCatalogDefinition<
-  Id extends string,
-  Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>>,
-  Skills extends Readonly<Record<string, SkillDefinition>>,
-  McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>>,
-  Agents extends Readonly<Record<string, AnyAgentDefinition>>,
-  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>>,
-  Requirements extends RuntimeRequirements,
+interface HarnessGraphView<
+  Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>> =
+    Readonly<Record<string, AnyNonMcpToolDefinition>>,
+  Skills extends Readonly<Record<string, SkillDefinition>> =
+    Readonly<Record<string, SkillDefinition>>,
+  McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>> =
+    Readonly<Record<string, McpServerDefinition<any, any>>>,
+  Agents extends Readonly<Record<string, AnyAgentDefinition>> =
+    Readonly<Record<string, AnyAgentDefinition>>,
+  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>> =
+    Readonly<Record<string, AnyWorkflowDefinition>>,
+  Requirements extends RuntimeRequirements = RuntimeRequirements,
 > {
-  readonly kind: 'catalog'
-  readonly id: Id
+  readonly tools: Tools
+  readonly skills: Skills
+  readonly mcpServers: McpServers
+  readonly agents: Agents
+  readonly workflows: Workflows
+  readonly requirements: Requirements
+}
+
+declare const catalogDependencyClosure: unique symbol
+
+interface HarnessCatalogView<
+  Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>> =
+    Readonly<Record<string, AnyNonMcpToolDefinition>>,
+  Skills extends Readonly<Record<string, SkillDefinition>> =
+    Readonly<Record<string, SkillDefinition>>,
+  McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>> =
+    Readonly<Record<string, McpServerDefinition<any, any>>>,
+  Agents extends Readonly<Record<string, AnyAgentDefinition>> =
+    Readonly<Record<string, AnyAgentDefinition>>,
+  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>> =
+    Readonly<Record<string, AnyWorkflowDefinition>>,
+  Requirements extends RuntimeRequirements = RuntimeRequirements,
+  Closure = unknown,
+> {
   readonly tools: Tools
   readonly skills: Skills
   readonly mcpServers: McpServers
@@ -2788,27 +2941,18 @@ interface HarnessCatalogDefinition<
   readonly workflows: Workflows
   readonly contracts: HarnessContracts<Agents, Workflows>
   readonly requirements: Requirements
-  readonly $infer: HarnessInfer<
-    HarnessContracts<Agents, Workflows>,
-    Requirements
-  >
+  /** Package-private type-only dependency closure. */
+  readonly [catalogDependencyClosure]?: Closure
 }
 
-interface HarnessGraphView<
-  Tools extends Readonly<Record<string, AnyNonMcpToolDefinition>>,
-  Skills extends Readonly<Record<string, SkillDefinition>>,
-  McpServers extends Readonly<Record<string, McpServerDefinition<any, any>>>,
-  Agents extends Readonly<Record<string, AnyAgentDefinition>>,
-  Workflows extends Readonly<Record<string, AnyWorkflowDefinition>>,
-  Requirements extends RuntimeRequirements,
-> {
-  readonly tools: Tools
-  readonly skills: Skills
-  readonly mcpServers: McpServers
-  readonly agents: Agents
-  readonly workflows: Workflows
-  readonly requirements: Requirements
-}
+type HarnessCatalogDefinition<
+  Id extends string,
+  View extends HarnessCatalogView<any, any, any, any, any, any, any>,
+> = Readonly<{
+  readonly kind: 'catalog'
+  readonly id: Id
+  readonly $infer: HarnessInfer<View['contracts'], View['requirements']>
+}> & View
 ```
 
 The maps contain original frozen authoring values, including handlers and prompt
@@ -3730,70 +3874,63 @@ use internal helper types, but it exposes this information without requiring a
 host to inspect compiler state:
 
 ```ts
-type MergeDefinitionMaps<Left, Right> = Readonly<Omit<Left, keyof Right> & Right>
-
-type AnyHarnessCatalogDefinition = HarnessCatalogDefinition<
-  string,
-  Readonly<Record<string, AnyNonMcpToolDefinition>>,
-  Readonly<Record<string, SkillDefinition>>,
-  Readonly<Record<string, McpServerDefinition<any, any>>>,
-  Readonly<Record<string, AnyAgentDefinition>>,
-  Readonly<Record<string, AnyWorkflowDefinition>>,
-  RuntimeRequirements
->
-
 declare const harnessCompiledGraphType: unique symbol
 
 interface HarnessDefinition<
-  AgentRoots extends Readonly<Record<string, AnyAgentDefinition>>,
-  WorkflowRoots extends Readonly<Record<string, AnyWorkflowDefinition>>,
-  Graph extends HarnessGraphView<any, any, any, any, any, any> =
-    HarnessGraphForRoots<AgentRoots, WorkflowRoots>,
+  Catalog extends HarnessCatalogView,
+  Name extends string = string,
+  Graph extends HarnessGraphView = HarnessGraphForCatalog<Catalog>,
 > {
   readonly kind: 'harness'
-  readonly name: string
+  readonly name: Name
   readonly revision?: string
   readonly defaults: Readonly<ResolvedHarnessExecutionDefaults>
   /** Package-private invariant inference marker; no runtime graph value. */
   readonly [harnessCompiledGraphType]: (graph: Graph) => Graph
-  readonly contracts: HarnessContracts<AgentRoots, WorkflowRoots>
-  readonly requirements: Graph['requirements']
+  readonly contracts: Catalog['contracts']
+  readonly requirements: Catalog['requirements']
   readonly $infer: HarnessInfer<
-    HarnessContracts<AgentRoots, WorkflowRoots>,
-    Graph['requirements']
+    Catalog['contracts'],
+    Catalog['requirements']
   >
-  inspect(): HarnessInspection<Graph['requirements']>
+  inspect(): HarnessInspection<Catalog['requirements']>
   getInstance<const ConfiguredGroups extends readonly string[] = readonly []>(
     config: HarnessInstanceConfig<
-      Graph['requirements'],
+      Catalog['requirements'],
       ConfiguredGroups
     >,
   ): Promise<HarnessInstance<
-    HarnessContracts<AgentRoots, WorkflowRoots>,
-    Graph['requirements']
+    Catalog['contracts'],
+    Catalog['requirements']
   >>
   addAgent<Agent extends AnyAgentDefinition>(
     agent: Agent,
   ): HarnessDefinition<
-    MergeDefinitionMaps<AgentRoots, Readonly<Record<Agent['id'], Agent>>>,
-    WorkflowRoots
+    WithAgent<Catalog, Agent>,
+    Name
   >
   addWorkflow<Workflow extends AnyWorkflowDefinition>(
     workflow: Workflow,
   ): HarnessDefinition<
-    AgentRoots,
-    MergeDefinitionMaps<WorkflowRoots, Readonly<Record<Workflow['id'], Workflow>>>
+    WithWorkflow<Catalog, Workflow>,
+    Name
   >
-  use<Catalog extends AnyHarnessCatalogDefinition>(
-    catalog: [keyof Catalog['agents'] | keyof Catalog['workflows']] extends [never]
-      ? never
-      : Catalog,
+  use<Other extends HarnessCatalogView>(
+    catalog: ExecutableCatalogDefinition<string, Other>,
   ): HarnessDefinition<
-    MergeDefinitionMaps<AgentRoots, Catalog['agents']>,
-    MergeDefinitionMaps<WorkflowRoots, Catalog['workflows']>
+    MergeCatalogViews<Catalog, Other>,
+    Name
   >
 }
 ```
+
+`HarnessGraphForCatalog`, `WithAgent`, `WithWorkflow`,
+`ExecutableCatalogDefinition`, and `MergeCatalogViews` are package-private type
+helpers. They preserve the exact catalog view, Harness name literal, recursive
+dependency closure, and requirements without adding runtime fields or another
+public builder state. Every normative Harness type uses the accepted
+`HarnessDefinition<Catalog, Name, Graph>` parameter order; there is no
+agent-roots/workflow-roots overload.
 
 `harnessCompiledGraphType` is not exported from any package subpath. Its value is
 a declaration-only invariant phantom used to preserve the exact `Graph` generic
@@ -4154,6 +4291,24 @@ type CompiledTargetOf<
   Graph extends HarnessGraphView<any, any, any, any, any, any>,
 > = HostedTargetOf<HarnessContracts<Graph['agents'], Graph['workflows']>>
 
+type HostedHarnessTargetEntry<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<{
+  target: Target
+  visibility: 'root' | 'dependency'
+}>
+
+declare function visitHostedHarnessTargets<
+  Catalog extends HarnessCatalogView,
+  Name extends string,
+  Graph extends HarnessGraphView<any, any, any, any, any, any>,
+>(
+  definition: HarnessDefinition<Catalog, Name, Graph>,
+  visitor: (
+    entry: HostedHarnessTargetEntry<CompiledTargetOf<Graph>>,
+  ) => void,
+): void
+
 type HostedHarnessInstanceConfig<
   Requirements extends RuntimeRequirements,
   const ConfiguredGroups extends readonly string[] = readonly [],
@@ -4162,23 +4317,74 @@ type HostedHarnessInstanceConfig<
   telemetry?: never
 }>
 
-type HostedInvokeOptions = Readonly<
-  Omit<InvokeOptions, 'traceparent' | 'tracestate'> & {
+type HostedInvokeBaseOptions<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<
+  Omit<
+    HarnessTargetInvokeOptions<Target>,
+    'traceparent' | 'tracestate' | 'resume'
+  > & {
     sessionId: string
     traceparent?: never
     tracestate?: never
   }
 >
 
+type HostedFreshInvokeOptions<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<HostedInvokeBaseOptions<Target> & {
+  resume?: never
+  resumeIdentity?: never
+}>
+
+type HostedResumeInvokeOptions<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey'> & {
+  idempotencyKey?: never
+  resume: HarnessTargetApprovalResume<Target>
+  resumeIdentity?: 'current-caller' | 'stored-run-owner'
+}>
+
+type HostedInvokeOptions<Target extends AnyHarnessTargetContract> =
+  | HostedFreshInvokeOptions<Target>
+  | HostedResumeInvokeOptions<Target>
+
+type HostedTargetAuthorizationRequest<
+  Target extends AnyHarnessTargetContract,
+> = Readonly<{
+  delivery: 'fresh' | 'resume'
+  target: Target
+  input: HarnessValidatedTargetInput<Target>
+}>
+
+type HostedTargetAuthorizer<
+  Target extends AnyHarnessTargetContract,
+> = (
+  request: HostedTargetAuthorizationRequest<Target>,
+) => void | Promise<void>
+
 type HostedTargetRequest<
   Target extends AnyHarnessTargetContract,
   HostInvocation,
-> = Readonly<{
-  target: Target
-  input: HarnessValidatedTargetInput<Target>
-  invokeOptions: HostedInvokeOptions
-  hostInvocation: HostInvocation
-}>
+> =
+  | Readonly<{
+      delivery: 'fresh'
+      target: Target
+      wireInput: HarnessTargetInput<Target>
+      input: HarnessValidatedTargetInput<Target>
+      invokeOptions: HostedFreshInvokeOptions<Target>
+      hostInvocation: HostInvocation
+      authorize: HostedTargetAuthorizer<Target>
+    }>
+  | Readonly<{
+      delivery: 'resume'
+      target: Target
+      wireInput: HarnessTargetInput<Target>
+      input?: never
+      invokeOptions: HostedResumeInvokeOptions<Target>
+      hostInvocation: HostInvocation
+      authorize: HostedTargetAuthorizer<Target>
+    }>
 
 type StripHostOwnedInvocation<T> = T extends unknown ? Readonly<
   Omit<T, 'identity' | 'trace'> & {
@@ -4233,21 +4439,21 @@ interface HostedHarnessInstance<
 }
 
 declare function instantiateHostedHarness<
-  AgentRoots extends Readonly<Record<string, AnyAgentDefinition>>,
-  WorkflowRoots extends Readonly<Record<string, AnyWorkflowDefinition>>,
+  Catalog extends HarnessCatalogView,
+  Name extends string,
   Graph extends HarnessGraphView<any, any, any, any, any, any>,
   HostInvocation,
   HostContext,
   const ConfiguredGroups extends readonly string[] = readonly [],
 >(
-  definition: HarnessDefinition<AgentRoots, WorkflowRoots, Graph>,
+  definition: HarnessDefinition<Catalog, Name, Graph>,
   config: HostedHarnessInstanceConfig<
     Graph['requirements'],
     ConfiguredGroups
   >,
   hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
 ): Promise<HostedHarnessInstance<
-  HarnessContracts<AgentRoots, WorkflowRoots>,
+  Catalog['contracts'],
   Graph,
   HostInvocation
 >>
@@ -4257,7 +4463,43 @@ Hosted execution extends the same private runtime kernel used by standalone
 execution. The Harness definition retains its compiled graph in package-private
 metadata; hosted instantiation consumes that exact graph and never recompiles
 sanitized inspection metadata or a public authoring-catalog projection. The
-private extension is semantically equivalent to:
+integrator-only synchronous `visitHostedHarnessTargets(definition, visitor)`
+function exposes the minimum target-contract projection needed to bind that
+private closure to a host transport. It is a trusted-host TCB API: importing
+and calling the integrator subpath is host authority, and the function's narrow
+shape reduces accidental coupling rather than forming an application privacy
+boundary.
+
+Before the first callback, the function authenticates the exact package-owned
+Harness object and preflights the complete compiled agent/workflow closure. A
+reflected, structurally copied, or foreign Harness definition throws
+`HarnessConfigError` with exact metadata
+`{reason:'foreign_definition',path:'definition'}`. A reflected, structurally
+copied, or foreign target throws the same error with exact path
+`graph.agents.${id}.contract` or `graph.workflows.${id}.contract` for its target
+kind. If several targets are invalid, the first target in the visitation order
+below determines the path. Either failure occurs before any callback.
+
+On normal completion the function invokes `visitor` exactly once for every
+exact compiled target: agents in target-id Unicode code-point order first, then
+workflows in target-id Unicode code-point order. An empty compiled target graph
+invokes no callback and returns `undefined`. Each callback receives a frozen
+`HostedHarnessTargetEntry` whose target remains the authentic exact contract
+and whose `visibility` is `root` only when that same target contract identity
+occurs in the Harness's explicit root contracts; every other closure target is
+`dependency`. If the callback throws, visitation stops immediately, the exact
+same error is propagated synchronously, and Harness performs no retry or later
+callback.
+
+The visitor returns no collection and exposes no graph, definition, handler,
+tool, Skill, MCP server, definition identity, host owner, mutable state, or
+invocation operation. Its callback cannot discover or mutate the private
+compiled indexes. `HostedHarnessTargetEntry` preserves the exact compiled
+agent/workflow closure union for integrator type inference and is not an
+application target registry. Both symbols are exported only from
+`@purista/harness/integrator`; they are absent from the package root and the
+definitions entrypoint. Sanitized `inspect()` remains unsuitable for transport
+binding. The private extension is semantically equivalent to:
 
 ```ts
 declare const trustedHostedInvocationBrand: unique symbol
@@ -4276,14 +4518,16 @@ interface HarnessRuntimeKernel<
 > {
   runTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
+    wireInput: HarnessTargetInput<Target>,
     input: HarnessValidatedTargetInput<Target>,
-    options: HostedInvokeOptions,
+    options: HostedInvokeOptions<Target>,
     environment: TrustedHostedInvocationEnvironment,
   ): Promise<HarnessTargetRunOutcome<Target>>
   streamTrusted<Target extends HostedTargetOf<Contracts>>(
     target: Target,
+    wireInput: HarnessTargetInput<Target>,
     input: HarnessValidatedTargetInput<Target>,
-    options: HostedInvokeOptions,
+    options: HostedInvokeOptions<Target>,
     environment: TrustedHostedInvocationEnvironment,
   ): Promise<HarnessTargetStream<Target>>
   streamDispatchedTrusted<Target extends CompiledTargetOf<Graph>>(
@@ -4311,6 +4555,14 @@ or terminal completion. Resume supplies a fresh host invocation, repeats the
 trusted projection, and constructs a fresh overlay; a prior host object is
 never revived.
 
+The hosted facade calls `runTrusted` or `streamTrusted` only after completing
+the root request algorithm below. Its `wireInput` is the compared original wire
+value, and its `input` is the one deeply frozen validated fresh value or the one
+deeply frozen validated value restored for resume. The private kernel never
+calls the public target input schema, invokes `authorize`, or decides host
+business access; it begins only after the post-authorization abort/deadline
+recheck and fresh-open or resume revision compare-and-swap succeeds.
+
 Hosted mode supplies the host dispatcher for workflow agent calls, subagents,
 and host nested targets. The root hosted target enters the shared runtime
 directly after exact contract-identity validation. Ordinary `getInstance`
@@ -4320,7 +4572,9 @@ and opaque invocation values are borrowed and are never closed by Harness.
 
 `@purista/harness/integrator` exports `createHostOwnerToken`,
 `defineHostTool(hostOwner, id, definition)`,
-`assertHarnessHostToolOwner(definition, owner)`, and the hosted types above. The
+`assertHarnessHostToolOwner(definition, owner)`,
+`visitHostedHarnessTargets(definition, visitor)`,
+`HostedHarnessTargetEntry`, and the hosted types above. The
 same opaque owner token is attached to every host tool from one host builder
 and supplied in `HarnessHostBindings`. Only `createHostOwnerToken` can create a
 factory-authentic token, and `defineHostTool` stores that exact object plus a
@@ -4337,22 +4591,46 @@ in inspection, serialization, persistence, or a digest. `runHosted`,
 `streamHosted`, and `streamDispatched` are the only integrator entry points
 that accept `HostInvocation`. They verify the target contract identity
 before starting or reopening the named session. `runHosted` and `streamHosted`
-accept only explicit root contracts from `Contracts` and receive an already
-validated logical input. `streamDispatched` accepts any authentic agent or
+accept only explicit root contracts from `Contracts` and receive the strict
+`HostedTargetRequest` fresh/resume union plus one required request-owned
+`authorize` callback. `streamDispatched` accepts any authentic agent or
 workflow from the retained compiled `Graph`, including a private
-dependency-only target, and receives the closed fresh/resume union below.
-Harness does not parse or transform either hosted input shape again.
+dependency-only target, and receives its separate closed fresh/resume union.
+Harness does not invoke a target input Standard Schema or transform either
+hosted input shape again.
 
 `runHosted` and `streamHosted` start or resume an application-facing root and
 therefore derive its root invocation identity through the ordinary hosted
-invoke options. `streamDispatched` is the receiving half of the trusted
+invoke options. Both root request variants carry the original JSON `wireInput`.
+A `fresh` root request additionally carries the host adapter's once-validated
+and transformed logical `input`; its invoke options forbid `resume` and
+  `resumeIdentity`. A `resume` root request carries the exact target-specific
+approval `resume` and optional `resumeIdentity` in its invoke options and
+forbids a caller-supplied logical input. Harness compares its `wireInput` with
+the stored run, then restores the prior validated logical input from required
+trusted `RunRecord.validatedInput` without invoking the target
+schema or transform.
+
+The root request parser is an exact own-key parser. It rejects a missing or
+unknown `delivery`; missing `wireInput`; a fresh request without `input`; a
+fresh request with an own `resume` or `resumeIdentity` key, including an
+`undefined` value; a resume request with an own `input` key, including
+`undefined`; a resume without the exact target-specific approval `resume`; and
+a resume with an own `idempotencyKey` key, including `undefined`. It also
+rejects a fresh delivery paired with resume invoke options, a resume delivery
+paired with fresh invoke options, unknown request or invoke-option keys, and a
+non-approval target paired with any resume shape. No union branch falls back to
+the other branch after a discriminant or own-key failure.
+
+`streamDispatched` is the receiving half of the trusted
 `HarnessTargetDispatcher` SPI. It is used only after a host adapter has decoded
 an addressed EventBridge delivery and reconstructed the runtime-authored
 dispatch envelope. A `fresh` delivery contains the original JSON `wireInput`
 and the adapter's once-validated and transformed logical `input`. A `resume`
 delivery contains the original `wireInput` and exact approval resume but no
-logical input: the Harness compares the wire value with the child run and
-checkpoint before restoring the logical input from its continuation. The
+logical input: the Harness compares the wire value with the child run before
+restoring the logical input from the child root's required stored
+`RunRecord.validatedInput`. The
 adapter must not invoke the target schema or transform for a resume delivery.
 It preserves the exact `sessionId`, `invocationId`, `rootRunId`, `parentRunId`,
 optional parent target id, `depth`, remaining delegation depth, absolute
@@ -4386,30 +4664,151 @@ identity or trace fields here.
 
 This is a deliberate hosted-boundary exception to the standalone wire-input
 contract. For `runHosted` and `streamHosted`, the host adapter owns wire parsing
-and transformation; its validated logical value is the application-facing
-root input used for session, checkpoint, replay, and conflict comparison. For
-a fresh `streamDispatched` delivery, Harness executes the validated logical
-`input` but persists and compares the original `wireInput`, matching standalone
-child dispatch. A resume delivery accepts only that same wire value and
-restores logical continuation state. Harness validates only that the supplied
-values are JSON data and never invokes the root input schema again.
+and transformation for a fresh request. Harness performs only the bounded JSON
+shape checks required by the hosted envelope: it does not revalidate or
+transform the fresh logical value. Harness persists the root `wireInput` for
+conflict and resume comparison and stores the validated logical value once as
+required trusted `RunRecord.validatedInput`. On resume it compares the supplied
+wire value and restores that persisted validated value without accepting another
+logical input or running a transform. A fresh `streamDispatched` delivery has
+the same split: Harness executes `input` but persists and compares `wireInput`.
+After fresh authorization succeeds and abort/deadline are rechecked, Harness
+creates the root agent/workflow `RunRecord` with both `input: wireInput` and
+`validatedInput: input`. Those exact canonical JSON values are written once,
+are part of spec 32's strict creation identity and revision-one record, and are
+retained unchanged through terminalization even when every checkpoint is
+deleted. A child-task record retains only its canonical child-call `input` and
+forbids `validatedInput`. No resume derives root validated input from a
+checkpoint or invokes a target transform.
 
 `HostInvocation` is supplied only by the host target adapter for each run. It is
 opaque to Harness application logic, absent from public `InvokeOptions`, never
 serialized, persisted, or exposed to a model. Harness passes it only to the two
 host-owned projection functions and `createHostContext`; it never reads its
-properties itself. At hosted entry it invokes both projection functions exactly
-once, normalizes and freezes their returns, binds the identity to the session,
-and enters the root trace through the existing W3C extraction behavior before
-any run event or handler. A projection throw becomes sanitized `InternalError`.
-The projected identity and trace cannot be supplied or overridden by
-`HostedTargetRequest`. Nested dispatch carries the frozen identity and a
-trusted current W3C carrier in `HarnessTargetDispatchRequest.invocation`.
-The returned context exists for one host-tool call and is
-discarded afterward. Hosted instance config omits public `logger` and
-`telemetry`; the host bindings replace those fields, and Harness derives
-`Metrics` from the bound telemetry. Application callers cannot supply or
-override host-only keys.
+properties itself. Core may close over the current `HostInvocation` when it
+constructs the request-owned `authorize` function, but Harness never includes
+that value in `HostedTargetAuthorizationRequest`.
+`HostedInvokeOptions.resumeIdentity` is forbidden without `resume`. With a
+resume, omission and explicit `current-caller` have the same meaning: Harness
+invokes `projectIdentity` for the current `HostInvocation`, normalizes and
+freezes that identity, and requires it to equal the identity already bound to
+the stored session.
+
+Explicit `resumeIdentity: 'stored-run-owner'` is accepted only with an exact
+approval `resume`, the required stable `sessionId`, and a target whose exact
+interrupt union contains `tool-approval`. The erased-type runtime check rejects
+the mode for any other target as
+`ValidationError('Hosted request is invalid.',
+{where:'invoke_options',issues:{reason:'invalid_hosted_request',
+field:'resumeIdentity'}})` before a projector or storage read.
+
+After structural validation and the pre-abort check, Harness projects and
+normalizes the current caller identity and trace exactly once. For every resume,
+it then reads and strictly validates the already stored run, session, target,
+immutable root inputs, optional interruption checkpoint, and immutable session identity addressed by
+`resume.runId` and `sessionId`. It compares the supplied `wireInput` with the
+stored root wire input and restores one deeply frozen exact prior validated
+logical input from required `RunRecord.validatedInput`; it never accepts or derives
+another logical input.
+An absent, malformed, cross-session, or cross-target run/session relationship
+is the sanitized `ApprovalResumeError` with `reason:'run_mismatch'`. A
+canonical wire-input mismatch is
+`ApprovalResumeError{reason:'input_mismatch'}`. An operational stored-owner lookup failure is wrapped
+without its cause or storage metadata as
+`InternalError('Hosted stored-run owner lookup failed.')`.
+
+Both the normalized current identity and stored identity must contain non-empty
+`tenantId` and `principalId`. An absent identity, a missing or empty identity
+dimension, or unequal tenant is the sanitized `ApprovalResumeError` with
+`reason:'session_identity_mismatch'`. The two tenant ids must be exactly equal;
+the principal ids may differ because the current caller is reviewing on behalf
+of the stored run owner. The stored identity, rather than the current projected
+identity, is used to reopen the durable session and execute the continuation.
+
+Requesting `stored-run-owner` is a Core-owned decision and is never derived
+from target input or another caller-controlled field. The exact tenant check
+remains mandatory before authorization. Core supplies the per-request
+`authorize` callback as its business-authorization boundary; Harness supplies
+that callback only the exact validated or restored target input, exact target,
+and delivery kind. The callback receives neither the current nor stored
+execution identity from Harness. Core retains the current `HostInvocation` as
+reviewer context in the request-owned authorizer closure and for
+`createHostContext`, while a host-aware tool receives the current reviewer
+rather than the stored owner.
+
+The stored identity is allowed only inside trusted execution scopes that
+already require the run owner: Harness storage, memory and sandbox scoping; a
+portable tool's trusted context; a nested Harness-to-Core dispatcher call; and
+Core's authenticated EventBridge sender identity metadata. It is forbidden in
+public target input, output, outcome, error, inspection, log, metric, or span
+data. It is never returned through a hosted API or the closure visitor. Neither
+identity mode accepts a caller-supplied identity value.
+
+`RunRecord.validatedInput` is trusted stored application data available only to
+storage and the selected Harness execution path: the authorizer, target
+handler, memory/sandbox scopes, portable-tool context, and authenticated nested
+dispatcher. It is never copied into a public outcome, error, event, inspection,
+log, metric, span, or closure-visitor entry. Normal target execution receives
+it as its input; no other public API can retrieve the stored value.
+
+After resolving the selected execution identity, hosted entry enters the
+already projected and frozen current trace through the existing W3C extraction
+behavior before any run event or handler. Projection functions run at most once
+for the current `HostInvocation`. A projection throw becomes sanitized
+`InternalError`.
+For a resume, this point is reached only after the strict terminal-receipt or
+pending-interrupt selection, revision/graph/session-identity validation,
+event-conflict handling, and complete decision-set validation described below.
+Harness then calls the request's `authorize` callback exactly once with one
+deeply frozen `HostedTargetAuthorizationRequest`. A fresh request supplies its
+deeply frozen host-validated logical input. A resume supplies only the one
+deeply frozen exact logical input restored from the validated stored run
+record after wire-input comparison.
+If authorization throws or rejects, Harness propagates that exact error object
+unchanged, creates or resumes no execution lease, emits no public event, and
+performs no model, tool, memory, sandbox, or target-runtime effect. This exact
+error reaches the Core boundary, which preserves a `HandledError` and sanitizes
+an unknown error through Core's ordinary error projection without leaking its
+raw value to HTTP. After a successful asynchronous authorization, Harness
+rechecks the request signal and effective absolute deadline. A non-terminal
+resume then atomically reacquires the run lease and compares the continuation
+revision plus the complete immutable run identity, including both root inputs,
+used for authorization with the current stored values before its first public
+event or execution effect; only a matching compare-and-swap may continue.
+
+A terminal receipt replay acquires no lease. After authorization it re-reads
+the authoritative terminal `RunRecord` and exact-compares the complete
+immutable creation identity, revision, terminal status/output-or-error, and
+`approvalReceipt` with the snapshot that was validated and authorized. Only an
+exact match may return the already committed terminal outcome. A missing or
+changed record rejects as
+`ApprovalResumeError{reason:'stale_continuation'}`. This branch performs no
+schema transform, handler/model/tool/runtime execution, public event, or
+storage mutation. Failed and cancelled records preserve their canonical local
+rejection semantics. Two concurrent byte-equivalent terminal replay requests
+may each authorize and return the same result only after their own exact
+re-read; neither can observe or expose the stored validated input.
+
+A fresh request atomically opens its new run with both root inputs only after
+the same post-authorization recheck. A losing concurrent resume may therefore
+have completed authorization but must not emit or execute. The callback is invoked once per `runHosted` or `streamHosted`
+request, including every separate or concurrent resume request; it is never
+checkpointed, replayed, or retried by Harness. An authorizer must not rely on
+exactly-once callback side effects.
+
+The selected execution identity and projected trace cannot be supplied or
+overridden by `HostedTargetRequest`. Nested dispatch carries the frozen
+execution identity and a trusted current W3C carrier in
+`HarnessTargetDispatchRequest.invocation`. The returned context exists for one
+host-tool call and is discarded afterward. Hosted instance config omits public
+`logger` and `telemetry`; the host bindings replace those fields, and Harness
+derives `Metrics` from the bound telemetry. Application callers cannot supply
+or override host-only keys.
+
+`streamDispatched` has no root-request `authorize` callback. Its authenticated
+host receiver must complete the Core-owned command or stream business guard
+before calling the integrator entrypoint; Harness retains the exact receiving
+identity, trace, target-authenticity, and continuation checks specified above.
 
 For a host tool selected by an agent turn, `tool.callId` is the provider's
 stable tool-call id and `invocationId` is the owning agent invocation id. For
@@ -4707,26 +5106,45 @@ storage operation, or dispatcher runs before this validation completes.
 Hosted entry validation is stable and stops at the first failure:
 
 1. require an open instance;
-2. validate request shape and exact hidden target identity;
-3. validate the already transformed logical input as JSON data;
+2. validate the exact fresh/resume request union and hidden target identity,
+   including `tool-approval` capability for `stored-run-owner`; a resume rejects
+   an own `idempotencyKey` key even when its value is `undefined`;
+3. validate `wireInput` as JSON data for both variants and the fresh logical
+   `input` as JSON data, while rejecting fresh resume fields and any resume
+   logical input without invoking the target schema or transform;
 4. reject host-owned `traceparent`, then `tracestate`, when present through an
    erased type;
 5. honor a pre-aborted signal;
-6. project and normalize identity;
-7. project and normalize trace context;
-8. compare session identity;
-9. open or reacquire the checkpoint/lease; and
-10. execute or dispatch.
+6. project and normalize current caller identity;
+7. project and normalize current trace context;
+8. for every resume, read and strictly validate the addressed stored run,
+   session, target, interruption checkpoint, and immutable session identity,
+   compare `wireInput`, and restore one deeply frozen exact validated logical
+   input together with the continuation revision;
+9. for `stored-run-owner`, require both complete identity dimensions, compare
+   the tenant, and select the stored execution identity; for a current-caller
+   resume compare the complete current identity with the session; for fresh
+   execution bind the current identity to the new session;
+10. invoke the required `authorize` callback exactly once with the frozen exact
+    target, delivery, and validated or restored logical input;
+11. after asynchronous authorization, recheck abort and the effective absolute
+    deadline;
+12. atomically open a fresh run, or reacquire the resumed run and compare-and-
+    swap the exact continuation revision used for authorization; and
+13. emit the first public event and execute or dispatch.
 
-`streamDispatched` uses the same order, except step 3 validates the exact
-fresh/resume delivery union and the appropriate wire/logical input, step 4
-rejects `identity` and then `trace` on the dispatch invocation, and step 5
-validates its exact XOR ancestry and invocation shape. A resume delivery runs
-the canonical strict `ToolApprovalResume` snapshot parser, including exact
-keys, identifier grammar, unique decision ids, and boolean decisions, then
-requires `resume.runId === invocationId`,
-and the pre-abort check follows those content-free structural checks. It does
-not accept `invokeOptions`. Unknown request or invocation fields, including
+`streamDispatched` does not accept `invokeOptions` or the root-request
+`authorize` callback because its authenticated Core receiver has already
+completed the command or stream business guard. Its Harness validation order
+remains: open instance and target identity; exact fresh/resume delivery shape
+and appropriate wire/logical input; forbidden `identity` then `trace`; exact
+XOR ancestry and invocation shape; strict resume snapshot and correlation;
+pre-abort; current identity and trace projection; stored continuation restore;
+lease; execution. A resume delivery runs the canonical strict
+`ToolApprovalResume` snapshot parser, including exact keys, identifier grammar,
+unique decision ids, and boolean decisions, then requires
+`resume.runId === invocationId`. The pre-abort check follows those content-free
+structural checks. Unknown request or invocation fields, including
 `identity` or `trace`, fail as
 `ValidationError('Hosted dispatch request is invalid.',
 {where:'invoke_options',issues:{reason:'invalid_hosted_dispatch_request',field?}})`.
@@ -4750,10 +5168,12 @@ existing canonical identity or trace normalization errors. Owner mismatch is a
 lexicographically first mismatched tool. Pre-abort invokes no projector,
 storage, or dispatcher; projection failure invokes no storage or dispatcher.
 
-There are no generic host lifecycle callbacks in this release. Harness owns
-and closes clients, processes, and internal adapters it creates. It borrows and
-never closes the dispatcher, context-factory dependencies, logger, telemetry,
-or opaque host invocation. Hosted shutdown first stops new Harness invocations,
+`authorize` is the single request-scoped host execution gate; it is not a
+generic lifecycle hook. There are no host startup, event, completion, failure,
+or shutdown callbacks in this release. Harness owns and closes clients,
+processes, and internal adapters it creates. It borrows and never closes the
+dispatcher, context-factory dependencies, logger, telemetry, authorizer, or
+opaque host invocation. Hosted shutdown first stops new Harness invocations,
 then cancels or drains active runs according to the normal instance policy,
 then closes Harness-owned resources. The host closes its service resources and
 EventBridge only after the Harness instance has shut down.
@@ -4866,9 +5286,11 @@ A non-durable agent for which
 workflow for which `compiledGraph.approval.workflows[workflowId].reachable` is
 true, remains an ordinary ephemeral authoring target, but each root invocation
 uses an approval-recovery lease. Guardrail `requirements.durable:true` requires
-storage but does not select this approval-recovery lifecycle. After raw JSON input validation and
-session locking, and before `run.started`, model, workflow, or tool activity,
-Harness creates the revision-one run, reads that authoritative record and the
+storage but does not select this approval-recovery lifecycle. After session
+locking, raw JSON input validation, and the one root schema transform, Harness
+creates the run before any `run.started`, model, workflow, or tool activity. It
+supplies canonical wire `input` and transformed `validatedInput` to
+`createRun`, reads the authoritative revision-one record and the
 absent `harness:root:v1` checkpoint, and submits spec 32's exact
 `AcquireRunRequest{mode:'initial',...}` with generated `run_<ulid>`, the
 instance `worker_<ulid>`, deterministic acquisition id, and requested attempt
@@ -4887,9 +5309,13 @@ to read the authoritative run first. A terminal run validates its
 `TerminalApprovalReceiptV1` and either replays, conflicts, or reports a stale
 continuation without lease acquisition. That path validates the requested
 session and root invoker against `RunRecord.sessionId/kind/target`, compares the
-canonical pre-transform input with required `RunRecord.input`, and compares
-interrupt id, deployment revision, compiled graph digest, and session identity
-digest with the receipt before event/decision equality. For a non-terminal
+canonical pre-transform input with required `RunRecord.input`, restores the
+required deeply frozen `RunRecord.validatedInput`, and compares interrupt id,
+deployment revision, compiled graph digest, and session identity digest with
+the receipt before event/decision equality. A hosted invocation then performs
+the identity/tenant checks and calls its authorizer with that restored input;
+after the callback it exact re-reads the immutable terminal record, revision,
+result/error, and receipt before returning. For a non-terminal
 resumable run, Harness optimistically reads and validates the record and
 `harness:interrupt:v1` checkpoint, then submits spec 32's exact
 `AcquireRunRequest{mode:'resume',expected:{revision,status,checkpoint:{stepId,
@@ -5389,8 +5815,10 @@ interface HarnessInterruptionCheckpointV1 {
 The root interruption checkpoint is stored as `RunCheckpoint.output` at the
 single reserved step id `harness:interrupt:v1`. Its `RunCheckpoint.input` is the
 root target's canonical JSON wire input captured before the Standard Schema
-validator or any transforming schema runs. The transformed validated input used
-by execution remains inside the appropriate continuation frame. Metadata is exactly
+validator or any transforming schema runs and must equal `RunRecord.input`.
+The root transformed validated input is stored once and retained only as
+required immutable `RunRecord.validatedInput`; continuation frames may consume
+it during execution but do not own or duplicate it. Metadata is exactly
 `{checkpointKind:'harness_interruption',schemaVersion:1}`. The checkpoint's
 `sequence` is the next global checkpoint sequence for that run, while
 `nextEventSequence` is the next portable event sequence and therefore belongs
@@ -5672,15 +6100,23 @@ strict schema/version validation, storage, event sequence, lifecycle set, and
 terminal deletion.
 
 Resume uses one exact optimistic-read and fenced-recheck sequence. It first
-reads the `RunRecord` and current `harness:interrupt:v1` checkpoint, when one
-exists, and performs every side-effect-free validation through receipt/event
-and decision equality. A terminal receipt replay returns here without acquiring
-a lease. For a resumable run, Harness then calls spec 32 `acquireRun` with the
+reads the `RunRecord` and, for a non-terminal run, the current
+`harness:interrupt:v1` checkpoint, and performs every side-effect-free
+validation through receipt/event and decision equality. Every agent/workflow
+resume requires strict canonical `RunRecord.input` and
+`RunRecord.validatedInput`; it compares the supplied wire input with the former
+and restores a deep-frozen copy of the latter. It never restores root validated
+input from a checkpoint. A hosted resume then completes the identity and
+`HostedTargetAuthorizer` sequence above. Its terminal receipt replay re-reads
+and exact-compares the immutable terminal record/revision/receipt after the
+authorizer before returning without a lease. A non-hosted terminal receipt
+replay returns after the same storage/receipt validation without acquiring a
+lease. For a resumable run, Harness then calls spec 32 `acquireRun` with the
 optimistically observed record revision/status and reserved checkpoint
 step/sequence. The returned `DurableRunLease.run` and checkpoint snapshot are
 the atomic under-lease reread. Harness requires the returned record to be
 `running` under that exact worker/attempt/lease result, with the same immutable
-session/target/input identity and byte-equivalent checkpoint value it validated
+session/target/input/validated-input identity and byte-equivalent checkpoint value it validated
 optimistically. Acquisition must have consumed that exact expectation. It
 repeats strict checkpoint, receipt/event, digest,
 target, root-input, and decision validation before emitting an event or
@@ -5707,11 +6143,11 @@ contract digest.
 An in-process resume also requires the same hidden definition identity token.
 A mismatch fails closed as stale continuation. The invoker's required `input`
 argument is first checked as JSON data and canonically encoded without invoking
-the target schema. Its bytes must equal the authoritative
-`RunCheckpoint.input`; otherwise resume fails with
+the target schema. Its bytes must equal authoritative `RunRecord.input`;
+otherwise resume fails with
 `ApprovalResumeError{reason:'input_mismatch'}` before any schema transform,
 handler, model, event, or effect. The original transformed input is restored
-from the continuation. This prevents a non-idempotent transforming schema from
+from required authoritative `RunRecord.validatedInput`. This prevents a non-idempotent transforming schema from
 changing resume identity or running twice. No resume reruns
 `beforeTool`, input parsing, the root input schema, permission, governance, audit, or
 `approval.requested`. A post-approval cursor also prevents a committed accepted
@@ -6257,7 +6693,7 @@ The stream projection additionally adds
 | Semantic value | Canonical owner | Valid projections | Forbidden duplication |
 | --- | --- | --- | --- |
 | tool/Skill/MCP/agent/workflow definition | branded immutable Harness definition | explicit authoring-catalog reference, sanitized inspection row, provider tool schema | expanded public closure, host-owned structural copies, or mutable registries |
-| target input/output contract | `HarnessTargetContract` with Standard JSON Schemas | PURISTA exported target, JSON Schema/OpenAPI metadata | importing another service builder for schemas |
+| target input/output contract | `HarnessTargetContract` with Standard JSON Schemas and invariant phantom `Inference` over the exact wire/validated/output/update-kind/interrupt-kinds tuple | authentic local schema-derived contract; generated Core `HarnessTargetInferenceFor` projection; trusted branded remote validation-only wire contract; PURISTA JSON Schema/OpenAPI metadata | exporting or hand-authoring the hidden witness, importing another service builder, executing a producer transform remotely, or constructing an unbranded inference override |
 | standalone aggregate execution | `RunOutcome<Output, Interrupt>` | `HarnessSession` agent/workflow `.run(...)` result and hosted Harness outcome | session-id wrapper or adapter-specific outcome union inside Harness |
 | PURISTA aggregate projection | Core-owned `{sessionId,outcome: RunOutcome<Output,Interrupt>}` | EventBridge command response, generated address-first client, HTTP JSON response | changing the nested Harness outcome or adding this wrapper to standalone Harness |
 | progressive execution | `HarnessTargetExecutionEvent<Target>` | EventBridge stream frame, AI SDK UI v1 chunk, persisted audit event | broad root events, provider-native SSE as the portable contract |
@@ -6267,7 +6703,10 @@ The stream projection additionally adds
 | runtime need | `RuntimeRequirements` | exact `HarnessInstanceConfig`, PURISTA `ai` config, inspection | hand-maintained duplicate capability lists |
 | background delivery | host queue receipt | PURISTA enqueue client and worker call | transparent queueing inside `run` or `stream` |
 | hosted runtime configuration | `HostedHarnessInstanceConfig` | validated shared runtime bindings plus host-owned bindings | a second hosted runtime or caller-supplied logger/telemetry |
+| hosted closure target | authentic compiled `HarnessTargetContract` visited through `visitHostedHarnessTargets` | frozen integrator-only `{target,visibility}` callback entry | graph/catalog exposure, copied contracts, mutable registry, or application invocation surface |
 | host invocation context | opaque `HostInvocation` projected into one call-scoped handler closure | identity, trace context, and `HostContext` | checkpoint, session, registry, log, model, or inspection storage |
+| hosted root authorization | required request-owned `HostedTargetAuthorizer` over exact frozen delivery/target/validated input | Core business guard closure with current reviewer context | Harness-owned policy, stored identity in callback arguments, lifecycle hooks, retry, or exactly-once side-effect claims |
+| hosted approval-resume identity | immutable identity already bound to the stored session/run | storage/memory/sandbox and portable-tool owner scopes, nested Core dispatch/EventBridge identity metadata, or exact current-caller equality | public payload/outcome/error/inspection/log/telemetry exposure, host-tool owner substitution, caller identity fields, or stored-owner replacement |
 | host nested target result | `RunCheckpoint.output` containing `HostNestedTargetCheckpointV1` | replayed `nestedTargets.run` result under the root lease | reuse of `WorkflowCallCheckpointV1`, another storage API, or direct child output as host-tool output |
 | host ownership | factory-authentic `HostOwnerToken` in hidden definition metadata | exact identity comparison at hosted instantiation | id/digest inference, public metadata, serialization, or persistence |
 | Agent Plugin package | addon-owned immutable byte snapshot and canonical package digest | explicitly selected branded Skill/MCP definitions, exact HTTP bindings, separate frozen provenance | executable plugin module, mutable registry, addon fields on Core definitions, or parsing bytes different from the digested snapshot |
@@ -6291,6 +6730,16 @@ durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+Harness-definition type tests must prove the single
+`HarnessDefinition<Catalog, Name, Graph>` order end to end. A direct
+`defineHarness({name}).addAgent(agent)` retains the exact name literal, exact
+root contract, recursive dependency closure, and requirements. Using a rooted
+catalog retains that catalog's exact agent/workflow root maps and recursively
+compiled dependency graph while a leaf-only catalog remains authorable but not
+mountable. Direct-root and catalog-root invokers, `$infer`, hosted
+instantiation, and hosted target visitation must agree without casts, widened
+root records, or an agent-roots/workflow-roots overload.
 
 Compile-time tests must prove that `HarnessTargetExecutionEvent<Target>`
 discriminates root from nested events: root events reject either parent field,
@@ -6321,10 +6770,167 @@ before a trustworthy terminal rejects. Public root adaptation must forward
 type; nested terminals cannot settle either result.
 
 Hosted type tests must prove that `runHosted` and `streamHosted` accept only
-explicit root contracts, while `streamDispatched` and its private trusted
-kernel accept authentic targets from the retained compiled graph, including a
-dependency-only target. `instantiateHostedHarness` must retain that graph type
-in its returned instance; copied and out-of-graph targets fail before dispatch.
+explicit root contracts and the exact `HostedTargetRequest` union. Both branches
+require `wireInput` and `authorize`; fresh requires the exact validated `input`
+and fresh invoke options, while resume requires the exact target-specific
+approval resume/options and forbids logical input and `idempotencyKey`.
+Negative type and erased-type runtime cases cover missing and unknown
+discriminants, every missing required field, fresh `resume`/`resumeIdentity`,
+resume `input`/`idempotencyKey` even as own keys with `undefined`, crossed
+delivery/options branches, unknown keys, and a resume for a non-approval target.
+Fresh runtime tests use distinct wire and transformed values plus a target-schema
+sentinel to prove Harness calls neither validation nor transformation and passes
+the exact frozen transformed value to authorization and execution.
+The authorizer receives exactly `delivery`, the target contract, and its
+inferred validated input, with no `HostInvocation`, execution identity, stored
+owner, trace, session, run, or mutable request object. `streamDispatched` and
+its private trusted kernel accept authentic targets from the retained compiled
+graph, including a dependency-only target. `instantiateHostedHarness` must
+retain that graph type in its returned instance; copied and out-of-graph targets
+fail before dispatch. Public export tests lock `HostedTargetRequest`,
+`HostedTargetAuthorizer`, and `HostedTargetAuthorizationRequest` to
+`@purista/harness/integrator`; none is exported from the package root or the
+definitions barrel.
+The integrator target visitor's callback must infer the exact compiled
+agent/workflow contract union. Runtime tests must prove complete preflight
+before callbacks, one frozen entry per exact target, deterministic agent/id then
+workflow/id code-point order, identity-based root/dependency visibility, and
+the empty-graph zero-callback result. Reflected, copied, or foreign definitions
+or targets must produce the exact `HarnessConfigError` reason/path with zero
+callbacks. A callback throw must stop immediately, propagate the same object,
+and cause no retry or later callback. Public API tests must prove this is a
+trusted-host TCB surface, that the visitor and entry type exist
+only on `@purista/harness/integrator` and that no graph, definition, handler,
+tool, Skill, MCP, identity, owner, mutable collection, or invocation surface is
+reachable through them.
+
+Hosted approval-resume type tests must reject `resumeIdentity` without
+`resume`, reject unknown modes, reject non-approval targets, and retain the
+exact target-specific approval resume type. Runtime tests must prove the exact
+structural, pre-abort, identity projection, trace projection, storage lookup,
+wire comparison, frozen input restoration, identity selection, authorization,
+post-authorization abort/deadline recheck, and atomic lease/revision-CAS order.
+Omission and `current-caller` project and compare the complete current identity.
+Every resume mode requires both immutable root inputs on the authoritative
+agent/workflow `RunRecord`, compares the wire value, and restores the same
+deeply frozen `validatedInput` without reading it from a checkpoint or running
+the target schema or transform. The authorizer observes that exact input once
+for that request. `stored-run-owner` requires complete current and
+stored tenant/principal dimensions, permits a different principal only within
+the exact same tenant, reopens the durable session under the stored identity,
+while Core retains the current `HostInvocation` in its authorizer closure and
+Harness passes it separately to host-context creation, never through the
+authorization request.
+Missing, invalid, cross-session, and cross-target stored runs use
+`run_mismatch`; identityless, tenantless, principal-less, and cross-tenant
+values use `session_identity_mismatch`; storage operational failures use the
+fixed sanitized `InternalError`. All fail before target, model, tool, event, or
+host-context effects. A wire mismatch fails before authorization. An authorizer
+throw or rejection must preserve exact error identity at the Core boundary,
+emit no start/run event, and perform no runtime effect; Core tests preserve
+`HandledError` and sanitize an unknown callback error without raw HTTP leakage.
+Tests race two resumed requests across an asynchronous authorizer: both may
+authorize, but only the request winning the continuation revision CAS executes;
+abort or deadline expiry after authorization also executes nothing. These tests
+must state that authorization callbacks cannot assume exactly-once side effects.
+Terminal receipt tests delete all checkpoints, reconstruct the hosted runtime,
+and prove the same event/decision request authorizes with the retained frozen
+`RunRecord.validatedInput`, reruns no transform, takes no lease, emits no event,
+and returns only after an exact post-authorization re-read of creation identity,
+revision, terminal result/error, and receipt. A mutation or deletion between
+authorization and re-read is `stale_continuation`; concurrent exact terminal
+replays may both authorize and return the same result, while changed decisions
+and event ids retain `event_conflict` and `stale_continuation` precedence.
+Tests must observe the stored owner in storage, memory,
+sandbox, portable-tool, nested-dispatch, and authenticated EventBridge identity
+scopes, the current reviewer in host-tool context, and no stored identity in a
+public payload, outcome, error, inspection, log, metric, or span.
+
+Target-contract type tests must prove that authentic local contracts use the
+schema-derived default `Inference`, including a transforming input schema's
+exact validated type. A trusted branded remote contract must retain its exact
+producer `input`, `validatedInput`, `output`, update, and interrupt inference
+while its local `ModelSchema<Wire, Wire>` remains validation-only. Dispatcher,
+hosted-request, target-stream, and event helpers must infer from `$infer`.
+Assignment tests prove the hidden witness is invariant in every exact tuple
+position: changing wire input, validated input, output, update kind, interrupt
+membership, or interrupt tuple order rejects in both directions. Dedicated
+negative cases prove a `string` witness cannot substitute for `JsonValue` and a
+`never` interrupt cannot substitute for a target containing `tool-approval` or
+`external-wait`, even though those substitutions would satisfy the five
+readable structural fields. Direct seventh-generic instantiation negatives
+reject `BadOutput`, `BadUpdate`, and `BadInterrupt` projections against the
+contract's exact output/update/interrupt discriminants while accepting a
+trusted remote inference with a distinct validated-input type. Negative tests
+also reject an unbranded structural
+contract, a hand-authored `$infer` object, and attempts to obtain
+producer-transform authority. Declaration tests prove generated Core witnesses
+use the public `HarnessTargetInferenceFor` alias without naming or recreating
+the hidden symbol. Runtime tests prove every `$infer` remains the same frozen
+empty phantom and remote wire validation never executes or claims the producer
+transform. Root, definitions-barrel, and packed-declaration tests export only
+`HarnessTargetInferenceFor` and the existing consumer inference helpers; the
+invariant symbol, invariant tuple, local schema alias, and structural shape are
+absent, and no compatibility constructor or overload is public.
+
+The later H4-027 remediation owns this complete contract slice. Its exact scope
+must include `packages/harness/src/definitions/types.ts`,
+`packages/harness/src/definitions/harness.ts`,
+`packages/harness/src/definitions/catalog.ts`,
+`packages/harness/src/definitions/index.ts`,
+`packages/harness/src/ports/target-dispatcher.ts`,
+`packages/harness/src/integrator/hosted-harness.ts`,
+`packages/harness/src/integrator/hosted-target-visitor.ts`,
+`packages/harness/src/integrator/target-contract.ts`,
+`packages/harness/src/integrator/index.ts`,
+`packages/harness/src/models/state.ts`,
+`packages/harness/src/runtime/standalone-instance.ts`,
+`packages/harness/src/storage/types.ts`,
+`packages/harness/src/storage/run-record-validation.ts`,
+`packages/harness/src/storage/execution.ts`,
+`packages/harness/src/storage/in-memory.ts`,
+`packages/harness/src/storage/sqlite.ts`,
+`packages/harness/src/storage/storage-contract.test.ts`,
+`packages/harness/src/storage/in-memory.test.ts`,
+`packages/harness/src/testing/harnessStorageContract.ts`,
+`packages/harness/src/testing/fakeHarnessStorage.ts`,
+`packages/harness/src/index.ts`,
+`packages/harness/test/definition-factories.test.ts`,
+`packages/harness/test/portable-definition.test.ts`,
+`packages/harness/test/hosted-runtime.test.ts`,
+`packages/harness/test/durable-session.test.ts`,
+`packages/harness/test/durable-runtime.test.ts`,
+`packages/harness/test/durable-steps.test.ts`,
+`packages/harness/test/failure/session-lifecycle.test.ts`,
+`packages/harness/test/local-durable-execution.test.ts`,
+`packages/harness/test/target-dispatcher.test.ts`,
+`packages/harness/test/workflow-call-replay.test.ts`,
+`packages/harness/test/public-api.test.ts`,
+`packages/harness/type-tests/composable-definitions.ts`,
+`packages/harness/type-tests/hosted-integration.ts`,
+`packages/harness/type-tests/removed-v3-api.ts`,
+`packages/harness-storage-postgres/migrations/001_storage.sql`,
+`packages/harness-storage-postgres/src/index.ts`,
+`packages/harness-storage-postgres/src/index.test.ts`, and
+`packages/harness-storage-postgres/test-live/postgres.test.ts`. It must run focused runtime
+and negative declaration tests, the complete Harness package tests/type tests/
+typecheck, the storage contract against in-memory, SQLite, and PostgreSQL
+implementations, public export and pack inventory, and clean-removal scans. It
+must implement the strict discriminated `CreateRunRequest`/`RunRecord` root
+input fields, canonical creation identity, durable retention, first-party
+adapter schema/read validation, terminal authorizer/re-read sequence, and
+privacy assertions frozen here and in specs 11, 22, and 32. Every scoped direct
+`createRun` fixture must supply the required validated input for an
+agent/workflow and must not add it to a child task; fixture compilation may not
+be recovered with an optional field, default, cast, or compatibility overload.
+The removed-v3 declaration fixture must change its positive
+`HarnessTargetInference` import into an exact clean-break negative while
+retaining `HarnessTargetInferenceFor` as the only public construction helper.
+It may not
+add Harness-owned or product-specific authorization policy: it implements only
+the exact required request authorizer seam and ordering frozen here. It also may
+not add remote transform execution, expose or materialize the inference witness,
+add a public graph, or add a compatibility overload.
 
 Addon and adapter implementation tickets align source, tests, examples, and
 public exports while every workspace package manifest, peer range,
@@ -6385,7 +6991,11 @@ output or interrupt content; `PersistedFinalRunEvent` status/error mapping and
 atomic finalization coherence without a duplicate output; terminal replay that
 reconstructs the typed public event from its validated envelope and terminal
 `RunRecord` without another append or an unsafe payload cast;
-strict `CreateRunRequest` for agent, workflow, and child-task records;
+strict discriminated `CreateRunRequest` for agent, workflow, and child-task
+records; required canonical `input` plus `validatedInput` for agent/workflow,
+forbidden validated-input key for child tasks, canonical identity comparison of
+both root inputs, and retained recursively frozen validated input after
+terminal checkpoint deletion and first-party adapter restart;
 storage-authored revision-one running state; recursively frozen authoritative
 returns; exact creation retry after later state changes; deterministic
 content-free conflict precedence; and durable same-run-id input mismatch before
@@ -6412,8 +7022,12 @@ event/decisions after restart, rejects changed same-event decisions, and marks
 a new event stale; a second sequential interruption whose pending checkpoint
 replays exactly its immediately consumed prior event and treats older events as
 stale; complete receipt revision/graph/session/root context plus required
-authoritative `RunRecord.input`; canonical pre-transform input comparison using a deliberately
-transforming input schema whose transform runs only on the initial invocation;
+authoritative `RunRecord.input` and `RunRecord.validatedInput`; canonical
+pre-transform input comparison using a deliberately transforming input schema
+whose transform runs only on the initial invocation; hosted terminal receipt
+authorization from the persisted validated input followed by exact immutable
+terminal record/revision/receipt re-read, with no lease/event/effect and
+`stale_continuation` on concurrent mutation;
 nondestructive optimistic validation followed by lease CAS and exact
 record/checkpoint byte revalidation, including initial/resume acquisition,
 stale revision or checkpoint rejection, exact pre-effect acquisition retry,
@@ -6462,7 +7076,7 @@ recommended example. Migration documentation contains only a concise source
 rewrite; no runtime migration code is added.
 
 Completion covers all Harness packages and examples, PURISTA Core, Hono and AI
-SDK UI adapters, CLI, `create-purista`, starter, Voyage consumers, banking
+SDK UI adapters, CLI, `create-purista`, starter, banking
 tutorial source, handbook, API reference, migration pages, public knowledge,
 canonical skills and mirrors, package-install verification, and scans for
 removed patterns.
@@ -6502,3 +7116,40 @@ removed patterns.
 14. Docker and Kubernetes sandbox runtime metadata is explicit, validated, and
     frozen. Neither adapter satisfies a runtime-bearing Skill until it truly
     implements and advertises `sandbox.readonly_mount`.
+15. A hosted integrator can synchronously visit the exact authenticated
+    compiled target closure once in deterministic order, distinguish explicit
+    roots from dependencies by contract identity, and bind private transport
+    routes through the trusted-host TCB without receiving graph, definition,
+    registry, or invocation authority. Empty graphs, invalid definitions or
+    targets, and callback failure follow the exact zero-callback/error or
+    stop-and-propagate behavior above.
+16. Hosted approval resume defaults to the complete current-caller identity;
+    explicit `stored-run-owner` is Core-authorized, requires complete current
+    and stored identity dimensions, and reopens only an existing valid
+    same-tenant approval run under its immutable stored identity. Trusted owner
+    scopes receive that identity, the host tool retains the current reviewer,
+    and no forbidden public or operational surface discloses the stored owner.
+17. Every direct-root, catalog-root, instance, and hosted declaration uses
+    `HarnessDefinition<Catalog, Name, Graph>` and preserves exact root,
+    dependency, name, contract, and requirement inference without an alternate
+    generic order.
+18. Local target contracts use schema-derived inference. A trusted branded
+    remote target can retain producer `validatedInput` inference beside a
+    validation-only wire schema, while no remote consumer executes or claims
+    the producer transform and every dispatcher helper remains `$infer`-based.
+    The one public `HarnessTargetInferenceFor` alias carries a hidden invariant
+    witness over the exact wire/validated/output/update-kind/interrupt-kinds
+    tuple, so structurally compatible wider, narrower, or `never` substitutions
+    fail while the symbol and runtime witness remain inaccessible.
+19. Hosted root requests use one exact fresh/resume union with `wireInput` on
+    both branches, fresh-only validated input, resume-only approval state, and
+    one required request-owned `authorize` gate. Fresh execution persists
+    canonical wire and validated inputs once on the authoritative run. Every
+    resume restores the deeply frozen retained `RunRecord.validatedInput`
+    without a transform; authorization occurs after identity, trace,
+    stored-run, wire, tenant, receipt/event, and decision-set validation but before a
+    lease, public event, or runtime effect; its exact error reaches Core, and a
+    successful asynchronous authorization still requires abort/deadline recheck
+    and an atomic continuation-revision compare-and-swap before execution. A
+    terminal receipt replay authorizes, exact re-reads its immutable terminal
+    run/revision/receipt, and returns without lease, event, effect, or transform.

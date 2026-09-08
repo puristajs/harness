@@ -417,11 +417,11 @@ follow_up_waves:
     status: approved
     human_approval:
       status: approved
-      approved_at: "2026-09-07"
+      approved_at: "2026-09-08"
       approver: "repo owner (active interactive Codex task)"
-      source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, and autonomous implementation. The content-bound third-pass independent hard gate subsequently passed with zero implementation-blocking decisions."
+      source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, autonomous implementation, the trusted-host integrator target visitor, the strict hosted fresh/resume and request-authorizer boundary, the explicit same-tenant stored-run-owner approval-resume mode, canonical HarnessDefinition generic order, invariant phantom inference, and nominal branded remote target contracts. Earlier content-bound review evidence remains historical; the repaired digest passed fresh independent review on 2026-09-09."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:71d2ff8ad62b47f3d20144ba8e7cfd5ff233f9b65bcd5d739854603d7d553338"
+      scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -462,11 +462,39 @@ follow_up_waves:
         - specs/README.md
         - ../purista/specs/20-agents/88-harness-first-service-integration.md
     summary:
-      updated_at: "2026-09-07"
-      purpose: "Approve the Harness v4 composition model and its PURISTA host boundary: standalone immutable tool, Skill, MCP server, agent, workflow, catalog, and Harness definitions; exact inferred runtime requirements; typed local and hosted target dispatch; standard streaming and approval behavior; and address-first PURISTA mounting."
+      updated_at: "2026-09-09"
+      purpose: "Specify the Harness v4 composition model and its PURISTA host boundary: standalone immutable definitions; canonical Catalog/Name/Graph inference; exact inferred runtime requirements; authenticated trusted-host closure visitation; strict hosted fresh/resume authorization; invariant local and nominal branded remote target inference; typed dispatch; standard streaming and approval behavior, including same-tenant stored-run-owner resume; and address-first PURISTA mounting."
       implementation_status: approved_for_planning_and_implementation
     precedence: "Spec 42 supersedes conflicting Harness construction, registration, module, agent, workflow, tool, Skill, runtime-instantiation, and host-binding APIs. PURISTA spec 88 is the authoritative companion projection of the same contracts into ServiceBuilder, EventBridge, Hono, CLI, export metadata, and testing."
     compatibility: "Clean break: no legacy aliases, deprecated overloads, wrappers, shims, dual behavior, migration runtime, or backward-compatible builder/module surface. Migration material contains source rewrites only."
+    amendment_evidence:
+      status: passed_after_independent_rereview
+      requested_at: "2026-09-08"
+      source_revision: "72462ce1d68ddc2f39efd6c6b7718f878759bbfe"
+      changed_spec: "specs/42-composable-definitions-and-catalogs.md"
+      changed_spec_digest: "sha256:74a1f21715cdd95cb4542d2d2d319c05e5f18e93904086c6109c21997aa9b38f"
+      companion_spec: "../purista/specs/20-agents/88-harness-first-service-integration.md"
+      companion_spec_digest: "sha256:1192a1f4bad919108680cd089149d3c2cc1051cf4d8953069cf738d889bfdef2"
+      scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
+      evidence: "The independently reviewed amendment closes the reported Harness and PURISTA companion blockers: canonical public inference with the full invariant schema witness; nominal local, remote, and queue authenticity; trusted closure visitation; strict hosted fresh/resume authorization and stored-owner privacy; durable validatedInput retention and terminal receipt re-read; generated validation-only remote contracts; and server-side AI SDK UI Message Stream v1 protocol projection without a client library. The exact source set contains no excluded product reference, compiled-graph exposure, or compatibility API."
+      repaired_findings:
+        count: 6
+        status: repaired_and_independently_reviewed
+        items:
+          - "All normative HarnessDefinition declarations use Catalog, Name, Graph and require exact direct-root/catalog inference proofs."
+          - "The visitor is a trusted-host TCB with full preflight, deterministic empty/success/callback-failure behavior, exact foreign-definition paths, and integrator-only exports."
+          - "Hosted roots use one strict wire-preserving fresh/resume union and a required Core-owned request authorizer after identity, trace, stored-run, wire, and same-tenant validation but before events or effects; stored identity remains restricted to trusted execution scopes."
+          - "Generated remote contracts use factory-authentic validation-only schema witnesses, exact address/digest/queue projection, and nominal Core branding without executing or claiming a producer transform."
+          - "Scratch TypeScript proof requires a hidden invariant target-inference witness over the exact wire, validated, output, update-kind, and interrupt-kinds tuple, exposed only through the Harness inference helper while runtime $infer remains the frozen empty phantom."
+          - "Scratch nominal-authenticity proof requires private type and runtime identity for local and hydrated remote contracts and queue capabilities; structural copies, forged brands, and handwritten inference cannot become authority."
+      deterministic_checks:
+        yaml_parse: passed
+        diff_whitespace: passed
+        targeted_ambiguity_scan: passed
+        scope_digest_recalculation: passed
+        generic_structured_spec_checker:
+          status: existing_flat_spec_exception
+          evidence: "The shared checker requires newer structured spec-root artifacts that this repository's approved flat spec set does not contain. The exact flat scope digest, YAML parse, ambiguity scan, zero-excluded-reference scan, and independent readiness review provide the applicable gates."
     independent_reviews:
       - review: "independent contract and architecture readiness review"
         status: passed
@@ -523,6 +551,13 @@ follow_up_waves:
         refinement_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
         blocking_findings_count: 0
         evidence: "PASS with zero implementation-blocking decisions after exact root/private hosted dispatch, caller-correlated event and workflow-model streaming authority, terminal/session/ancestry semantics, MCP header conformance, lifecycle and policy ownership, legacy API cleanup, raw standalone versus Core-wrapped aggregate outcomes, private closure and authoring-catalog handler visibility, the package-real integrator path, v4 evaluation/session usage, and exact PURISTA queue receipt typing were verified together."
+      - review: "independent hosted integrator, authorization, invariant inference, and nominal remote-contract amendment re-review"
+        status: passed
+        reviewed_at: "2026-09-09"
+        reviewer: "independent final Harness/PURISTA readiness reviewer"
+        scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
+        blocking_findings_count: 0
+        evidence: "PASS with zero blockers after review of public target inference and its full invariant schema witness, nominal remote and queue authenticity, strict fresh/resume authorization, durable validatedInput creation identity and terminal receipt re-read, trusted closure visitation, server-side protocol versus UI-client separation, and zero excluded product references."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -582,7 +617,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        completed_count: 16
+        completed_count: 17
         pending_count: 0
       contradiction_check:
         status: passed
@@ -624,8 +659,6 @@ guardrail_authoring_2026_08_26:
   precedence: Scoped spec38 supersedes authoring/config declarations only; spec37 runtime decision semantics remain authoritative.
   compatibility: No legacy aliases, compatibility or migrations.
   implementation_status: not_started
-  voyage: excluded
-
 declarative_registration_and_guardrails_binding_2026_08_30:
   status: superseded
   historical_status: approved

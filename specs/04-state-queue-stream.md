@@ -99,34 +99,52 @@ interface Message {
 type RunStatus = 'running' | 'waiting' | 'interrupted' |
   'succeeded' | 'failed' | 'cancelled'
 
-interface CreateRunRequest {
+type RunCreationBase = Readonly<{
   readonly id: string
   readonly sessionId: string
-  readonly kind: 'workflow' | 'agent' | 'child_task'
   readonly target: string
   readonly startedAt: string
-  readonly input: JsonValue
   readonly metadata?: Readonly<Record<string, JsonValue>>
-}
+}>
 
-interface RunRecord {
+type RunInputFields =
+  | Readonly<{
+      kind: 'workflow' | 'agent'
+      input: JsonValue              // canonical pre-transform wire input
+      validatedInput: JsonValue     // result of the one root schema transform
+    }>
+  | Readonly<{
+      kind: 'child_task'
+      input: JsonValue              // canonical child-call input
+      validatedInput?: never
+    }>
+
+type CreateRunRequest = RunCreationBase & RunInputFields
+
+type RunRecordBase = Readonly<{
   readonly id: string                      // run_<ulid>
   readonly sessionId: string
-  readonly kind: 'workflow' | 'agent' | 'child_task'
   readonly target: string                  // target agent/workflow id
   readonly startedAt: string
   readonly finishedAt?: string
   readonly status: RunStatus
   readonly revision: number                // positive storage CAS revision; starts at 1
-  readonly input: JsonValue                // canonical pre-transform wire input
   readonly output?: JsonValue
   readonly error?: SerializedError         // see 12-streaming
-  readonly approvalReceipt?: TerminalApprovalReceiptV1 // exact v4 shape in spec 32; terminal only
   readonly attempt?: number
   readonly workerId?: string
   readonly initialStepId?: string
   readonly metadata?: Readonly<Record<string, JsonValue>>
-}
+}>
+
+type RunRecord = RunRecordBase & (
+  | (Extract<RunInputFields, { kind: 'workflow' | 'agent' }> & Readonly<{
+      approvalReceipt?: TerminalApprovalReceiptV1 // exact v4 shape in spec 32; terminal only
+    }>)
+  | (Extract<RunInputFields, { kind: 'child_task' }> & Readonly<{
+      approvalReceipt?: never
+    }>)
+)
 
 interface PersistedRunEvent {
   id: string                      // ulid (sortable)
@@ -140,11 +158,21 @@ interface PersistedRunEvent {
 `CreateRunRequest` is the strict caller-owned creation projection. Storage adds
 `status:'running'` and `revision:1`; request values cannot supply revision,
 status, terminal result/error/receipt fields, attempt, worker, initial step, or
-lease data. `input` is required for every run kind. For root `agent` and `workflow` runs it
-is the authoritative canonical pre-transform wire input used by approval
-resume. A `child_task` retains the canonical child-call input required by spec
-28. `approvalReceipt` is permitted only on a terminal `agent` or `workflow`
+lease data. `input` is required for every run kind. For root `agent` and
+`workflow` runs it is the authoritative canonical pre-transform wire input
+used by approval resume, and `validatedInput` is the required canonical JSON
+result of the one initial schema transform. A `child_task` retains the
+canonical child-call input required by spec 28 and forbids an own
+`validatedInput` key, including when its value is `undefined`.
+`approvalReceipt` is permitted only on a terminal `agent` or `workflow`
 record; it is forbidden on `child_task` and every non-terminal record.
+Storage copies and recursively freezes both root inputs. They are written once
+at run creation, participate in spec 32's exact canonical creation identity,
+and remain unchanged through revision/status transitions and terminalization
+after checkpoints are deleted. `validatedInput` is trusted stored application
+data for the selected Harness execution path and authorizer; it is never
+exposed through public outcomes, errors, events, inspection, logs, metrics, or
+spans. No resume reconstructs it from a checkpoint or reruns a transform.
 `revision` starts at `1` when `createRun` wins and increases by exactly one for
 each successful acquisition, checkpoint mutation, resumable release/wait
 transition, or terminal mutation. Event and message appends do not change it.

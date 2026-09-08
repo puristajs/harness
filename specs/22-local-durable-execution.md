@@ -91,6 +91,13 @@ detects the incompatible v2 schema and throws
 to create a fresh development database. There is no silent migration or
 partial compatibility path.
 
+`harness_runs.validated_input_json` is non-null for `kind IN
+('agent','workflow')` and null for `kind='child_task'`, enforced by an exact
+SQLite check constraint together with the existing non-null `input_json`.
+The schema compatibility check requires this column and constraint. A database
+without them is incompatible unreleased state and is rejected; no read-time
+fallback derives validated input from a checkpoint or reruns a transform.
+
 ## 5. Storage semantics
 
 `SqliteHarnessStorage` implements the complete `HarnessStorage` contract:
@@ -130,11 +137,21 @@ active lease per run and one per session.
 fields with storage-authored `status='running'` and `revision=1`, or loads an
 existing row and compares the exact canonical creation identity in spec 32's
 fixed precedence. The exact retry returns the current authoritative row;
-another input, metadata value, target, session, kind, or start time returns the
-content-free `StateError{op:'createRun',reason:'run_conflict'}` without an
-update. In-memory storage performs the same copy, recursive freeze, comparison,
-and return under its session mutex. Neither adapter accepts a caller-authored
-status, revision, attempt, worker, terminal, checkpoint, or lease field.
+another wire input, validated input, metadata value, target, session, kind, or
+start time returns the content-free
+`StateError{op:'createRun',reason:'run_conflict'}` without an update. For
+`kind:'agent'|'workflow'`, the strict row and returned `RunRecord` contain both
+required immutable JSON columns: `input`, the canonical pre-transform wire
+value, and `validatedInput`, the result of the one initial schema transform.
+For `kind:'child_task'`, `input` is the canonical child-call value and an own
+`validatedInput` key is forbidden, including when its value is `undefined`.
+The SQLite schema declares and enforces this discriminant, includes
+`validatedInput` in the canonical create identity, retains it unchanged after
+terminalization and checkpoint deletion, and recursively freezes a copied
+value on read. In-memory storage performs the same strict shape validation,
+copy, recursive freeze, comparison, retention, and return under its session
+mutex. Neither adapter accepts a caller-authored status, revision, attempt,
+worker, terminal, checkpoint, or lease field.
 
 `SqliteHarnessStorage.acquireRun` executes in one immediate transaction. It
 loads the run, selected checkpoint, run lease, and session lease; applies spec
@@ -203,7 +220,7 @@ process cleanup remains retryable and cannot report successful detach early.
 Storage operations emit `harness.storage.*` spans and metrics. Workspace and
 sandbox operations keep their own operation families. Signals include safe
 operation, status, adapter, attempt, duration, and bounded counts. They never
-include prompts, messages, checkpoint payloads, wait content, file paths,
+include prompts, messages, wire or validated inputs, checkpoint payloads, wait content, file paths,
 command arguments/output, environment values, credentials, or reviewer data.
 
 Driver absence, incompatible schema, lease conflict, checkpoint conflict,
@@ -218,6 +235,9 @@ both, plus:
 - `harnessStorageContract` against fresh SQLite databases;
 - `durableWorkspaceContract` against temporary local roots;
 - process-style close/reopen and replay with the same run id;
+- agent/workflow `validatedInput` persistence across close/reopen and terminal
+  checkpoint deletion, strict creation-identity conflict, and child-task
+  rejection of that field;
 - attempt increment, stale lease rejection, expiry takeover, and session
   serialization;
 - wait/signal/retry recovery and signal deduplication;

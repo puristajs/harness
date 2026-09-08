@@ -9,8 +9,8 @@ after the v4 specification and independent-readiness digests are final.
 
 [Spec 42](./42-composable-definitions-and-catalogs.md) owns the implementation
 acceptance detail and ticket identifiers for Harness v4. The workspace plan
-orders that work across Harness, PURISTA, starter, create-purista, Voyage,
-examples, documentation, tutorials, CLI generation, skills, package
+orders that work across Harness, PURISTA, starter, create-purista, declared
+downstream consumers, examples, documentation, tutorials, CLI generation, skills, package
 verification, and coordinated publication gates.
 
 Implementation agents must use the current plan ticket assigned to them. They
@@ -33,7 +33,7 @@ The plan maintains these dependency boundaries:
 7. align provider and infrastructure addons;
 8. delete every replaced implementation and verify removal;
 9. align PURISTA Core, Hono, service export, queue, CLI, and testing;
-10. align starter, create-purista, Voyage, examples, handbook, API docs,
+10. align starter, create-purista, declared downstream consumers, examples, handbook, API docs,
     tutorials, public knowledge, and canonical skills;
 11. verify packed installs, coordinated versions, clean consumers, and release
     artifacts;

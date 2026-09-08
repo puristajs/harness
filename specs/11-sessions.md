@@ -67,27 +67,37 @@ For every `session.agents[id].run(input, opts?)`, `session.agents[id].stream(inp
    do not invoke that schema.
 4. **Establish the root run.** A new logical invocation calls the strict
    `storage.createRun({id,sessionId,kind,target,startedAt,input:
-   canonicalWireInput,metadata})`; storage authors `status:'running'` and
+   canonicalWireInput,validatedInput,metadata})`; storage authors `status:'running'` and
    `revision:1` and returns the authoritative frozen record. For a stable
    caller-owned durable run id, Harness first reads an existing record. When
    present it uses the stored immutable `startedAt` in the create request while
-   supplying the current invocation's session, kind, target, canonical input,
-   and exact metadata, so a different input or other identity field conflicts
+   supplying the current invocation's session, kind, target, canonical wire
+   input, validated input, and exact metadata, so a different value in either
+   input or another identity field conflicts
    before acquisition. Concurrent absent observations may propose different
    start times: after `run_conflict`, a caller may reread and retry with the
    winner's `startedAt` only after it has independently verified equality of
-   every other creation-identity member. It never adopts stored input or
-   metadata to turn a mismatch into a retry. An
-   approval resume first reads its existing `RunRecord` and root checkpoint,
+   every other creation-identity member, including the validated input produced
+   by the one initial schema transform. It never adopts stored input,
+   `validatedInput`, or metadata to turn a mismatch into a retry. An approval
+   resume first reads its existing `RunRecord` and, for a non-terminal run, its
+   root checkpoint,
    compares the supplied canonical wire input with the authoritative
    `RunRecord.input`, and restores the previously transformed input from the
-   strict continuation checkpoint. An input mismatch is
+   authoritative `RunRecord.validatedInput`. That stored value is required for
+   agent/workflow records, retained through terminalization, recursively
+   frozen before use, never reconstructed from a checkpoint, and never exposed
+   through a public outcome, error, event, inspection, log, metric, or span. An input mismatch is
    `ApprovalResumeError{reason:'input_mismatch'}`. It then completes every
    side-effect-free validation and submits spec 32's exact resume
    `AcquireRunRequest` with the observed record revision/status and checkpoint
    step/sequence. The returned lease record/checkpoint snapshot is the atomic
    post-CAS reread and must byte-match the optimistic identity/checkpoint before
-   execution; no second record is created. A terminal receipt replay does not acquire.
+   execution; no second record is created. A hosted terminal receipt replay
+   authorizes with the stored validated input and re-reads the exact immutable
+   terminal record/revision/receipt under specs 32 and 42, but does not acquire;
+   a non-hosted replay follows the same storage/receipt validation without the
+   host-only callback.
    Post-acquire validation failure releases the lease under spec 42. If
    establishment fails, Harness opens no span, emits no new event, and
    propagates the specified canonical or aggregate error.

@@ -131,15 +131,26 @@ The v4 leased-run mutation surface adds exactly these operations to
 `HarnessStorage`; they remain part of the same adapter and transaction domain:
 
 ```ts
-interface CreateRunRequest {
+type CreateRunRequestBase = Readonly<{
   readonly id: string
   readonly sessionId: string
-  readonly kind: 'agent' | 'workflow' | 'child_task'
   readonly target: string
   readonly startedAt: string
-  readonly input: JsonValue
   readonly metadata?: Readonly<Record<string, JsonValue>>
-}
+}>
+
+type CreateRunRequest = CreateRunRequestBase & (
+  | Readonly<{
+      kind: 'agent' | 'workflow'
+      input: JsonValue
+      validatedInput: JsonValue
+    }>
+  | Readonly<{
+      kind: 'child_task'
+      input: JsonValue
+      validatedInput?: never
+    }>
+)
 
 type RunAcquisitionMode = 'initial' | 'resume'
 
@@ -249,7 +260,12 @@ creation fields shown above. It excludes `revision`, `status`, `finishedAt`,
 `output`, `error`, `approvalReceipt`, `attempt`, `workerId`, `initialStepId`,
 lease identity, and every other storage-authored field. `id`, `sessionId`,
 `kind`, `target`, and `startedAt` use their existing validators;
-`startedAt` is ISO 8601 UTC. `input` must be canonicalizable JSON. `metadata`,
+`startedAt` is ISO 8601 UTC. `input` must be canonicalizable JSON. An agent or
+workflow request requires `validatedInput`, also canonicalizable JSON, and it
+is the exact result produced by the root target's one initial schema transform.
+A child-task request forbids an own `validatedInput` key, including when its
+value is `undefined`; its existing `input` is already the canonical child-call
+value. `metadata`,
 when present, is a plain JSON object whose full nested value is immutable; its
 absence is distinct from an explicitly supplied empty object. Unknown keys,
 undefined values, non-JSON prototypes, and non-finite values are rejected before
@@ -258,11 +274,13 @@ storage mutation with the same fixed
 
 `createRun` atomically creates
 `{...request,status:'running',revision:1}` and returns a recursively frozen
-authoritative `RunRecord`. Storage canonicalizes and copies `input` and
-`metadata`; it never retains a caller-mutable object. The immutable creation
+authoritative `RunRecord`. Storage canonicalizes and copies `input`, a present
+`validatedInput`, and `metadata`; it never retains a caller-mutable object. The immutable creation
 identity is the canonical tuple
 `['harness-run-create-v1',id,sessionId,kind,target,startedAt,input,
-metadata-is-present,metadata ?? null]`. JSON values use spec 42's canonical
+validated-input-is-present,validatedInput ?? null,
+metadata-is-present,metadata ?? null]`. The validated-input presence bit is
+always true for an agent/workflow and false for a child task. JSON values use spec 42's canonical
 encoder, so object-key insertion order is irrelevant and array order remains
 significant.
 
@@ -274,12 +292,15 @@ any record, event, message, checkpoint, wait, or lease. A mismatch rejects with
 fixed message `Run creation conflicts with an existing logical run.` and exact
 metadata `StateError{op:'createRun',reason:'run_conflict'}`. Comparison
 precedence is request shape/identifier validation, then existing-record
-`sessionId`, `kind`, `target`, `startedAt`, canonical input bytes, metadata
-presence, and canonical metadata bytes. The run id is the lookup key and the
+`sessionId`, `kind`, `target`, `startedAt`, canonical input bytes,
+validated-input presence, canonical validated-input bytes when present,
+metadata presence, and canonical metadata bytes. The run id is the lookup key and the
 first member of the identity tuple. Errors never expose the differing field,
-input, metadata, canonical bytes, target content, or stored record.
+wire or validated input, metadata, canonical bytes, target content, or stored
+record.
 
-These rules apply identically to `agent`, `workflow`, and `child_task` records.
+These rules apply to all three run kinds with the exact discriminated
+validated-input shape above.
 For a caller-owned durable `runId`, Harness checks or creates this record before
 building an acquisition request. Reusing that run id with different agent or
 workflow input, target, session, or immutable metadata fails at `createRun`
@@ -289,7 +310,7 @@ metadata through the same fence.
 
 `AcquireRunRequest` replaces `DurableRunStart` as the sole `acquireRun` input,
 and the lease has exactly the result fields above; the former duplicated
-`lease.start` payload is removed. Immutable target/session/input metadata lives
+`lease.start` payload is removed. Immutable target/session/input/validated-input metadata lives
 only on the authoritative `RunRecord` created before acquisition.
 
 `RunRecord.revision` is a positive safe integer. The creation winner receives
@@ -371,18 +392,31 @@ and fail without mutation when its identity is stale.
 
 Both `FinalizeRunPatch` variants and their nested values are strict and reject
 unknown keys. `finishedAt` is valid ISO 8601 UTC. The authoritative v4
-`RunRecord` adds exactly
-`readonly approvalReceipt?: TerminalApprovalReceiptV1` to its existing fields;
+`RunRecord` uses the exact discriminated input fields below and adds
+`readonly approvalReceipt?: TerminalApprovalReceiptV1`;
 it is absent on every non-terminal record and on a terminal record that did not
 consume an approval resume. Storage readers validate that field together with
 the status/output/error discriminant before returning a record.
 `RunRecord.input` is required for `kind:'agent'|'workflow'` and is the exact
-canonical pre-transform JSON wire input; it never stores the schema-transformed
-value. The existing spec 28 `child_task` input remains required as its canonical
-child-call input, but `approvalReceipt` is forbidden for `kind:'child_task'`.
+canonical pre-transform JSON wire input. The same records require
+`RunRecord.validatedInput`, the exact JSON result of the root schema transform
+performed once before creation. Storage treats both as immutable creation
+identity, validates and copies both on every read, and retains both unchanged
+through every status/revision transition and terminalization after all
+checkpoints are deleted. The existing spec 28 `child_task` input remains
+required as its canonical child-call input, while an own `validatedInput` and
+`approvalReceipt` are forbidden for `kind:'child_task'`, including an
+`undefined` validated-input value.
 The terminal receipt intentionally references root input by residing on
 the same immutable run record rather than duplicating content or a second
 digest. Its `rootTarget` must equal the record's `(kind,target)`.
+
+`RunRecord.validatedInput` is trusted stored application data. It is available
+only to the Harness execution runtime, storage adapters, memory/sandbox scopes,
+portable-tool context, and the authenticated nested Harness-to-host boundary
+allowed by spec 42. It is never exposed in a public run outcome, error,
+inspection result, event, log, metric, or span. A storage adapter must encrypt,
+retain, and protect it with the same controls as other persisted input data.
 
 `replaceCheckpoint` requires the active unexpired lease and the exact existing
 `(runId,sessionId,stepId,expectedSequence)`. The replacement keeps that run,
@@ -436,8 +470,26 @@ there is no receipt table or checkpoint copy after terminalization.
 
 The receipt is part of the terminal patch's byte-equivalence test. After
 checkpoint deletion or process restart, the same `(resumeEventId, normalized
-decisions)` returns the already committed terminal result from the authoritative
-`RunRecord` without reopening execution. Reusing that `resumeEventId` with a
+decisions)` may return the already committed terminal result from the
+authoritative `RunRecord` without reopening execution only after spec 42's
+canonical resume validation. A hosted resume additionally validates current and
+stored identity, deeply freezes the record's required `validatedInput`, and
+calls the request's `HostedTargetAuthorizer` with that restored input. It never
+invokes the root schema or transform. The callback error propagates unchanged.
+An operational storage read failure is sanitized as the canonical internal
+storage error.
+
+After the hosted asynchronous authorizer resolves, Harness re-reads the authoritative
+terminal record and exact-compares its immutable creation identity, including
+`input` and `validatedInput`, its revision, terminal status/output-or-error,
+and complete `approvalReceipt` with the values authorized. Only an exact match
+returns the terminal result. A missing or changed record is
+`ApprovalResumeError{reason:'stale_continuation'}` and returns no result.
+This path acquires no lease, executes no model/tool/handler, emits no event, and
+performs no schema transform or storage mutation. Concurrent byte-equivalent
+terminal replay requests may each authorize and then return the same immutable
+result after their own successful re-read; an authorizer therefore must not
+assume exactly-once side effects. Reusing that `resumeEventId` with a
 different normalized decision set is `ApprovalResumeError{reason:'event_conflict'}`.
 Any new event id for the consumed interrupt is
 `ApprovalResumeError{reason:'stale_continuation'}`. Failed and cancelled runs
@@ -575,9 +627,12 @@ SQLite schema contains `harness_sessions`, `harness_messages`, `harness_runs`,
 contain `harness_durable_runs` or `harness_context_checkpoints`.
 
 SQLite is local/single-host only. It advertises persistence but not
-multi-instance coordination. In-memory storage advertises neither. A future
-production adapter must pass the same contract suite and advertise its exact
-distributed guarantees.
+multi-instance coordination. In-memory storage advertises neither. Every
+first-party storage implementation, including the PostgreSQL adapter, must
+persist the exact discriminated run-input fields, apply the same creation
+identity and terminal retention rules, pass the same contract suite, and
+advertise its exact distributed guarantees. A third-party production adapter
+has the same obligations.
 
 ## 9. PURISTA integration
 
@@ -633,7 +688,11 @@ Implementation is incomplete until all of the following pass:
    It proves strict create requests for all three run kinds, rejection of every
    storage-authored request field, revision-one running frozen returns, exact
    retry returning the current authoritative record, deterministic content-free
-   conflict precedence, and repeated durable agent/workflow input mismatch
+   conflict precedence, required and recursively frozen agent/workflow
+   `validatedInput`, child-task rejection of that own key, creation-identity
+   conflicts on either wire or validated input, retention of both root inputs
+   through terminalization/checkpoint deletion/adapter close and reopen, and
+   repeated durable agent/workflow input mismatch
    before acquisition. It also proves initial and resume acquisition from exact optimistic record
    revision/status and checkpoint step/sequence; deterministic acquisition-id
    response-loss replay; changed-id/request, stale revision/checkpoint, and
@@ -641,7 +700,12 @@ Implementation is incomplete until all of the following pass:
    terminal approval-receipt validation; atomic receipt plus
    terminal patch plus terminal event plus checkpoint deletion plus lease
    release, exact retry, byte-different receipt conflict, required canonical
-   root input, and receipt revision/graph/session/root-target validation.
+   root wire and validated input, and receipt revision/graph/session/root-target
+   validation. Hosted runtime tests prove terminal replay authorizes from the
+   deeply frozen stored validated input, never transforms or acquires, re-reads
+   and exact-compares the terminal record/revision/receipt after authorization,
+   rejects a concurrent change as `stale_continuation`, propagates the exact
+   authorizer error, and exposes neither stored input through public surfaces.
 3. SQLite rebuild tests prove history, one run record, attempt increments,
    checkpoint replay, wait suspension/signal/resume, lease takeover, and
    idempotent close.

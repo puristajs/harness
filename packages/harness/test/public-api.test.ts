@@ -269,6 +269,7 @@ const EXPECTED_INTEGRATOR_EXPORTS = [
   'defineHostTool',
   'hostToolOwner',
   'instantiateHostedHarness',
+  'isHarnessTargetContract',
   'isHostOwnerToken',
 ]
 

@@ -25,6 +25,7 @@ import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telem
 import { bindHostTool, type AgentExecutableBinding, type ToolInvocationContext } from '../tools/bindings.js'
 import { canonicalJson } from '../runtime/canonical-json.js'
 import { abortError } from '../runtime/abort.js'
+import { isHarnessTargetContract } from './target-contract.js'
 import {
 	createHarnessChildTargetInterruption, attachHarnessChildTargetHostFrame,
 	type HarnessCheckpointStep,
@@ -472,6 +473,9 @@ function validateHostedRequest(value: unknown, contracts: HarnessContracts): Hos
 	const unknown = Reflect.ownKeys(value).filter(key => typeof key !== 'string' || !['target', 'input', 'invokeOptions', 'hostInvocation'].includes(key)).map(String).sort(codePointCompare)[0]
 	if (unknown !== undefined) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request', field: unknown } })
 	const target = value['target'] as AnyHarnessTargetContract
+	if (!isHarnessTargetContract(target)) throw new ValidationError('Hosted target is not part of this Harness graph.', {
+		where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
+	})
 	const identity = getDefinitionIdentity(target)
 	const known = identity === undefined ? undefined : [...Object.values(contracts.agents), ...Object.values(contracts.workflows)]
 		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate === target)
@@ -514,6 +518,9 @@ function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract
 		.filter(key => typeof key !== 'string' || !requestKeys.includes(key)).map(String).sort(codePointCompare)[0]
 	if (unknownRequestField !== undefined) invalid(unknownRequestField)
 	const target = request['target'] as AnyHarnessTargetContract
+	if (!isHarnessTargetContract(target)) throw new ValidationError('Hosted target is not part of this Harness graph.', {
+		where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
+	})
 	const identity = getDefinitionIdentity(target)
 	const known = identity === undefined ? undefined : [...Object.values(graph.agents), ...Object.values(graph.workflows)]
 		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate.contract === target)

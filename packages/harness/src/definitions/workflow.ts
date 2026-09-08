@@ -15,6 +15,7 @@ import {
 	createDefinitionIdentity,
 	freezeDefinition,
 	getDefinitionIdentity,
+	registerHarnessTargetContract,
 } from './identity.js'
 import type {
 	WorkflowAgentMap,
@@ -131,7 +132,9 @@ export function defineWorkflow<
 		contract,
 	}
 	attachDefinitionInference(value)
-	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
+	const definition = freezeDefinition(value, identity)
+	registerHarnessTargetContract(definition, contract, identity)
+	return definition as unknown as WorkflowDefinition<Id, ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
 }
 
 function copyTools<T extends WorkflowToolDefinitions>(tools: T | undefined, workflowId: string): T | undefined {

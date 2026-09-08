@@ -299,6 +299,17 @@ describe('hosted Harness runtime', () => {
 				parentWorkflowId: root.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
 			}, hostInvocation: {} } as never))
 			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'unknown_hosted_target' } } })
+		const reflectiveCopy = {}
+		for (const key of Reflect.ownKeys(dependency.contract)) {
+			Object.defineProperty(reflectiveCopy, key, Object.getOwnPropertyDescriptor(dependency.contract, key)!)
+		}
+		Object.freeze(reflectiveCopy)
+		await expect(instance.streamDispatched({ delivery: 'fresh', target: reflectiveCopy,
+			wireInput: 'question', input: 'question', invocation: {
+				sessionId: 'reflective-session', invocationId: 'reflective-run', rootRunId: 'root-run', parentRunId: 'root-run',
+				parentWorkflowId: root.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+			}, hostInvocation: {} } as never))
+			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'unknown_hosted_target' } } })
 		await instance.close()
 	})
 

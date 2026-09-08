@@ -16,6 +16,7 @@ import {
 	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
+	registerHarnessTargetContract,
 } from './identity.js'
 import type {
 	AgentDefinition,
@@ -194,7 +195,9 @@ export function defineAgent<
 		contract,
 	}
 	attachDefinitionInference(value)
-	return freezeDefinition(value, identity) as unknown as AgentDefinition<
+	const definition = freezeDefinition(value, identity)
+	registerHarnessTargetContract(definition, contract, identity)
+	return definition as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
 		ResolvedUpdates<Output, ResponseMode>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox
 	>

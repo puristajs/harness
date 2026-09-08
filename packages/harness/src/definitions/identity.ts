@@ -26,6 +26,12 @@ export interface DefinitionIdentity {
 
 const runtimeDefinitionIdentity = Symbol('@purista/harness/definition-identity')
 const runtimeDefinitionInference = Object.freeze({})
+const harnessTargetDefinitions = new WeakMap<object, Readonly<{
+	definition: object
+	kind: 'agent' | 'workflow'
+	id: string
+	token: object
+}>>()
 
 /** @internal Creates a unique immutable identity for one definition value. */
 export function createDefinitionIdentity(
@@ -75,6 +81,44 @@ export function sameDefinitionIdentity(left: unknown, right: unknown): boolean {
 	const leftIdentity = getDefinitionIdentity(left)
 	const rightIdentity = getDefinitionIdentity(right)
 	return leftIdentity !== undefined && rightIdentity !== undefined && leftIdentity.token === rightIdentity.token
+}
+
+/** @internal Records the package-owned definition/contract relationship used at integrator boundaries. */
+export function registerHarnessTargetContract(
+	definition: object,
+	contract: object,
+	identity: DefinitionIdentity,
+): void {
+	if ((identity.kind !== 'agent' && identity.kind !== 'workflow')
+		|| getDefinitionIdentity(definition)?.token !== identity.token
+		|| getDefinitionIdentity(contract)?.token !== identity.token
+		|| (definition as { readonly contract?: unknown }).contract !== contract) {
+		throw new HarnessConfigError('Harness target contract registration is invalid.', {
+			reason: 'foreign_definition', path: 'integrator.target',
+		})
+	}
+	harnessTargetDefinitions.set(contract, Object.freeze({
+		definition,
+		kind: identity.kind,
+		id: identity.id,
+		token: identity.token,
+	}))
+}
+
+/** @internal Verifies the unobservable package-owned definition/contract relationship. */
+export function hasHarnessTargetContractIdentity(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false
+	const relationship = harnessTargetDefinitions.get(value)
+	if (relationship === undefined) return false
+	const definitionIdentity = getDefinitionIdentity(relationship.definition)
+	const contractIdentity = getDefinitionIdentity(value)
+	return definitionIdentity?.token === relationship.token
+		&& contractIdentity?.token === relationship.token
+		&& definitionIdentity.kind === relationship.kind
+		&& contractIdentity.kind === relationship.kind
+		&& definitionIdentity.id === relationship.id
+		&& contractIdentity.id === relationship.id
+		&& (relationship.definition as { readonly contract?: unknown }).contract === value
 }
 
 /** @internal Freezes a library-owned value after associating its identity. */

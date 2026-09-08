@@ -4,9 +4,11 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import {
-	createHostOwnerToken, defineHostTool, instantiateHostedHarness,
+	createHostOwnerToken, defineHostTool, instantiateHostedHarness, isHarnessTargetContract,
 	type HarnessHostBindings, type HostedHarnessInstanceConfig, type HostedInvokeOptions,
 } from '../src/integrator/index.js'
+import * as rootExports from '../src/index.js'
+import type { AnyHarnessTargetContract } from '../src/ports/target-dispatcher.js'
 import type { ModelProvider } from '../src/ports/model-provider.js'
 import type { HarnessTargetDispatcher } from '../src/ports/target-dispatcher.js'
 import type { HarnessTargetDispatchStream } from '../src/ports/target-dispatcher.js'
@@ -18,6 +20,17 @@ import type { TelemetryShim } from '../src/telemetry/index.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
 type Expect<T extends true> = T
+
+declare let possibleTarget: unknown
+if (isHarnessTargetContract(possibleTarget)) {
+	type _PredicateNarrowing = Expect<Equal<typeof possibleTarget, AnyHarnessTargetContract>>
+	const predicateNarrowing: _PredicateNarrowing = true
+	void predicateNarrowing
+}
+// @ts-expect-error target authenticity is intentionally absent from the root package
+rootExports.isHarnessTargetContract
+// @ts-expect-error target authenticity is intentionally absent from the root package
+rootExports.assertHarnessTargetContract
 
 type HostContext = Readonly<{ tenantId: string }>
 const owner = createHostOwnerToken<HostContext>()

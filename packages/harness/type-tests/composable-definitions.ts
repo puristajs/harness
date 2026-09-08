@@ -304,6 +304,36 @@ catalog.tools.searchKnowledge
 // @ts-expect-error catalogs accept definitions rather than structural string references
 defineCatalog('invalidCatalog', { agents: ['classify'] })
 
+const emptyLeafCatalog = defineCatalog('emptyLeafCatalog', {})
+const toolsOnlyCatalog = defineCatalog('toolsOnlyCatalog', { tools: [lookup] })
+const skillsOnlyCatalog = defineCatalog('skillsOnlyCatalog', { skills: [skill] })
+const mcpOnlyCatalog = defineCatalog('mcpOnlyCatalog', { mcpServers: [mcp] })
+const combinedLeafCatalog = defineCatalog('combinedLeafCatalog', { tools: [lookup], skills: [skill], mcpServers: [mcp] })
+void emptyLeafCatalog
+void toolsOnlyCatalog
+void skillsOnlyCatalog
+void mcpOnlyCatalog
+void combinedLeafCatalog
+// @ts-expect-error empty catalogs cannot supply executable Harness roots
+defineHarness({ name: 'emptyLeafConsumer' }).use(emptyLeafCatalog)
+// @ts-expect-error tools-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'toolsOnlyConsumer' }).use(toolsOnlyCatalog)
+// @ts-expect-error skills-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'skillsOnlyConsumer' }).use(skillsOnlyCatalog)
+// @ts-expect-error MCP-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'mcpOnlyConsumer' }).use(mcpOnlyCatalog)
+// @ts-expect-error combined leaf-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'combinedLeafConsumer' }).use(combinedLeafCatalog)
+
+const agentRootCatalog = defineCatalog('agentRootCatalog', { tools: [lookup], agents: [structuredAgent] })
+const workflowRootCatalog = defineCatalog('workflowRootCatalog', { skills: [skill], workflows: [workflow] })
+const agentRootHarness = defineHarness({ name: 'agentRootConsumer' }).use(agentRootCatalog)
+const workflowRootHarness = defineHarness({ name: 'workflowRootConsumer' }).use(workflowRootCatalog)
+type _AgentRootCatalogInference = Expect<Equal<keyof typeof agentRootHarness.$infer.agents, 'classify'>>
+type _AgentRootCatalogHasNoWorkflow = Expect<Equal<keyof typeof agentRootHarness.$infer.workflows, never>>
+type _WorkflowRootCatalogInference = Expect<Equal<keyof typeof workflowRootHarness.$infer.workflows, 'resolveCase'>>
+type _WorkflowRootCatalogHasNoAgent = Expect<Equal<keyof typeof workflowRootHarness.$infer.agents, never>>
+
 const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgent).addWorkflow(workflow)
 const usedHarness = defineHarness({ name: 'support' }).use(catalog)
 const reusedCatalogHarness = usedHarness.use(catalog)

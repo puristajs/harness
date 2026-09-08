@@ -63,6 +63,8 @@ type WithAgent<Catalog extends HarnessCatalogView, Agent extends AnyAgentDefinit
 type WithWorkflow<Catalog extends HarnessCatalogView, Workflow extends AnyWorkflowDefinition> = MergeCatalogViews<
 	Catalog, CatalogViewForRoots<undefined, undefined, undefined, undefined, readonly [Workflow]>
 >
+type ExecutableCatalogDefinition<Id extends string, Catalog extends HarnessCatalogView> =
+	[keyof Catalog['agents'] | keyof Catalog['workflows']] extends [never] ? never : HarnessCatalogDefinition<Id, Catalog>
 
 type EmptyCatalogView = HarnessCatalogView<
 	Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
@@ -114,7 +116,9 @@ export type HarnessDefinition<Catalog extends HarnessCatalogView, Name extends s
 	getInstance<const AdditionalGroups extends readonly string[] = readonly []>(
 		config: HarnessInstanceConfig<Catalog['requirements'], AdditionalGroups>,
 	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
-	use<Other extends HarnessCatalogView>(catalog: HarnessCatalogDefinition<string, Other>): HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name>
+	use<Other extends HarnessCatalogView>(
+		catalog: ExecutableCatalogDefinition<string, Other>,
+	): HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name>
 	addAgent<Agent extends AnyAgentDefinition>(agent: Agent): HarnessDefinition<WithAgent<Catalog, Agent>, Name>
 	addWorkflow<Workflow extends AnyWorkflowDefinition>(workflow: Workflow): HarnessDefinition<WithWorkflow<Catalog, Workflow>, Name>
 } & DefinitionReference<'harness', Name> & HarnessDefinitionBrand<Name>

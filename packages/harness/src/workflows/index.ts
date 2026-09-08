@@ -63,6 +63,10 @@ export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefi
 	readonly allocateManagedEvent?: (event: UncorrelatedExecutionEvent) => Promise<ManagedEventAllocation>
 	/** @internal Appends an already allocated event without changing its identity. */
 	readonly appendManagedEvent?: (allocation: ManagedEventAllocation) => Promise<void>
+	/** @internal Releases a managed event reservation after a publication storage failure. */
+	readonly abortManagedEvent?: (allocation: ManagedEventAllocation, phase: 'marker' | 'append' | 'ack') => void
+	/** @internal Releases a managed event reservation after durable acknowledgement. */
+	readonly completeManagedEvent?: (allocation: ManagedEventAllocation) => void
 	/** @internal Delivers an already appended event to the live stream. */
 	readonly deliverManagedEvent?: (allocation: ManagedEventAllocation) => void
 	readonly relayChildEvent?: (event: ExecutionEvent) => Promise<void>
@@ -657,27 +661,40 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				managedEventAllocations.set(allocationKey, allocation)
 				marker = Object.freeze({ schemaVersion: 1, kind: 'workflow_call_publication', callId: record.callId,
 					operation: record.operation, target: record.target, eventIndex, eventDigest, allocation })
-				if (options.checkpoint !== undefined) await options.checkpoint.commit(stepId, managedJson(marker),
-					Object.freeze({ checkpointKind: 'workflow_call_publication', schemaVersion: 1 }))
+				if (options.checkpoint !== undefined) try {
+					await options.checkpoint.commit(stepId, managedJson(marker), Object.freeze({ checkpointKind: 'workflow_call_publication', schemaVersion: 1 }))
+				} catch (error) {
+					managedEventAllocations.delete(allocationKey)
+					options.abortManagedEvent?.(allocation, 'marker')
+					throw error
+				}
 			} else {
 				marker = parseWorkflowPublicationCheckpoint(persisted.output)
 				assertPublicationCheckpoint(persisted, stepId, options.checkpoint?.rootInput, marker, record, event, eventIndex, eventDigest)
 			}
-			const ackStepId = `${stepId}:ack`
-			const acknowledged = await options.checkpoint?.load(ackStepId)
-			const inMemoryAcknowledged = options.checkpoint === undefined && deliveredManagedEventIds.has(marker.allocation.event.eventId)
-			if (acknowledged === undefined && !inMemoryAcknowledged) {
-				await options.appendManagedEvent(marker.allocation)
-				if (options.checkpoint !== undefined) {
-					const ack: WorkflowCallPublicationAckCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call_publication_ack',
-						callId: record.callId, operation: record.operation, target: record.target, caller: record.caller, correlation: record.correlation,
-						eventIndex, eventId: marker.allocation.event.eventId, eventDigest })
-					await options.checkpoint.commit(ackStepId, managedJson(ack),
-						Object.freeze({ checkpointKind: 'workflow_call_publication_ack', schemaVersion: 1 }))
-				}
-			} else if (acknowledged !== undefined) assertPublicationAckCheckpoint(acknowledged, ackStepId, options.checkpoint?.rootInput,
-				record, eventIndex, marker.allocation.event.eventId, eventDigest)
-			if (acknowledged === undefined && !deliveredManagedEventIds.has(marker.allocation.event.eventId)) {
+			let failurePhase: 'append' | 'ack' = 'append'
+			try {
+				const ackStepId = `${stepId}:ack`
+				const acknowledged = await options.checkpoint?.load(ackStepId)
+				const inMemoryAcknowledged = options.checkpoint === undefined && deliveredManagedEventIds.has(marker.allocation.event.eventId)
+				if (acknowledged === undefined && !inMemoryAcknowledged) {
+					await options.appendManagedEvent(marker.allocation)
+					failurePhase = 'ack'
+					if (options.checkpoint !== undefined) {
+						const ack: WorkflowCallPublicationAckCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call_publication_ack',
+							callId: record.callId, operation: record.operation, target: record.target, caller: record.caller, correlation: record.correlation,
+							eventIndex, eventId: marker.allocation.event.eventId, eventDigest })
+						await options.checkpoint.commit(ackStepId, managedJson(ack),
+							Object.freeze({ checkpointKind: 'workflow_call_publication_ack', schemaVersion: 1 }))
+					}
+				} else if (acknowledged !== undefined) assertPublicationAckCheckpoint(acknowledged, ackStepId, options.checkpoint?.rootInput,
+					record, eventIndex, marker.allocation.event.eventId, eventDigest)
+			} catch (error) {
+				options.abortManagedEvent?.(marker.allocation, failurePhase)
+				throw error
+			}
+			options.completeManagedEvent?.(marker.allocation)
+			if (!deliveredManagedEventIds.has(marker.allocation.event.eventId)) {
 				options.deliverManagedEvent(marker.allocation)
 				deliveredManagedEventIds.add(marker.allocation.event.eventId)
 			}

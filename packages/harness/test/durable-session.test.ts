@@ -4,6 +4,7 @@ import { z } from 'zod'
 
 import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness } from '../src/definitions/harness.js'
+import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
@@ -28,6 +29,152 @@ function acquisitionId(request: Omit<AcquireRunRequest, 'acquisitionId'>): strin
 }
 
 describe('v4 durable session execution', () => {
+	it.each([
+		{ boundary: 'marker' as const, persisted: false }, { boundary: 'marker' as const, persisted: true },
+		{ boundary: 'append' as const, persisted: false }, { boundary: 'append' as const, persisted: true },
+		{ boundary: 'ack' as const, persisted: false }, { boundary: 'ack' as const, persisted: true },
+	])(
+		'recovers an instantiated workflow after a $boundary publication failure (persisted=$persisted) without repeating its effect',
+		async ({ boundary, persisted }) => {
+			const storage = persistentStorage()
+			const sentinel = new Error(`${boundary} storage failed${persisted ? ' after persistence' : ''}`)
+			let fail = true
+			let effects = 0
+			let terminalEventId: string | undefined
+			let terminalSequence: number | undefined
+			const originalCommit = storage.commitCheckpoint.bind(storage)
+			storage.commitCheckpoint = async checkpoint => {
+				const output = checkpoint.output as { eventIndex?: number; allocation?: { event?: { eventId?: string; sequence?: number } }; eventId?: string } | undefined
+				const terminalPublication = output?.eventIndex === 2
+				if (terminalPublication && checkpoint.metadata?.['checkpointKind'] === 'workflow_call_publication') {
+					terminalEventId = output.allocation?.event?.eventId
+					terminalSequence = output.allocation?.event?.sequence
+				}
+				const failsHere = fail && terminalPublication
+					&& checkpoint.metadata?.['checkpointKind'] === `workflow_call_publication${boundary === 'ack' ? '_ack' : ''}`
+					&& boundary !== 'append'
+				if (failsHere && !persisted) { fail = false; throw sentinel }
+				await originalCommit(checkpoint)
+				if (failsHere && persisted) {
+					fail = false
+					throw sentinel
+				}
+			}
+			const originalAppend = storage.appendEvents.bind(storage)
+			storage.appendEvents = async (runId, events) => {
+				const failsHere = fail && boundary === 'append' && events.some(event => event.type === 'tool.finished')
+				if (failsHere && !persisted) { fail = false; throw sentinel }
+				await originalAppend(runId, events)
+				if (failsHere && persisted) {
+					fail = false
+					throw sentinel
+				}
+			}
+			const tool = defineTool('recoverableTool', {
+				description: 'Complete one recoverable effect.', input: z.string(), output: z.string(),
+				async handler(_context, input) { effects += 1; return input },
+			})
+			const workflow = defineWorkflow('recoverableWorkflow', {
+				input: z.string(), output: z.string(), durable: true, tools: [tool],
+				async handler({ input, tools }) { return tools.recoverableTool.run(input, { callId: 'stable-call' }) },
+			})
+			const suffix = `${boundary}-${persisted ? 'after' : 'before'}`
+			const harnessName = `recoverable${boundary[0]!.toUpperCase()}${boundary.slice(1)}${persisted ? 'After' : 'Before'}`
+			const instance = await defineHarness({ name: harnessName, revision: 'v1' }).addWorkflow(workflow).getInstance({ storage })
+			const session = await instance.getSession(`recoverable-${suffix}`)
+			const invoke = { durable: { runId: `recoverable-${suffix}-run` } } as const
+			const firstLive: string[] = []
+			const first = async () => {
+				for await (const event of session.workflows.recoverableWorkflow.stream('value', invoke)) firstLive.push(event.type)
+			}
+			await expect(first()).rejects.toBe(sentinel)
+			expect(effects).toBe(1)
+			expect(await storage.getRun(invoke.durable.runId)).toMatchObject({ status: 'interrupted' })
+			expect(await storage.loadCheckpoint(invoke.durable.runId, 'workflow:call:stable-call')).toMatchObject({
+				output: { kind: 'workflow_call', callId: 'stable-call', outcome: { status: 'completed', output: 'value' } },
+			})
+			expect((await storage.listEvents(invoke.durable.runId)).filter(event => event.type === 'run.finished')).toHaveLength(0)
+			expect(firstLive.filter(type => type === 'run.started')).toHaveLength(1)
+			expect(firstLive.filter(type => type === 'tool.input.available')).toHaveLength(1)
+			expect(firstLive.filter(type => type === 'tool.started')).toHaveLength(1)
+			expect(firstLive.filter(type => type === 'tool.finished')).toHaveLength(0)
+			expect(terminalEventId).toMatch(/^event_/)
+			expect(terminalSequence).toBe(4)
+
+			const recoveredLive: string[] = []
+			for await (const event of session.workflows.recoverableWorkflow.stream('value', invoke)) recoveredLive.push(event.type)
+			expect(effects).toBe(1)
+			for (const type of ['run.started', 'tool.input.available', 'tool.started', 'tool.finished', 'run.finished']) {
+				expect(recoveredLive.filter(candidate => candidate === type), type).toHaveLength(1)
+			}
+			const durableEvents = await storage.listEvents(invoke.durable.runId)
+			expect(durableEvents.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5])
+			for (const type of ['run.started', 'tool.input.available', 'tool.started', 'tool.finished', 'run.finished']) {
+				expect(durableEvents.filter(event => event.type === type), type).toHaveLength(1)
+			}
+			expect(durableEvents.find(event => event.type === 'tool.finished')).toMatchObject({ id: terminalEventId, sequence: terminalSequence })
+			expect(await storage.getRun(invoke.durable.runId)).toMatchObject({ status: 'succeeded', output: 'value' })
+			expect(await storage.loadCheckpoint(invoke.durable.runId)).toBeUndefined()
+			await session.destroy()
+			await instance.close()
+		},
+	)
+
+	it('reconstructs an acquired running workflow from its durable maximum sequence without a second start', async () => {
+		const storage = persistentStorage()
+		const runId = 'already-running-run'
+		await storage.createRun({ id: runId, sessionId: 'already-running-session', kind: 'workflow', target: 'alreadyRunning',
+			startedAt: '2026-09-08T00:00:00.000Z', input: 'value' })
+		const startId = `event_${createHash('sha256').update(canonicalJson(['harness.event.v1', runId, 1, 'run.started'])).digest('hex')}`
+		await storage.appendEvents(runId, [{ id: startId, sequence: 1, runId,
+			at: '2026-09-08T00:00:00.000Z', type: 'run.started', payload: {} }])
+		let effects = 0
+		const workflow = defineWorkflow('alreadyRunning', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input }) { effects += 1; return input } })
+		const instance = await defineHarness({ name: 'alreadyRunningHarness', revision: 'v1' }).addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('already-running-session')
+		const live: string[] = []
+		for await (const event of session.workflows.alreadyRunning.stream('value', { durable: { runId } })) live.push(event.type)
+		expect(effects).toBe(1)
+		expect(live).toEqual(['run.started', 'run.finished'])
+		expect((await storage.listEvents(runId)).map(event => [event.sequence, event.type])).toEqual([
+			[1, 'run.started'], [2, 'run.finished'],
+		])
+		await session.destroy()
+		await instance.close()
+	})
+
+	it('serializes concurrent managed publications and terminal finalization through one run sequence', async () => {
+		const storage = persistentStorage()
+		const first = defineTool('firstConcurrentTool', { description: 'First.', input: z.string(), output: z.string(),
+			async handler(_context, input) { await Promise.resolve(); return input } })
+		const second = defineTool('secondConcurrentTool', { description: 'Second.', input: z.string(), output: z.string(),
+			async handler(_context, input) { await Promise.resolve(); return input } })
+		const workflow = defineWorkflow('concurrentPublications', {
+			input: z.string(), output: z.string(), durable: true, tools: [first, second],
+			async handler({ input, tools }) {
+				const values = await Promise.all([
+					tools.firstConcurrentTool.run(input, { callId: 'first-call' }),
+					tools.secondConcurrentTool.run(input, { callId: 'second-call' }),
+				])
+				return values.join(':')
+			},
+		})
+		const instance = await defineHarness({ name: 'concurrentPublicationHarness', revision: 'v1' }).addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('concurrent-publication-session')
+		await expect(session.workflows.concurrentPublications.run('value', { durable: { runId: 'concurrent-publication-run' } }))
+			.resolves.toMatchObject({ status: 'completed', output: 'value:value' })
+		const events = await storage.listEvents('concurrent-publication-run')
+		expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+		expect(new Set(events.map(event => event.id))).toHaveLength(events.length)
+		expect(events.filter(event => event.type === 'tool.input.available')).toHaveLength(2)
+		expect(events.filter(event => event.type === 'tool.started')).toHaveLength(2)
+		expect(events.filter(event => event.type === 'tool.finished')).toHaveLength(2)
+		expect(events.at(-1)?.type).toBe('run.finished')
+		await session.destroy()
+		await instance.close()
+	})
+
   it('acquires before the workflow effect and finalizes output and terminal event atomically', async () => {
     const storage = persistentStorage()
     let observedStatus: string | undefined

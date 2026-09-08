@@ -242,10 +242,13 @@ describe('v4 workflow direct-call replay', () => {
 			if (failureAt === 'append' && fail && events[0]?.type === 'tool.finished') { fail = false; throw new Error('real append failed') }
 			await append(runId, events)
 		}
-		let effects = 0; let sequence = 0; const live: string[] = []; const stored = new Map<string, RunCheckpoint>()
+		let effects = 0; let sequence = 0; const liveStreams: string[][] = []; const stored = new Map<string, RunCheckpoint>()
 		const tool = defineTool('stableTool', { description: 'Stable.', input: z.string(), output: z.string(), async handler(_context, input) { effects += 1; return input } })
 		const workflow = defineWorkflow('stableFlow', { input: z.string(), output: z.string(), durable: true, tools: [tool], async handler({ input }) { return input } })
-		const build = () => createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { stableTool: bindPortableTool(tool) },
+		const build = () => {
+			const live: string[] = []
+			liveStreams.push(live)
+			return createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { stableTool: bindPortableTool(tool) },
 			toolContext: { caller: { kind: 'workflow', workflowId: 'stableFlow' }, harnessName: 'harness', telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
 			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'run', rootRunId: 'run', invocationId: 'invocation', depth: 0, remainingDepth: 1,
@@ -263,8 +266,9 @@ describe('v4 workflow direct-call replay', () => {
 			},
 			appendManagedEvent: async allocation => storage.appendEvents('run', [{ id: allocation.event.eventId, sequence: allocation.event.sequence,
 				runId: 'run', at: allocation.persistedAt, type: allocation.event.type, payload: {} }]),
-			deliverManagedEvent: allocation => { live.push(allocation.event.type); if (allocation.event.type === 'tool.finished') publicationOrder.push(`live:${allocation.event.eventId}`) },
-		})
+				deliverManagedEvent: allocation => { live.push(allocation.event.type); if (allocation.event.type === 'tool.finished') publicationOrder.push(`live:${allocation.event.eventId}`) },
+			})
+		}
 		const first = build()
 		await expect(first.tools.stableTool.run('ok', { callId: 'stable' })).rejects.toThrow(failureAt === 'append' ? 'real append failed' : 'ack failed')
 		await expect(build().tools.stableTool.run('ok', { callId: 'stable' })).resolves.toBe('ok')
@@ -275,7 +279,11 @@ describe('v4 workflow direct-call replay', () => {
 		expect(publicationOrder[0]).toBe(`allocate:${terminalId}`)
 		expect(publicationOrder.at(-1)).toBe(`live:${terminalId}`)
 		expect(await storage.listEvents('run')).toHaveLength(3)
-		expect(live).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
+		expect(liveStreams.slice(0, 3)).toEqual([
+			['tool.input.available', 'tool.started'],
+			['tool.input.available', 'tool.started', 'tool.finished'],
+			['tool.input.available', 'tool.started', 'tool.finished'],
+		])
 		const publicationKey = [...stored.keys()].find(key => key.startsWith('workflow:publication:') && !key.endsWith(':ack'))!
 		const publication = stored.get(publicationKey)!
 		const output = structuredClone(publication.output) as any
@@ -283,7 +291,7 @@ describe('v4 workflow direct-call replay', () => {
 		stored.set(publicationKey, { ...publication, output })
 		await expect(build().tools.stableTool.run('ok', { callId: 'stable' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'workflow_output' } })
 		expect(effects).toBe(1)
-		expect(live).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
+		expect(liveStreams.at(-1)).toEqual([])
 	})
 
 	it('memoizes ephemeral failures and retries only missing post-effect publication', async () => {

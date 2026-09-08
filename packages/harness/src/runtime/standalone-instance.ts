@@ -676,39 +676,78 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				}
 			}
 		}
-		const priorEvents = resumingExternalWait ? await storage.listEvents(runId) : undefined
+		const reconstructingActive = resume === undefined && existing !== undefined
+			&& (run.status === 'running' || run.status === 'waiting' || run.status === 'interrupted')
+		const priorEvents = resumingExternalWait || reconstructingActive ? await storage.listEvents(runId) : undefined
+		const hasPersistedStart = priorEvents?.some(event => event.sequence === 1 && event.type === 'run.started') === true
 		let sequence = pendingCheckpoint === undefined
 			? Math.max(0, ...(priorEvents?.map(event => event.sequence) ?? []))
 			: pendingCheckpoint.value.nextEventSequence - 1
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
+		const recoverablePublicationErrors = new Set<unknown>()
+		let eventSequenceTail = Promise.resolve()
+		let reservedManagedEvent: Readonly<{ eventId: string; release: () => void }> | undefined
+		const acquireEventSequence = async (): Promise<() => void> => {
+			const prior = eventSequenceTail
+			let release!: () => void
+			eventSequenceTail = new Promise<void>(resolve => { release = resolve })
+			await prior
+			return release
+		}
 		const allocateManagedEvent = async (body: UncorrelatedExecutionEvent) => {
+			const release = await acquireEventSequence()
 			sequence += 1
 			const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
+			reservedManagedEvent = Object.freeze({ eventId: event.eventId, release })
 			return Object.freeze({ event, persistedAt: 'at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString() })
 		}
 		const appendManagedEvent = async (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>) => {
-			sequence = Math.max(sequence, allocation.event.sequence)
+			if (reservedManagedEvent?.eventId !== allocation.event.eventId) {
+				const release = await acquireEventSequence()
+				if (allocation.event.sequence > sequence + 1) {
+					release()
+					throw new StateError('Managed workflow event sequence contains a gap.', {
+						op: 'appendEvents', reason: 'event_sequence_gap',
+					})
+				}
+				sequence = Math.max(sequence, allocation.event.sequence)
+				reservedManagedEvent = Object.freeze({ eventId: allocation.event.eventId, release })
+			}
 			const persisted: PersistedRunEvent = Object.freeze({ id: allocation.event.eventId, sequence: allocation.event.sequence, runId,
 				at: allocation.persistedAt, type: allocation.event.type, payload: privacySafeEventPayload(allocation.event) })
 			try { await storage.appendEvents(runId, [persisted]) } catch (error) {
+				recoverablePublicationErrors.add(error)
 				metrics.counter('harness.events.persist_errors', 1, { harness: options.name })
 				logger.error('Failed to persist run events.', { harness: options.name, run_id: runId, error: serializeError(error) })
 				throw error
 			}
 		}
+		const abortManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>, _phase: 'marker' | 'append' | 'ack') => {
+			if (reservedManagedEvent?.eventId !== allocation.event.eventId) return
+			reservedManagedEvent.release()
+			reservedManagedEvent = undefined
+		}
+		const completeManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>) => {
+			if (reservedManagedEvent?.eventId !== allocation.event.eventId) return
+			reservedManagedEvent.release()
+			reservedManagedEvent = undefined
+		}
 		const deliverManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>) => { queue.push(allocation.event) }
 		const persistAndQueue = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
-			sequence += 1
-			const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
-			const existing = event.type === 'model.completed'
-				? (await storage.listEvents(runId)).find(candidate => candidate.id === event.eventId)
-				: undefined
-			const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
-				at: existing?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
-				payload: privacySafeEventPayload(event) })
-			await storage.appendEvents(runId, [persisted])
-			queue.push(event)
+			const release = await acquireEventSequence()
+			try {
+				sequence += 1
+				const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
+				const existingEvent = event.type === 'model.completed'
+					? (await storage.listEvents(runId)).find(candidate => candidate.id === event.eventId)
+					: undefined
+				const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
+					at: existingEvent?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
+					payload: privacySafeEventPayload(event) })
+				await storage.appendEvents(runId, [persisted])
+				queue.push(event)
+			} finally { release() }
 		}
 		const emit = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
 			if (queue.wouldOverflow(1)) {
@@ -960,7 +999,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			if (replay !== undefined) await workspaceAttempt!.committed(replay)
 			resumeCheckpointSequence = nextSequence
 		}
-		if (pendingCheckpoint === undefined && !resumingExternalWait) await emit({ type: 'run.started', at: new Date().toISOString() })
+		if (pendingCheckpoint === undefined && !resumingExternalWait && !hasPersistedStart) await emit({ type: 'run.started', at: new Date().toISOString() })
 		else {
 			const started = (priorEvents ?? await storage.listEvents(runId)).find(event => event.sequence === 1)
 			if (!started) throw new ApprovalResumeError('invalid_checkpoint')
@@ -1188,12 +1227,22 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				if (lease === undefined && (definition.durable === true || approvalReachable)) throw new InternalError('Workflow recovery lease is unavailable.')
 				const workflowCheckpoint: WorkflowChildCheckpointAccess | undefined = lease === undefined ? undefined : Object.freeze({
 					rootInput: persistedInput,
-					load: (stepId: string) => storage.loadCheckpoint(runId, stepId),
+					load: async (stepId: string) => {
+						try { return await storage.loadCheckpoint(runId, stepId) } catch (error) {
+							if (stepId.startsWith('workflow:publication:')) recoverablePublicationErrors.add(error)
+							throw error
+						}
+					},
 					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'workflow_call_publication' | 'workflow_call_publication_ack' | 'host_nested_target'; schemaVersion: 1 }>) => {
 						const activeLease = lease!
 						const checkpoint = Object.freeze({ runId, sessionId: invocation.sessionId, leaseId: activeLease.leaseId, workerId: activeLease.workerId,
 							stepId, input: persistedInput, attempt: activeLease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
-						await storage.commitCheckpoint(checkpoint)
+						try { await storage.commitCheckpoint(checkpoint) } catch (error) {
+							if (metadata.checkpointKind === 'workflow_call_publication' || metadata.checkpointKind === 'workflow_call_publication_ack') {
+								recoverablePublicationErrors.add(error)
+							}
+							throw error
+						}
 						lease = Object.freeze({ ...activeLease, checkpoints: Object.freeze([...(activeLease.checkpoints ?? []), checkpoint]) })
 					},
 				})
@@ -1287,7 +1336,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					depth: invocation.depth, remainingDepth: invocation.remainingDepth, defaults: options.defaults,
 					...(invocation.identity === undefined ? {} : { identity: invocation.identity }), ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
 					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), storage, durable: definition.durable === true, emit,
-					allocateManagedEvent, appendManagedEvent, deliverManagedEvent, relayChildEvent,
+					allocateManagedEvent, appendManagedEvent, abortManagedEvent, completeManagedEvent, deliverManagedEvent, relayChildEvent,
 					approval: options.graph.approval.agents, taskRegistry: session.taskRegistry,
 					prepareChildLaunch: request => prepareChildSandboxLaunch(definition, invocation.sessionId, runId, request),
 					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },
@@ -1313,12 +1362,15 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const outcome = Object.freeze({ status: 'completed' as const, runId, output })
 			const at = new Date().toISOString()
 			if (lease) {
-				const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
-				await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
+				const release = await acquireEventSequence()
+				try {
+					const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
+					await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
 						patch: { status: 'succeeded', finishedAt: at, output, ...(approvalReceipt === undefined ? {} : { approvalReceipt }) }, terminalEvent: persistedFinalEvent(terminal), checkpointDisposition: 'delete-all' })
-				const authoritative = await requireAuthoritativeTerminalRun(storage, runId, 'succeeded')
-				sequence += 1
-				queue.push(restoreTerminalEvent(persistedFinalEvent(terminal), authoritative))
+					const authoritative = await requireAuthoritativeTerminalRun(storage, runId, 'succeeded')
+					sequence += 1
+					queue.push(restoreTerminalEvent(persistedFinalEvent(terminal), authoritative))
+				} finally { release() }
 			} else {
 				await storage.finishRun(runId, { status: 'succeeded', finishedAt: at, output })
 				const authoritative = await requireAuthoritativeTerminalRun(storage, runId, 'succeeded')
@@ -1327,7 +1379,18 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			await workspaceAttempt?.settle('succeeded')
 			await updateSessionRunCount(session)
 		} catch (error) {
-			if (error instanceof ExternalWaitPendingError) {
+			if (recoverablePublicationErrors.has(error)) {
+				recordStandaloneSpanFailure(targetSpan, error)
+				recordStandaloneSpanFailure(sessionSpan, error)
+				if (lease) {
+					try { await lease.release() } catch (releaseError) {
+						logger.error('Failed to release a workflow run after recoverable event publication failure.', {
+							harness: options.name, run_id: runId, error: serializeError(releaseError),
+						})
+					}
+				}
+				queue.fail(error)
+			} else if (error instanceof ExternalWaitPendingError) {
 				if (!lease) await storage.finishRun(runId, { status: 'waiting' })
 				await workspaceAttempt?.suspend()
 				await emit({ type: 'run.finished', at: new Date().toISOString(), outcome: Object.freeze({
@@ -1408,12 +1471,15 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const at = new Date().toISOString()
 				const outcome = Object.freeze({ status, runId, error: serialized })
 				if (lease) {
-					const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
-					await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
-						patch: { status, finishedAt: at, error: serialized, ...(approvalReceipt === undefined ? {} : { approvalReceipt }) }, terminalEvent: persistedFinalEvent(terminal), checkpointDisposition: 'delete-all' })
-					const authoritative = await requireAuthoritativeTerminalRun(storage, runId, status)
-					sequence += 1
-					queue.push(restoreTerminalEvent(persistedFinalEvent(terminal), authoritative))
+					const release = await acquireEventSequence()
+					try {
+						const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
+						await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
+							patch: { status, finishedAt: at, error: serialized, ...(approvalReceipt === undefined ? {} : { approvalReceipt }) }, terminalEvent: persistedFinalEvent(terminal), checkpointDisposition: 'delete-all' })
+						const authoritative = await requireAuthoritativeTerminalRun(storage, runId, status)
+						sequence += 1
+						queue.push(restoreTerminalEvent(persistedFinalEvent(terminal), authoritative))
+					} finally { release() }
 				} else {
 					await storage.finishRun(runId, { status, finishedAt: at, error: serialized })
 					const authoritative = await requireAuthoritativeTerminalRun(storage, runId, status)

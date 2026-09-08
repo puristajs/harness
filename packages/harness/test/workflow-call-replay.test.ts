@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 
 import { defineAgent } from '../src/definitions/agent.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
@@ -10,6 +11,7 @@ import { isHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 import type { RunCheckpoint } from '../src/storage/execution.js'
 import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
 import { bindPortableTool } from '../src/tools/bindings.js'
+import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 
 function stream(events: readonly ExecutionEvent[]): HarnessTargetDispatchStream<any> {
 	const authored = events.map((event, index) => ({ eventId: `event-${index + 1}`, sequence: index + 1, ...event })) as ExecutionEvent[]
@@ -33,14 +35,14 @@ function runtime(open: HarnessTargetDispatcher['open'], checkpoint?: { load(step
 
 describe('v4 workflow direct-call replay', () => {
 	const modelWorkflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
-	function modelRuntime(handle: unknown, options: { commit?: (stepId: string, output: any, metadata: any) => Promise<void>; emit?: (event: any) => Promise<void> } = {}) {
+	function modelRuntime(handle: unknown, options: { load?: (stepId: string) => Promise<RunCheckpoint | undefined>; commit?: (stepId: string, output: any, metadata: any) => Promise<void>; emit?: (event: any) => Promise<void> } = {}) {
 		return createWorkflowExecutionRuntime({ workflow: modelWorkflow, models: { scoped: handle } as never,
 			toolContext: { caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness' } as never,
 			targetDispatcher: { open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			identity: { tenantId: 'tenant' }, trace: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 },
-			...(options.commit === undefined ? {} : { checkpoint: { rootInput: 'root', load: async () => undefined, commit: options.commit } }),
+			...(options.commit === undefined && options.load === undefined ? {} : { checkpoint: { rootInput: 'root', load: options.load ?? (async () => undefined), commit: options.commit ?? (async () => {}) } }),
 			...(options.emit === undefined ? {} : { emit: options.emit }) })
 	}
 
@@ -194,7 +196,7 @@ describe('v4 workflow direct-call replay', () => {
 				targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 				sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 				defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', load: async () => undefined,
-					commit: async () => { commits += 1; if (failureAt === 'checkpoint') throw sentinel } },
+					commit: async stepId => { if (stepId.startsWith('workflow:call:')) commits += 1; if (failureAt === 'checkpoint' && stepId.startsWith('workflow:call:')) throw sentinel } },
 				emit: async event => { if (failureAt === 'event' && event.type === 'tool.finished') throw sentinel },
 			})
 			await expect(value.tools.persistenceTool.run('ok', { callId: failureAt })).rejects.toBe(sentinel)
@@ -230,6 +232,118 @@ describe('v4 workflow direct-call replay', () => {
 		expect(events).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
 	})
 
+	it.each(['append', 'ack'] as const)('preallocates a stable event id and recovers an actual storage %s failure without repeating the effect', async failureAt => {
+		const storage = new InMemoryHarnessStorage()
+		await storage.createRun({ id: 'run', sessionId: 'session', kind: 'workflow', target: 'stableFlow', startedAt: '2026-01-01T00:00:00.000Z', input: 'root' })
+		const append = storage.appendEvents.bind(storage)
+		let fail = true; const appendedIds: string[] = []; const publicationOrder: string[] = []
+		storage.appendEvents = async (runId, events) => {
+			if (events[0]?.type === 'tool.finished') { appendedIds.push(events[0].id); publicationOrder.push(`append:${events[0].id}`) }
+			if (failureAt === 'append' && fail && events[0]?.type === 'tool.finished') { fail = false; throw new Error('real append failed') }
+			await append(runId, events)
+		}
+		let effects = 0; let sequence = 0; const live: string[] = []; const stored = new Map<string, RunCheckpoint>()
+		const tool = defineTool('stableTool', { description: 'Stable.', input: z.string(), output: z.string(), async handler(_context, input) { effects += 1; return input } })
+		const workflow = defineWorkflow('stableFlow', { input: z.string(), output: z.string(), durable: true, tools: [tool], async handler({ input }) { return input } })
+		const build = () => createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { stableTool: bindPortableTool(tool) },
+			toolContext: { caller: { kind: 'workflow', workflowId: 'stableFlow' }, harnessName: 'harness', telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
+			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			sessionId: 'session', runId: 'run', rootRunId: 'run', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', load: async id => stored.get(id),
+				commit: async (stepId, output, metadata) => {
+					if (metadata.checkpointKind === 'workflow_call_publication' && (output as any).eventIndex === 2) publicationOrder.push(`allocate:${(output as any).allocation.event.eventId}`)
+					if (metadata.checkpointKind === 'workflow_call_publication_ack' && (output as any).eventIndex === 2) publicationOrder.push(`ack:${(output as any).eventId}`)
+					if (failureAt === 'ack' && fail && metadata.checkpointKind === 'workflow_call_publication_ack' && stepId.includes(':ack') && (output as any).eventIndex === 2) { fail = false; throw new Error('ack failed') }
+					stored.set(stepId, { runId: 'run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: stored.size + 1, output, metadata })
+				} },
+			allocateManagedEvent: async event => {
+				sequence += 1
+				const eventId = `event_${createHash('sha256').update(JSON.stringify(['harness.event.v1', 'run', sequence, event.type])).digest('hex')}`
+				return { event: { ...event, eventId, sequence }, persistedAt: '2026-01-01T00:00:00.000Z' } as never
+			},
+			appendManagedEvent: async allocation => storage.appendEvents('run', [{ id: allocation.event.eventId, sequence: allocation.event.sequence,
+				runId: 'run', at: allocation.persistedAt, type: allocation.event.type, payload: {} }]),
+			deliverManagedEvent: allocation => { live.push(allocation.event.type); if (allocation.event.type === 'tool.finished') publicationOrder.push(`live:${allocation.event.eventId}`) },
+		})
+		const first = build()
+		await expect(first.tools.stableTool.run('ok', { callId: 'stable' })).rejects.toThrow(failureAt === 'append' ? 'real append failed' : 'ack failed')
+		await expect(build().tools.stableTool.run('ok', { callId: 'stable' })).resolves.toBe('ok')
+		await expect(build().tools.stableTool.run('ok', { callId: 'stable' })).resolves.toBe('ok')
+		expect(effects).toBe(1)
+		expect(new Set(appendedIds)).toHaveLength(1)
+		const terminalId = appendedIds[0]!
+		expect(publicationOrder[0]).toBe(`allocate:${terminalId}`)
+		expect(publicationOrder.at(-1)).toBe(`live:${terminalId}`)
+		expect(await storage.listEvents('run')).toHaveLength(3)
+		expect(live).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
+		const publicationKey = [...stored.keys()].find(key => key.startsWith('workflow:publication:') && !key.endsWith(':ack'))!
+		const publication = stored.get(publicationKey)!
+		const output = structuredClone(publication.output) as any
+		output.allocation.event.callId = 'forged'
+		stored.set(publicationKey, { ...publication, output })
+		await expect(build().tools.stableTool.run('ok', { callId: 'stable' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'workflow_output' } })
+		expect(effects).toBe(1)
+		expect(live).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
+	})
+
+	it('memoizes ephemeral failures and retries only missing post-effect publication', async () => {
+		let toolEffects = 0; const toolEvents: string[] = []
+		const tool = defineTool('ephemeralTool', { description: 'Fails.', input: z.string(), output: z.string(), async handler() { toolEffects += 1; throw new Error('effect failed') } })
+		const workflow = defineWorkflow('ephemeralFlow', { input: z.string(), output: z.string(), tools: [tool], async handler({ input }) { return input } })
+		const value = createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { ephemeralTool: bindPortableTool(tool) },
+			toolContext: { caller: { kind: 'workflow', workflowId: 'ephemeralFlow' }, harnessName: 'harness', telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
+			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { toolEvents.push(event.type) } })
+		await expect(value.tools.ephemeralTool.run('x', { callId: 'failure' })).rejects.toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED' })
+		await expect(value.tools.ephemeralTool.run('x', { callId: 'failure' })).rejects.toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED' })
+		expect(toolEffects).toBe(1)
+		expect(toolEvents).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
+
+		let modelEffects = 0; let failPublication = true; const modelEvents: string[] = []
+		const model = (modelRuntime({ async text() { modelEffects += 1; return { content: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' } } }, {
+			emit: async event => { if (failPublication) { failPublication = false; throw new Error('publish failed') }; modelEvents.push(event.type) },
+		}).models as any).scoped
+		await expect(model.text({ messages: [] }, { callId: 'ephemeral-publish' })).rejects.toThrow('publish failed')
+		await expect(model.text({ messages: [] }, { callId: 'ephemeral-publish' })).resolves.toMatchObject({ content: 'ok' })
+		expect(modelEffects).toBe(1)
+		expect(modelEvents).toEqual(['model.completed'])
+		let failedModelEffects = 0
+		const failedModel = (modelRuntime({ async text() { failedModelEffects += 1; throw new Error('provider failed') } }).models as any).scoped
+		await expect(failedModel.text({ messages: [] }, { callId: 'ephemeral-model-failure' })).rejects.toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED' })
+		await expect(failedModel.text({ messages: [] }, { callId: 'ephemeral-model-failure' })).rejects.toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED' })
+		expect(failedModelEffects).toBe(1)
+	})
+
+	it('rejects corrupt managed model caller, correlation, identity, result, and stream checkpoints before publication or effect', async () => {
+		const checkpoints = new Map<string, RunCheckpoint>(); let effects = 0
+		const chunks = [{ kind: 'delta', text: 'ok' }, { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }]
+		const seed = (modelRuntime({ async *textStream() { effects += 1; yield* chunks } }, {
+			load: async id => checkpoints.get(id), commit: async (stepId, output, metadata) => checkpoints.set(stepId, { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: checkpoints.size + 1, output, metadata }),
+		}).models as any).scoped
+		for await (const _chunk of seed.textStream({ messages: [] }, { callId: 'corrupt-stream' })) void _chunk
+		const original = checkpoints.get('workflow:call:corrupt-stream')!
+		const cases = [
+			{ ...structuredClone(original.output), caller: {} },
+			{ ...structuredClone(original.output), caller: { kind: 'workflow', workflowId: 'modelFlow', agentId: 'forged' } },
+			{ ...structuredClone(original.output), correlation: { runId: 'other', rootRunId: 'root-run', workflowInvocationId: 'workflow-invocation' } },
+			{ ...structuredClone(original.output), callId: 'other' },
+			{ ...structuredClone(original.output), outcome: { status: 'completed', output: 5 } },
+			{ ...structuredClone(original.output), outcome: { status: 'completed', output: [{ kind: 'delta', text: 'missing finish' }] } },
+		]
+		for (const [index, output] of cases.entries()) {
+			const emitted: unknown[] = []
+			const corrupt = (modelRuntime({ async *textStream() { effects += 1; yield* chunks } }, {
+				load: async id => id === 'workflow:call:corrupt-stream' ? { ...original, output } : checkpoints.get(id),
+				emit: async event => { emitted.push(event) },
+			}).models as any).scoped
+			const consume = async () => { for await (const _chunk of corrupt.textStream({ messages: [] }, { callId: 'corrupt-stream' })) void _chunk }
+			await expect(consume(), `corrupt case ${index}`).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { where: 'workflow_output' } })
+			expect(emitted).toEqual([])
+		}
+		expect(effects).toBe(1)
+	})
+
 	it('persists and replays every scoped model operation with exact workflow caller context', async () => {
 		const artifact = { id: 'artifact', url: 'https://example.test/artifact', mediaType: 'application/octet-stream' }
 		const cases = [
@@ -254,7 +368,7 @@ describe('v4 workflow direct-call replay', () => {
 				async *textStream(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; value(null); yield { kind: 'delta', text: 'ok' }; yield { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' } },
 				async object(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ object: { ok: true }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }) },
 				async *objectStream(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; value(null); yield { kind: 'partial', partial: { ok: true } }; yield { kind: 'finish', object: { ok: true }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' } },
-				async embed(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ embeddings: [{ index: 0, vector: [1] }] }) },
+				async embed(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ embeddings: [{ index: 0, vector: [1] }], usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } }) },
 				async rerank(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ results: [{ id: 'one', index: 0, score: 1 }] }) },
 				async image(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ artifacts: [artifact] }) },
 				async speech(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ artifact }) },

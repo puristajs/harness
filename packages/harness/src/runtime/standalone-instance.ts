@@ -682,6 +682,22 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			: pendingCheckpoint.value.nextEventSequence - 1
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
+		const allocateManagedEvent = async (body: UncorrelatedExecutionEvent) => {
+			sequence += 1
+			const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
+			return Object.freeze({ event, persistedAt: 'at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString() })
+		}
+		const appendManagedEvent = async (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>) => {
+			sequence = Math.max(sequence, allocation.event.sequence)
+			const persisted: PersistedRunEvent = Object.freeze({ id: allocation.event.eventId, sequence: allocation.event.sequence, runId,
+				at: allocation.persistedAt, type: allocation.event.type, payload: privacySafeEventPayload(allocation.event) })
+			try { await storage.appendEvents(runId, [persisted]) } catch (error) {
+				metrics.counter('harness.events.persist_errors', 1, { harness: options.name })
+				logger.error('Failed to persist run events.', { harness: options.name, run_id: runId, error: serializeError(error) })
+				throw error
+			}
+		}
+		const deliverManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>) => { queue.push(allocation.event) }
 		const persistAndQueue = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
 			sequence += 1
 			const event = correlatedEvent(runId, sequence, body, parentEventRunId, parentInvocationId)
@@ -691,10 +707,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
 				at: existing?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
 				payload: privacySafeEventPayload(event) })
-			try { await storage.appendEvents(runId, [persisted]) } catch (error) {
-				metrics.counter('harness.events.persist_errors', 1, { harness: options.name })
-				logger.error('Failed to persist run events.', { harness: options.name, run_id: runId, error: serializeError(error) })
-			}
+			await storage.appendEvents(runId, [persisted])
 			queue.push(event)
 		}
 		const emit = async (body: AgentPipelineEvent | UncorrelatedExecutionEvent | RootEventBody) => {
@@ -1176,7 +1189,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const workflowCheckpoint: WorkflowChildCheckpointAccess | undefined = lease === undefined ? undefined : Object.freeze({
 					rootInput: persistedInput,
 					load: (stepId: string) => storage.loadCheckpoint(runId, stepId),
-					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'workflow_call_publication' | 'host_nested_target'; schemaVersion: 1 }>) => {
+					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'workflow_call_publication' | 'workflow_call_publication_ack' | 'host_nested_target'; schemaVersion: 1 }>) => {
 						const activeLease = lease!
 						const checkpoint = Object.freeze({ runId, sessionId: invocation.sessionId, leaseId: activeLease.leaseId, workerId: activeLease.workerId,
 							stepId, input: persistedInput, attempt: activeLease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
@@ -1208,8 +1221,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 									rootRunId: invocation.rootRunId, callerRunId: runId, hostToolInvocationId: frame.hostToolInvocationId,
 									childRunId: frame.activeNestedCall.childRunId, childInvocationId: frame.activeNestedCall.childInvocationId,
 								}) })
+							if (!isJsonValue(hostStored)) throw new InternalError('Resumed host nested-target checkpoint is not JSON.')
 							await workflowCheckpoint.commit(`host:call:${digest(['harness.host-call-key.v1', frame.hostToolInvocationId, frame.activeNestedCall.callId])}`,
-								hostStored as unknown as JsonValue, Object.freeze({ checkpointKind: 'host_nested_target', schemaVersion: 1 }))
+								hostStored, Object.freeze({ checkpointKind: 'host_nested_target', schemaVersion: 1 }))
 							continue
 						}
 						if (childNode.frame.kind !== 'agent') throw new ApprovalResumeError('invalid_checkpoint')
@@ -1219,10 +1233,14 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						const stored: WorkflowCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call', callId,
 							operation: 'agent_run',
 							target: Object.freeze({ kind: 'agent', id: childNode.frame.state.agentId }), input: childRun.input,
-							outcome: Object.freeze({ status: 'completed', output: childOutput }), publication: Object.freeze({ events: Object.freeze([]) }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
+							outcome: Object.freeze({ status: 'completed', output: childOutput }), caller: Object.freeze({ kind: 'workflow', workflowId: definition.id }),
+							correlation: Object.freeze({ runId, rootRunId: invocation.rootRunId, workflowInvocationId: resumedWorkflowFrame.invocationId,
+								...(invocation.depth === 0 || invocation.parentRunId === undefined ? {} : { parentRunId: invocation.parentRunId, parentInvocationId: invocation.invocationId }) }),
+							publication: Object.freeze({ events: Object.freeze([]) }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
 								workflowRunId: runId, workflowInvocationId: resumedWorkflowFrame.invocationId, childRunId: childNode.frame.runId,
 								childInvocationId: childNode.frame.invocationId }) })
-						await workflowCheckpoint.commit(`workflow:call:${callId}`, stored as unknown as JsonValue,
+						if (!isJsonValue(stored)) throw new InternalError('Resumed workflow call checkpoint is not JSON.')
+						await workflowCheckpoint.commit(`workflow:call:${callId}`, stored,
 							Object.freeze({ checkpointKind: 'workflow_call', schemaVersion: 1 }))
 					}
 					resumedContinuation = Object.freeze({ frame: resumedWorkflowFrame, children: Object.freeze([]) })
@@ -1265,9 +1283,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const runtime = createWorkflowExecutionRuntime({ workflow: definition, models: workflowModels(definition), toolBindings: selectedWorkflowBindings,
 					toolContext: workflowToolContext, targetDispatcher: executionDispatcher,
 					signal, lifecycleSignal: instanceController.signal, sessionId: invocation.sessionId, runId, rootRunId: invocation.rootRunId,
-					invocationId: invocation.invocationId, depth: invocation.depth, remainingDepth: invocation.remainingDepth, defaults: options.defaults,
+					invocationId: invocation.invocationId, ...(invocation.parentRunId === undefined ? {} : { parentRunId: invocation.parentRunId }),
+					depth: invocation.depth, remainingDepth: invocation.remainingDepth, defaults: options.defaults,
 					...(invocation.identity === undefined ? {} : { identity: invocation.identity }), ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
-					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), storage, durable: definition.durable === true, emit, relayChildEvent,
+					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), storage, durable: definition.durable === true, emit,
+					allocateManagedEvent, appendManagedEvent, deliverManagedEvent, relayChildEvent,
 					approval: options.graph.approval.agents, taskRegistry: session.taskRegistry,
 					prepareChildLaunch: request => prepareChildSandboxLaunch(definition, invocation.sessionId, runId, request),
 					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },

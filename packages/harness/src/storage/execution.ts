@@ -1,7 +1,13 @@
 import type { JsonValue } from '../models/json.js'
+import type { ExecutionEvent } from '../definitions/execution-events.js'
+import type { HarnessExecutionCaller } from '../definitions/types.js'
 import type { RunRecord, RunStatus } from '../models/state.js'
 import type { DurableReplayCheckpoint } from '../ports/workspace.js'
 import type { RunAcquisitionExpectation } from './types.js'
+
+type WorkflowManagedEvent = ExecutionEvent extends infer Event
+	? Event extends ExecutionEvent ? Omit<Event, 'eventId' | 'sequence'> : never
+	: never
 
 /** Non-terminal run states that can be acquired again. */
 export type DurableActiveRunStatus = 'running' | 'waiting' | 'interrupted'
@@ -85,8 +91,10 @@ export interface WorkflowCallCheckpointV1 {
   readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
   readonly input: JsonValue
 	readonly outcome: WorkflowCallStoredOutcomeV1
+	readonly caller: HarnessExecutionCaller
+	readonly correlation: Readonly<{ runId: string; rootRunId: string; workflowInvocationId: string; parentRunId?: string; parentInvocationId?: string }>
 	/** Ordered managed events whose durable publication is tracked independently from the terminal effect. */
-	readonly publication: Readonly<{ events: readonly JsonValue[] }>
+	readonly publication: Readonly<{ events: readonly WorkflowManagedEvent[] }>
   readonly lineage?: Readonly<{
     rootRunId: string
     workflowRunId: string
@@ -101,7 +109,24 @@ export interface WorkflowCallPublicationCheckpointV1 {
 	readonly schemaVersion: 1
 	readonly kind: 'workflow_call_publication'
 	readonly callId: string
+	readonly operation: WorkflowManagedCallOperation
+	readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
 	readonly eventIndex: number
+	readonly eventDigest: string
+	readonly allocation: Readonly<{ event: ExecutionEvent; persistedAt: string }>
+}
+
+/** Durable acknowledgement that one pre-allocated managed event was appended. */
+export interface WorkflowCallPublicationAckCheckpointV1 {
+	readonly schemaVersion: 1
+	readonly kind: 'workflow_call_publication_ack'
+	readonly callId: string
+	readonly operation: WorkflowManagedCallOperation
+	readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
+	readonly caller: HarnessExecutionCaller
+	readonly correlation: WorkflowCallCheckpointV1['correlation']
+	readonly eventIndex: number
+	readonly eventId: string
 	readonly eventDigest: string
 }
 

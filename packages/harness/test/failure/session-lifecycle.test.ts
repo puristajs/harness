@@ -73,6 +73,66 @@ describe('v4 storage failure lifecycle', () => {
     await instance.close()
   })
 
+  it('releases a durable run after finalization fails before persistence and retries the effect exactly once', async () => {
+    const finalizationFailure = new StateError('finalizeRun failed before persistence', {
+      op: 'finalizeRun', reason: 'injected_failure',
+    })
+    class FinalizeFailureStorage extends InMemoryHarnessStorage {
+      public finalizeCalls = 0
+      public override async finalizeRun(request: FinalizeRunRequest): Promise<void> {
+        this.finalizeCalls += 1
+        if (this.finalizeCalls === 1) throw finalizationFailure
+        await super.finalizeRun(request)
+      }
+    }
+    let effectCalls = 0
+    const retryWorkflow = defineWorkflow('retryFinalizationFailure', {
+      input: z.string(), output: z.string(), durable: true,
+      async handler({ input, step }) {
+        return step('effect', async () => {
+          effectCalls += 1
+          return input
+        })
+      },
+    })
+    const storage = new FinalizeFailureStorage()
+    const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+    Object.defineProperties(storage, {
+      capabilities: { value: capabilities },
+      info: { value: Object.freeze({ ...storage.info, capabilities }) },
+    })
+    const instance = await defineHarness({ name: 'finalizationRetryHarness', revision: 'release-1' })
+      .addWorkflow(retryWorkflow).getInstance({ storage,
+        logger: new JsonLogger({ level: 'fatal', out: { write: () => undefined } }),
+      })
+    const session = await instance.getSession('finalization-retry')
+    const durable = { runId: 'finalization-retry-run' } as const
+
+    const first = session.workflows.retryFinalizationFailure.stream('input', { durable })
+    const firstEvents: unknown[] = []
+    const firstDrain = (async () => { for await (const event of first) firstEvents.push(event) })()
+
+    await expect(first.result).rejects.toBe(finalizationFailure)
+    await expect(firstDrain).rejects.toBe(finalizationFailure)
+    expect(firstEvents).not.toContainEqual(expect.objectContaining({ type: 'run.finished' }))
+    await expect(storage.getRun(durable.runId)).resolves.toMatchObject({ status: 'interrupted' })
+
+    const retry = session.workflows.retryFinalizationFailure.stream('input', { durable })
+    const retryEvents: unknown[] = []
+    for await (const event of retry) retryEvents.push(event)
+    await expect(retry.result).resolves.toEqual({ status: 'completed', runId: durable.runId, output: 'input' })
+
+    expect(effectCalls).toBe(1)
+    expect(storage.finalizeCalls).toBe(2)
+    expect(retryEvents.filter(event => (event as { type?: string }).type === 'run.finished')).toHaveLength(1)
+    await expect(storage.listEvents(durable.runId)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'run.finished', payload: expect.objectContaining({ outcome: expect.objectContaining({ status: 'completed' }) }) }),
+    ]))
+    expect((await storage.listEvents(durable.runId)).filter(event => event.type === 'run.finished')).toHaveLength(1)
+    await expect(session.release()).resolves.toBeUndefined()
+    await instance.close()
+  })
+
   it('preserves the completed run when the terminal session summary update fails', async () => {
     class SessionUpdateFailureStorage extends InMemoryHarnessStorage {
       public createCalls = 0

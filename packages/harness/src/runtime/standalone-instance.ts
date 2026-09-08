@@ -737,6 +737,12 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			recoverablePublicationErrors.add(error)
 			if (error !== null && (typeof error === 'object' || typeof error === 'function')) recoverableEventPublicationErrors.add(error)
 		}
+		const finalizeDurableRun = async (request: Parameters<HarnessStorage['finalizeRun']>[0]) => {
+			try { await storage.finalizeRun(request) } catch (error) {
+				markRecoverablePublicationError(error)
+				throw error
+			}
+		}
 		const recoverableEventError = (value: unknown, seen = new Set<unknown>()): unknown | undefined => {
 			if (recoverablePublicationErrors.has(value)
 				|| value !== null && (typeof value === 'object' || typeof value === 'function') && recoverableEventPublicationErrors.has(value)) return value
@@ -1561,7 +1567,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const release = await acquireEventSequence()
 				try {
 					const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
-					await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
+					await finalizeDurableRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
 						patch: { status: 'succeeded', finishedAt: at, output, ...(approvalReceipt === undefined ? {} : { approvalReceipt }) }, terminalEvent: persistedFinalEvent(terminal), checkpointDisposition: 'delete-all' })
 					const authoritative = await requireAuthoritativeTerminalRun(storage, runId, 'succeeded')
 					sequence += 1
@@ -1666,7 +1672,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					const release = await acquireEventSequence()
 					try {
 						const terminal = correlatedEvent(runId, sequence + 1, { type: 'run.finished', at, outcome }, parentEventRunId, parentInvocationId)
-						await storage.finalizeRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
+						await finalizeDurableRun({ runId, sessionId: invocation.sessionId, leaseId: lease.leaseId, workerId: lease.workerId,
 							patch: { status, finishedAt: at, error: serialized, ...(approvalReceipt === undefined ? {} : { approvalReceipt }) }, terminalEvent: persistedFinalEvent(terminal), checkpointDisposition: 'delete-all' })
 						const authoritative = await requireAuthoritativeTerminalRun(storage, runId, status)
 						sequence += 1

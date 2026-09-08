@@ -75,6 +75,8 @@ type RootEventBody<Output extends JsonValue = JsonValue> =
 	| Readonly<{ type: 'run.finished'; at: string; outcome: RunOutcome<Output> | Readonly<{ status: 'failed' | 'cancelled'; runId: string; error: ReturnType<typeof serializeError> }> }>
 	| Readonly<{ type: 'model.completed'; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: import('../ports/model-provider.js').TokenUsage; finishReason?: import('../ports/model-provider.js').FinishReason }>
 
+const recoverableEventPublicationErrors = new WeakSet<object>()
+
 interface PendingInterruptionValue {
 	readonly schemaVersion: 1
 	readonly rootRunId: string
@@ -686,6 +688,23 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const parentEventRunId = invocation.depth === 0 ? undefined : invocation.parentRunId
 		const parentInvocationId = invocation.depth === 0 ? undefined : invocation.invocationId
 		const recoverablePublicationErrors = new Set<unknown>()
+		const markRecoverablePublicationError = (error: unknown) => {
+			recoverablePublicationErrors.add(error)
+			if (error !== null && (typeof error === 'object' || typeof error === 'function')) recoverableEventPublicationErrors.add(error)
+		}
+		const recoverableEventError = (value: unknown, seen = new Set<unknown>()): unknown | undefined => {
+			if (recoverablePublicationErrors.has(value)
+				|| value !== null && (typeof value === 'object' || typeof value === 'function') && recoverableEventPublicationErrors.has(value)) return value
+			if (value === null || (typeof value !== 'object' && typeof value !== 'function') || seen.has(value)) return undefined
+			seen.add(value)
+			if (value instanceof AggregateError) {
+				for (const nested of value.errors) {
+					const match = recoverableEventError(nested, seen)
+					if (match !== undefined) return match
+				}
+			}
+			return recoverableEventError((value as { cause?: unknown }).cause, seen)
+		}
 		let eventSequenceTail = Promise.resolve()
 		let reservedManagedEvent: Readonly<{ eventId: string; release: () => void }> | undefined
 		const acquireEventSequence = async (): Promise<() => void> => {
@@ -717,14 +736,16 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const persisted: PersistedRunEvent = Object.freeze({ id: allocation.event.eventId, sequence: allocation.event.sequence, runId,
 				at: allocation.persistedAt, type: allocation.event.type, payload: privacySafeEventPayload(allocation.event) })
 			try { await storage.appendEvents(runId, [persisted]) } catch (error) {
-				recoverablePublicationErrors.add(error)
+				markRecoverablePublicationError(error)
 				metrics.counter('harness.events.persist_errors', 1, { harness: options.name })
 				logger.error('Failed to persist run events.', { harness: options.name, run_id: runId, error: serializeError(error) })
 				throw error
 			}
 		}
-		const abortManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>, _phase: 'marker' | 'append' | 'ack') => {
+		const abortManagedEvent = (allocation: Awaited<ReturnType<typeof allocateManagedEvent>>,
+			phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack') => {
 			if (reservedManagedEvent?.eventId !== allocation.event.eventId) return
+			if (phase === 'marker_absent' && sequence === allocation.event.sequence) sequence -= 1
 			reservedManagedEvent.release()
 			reservedManagedEvent = undefined
 		}
@@ -745,7 +766,28 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const persisted: PersistedRunEvent = Object.freeze({ id: event.eventId, sequence: event.sequence, runId,
 					at: existingEvent?.at ?? ('at' in event && typeof event.at === 'string' ? event.at : new Date().toISOString()), type: event.type,
 					payload: privacySafeEventPayload(event) })
-				await storage.appendEvents(runId, [persisted])
+				try { await storage.appendEvents(runId, [persisted]) } catch (error) {
+					let stored: PersistedRunEvent | undefined
+					try {
+						const events = await storage.listEvents(runId)
+						stored = events.find(candidate => candidate.id === persisted.id || candidate.sequence === persisted.sequence)
+					} catch {
+						markRecoverablePublicationError(error)
+						throw error
+					}
+					if (stored === undefined) {
+						if (sequence === persisted.sequence) sequence -= 1
+						markRecoverablePublicationError(error)
+						throw error
+					}
+					if (canonicalJson(stored) !== canonicalJson(persisted)) {
+						const conflict = new StateError('Run event reconciliation found conflicting durable state.', {
+							op: 'appendEvents', reason: 'event_sequence_conflict',
+						}, error)
+						markRecoverablePublicationError(conflict)
+						throw conflict
+					}
+				}
 				queue.push(event)
 			} finally { release() }
 		}
@@ -976,6 +1018,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		}
 		if (invocation.depth === 0) rootChildEventRelays.set(runId, relayChildEvent)
 		effectiveSandboxScopes.set(invocation.invocationId, effectiveSandboxSource)
+		let deferredPublicationError: unknown
 		try {
 			await telemetry.span('harness.session.run', {
 			'harness.name': options.name, 'harness.session.id': invocation.sessionId, 'harness.run.id': runId,
@@ -1229,7 +1272,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					rootInput: persistedInput,
 					load: async (stepId: string) => {
 						try { return await storage.loadCheckpoint(runId, stepId) } catch (error) {
-							if (stepId.startsWith('workflow:publication:')) recoverablePublicationErrors.add(error)
+							if (stepId.startsWith('workflow:publication:')) markRecoverablePublicationError(error)
 							throw error
 						}
 					},
@@ -1239,7 +1282,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 							stepId, input: persistedInput, attempt: activeLease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
 						try { await storage.commitCheckpoint(checkpoint) } catch (error) {
 							if (metadata.checkpointKind === 'workflow_call_publication' || metadata.checkpointKind === 'workflow_call_publication_ack') {
-								recoverablePublicationErrors.add(error)
+								markRecoverablePublicationError(error)
 							}
 							throw error
 						}
@@ -1336,7 +1379,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					depth: invocation.depth, remainingDepth: invocation.remainingDepth, defaults: options.defaults,
 					...(invocation.identity === undefined ? {} : { identity: invocation.identity }), ...(invocation.trace === undefined ? {} : { trace: invocation.trace }),
 					...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), storage, durable: definition.durable === true, emit,
-					allocateManagedEvent, appendManagedEvent, abortManagedEvent, completeManagedEvent, deliverManagedEvent, relayChildEvent,
+					allocateManagedEvent, appendManagedEvent, abortManagedEvent, completeManagedEvent, deliverManagedEvent,
+					isRecoverableEventError: error => recoverableEventError(error) !== undefined, relayChildEvent,
 					approval: options.graph.approval.agents, taskRegistry: session.taskRegistry,
 					prepareChildLaunch: request => prepareChildSandboxLaunch(definition, invocation.sessionId, runId, request),
 					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },
@@ -1379,17 +1423,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			await workspaceAttempt?.settle('succeeded')
 			await updateSessionRunCount(session)
 		} catch (error) {
-			if (recoverablePublicationErrors.has(error)) {
-				recordStandaloneSpanFailure(targetSpan, error)
-				recordStandaloneSpanFailure(sessionSpan, error)
-				if (lease) {
-					try { await lease.release() } catch (releaseError) {
-						logger.error('Failed to release a workflow run after recoverable event publication failure.', {
-							harness: options.name, run_id: runId, error: serializeError(releaseError),
-						})
-					}
-				}
-				queue.fail(error)
+			const publicationError = recoverableEventError(error)
+			if (publicationError !== undefined) {
+				recordStandaloneSpanFailure(targetSpan, publicationError)
+				recordStandaloneSpanFailure(sessionSpan, publicationError)
+				throw publicationError
 			} else if (error instanceof ExternalWaitPendingError) {
 				if (!lease) await storage.finishRun(runId, { status: 'waiting' })
 				await workspaceAttempt?.suspend()
@@ -1491,10 +1529,47 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				rootFailures.set(runId, terminalError)
 			}
 		}
-		})
-		})
-		} finally {
-			queue.end()
+			})
+			})
+			} catch (error) {
+				const publicationError = recoverableEventError(error)
+				if (publicationError === undefined) throw error
+				if (workspaceAttempt !== undefined && lease !== undefined) {
+					const recoverySequence = nextCheckpointSequence()
+					const recoveryStepId = `harness:publication-recovery:${recoverySequence}`
+					const recoveryOutput = Object.freeze({ schemaVersion: 1, kind: 'workflow_publication_recovery',
+						runId, nextEventSequence: sequence + 1 }) satisfies JsonValue
+					try {
+						const replay = await workspaceAttempt.pause(recoveryStepId, recoverySequence, recoveryOutput, 'manual_pause')
+						const activeLease = lease
+						const checkpoint = Object.freeze({ runId, sessionId: invocation.sessionId, leaseId: activeLease.leaseId,
+							workerId: activeLease.workerId, stepId: recoveryStepId, input: persistedInput, attempt: activeLease.attempt,
+							sequence: recoverySequence, output: recoveryOutput, replay,
+							metadata: Object.freeze({ checkpointKind: 'workflow_publication_recovery', schemaVersion: 1 }) })
+						await storage.commitCheckpoint(checkpoint)
+						lease = Object.freeze({ ...activeLease, checkpoints: Object.freeze([...(activeLease.checkpoints ?? []), checkpoint]) })
+						await workspaceAttempt.committed(replay)
+					} catch (recoveryError) {
+						logger.error('Failed to checkpoint a workspace after recoverable event publication failure.', {
+							harness: options.name, run_id: runId, error: serializeError(recoveryError),
+						})
+					} finally {
+						try { await workspaceAttempt.suspend() } catch (suspendError) {
+							logger.error('Failed to suspend a workspace after recoverable event publication failure.', {
+								harness: options.name, run_id: runId, error: serializeError(suspendError),
+							})
+						}
+					}
+				}
+				if (lease) {
+					try { await lease.release() } catch (releaseError) {
+						logger.error('Failed to release a workflow run after recoverable event publication failure.', {
+							harness: options.name, run_id: runId, error: serializeError(releaseError),
+						})
+					}
+				}
+				deferredPublicationError = publicationError
+			} finally {
 				rootHostedEnvironments.delete(invocation.invocationId)
 				if (invocation.depth === 0) {
 					rootChildEventRelays.delete(runId)
@@ -1506,6 +1581,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			childSandboxPolicies.delete(invocation.invocationId)
 			rootSettled.get(runId)?.()
 			rootSettled.delete(runId)
+			if (deferredPublicationError === undefined) queue.end()
+			else queue.fail(deferredPublicationError)
 		}
 	}
 
@@ -3396,17 +3473,21 @@ function createExternalWaitFacade(args: Readonly<{
 			if (readback === undefined) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
 			const snapshot = validateExternalWaitSnapshot(readback)
 			assertExternalWaitSnapshotRequest(snapshot, validatedRequest)
-			if (registration.created) await args.emit({ type: 'external_wait.requested', at: new Date().toISOString(),
+			const priorEvents = registration.created ? [] : await args.storage.listEvents(args.runId)
+			const hasWaitEvent = (type: PersistedRunEvent['type']) => priorEvents.some(event => event.type === type
+				&& isPlainRecord(event.payload) && event.payload['waitId'] === validatedRequest.waitId)
+			const requestEventExists = hasWaitEvent('external_wait.requested')
+			if (registration.created || !requestEventExists) await args.emit({ type: 'external_wait.requested', at: new Date().toISOString(),
 				waitId: validatedRequest.waitId, kind: validatedRequest.kind, schemaVersion: validatedRequest.schemaVersion,
 				definitionVersion: validatedRequest.definitionVersion, deadline: validatedRequest.deadline })
 			if (snapshot.status === 'waiting') {
-				await args.emit({ type: 'external_wait.waiting', at: new Date().toISOString(), waitId: snapshot.waitId,
+				if (!hasWaitEvent('external_wait.waiting')) await args.emit({ type: 'external_wait.waiting', at: new Date().toISOString(), waitId: snapshot.waitId,
 					kind: snapshot.kind, deadline: snapshot.deadline })
 				throw new ExternalWaitPendingError(snapshot, args.runId)
 			}
 			const resolved = asExternalWaitResolved(snapshot)
 			if (resolved === undefined) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
-			await args.emit({ type: 'external_wait.resolved', at: new Date().toISOString(), waitId: resolved.waitId,
+			if (!hasWaitEvent('external_wait.resolved')) await args.emit({ type: 'external_wait.resolved', at: new Date().toISOString(), waitId: resolved.waitId,
 				kind: resolved.kind, outcome: resolved.status, deadline: resolved.deadline })
 			args.telemetry.recordCounter('harness.external_wait.resolved', 1, {
 				'harness.name': args.harnessName, 'harness.workflow.id': args.workflowId,

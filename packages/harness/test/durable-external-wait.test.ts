@@ -17,6 +17,72 @@ const request = {
 } as const
 
 describe('v4 durable external waits', () => {
+	it.each([false, true])('reconciles an external-wait event append (persisted=%s)', async persisted => {
+		const storage = new InMemoryHarnessStorage()
+		const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+		Object.defineProperties(storage, { capabilities: { value: capabilities }, info: { value: Object.freeze({ ...storage.info, capabilities }) } })
+		const sentinel = new Error(`wait event ${persisted ? 'persisted' : 'absent'}`)
+		let fail = true
+		const appendEvents = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const requested = fail && events.some(event => event.type === 'external_wait.requested')
+			if (requested && !persisted) { fail = false; throw sentinel }
+			await appendEvents(runId, events)
+			if (requested) { fail = false; throw sentinel }
+		}
+		const workflow = defineWorkflow('recoverableWait', { input: z.string(), output: z.string(), durable: true,
+			async handler(context) { await context.externalWait.wait(request); return context.input } })
+		const instance = await defineHarness({ name: persisted ? 'recoverableWaitAfter' : 'recoverableWaitBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('recoverable-wait-session')
+		const invoke = { durable: { runId: 'recoverable-wait-run' } } as const
+		if (!persisted) {
+			await expect(session.workflows.recoverableWait.run('value', invoke)).rejects.toBe(sentinel)
+			expect((await storage.listEvents(invoke.durable.runId)).map(event => event.type)).toEqual(['run.started'])
+		}
+		await expect(session.workflows.recoverableWait.run('value', invoke)).resolves.toMatchObject({
+			status: 'interrupted', interrupt: { type: 'external-wait', id: request.waitId },
+		})
+		const events = await storage.listEvents(invoke.durable.runId)
+		expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4])
+		expect(events.filter(event => event.type === 'external_wait.requested')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'external_wait.waiting')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'run.finished')).toHaveLength(1)
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('reconciles an interrupted terminal append without duplicating wait lifecycle (persisted=%s)', async persisted => {
+		const storage = new InMemoryHarnessStorage()
+		const capabilities = Object.freeze([...storage.capabilities, 'storage.persistent'] as const)
+		Object.defineProperties(storage, { capabilities: { value: capabilities }, info: { value: Object.freeze({ ...storage.info, capabilities }) } })
+		const sentinel = new Error(`wait terminal ${persisted ? 'persisted' : 'absent'}`)
+		let fail = true
+		const appendEvents = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const terminal = fail && events.some(event => event.type === 'run.finished')
+			if (terminal && !persisted) { fail = false; throw sentinel }
+			await appendEvents(runId, events)
+			if (terminal) { fail = false; throw sentinel }
+		}
+		const workflow = defineWorkflow('recoverableWaitTerminal', { input: z.string(), output: z.string(), durable: true,
+			async handler(context) { await context.externalWait.wait({ ...request, waitId: 'terminal-review' }); return context.input } })
+		const instance = await defineHarness({ name: persisted ? 'recoverableWaitTerminalAfter' : 'recoverableWaitTerminalBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('recoverable-wait-terminal-session')
+		const invoke = { durable: { runId: 'recoverable-wait-terminal-run' } } as const
+		if (!persisted) await expect(session.workflows.recoverableWaitTerminal.run('value', invoke)).rejects.toBe(sentinel)
+		await expect(session.workflows.recoverableWaitTerminal.run('value', invoke)).resolves.toMatchObject({
+			status: 'interrupted', interrupt: { type: 'external-wait', id: 'terminal-review' },
+		})
+		const events = await storage.listEvents(invoke.durable.runId)
+		expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4])
+		expect(events.filter(event => event.type === 'external_wait.requested')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'external_wait.waiting')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'run.finished')).toHaveLength(1)
+		await session.destroy()
+		await instance.close()
+	})
 
   it('omits externalWait from non-durable workflow contexts', async () => {
     let exposed = true

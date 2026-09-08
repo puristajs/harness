@@ -29,6 +29,185 @@ function acquisitionId(request: Omit<AcquireRunRequest, 'acquisitionId'>): strin
 }
 
 describe('v4 durable session execution', () => {
+	it.each([false, true])('reconciles a failed terminal marker in one handler retry (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const sentinel = new Error(`marker ${persisted ? 'persisted' : 'absent'}`)
+		let fail = true
+		let effects = 0
+		let caught: unknown
+		const originalCommit = storage.commitCheckpoint.bind(storage)
+		storage.commitCheckpoint = async checkpoint => {
+			const output = checkpoint.output as { eventIndex?: number } | undefined
+			const terminalMarker = fail && checkpoint.metadata?.['checkpointKind'] === 'workflow_call_publication' && output?.eventIndex === 2
+			if (terminalMarker && !persisted) { fail = false; throw sentinel }
+			await originalCommit(checkpoint)
+			if (terminalMarker) { fail = false; throw sentinel }
+		}
+		const tool = defineTool('caughtMarkerTool', { description: 'Complete once.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const workflow = defineWorkflow('caughtMarkerWorkflow', { input: z.string(), output: z.string(), durable: true, tools: [tool],
+			async handler({ input, tools }) {
+				try { await tools.caughtMarkerTool.run(input, { callId: 'caught-call' }) } catch (error) { caught = error }
+				return tools.caughtMarkerTool.run(input, { callId: 'caught-call' })
+			} })
+		const instance = await defineHarness({ name: persisted ? 'caughtMarkerAfter' : 'caughtMarkerBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('caught-marker-session')
+		await expect(session.workflows.caughtMarkerWorkflow.run('value', { durable: { runId: 'caught-marker-run' } }))
+			.resolves.toMatchObject({ status: 'completed', output: 'value' })
+		expect(caught).toBe(sentinel)
+		expect(effects).toBe(1)
+		const events = await storage.listEvents('caught-marker-run')
+		expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5])
+		expect(events.filter(event => event.type === 'tool.finished')).toHaveLength(1)
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('reconciles uncertain run-start append (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const sentinel = new Error(`run start ${persisted ? 'persisted' : 'absent'}`)
+		let fail = true
+		const originalAppend = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const start = fail && events.some(event => event.type === 'run.started')
+			if (start && !persisted) { fail = false; throw sentinel }
+			await originalAppend(runId, events)
+			if (start) { fail = false; throw sentinel }
+		}
+		let effects = 0
+		const workflow = defineWorkflow('uncertainLifecycle', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input }) { effects += 1; return input } })
+		const instance = await defineHarness({ name: persisted ? 'uncertainLifecycleAfter' : 'uncertainLifecycleBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('uncertain-lifecycle-session')
+		const invoke = { durable: { runId: 'uncertain-lifecycle-run' } } as const
+		if (persisted) {
+			await expect(session.workflows.uncertainLifecycle.run('value', invoke)).resolves.toMatchObject({ status: 'completed', output: 'value' })
+		} else {
+			await expect(session.workflows.uncertainLifecycle.run('value', invoke)).rejects.toBe(sentinel)
+			await expect(session.workflows.uncertainLifecycle.run('value', invoke)).resolves.toMatchObject({ status: 'completed', output: 'value' })
+		}
+		expect(effects).toBe(1)
+		expect((await storage.listEvents(invoke.durable.runId)).map(event => event.sequence)).toEqual([1, 2])
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('reconciles a fanout start append without publishing an unmatched terminal (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const sentinel = new Error(`fanout start ${persisted ? 'persisted' : 'absent'}`)
+		let fail = true
+		let workers = 0
+		const originalAppend = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const start = fail && events.some(event => event.type === 'fanout.started')
+			if (start && !persisted) { fail = false; throw sentinel }
+			await originalAppend(runId, events)
+			if (start) { fail = false; throw sentinel }
+		}
+		const workflow = defineWorkflow('recoverableFanout', { input: z.string(), output: z.string(), durable: true,
+			async handler({ input, fanOut }) {
+				const result = await fanOut([input, input], async value => { workers += 1; return value }, { concurrency: 2 })
+				return result.join(':')
+			} })
+		const instance = await defineHarness({ name: persisted ? 'recoverableFanoutAfter' : 'recoverableFanoutBefore', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage })
+		const session = await instance.getSession('recoverable-fanout-session')
+		const invoke = { durable: { runId: 'recoverable-fanout-run' } } as const
+		if (!persisted) {
+			await expect(session.workflows.recoverableFanout.run('value', invoke)).rejects.toBe(sentinel)
+			expect((await storage.listEvents(invoke.durable.runId)).map(event => event.type)).toEqual(['run.started'])
+		}
+		await expect(session.workflows.recoverableFanout.run('value', invoke)).resolves.toMatchObject({
+			status: 'completed', output: 'value:value',
+		})
+		expect(workers).toBe(2)
+		const events = await storage.listEvents(invoke.durable.runId)
+		expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4])
+		expect(events.filter(event => event.type === 'fanout.started')).toHaveLength(1)
+		expect(events.filter(event => event.type === 'fanout.finished')).toHaveLength(1)
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('reconciles a nested agent run-start append without committing a parent failure (persisted=%s)', async persisted => {
+		const storage = persistentStorage()
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: 'child output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const sentinel = new Error(`child start ${persisted ? 'persisted' : 'absent'}`)
+		const parentRunId = 'recoverable-child-parent-run'
+		let fail = true
+		const originalAppend = storage.appendEvents.bind(storage)
+		storage.appendEvents = async (runId, events) => {
+			const childStart = fail && runId !== parentRunId && events.some(event => event.type === 'run.started')
+			if (childStart && !persisted) { fail = false; throw sentinel }
+			await originalAppend(runId, events)
+			if (childStart) { fail = false; throw sentinel }
+		}
+		const child = defineAgent('recoverableChild', { input: z.string(), output: z.string(), durable: true,
+			instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('recoverableChildParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
+			async handler({ input, agents }) { return agents.recoverableChild.run(input, { callId: 'child-call' }) } })
+		const instance = await defineHarness({ name: persisted ? 'recoverableChildAfter' : 'recoverableChildBefore', revision: 'v1' })
+			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+		const session = await instance.getSession('recoverable-child-session')
+		const invoke = { durable: { runId: parentRunId } } as const
+		if (!persisted) {
+			await expect(session.workflows.recoverableChildParent.run('value', invoke)).rejects.toBe(sentinel)
+			await expect(storage.getRun(parentRunId)).resolves.toMatchObject({ status: 'interrupted' })
+		}
+		await expect(session.workflows.recoverableChildParent.run('value', invoke))
+			.resolves.toMatchObject({ status: 'completed', output: 'child output' })
+		expect(provider.requests).toHaveLength(1)
+		expect((await storage.listEvents(parentRunId)).map(event => event.sequence)).toEqual([1, 2])
+		await session.destroy()
+		await instance.close()
+	})
+
+	it.each([false, true])('reconciles a child-task start append around one effect (persisted=%s)', async persisted => {
+			const eventType = 'child_task.started' as const
+			const storage = persistentStorage()
+			const provider = new FakeModelProvider({ strict: true })
+			provider.enqueueText({ content: 'task output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+			const sentinel = new Error(`${eventType} ${persisted ? 'persisted' : 'absent'}`)
+			let fail = true
+			const originalAppend = storage.appendEvents.bind(storage)
+			storage.appendEvents = async (runId, events) => {
+				const target = fail && events.some(event => event.type === eventType)
+				if (target && !persisted) { fail = false; throw sentinel }
+				await originalAppend(runId, events)
+				if (target) { fail = false; throw sentinel }
+			}
+			const child = defineAgent('recoverableTaskChild', { input: z.string(), output: z.string(), durable: true,
+				instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
+			let caught: unknown
+			const workflow = defineWorkflow('recoverableTaskParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
+				async handler({ input, childTasks }) {
+					let task
+					try { task = await childTasks.start('recoverableTaskChild', input, { callId: 'task-call', idempotencyKey: 'task-key' }) }
+					catch (error) {
+						caught = error
+						task = await childTasks.start('recoverableTaskChild', input, { callId: 'task-call', idempotencyKey: 'task-key' })
+					}
+					return task.result()
+				} })
+			const instance = await defineHarness({ name: persisted ? 'recoverableTaskStartAfter' : 'recoverableTaskStartBefore', revision: 'v1' })
+				.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+			const session = await instance.getSession('recoverable-task-session')
+			const invoke = { durable: { runId: `recoverable-task-${eventType}-${persisted}` } } as const
+			await expect(session.workflows.recoverableTaskParent.run('value', invoke))
+				.resolves.toMatchObject({ status: 'completed', output: 'task output' })
+			expect(caught).toBe(persisted ? undefined : sentinel)
+			expect(provider.requests).toHaveLength(1)
+			const events = await storage.listEvents(invoke.durable.runId)
+			expect(events.filter(event => event.type === 'child_task.started')).toHaveLength(1)
+			expect(events.filter(event => event.type === 'child_task.settled')).toHaveLength(1)
+			expect(events.map(event => event.sequence)).toEqual(events.map((_event, index) => index + 1))
+			await session.destroy()
+			await instance.close()
+		})
+
 	it.each([
 		{ boundary: 'marker' as const, persisted: false }, { boundary: 'marker' as const, persisted: true },
 		{ boundary: 'append' as const, persisted: false }, { boundary: 'append' as const, persisted: true },

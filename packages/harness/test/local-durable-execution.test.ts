@@ -502,7 +502,51 @@ describe('local durable execution', () => {
     }
   })
 
-  it.each([
+	it('checkpoints and suspends a workspace for recoverable managed publication, then resumes without repeating the effect', async () => {
+		const root = await tempRoot()
+		const local = localDurableExecution({ root })
+		const sentinel = new Error('workspace publication failed')
+		let fail = true
+		let effects = 0
+		const appendEvents = local.storage.appendEvents.bind(local.storage)
+		vi.spyOn(local.storage, 'appendEvents').mockImplementation(async (runId, events) => {
+			if (fail && events.some(event => event.type === 'tool.finished')) { fail = false; throw sentinel }
+			return appendEvents(runId, events)
+		})
+		const pauseWorkspace = vi.spyOn(local.workspace, 'pauseWorkspace')
+		const resumeWorkspace = vi.spyOn(local.workspace, 'resumeWorkspace')
+		const tool = defineTool('workspacePublishTool', { description: 'Complete once.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const workflow = defineWorkflow('workspacePublishRecovery', {
+			input: z.string(), output: z.string(), durable: true, workspace: true, tools: [tool],
+			async handler({ input, tools }) { return tools.workspacePublishTool.run(input, { callId: 'workspace-call' }) },
+		})
+		const harness = await defineV4Harness({ name: 'workspacePublishRecoveryHarness', revision: 'v1' }).addWorkflow(workflow)
+			.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+		try {
+			const session = await harness.getSession('workspace-publish-session')
+			const invoke = { durable: { runId: 'workspace-publish-run' } } as const
+			await expect(session.workflows.workspacePublishRecovery.run('value', invoke)).rejects.toBe(sentinel)
+			expect(effects).toBe(1)
+			expect(await local.storage.getRun(invoke.durable.runId)).toMatchObject({ status: 'interrupted' })
+			expect(await local.storage.loadCheckpoint(invoke.durable.runId)).toMatchObject({
+				output: { kind: 'workflow_publication_recovery', runId: invoke.durable.runId },
+				replay: { runId: invoke.durable.runId, checkpointRef: expect.any(String), workspaceRef: expect.any(String) },
+			})
+			expect(pauseWorkspace).toHaveBeenCalledTimes(1)
+			await expect(session.workflows.workspacePublishRecovery.run('value', invoke))
+				.resolves.toMatchObject({ status: 'completed', output: 'value' })
+			expect(resumeWorkspace).toHaveBeenCalledTimes(1)
+			expect(effects).toBe(1)
+			expect((await local.storage.listEvents(invoke.durable.runId)).map(event => event.sequence)).toEqual([1, 2, 3, 4, 5])
+		} finally {
+			await harness.close()
+			await local.close()
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
+	it.each([
 		['private', 'private', { kind: 'workflow', harnessName: 'workspaceDefaultPrivate', id: 'workspacePartition' }],
 		['group', { group: 'reviewers' }, { kind: 'group', id: 'reviewers' }],
 	] as const)('uses the runtime %s default policy for a durable workspace partition', async (_case, defaultPolicy, expectedPartition) => {

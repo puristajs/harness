@@ -64,11 +64,13 @@ export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefi
 	/** @internal Appends an already allocated event without changing its identity. */
 	readonly appendManagedEvent?: (allocation: ManagedEventAllocation) => Promise<void>
 	/** @internal Releases a managed event reservation after a publication storage failure. */
-	readonly abortManagedEvent?: (allocation: ManagedEventAllocation, phase: 'marker' | 'append' | 'ack') => void
+	readonly abortManagedEvent?: (allocation: ManagedEventAllocation, phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' | 'append' | 'ack') => void
 	/** @internal Releases a managed event reservation after durable acknowledgement. */
 	readonly completeManagedEvent?: (allocation: ManagedEventAllocation) => void
 	/** @internal Delivers an already appended event to the live stream. */
 	readonly deliverManagedEvent?: (allocation: ManagedEventAllocation) => void
+	/** @internal Identifies event-storage failures that must bypass logical failure publication. */
+	readonly isRecoverableEventError?: (error: unknown) => boolean
 	readonly relayChildEvent?: (event: ExecutionEvent) => Promise<void>
 	/** @internal Authorization fence and sandbox handoff installed before any child effect. */
 	readonly prepareChildLaunch?: (request: ChildLaunchRequest) => Promise<void>
@@ -145,6 +147,8 @@ export function restoreSessionChildTaskHandle(record: RunRecord, expectedSession
 		throw new ChildTaskStateError({ reason: 'invalid_record', task_id: record.id })
 	}
 }
+
+const workflowChildTaskInstances = new WeakMap<object, LiveWorkflowChildTask>()
 
 /** Creates one isolated, replay-aware orchestration state for one logical workflow invocation. */
 export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap | undefined, Tools extends WorkflowToolDefinitions | undefined, Models extends WorkflowModelMap | undefined>(
@@ -236,6 +240,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			if (!isJsonValue(output)) throw new ValidationError('Tool output validation failed.', { where: 'tool_output', issues: { reason: 'non_json_tool_output' } })
 		} catch (error) {
 			if (isHarnessChildTargetInterruption(error)) throw error
+			if (options.isRecoverableEventError?.(error) === true) throw error
 			const cancelled = signal.aborted || error instanceof OperationCancelledError || error instanceof OperationTimeoutError
 			const stored = cancelled ? storedManagedCancelled('tool') : storedManagedFailure(workflow.id, callOptions.callId, 'tool_run', 'tool', binding.id)
 			const record = await commitManagedCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, stored,
@@ -507,6 +512,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			return replayDirectOutcome(stored)
 		} catch (error) {
 			if (isHarnessChildTargetInterruption(error)) throw error
+			if (options.isRecoverableEventError?.(error) === true) throw error
 			if (!terminalCommitted && (error instanceof OperationCancelledError || error instanceof OperationTimeoutError)) {
 				const stored = storedManagedCancelled('agent')
 				await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, [], Object.freeze({ childRunId: childInvocationId, childInvocationId }))
@@ -664,8 +670,19 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				if (options.checkpoint !== undefined) try {
 					await options.checkpoint.commit(stepId, managedJson(marker), Object.freeze({ checkpointKind: 'workflow_call_publication', schemaVersion: 1 }))
 				} catch (error) {
+					let phase: 'marker_absent' | 'marker_persisted' | 'marker_unknown' = 'marker_unknown'
+					try {
+						const reconciled = await options.checkpoint.load(stepId)
+						if (reconciled === undefined) phase = 'marker_absent'
+						else {
+							const persistedMarker = parseWorkflowPublicationCheckpoint(reconciled.output)
+							assertPublicationCheckpoint(reconciled, stepId, options.checkpoint.rootInput, persistedMarker,
+								record, event, eventIndex, eventDigest)
+							phase = 'marker_persisted'
+						}
+					} catch { phase = 'marker_unknown' }
 					managedEventAllocations.delete(allocationKey)
-					options.abortManagedEvent?.(allocation, 'marker')
+					options.abortManagedEvent?.(allocation, phase)
 					throw error
 				}
 			} else {
@@ -759,15 +776,19 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			...(options.authorizeChildLaunch === undefined ? {} : { authorizeChildLaunch: options.authorizeChildLaunch }),
 			...(options.finishChildLaunch === undefined ? {} : { finishChildLaunch: options.finishChildLaunch }),
 			...(options.onChildTaskTerminal === undefined ? {} : { onTerminal: options.onChildTaskTerminal }),
-			...(options.emit === undefined ? {} : { emit: options.emit }), now })
+			...(options.emit === undefined ? {} : { emit: options.emit }),
+			...(options.isRecoverableEventError === undefined ? {} : { isRecoverableEventError: options.isRecoverableEventError }), now })
 		const handle = live.handle()
+		workflowChildTaskInstances.set(handle, live)
 		liveTasks.set(taskId, handle)
 		try {
-			await live.persistStart()
-			if (await live.activateLifecycle()) live.start()
-			else options.finishChildLaunch?.(initialChildInvocationId)
+			await live.publishStartAndActivate()
 			return handle
 		} catch (error) {
+			if (options.isRecoverableEventError?.(error) === true) {
+				try { await live.publishStartAndActivate() } catch { throw error }
+				throw error
+			}
 			options.finishChildLaunch?.(initialChildInvocationId)
 			if (liveTasks.get(taskId) === handle) liveTasks.delete(taskId)
 			rollbackReservation()
@@ -785,8 +806,23 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		if (differs) throw new ChildTaskConflictError({ reason: 'idempotency_key_reused', workflow_id: workflow.id, parent_run_id: options.runId,
 			task_id: record.id, agent_id: agent.id, call_id: taskOptions.callId })
 		if (record.status === 'running') {
-			if (resident !== undefined) return resident
+			if (resident !== undefined) {
+				const live = workflowChildTaskInstances.get(resident)
+				if (live !== undefined) await live.publishStartAndActivate()
+				return resident
+			}
 			throw new ChildTaskStateError({ reason: 'recovery_required', task_id: record.id, workflow_id: workflow.id, agent_id: agent.id })
+		}
+		if (options.storage !== undefined && options.emit !== undefined) {
+			if (record.status !== 'succeeded' && record.status !== 'failed' && record.status !== 'cancelled') {
+				throw new ChildTaskStateError({ reason: 'invalid_record', task_id: record.id })
+			}
+			const settledExists = (await options.storage.listEvents(options.runId)).some(event => event.type === 'child_task.settled'
+				&& isPlainRecord(event.payload) && event.payload['taskId'] === record.id)
+			if (!settledExists) await options.emit({ type: 'child_task.settled', runId: record.id, taskId: record.id,
+				at: record.finishedAt!, parentRunId: parsed.descriptor.parentRunId, workflowId: parsed.descriptor.workflowId,
+				agentId: parsed.descriptor.agentId, status: record.status,
+				...(record.error === undefined ? {} : { error: record.error }) })
 		}
 		return terminalTaskHandle(parsed.descriptor, record)
 	}
@@ -816,6 +852,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			await options.emit?.({ type: 'fanout.finished', runId: options.runId, batchId, at: now().toISOString(), count: items.length, status: 'succeeded' })
 			return output
 		} catch (error) {
+			if (options.isRecoverableEventError?.(error) === true) throw error
 			await options.emit?.({ type: 'fanout.finished', runId: options.runId, batchId, at: now().toISOString(), count: items.length,
 				status: error instanceof OperationCancelledError ? 'cancelled' : 'failed' })
 			throw error
@@ -887,6 +924,7 @@ class LiveWorkflowChildTask {
 		authorizeChildLaunch?: WorkflowRuntimeOptions<WorkflowAgentMap, WorkflowToolDefinitions, WorkflowModelMap>['authorizeChildLaunch']
 		finishChildLaunch?: (childInvocationId: string) => void
 		onTerminal?: (childSessionId: string) => Promise<void>
+		isRecoverableEventError?: (error: unknown) => boolean
 		relay(event: ExecutionEvent): Promise<void>; emit?: (event: UncorrelatedExecutionEvent) => Promise<void>; now(): Date
 	}) {
 		this.statusValue = Object.freeze({ descriptor: values.descriptor, status: 'running' })
@@ -913,7 +951,22 @@ class LiveWorkflowChildTask {
 			await this.values.emit?.({ type: 'child_task.started', runId: this.values.descriptor.id, taskId: this.values.descriptor.id, at: this.values.descriptor.createdAt,
 				parentRunId: this.values.descriptor.parentRunId, workflowId: this.values.workflowId, agentId: this.values.agent.id, modelAlias: this.values.agent.model,
 				contextPolicy: 'isolated', mode: this.values.taskOptions.mode })
-		} catch (error) { throw lifecycleFailure(error) }
+		} catch (error) {
+			if (this.values.isRecoverableEventError?.(error) === true) throw error
+			throw lifecycleFailure(error)
+		}
+	}
+	private startPublished = false
+	private activated = false
+	public async publishStartAndActivate() {
+		if (!this.startPublished) {
+			await this.persistStart()
+			this.startPublished = true
+		}
+		if (this.activated) return
+		this.activated = true
+		if (await this.activateLifecycle()) this.start()
+		else this.values.finishChildLaunch?.(this.values.initialChildInvocationId)
 	}
 	public async activateLifecycle(): Promise<boolean> {
 		this.parentAbort = () => { void this.cancel() }

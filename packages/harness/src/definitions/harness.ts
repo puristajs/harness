@@ -11,6 +11,7 @@ import {
 import {
 	assertDefinitionId,
 	assertKnownFields,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 	getDefinitionIdentity,
@@ -185,7 +186,6 @@ export interface HarnessOptions<Name extends string = string> {
 	readonly defaults?: HarnessExecutionDefaults
 }
 
-const inferPhantom = Object.freeze({})
 type CatalogProvenance = readonly HarnessCatalogDefinition<string, HarnessCatalogView>[]
 const harnessRuntimeBlueprint = Symbol('@purista/harness/runtime-blueprint')
 
@@ -245,7 +245,6 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		defaults,
 		contracts: catalog.contracts,
 		requirements: catalog.requirements,
-		$infer: inferPhantom as HarnessInfer<Catalog['contracts'], Catalog['requirements']>,
 		inspect: () => inspectHarness(name, catalog, graph),
 		getInstance: (config: HarnessInstanceConfig<Catalog['requirements'], readonly string[]>) => instantiateStandaloneHarness({
 			name, ...(revision === undefined ? {} : { revision }), defaults, graph,
@@ -260,9 +259,7 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		addAgent: (agent: AnyAgentDefinition) => withRoots({ agents: [agent] }) as never,
 		addWorkflow: (workflow: AnyWorkflowDefinition) => withRoots({ workflows: [workflow] }) as never,
 	}
-	Object.defineProperty(value, '$infer', {
-		value: inferPhantom, enumerable: false, configurable: false, writable: false,
-	})
+	attachDefinitionInference(value)
 	Object.defineProperty(value, harnessRuntimeBlueprint, {
 		value: Object.freeze({ name, ...(revision === undefined ? {} : { revision }), defaults, graph }),
 		enumerable: false, configurable: false, writable: false,

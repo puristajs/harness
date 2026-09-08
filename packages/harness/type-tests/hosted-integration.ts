@@ -33,9 +33,12 @@ const lookup = defineHostTool(owner, 'lookupAccount', {
 		return { balance: 1 }
 	},
 })
+type _HostToolDefinitionInference = Expect<Equal<typeof lookup.$infer.input, { accountId: string }>>
+type _HostToolDefinitionOutput = Expect<Equal<typeof lookup.$infer.output, { balance: number }>>
 const agent = defineAgent('accountAssistant', { instructions: 'Help.', tools: [lookup] })
 const workflow = defineWorkflow('hostedWorkflow', { input: z.string(), output: z.number(),
 	async handler({ input }) { return input.length } })
+type _WorkflowDefinitionInference = Expect<Equal<typeof workflow.$infer, typeof workflow.contract.$infer>>
 const dependencyAgent = defineAgent('dependencyAgent', { instructions: 'Dependency only.' })
 const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
 	async handler() { return 'done' } })

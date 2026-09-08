@@ -251,10 +251,12 @@ export type AnyNonMcpToolDefinition =
 export type AnyToolDefinition = AnyNonMcpToolDefinition | McpToolDefinition<any, any, any>
 
 /** Frozen transport-free declaration of an MCP server and its selected tools. */
-export type McpServerDefinition<Id extends string, Tools extends Record<string, McpToolDefinition>> = Readonly<{
+export type McpServerDefinition<Id extends string, Tools extends Readonly<Record<string, McpToolDefinition>>> = Readonly<{
 	kind: 'mcp-server'
 	id: Id
 	tools: Readonly<Tools>
+	/** Type-only selected-tool inference. The runtime value is a hidden frozen marker. */
+	readonly $infer: Readonly<{ tools: Readonly<{ [Name in keyof Tools]: Tools[Name]['$infer'] }> }>
 }> & DefinitionReference<'mcp-server', Id>
 
 /** Closed logical runtime vocabulary for Agent Skill availability checks. */
@@ -266,6 +268,8 @@ export type SkillDefinition<Id extends string = string, Runtimes extends readonl
 	id: Id
 	directory: URL
 	runtimes?: Runtimes
+	/** Type-only runtime inference. The runtime value is a hidden frozen marker. */
+	readonly $infer: Readonly<{ runtimes: Runtimes }>
 }> & DefinitionReference<'skill', Id>
 
 /** Lower-camel runtime model alias referenced by definitions. */
@@ -333,6 +337,8 @@ export type AnyAgentDefinition = Readonly<{
 	workspace?: true | undefined
 	durable?: true | undefined
 	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any>
+	/** Exact definition inference shared with `contract.$infer`. */
+	readonly $infer: HarnessTargetInference<ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any>
 }> & DefinitionReference<'agent', string>
 /** Direct child-agent reference or its parent-facing description override. */
 export type AgentSubagentReference = AnyAgentDefinition | Readonly<{ agent: AnyAgentDefinition; description?: string }>
@@ -447,6 +453,8 @@ export type AgentDefinition<
 	inputCapabilities?: Capabilities
 	loop?: AgentLoopOptions
 	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>
+	/** Exact definition inference shared with `contract.$infer`. */
+	readonly $infer: HarnessTargetInference<Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
 	& PresentField<'memory', Memory>
 	& PresentField<'guardrails', Guardrails>
@@ -693,6 +701,8 @@ export type WorkflowDefinition<
 	maxDepth?: number
 	handler: WorkflowOptions<Input, Output, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>['handler']
 	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>
+	/** Exact definition inference shared with `contract.$infer`. */
+	readonly $infer: HarnessTargetInference<Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>
 }> & PresentField<'agents', Agents> & PresentField<'tools', Tools> & PresentField<'models', Models>
 	& PresentField<'childTaskSandboxGroups', ChildTaskSandboxGroups extends readonly [] ? undefined : ChildTaskSandboxGroups>
 	& PresentField<'workspace', Workspace> & PresentField<'durable', Durable>
@@ -717,4 +727,6 @@ export type AnyWorkflowDefinition = Readonly<{
 	durable?: true | undefined
 	handler: (...args: any[]) => Promise<any>
 	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', any>
+	/** Exact definition inference shared with `contract.$infer`. */
+	readonly $infer: HarnessTargetInference<ModelSchema, ModelSchema, 'none', any>
 }> & DefinitionReference<'workflow', string>

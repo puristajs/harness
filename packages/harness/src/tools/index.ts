@@ -5,7 +5,7 @@ import type { Message } from '../models/state.js'
 import type { ModelToolSpec } from '../ports/model-provider.js'
 import { isExecCapableSession, isTextSearchCapableSession, validateSandboxTextSearchRequest, type SandboxSessionBase } from '../sandbox/index.js'
 import { ulid } from '../ulid/index.js'
-import { createDefinitionIdentity, freezeDefinition } from '../definitions/identity.js'
+import { attachDefinitionInference, createDefinitionIdentity, freezeDefinition } from '../definitions/identity.js'
 import type { BuiltInToolDefinition, SandboxCapabilityId } from '../definitions/types.js'
 
 /** Canonical built-in tool ids. */
@@ -130,6 +130,7 @@ function builtInDefinition<Name extends BuiltInName>(name: Name): BuiltInDefinit
     output: spec.output,
     requires: Object.freeze({ sandbox }),
   }
+	attachDefinitionInference(value)
   return freezeDefinition(value, createDefinitionIdentity('built-in-tool', name)) as BuiltInDefinitions[Name]
 }
 

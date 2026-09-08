@@ -33,6 +33,11 @@ it('exposes immutable built-in definition references with exact capabilities', (
   expect(builtInTools.read.requires.sandbox).toEqual(['sandbox.fs'])
   expect(Object.isFrozen(builtInTools)).toBe(true)
   expect(Object.values(builtInTools).every(Object.isFrozen)).toBe(true)
+	const markers = Object.values(builtInTools).map(tool => Object.getOwnPropertyDescriptor(tool, '$infer'))
+	expect(markers.every(marker => marker?.enumerable === false && marker.configurable === false && marker.writable === false)).toBe(true)
+	expect(markers.every(marker => Object.isFrozen(marker?.value))).toBe(true)
+	expect(markers.every(marker => marker?.value === markers[0]?.value)).toBe(true)
+	expect(Object.values(builtInTools).every(tool => !Object.hasOwn({ ...tool }, '$infer'))).toBe(true)
 })
 
 it('accepts readonly mount as a portable tool sandbox requirement', () => {

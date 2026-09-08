@@ -2,6 +2,7 @@ import { HarnessConfigError } from '../errors/index.js'
 import {
 	assertKnownFields,
 	assertSkillId,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 } from './identity.js'
@@ -32,7 +33,7 @@ export interface SkillOptions<Runtimes extends readonly SkillRuntimeId[] | undef
 export function defineSkill<
 	const Id extends string,
 	const Runtimes extends readonly SkillRuntimeId[] | undefined = undefined,
->(id: Id, options: SkillOptions<Runtimes>): SkillDefinition<Id, Exclude<Runtimes, undefined>> & (
+>(id: Id, options: SkillOptions<Runtimes>): SkillDefinition<Id, ResolvedSkillRuntimes<Runtimes>> & (
 	Runtimes extends undefined ? { readonly runtimes?: undefined } : { readonly runtimes: Runtimes }
 ) {
 	assertSkillId(id)
@@ -59,10 +60,14 @@ export function defineSkill<
 		get directory() { return new URL(directoryHref) },
 		...(runtimes === undefined ? {} : { runtimes }),
 	}
+	attachDefinitionInference(value)
 	return freezeDefinition(value, createDefinitionIdentity('skill', id)) as ReturnTypeShape<Id, Runtimes>
 }
 
+type ResolvedSkillRuntimes<Runtimes extends readonly SkillRuntimeId[] | undefined> =
+	Runtimes extends readonly SkillRuntimeId[] ? Runtimes : readonly []
+
 type ReturnTypeShape<Id extends string, Runtimes extends readonly SkillRuntimeId[] | undefined> =
-	SkillDefinition<Id, Exclude<Runtimes, undefined>> & (
+	SkillDefinition<Id, ResolvedSkillRuntimes<Runtimes>> & (
 		Runtimes extends undefined ? { readonly runtimes?: undefined } : { readonly runtimes: Runtimes }
 	)

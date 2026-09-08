@@ -11,6 +11,7 @@ import {
 	assertNonemptyText,
 	assertPositiveInteger,
 	attachDefinitionIdentity,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 	getDefinitionIdentity,
@@ -108,9 +109,7 @@ export function defineWorkflow<
 		updates: 'none' as const,
 		interrupts,
 	}, identity)
-	Object.defineProperty(contract, '$infer', {
-		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
-	})
+	attachDefinitionInference(contract)
 	Object.freeze(contract)
 
 	const value = {
@@ -131,6 +130,7 @@ export function defineWorkflow<
 		handler: options.handler,
 		contract,
 	}
+	attachDefinitionInference(value)
 	return freezeDefinition(value, identity) as unknown as WorkflowDefinition<Id, ResolvedInput<Input>, ResolvedOutput<Output>, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>
 }
 

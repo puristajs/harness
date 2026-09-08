@@ -3,7 +3,7 @@ import type { JsonSchemaBoundary, ModelSchema, Schema } from '../schema/index.js
 import type { Infer, InferIn } from '../schema/index.js'
 import {
 	assertDefinitionId, assertKnownFields, assertModelSchema, assertNonemptyText, assertSchema,
-	createDefinitionIdentity, freezeDefinition, getDefinitionIdentity,
+	attachDefinitionInference, createDefinitionIdentity, freezeDefinition, getDefinitionIdentity,
 } from '../definitions/identity.js'
 import type { HostToolDefinition } from '../definitions/types.js'
 
@@ -58,8 +58,10 @@ export function defineHostTool<
 	if (typeof options.handler !== 'function') throw new HarnessConfigError('Host tool handler must be a function.', {
 		reason: 'invalid_tool_handler', path: 'hostTool.handler', id,
 	})
-	return freezeDefinition({ kind: 'tool' as const, id, description: options.description, input: options.input,
-		output: options.output, handler: options.handler }, createDefinitionIdentity('host-tool', id, owner)) as unknown as HostToolDefinition<Id, Input, Output, HostContext>
+	const value = { kind: 'tool' as const, id, description: options.description, input: options.input,
+		output: options.output, handler: options.handler }
+	attachDefinitionInference(value)
+	return freezeDefinition(value, createDefinitionIdentity('host-tool', id, owner)) as unknown as HostToolDefinition<Id, Input, Output, HostContext>
 }
 
 /** @internal */

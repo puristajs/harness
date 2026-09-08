@@ -2,7 +2,7 @@ import { HarnessConfigError } from '../errors/index.js'
 import type { Infer, InferIn, ModelSchema } from '../schema/index.js'
 import { compileDefinitionGraph, type CompiledDefinitionGraph, type DefinitionGraphRoots } from '../runtime/compiled-graph.js'
 import type { RuntimeRequirements, RuntimeRequirementsFor } from '../runtime/runtime-requirements.js'
-import { assertDefinitionId, assertKnownFields, createDefinitionIdentity, freezeDefinition } from './identity.js'
+import { assertDefinitionId, assertKnownFields, attachDefinitionInference, createDefinitionIdentity, freezeDefinition } from './identity.js'
 import type { DefinitionReference } from './identity.js'
 import type {
 	AnyAgentDefinition,
@@ -192,9 +192,7 @@ export function defineCatalog<
 	}
 	const graph = compileDefinitionGraph(options as DefinitionGraphRoots)
 	const value = { kind: 'catalog' as const, id, ...createCatalogView(graph, options as DefinitionGraphRoots) }
-	Object.defineProperty(value, '$infer', {
-		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
-	})
+	attachDefinitionInference(value)
 	return freezeDefinition(value, createDefinitionIdentity('catalog', id)) as HarnessCatalogDefinition<
 		Id,
 		CatalogViewForRoots<Tools, Skills, McpServers, Agents, Workflows>

@@ -25,6 +25,7 @@ export interface DefinitionIdentity {
 }
 
 const runtimeDefinitionIdentity = Symbol('@purista/harness/definition-identity')
+const runtimeDefinitionInference = Object.freeze({})
 
 /** @internal Creates a unique immutable identity for one definition value. */
 export function createDefinitionIdentity(
@@ -39,6 +40,17 @@ export function createDefinitionIdentity(
 export function attachDefinitionIdentity<T extends object>(value: T, identity: DefinitionIdentity): T {
 	Object.defineProperty(value, runtimeDefinitionIdentity, {
 		value: identity,
+		enumerable: false,
+		configurable: false,
+		writable: false,
+	})
+	return value
+}
+
+/** @internal Attaches the shared type-only inference marker before a definition is frozen. */
+export function attachDefinitionInference<T extends object>(value: T): T {
+	Object.defineProperty(value, '$infer', {
+		value: runtimeDefinitionInference,
 		enumerable: false,
 		configurable: false,
 		writable: false,

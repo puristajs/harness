@@ -576,6 +576,10 @@ describe('hosted Harness runtime', () => {
 		const hosted = defineHostTool(owner, 'hostedLookup', {
 			description: 'Call the host.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
 		})
+		const infer = Object.getOwnPropertyDescriptor(hosted, '$infer')
+		expect(infer).toMatchObject({ enumerable: false, configurable: false, writable: false })
+		expect(Object.isFrozen(infer?.value)).toBe(true)
+		expect({ ...hosted }).not.toHaveProperty('$infer')
 		const agent = defineAgent('ownerAgent', { instructions: 'Call.', tools: [hosted] })
 		const definition = defineHarness({ name: 'ownerHarness', revision: 'v1' }).addAgent(agent)
 		let initialized = 0

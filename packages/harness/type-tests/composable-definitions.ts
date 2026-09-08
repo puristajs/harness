@@ -6,6 +6,7 @@ import { defineHarness } from '../src/definitions/harness.js'
 import type { HarnessCatalogDefinition, HarnessCatalogView } from '../src/definitions/catalog.js'
 import type { AnyAgentDefinition } from '../src/definitions/types.js'
 import type { HarnessUpdateFor, ToolRequirements } from '../src/definitions/index.js'
+import { builtInTools } from '../src/tools/index.js'
 import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
 import type { AgentModelResponse, HarnessTargetStream } from '../src/index.js'
@@ -46,6 +47,7 @@ const transformedTool = defineTool('transformed', {
 })
 type _TransformedToolInput = Expect<Equal<typeof transformedTool.$infer.input, string>>
 type _TransformedToolValidatedInput = Expect<Equal<typeof transformedTool.$infer.validatedInput, number>>
+type _BuiltinToolDefinitionInference = Expect<Equal<typeof builtInTools.read.$infer.input, { path: string; encoding?: 'utf-8' | undefined }>>
 
 const stateful = defineTool('stateful', {
 	description: 'Use declared state and execution.', input, output,
@@ -127,6 +129,10 @@ defineTool('badToolOutput', { description: 'bad', input, output, async handler()
 defineTool('badToolField', { description: 'bad', input, output, extra: true, async handler() { return { answer: 'ok' } } })
 
 const skill = defineSkill('support-policy', { directory: new URL('./support-policy/', import.meta.url) })
+const runtimeSkill = defineSkill('runtime-policy', {
+	directory: new URL('./runtime-policy/', import.meta.url), runtimes: ['python', 'shell'],
+})
+type _SkillDefinitionInference = Expect<Equal<typeof runtimeSkill.$infer.runtimes, readonly ['python', 'shell']>>
 // @ts-expect-error Skill runtimes are a closed union
 defineSkill('bad-runtime', { directory: new URL('./bad/', import.meta.url), runtimes: ['ruby'] })
 // @ts-expect-error unknown Skill definition fields are rejected
@@ -141,6 +147,7 @@ const mcp = defineMcpServer('knowledge', {
 const mcpToolId: 'searchKnowledge' = mcp.tools.searchKnowledge.id
 type _McpInput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.input, { message: string }>>
 type _McpOutput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.output, { answer: string }>>
+type _McpServerInference = Expect<Equal<typeof mcp.$infer.tools.searchKnowledge, typeof mcp.tools.searchKnowledge.$infer>>
 void mcpToolId
 // @ts-expect-error the owning server id is private type metadata
 mcp.tools.searchKnowledge.serverId
@@ -150,6 +157,7 @@ defineMcpServer('badMcp', { url: 'https://example.com', tools: { search: { remot
 const textAgent = defineAgent('assistant', { instructions: 'Help.', tools: [lookup], skills: [skill] })
 type _TextInput = Expect<typeof textAgent.contract.$infer.input extends string ? true : false>
 type _TextOutput = Expect<typeof textAgent.contract.$infer.output extends string ? true : false>
+type _AgentDefinitionInference = Expect<Equal<typeof textAgent.$infer, typeof textAgent.contract.$infer>>
 const agentId: 'assistant' = textAgent.id
 const agentKind: 'agent' = textAgent.kind
 const primaryModel: 'primary' = textAgent.model

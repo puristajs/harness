@@ -5,12 +5,16 @@ import { HarnessConfigError } from '../src/errors/index.js'
 import { agentGuardrailsBinding, type AgentGuardrailsBinding } from '../src/agents/guardrails.js'
 import {
 	defineAgent,
+	defineCatalog,
+	defineHarness,
 	defineMcpServer,
 	defineSkill,
 	defineTool,
 	defineWorkflow,
 } from '../src/definitions/index.js'
 import { getDefinitionIdentity, hasDefinitionIdentity, sameDefinitionIdentity } from '../src/definitions/identity.js'
+import { createHostOwnerToken, defineHostTool } from '../src/integrator/index.js'
+import { builtInTools } from '../src/tools/index.js'
 
 const inputSchema = z.object({ message: z.string() })
 const outputSchema = z.object({ answer: z.string() })
@@ -74,6 +78,45 @@ describe('composable definition factories', () => {
 			expect(hasDefinitionIdentity({ ...definition })).toBe(false)
 		}
 		expect(sameDefinitionIdentity(workflow, workflow.contract)).toBe(true)
+	})
+
+	it('attaches one hidden frozen inference marker to every definition family', () => {
+		const tool = defineTool('inferLookup', {
+			description: 'Look up a message.', input: inputSchema, output: outputSchema,
+			async handler(_context, input) { return { answer: input.message } },
+		})
+		const skill = defineSkill('infer-policy', {
+			directory: new URL('./infer-policy/', import.meta.url), runtimes: ['python', 'shell'],
+		})
+		const mcp = defineMcpServer('inferKnowledge', {
+			tools: { search: { remoteName: 'search', description: 'Search.', input: inputSchema, output: outputSchema } },
+		})
+		const agent = defineAgent('inferAgent', { instructions: 'Answer.' })
+		const workflow = defineWorkflow('inferWorkflow', { async handler({ input }) { return input } })
+		const owner = createHostOwnerToken<Record<never, never>>()
+		const hostTool = defineHostTool(owner, 'inferHost', {
+			description: 'Run a host effect.', input: inputSchema, output: outputSchema,
+			async handler(_context, input) { return { answer: input.message } },
+		})
+		const catalog = defineCatalog('inferCatalog', { agents: [agent] })
+		const harness = defineHarness({ name: 'inferHarness' }).use(catalog)
+		const definitions = [
+			tool, builtInTools.read, hostTool, skill, mcp, mcp.tools.search,
+			agent, agent.contract, workflow, workflow.contract, catalog, harness,
+		]
+		const markers = definitions.map(definition => Object.getOwnPropertyDescriptor(definition, '$infer'))
+
+		for (const [definition, descriptor] of definitions.map((definition, index) => [definition, markers[index]] as const)) {
+			expect(descriptor).toMatchObject({ enumerable: false, configurable: false, writable: false })
+			expect(Object.isFrozen(descriptor?.value)).toBe(true)
+			expect(Object.keys(descriptor?.value ?? {})).toEqual([])
+			expect(Object.keys(definition)).not.toContain('$infer')
+			expect({ ...definition }).not.toHaveProperty('$infer')
+			expect(JSON.stringify(definition)).not.toContain('$infer')
+		}
+		expect(markers.every(descriptor => descriptor?.value === markers[0]?.value)).toBe(true)
+		expect(Reflect.set(markers[0]?.value as object, 'input', 'mutable')).toBe(false)
+		expect(JSON.stringify(harness.inspect())).not.toContain('$infer')
 	})
 
 	it('uses the minimal text-agent contract defaults', async () => {

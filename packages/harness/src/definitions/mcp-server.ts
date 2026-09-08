@@ -7,6 +7,7 @@ import {
 	assertNonemptyText,
 	assertSchema,
 	attachDefinitionIdentity,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 } from './identity.js'
@@ -81,6 +82,7 @@ export function defineMcpServer<const Id extends string, const Tools extends Mcp
 			input: tool.input,
 			output: tool.output,
 		}
+		attachDefinitionInference(toolValue)
 		toolValues[localId] = freezeDefinition(
 			toolValue,
 			createDefinitionIdentity('mcp-tool', localId, serverValue),
@@ -88,6 +90,7 @@ export function defineMcpServer<const Id extends string, const Tools extends Mcp
 	}
 
 	Object.freeze(toolValues)
+	attachDefinitionInference(serverValue)
 	return Object.freeze(serverValue) as McpServerDefinition<Id, McpToolsFromOptions<Id, Tools>>
 }
 

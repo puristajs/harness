@@ -13,6 +13,7 @@ import {
 	assertNonemptyText,
 	assertPositiveInteger,
 	attachDefinitionIdentity,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 } from './identity.js'
@@ -166,9 +167,7 @@ export function defineAgent<
 		updates,
 		interrupts,
 	}, identity)
-	Object.defineProperty(contract, '$infer', {
-		value: Object.freeze({}), enumerable: false, configurable: false, writable: false,
-	})
+	attachDefinitionInference(contract)
 	Object.freeze(contract)
 
 	const value = {
@@ -194,6 +193,7 @@ export function defineAgent<
 		...(options.durable === undefined ? {} : { durable: options.durable }),
 		contract,
 	}
+	attachDefinitionInference(value)
 	return freezeDefinition(value, identity) as unknown as AgentDefinition<
 		Id, ResolvedInput<Input>, ResolvedOutput<Output>, Model, Tools, Skills, Subagents, Capabilities,
 		ResolvedUpdates<Output, ResponseMode>, ResolvedPrompt<Input, Capabilities>, Memory, Guardrails, Permissions, ResolvedGovernance<Governance>, Workspace, Durable, Sandbox

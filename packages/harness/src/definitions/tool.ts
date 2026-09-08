@@ -7,6 +7,7 @@ import {
 	assertModelSchema,
 	assertNonemptyText,
 	assertSchema,
+	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
 } from './identity.js'
@@ -70,6 +71,7 @@ export function defineTool<
 		...(requires === undefined ? {} : { requires }),
 		handler: options.handler,
 	}
+	attachDefinitionInference(value)
 	return freezeDefinition(value, createDefinitionIdentity('tool', id)) as unknown as ToolDefinition<Id, Input, Output, Requires>
 }
 

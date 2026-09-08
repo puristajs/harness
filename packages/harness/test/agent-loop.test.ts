@@ -73,6 +73,37 @@ function directInterceptorRuntime() {
 }
 
 describe('v4 standard agent loop', () => {
+	it('rejects erased caller aliases before model or event effects and snapshots one frozen caller', async () => {
+		const agent = defineAgent('callerBoundaryAgent', { instructions: 'Answer.' })
+		const inherited = Object.create({ kind: 'agent', agentId: agent.id })
+		for (const hostile of [
+			{ kind: 'agent' },
+			{ kind: 'workflow', workflowId: 'flow', agentId: agent.id },
+			{ kind: 'workflow', workflowId: 'flow' },
+			inherited,
+			{ kind: 'agent', agentId: agent.id, unknown: true },
+		]) {
+			const text = vi.fn(async () => ({ content: 'unsafe', usage, finishReason: 'stop' as const }))
+			const run = baseOptions(agent, { text }, 'run')
+			;(run.options.invocation as any).caller = hostile
+			await expect(executeStandardAgent(run.options)).rejects.toMatchObject({
+				constructor: ValidationError, meta: { issues: { reason: 'invalid_execution_caller' } },
+			})
+			expect(text).not.toHaveBeenCalled()
+			expect(run.events).toEqual([])
+		}
+
+		const mutable = { kind: 'agent' as const, agentId: agent.id }
+		const run = baseOptions(agent, { async text() { return { content: 'safe', usage, finishReason: 'stop' as const } } }, 'run')
+		;(run.options.invocation as any).caller = mutable
+		const execution = executeStandardAgent(run.options)
+		mutable.agentId = 'mutated'
+		await expect(execution).resolves.toMatchObject({ output: 'safe' })
+		const callers = run.events.flatMap(event => 'caller' in event ? [event.caller] : [])
+		expect(callers.length).toBeGreaterThan(0)
+		expect(callers.every(caller => caller.kind === 'agent' && caller.agentId === agent.id && Object.isFrozen(caller))).toBe(true)
+	})
+
 	it('applies the effective context projection only to model-visible tool results', async () => {
 		let providerMessages: readonly import('../src/ports/model-provider.js').ModelMessage[] = []
 		const agent = defineAgent('projectedAgent', { instructions: 'Answer.' })

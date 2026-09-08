@@ -9,14 +9,20 @@ import { canonicalJson } from '../src/runtime/canonical-json.js'
 import { createLocalTargetDispatcher } from '../src/runtime/local-target-dispatcher.js'
 
 function stream(events: readonly any[]) {
-	return { cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* events } }
+	const rootRunId = events[0]?.runId
+	const terminal = events.findLast(event => event.type === 'run.finished' && event.runId === rootRunId)
+	return {
+		result: terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome),
+		cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* events },
+	}
 }
 
 describe('local target dispatcher', () => {
 	it('returns the executor stream unchanged so cancellation reaches the target', async () => {
 		const child = defineAgent('cancellableChild', { instructions: 'Answer.' })
 		const cancel = vi.fn(async (_reason?: string) => {})
-		const targetStream = { cancel, async *[Symbol.asyncIterator]() {} }
+		const result = Promise.resolve({ status: 'completed' as const, runId: 'child-run', output: 'done' })
+		const targetStream = { result, cancel, async *[Symbol.asyncIterator]() {} }
 		const dispatcher = createLocalTargetDispatcher({
 			defaultMaxDepth: 1,
 			routeBindingRevision: 'deploy-1:graph-a',
@@ -28,6 +34,7 @@ describe('local target dispatcher', () => {
 		} })
 		await opened.cancel('transport disconnected')
 		expect(opened).toBe(targetStream)
+		expect(opened.result).toBe(result)
 		expect(cancel).toHaveBeenCalledWith('transport disconnected')
 	})
 

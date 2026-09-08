@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { defineAgent } from '../src/definitions/agent.js'
+import type { ToolApprovalResume } from '../src/approvals/index.js'
 import type { ChildTaskHandle } from '../src/definitions/types.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import { defineSkill } from '../src/definitions/skill.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
-import { OperationCancelledError, SessionBusyError } from '../src/errors/index.js'
+import { InternalError, OperationCancelledError, SessionBusyError } from '../src/errors/index.js'
 import {
 	inMemorySandbox,
 	type Sandbox,
@@ -212,7 +213,9 @@ describe('v4 session lifecycle', () => {
 		try {
 			const session = await harness.getSession('span-session')
 			await expect(session.workflows.spanSuccess.run('public')).resolves.toMatchObject({ status: 'completed' })
-			await expect(session.workflows.spanFailure.run('private input')).rejects.toThrow('private failure text')
+		await expect(session.workflows.spanFailure.run('private input')).rejects.toMatchObject({
+			constructor: InternalError, message: 'Harness target execution failed.',
+		})
 			const controller = new AbortController()
 			const running = session.workflows.spanCancelled.run('private input', { signal: controller.signal })
 			await cancellationStarted
@@ -731,6 +734,118 @@ describe('v4 session lifecycle', () => {
 		expect(sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
 			.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
 		await session.destroy()
+		await harness.close()
+	})
+
+	it('rejoins concurrent identical approval resumes and rejects conflicts and malformed logical decision sets', async () => {
+		let effectCalls = 0
+		let enterEffect!: () => void
+		let releaseEffect!: () => void
+		const effectEntered = new Promise<void>(resolve => { enterEffect = resolve })
+		const effectRelease = new Promise<void>(resolve => { releaseEffect = resolve })
+		const effect = defineTool('bash', {
+			description: 'Wait until the concurrent resume checks finish.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effectCalls += 1; enterEffect(); await effectRelease; return input },
+		})
+		const agent = defineAgent('concurrentApprovalAgent', {
+			input: z.string(), instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' },
+			prompt: input => ({ role: 'user', content: input }),
+		})
+		const provider = new FakeModelProvider({ strict: true })
+		provider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: effect.id, arguments: 'approved' }],
+			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText({ content: 'complete', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const harness = await defineHarness({ name: 'concurrentApprovalResume', revision: 'v1' }).addAgent(agent).getInstance({
+			storage: persistentStorage(), model: { provider, model: 'fake' },
+		})
+		const session = await harness.getSession('concurrent-approval')
+		const interrupted = await session.agents.concurrentApprovalAgent.run('start')
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+		const request = interrupted.interrupt.requests[0]!
+		const resume: ToolApprovalResume = Object.freeze({
+			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+			revision: interrupted.interrupt.revision, eventId: 'resume-event-1',
+			decisions: Object.freeze([{ approvalId: request.approvalId, approved: true }]),
+		})
+		const first = session.agents.concurrentApprovalAgent.run('start', { resume })
+		await effectEntered
+		const joined = session.agents.concurrentApprovalAgent.run('start', { resume })
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+			...resume, decisions: [{ approvalId: request.approvalId, approved: false }],
+		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
+		for (const decisions of [
+			[],
+			[{ approvalId: 'unknown-approval', approved: true }],
+			[{ approvalId: request.approvalId, approved: true }, { approvalId: request.approvalId, approved: false }],
+		]) {
+			await expect(session.agents.concurrentApprovalAgent.run('start', { resume: { ...resume, decisions } }))
+				.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'decision_set_mismatch' } })
+		}
+		releaseEffect()
+		await expect(Promise.all([first, joined])).resolves.toEqual([
+			expect.objectContaining({ status: 'completed', output: 'complete' }),
+			expect.objectContaining({ status: 'completed', output: 'complete' }),
+		])
+		expect(effectCalls).toBe(1)
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume }))
+			.resolves.toMatchObject({ status: 'completed', output: 'complete' })
+		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: { ...resume, eventId: 'resume-event-2' } }))
+			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		await harness.close()
+	})
+
+	it.each([
+		['agent', 'run'], ['agent', 'stream'], ['workflow', 'run'], ['workflow', 'stream'],
+	] as const)('rejects a consumed new approval event as stale for %s %s', async (targetKind, mode) => {
+		let effects = 0
+		const effect = defineTool('bash', { description: 'Apply once.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effects += 1; return input } })
+		const agent = defineAgent('resumeMatrixAgent', { input: z.string(), instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('resumeMatrixWorkflow', { input: z.string(), output: z.string(), agents: [agent],
+			async handler({ agents, input }) { return agents.resumeMatrixAgent.run(input, { callId: 'matrix-child' }) } })
+		const provider = new FakeModelProvider({ strict: true })
+		const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+		if (targetKind === 'agent' && mode === 'stream') {
+			provider.enqueueTextStream([
+				{ kind: 'tool_call', call: { id: 'matrix-effect-call', name: effect.id, arguments: 'approved' } },
+				{ kind: 'finish', usage, finishReason: 'tool_calls' },
+			])
+			provider.enqueueTextStream([
+				{ kind: 'delta', text: 'complete' },
+				{ kind: 'finish', usage, finishReason: 'stop' },
+			])
+		} else {
+			provider.enqueueText({ content: '', toolCalls: [{ id: 'matrix-effect-call', name: effect.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' })
+			provider.enqueueText({ content: 'complete', toolCalls: [], usage, finishReason: 'stop' })
+		}
+		const harness = await defineHarness({ name: `resumeMatrix${targetKind}${mode}`, revision: 'v1' })
+			.addAgent(agent).addWorkflow(workflow).getInstance({ storage: persistentStorage(), model: { provider, model: 'fake' } })
+		const session = await harness.getSession(`resume-matrix-${targetKind}-${mode}`)
+		const invoke = async (resume?: ToolApprovalResume) => {
+			if (targetKind === 'agent') {
+				if (mode === 'run') return session.agents.resumeMatrixAgent.run('start', resume === undefined ? {} : { resume })
+				const opened = session.agents.resumeMatrixAgent.stream('start', resume === undefined ? {} : { resume })
+				const drained = (async () => { for await (const _event of opened) void _event })()
+				const [outcome] = await Promise.all([opened.result, drained])
+				return outcome
+			}
+			if (mode === 'run') return session.workflows.resumeMatrixWorkflow.run('start', resume === undefined ? {} : { resume })
+			const opened = session.workflows.resumeMatrixWorkflow.stream('start', resume === undefined ? {} : { resume })
+			const drained = (async () => { for await (const _event of opened) void _event })()
+			const [outcome] = await Promise.all([opened.result, drained])
+			return outcome
+		}
+		const interrupted = await invoke()
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
+		const resume: ToolApprovalResume = { type: 'tool-approval', runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'matrix-event-1',
+			decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
+		await expect(invoke(resume)).resolves.toMatchObject({ status: 'completed', output: 'complete' })
+		expect(effects).toBe(1)
+		await expect(invoke({ ...resume, eventId: 'matrix-event-2' }))
+			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
 		await harness.close()
 	})
 

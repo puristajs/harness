@@ -9,7 +9,15 @@ import { isHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 function runtimeEvents(events: readonly any[]) {
 	return events.map((event, index) => ({ eventId: `event-${index + 1}`, sequence: index + 1, ...event }))
 }
-function childStream(events: readonly any[], correlation?: { parentRunId: string; parentInvocationId: string }) { return { cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* runtimeEvents(events).map(event => ({ ...event, ...correlation })) } } }
+function streamResult(events: readonly any[]) {
+	const rootRunId = events[0]?.runId
+	const terminal = events.findLast(event => event.type === 'run.finished' && event.runId === rootRunId)
+	return terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome)
+}
+function childStream(events: readonly any[], correlation?: { parentRunId: string; parentInvocationId: string }) {
+	const authored = runtimeEvents(events)
+	return { result: streamResult(authored), cancel: vi.fn(async () => {}), async *[Symbol.asyncIterator]() { yield* authored.map(event => ({ ...event, ...correlation })) } }
+}
 function trackedStream(events: readonly any[], failAt?: number) {
 	const authored = runtimeEvents(events)
 	let index = 0
@@ -23,12 +31,14 @@ function trackedStream(events: readonly any[], failAt?: number) {
 		},
 		return: close,
 	}
-	return { stream: { cancel, [Symbol.asyncIterator]: () => iterator }, cancel, close }
+	return { stream: { result: streamResult(authored), cancel, [Symbol.asyncIterator]: () => iterator }, cancel, close }
 }
 function context(open: any, overrides: Record<string, unknown> = {}) {
 	const correlatedOpen = async (request: any) => {
 		const stream = await open(request)
+		const producerResult = stream.result
 		return {
+			result: producerResult.then((outcome: any) => ({ ...outcome, runId: request.invocation.invocationId })),
 			cancel: (reason?: string) => stream.cancel(reason),
 			[Symbol.asyncIterator]() {
 				const iterator = stream[Symbol.asyncIterator]()
@@ -210,7 +220,7 @@ describe('subagent execution', () => {
 		const child = defineAgent('slowChild', { instructions: 'Help.' })
 		const cancel = vi.fn(async () => {})
 		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
-		const hanging = { cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
+		const hanging = { result: new Promise<never>(() => {}), cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
 		const controller = new AbortController()
 		const binding = createSubagentBinding('slowDelegate', child)
 		const execution = binding.invokeValidated(context(async () => hanging, { signal: controller.signal }) as never, 'x', 'x').catch(error => error)
@@ -226,7 +236,7 @@ describe('subagent execution', () => {
 		const controller = new AbortController()
 		const cancel = vi.fn(async () => {})
 		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
-		const hanging = { cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
+		const hanging = { result: new Promise<never>(() => {}), cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
 		const timeout = new OperationTimeoutError('Tool execution timed out.', { scope: 'tool', timeout_ms: 5 })
 		const execution = createSubagentBinding('timedDelegate', child).invokeValidated(context(async () => hanging, { signal: controller.signal }) as never, 'x', 'x').catch(error => error)
 		await Promise.resolve()
@@ -284,6 +294,40 @@ describe('subagent execution', () => {
 		expect(tracked.close).toHaveBeenCalledTimes(1)
 	})
 
+	it('rejects a producer result that disagrees with the direct terminal before relaying it', async () => {
+		const child = defineAgent('mismatchedResultChild', { instructions: 'Help.' })
+		const tracked = trackedStream([{ type: 'run.finished', runId: 'r', at: 'x',
+			outcome: { status: 'completed', runId: 'r', output: 'event-output' } }])
+		Object.defineProperty(tracked.stream, 'result', {
+			value: Promise.resolve({ status: 'completed', runId: 'r', output: 'result-output' }),
+		})
+		const runtime = context(async () => tracked.stream)
+		await expect(createSubagentBinding('mismatchedResultDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
+			.rejects.toMatchObject({ meta: { issues: { reason: 'invalid_terminal' } } })
+		expect(runtime.relayChildEvent).not.toHaveBeenCalled()
+		expect(tracked.cancel).toHaveBeenCalledTimes(1)
+		expect(tracked.close).toHaveBeenCalledTimes(1)
+	})
+
+	it('observes producer result rejection while the iterator hangs and awaits cleanup', async () => {
+		const child = defineAgent('rejectedResultChild', { instructions: 'Help.' })
+		const cancel = vi.fn(async () => {})
+		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+		const primary = new Error('private producer failure')
+		const stream = {
+			result: Promise.reject(primary),
+			cancel,
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close }
+			},
+		}
+		const execution = createSubagentBinding('rejectedResultDelegate', child)
+			.invokeValidated(context(async () => stream) as never, 'x', 'x')
+		await expect(execution).rejects.toBe(primary)
+		expect(cancel).toHaveBeenCalledTimes(1)
+		expect(close).toHaveBeenCalledTimes(1)
+	})
+
 	it.each([
 		['both parent fields missing', { __preserveParent: true }],
 		['parent invocation missing', { parentRunId: 'parent-run' }],
@@ -320,7 +364,7 @@ describe('subagent execution', () => {
 		let resolveReturn!: () => void
 		const cancel = vi.fn(() => new Promise<void>(resolve => { resolveCancel = resolve }))
 		const close = vi.fn(() => new Promise<IteratorResult<any>>(resolve => { resolveReturn = () => resolve({ done: true, value: undefined }) }))
-		const stream = { cancel, [Symbol.asyncIterator]() { return { next: async () => { throw primary }, return: close } } }
+		const stream = { result: new Promise<never>(() => {}), cancel, [Symbol.asyncIterator]() { return { next: async () => { throw primary }, return: close } } }
 		let settled = false
 		const execution = createSubagentBinding('deferredCleanupDelegate', child).invokeValidated(context(async () => stream) as never, 'x', 'x')
 			.then(() => undefined, error => error).finally(() => { settled = true })

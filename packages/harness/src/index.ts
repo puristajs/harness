@@ -183,7 +183,9 @@ export { harnessExecutionEventTypesV1 } from './definitions/execution-events.js'
 export type {
   ExecutionEvent,
   ExecutionEventCorrelation,
+  ExecutionTerminalOutcome,
   HarnessExecutionEventType,
+  HarnessTargetExecutionTerminalOutcome,
   HarnessTargetStream,
 } from './definitions/execution-events.js'
 export type {
@@ -589,7 +591,7 @@ export type {
 } from './governance/types.js'
 export type { BuiltinToolName } from './tools/index.js'
 export type { ContentCaptureMode, TelemetryFlavor, TelemetryOptions } from './telemetry/index.js'
-export type { HarnessInterrupt, RunOutcome } from './runtime/outcomes.js'
+export type { HarnessInterrupt, HarnessTargetRunOutcome, RunOutcome } from './runtime/outcomes.js'
 export type { ConversationHistory, RunSummary, SessionChildTasks } from './runtime/session-contracts.js'
 export type {
   DurableInvokeOptions,

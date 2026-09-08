@@ -588,7 +588,7 @@ async function checkRuntimeSurface() {
 	}
 	const targetStream = session.workflows.runtimeWorkflow.stream({ message: 'hello' })
 	await targetStream.cancel('typed transport disconnect')
-	type _CanonicalTargetStream = Expect<typeof targetStream extends HarnessTargetStream<{ answer: string }> ? true : false>
+	type _CanonicalTargetStream = Expect<typeof targetStream extends HarnessTargetStream<typeof workflow.contract> ? true : false>
 	// @ts-expect-error unknown targets are not present on the exact definition-keyed map
 	session.workflows.unknown
 	// @ts-expect-error target inputs are inferred from the selected workflow contract

@@ -23,8 +23,9 @@ function persistentStorage(): InMemoryHarnessStorage {
 
 function terminalStream(request: Parameters<HarnessTargetDispatcher['open']>[0], output: unknown) {
 	const runId = request.invocation.invocationId
-	return { async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId, parentRunId: request.invocation.parentRunId,
-		parentInvocationId: request.invocation.invocationId, at: 'now', outcome: { status: 'completed', runId, output } } as ExecutionEvent }, async cancel() {} }
+	const outcome = { status: 'completed' as const, runId, output }
+	return { result: Promise.resolve(outcome), async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId, parentRunId: request.invocation.parentRunId,
+		parentInvocationId: request.invocation.invocationId, at: 'now', outcome } as ExecutionEvent }, async cancel() {} }
 }
 
 function approvalFor(workflow: AnyWorkflowDefinition) {
@@ -66,11 +67,15 @@ describe('v4 workflow child-task runtime', () => {
 		const storage = new InMemoryHarnessStorage()
 		const observed: string[] = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage,
-			targetDispatcher: { open: async request => ({ async *[Symbol.asyncIterator]() {
+			targetDispatcher: { open: async request => {
+				const outcome = { status, runId: request.invocation.invocationId,
+					error: { code: status === 'cancelled' ? 'OPERATION_CANCELLED' : 'INTERNAL_ERROR', message: 'safe' } }
+				return { result: Promise.resolve(outcome), async *[Symbol.asyncIterator]() {
 				yield { eventId: 'terminal-event', sequence: 1, type: 'run.finished', runId: request.invocation.invocationId,
 					parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId, at: 'now',
-					outcome: { status, runId: request.invocation.invocationId, error: { code: status === 'cancelled' ? 'OPERATION_CANCELLED' : 'INTERNAL_ERROR', message: 'safe' } } }
-			}, async cancel() {} }) as never },
+					outcome }
+			}, async cancel() {} }
+			} },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'workflow-invocation',
 			depth: 0, remainingDepth: 1, defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 },
 			onChildTaskTerminal: async childSessionId => {
@@ -206,7 +211,8 @@ describe('v4 workflow child-task runtime', () => {
 				opened += 1
 				if (opened === 1) {
 					initialOpened()
-					return { async *[Symbol.asyncIterator]() { await initialGate; yield* terminalStream(request, 'first!') }, async cancel() {} } as never
+					const source = terminalStream(request, 'first!')
+					return { result: source.result, async *[Symbol.asyncIterator]() { await initialGate; yield* source }, async cancel() {} } as never
 				}
 				return terminalStream(request, `${request.input}!`) as never
 			} },
@@ -430,10 +436,11 @@ describe('v4 workflow child-task runtime', () => {
 			const controller = new AbortController()
 			const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { open: async request => {
 				opened += 1
-				return { async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId: request.invocation.invocationId, parentRunId: request.invocation.parentRunId,
-					parentInvocationId: request.invocation.invocationId, at: 'now', outcome: terminal === 'failed'
+				const outcome = terminal === 'failed'
 						? { status: 'failed', runId: request.invocation.invocationId, error: { code: 'REMOTE', message: 'private' } }
-						: { status: 'cancelled', runId: request.invocation.invocationId, error: { code: 'REMOTE', message: 'private' } } } as ExecutionEvent }, async cancel() {} } as any
+						: { status: 'cancelled', runId: request.invocation.invocationId, error: { code: 'REMOTE', message: 'private' } }
+				return { result: Promise.resolve(outcome), async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId: request.invocation.invocationId, parentRunId: request.invocation.parentRunId,
+					parentInvocationId: request.invocation.invocationId, at: 'now', outcome } as ExecutionEvent }, async cancel() {} } as never
 			} }, signal: controller.signal, sessionId: 'session', runId: `parent-${terminal}`, rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 				defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 } })
 			const first = await build().childTasks.start(agent.id, 'input', { callId: 'task', idempotencyKey: 'stable' })

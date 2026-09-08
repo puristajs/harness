@@ -157,7 +157,7 @@ describe('v4 durable external waits', () => {
     await instance.close()
   })
 
-  it('rejects a durable definition without caller-owned durable invocation options before registration', async () => {
+  it.each(['run', 'stream'] as const)('allocates durable identity for an ordinary %s invocation and resumes it after restart', async mode => {
     class RegistrationTrackingStorage extends InMemoryHarnessStorage {
       public registrations = 0
       public override async registerWait(value: Parameters<InMemoryHarnessStorage['registerWait']>[0]) {
@@ -171,24 +171,45 @@ describe('v4 durable external waits', () => {
       capabilities: { value: capabilities },
       info: { value: Object.freeze({ ...storage.info, capabilities }) },
     })
-    const wait = defineWorkflow('missingDurableInvocation', {
+    let effects = 0
+    const modeRequest = { ...request, waitId: `ordinary-${mode}-wait` }
+    const wait = defineWorkflow('defaultDurableInvocation', {
       input: z.string(), output: z.string(), durable: true,
       async handler(context) {
-        await context.externalWait.wait(request)
+		await context.externalWait.wait(modeRequest)
+		effects += 1
         return context.input
       },
     })
-    const instance = await defineHarness({ name: 'missingDurableInvocationHarness', revision: 'release-1' })
+    const harness = defineHarness({ name: `defaultDurableInvocationHarness${mode}`, revision: 'release-1' })
       .addWorkflow(wait).getInstance({ storage })
-    const session = await instance.getSession('missing-durable-session')
+    const instance = await harness
+    const sessionId = `default-durable-${mode}-session`
+    const session = await instance.getSession(sessionId)
+	const interrupted = mode === 'run'
+		? await session.workflows.defaultDurableInvocation.run('input')
+		: await (async () => {
+			const stream = session.workflows.defaultDurableInvocation.stream('input')
+			const result = await stream.result
+			for await (const _event of stream) { /* drain before restart */ }
+			return result
+		})()
+	expect(interrupted).toMatchObject({ status: 'interrupted', interrupt: { type: 'external-wait', id: modeRequest.waitId } })
+	const runId = interrupted.runId
+	expect(runId).toMatch(/^run_/)
+    expect(storage.registrations).toBe(1)
+	await instance.close()
+	await expect(storage.signalWait({ waitId: modeRequest.waitId, eventId: `${mode}-delivery`, outcome: 'approved' }))
+		.resolves.toMatchObject({ kind: 'applied' })
 
-    await expect(session.workflows.missingDurableInvocation.run('input')).rejects.toMatchObject({
-      code: 'EXTERNAL_WAIT_ERROR', reason: 'durable_required',
-    })
-    expect(storage.registrations).toBe(0)
-    await expect(storage.getWait(request.waitId)).resolves.toBeUndefined()
-    await session.destroy()
-    await instance.close()
+	const restarted = await defineHarness({ name: `defaultDurableInvocationHarness${mode}`, revision: 'release-1' })
+		.addWorkflow(wait).getInstance({ storage })
+	const resumedSession = await restarted.getSession(sessionId)
+	await expect(resumedSession.workflows.defaultDurableInvocation.run('input', { durable: { runId } }))
+		.resolves.toEqual({ status: 'completed', runId, output: 'input' })
+	expect(effects).toBe(1)
+	await resumedSession.destroy()
+	await restarted.close()
   })
 
   it('rejects malformed or extended requests', () => {

@@ -7,18 +7,25 @@ import { defineWorkflow } from '../src/definitions/workflow.js'
 import { defineTool } from '../src/definitions/tool.js'
 import type { ExecutionEvent } from '../src/definitions/execution-events.js'
 import type { HarnessTargetDispatcher, HarnessTargetDispatchStream } from '../src/ports/target-dispatcher.js'
+import type { JsonValue } from '../src/models/json.js'
+import type { HarnessInterrupt } from '../src/runtime/outcomes.js'
 import { isHarnessChildTargetInterruption } from '../src/runtime/steps.js'
 import type { RunCheckpoint } from '../src/storage/execution.js'
 import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
 import { bindPortableTool } from '../src/tools/bindings.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 
-function stream(events: readonly ExecutionEvent[]): HarnessTargetDispatchStream<any> {
+function stream(events: readonly ExecutionEvent[]): HarnessTargetDispatchStream<JsonValue, HarnessInterrupt> {
 	const authored = events.map((event, index) => ({ eventId: `event-${index + 1}`, sequence: index + 1, ...event })) as ExecutionEvent[]
-	return { async *[Symbol.asyncIterator]() { yield* authored }, async cancel() {} }
+	const directRunId = authored[0]?.runId
+	const terminal = authored.findLast(event => event.type === 'run.finished' && event.runId === directRunId)
+	return {
+		result: terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome),
+		async *[Symbol.asyncIterator]() { yield* authored }, async cancel() {},
+	}
 }
 
-function completed(parentRunId: string, childInvocationId: string, output: unknown, runId = childInvocationId): HarnessTargetDispatchStream<any> {
+function completed(parentRunId: string, childInvocationId: string, output: unknown, runId = childInvocationId): HarnessTargetDispatchStream<JsonValue, HarnessInterrupt> {
 	return stream([{ type: 'run.finished', runId, parentRunId, parentInvocationId: childInvocationId, at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId, output } } as ExecutionEvent])
 }
 

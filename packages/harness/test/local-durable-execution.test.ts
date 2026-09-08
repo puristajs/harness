@@ -27,7 +27,7 @@ import { defineHarness as defineV4Harness } from '../src/definitions/harness.js'
 import { defineAgent } from '../src/definitions/agent.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
-import { OperationCancelledError } from '../src/errors/index.js'
+import { InternalError, OperationCancelledError } from '../src/errors/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 
 async function tempRoot(): Promise<string> {
@@ -672,7 +672,7 @@ describe('local durable execution', () => {
     try {
       const session = await harness.getSession('workspace-failed-session')
       await expect(session.workflows.workspaceFailed.run('go', { durable: { runId: 'workspace-failed-run' } }))
-        .rejects.toThrow('workflow failed')
+        .rejects.toMatchObject({ constructor: InternalError, message: 'Harness target execution failed.' })
       expect(calls).toEqual(['finalizeRun', 'finish:failed'])
       await expect(local.storage.getRun('workspace-failed-run')).resolves.toMatchObject({ status: 'failed' })
       await expect(local.workspace.inspectWorkspace?.({ workspaceRef }))

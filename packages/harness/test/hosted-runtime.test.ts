@@ -58,6 +58,16 @@ function routeFor(target: AnyHarnessTargetContract, fill = 'a'): HarnessTargetRo
 		target: Object.freeze({ kind: target.kind, id: target.id }), bindingDigest: `sha256:${fill.repeat(64)}` })
 }
 
+function dispatchStream<Output>(events: readonly ExecutionEvent<Output>[], cancel: (reason?: string) => Promise<void> = async () => {}) {
+	const directRunId = events[0]?.runId
+	const terminal = events.findLast(event => event.type === 'run.finished' && event.runId === directRunId)
+	return Object.freeze({
+		result: terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome),
+		cancel,
+		async *[Symbol.asyncIterator]() { yield* events },
+	})
+}
+
 function dispatcherFor(target: ReturnType<typeof defineAgent>, onOpen: (request: HarnessTargetDispatchRequest<typeof target.contract>) => void) {
 	let opens = 0
 	let assertions = 0
@@ -85,10 +95,7 @@ function dispatcherFor(target: ReturnType<typeof defineAgent>, onOpen: (request:
 					parentInvocationId, at: '2026-01-01T00:00:01.000Z',
 					outcome: Object.freeze({ status: 'completed', runId, output: 'child-answer' }) }),
 			])
-			return Object.freeze({
-				async cancel() {},
-				async *[Symbol.asyncIterator]() { for (const event of events) yield event },
-			})
+			return dispatchStream(events)
 		},
 		async openPersisted(request) {
 			if (canonicalJson(request.route) !== canonicalJson(route)) throw new Error('unexpected route')
@@ -99,11 +106,12 @@ function dispatcherFor(target: ReturnType<typeof defineAgent>, onOpen: (request:
 	return { dispatcher, counts: () => ({ opens, assertions, closes }) }
 }
 
-function correlateRemoteStream<Output>(
-	stream: HarnessTargetDispatchStream<Output>,
+function correlateRemoteStream<Output, Interrupt>(
+	stream: HarnessTargetDispatchStream<Output, Interrupt>,
 	invocation: HarnessTargetDispatchRequest<AnyHarnessTargetContract>['invocation'],
-): HarnessTargetDispatchStream<Output> {
+): HarnessTargetDispatchStream<Output, Interrupt> {
 	return Object.freeze({
+		result: stream.result,
 		cancel: (reason?: string) => stream.cancel(reason),
 		async *[Symbol.asyncIterator]() {
 			for await (const event of stream) yield event.runId === invocation.invocationId
@@ -260,6 +268,38 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 }
 
 describe('hosted Harness runtime', () => {
+	it('owns exact terminal results for hosted root and dispatched streams independently of iteration', async () => {
+		const workflow = defineWorkflow('hostedResultWorkflow', { input: z.string(), output: z.string(),
+			async handler({ input }) { return `done:${input}` } })
+		const definition = defineHarness({ name: 'hostedResultHarness', revision: 'v1' }).addWorkflow(workflow)
+		const unused = defineAgent('unusedHostedResultTarget', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const owner = createHostOwnerToken<object>()
+		const instance = await instantiateHostedHarness(definition, { storage: persistentStorage() }, {
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
+		})
+		const hosted = await instance.streamHosted({ target: workflow.contract, input: 'root',
+			invokeOptions: { sessionId: 'hosted-result-root' }, hostInvocation: {} })
+		const hostedOutcome = await hosted.result
+		expect(hostedOutcome).toMatchObject({ status: 'completed', output: 'done:root' })
+		const hostedEvents = []
+		for await (const event of hosted) hostedEvents.push(event)
+		expect(hostedEvents.at(-1)).toMatchObject({ type: 'run.finished', outcome: hostedOutcome })
+
+		const invocation = Object.freeze({ sessionId: 'hosted-result-dispatched', invocationId: 'hosted-result-child-run',
+			rootRunId: 'hosted-result-root-run', parentRunId: 'hosted-result-parent-run', parentWorkflowId: 'outerWorkflow',
+			depth: 1, remainingDepth: 2, signal: new AbortController().signal })
+		const dispatched = await instance.streamDispatched({ delivery: 'fresh', target: workflow.contract,
+			input: 'child', wireInput: 'child', invocation, hostInvocation: {} })
+		const dispatchedOutcome = await dispatched.result
+		expect(dispatchedOutcome).toEqual({ status: 'completed', runId: invocation.invocationId, output: 'done:child' })
+		const dispatchedEvents = []
+		for await (const event of dispatched) dispatchedEvents.push(event)
+		expect(dispatchedEvents.at(-1)).toMatchObject({ type: 'run.finished', outcome: dispatchedOutcome })
+		await instance.close()
+	})
+
 	it('runs a workflow-declared host tool with workflow target context and caller events', async () => {
 		interface HostContext { readonly marker: string; readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
@@ -298,11 +338,10 @@ describe('hosted Harness runtime', () => {
 		let opens = 0
 		const dispatcher: HarnessTargetDispatcher = {
 			assertTarget: target => routeFor(target, 'f'),
-			async open(request) { opens += 1; const runId = request.invocation.invocationId; return {
-				async cancel() {}, async *[Symbol.asyncIterator]() { yield { type: 'run.finished', eventId: `${runId}:1`, sequence: 1, runId,
+			async open(request) { opens += 1; const runId = request.invocation.invocationId; return dispatchStream([{
+				type: 'run.finished', eventId: `${runId}:1`, sequence: 1, runId,
 					parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId, at: 'now',
-					outcome: { status: 'failed', runId, error: { code: 'REMOTE', message: 'secret', category: 'internal', retriable: false } } } as ExecutionEvent<string> },
-			} },
+					outcome: { status: 'failed', runId, error: { code: 'REMOTE', message: 'secret', category: 'internal', retriable: false } } } as ExecutionEvent<string>]) },
 			async openPersisted() { throw new Error('unexpected persisted open') },
 		}
 		const tool = defineHostTool(owner, 'workflowFailureHost', { description: 'Fail nested.', input: z.string(), output: z.string(), async handler(context, input) {
@@ -600,7 +639,7 @@ describe('hosted Harness runtime', () => {
 				eventId: 'event', decisions: [
 					{ approvalId: 'duplicate', approved: true }, { approvalId: 'duplicate', approved: false },
 				] }, hostInvocation: {},
-		})).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_resume' } })
+		})).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'decision_set_mismatch' } })
 		await expect(instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
 			invocation: { ...invocation, identity: { tenantId: 'caller-controlled' } }, hostInvocation: {},
 		} as never)).rejects.toMatchObject({ meta: { issues: { reason: 'invalid_hosted_dispatch_request', field: 'invocation.identity' } } })
@@ -766,7 +805,7 @@ describe('hosted Harness runtime', () => {
 						parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId,
 						at: '2026-01-01T00:00:01.000Z', outcome: { status: 'completed', runId, output: 'ok' } },
 				]
-				return { async cancel() {}, async *[Symbol.asyncIterator]() { yield* events } }
+				return dispatchStream(events)
 			},
 			async openPersisted() { throw new Error('unexpected persisted open') },
 		}
@@ -833,7 +872,7 @@ describe('hosted Harness runtime', () => {
 						parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId,
 						at: '2026-01-01T00:00:01.000Z', outcome } as ExecutionEvent<string>,
 				]
-				return { async cancel() {}, async *[Symbol.asyncIterator]() { yield* events } }
+				return dispatchStream(events)
 			},
 			async openPersisted() { throw new Error('unexpected persisted open') },
 		}
@@ -893,7 +932,7 @@ describe('hosted Harness runtime', () => {
 						parentRunId: request.invocation.parentRunId, parentInvocationId: request.invocation.invocationId,
 						at: '2026-01-01T00:00:01.000Z', outcome: { status: 'completed', runId, output: 'ok' } },
 				]
-				return { async cancel() {}, async *[Symbol.asyncIterator]() { yield* events } }
+				return dispatchStream(events)
 			},
 			async openPersisted() { throw new Error('unexpected persisted open') },
 		}
@@ -983,6 +1022,7 @@ describe('hosted Harness runtime', () => {
 				opened()
 				const runId = request.invocation.invocationId
 				return {
+					result: new Promise<never>(() => {}),
 					cancel,
 					async *[Symbol.asyncIterator]() {
 						yield { type: 'run.started', eventId: `${runId}:1`, sequence: 1, runId,

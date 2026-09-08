@@ -1,4 +1,5 @@
 import type { ToolApprovalInterrupt } from '../approvals/index.js'
+import type { AnyHarnessTargetContract } from '../ports/target-dispatcher.js'
 
 /** Durable, authenticated pause that can be resumed without treating it as a failure. */
 export type HarnessInterrupt =
@@ -9,3 +10,9 @@ export type HarnessInterrupt =
 export type RunOutcome<Output, Interrupt = HarnessInterrupt> =
 	| Readonly<{ status: 'completed'; runId: string; output: Output }>
 	| Readonly<{ status: 'interrupted'; runId: string; interrupt: Interrupt }>
+
+/** Aggregate result derived solely from one target contract. */
+export type HarnessTargetRunOutcome<Target extends AnyHarnessTargetContract> = RunOutcome<
+	Target['$infer']['output'],
+	Target['$infer']['interrupt']
+>

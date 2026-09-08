@@ -9,9 +9,15 @@ import {
 } from '../src/integrator/index.js'
 import type { ModelProvider } from '../src/ports/model-provider.js'
 import type { HarnessTargetDispatcher } from '../src/ports/target-dispatcher.js'
+import type { HarnessTargetDispatchStream } from '../src/ports/target-dispatcher.js'
+import type { HarnessTargetStream } from '../src/definitions/execution-events.js'
+import type { HarnessTargetRunOutcome } from '../src/runtime/outcomes.js'
 import type { HarnessStorage } from '../src/storage/types.js'
 import type { Logger } from '../src/logger/index.js'
 import type { TelemetryShim } from '../src/telemetry/index.js'
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
+type Expect<T extends true> = T
 
 type HostContext = Readonly<{ tenantId: string }>
 const owner = createHostOwnerToken<HostContext>()
@@ -72,14 +78,21 @@ const hostBindings: HarnessHostBindings<Readonly<{ authorization: string }>, Hos
 }
 const hostedInstance = instantiateHostedHarness(harness, config, hostBindings)
 hostedInstance.then(instance => {
-	instance.runHosted({ target: agent.contract, input: 'hello', invokeOptions: { sessionId: 'session' },
+	const agentRun = instance.runHosted({ target: agent.contract, input: 'hello', invokeOptions: { sessionId: 'session' },
 		hostInvocation: { authorization: 'token' } })
-	instance.runHosted({ target: workflow.contract, input: 'hello', invokeOptions: { sessionId: 'session' },
+	const workflowRun = instance.runHosted({ target: workflow.contract, input: 'hello', invokeOptions: { sessionId: 'session' },
 		hostInvocation: { authorization: 'token' } })
-	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
+	const agentStream = instance.streamHosted({ target: agent.contract, input: 'hello', invokeOptions: { sessionId: 'stream-session' },
+		hostInvocation: { authorization: 'token' } })
+	const dispatchedStream = instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
 	}, hostInvocation: { authorization: 'token' } })
+	type _AgentRun = Expect<Equal<typeof agentRun, Promise<HarnessTargetRunOutcome<typeof agent.contract>>>>
+	type _WorkflowRun = Expect<Equal<typeof workflowRun, Promise<HarnessTargetRunOutcome<typeof workflow.contract>>>>
+	type _AgentStream = Expect<Equal<typeof agentStream, Promise<HarnessTargetStream<typeof agent.contract>>>>
+	type _DispatchedStream = Expect<Equal<typeof dispatchedStream,
+		Promise<HarnessTargetDispatchStream<typeof agent.contract.$infer.output, typeof agent.contract.$infer.interrupt>>>>
 	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello',
 		// @ts-expect-error a dispatched child has exactly one parent target kind
 		invocation: { sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',

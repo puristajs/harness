@@ -4,7 +4,10 @@ import type {
   AgentAdmissionRequest,
   InMemoryAgentAdmissionOptions,
   ExecutionEvent,
+  ExecutionTerminalOutcome,
   HarnessExecutionEventType,
+  HarnessTargetExecutionTerminalOutcome,
+  HarnessTargetRunOutcome,
   HarnessTargetStream,
   McpBinding,
   McpServerOptions,
@@ -222,8 +225,16 @@ describe('v4 public API export surface', () => {
 	})
 
 	it('publishes the canonical cancellable target event stream from the root', () => {
-		expectTypeOf<HarnessTargetStream<string>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
-		expectTypeOf<HarnessTargetStream<string>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()
+		const target = mainEntry.defineAgent('publicApiTarget', { instructions: 'Answer.' }).contract
+		expectTypeOf<HarnessTargetStream<typeof target>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
+		expectTypeOf<HarnessTargetStream<typeof target>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()
+		expectTypeOf<HarnessTargetStream<typeof target>['result']>().toEqualTypeOf<Promise<HarnessTargetExecutionTerminalOutcome<typeof target>>>()
+		expectTypeOf<HarnessTargetRunOutcome<typeof target>>().toMatchTypeOf<
+			| { readonly status: 'completed'; readonly runId: string; readonly output: string }
+			| { readonly status: 'interrupted'; readonly runId: string; readonly interrupt: never }
+		>()
+		expectTypeOf<ExecutionTerminalOutcome<string, never>>().toMatchTypeOf<
+			HarnessTargetExecutionTerminalOutcome<typeof target>>()
 	})
 
   it('publishes v4 runtime binding, admission, and event inventory types', () => {

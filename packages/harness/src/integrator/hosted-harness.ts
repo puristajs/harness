@@ -5,6 +5,7 @@ import type { HarnessCatalogView, HarnessContracts } from '../definitions/catalo
 import { getHarnessRuntimeBlueprint, type HarnessDefinition } from '../definitions/harness.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { HarnessExecutionCaller, HostToolDefinition } from '../definitions/types.js'
+import type { HarnessTargetStream } from '../definitions/execution-events.js'
 import {
 	AgentLoopBudgetError, HarnessConfigError, HostNestedTargetError, HostNestedTargetReplayConflictError, InternalError,
 	HarnessTargetRouteReceiptMismatchError, OperationCancelledError, ValidationError,
@@ -15,7 +16,7 @@ import { isJsonValue, type JsonValue } from '../models/json.js'
 import type { Logger } from '../logger/index.js'
 import type {
 	AnyHarnessTargetContract, HarnessNestedTargetDispatchInvocation, HarnessTargetDispatcher, HarnessTargetDispatchStream, HarnessTargetInput,
-	HarnessTargetOutput, HarnessTargetRouteReceiptV1, HarnessValidatedTargetInput,
+	HarnessTargetInterrupt, HarnessTargetOutput, HarnessTargetRouteReceiptV1, HarnessValidatedTargetInput,
 } from '../ports/target-dispatcher.js'
 import type { Infer } from '../schema/index.js'
 import type { HostNestedTargetCheckpointV1, HostNestedTargetStoredOutcomeV1 } from '../storage/execution.js'
@@ -33,7 +34,7 @@ import {
 	createTrustedHostedInvocationEnvironment, instantiateHarnessRuntime,
 	normalizeInvokeOptions, normalizeToolApprovalResume, type InvokeOptions,
 } from '../runtime/standalone-instance.js'
-import type { RunOutcome } from '../runtime/outcomes.js'
+import type { HarnessTargetRunOutcome } from '../runtime/outcomes.js'
 import type { RuntimeRequirements } from '../runtime/runtime-requirements.js'
 import type { CompiledDefinitionGraph } from '../runtime/compiled-graph.js'
 import {
@@ -133,10 +134,10 @@ export type HostedDispatchedTargetRequest<Target extends AnyHarnessTargetContrac
 
 /** Hosted execution facade retaining exact graph target types. */
 export interface HostedHarnessInstance<Contracts extends HarnessContracts, HostInvocation> {
-	runHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<RunOutcome<HarnessTargetOutput<Target>>>
-	streamHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+	runHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetRunOutcome<Target>>
+	streamHosted<Target extends HostedTargetOf<Contracts>>(request: HostedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetStream<Target>>
 	/** Accepts the receiving side of a trusted target dispatch while preserving its exact child identity. */
-	streamDispatched<Target extends HostedTargetOf<Contracts>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+	streamDispatched<Target extends HostedTargetOf<Contracts>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 	close(): Promise<void>
 }
 
@@ -200,11 +201,11 @@ export async function instantiateHostedHarness<
 	return Object.freeze({
 		async runHosted<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedTargetRequest<Target, HostInvocation>) {
 			const prepared = await prepare(request)
-			return kernel.runTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment) as Promise<RunOutcome<HarnessTargetOutput<Target>>>
+			return kernel.runTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment)
 		},
 		async streamHosted<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedTargetRequest<Target, HostInvocation>) {
 			const prepared = await prepare(request)
-			return kernel.streamTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment) as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+			return kernel.streamTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment)
 		},
 		async streamDispatched<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>) {
 			if (closed) throw new InternalError('Hosted Harness instance is closed.')
@@ -217,7 +218,7 @@ export async function instantiateHostedHarness<
 			})
 			const executionInput = validated.delivery === 'fresh' ? validated.input! : validated.wireInput
 			return kernel.streamDispatchedTrusted(request.target, executionInput, validated.wireInput,
-				invocation, validated.resume, environment) as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+				invocation, validated.resume, environment)
 		},
 		async close() { closed = true; await kernel.instance.close() },
 	})
@@ -486,14 +487,14 @@ function validateHostedRequest(value: unknown, graph: NonNullable<ReturnType<typ
 	return Object.freeze({ sessionId, ...hostedOptions })
 }
 
-function validateHostedDispatchedRequest(
-	value: unknown,
+function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract, HostInvocation>(
+	value: HostedDispatchedTargetRequest<Target, HostInvocation>,
 	graph: NonNullable<ReturnType<typeof getHarnessRuntimeBlueprint>>['graph'],
 	defaultMaxDepth: number,
 ): Readonly<{
 	delivery: 'fresh' | 'resume'
-	input?: JsonValue
-	wireInput: JsonValue
+	input?: HarnessValidatedTargetInput<Target>
+	wireInput: HarnessTargetInput<Target>
 	invocation: HostedDispatchInvocation
 	resume?: ToolApprovalResume
 }> {
@@ -559,8 +560,8 @@ function validateHostedDispatchedRequest(
 	const validatedInvocation = Object.freeze({ ...invocation,
 		remainingDepth: Math.min(invocation['remainingDepth'] as number, configuredMaxDepth),
 	}) as HostedDispatchInvocation
-	return Object.freeze({ delivery, wireInput: request['wireInput'],
-		...(delivery === 'fresh' ? { input: request['input'] as JsonValue } : {}),
+	return Object.freeze({ delivery, wireInput: request['wireInput'] as HarnessTargetInput<Target>,
+		...(delivery === 'fresh' ? { input: request['input'] as HarnessValidatedTargetInput<Target> } : {}),
 		invocation: validatedInvocation, ...(resume === undefined ? {} : { resume }) })
 }
 

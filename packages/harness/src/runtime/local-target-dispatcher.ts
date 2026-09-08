@@ -14,6 +14,7 @@ import type {
 	HarnessTargetDispatchRequest,
 	HarnessTargetDispatchStream,
 	HarnessTargetOutput,
+	HarnessTargetInterrupt,
 	HarnessTargetRouteReceiptV1,
 	HarnessValidatedTargetInput,
 	PersistedHarnessTargetDispatchRequest,
@@ -46,7 +47,10 @@ export type LocalTargetExecutionRequest<D extends AnyDefinition> =
 /** One immutable local route from an exact definition identity to its executor. */
 export interface LocalTargetBinding<D extends AnyDefinition = AnyDefinition> {
 	readonly definition: D
-	execute(request: LocalTargetExecutionRequest<D>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<ContractOf<D>>>>
+	execute(request: LocalTargetExecutionRequest<D>): Promise<HarnessTargetDispatchStream<
+		HarnessTargetOutput<ContractOf<D>>,
+		HarnessTargetInterrupt<ContractOf<D>>
+	>>
 }
 
 export interface LocalTargetDispatcherOptions {
@@ -62,7 +66,7 @@ export interface LocalTargetDispatcher extends HarnessTargetDispatcher {
 		target: Target
 		input: import('../ports/target-dispatcher.js').HarnessTargetInput<Target>
 		invocation: HarnessRootTargetDispatchInvocation
-	}>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+	}>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 }
 
 interface LocalRoute {
@@ -70,7 +74,7 @@ interface LocalRoute {
 	readonly contract: AnyHarnessTargetContract
 	readonly configuredMaxDepth: number
 	readonly receipt: HarnessTargetRouteReceiptV1
-	execute(request: LocalTargetExecutionRequest<AnyDefinition>): Promise<HarnessTargetDispatchStream<JsonValue>>
+	execute(request: LocalTargetExecutionRequest<AnyDefinition>): Promise<HarnessTargetDispatchStream<JsonValue, import('./outcomes.js').HarnessInterrupt>>
 }
 
 /** Creates a standalone receiving dispatcher with no string-address fallback. */
@@ -128,7 +132,7 @@ export function createLocalTargetDispatcher(options: LocalTargetDispatcherOption
 		invocationValue: HarnessTargetDispatchInvocation,
 		resume?: ToolApprovalResume,
 		ancestry: 'root' | 'nested' = 'nested',
-	): Promise<HarnessTargetDispatchStream<JsonValue>> => {
+	): Promise<HarnessTargetDispatchStream<JsonValue, import('./outcomes.js').HarnessInterrupt>> => {
 		validateInvocation(invocationValue, ancestry)
 		if (resume !== undefined && resume.runId !== invocationValue.invocationId) {
 			throw new HarnessConfigError('Persisted target resume is invalid.', {
@@ -150,15 +154,15 @@ export function createLocalTargetDispatcher(options: LocalTargetDispatcherOption
 
 	return Object.freeze({
 		assertTarget(target: AnyHarnessTargetContract): HarnessTargetRouteReceiptV1 { return assertTarget(target).receipt },
-		async openRoot<Target extends AnyHarnessTargetContract>(request: Readonly<{ target: Target; input: import('../ports/target-dispatcher.js').HarnessTargetInput<Target>; invocation: HarnessRootTargetDispatchInvocation }>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>> {
+		async openRoot<Target extends AnyHarnessTargetContract>(request: Readonly<{ target: Target; input: import('../ports/target-dispatcher.js').HarnessTargetInput<Target>; invocation: HarnessRootTargetDispatchInvocation }>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>> {
 			const route = assertTarget(request.target)
-			return openRoute(route, request.input, request.invocation, undefined, 'root') as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+			return openRoute(route, request.input, request.invocation, undefined, 'root') as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 		},
-		async open<Target extends AnyHarnessTargetContract>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>> {
+		async open<Target extends AnyHarnessTargetContract>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>> {
 			const route = assertTarget(request.target)
-			return openRoute(route, request.input, request.invocation) as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+			return openRoute(route, request.input, request.invocation) as Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 		},
-		async openPersisted(request: PersistedHarnessTargetDispatchRequest): Promise<HarnessTargetDispatchStream<JsonValue>> {
+		async openPersisted(request: PersistedHarnessTargetDispatchRequest): Promise<HarnessTargetDispatchStream<JsonValue, import('./outcomes.js').HarnessInterrupt>> {
 			assertRouteReceipt(request.route)
 			const route = routesByReceipt.get(canonicalJson(request.route))
 			if (route === undefined) throw new HarnessTargetRouteReceiptMismatchError({
@@ -191,7 +195,7 @@ function eraseLocalBinding<D extends AnyDefinition>(binding: LocalTargetBinding<
 		receipt,
 		async execute(request: LocalTargetExecutionRequest<AnyDefinition>) {
 			const opened = await binding.execute(request as LocalTargetExecutionRequest<D>)
-			return opened as HarnessTargetDispatchStream<JsonValue>
+			return opened as HarnessTargetDispatchStream<JsonValue, import('./outcomes.js').HarnessInterrupt>
 		},
 	})
 }

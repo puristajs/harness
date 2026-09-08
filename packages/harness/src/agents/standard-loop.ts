@@ -36,8 +36,7 @@ export interface StandardAgentInvocation {
 	readonly parentRunId?: string
 	readonly parentInvocationId?: string
 	readonly invocationId: string
-	readonly agentId: string
-	readonly workflowId?: string
+	readonly caller: Extract<import('../definitions/types.js').HarnessExecutionCaller, { readonly kind: 'agent' }>
 	readonly signal: AbortSignal
 	readonly metadata: Readonly<Record<string, JsonValue>>
 	readonly depth?: number
@@ -85,7 +84,11 @@ export type StandardAgentExecutionResult = Readonly<{
 
 /** @internal Runs one v4 configurable agent as the standard bounded model loop. */
 export async function executeStandardAgent(options: ExecuteStandardAgentOptions): Promise<StandardAgentExecutionResult> {
-	agentCaller(options)
+	const caller = agentCaller(options)
+	options = Object.freeze({ ...options,
+		invocation: Object.freeze({ ...options.invocation, caller }),
+		toolContext: Object.freeze({ ...options.toolContext, caller }),
+	})
 	const resumed = options.resume
 	let input: JsonValue
 	if (resumed === undefined && options.inputValidation !== 'already-validated-target') {
@@ -113,7 +116,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 		maxDepth: options.agent.loop?.maxDepth ?? options.defaults.maxDepth,
 	}
 	if (resumed === undefined) await options.sink.emit({ type: 'agent.started', agentId: options.agent.id, at: new Date().toISOString(), modelAlias: options.modelAlias,
-		...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) })
+		...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }) })
 	try {
 	const interceptor = options.agent.guardrails?.[agentGuardrailsBinding] as AgentExecutionInterceptor | undefined
 	let effectiveInput = input
@@ -198,7 +201,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 			...(options.invocation.parentRunId === undefined ? {} : { parentRunId: options.invocation.parentRunId }),
 			...(options.invocation.parentInvocationId === undefined ? {} : { parentInvocationId: options.invocation.parentInvocationId }),
 			sessionId: options.invocation.sessionId,
-			...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+			...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 			invocationId: options.invocation.invocationId, step, signal: options.invocation.signal,
 			decisionTimeoutMs: options.defaults.decisionTimeoutMs, metadata: options.invocation.metadata,
 			...(options.toolContext.telemetry === undefined ? {} : { telemetry: options.toolContext.telemetry }),
@@ -267,7 +270,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 			messages.push(finalMessage)
 			await emitMessage(options, finalMessage)
 			await options.sink.emit({ type: 'agent.finished', agentId: options.agent.id, at: new Date().toISOString(), modelAlias: options.modelAlias, output,
-				...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) })
+				...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }) })
 			return Object.freeze({ output, messages: Object.freeze(messages.map(stripContinuation)),
 				conversationMessages: Object.freeze(messages.slice(conversationStart).map(stripContinuation)) })
 		}
@@ -292,7 +295,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 			const preparedState = freezeSuspendedAgentTurnState({
 				rootRunId: options.invocation.rootRunId, agentRunId: options.invocation.runId,
 				sessionId: options.invocation.sessionId, agentId: options.agent.id,
-				...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+				...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 				...(options.invocation.parentRunId === undefined ? {} : { parentRunId: options.invocation.parentRunId }),
 				...(options.invocation.parentInvocationId === undefined ? {} : { parentInvocationId: options.invocation.parentInvocationId }),
 				invocationId: options.invocation.invocationId, step, modelAlias: options.modelAlias, input: effectiveInput,
@@ -312,7 +315,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 			durablePreparedState = freezeSuspendedAgentTurnState({
 				rootRunId: options.invocation.rootRunId, agentRunId: options.invocation.runId,
 				sessionId: options.invocation.sessionId, agentId: options.agent.id,
-				...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+				...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 				...(options.invocation.parentRunId === undefined ? {} : { parentRunId: options.invocation.parentRunId }),
 				...(options.invocation.parentInvocationId === undefined ? {} : { parentInvocationId: options.invocation.parentInvocationId }),
 				invocationId: options.invocation.invocationId, step, modelAlias: options.modelAlias, input: effectiveInput,
@@ -336,7 +339,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 				const state = freezeSuspendedAgentTurnState({
 					rootRunId: options.invocation.rootRunId, agentRunId: options.invocation.runId,
 					sessionId: options.invocation.sessionId, agentId: options.agent.id,
-					...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+					...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 					...(options.invocation.parentRunId === undefined ? {} : { parentRunId: options.invocation.parentRunId }),
 					...(options.invocation.parentInvocationId === undefined ? {} : { parentInvocationId: options.invocation.parentInvocationId }),
 					invocationId: options.invocation.invocationId, step, modelAlias: options.modelAlias, input: effectiveInput,
@@ -358,7 +361,7 @@ export async function executeStandardAgent(options: ExecuteStandardAgentOptions)
 	} catch (error) {
 		if (error instanceof ToolApprovalPendingError || isHarnessChildTargetInterruptionControl(error)) throw error
 		await options.sink.emit({ type: 'agent.finished', agentId: options.agent.id, at: new Date().toISOString(), modelAlias: options.modelAlias,
-			error: serializeError(error), ...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) })
+			error: serializeError(error), ...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }) })
 		throw error
 	}
 }
@@ -466,7 +469,7 @@ function assertMatchingContinuation(options: ExecuteStandardAgentOptions, state:
 	if (state.rootRunId !== options.invocation.rootRunId || state.agentRunId !== options.invocation.runId
 		|| state.sessionId !== options.invocation.sessionId || state.agentId !== options.agent.id
 		|| state.invocationId !== options.invocation.invocationId || state.modelAlias !== options.modelAlias
-		|| state.workflowId !== options.invocation.workflowId || state.parentRunId !== options.invocation.parentRunId
+		|| state.workflowId !== options.invocation.caller.workflowId || state.parentRunId !== options.invocation.parentRunId
 		|| state.parentInvocationId !== options.invocation.parentInvocationId) {
 		throw new ValidationError('Prepared agent continuation does not match the invocation.', {
 			where: 'invoke_options', issues: { reason: 'prepared_agent_context_mismatch' },
@@ -503,7 +506,7 @@ function acceptedTurnCursor(
 	return freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase,
 		rootRunId: options.invocation.rootRunId, agentRunId: options.invocation.runId,
 		sessionId: options.invocation.sessionId, agentId: options.agent.id,
-		...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+		...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 		...(options.invocation.parentRunId === undefined ? {} : { parentRunId: options.invocation.parentRunId }),
 		...(options.invocation.parentInvocationId === undefined ? {} : { parentInvocationId: options.invocation.parentInvocationId }),
 		invocationId: options.invocation.invocationId, step, modelAlias: options.modelAlias, input, mode: options.mode,
@@ -535,7 +538,15 @@ function freezeCallForCursor(call: ToolCallSpec): ToolCallSpec {
 	return Object.freeze({ id: call.id, name: call.name, arguments: cloneJson(call.arguments) })
 }
 function modelToolSpecs(bindings: Readonly<Record<string, AgentExecutableBinding>>, hasSkills: boolean): ModelToolSpec[] { return Object.values(bindings).filter(binding => binding.id !== 'read_skill' || hasSkills).map(binding => ({ name: binding.id, description: binding.description, parameters: projectModelSchema(binding.input, 'tool_input', binding.id) })) }
-function agentCaller(options: ExecuteStandardAgentOptions): Extract<import('../definitions/types.js').HarnessExecutionCaller, { kind: 'agent' }> { const caller = projectHarnessExecutionCaller({ kind: 'agent', agentId: options.agent.id, ...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }) }); if (caller.kind !== 'agent') throw new ValidationError('Agent caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } }); return caller }
+function agentCaller(options: ExecuteStandardAgentOptions): Extract<import('../definitions/types.js').HarnessExecutionCaller, { kind: 'agent' }> {
+	let caller: import('../definitions/types.js').HarnessExecutionCaller
+	try { caller = projectHarnessExecutionCaller(options.invocation.caller) }
+	catch { throw new ValidationError('Agent caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } }) }
+	if (caller.kind !== 'agent' || caller.agentId !== options.agent.id) {
+		throw new ValidationError('Agent caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } })
+	}
+	return caller
+}
 function callContext(options: ExecuteStandardAgentOptions, _step: number, streamId?: string): HarnessModelCallContext { return { caller: agentCaller(options), harnessName: options.invocation.harnessName, sessionId: options.invocation.sessionId, runId: options.invocation.runId, modelAlias: options.modelAlias, ...(streamId === undefined ? {} : { streamId }) } }
 function malformedStream(): ValidationError { return new ValidationError('Model stream must contain exactly one terminal finish.', { where: 'model_response', issues: { reason: 'invalid_stream_finish' } }) }
 function malformedResponse(): ValidationError { return new ValidationError('Model response is malformed.', { where: 'model_response', issues: { reason: 'invalid_model_response' } }) }
@@ -556,7 +567,7 @@ function hookContext<Extra extends object>(
 		step,
 		model: options.modelAlias,
 		agentId: options.agent.id,
-		...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }),
+		...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }),
 		runId: options.invocation.runId,
 		sessionId: options.invocation.sessionId,
 		history: options.interceptorRuntime.history,
@@ -619,7 +630,7 @@ function invokeHook(hook: ((...args: never[]) => unknown) | undefined, context: 
 
 function agentOccurrence(options: ExecuteStandardAgentOptions, step: number) {
 	return { invocationId: options.invocation.invocationId, runId: options.invocation.runId, agentId: options.agent.id,
-		sessionId: options.invocation.sessionId, ...(options.invocation.workflowId === undefined ? {} : { workflowId: options.invocation.workflowId }), step }
+		sessionId: options.invocation.sessionId, ...(options.invocation.caller.workflowId === undefined ? {} : { workflowId: options.invocation.caller.workflowId }), step }
 }
 
 function validateModelRequestTransform(value: JsonValue, canonical: readonly ModelMessage[]): JsonValue {

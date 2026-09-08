@@ -38,10 +38,14 @@ describe('v4 workflow fan-out admission', () => {
 	it('lets bounded fan-out workers make agent calls without acquiring a fan-out slot', async () => {
 		const agent = defineAgentV4('fanWorker', { input: z.number(), output: z.number(), instructions: 'Work.', prompt: value => ({ role: 'user', content: String(value) }) })
 		const workflow = defineWorkflowV4('fanCalls', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 3, maxParallel: 2 }, async handler({ input }) { return input } })
-		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async request => ({
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async request => {
+			const outcome = { status: 'completed' as const, runId: request.invocation.invocationId, output: (request.input as number) * 2 }
+			return {
+			result: Promise.resolve(outcome),
 			async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId: request.invocation.invocationId, parentRunId: request.invocation.parentRunId,
-				parentInvocationId: request.invocation.invocationId, at: 'now', outcome: { status: 'completed', runId: request.invocation.invocationId, output: (request.input as number) * 2 } } as ExecutionEvent }, async cancel() {},
-		}) as any }, signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+				parentInvocationId: request.invocation.invocationId, at: 'now', outcome } as ExecutionEvent }, async cancel() {},
+			}
+		} }, signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 3, maxParallelWorkflowAgentCalls: 2 } })
 		await expect(runtime.fanOut([1, 2, 3], (item, index) => runtime.agents.fanWorker.run(item, { callId: `fan-${index}` }), { concurrency: 2 })).resolves.toEqual([2, 4, 6])
 	})

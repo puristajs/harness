@@ -1,8 +1,17 @@
 import type { DecisionEvidence } from '../decisions/types.js'
-import type { ChildTaskContextPolicy, ChildTaskMode, HarnessExecutionCaller } from './types.js'
+import type {
+	ChildTaskContextPolicy,
+	ChildTaskMode,
+	HarnessExecutionCaller,
+	HarnessInterruptKind,
+	HarnessOutputUpdateKind,
+	HarnessTargetContract,
+	HarnessTargetKind,
+} from './types.js'
 import type { GovernanceEffect, GovernanceExposureEffect } from '../governance/types.js'
 import type { HarnessInterrupt, RunOutcome } from '../runtime/outcomes.js'
 import type { JsonValue } from '../models/json.js'
+import type { ModelSchema } from '../schema/index.js'
 import type { Message, SerializedError } from '../models/state.js'
 import type { ArtifactReference } from '../ports/artifact-store.js'
 import type { FinishReason, TokenUsage } from '../ports/model-provider.js'
@@ -34,7 +43,8 @@ export type ExecutionEventCorrelation = Readonly<{
 	readonly parentRunId?: string
 	readonly parentInvocationId?: string
 }>
-type ExecutionTerminalOutcome<Output, Interrupt> = RunOutcome<Output, Interrupt>
+/** Exact terminal state of one aggregate or streamed target execution. */
+export type ExecutionTerminalOutcome<Output, Interrupt> = RunOutcome<Output, Interrupt>
 	| Readonly<{ status: 'failed'; runId: string; error: SerializedError }>
 	| Readonly<{ status: 'cancelled'; runId: string; error: SerializedError }>
 
@@ -88,6 +98,69 @@ type EventBody<Output, Interrupt> =
  */
 export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> = ExecutionEventCorrelation & EventBody<Output, Interrupt>
 
+type AnyHarnessTargetContract = HarnessTargetContract<
+	HarnessTargetKind,
+	string,
+	ModelSchema,
+	ModelSchema,
+	HarnessOutputUpdateKind,
+	readonly HarnessInterruptKind[]
+>
+type RootExecutionEventCorrelation = Readonly<{
+	eventId: string
+	sequence: number
+	runId: string
+	parentRunId?: never
+	parentInvocationId?: never
+}>
+type NestedExecutionEvent = ExecutionEvent & Readonly<{ parentRunId: string; parentInvocationId: string }>
+type StripExecutionEventCorrelation<Event> = Event extends ExecutionEventCorrelation & infer Payload ? Payload : never
+type ExecutionEventPayload<Output, Interrupt> = StripExecutionEventCorrelation<ExecutionEvent<Output, Interrupt>>
+type RootAlwaysEventPayload<Output, Interrupt> = Exclude<ExecutionEventPayload<Output, Interrupt>,
+	| { readonly type: 'run.finished' }
+	| { readonly type: 'output.text.delta' }
+	| { readonly type: 'output.object.snapshot' }
+	| { readonly type: 'model.output.text.delta' }
+	| { readonly type: 'model.output.object.snapshot' }
+	| { readonly type: 'approval.requested' | 'approval.responded' }
+	| { readonly type: 'external_wait.requested' | 'external_wait.waiting' | 'external_wait.resolved' }
+>
+type RootUpdateEventPayload<Target extends AnyHarnessTargetContract> =
+	Target['updates'] extends 'text-delta'
+		? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, { readonly type: 'output.text.delta'; readonly delta: string }>
+		: Target['updates'] extends 'object-snapshot'
+			? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, { readonly type: 'output.object.snapshot'; readonly value: JsonValue }>
+			: never
+type RootWorkflowModelActivityPayload<Target extends AnyHarnessTargetContract> = Target['kind'] extends 'workflow'
+	? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, { readonly type: 'model.output.text.delta' | 'model.output.object.snapshot' }>
+	: never
+type RootInterruptEventPayload<Target extends AnyHarnessTargetContract> =
+	| ('tool-approval' extends Target['interrupts'][number]
+		? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, { readonly type: 'approval.requested' | 'approval.responded' }>
+		: never)
+	| ('external-wait' extends Target['interrupts'][number]
+		? Extract<ExecutionEventPayload<JsonValue, HarnessInterrupt>, { readonly type: 'external_wait.requested' | 'external_wait.waiting' | 'external_wait.resolved' }>
+		: never)
+type CorrelateRootEvent<Payload> = Payload extends { readonly type: 'child_task.started' | 'child_task.settled' }
+	? Omit<RootExecutionEventCorrelation, 'parentRunId'> & Payload
+	: RootExecutionEventCorrelation & Payload
+type RootExecutionEventFor<Target extends AnyHarnessTargetContract> = CorrelateRootEvent<
+	| RootAlwaysEventPayload<Target['$infer']['output'], Target['$infer']['interrupt']>
+	| RootUpdateEventPayload<Target>
+	| RootWorkflowModelActivityPayload<Target>
+	| RootInterruptEventPayload<Target>
+	| Readonly<{ type: 'run.finished'; at: string; outcome: ExecutionTerminalOutcome<Target['$infer']['output'], Target['$infer']['interrupt']> }>
+>
+
+/** Exact root events for one target plus fully correlated descendant events. */
+export type HarnessTargetExecutionEvent<Target extends AnyHarnessTargetContract> = RootExecutionEventFor<Target> | NestedExecutionEvent
+
+/** Exact terminal outcome derived solely from one target contract. */
+export type HarnessTargetExecutionTerminalOutcome<Target extends AnyHarnessTargetContract> = ExecutionTerminalOutcome<
+	Target['$infer']['output'],
+	Target['$infer']['interrupt']
+>
+
 /**
  * Ordered target execution events plus explicit execution cancellation.
  *
@@ -95,7 +168,9 @@ export type ExecutionEvent<Output = JsonValue, Interrupt = HarnessInterrupt> = E
  * when the target itself must be cancelled, such as when a transport client
  * disconnects.
  */
-export interface HarnessTargetStream<Output> extends AsyncIterable<ExecutionEvent<Output>> {
+export interface HarnessTargetStream<Target extends AnyHarnessTargetContract> extends AsyncIterable<HarnessTargetExecutionEvent<Target>> {
+	/** Resolves exactly once with the direct root target's terminal outcome. */
+	readonly result: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
 	/** Request target cancellation and resolve once the request is accepted. */
 	cancel(reason?: string): Promise<void>
 }

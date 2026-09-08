@@ -11,6 +11,7 @@ import type { Infer, InferIn } from '../schema/index.js'
 import type { HarnessTargetDispatchStream } from '../ports/target-dispatcher.js'
 import { finishReasonSchema } from '../ports/model-provider.js'
 import { withAbortSignal } from './abort.js'
+import { canonicalJson } from './canonical-json.js'
 import { createHarnessChildTargetInterruption } from './steps.js'
 import {
 	createAgentExecutableBinding,
@@ -111,21 +112,21 @@ async function executeSubagent(
 	throw new ToolError('Subagent execution failed.', { tool_id: providerName, tool_kind: 'subagent' }, outcome.error)
 }
 
-export interface ConsumedHarnessTarget<Output> {
-	readonly outcome: Extract<ExecutionEvent<Output>, { readonly type: 'run.finished' }>['outcome']
+export interface ConsumedHarnessTarget<Output, Interrupt> {
+	readonly outcome: Extract<ExecutionEvent<Output, Interrupt>, { readonly type: 'run.finished' }>['outcome']
 	readonly lineage: Readonly<{ parentRunId: string; childRunId: string; childInvocationId: string }>
 }
 
 /** @internal Strict shared target-stream consumer. Caller-specific code maps the terminal. */
-export async function consumeHarnessTargetStream<Output extends JsonValue>(options: Readonly<{
-	stream: HarnessTargetDispatchStream<Output>
+export async function consumeHarnessTargetStream<Output extends JsonValue, Interrupt>(options: Readonly<{
+	stream: HarnessTargetDispatchStream<Output, Interrupt>
 	signal: AbortSignal
 	parentRunId: string
 	childInvocationId: string
-	relay(event: ExecutionEvent<Output>): Promise<void>
-}>): Promise<ConsumedHarnessTarget<Output>> {
+	relay(event: ExecutionEvent<Output, Interrupt>): Promise<void>
+}>): Promise<ConsumedHarnessTarget<Output, Interrupt>> {
 	const { stream, signal, parentRunId, childInvocationId, relay } = options
-	let terminal: Extract<ExecutionEvent<Output>, { readonly type: 'run.finished' }> | undefined
+	let terminal: Extract<ExecutionEvent<Output, Interrupt>, { readonly type: 'run.finished' }> | undefined
 	const childRunId = childInvocationId
 	const runs = new Map<string, Readonly<{
 		parentRunId: string
@@ -133,29 +134,38 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 		terminal: boolean
 		lastSequence: number
 	}>>()
-	let iterator: AsyncIterator<ExecutionEvent<Output>>
+	let iterator: AsyncIterator<ExecutionEvent<Output, Interrupt>>
+	let producerResult: Promise<unknown>
 	try {
 		iterator = stream[Symbol.asyncIterator]()
+		producerResult = Promise.resolve(stream.result)
 	} catch (error) {
 		await cleanupChildStream(stream)
 		throw error
 	}
+	const producerFailure = producerResult.then(
+		() => new Promise<never>(() => {}),
+		(error: unknown) => { throw error },
+	)
+	void producerFailure.catch(() => {})
 	try {
 		while (true) {
-			const next = await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => iterator.next())
+			const next = await Promise.race([
+				withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => iterator.next()),
+				producerFailure,
+			])
 			if (next === null || typeof next !== 'object') throw malformedTerminal('invalid_event')
 			if (next.done) {
 				if (terminal === undefined || [...runs.values()].some(run => !run.terminal)) {
 					throw malformedTerminal('missing_terminal')
 				}
-				await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(terminal!))
 				break
 			}
 			if (terminal !== undefined) {
 				const reason = isPlainRecord(next.value) && next.value['type'] === 'run.finished' ? 'duplicate_terminal' : 'event_after_terminal'
 				throw malformedTerminal(reason)
 			}
-			const event = validateTargetEvent(next.value) as ExecutionEvent<Output>
+			const event = validateTargetEvent(next.value) as ExecutionEvent<Output, Interrupt>
 			const direct = event.runId === childRunId
 			const expectedParentRunId = direct ? parentRunId : event.parentRunId
 			const expectedParentInvocationId = direct ? childInvocationId : event.parentInvocationId
@@ -181,6 +191,13 @@ export async function consumeHarnessTargetStream<Output extends JsonValue>(optio
 			}
 			await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(event))
 		}
+		if (terminal === undefined) throw malformedTerminal('missing_terminal')
+		let result: unknown
+		try { result = await producerResult }
+		catch (error) { throw error }
+		if (!validTerminalOutcome(result, childRunId)
+			|| canonicalJson(result) !== canonicalJson(terminal.outcome)) throw malformedTerminal('invalid_terminal')
+		await withAbortSignal(signal, 'agent', 'Subagent execution was cancelled.', () => relay(terminal!))
 	} catch (error) {
 		await cleanupChildStream(stream, iterator)
 		throw error
@@ -323,7 +340,7 @@ function isSerializedError(value: unknown): boolean {
 
 async function cleanupChildStream(
 	stream: { cancel(reason?: string): Promise<void> },
-	iterator?: AsyncIterator<ExecutionEvent>,
+	iterator?: AsyncIterator<unknown>,
 ): Promise<void> {
 	const cleanup: Promise<unknown>[] = []
 	try { cleanup.push(Promise.resolve(stream.cancel('target-consumer-stopped'))) } catch { /* preserve the primary failure */ }

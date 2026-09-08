@@ -1,6 +1,6 @@
 import type { HarnessIdentity } from '../identity/index.js'
 import type { ToolApprovalResume } from '../approvals/index.js'
-import type { HarnessTargetStream } from '../definitions/execution-events.js'
+import type { ExecutionEvent, ExecutionTerminalOutcome } from '../definitions/execution-events.js'
 import type {
 	HarnessInterruptKind,
 	HarnessOutputUpdateKind,
@@ -8,8 +8,9 @@ import type {
 	HarnessTargetKind,
 } from '../definitions/types.js'
 import type { JsonValue } from '../models/json.js'
-import type { Infer, InferIn, ModelSchema } from '../schema/index.js'
+import type { ModelSchema } from '../schema/index.js'
 import type { HarnessTraceContext } from '../telemetry/trace-context.js'
+import type { HarnessInterrupt } from '../runtime/outcomes.js'
 
 export type AnyHarnessTargetContract = HarnessTargetContract<
 	HarnessTargetKind,
@@ -19,9 +20,10 @@ export type AnyHarnessTargetContract = HarnessTargetContract<
 	HarnessOutputUpdateKind,
 	readonly HarnessInterruptKind[]
 >
-export type HarnessTargetInput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, infer I, ModelSchema, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? InferIn<I> & JsonValue : never
-export type HarnessValidatedTargetInput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, infer I, ModelSchema, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? Infer<I> & JsonValue : never
-export type HarnessTargetOutput<T> = T extends HarnessTargetContract<HarnessTargetKind, string, ModelSchema, infer O, HarnessOutputUpdateKind, readonly HarnessInterruptKind[]> ? Infer<O> & JsonValue : never
+export type HarnessTargetInput<T> = T extends AnyHarnessTargetContract ? T['$infer']['input'] : never
+export type HarnessValidatedTargetInput<T> = T extends AnyHarnessTargetContract ? T['$infer']['validatedInput'] : never
+export type HarnessTargetOutput<T> = T extends AnyHarnessTargetContract ? T['$infer']['output'] : never
+export type HarnessTargetInterrupt<T> = T extends AnyHarnessTargetContract ? T['$infer']['interrupt'] : never
 
 type HarnessTargetDispatchInvocationBase = Readonly<{
 		sessionId: string
@@ -59,7 +61,10 @@ export type HarnessTargetDispatchRequest<Target extends AnyHarnessTargetContract
 	invocation: HarnessNestedTargetDispatchInvocation
 }>
 
-export interface HarnessTargetDispatchStream<Output> extends HarnessTargetStream<Output> {}
+export interface HarnessTargetDispatchStream<Output, Interrupt> extends AsyncIterable<ExecutionEvent<Output, Interrupt>> {
+	readonly result: Promise<ExecutionTerminalOutcome<Output, Interrupt>>
+	cancel(reason?: string): Promise<void>
+}
 
 /** Stable inert receipt for one exact target route owned by a dispatcher. */
 export interface HarnessTargetRouteReceiptV1 {
@@ -81,7 +86,7 @@ export type PersistedHarnessTargetDispatchRequest = Readonly<{
 export interface HarnessTargetDispatcher {
 	/** Fails unless the exact immutable target contract is registered, then returns its inert route receipt. */
 	assertTarget(target: AnyHarnessTargetContract): HarnessTargetRouteReceiptV1
-	open<Target extends AnyHarnessTargetContract>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>>>
+	open<Target extends AnyHarnessTargetContract>(request: HarnessTargetDispatchRequest<Target>): Promise<HarnessTargetDispatchStream<HarnessTargetOutput<Target>, HarnessTargetInterrupt<Target>>>
 	/** Resumes one persisted child route only when the complete stored receipt still matches. */
-	openPersisted(request: PersistedHarnessTargetDispatchRequest): Promise<HarnessTargetDispatchStream<JsonValue>>
+	openPersisted(request: PersistedHarnessTargetDispatchRequest): Promise<HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>>
 }

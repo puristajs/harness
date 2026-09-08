@@ -27,6 +27,15 @@ async function files(directory) {
 const failures = []
 const exampleFiles = await files(examplesRoot)
 const manifests = exampleFiles.filter(file => file.endsWith('package.json'))
+const intentionalNegativeFixtureFiles = new Set([
+  join(repositoryRoot, 'packages', 'harness', 'type-tests', 'removed-v3-api.ts'),
+])
+const fixtureCandidates = [
+  ...await files(join(repositoryRoot, 'scripts', 'fixtures')),
+  ...intentionalNegativeFixtureFiles,
+]
+const activeFixtureFiles = fixtureCandidates.filter(file =>
+  codeExtensions.has(extname(file)) && !intentionalNegativeFixtureFiles.has(file))
 
 for (const file of exampleFiles) {
   const name = relative(repositoryRoot, file)
@@ -179,7 +188,7 @@ const packageReadmes = packageDirectories
   .map(entry => join(repositoryRoot, 'packages', entry.name, 'README.md'))
 const knowledgeFiles = [join(repositoryRoot, 'README.md'), ...docsFiles, ...architectureFiles, ...skillFiles, ...packageReadmes]
 
-for (const file of [...exampleFiles.filter(path => codeExtensions.has(extname(path))), ...knowledgeFiles]) {
+for (const file of [...exampleFiles.filter(path => codeExtensions.has(extname(path))), ...activeFixtureFiles, ...knowledgeFiles]) {
   if (!sourceExtensions.has(extname(file))) continue
   const source = await readFile(file, 'utf8').catch(() => undefined)
   if (source === undefined) continue

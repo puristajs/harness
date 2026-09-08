@@ -478,6 +478,63 @@ describe('v4 session lifecycle', () => {
 		await harness.close()
 	})
 
+	it('settles result after session cleanup for every operational terminal', async () => {
+		const completed = defineWorkflow('resultCompleted', { async handler({ input }) { return input } })
+		const interrupted = defineWorkflow('resultInterrupted', { durable: true, async handler({ input, externalWait }) {
+			await externalWait.wait({ waitId: 'result-review', kind: 'review', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z' })
+			return input
+		} })
+		const failed = defineWorkflow('resultFailed', { async handler() { throw new Error('expected failure') } })
+		const cancelled = defineWorkflow('resultCancelled', { async handler({ input, signal }) {
+			await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+			return input
+		} })
+		const harness = await defineHarness({ name: 'resultCleanup', revision: 'v1' })
+			.addWorkflow(completed).addWorkflow(interrupted).addWorkflow(failed).addWorkflow(cancelled)
+			.getInstance({ storage: persistentStorage() })
+		const cases = [
+			['completed', completed, undefined],
+			['interrupted', interrupted, undefined],
+			['failed', failed, undefined],
+			['cancelled', cancelled, 'cancel'],
+		] as const
+
+		for (const [status, definition, cancel] of cases) {
+			const session = await harness.getSession(`result-${status}`)
+			const invoker = session.workflows[definition.id]
+			const stream = invoker.stream('value')
+			if (cancel !== undefined) await stream.cancel(cancel)
+			await expect(stream.result).resolves.toMatchObject({ status })
+			await expect(session.release()).resolves.toBeUndefined()
+		}
+		await harness.close()
+	})
+
+	it('permits release after full stream iteration and keeps early iterator return observation-only', async () => {
+		let finish!: () => void
+		const gate = new Promise<void>(resolve => { finish = resolve })
+		const workflow = defineWorkflow('resultObservation', { async handler({ input }) { await gate; return input } })
+		const harness = await defineHarness({ name: 'resultObservation' }).addWorkflow(workflow).getInstance({})
+		const earlySession = await harness.getSession('result-observation-early')
+		const early = earlySession.workflows.resultObservation.stream('early')
+		const iterator = early[Symbol.asyncIterator]()
+		await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { type: 'run.started' } })
+		await iterator.return?.()
+		await expect(earlySession.release()).rejects.toBeInstanceOf(SessionBusyError)
+		finish()
+		await expect(early.result).resolves.toMatchObject({ status: 'completed', output: 'early' })
+		await expect(earlySession.release()).resolves.toBeUndefined()
+
+		const fullSession = await harness.getSession('result-observation-full')
+		const full = fullSession.workflows.resultObservation.stream('full')
+		const events = []
+		for await (const event of full) events.push(event)
+		await expect(full.result).resolves.toMatchObject({ status: 'completed', output: 'full' })
+		expect(events.at(-1)).toMatchObject({ type: 'run.finished' })
+		await expect(fullSession.release()).resolves.toBeUndefined()
+		await harness.close()
+	})
+
 	it('keeps failed cleanup retryable for session release and instance close', async () => {
 		const sandbox = new TrackingSandbox()
 		const { harness, provider } = await buildLifecycleHarness(persistentStorage(), sandbox)
@@ -861,7 +918,13 @@ describe('v4 session lifecycle', () => {
 		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
 		expect(effects).toBe(1)
 		expect(provider.requests).toHaveLength(2)
-		await session.destroy()
+		const replay = session.agents.secondApprovalAgent.stream('start', { resume })
+		const replayEvents = []
+		for await (const event of replay) replayEvents.push(event)
+		await expect(replay.result).resolves.toEqual(firstResult)
+		expect(replayEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
+		expect(replayEvents.at(-1)).toMatchObject({ outcome: firstResult })
+		await session.release()
 		await harness.close()
 	})
 
@@ -1017,7 +1080,7 @@ describe('v4 session lifecycle', () => {
 			expect(provider.requests).toHaveLength(requests)
 			expect(effects).toBe(1)
 			expect(await storage.listEvents(interrupted.runId)).toEqual(persisted)
-			await session.destroy()
+			await session.release()
 			await harness.close()
 		},
 	)

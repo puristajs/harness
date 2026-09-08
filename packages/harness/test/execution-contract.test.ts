@@ -4,9 +4,101 @@ import { defineHarness as defineV4Harness } from '../src/definitions/harness.js'
 import { defineAgent as defineV4Agent } from '../src/definitions/agent.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { defineTool } from '../src/definitions/tool.js'
+import type { ExecutionTerminalOutcome } from '../src/definitions/execution-events.js'
+import { EventQueue } from '../src/runtime/standalone-instance.js'
 import { z } from 'zod'
 
 describe('portable execution contract', () => {
+	it.each([
+		{ status: 'completed', runId: 'queue-run', output: 'done' },
+		{ status: 'interrupted', runId: 'queue-run', interrupt: { type: 'external-wait', runId: 'queue-run', interruptId: 'wait-1', revision: 'revision-1', eventId: 'event-1', id: 'wait-1', kind: 'review', schemaVersion: 'v1', definitionVersion: 'v1', deadline: '2030-01-01T00:00:00.000Z' } },
+		{ status: 'failed', runId: 'queue-run', error: { name: 'Error', message: 'failed' } },
+		{ status: 'cancelled', runId: 'queue-run', error: { name: 'Error', message: 'cancelled' } },
+	] satisfies readonly ExecutionTerminalOutcome<string, { type: 'external-wait'; runId: string; interruptId: string; revision: string; eventId: string; id: string; kind: string; schemaVersion: string; definitionVersion: string; deadline: string }>[])('settles a captured $status terminal only when its producer ends', async outcome => {
+		const queue = new EventQueue<string>('queue-run', () => undefined)
+		queue.push({ type: 'run.finished', eventId: 'terminal-1', sequence: 1, runId: 'queue-run', at: '2026-01-01T00:00:00.000Z', outcome })
+		let settled = false
+		void queue.result.finally(() => { settled = true })
+		await Promise.resolve()
+		expect(settled).toBe(false)
+
+		queue.end()
+		await expect(queue.result).resolves.toBe(outcome)
+	})
+
+	it('rejects a captured terminal when producer finalization fails afterward', async () => {
+		const queue = new EventQueue<string>('queue-run', () => undefined)
+		const infrastructureFailure = new Error('terminal acknowledgement failed')
+		queue.push({
+			type: 'run.finished', eventId: 'terminal-1', sequence: 1, runId: 'queue-run', at: '2026-01-01T00:00:00.000Z',
+			outcome: { status: 'completed', runId: 'queue-run', output: 'done' },
+		})
+		queue.fail(infrastructureFailure)
+
+		await expect(queue.result).rejects.toBe(infrastructureFailure)
+		queue.end()
+		await expect(queue.result).rejects.toBe(infrastructureFailure)
+	})
+
+	it('rejects missing and duplicate terminals through both result and iteration', async () => {
+		const missing = new EventQueue<string>('missing-run', () => undefined)
+		missing.end()
+		await expect(missing.result).rejects.toBeInstanceOf(InternalError)
+		await expect((async () => { for await (const _event of missing) { /* no events */ } })())
+			.rejects.toBeInstanceOf(InternalError)
+
+		const duplicate = new EventQueue<string>('duplicate-run', () => undefined)
+		const terminal = {
+			type: 'run.finished' as const, eventId: 'terminal-1', sequence: 1, runId: 'duplicate-run', at: '2026-01-01T00:00:00.000Z',
+			outcome: { status: 'completed' as const, runId: 'duplicate-run', output: 'done' },
+		}
+		duplicate.push(terminal)
+		duplicate.push({ ...terminal, eventId: 'terminal-2', sequence: 2 })
+		await expect(duplicate.result).rejects.toBeInstanceOf(InternalError)
+		await expect((async () => { for await (const _event of duplicate) { /* drain first terminal */ } })())
+			.rejects.toBeInstanceOf(InternalError)
+	})
+
+	it('keeps metadata-only operational failure and cancellation separate from producer failure', async () => {
+		const operational = new EventQueue<string>('operational-run', () => undefined)
+		const operationalFailure = new Error('private operational failure')
+		operational.setFailure(operationalFailure)
+		operational.push({
+			type: 'run.finished', eventId: 'terminal-1', sequence: 1, runId: 'operational-run', at: '2026-01-01T00:00:00.000Z',
+			outcome: { status: 'failed', runId: 'operational-run', error: { name: 'Error', message: 'failed' } },
+		})
+		operational.end()
+		await expect(operational.result).resolves.toMatchObject({ status: 'failed' })
+		expect(operational.failure).toBe(operationalFailure)
+
+		let cancelReason: string | undefined
+		const cancelled = new EventQueue<string>('cancel-run', reason => { cancelReason = reason })
+		const cancellation = cancelled.cancel('stop')
+		let settled = false
+		void cancelled.result.finally(() => { settled = true })
+		await cancellation
+		await Promise.resolve()
+		expect(cancelReason).toBe('stop')
+		expect(settled).toBe(false)
+		cancelled.push({
+			type: 'run.finished', eventId: 'terminal-1', sequence: 1, runId: 'cancel-run', at: '2026-01-01T00:00:00.000Z',
+			outcome: { status: 'cancelled', runId: 'cancel-run', error: { name: 'Error', message: 'cancelled' } },
+		})
+		cancelled.end()
+		await expect(cancelled.result).resolves.toMatchObject({ status: 'cancelled' })
+	})
+
+	it('honors the first producer finalizer', async () => {
+		const completed = new EventQueue<string>('first-run', () => undefined)
+		completed.push({
+			type: 'run.finished', eventId: 'terminal-1', sequence: 1, runId: 'first-run', at: '2026-01-01T00:00:00.000Z',
+			outcome: { status: 'completed', runId: 'first-run', output: 'done' },
+		})
+		completed.end()
+		completed.fail(new Error('too late'))
+		await expect(completed.result).resolves.toMatchObject({ status: 'completed' })
+	})
+
 	it('resolves one frozen v4 defaults snapshot and preserves it through composition', () => {
 		const definition = defineV4Harness({ name: 'defaultsHarness', defaults: { maxSteps: 4, historyWindow: 0 } })
 		const next = definition.addAgent(defineV4Agent('answerAgent', { instructions: 'Answer.' }))

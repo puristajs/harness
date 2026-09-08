@@ -571,6 +571,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			? telemetry.withTraceContext(invocation.trace, execute)
 			: execute())
 			.then(() => {
+				controller.dispose()
+				rootHostedEnvironments.delete(invocation.invocationId)
+				queue.end()
 				const settler = directStreamSettlers.get(runId)
 				if (settler === undefined) return
 				const terminal = queue.terminalEvent
@@ -581,8 +584,6 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				}
 			})
 			.catch(error => {
-				directStreamSettlers.get(runId)?.reject(error)
-				queue.fail(error)
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
@@ -590,11 +591,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				childSandboxPolicies.delete(invocation.invocationId)
 				rootSettled.get(runId)?.()
 				rootSettled.delete(runId)
+				controller.dispose()
+				rootHostedEnvironments.delete(invocation.invocationId)
+				queue.fail(error)
+				directStreamSettlers.get(runId)?.reject(error)
 			})
-				.finally(() => {
-					rootHostedEnvironments.delete(invocation.invocationId)
-					controller.dispose()
-				})
 		return Promise.resolve(queue)
 	}
 
@@ -638,7 +639,6 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const boundaries = requirePersistedBoundaries(storedEvents, run)
 			queue.push(restoreStartedEvent(boundaries.started))
 			queue.push(restoreTerminalEvent(boundaries.terminal, run))
-			queue.end()
 			rootInputs.delete(runId)
 			rootOptions.delete(runId)
 			rootModes.delete(runId)
@@ -657,7 +657,6 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const boundaries = requirePersistedBoundaries(storedEvents, run)
 				queue.push(restoreStartedEvent(boundaries.started))
 				queue.push(restoreTerminalEvent(boundaries.terminal, run, pendingCheckpoint.value.interrupt))
-				queue.end()
 				rootInputs.delete(runId)
 				rootOptions.delete(runId)
 				rootModes.delete(runId)
@@ -1733,9 +1732,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			childSandboxPolicies.delete(invocation.invocationId)
 			rootSettled.get(runId)?.()
 			rootSettled.delete(runId)
-			if (deferredPublicationError === undefined) queue.end()
-			else queue.fail(deferredPublicationError)
 		}
+		if (deferredPublicationError !== undefined) throw deferredPublicationError
 	}
 
 	async function ensureSession(id: string, rawOptions: SessionOptions, deferOwnerRegistration = false): Promise<SessionRuntime> {
@@ -2529,7 +2527,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	}
 }
 
-class EventQueue<Output extends JsonValue, Interrupt = HarnessInterrupt> implements HarnessTargetDispatchStream<Output, Interrupt> {
+/** @internal Producer-owned bounded event queue. Exported only for contract tests. */
+export class EventQueue<Output extends JsonValue, Interrupt = HarnessInterrupt> implements HarnessTargetDispatchStream<Output, Interrupt> {
 	private static readonly MAX_BUFFERED_EVENTS = 256
 	private readonly values: ExecutionEvent<Output, Interrupt>[] = []
 	private readonly waiters: Array<() => void> = []
@@ -2557,7 +2556,6 @@ class EventQueue<Output extends JsonValue, Interrupt = HarnessInterrupt> impleme
 				return
 			}
 			this.terminal = value
-			this.resolveResult(value.outcome)
 		}
 		this.values.push(value)
 		this.wake()
@@ -2577,16 +2575,22 @@ class EventQueue<Output extends JsonValue, Interrupt = HarnessInterrupt> impleme
 		return dropped
 	}
 	public end() {
-		if (this.terminal === undefined) this.rejectResult(new InternalError('Harness target execution ended without a terminal event.'))
+		if (this.done) return
 		this.done = true
+		if (this.terminal === undefined) {
+			this.failure = new InternalError('Harness target execution ended without a terminal event.')
+			this.rejectIterator = true
+			this.rejectResult(this.failure)
+		} else this.resolveResult(this.terminal.outcome)
 		this.wake()
 	}
 	public setFailure(error: unknown) { this.failure = error }
 	public fail(error: unknown) {
+		if (this.done) return
 		this.failure = error
-		if (this.terminal === undefined) this.rejectResult(error)
 		this.rejectIterator = true
 		this.done = true
+		this.rejectResult(error)
 		this.wake()
 	}
 	public async cancel(reason?: string): Promise<void> { this.cancelRun(reason) }

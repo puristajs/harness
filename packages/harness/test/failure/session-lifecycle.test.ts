@@ -44,11 +44,12 @@ describe('v4 storage failure lifecycle', () => {
   })
 
   it('surfaces atomic finalization failure after the workflow handler completes', async () => {
+    const finalizationFailure = new StateError('finalizeRun failed', { op: 'finalizeRun', reason: 'injected_failure' })
     class FinalizeFailureStorage extends InMemoryHarnessStorage {
       public finalizeCalls = 0
       public override async finalizeRun(_request: FinalizeRunRequest): Promise<void> {
         this.finalizeCalls += 1
-        throw new StateError('finalizeRun failed', { op: 'finalizeRun', reason: 'injected_failure' })
+        throw finalizationFailure
       }
     }
     const storage = new FinalizeFailureStorage()
@@ -56,7 +57,7 @@ describe('v4 storage failure lifecycle', () => {
     const session = await instance.getSession('finalize-failure')
 
     await expect(session.workflows.lifecycleFailure.run('input', { durable: { runId: 'finalize-failure-run' } }))
-      .rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
+      .rejects.toBe(finalizationFailure)
     expect(storage.finalizeCalls).toBeGreaterThan(0)
     await session.release()
     await instance.close()

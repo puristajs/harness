@@ -85,6 +85,8 @@ export interface WorkflowCallCheckpointV1 {
   readonly target: Readonly<{ kind: 'agent' | 'tool' | 'model'; id: string }>
   readonly input: JsonValue
 	readonly outcome: WorkflowCallStoredOutcomeV1
+	/** Ordered managed events whose durable publication is tracked independently from the terminal effect. */
+	readonly publication: Readonly<{ events: readonly JsonValue[] }>
   readonly lineage?: Readonly<{
     rootRunId: string
     workflowRunId: string
@@ -92,6 +94,15 @@ export interface WorkflowCallCheckpointV1 {
     childRunId: string
     childInvocationId: string
   }>
+}
+
+/** Durable acknowledgement for one published event in a managed workflow call outbox. */
+export interface WorkflowCallPublicationCheckpointV1 {
+	readonly schemaVersion: 1
+	readonly kind: 'workflow_call_publication'
+	readonly callId: string
+	readonly eventIndex: number
+	readonly eventDigest: string
 }
 
 /** Exact stored terminal for one host-owned nested target call. */

@@ -19,7 +19,7 @@ import { consumeHarnessTargetStream } from '../runtime/subagent-execution.js'
 import { createHarnessChildTargetInterruption, isHarnessChildTargetInterruption, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from '../runtime/steps.js'
 import type { HarnessStorage } from '../storage/types.js'
 import type { SandboxPolicy } from '../sandbox/ownership.js'
-import type { WorkflowCallCheckpointV1, WorkflowCallStoredOutcomeV1, WorkflowManagedCallOperation } from '../storage/execution.js'
+import type { WorkflowCallCheckpointV1, WorkflowCallPublicationCheckpointV1, WorkflowCallStoredOutcomeV1, WorkflowManagedCallOperation } from '../storage/execution.js'
 import type { ModelSchema } from '../schema/index.js'
 import { validateSchema } from '../schema/validation.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
@@ -67,6 +67,8 @@ export interface WorkflowRuntimeOptions<Agents extends WorkflowAgentMap | undefi
 	readonly now?: () => Date
 	readonly taskRegistry?: Map<string, ChildTaskHandle<JsonValue>>
 	readonly restoredAgentCallBudget?: WorkflowAgentCallBudgetStateV1
+	/** @internal Direct workflow host-tool calls whose input/start lifecycle was persisted before interruption. */
+	readonly restoredToolCallIds?: readonly string[]
 	readonly approval: CompiledApprovalInventory['agents']
 }
 
@@ -141,6 +143,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 	const budget = new WorkflowCallAdmission(workflow.id, maxCalls, maxParallel, restoredUsedCalls)
 	const calls = new Map<string, CallEntry>()
 	const activeCalls = new Set<string>()
+	const restoredToolCalls = new Set(options.restoredToolCallIds ?? [])
 	const liveTasks = options.taskRegistry ?? new Map<string, ChildTaskHandle<JsonValue>>()
 	let sequence = 0
 
@@ -169,31 +172,33 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			assertSameCall(workflow.id, callOptions.callId, existing.tuple, tuple)
 			return existing.promise as Promise<JsonValue>
 		}
-		let admitted = false
+		let admitted = false; let checkpointed = false
 		activeCalls.add(callOptions.callId)
-		const promise = executeTool(binding, input, wireInput, callOptions, () => { admitted = true }).then(value => {
+		const promise = executeTool(binding, input, wireInput, callOptions, () => { admitted = true }, () => { checkpointed = true }).then(value => {
 			activeCalls.delete(callOptions.callId); return value
 		}, error => { if (!isHarnessChildTargetInterruption(error)) activeCalls.delete(callOptions.callId); throw error })
 		const entry = Object.freeze({ tuple, promise })
 		calls.set(callOptions.callId, entry)
-		void promise.catch(() => { if (!admitted && calls.get(callOptions.callId) === entry) calls.delete(callOptions.callId) })
+		void promise.catch(error => { if ((!admitted || checkpointed) && !isHarnessChildTargetInterruption(error) && calls.get(callOptions.callId) === entry) calls.delete(callOptions.callId) })
 		return promise
 	}
 
-	async function executeTool(binding: AgentExecutableBinding, input: JsonValue, wireInput: JsonValue, callOptions: WorkflowModelCallOptions, admitted: () => void): Promise<JsonValue> {
+	async function executeTool(binding: AgentExecutableBinding, input: JsonValue, wireInput: JsonValue, callOptions: WorkflowModelCallOptions, admitted: () => void, checkpointed: () => void): Promise<JsonValue> {
 		const toolContext = options.toolContext
 		if (toolContext === undefined) throw new InternalError('Workflow tool execution context is unavailable.')
 		const caller = projectHarnessExecutionCaller(toolContext.caller)
 		if (caller.kind !== 'workflow') throw new ValidationError('Workflow tool caller projection is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_execution_caller' } })
 		const replay = await loadDirectCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, callOptions)
-		if (replay !== undefined) return replayDirectOutcome(replay.outcome)
+		if (replay !== undefined) { checkpointed(); await publishManagedEvents(replay); return replayDirectOutcome(replay.outcome) }
 		const signal = managedSignal(options.signal, callOptions.timeoutMs ?? options.defaults.toolTimeoutMs)
 		if (signal.aborted) throw abortError(signal, 'tool', 'Workflow managed call was cancelled.')
 		admitted()
 		const context: WorkflowToolInvocationContext = Object.freeze({ ...toolContext, caller, workflowId: workflow.id,
 			step: 0, toolId: binding.id, callId: callOptions.callId, ...(callOptions.idempotencyKey === undefined ? {} : { idempotencyKey: callOptions.idempotencyKey }), signal })
-		await options.emit?.({ type: 'tool.input.available', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, input: wireInput })
-		await options.emit?.({ type: 'tool.started', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, input: wireInput })
+		if (!restoredToolCalls.has(callOptions.callId)) {
+			await options.emit?.({ type: 'tool.input.available', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, input: wireInput })
+			await options.emit?.({ type: 'tool.started', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, input: wireInput })
+		}
 		let output: JsonValue
 		try {
 			const raw = await toolContext.telemetry.span('harness.tool.execute', {
@@ -206,13 +211,15 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			if (isHarnessChildTargetInterruption(error)) throw error
 			const cancelled = signal.aborted || error instanceof OperationCancelledError || error instanceof OperationTimeoutError
 			const stored = cancelled ? storedManagedCancelled('tool') : storedManagedFailure(workflow.id, callOptions.callId, 'tool_run', 'tool', binding.id)
-			await commitManagedCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, stored)
-			await options.emit?.({ type: 'tool.finished', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, error: stored.error })
+			const record = await commitManagedCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, stored,
+				[{ type: 'tool.finished', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, error: stored.error }])
+			checkpointed(); await publishManagedEvents(record)
 			throw replayDirectOutcomeError(stored)
 		}
 		const stored = Object.freeze({ status: 'completed' as const, output })
-		await commitManagedCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, stored)
-		await options.emit?.({ type: 'tool.finished', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, output })
+		const record = await commitManagedCheckpoint(callOptions.callId, 'tool_run', 'tool', binding.id, wireInput, stored,
+			[{ type: 'tool.finished', runId: options.runId, caller, toolId: binding.id, callId: callOptions.callId, output }])
+		checkpointed(); await publishManagedEvents(record); restoredToolCalls.delete(callOptions.callId)
 		return output
 	}
 
@@ -297,15 +304,16 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		return (async function* () {
 			const output = await managedModel(operation, modelAlias, request, callOptions, async (signal, context) => {
 				const chunks: JsonValue[] = []; const events: UncorrelatedExecutionEvent[] = []
-				let sawFinish = false
+				let sawFinish = false; let videoState: 'start' | 'queued' | 'progress' = 'start'
 				for await (const chunk of effect(signal, context)) {
 					let value: JsonValue
 					try { value = managedModelJson(chunk, operation) }
 					catch (error) {
-						if (operation === 'model_text_stream' || operation === 'model_object_stream') throw modelResponseError('malformed_chunk')
+						if (operation === 'model_text_stream' || operation === 'model_object_stream' || operation === 'model_video_stream') throw modelResponseError('malformed_chunk')
 						throw error
 					}
 					if (operation === 'model_text_stream') validateFiniteStreamChunk(value, 'text', sawFinish)
+					if (operation === 'model_video_stream') videoState = validateVideoStreamChunk(value, videoState)
 					if (sawFinish) throw modelResponseError('chunk_after_finish')
 					if (isPlainRecord(value) && value['kind'] === 'finish') sawFinish = true
 					chunks.push(value); const event = activity(value as Chunk); if (event !== undefined) events.push(event)
@@ -324,7 +332,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		let snapshot: JsonValue | undefined
 		return managedModelStream('model_object_stream', modelAlias, request, callOptions, effect, chunk => {
 			validateFiniteStreamChunk(chunk as unknown as JsonValue, 'object', false)
-			if (chunk.kind === 'partial') snapshot = managedJson(chunk.partial)
+			if (chunk.kind === 'partial') snapshot = snapshotJson(chunk.partial)
 			else if (chunk.kind === 'delta') snapshot = applyObjectDelta(snapshot, chunk.path, chunk.value)
 			else return undefined
 			return { type: 'model.output.object.snapshot', runId: options.runId, caller: workflowCaller(), callId: callOptions.callId,
@@ -342,11 +350,11 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		const tuple = makeTuple(operation, 'model', modelAlias, request, callOptions.idempotencyKey ?? null, normalizeDirectIdentity(callOptions))
 		const existing = calls.get(callOptions.callId)
 		if (existing !== undefined) { assertSameCall(workflow.id, callOptions.callId, existing.tuple, tuple); return existing.promise as Promise<JsonValue> }
-		let admitted = false
+			let admitted = false; let checkpointed = false
 		activeCalls.add(callOptions.callId)
 		const promise = (async () => {
 			const replay = await loadDirectCheckpoint(callOptions.callId, operation, 'model', modelAlias, request, callOptions)
-			if (replay !== undefined) return replayDirectOutcome(replay.outcome)
+				if (replay !== undefined) { checkpointed = true; await publishManagedEvents(replay); return replayDirectOutcome(replay.outcome) }
 			const signal = managedSignal(options.signal, callOptions.timeoutMs ?? options.defaults.modelTimeoutMs)
 			if (signal.aborted) throw abortError(signal, 'model', 'Workflow managed call was cancelled.')
 			admitted = true
@@ -361,38 +369,41 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 				if (error instanceof ValidationError && error.meta?.['where'] === 'model_response') throw error
 				const cancelled = signal.aborted || error instanceof OperationCancelledError || error instanceof OperationTimeoutError
 				const stored = cancelled ? storedManagedCancelled('model') : storedManagedFailure(workflow.id, callOptions.callId, operation, 'model', modelAlias)
-				await commitManagedCheckpoint(callOptions.callId, operation, 'model', modelAlias, request, stored)
+					await commitManagedCheckpoint(callOptions.callId, operation, 'model', modelAlias, request, stored, [])
+					checkpointed = true
 				throw replayDirectOutcomeError(stored)
 			}
 			const stored = Object.freeze({ status: 'completed' as const, output: result.output })
-			await commitManagedCheckpoint(callOptions.callId, operation, 'model', modelAlias, request, stored)
-			for (const event of result.events) await options.emit?.(event)
-			await emitModelTerminal(operation, modelAlias, callOptions.callId, caller, result.output)
+				const events = [...result.events, ...modelTerminalEvents(operation, modelAlias, callOptions.callId, caller, result.output)]
+				const record = await commitManagedCheckpoint(callOptions.callId, operation, 'model', modelAlias, request, stored, events)
+				checkpointed = true; await publishManagedEvents(record)
 			return result.output
 		})().finally(() => activeCalls.delete(callOptions.callId))
 		const entry = Object.freeze({ tuple, promise })
 		calls.set(callOptions.callId, entry)
-		void promise.catch(() => { if (!admitted && calls.get(callOptions.callId) === entry) calls.delete(callOptions.callId) })
+			void promise.catch(() => { if ((!admitted || checkpointed) && calls.get(callOptions.callId) === entry) calls.delete(callOptions.callId) })
 		return promise
 	}
-	async function emitModelTerminal(operation: WorkflowManagedCallOperation, modelAlias: string, callId: string, caller: Extract<ReturnType<typeof projectHarnessExecutionCaller>, { kind: 'workflow' }>, output: JsonValue): Promise<void> {
+	function modelTerminalEvents(operation: WorkflowManagedCallOperation, modelAlias: string, callId: string, caller: Extract<ReturnType<typeof projectHarnessExecutionCaller>, { kind: 'workflow' }>, output: JsonValue): readonly UncorrelatedExecutionEvent[] {
 		if (operation === 'model_text_stream' || operation === 'model_object_stream') {
 			const finish = Array.isArray(output) ? output.at(-1) : undefined
 			if (!isPlainRecord(finish) || finish['kind'] !== 'finish') throw new InternalError('Stored workflow model stream is invalid.')
-			await options.emit?.({ type: 'model.completed', runId: options.runId, caller, callId, modelAlias, streamId: modelStreamId(callId),
-				operation: operation === 'model_text_stream' ? 'textStream' : 'objectStream', ...modelCompletion(finish) })
-			return
+			return [{ type: 'model.completed', runId: options.runId, caller, callId, modelAlias, streamId: modelStreamId(callId),
+				operation: operation === 'model_text_stream' ? 'textStream' : 'objectStream', ...modelCompletion(finish) }]
 		}
-		if (!isPlainRecord(output)) return
-		if (operation === 'model_text' || operation === 'model_object') await options.emit?.({ type: 'model.completed', runId: options.runId, caller, callId, modelAlias,
-			operation: operation === 'model_text' ? 'text' : 'object', ...modelCompletion(output) })
-		else if (operation === 'model_embed') await options.emit?.({ type: 'model.embedding.completed', runId: options.runId, caller, callId, modelAlias,
-			count: Array.isArray(output['embeddings']) ? output['embeddings'].length : 0, ...(typeof output['dimensions'] === 'number' ? { dimensions: output['dimensions'] } : {}), ...(isPlainRecord(output['usage']) ? { usage: output['usage'] as never } : {}) })
-		else if (operation === 'model_rerank') await options.emit?.({ type: 'model.rerank.completed', runId: options.runId, caller, callId, modelAlias,
-			count: Array.isArray(output['results']) ? output['results'].length : 0, ...(isPlainRecord(output['usage']) ? { usage: output['usage'] as never } : {}) })
+		if (!isPlainRecord(output)) return []
+		if (operation === 'model_text' || operation === 'model_object') return [{ type: 'model.completed', runId: options.runId, caller, callId, modelAlias,
+			operation: operation === 'model_text' ? 'text' : 'object', ...modelCompletion(output) }]
+		if (operation === 'model_embed') return [{ type: 'model.embedding.completed', runId: options.runId, caller, callId, modelAlias,
+			count: Array.isArray(output['embeddings']) ? output['embeddings'].length : 0, ...(typeof output['dimensions'] === 'number' ? { dimensions: output['dimensions'] } : {}), ...(isPlainRecord(output['usage']) ? { usage: output['usage'] as never } : {}) }]
+		if (operation === 'model_rerank') return [{ type: 'model.rerank.completed', runId: options.runId, caller, callId, modelAlias,
+			count: Array.isArray(output['results']) ? output['results'].length : 0, ...(isPlainRecord(output['usage']) ? { usage: output['usage'] as never } : {}) }]
 		else if (operation === 'model_image') {
-			if (Array.isArray(output['artifacts'])) for (const artifact of output['artifacts']) if (isPlainRecord(artifact) && typeof artifact['id'] === 'string') await options.emit?.({ type: 'output.file', runId: options.runId, caller, callId, id: artifact['id'], modelAlias, operation: 'image', artifact: artifact as never })
-		} else if ((operation === 'model_speech' || operation === 'model_video') && isPlainRecord(output['artifact']) && typeof output['artifact']['id'] === 'string') await options.emit?.({ type: 'output.file', runId: options.runId, caller, callId, id: output['artifact']['id'], modelAlias, operation: operation === 'model_speech' ? 'speech' : 'video', artifact: output['artifact'] as never })
+			return Array.isArray(output['artifacts']) ? output['artifacts'].flatMap(artifact => isPlainRecord(artifact) && typeof artifact['id'] === 'string'
+				? [{ type: 'output.file' as const, runId: options.runId, caller, callId, id: artifact['id'], modelAlias, operation: 'image' as const, artifact: artifact as never }] : []) : []
+		}
+		if ((operation === 'model_speech' || operation === 'model_video') && isPlainRecord(output['artifact']) && typeof output['artifact']['id'] === 'string') return [{ type: 'output.file', runId: options.runId, caller, callId, id: output['artifact']['id'], modelAlias, operation: operation === 'model_speech' ? 'speech' : 'video', artifact: output['artifact'] as never }]
+		return []
 	}
 
 	async function directAgentRun(agent: AnyAgentDefinition, input: JsonValue, callOptions: WorkflowModelCallOptions): Promise<JsonValue> {
@@ -449,7 +460,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			if (consumed.outcome.status === 'completed') stored = Object.freeze({ status: 'completed', output: consumed.outcome.output })
 			else if (consumed.outcome.status === 'cancelled') stored = storedManagedCancelled('agent')
 			else stored = storedManagedFailure(workflow.id, callId, 'agent_run', 'agent', agent.id)
-			await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, Object.freeze({ childRunId: consumed.lineage.childRunId, childInvocationId }))
+			await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, [], Object.freeze({ childRunId: consumed.lineage.childRunId, childInvocationId }))
 			terminalCommitted = true
 			if (stored.status === 'failed') throw new WorkflowManagedCallError(stored.error.meta, consumed.outcome.status === 'failed' ? consumed.outcome.error : undefined)
 			return replayDirectOutcome(stored)
@@ -457,12 +468,12 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			if (isHarnessChildTargetInterruption(error)) throw error
 			if (!terminalCommitted && (error instanceof OperationCancelledError || error instanceof OperationTimeoutError)) {
 				const stored = storedManagedCancelled('agent')
-				await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, Object.freeze({ childRunId: childInvocationId, childInvocationId }))
+				await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, [], Object.freeze({ childRunId: childInvocationId, childInvocationId }))
 				throw replayDirectOutcomeError(stored)
 			}
 			if (!terminalCommitted && executionAdmitted) {
 				const stored = storedManagedFailure(workflow.id, callId, 'agent_run', 'agent', agent.id)
-				await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored,
+				await commitManagedCheckpoint(callId, 'agent_run', 'agent', agent.id, input, stored, [],
 					Object.freeze({ childRunId: childInvocationId, childInvocationId }))
 				throw new WorkflowManagedCallError(stored.error.meta, error)
 			}
@@ -490,13 +501,41 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 		return value
 	}
 
-	async function commitManagedCheckpoint(callId: string, operation: WorkflowManagedCallOperation, targetKind: ManagedTargetKind, targetId: string, input: JsonValue, outcome: WorkflowCallStoredOutcomeV1, child?: Readonly<{ childRunId: string; childInvocationId: string }>) {
-		if (options.checkpoint === undefined) return
+	async function commitManagedCheckpoint(callId: string, operation: WorkflowManagedCallOperation, targetKind: ManagedTargetKind, targetId: string, input: JsonValue, outcome: WorkflowCallStoredOutcomeV1, events: readonly UncorrelatedExecutionEvent[], child?: Readonly<{ childRunId: string; childInvocationId: string }>): Promise<WorkflowCallCheckpointV1> {
 		const record: WorkflowCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call', callId, operation,
 			target: Object.freeze({ kind: targetKind, id: targetId }), input, outcome,
+			publication: Object.freeze({ events: Object.freeze(events.map(event => snapshotJson(event as unknown as JsonValue))) }),
 			...(child === undefined ? {} : { lineage: Object.freeze({ rootRunId: options.rootRunId, workflowRunId: options.runId, workflowInvocationId: options.invocationId, ...child }) }) })
-		await options.checkpoint.commit(`workflow:call:${callId}`, record as unknown as JsonValue,
+		if (options.checkpoint !== undefined) await options.checkpoint.commit(`workflow:call:${callId}`, record as unknown as JsonValue,
 			Object.freeze({ checkpointKind: 'workflow_call', schemaVersion: 1 }))
+		return record
+	}
+
+	async function publishManagedEvents(record: WorkflowCallCheckpointV1): Promise<void> {
+		for (let eventIndex = 0; eventIndex < record.publication.events.length; eventIndex += 1) {
+			const event = record.publication.events[eventIndex]!
+			const stepId = `workflow:publication:${digest(['harness.workflow-call-publication.v1', record.callId, eventIndex])}`
+			const eventDigest = `sha256:${digest(event)}`
+			if (options.checkpoint !== undefined) {
+				const persisted = await options.checkpoint.load(stepId)
+				if (persisted !== undefined) {
+					const marker = parseWorkflowPublicationCheckpoint(persisted.output)
+					if (persisted.stepId !== stepId || canonicalJson(persisted.input) !== canonicalJson(options.checkpoint.rootInput)
+						|| !isPlainRecord(persisted.metadata) || !exactKeys(persisted.metadata, ['checkpointKind', 'schemaVersion'])
+						|| persisted.metadata['checkpointKind'] !== 'workflow_call_publication' || persisted.metadata['schemaVersion'] !== 1
+						|| marker.callId !== record.callId || marker.eventIndex !== eventIndex || marker.eventDigest !== eventDigest) {
+						throw new ValidationError('Stored workflow managed call publication is invalid.', { where: 'workflow_output', issues: { reason: 'invalid_checkpoint' } })
+					}
+					continue
+				}
+			}
+			await options.emit?.(event as unknown as UncorrelatedExecutionEvent)
+			if (options.checkpoint !== undefined && options.emit !== undefined) {
+				const marker: WorkflowCallPublicationCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call_publication', callId: record.callId, eventIndex, eventDigest })
+				await options.checkpoint.commit(stepId, marker as unknown as JsonValue,
+					Object.freeze({ checkpointKind: 'workflow_call_publication', schemaVersion: 1 }))
+			}
+		}
 	}
 
 	async function startTask(agentName: string, input: JsonValue, rawOptions: Record<string, unknown>): Promise<ChildTaskHandle<JsonValue>> {
@@ -961,15 +1000,26 @@ function parseChildTaskRecord(record: RunRecord, agent: AnyAgentDefinition, work
 	} catch { throw new ChildTaskStateError({ reason: 'invalid_record', task_id: record.id }) }
 }
 function parseWorkflowCallCheckpoint(value: unknown): WorkflowCallCheckpointV1 {
-	if (!isPlainRecord(value) || !exactKeys(value, value['lineage'] === undefined ? ['schemaVersion', 'kind', 'callId', 'operation', 'target', 'input', 'outcome'] : ['schemaVersion', 'kind', 'callId', 'operation', 'target', 'input', 'outcome', 'lineage'])
+	if (!isPlainRecord(value) || !exactKeys(value, value['lineage'] === undefined ? ['schemaVersion', 'kind', 'callId', 'operation', 'target', 'input', 'outcome', 'publication'] : ['schemaVersion', 'kind', 'callId', 'operation', 'target', 'input', 'outcome', 'publication', 'lineage'])
 		|| value['schemaVersion'] !== 1 || value['kind'] !== 'workflow_call' || typeof value['callId'] !== 'string' || !isManagedOperation(value['operation'])
 		|| !isPlainRecord(value['target']) || !exactKeys(value['target'], ['kind', 'id']) || !isManagedTargetKind(value['target']['kind']) || typeof value['target']['id'] !== 'string'
 		|| !isJsonValue(value['input']) || !isPlainRecord(value['outcome']) || !validDirectStoredOutcome(value['outcome'], value['callId'], value['operation'], value['target']['kind'], value['target']['id'])
+		|| !isPlainRecord(value['publication']) || !exactKeys(value['publication'], ['events']) || !Array.isArray(value['publication']['events'])
+		|| !(value['publication']['events'] as unknown[]).every(isJsonValue)
 		|| value['lineage'] !== undefined && (!isPlainRecord(value['lineage']) || !exactKeys(value['lineage'], ['rootRunId', 'workflowRunId', 'workflowInvocationId', 'childRunId', 'childInvocationId'])
 		|| !Object.values(value['lineage']).every(item => typeof item === 'string'))) {
 		throw new ValidationError('Stored workflow managed call is invalid.', { where: 'workflow_output', issues: { reason: 'invalid_checkpoint' } })
 	}
 	return value as unknown as WorkflowCallCheckpointV1
+}
+function parseWorkflowPublicationCheckpoint(value: unknown): WorkflowCallPublicationCheckpointV1 {
+	if (!isPlainRecord(value) || !exactKeys(value, ['schemaVersion', 'kind', 'callId', 'eventIndex', 'eventDigest'])
+		|| value['schemaVersion'] !== 1 || value['kind'] !== 'workflow_call_publication' || !nonempty(value['callId'])
+		|| !Number.isSafeInteger(value['eventIndex']) || (value['eventIndex'] as number) < 0
+		|| typeof value['eventDigest'] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value['eventDigest'])) {
+		throw new ValidationError('Stored workflow managed call publication is invalid.', { where: 'workflow_output', issues: { reason: 'invalid_checkpoint' } })
+	}
+	return value as unknown as WorkflowCallPublicationCheckpointV1
 }
 function validDirectStoredOutcome(value: Record<string, unknown>, callId: string, operation: WorkflowManagedCallOperation, targetKind: ManagedTargetKind, targetId: string): boolean {
 	if (value['status'] === 'completed') return exactKeys(value, ['status', 'output']) && isJsonValue(value['output'])
@@ -1036,6 +1086,23 @@ function validateFiniteStreamChunk(value: JsonValue, kind: 'text' | 'object', _a
 	}
 	throw modelResponseError('malformed_chunk')
 }
+function validateVideoStreamChunk(value: JsonValue, state: 'start' | 'queued' | 'progress'): 'queued' | 'progress' {
+	if (!isPlainRecord(value) || typeof value['kind'] !== 'string') throw modelResponseError('malformed_chunk')
+	if (value['kind'] === 'queued' && state === 'start' && exactKeys(value, ['kind'])) return 'queued'
+	if (value['kind'] === 'progress' && exactKeys(value, ['kind', 'progress']) && typeof value['progress'] === 'number'
+		&& state !== 'start' && Number.isFinite(value['progress']) && value['progress'] >= 0 && value['progress'] <= 1) return 'progress'
+	if (value['kind'] === 'finish' && state !== 'start' && exactKeys(value, ['kind', 'artifact']) && validArtifact(value['artifact'])) return state
+	throw modelResponseError('malformed_chunk')
+}
+function validArtifact(value: unknown): boolean {
+	if (!isPlainRecord(value)) return false
+	const allowed = ['id', 'url', 'mediaType', 'filename', 'size', 'expiresAt', 'metadata']
+	return exactKeysSubset(value, allowed) && nonempty(value['id']) && nonempty(value['url']) && nonempty(value['mediaType'])
+		&& (value['filename'] === undefined || nonempty(value['filename']))
+		&& (value['size'] === undefined || Number.isSafeInteger(value['size']) && (value['size'] as number) >= 0)
+		&& (value['expiresAt'] === undefined || typeof value['expiresAt'] === 'string')
+		&& (value['metadata'] === undefined || isPlainRecord(value['metadata']) && Object.values(value['metadata']).every(isJsonValue))
+}
 function validToolCall(value: unknown): boolean {
 	return isPlainRecord(value) && exactKeys(value, ['id', 'name', 'arguments'])
 		&& nonempty(value['id']) && nonempty(value['name']) && isJsonValue(value['arguments'])
@@ -1055,35 +1122,53 @@ function exactKeysSubset(value: object, allowed: readonly string[]): boolean {
 	return Reflect.ownKeys(value).every(key => typeof key === 'string' && allowed.includes(key))
 }
 function applyObjectDelta(current: JsonValue | undefined, path: readonly (string | number)[], value: JsonValue): JsonValue {
-	if (path.length === 0) return managedJson(value)
-	const root = current === undefined ? (typeof path[0] === 'number' ? [] : {}) : managedJson(current)
+	assertSafeDeltaPath(path)
+	if (path.length === 0) return snapshotJson(value)
+	const root = current === undefined ? (typeof path[0] === 'number' ? [] : Object.create(null) as Record<string, JsonValue>) : snapshotJson(current)
 	if (root === null || typeof root !== 'object') throw modelResponseError('invalid_object_delta')
 	let cursor: JsonValue = root
 	for (let index = 0; index < path.length - 1; index += 1) {
 		const key = path[index]!
 		const nextKey = path[index + 1]!
 		if (Array.isArray(cursor)) {
-			if (typeof key !== 'number' || key < 0) throw modelResponseError('invalid_object_delta')
-			const existing = cursor[key]
-			if (existing === undefined) cursor[key] = typeof nextKey === 'number' ? [] : {}
+			if (typeof key !== 'number' || key < 0 || key > cursor.length) throw modelResponseError('invalid_object_delta')
+			const existing = Object.prototype.hasOwnProperty.call(cursor, key) ? cursor[key] : undefined
+			if (existing === undefined) cursor[key] = typeof nextKey === 'number' ? [] : Object.create(null) as Record<string, JsonValue>
 			cursor = cursor[key]!
 		} else if (isPlainRecord(cursor)) {
 			if (typeof key !== 'string') throw modelResponseError('invalid_object_delta')
-			const existing = cursor[key]
-			if (existing === undefined) cursor[key] = typeof nextKey === 'number' ? [] : {}
+			const existing = Object.prototype.hasOwnProperty.call(cursor, key) ? cursor[key] : undefined
+			if (existing === undefined) cursor[key] = typeof nextKey === 'number' ? [] : Object.create(null) as Record<string, JsonValue>
 			cursor = cursor[key] as JsonValue
 		} else throw modelResponseError('invalid_object_delta')
 		if (cursor === null || typeof cursor !== 'object') throw modelResponseError('invalid_object_delta')
 	}
 	const leaf = path.at(-1)!
 	if (Array.isArray(cursor)) {
-		if (typeof leaf !== 'number' || leaf < 0) throw modelResponseError('invalid_object_delta')
-		cursor[leaf] = managedJson(value)
+		if (typeof leaf !== 'number' || leaf < 0 || leaf > cursor.length) throw modelResponseError('invalid_object_delta')
+		cursor[leaf] = snapshotJson(value)
 	} else if (isPlainRecord(cursor)) {
 		if (typeof leaf !== 'string') throw modelResponseError('invalid_object_delta')
-		cursor[leaf] = managedJson(value)
+		cursor[leaf] = snapshotJson(value)
 	} else throw modelResponseError('invalid_object_delta')
 	return root
+}
+function assertSafeDeltaPath(path: readonly (string | number)[]): void {
+	for (const segment of path) {
+		if (typeof segment === 'string') {
+			if (segment === '__proto__' || segment === 'prototype' || segment === 'constructor') throw modelResponseError('invalid_object_delta')
+		} else if (!Number.isSafeInteger(segment) || segment < 0) throw modelResponseError('invalid_object_delta')
+	}
+}
+function snapshotJson(value: JsonValue): JsonValue {
+	if (value === null || typeof value !== 'object') return value
+	if (Array.isArray(value)) return value.map(snapshotJson)
+	if (!isPlainRecord(value)) throw modelResponseError('invalid_object_delta')
+	const result = Object.create(null) as Record<string, JsonValue>
+	for (const [key, child] of Object.entries(value)) {
+		result[key] = snapshotJson(child as JsonValue)
+	}
+	return result
 }
 function modelCompletion(value: Record<string, unknown>): Readonly<{ usage?: never; finishReason?: never }> {
 	return Object.freeze({ ...(isPlainRecord(value['usage']) ? { usage: value['usage'] as never } : {}), ...(typeof value['finishReason'] === 'string' ? { finishReason: value['finishReason'] as never } : {}) })

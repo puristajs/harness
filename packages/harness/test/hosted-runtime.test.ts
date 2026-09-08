@@ -113,7 +113,7 @@ function correlateRemoteStream<Output>(
 	})
 }
 
-async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: number }> = {}) {
+async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: number; callerWorkflowId?: string; catchNestedTerminal?: boolean }> = {}) {
 	const leafCount = options.leafCount ?? 1
 	interface HostInvocation { readonly generation?: string }
 	interface HostContext {
@@ -126,6 +126,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	let remoteEffectCalls = 0
 	let managedEffects = 0
 	const hostContextInvocations: HostInvocation[] = []
+	const hostCallers: unknown[] = []
 	const remoteEffect = defineTool('bash', {
 		description: 'One approval-controlled remote effect.', input: z.string(), output: z.string(),
 		async handler(_context, input) { remoteEffectCalls += 1; return `approved:${input}` },
@@ -139,8 +140,13 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 		description: 'Invoke the remote child.', input: z.string(), output: z.string(),
 		async handler(context) {
 			await context.checkpointStep('before-remote-child', async () => { managedEffects += 1; return 'prepared' })
-			const output = await context.nestedTargets.run(child.contract, 'original-remote-wire-input', { callId: 'remote-child-call' })
-			return `${context.generation}:${output}`
+			try {
+				const output = await context.nestedTargets.run(child.contract, 'original-remote-wire-input', { callId: 'remote-child-call' })
+				return `${context.generation}:${output}`
+			} catch (error) {
+				if (options.catchNestedTerminal && (error instanceof HostNestedTargetError || error instanceof OperationCancelledError)) return error.code
+				throw error
+			}
 		},
 	})
 	const parent = defineAgent('remoteApprovalParent', {
@@ -209,6 +215,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 			projectTraceContext: () => undefined,
 			createHostContext(request: HarnessHostContextRequest<HostInvocation>) {
 				hostContextInvocations.push(request.hostInvocation)
+				hostCallers.push(request.caller)
 				return Object.freeze({ generation: request.hostInvocation.generation ?? 'initial', nestedTargets: request.nestedTargets,
 					checkpointStep: request.checkpointStep })
 			},
@@ -223,8 +230,17 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	firstParentProvider.enqueueText({ content: '', toolCalls: Array.from({ length: leafCount }, (_unused, index) =>
 		({ id: `host-call-${index + 1}`, name: hostTool.id, arguments: `start-${index + 1}` })), usage, finishReason: 'tool_calls' })
 	const firstParent = await startParent(firstParentProvider)
-	const interrupted = await firstParent.runHosted({ target: parent.contract, input: 'root-input',
+	const rootInvocation = options.callerWorkflowId === undefined ? undefined : Object.freeze({ sessionId: 'remote-route-session',
+		invocationId: 'workflow-parent-agent-run', rootRunId: 'workflow-root-run', parentRunId: 'workflow-run',
+		parentWorkflowId: options.callerWorkflowId, depth: 1, remainingDepth: 3, signal: new AbortController().signal })
+	let interrupted: any
+	if (rootInvocation === undefined) interrupted = await firstParent.runHosted({ target: parent.contract, input: 'root-input',
 		invokeOptions: { sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run' }, hostInvocation: {} })
+	else {
+		const opened = await firstParent.streamDispatched({ delivery: 'fresh', target: parent.contract, wireInput: 'root-input', input: 'root-input',
+			invocation: rootInvocation, hostInvocation: {} })
+		for await (const event of opened) if (event.type === 'run.finished' && event.runId === rootInvocation.invocationId) interrupted = event.outcome
+	}
 	if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') {
 		throw new Error('Expected remote child approval interruption.')
 	}
@@ -233,13 +249,13 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	remoteInstance = undefined
 
 	return {
-		storage, owner, child, parent, parentDefinition, interrupted, route,
+		storage, owner, child, parent, parentDefinition, interrupted, route, rootInvocation,
 		startRemote,
 		stopRemote,
 		startParent,
 		setRoute(next: HarnessTargetRouteReceiptV1) { currentRoute = next },
 		counts: () => ({ freshOpens, persistedDispatchEffects, remoteEffectCalls, managedEffects,
-			hostContextInvocations, persistedRequests }),
+			hostContextInvocations, hostCallers, persistedRequests }),
 	}
 }
 
@@ -349,20 +365,130 @@ describe('hosted Harness runtime', () => {
 		}, hostInvocation: {} })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow host interruption.')
 		await current.close()
+		const approval = interrupted.interrupt.requests[0]!
+		const repeatedProvider = new FakeModelProvider({ strict: true })
+		repeatedProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call-2', name: effect.id, arguments: 'go-again' }], usage, finishReason: 'tool_calls' })
+		current = await instantiateHostedHarness(definition, { model: { provider: repeatedProvider, model: 'fake' }, storage }, bindings)
+		const interruptedAgain = await current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
+			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root', resume: {
+				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
+				revision: interrupted.interrupt.revision, eventId: 'workflow-interrupted-resume-1',
+				decisions: [{ approvalId: approval.approvalId, approved: true }],
+			},
+		}, hostInvocation: {} })
+		if (interruptedAgain.status !== 'interrupted' || interruptedAgain.interrupt.type !== 'tool-approval') throw new Error('Expected repeated workflow host interruption.')
+		await current.close()
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'child-complete', toolCalls: [], usage, finishReason: 'stop' })
 		current = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
-		const approval = interrupted.interrupt.requests[0]!
+		const repeatedApproval = interruptedAgain.interrupt.requests[0]!
 		await expect(current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
 			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root', resume: {
-				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
-				revision: interrupted.interrupt.revision, eventId: 'workflow-interrupted-resume',
-				decisions: [{ approvalId: approval.approvalId, approved: true }],
+				type: 'tool-approval', runId: interruptedAgain.runId, interruptId: interruptedAgain.interrupt.id,
+				revision: interruptedAgain.interrupt.revision, eventId: 'workflow-interrupted-resume-2',
+				decisions: [{ approvalId: repeatedApproval.approvalId, approved: true }],
 			},
 		}, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed', output: 'child-complete' })
-		expect(approvedEffects).toBe(1)
+		expect(approvedEffects).toBe(2)
 		expect(callers).toEqual(callers.map(() => ({ kind: 'workflow', workflowId: 'workflowInterrupted' })))
+		const lifecycle = (await storage.listEvents(interrupted.runId)).filter(event => {
+			const payload = event.payload as Record<string, unknown>
+			return ['tool.input.available', 'tool.started', 'tool.finished'].includes(event.type)
+				&& payload['toolId'] === 'workflowInterruptedHost' && payload['callId'] === 'host-call'
+		})
+		expect(lifecycle.map(event => event.type)).toEqual(['tool.input.available', 'tool.started', 'tool.finished'])
 		await current.close()
+	})
+
+	it('preserves an agent caller workflow id through hosted interruption and rejects tampering before effects', async () => {
+		const fixture = await interruptedRemoteHostFixture({ callerWorkflowId: 'outerWorkflow' })
+		const checkpoint = await fixture.storage.loadCheckpoint(fixture.interrupted.runId, 'harness:interrupt:v1')
+		if (checkpoint?.output === undefined || fixture.rootInvocation === undefined) throw new Error('Expected hosted lineage checkpoint.')
+		const original = structuredClone(checkpoint.output) as Record<string, any>
+		expect(original['continuation']['children'][0]['frame']['caller']).toEqual({
+			kind: 'agent', agentId: fixture.parent.id, workflowId: 'outerWorkflow',
+		})
+		const tampered = structuredClone(original) as Record<string, any>
+		tampered['continuation']['children'][0]['frame']['caller']['workflowId'] = 'tamperedWorkflow'
+		const originalLoad = fixture.storage.loadCheckpoint.bind(fixture.storage)
+		const originalAcquire = fixture.storage.acquireRun.bind(fixture.storage)
+		const loadSpy = vi.spyOn(fixture.storage, 'loadCheckpoint').mockImplementation(async (runId, stepId) => {
+			const value = await originalLoad(runId, stepId)
+			return runId === fixture.interrupted.runId && stepId === 'harness:interrupt:v1' && value !== undefined
+				? Object.freeze({ ...value, output: tampered }) : value
+		})
+		const acquireSpy = vi.spyOn(fixture.storage, 'acquireRun').mockImplementation(async request => {
+			const lease = await originalAcquire(request)
+			if (request.runId !== fixture.interrupted.runId || lease.checkpoint === undefined) return lease
+			const selected = Object.freeze({ ...lease.checkpoint, output: tampered })
+			return Object.freeze({ ...lease, checkpoint: selected,
+				checkpoints: Object.freeze(lease.checkpoints.map(item => item.stepId === selected.stepId ? selected : item)) })
+		})
+		const approval = fixture.interrupted.interrupt.requests[0]!
+		const tamperParent = await fixture.startParent(new FakeModelProvider({ strict: true }))
+		const consumeTampered = async () => {
+			const stream = await tamperParent.streamDispatched({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input',
+				invocation: fixture.rootInvocation, resume: { type: 'tool-approval', runId: fixture.interrupted.runId,
+					interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision, eventId: 'workflow-lineage-tamper',
+					decisions: [{ approvalId: approval.approvalId, approved: true }] }, hostInvocation: {},
+			})
+			for await (const _event of stream) void _event
+		}
+		await expect(consumeTampered()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } })
+		expect(fixture.counts()).toMatchObject({ persistedDispatchEffects: 0, remoteEffectCalls: 0 })
+		await tamperParent.close(); loadSpy.mockRestore(); acquireSpy.mockRestore(); await fixture.stopRemote()
+	})
+
+	it('resumes a hosted agent caller with its exact workflow id', async () => {
+		const fixture = await interruptedRemoteHostFixture({ callerWorkflowId: 'outerWorkflow' })
+		if (fixture.rootInvocation === undefined) throw new Error('Expected workflow caller invocation.')
+		const approval = fixture.interrupted.interrupt.requests[0]!
+		const remoteProvider = new FakeModelProvider({ strict: true })
+		remoteProvider.enqueueText({ content: 'remote-complete', toolCalls: [], usage, finishReason: 'stop' })
+		await fixture.startRemote(remoteProvider)
+		const parentProvider = new FakeModelProvider({ strict: true })
+		parentProvider.enqueueText({ content: 'parent-complete', toolCalls: [], usage, finishReason: 'stop' })
+		const parent = await fixture.startParent(parentProvider)
+		const resumed = await parent.streamDispatched({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input',
+			invocation: fixture.rootInvocation, resume: { type: 'tool-approval', runId: fixture.interrupted.runId,
+				interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision, eventId: 'workflow-lineage-resume',
+				decisions: [{ approvalId: approval.approvalId, approved: true }] }, hostInvocation: {},
+		})
+		let outcome: unknown
+		for await (const event of resumed) if (event.type === 'run.finished' && event.runId === fixture.interrupted.runId) outcome = event.outcome
+		expect(outcome).toMatchObject({ status: 'completed', output: 'parent-complete' })
+		expect(fixture.counts().hostCallers).toEqual(fixture.counts().hostCallers.map(() => ({
+			kind: 'agent', agentId: fixture.parent.id, workflowId: 'outerWorkflow',
+		})))
+		await parent.close(); await fixture.stopRemote()
+	})
+
+	it.each(['failed', 'cancelled'] as const)('commits a resumed hosted child %s terminal before the host handler replays it', async status => {
+		const fixture = await interruptedRemoteHostFixture({ catchNestedTerminal: true })
+		const remoteProvider = new FakeModelProvider({ strict: true })
+		vi.spyOn(remoteProvider, 'text').mockRejectedValue(status === 'cancelled'
+			? new OperationCancelledError('cancelled', { scope: 'agent' }) : new Error('private provider failure'))
+		await fixture.startRemote(remoteProvider)
+		const parentProvider = new FakeModelProvider({ strict: true })
+		parentProvider.enqueueText({ content: 'parent-complete', toolCalls: [], usage, finishReason: 'stop' })
+		const committed: any[] = []
+		const originalCommit = fixture.storage.commitCheckpoint.bind(fixture.storage)
+		vi.spyOn(fixture.storage, 'commitCheckpoint').mockImplementation(async checkpoint => {
+			if ((checkpoint.output as any)?.kind === 'host_nested_target') committed.push(checkpoint.output)
+			return originalCommit(checkpoint)
+		})
+		const parent = await fixture.startParent(parentProvider)
+		const approval = fixture.interrupted.interrupt.requests[0]!
+		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+				type: 'tool-approval', runId: fixture.interrupted.runId, interruptId: fixture.interrupted.interrupt.id,
+				revision: fixture.interrupted.interrupt.revision, eventId: `resumed-${status}`,
+				decisions: [{ approvalId: approval.approvalId, approved: true }],
+			},
+		}, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed', output: 'parent-complete' })
+		expect(committed).toEqual([expect.objectContaining({ kind: 'host_nested_target', outcome: expect.objectContaining({ status }) })])
+		expect(JSON.stringify(parentProvider.requests[0])).toContain(status === 'cancelled' ? 'OPERATION_CANCELLED' : 'HOST_NESTED_TARGET_FAILED')
+		await parent.close(); await fixture.stopRemote()
 	})
 
 	it('requires factory-authentic owners and rejects a different owner before runtime initialization', async () => {

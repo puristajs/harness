@@ -721,7 +721,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			rootInvocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchInvocation,
 			environment: TrustedHostedInvocationEnvironment | undefined,
 		): Promise<void> => {
-			const visit = async (parent: SuspensionNodeValue): Promise<void> => {
+			const visit = async (parent: SuspensionNodeValue, inheritedWorkflowId: string | undefined): Promise<void> => {
+				const workflowId = parent.frame.kind === 'workflow' ? parent.frame.workflowId : inheritedWorkflowId
 				for (const child of parent.children) {
 					if (child.frame.kind === 'host-tool') {
 						if (environment === undefined || (parent.frame.kind !== 'agent' && parent.frame.kind !== 'workflow')) {
@@ -729,7 +730,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						}
 						const frame = child.frame
 						const parentCaller = parent.frame.kind === 'agent'
-							? projectHarnessExecutionCaller({ kind: 'agent', agentId: parent.frame.state.agentId })
+							? projectHarnessExecutionCaller({ kind: 'agent', agentId: parent.frame.state.agentId,
+								...(workflowId === undefined ? {} : { workflowId }) })
 							: projectHarnessExecutionCaller({ kind: 'workflow', workflowId: parent.frame.workflowId })
 						const entry = parent.frame.kind === 'agent' && 'entries' in parent.frame.state
 							? parent.frame.state.entries.find((candidate): candidate is Extract<PreparedToolCheckpointEntryV1, { state: 'suspended-child' }> => (
@@ -778,10 +780,18 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						}
 						continue
 					}
-					await visit(child)
+					await visit(child, workflowId)
 				}
 			}
-			await visit(root)
+			await visit(root, rootInvocation.parentWorkflowId)
+		}
+		const workflowIdForAgentNode = (node: SuspensionNodeValue): string | undefined => {
+			const path = resumedContinuation === undefined ? undefined : findSuspensionPath(resumedContinuation, node.frame.invocationId)
+			for (let index = (path?.length ?? 0) - 1; index >= 0; index -= 1) {
+				const frame = path![index]!.frame
+				if (frame.kind === 'workflow') return frame.workflowId
+			}
+			return invocation.parentWorkflowId
 		}
 		const resumeTargetNode = async (node: SuspensionNodeValue, expectedRunId: string): Promise<JsonValue> => {
 			if ((node.frame.kind !== 'agent' && node.frame.kind !== 'workflow') || node.frame.runId !== expectedRunId) {
@@ -814,7 +824,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const parentCaller = parentNode.frame.kind === 'workflow'
 				? projectHarnessExecutionCaller({ kind: 'workflow', workflowId: parentNode.frame.workflowId })
 				: parentNode.frame.kind === 'agent'
-					? projectHarnessExecutionCaller({ kind: 'agent', agentId: parentNode.frame.state.agentId })
+					? projectHarnessExecutionCaller({ kind: 'agent', agentId: parentNode.frame.state.agentId,
+						...(workflowIdForAgentNode(parentNode) === undefined ? {} : { workflowId: workflowIdForAgentNode(parentNode) }) })
 					: parentNode.frame.caller
 			const childInvocation = Object.freeze({ sessionId: childSessionId,
 				invocationId: node.frame.invocationId, rootRunId: invocation.rootRunId, parentRunId: parentNode.frame.runId,
@@ -857,6 +868,25 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				}, consumed.outcome.error)
 				throw new InternalError('Subagent execution failed.', undefined, consumed.outcome.error)
 			} finally { childSandboxPolicies.delete(node.frame.invocationId); childController.dispose() }
+		}
+		const resumeHostNestedOutcome = async (
+			frame: Extract<SuspensionFrameValue, { kind: 'host-tool' }>, node: SuspensionNodeValue,
+		): Promise<import('../storage/execution.js').HostNestedTargetStoredOutcomeV1> => {
+			try {
+				return Object.freeze({ status: 'completed', output: await resumeTargetNode(node, frame.activeNestedCall.childRunId) })
+			} catch (error) {
+				if (error instanceof OperationCancelledError) return Object.freeze({ status: 'cancelled', error: Object.freeze({
+					code: 'OPERATION_CANCELLED', message: 'Host nested target call was cancelled.', category: 'cancelled', retriable: false,
+					meta: Object.freeze({ scope: frame.activeNestedCall.target.kind }),
+				}) })
+				if (error instanceof InternalError && error.message === 'Subagent execution failed.') return Object.freeze({ status: 'failed', error: Object.freeze({
+					code: 'HOST_NESTED_TARGET_FAILED', message: 'Host nested target failed.', category: 'internal', retriable: false,
+					meta: Object.freeze({ reason: 'target_failed', caller: frame.caller, caller_run_id: frame.runId,
+						tool_id: frame.toolId, tool_call_id: frame.callId, call_id: frame.activeNestedCall.callId,
+						target_kind: frame.activeNestedCall.target.kind, target_id: frame.activeNestedCall.target.id }),
+				}) })
+				throw error
+			}
 		}
 		let approvalReceipt: ApprovalResumeReceiptV1 | undefined
 		let resumedAgentState: AgentContinuationStateV1 | undefined
@@ -929,8 +959,10 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				? { 'harness.agent.id': definition.id, 'gen_ai.operation.name': 'invoke_agent' }
 				: { 'harness.workflow.id': definition.id, 'gen_ai.operation.name': 'invoke_workflow' }),
 		}, async targetSpan => {
-		let activeWorkflowRuntime: Pick<WorkflowExecutionRuntime<undefined, undefined, undefined>, 'agentCallBudgetState' | 'activeCallIds'> | undefined
-		let activeWorkflowInput: JsonValue = input
+			let activeWorkflowRuntime: Pick<WorkflowExecutionRuntime<undefined, undefined, undefined>, 'agentCallBudgetState' | 'activeCallIds'> | undefined = resumedWorkflowFrame === undefined
+				? undefined : Object.freeze({ activeCallIds: () => resumedWorkflowFrame.activeCallIds,
+					agentCallBudgetState: () => resumedWorkflowFrame.agentCallBudget })
+			let activeWorkflowInput: JsonValue = resumedWorkflowFrame?.input ?? input
 		let conversationTurn: readonly Message[] = Object.freeze([])
 		try {
 			const memoryFacade = createMemoryFacade({ engine: memory, harnessName: options.name, sessionId: invocation.sessionId,
@@ -986,14 +1018,16 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					sandbox: sessionSandbox, targetDispatcher: executionDispatcher, relayChildEvent, checkpointStep: agentCheckpointStep })
 				const resumeSuspendedChild = async (
 					entry: Extract<PreparedToolCheckpointEntryV1, { state: 'suspended-child' }>,
-					): Promise<JsonValue> => {
-						const node = findSuspensionNode(resumedContinuation, entry.childInvocationId)
+				): Promise<JsonValue> => {
+					const node = findSuspensionNode(resumedContinuation, entry.childInvocationId)
 					if (node === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 					const parentNode = findSuspensionParent(resumedContinuation, node.frame.invocationId)
 					if (parentNode === undefined) throw new ApprovalResumeError('invalid_checkpoint')
 					if (parentNode.frame.kind !== 'host-tool') return resumeTargetNode(node, entry.childRunId)
+					const expectedAgentCaller = projectHarnessExecutionCaller({ kind: 'agent', agentId: definition.id,
+						...(invocation.parentWorkflowId === undefined ? {} : { workflowId: invocation.parentWorkflowId }) })
 					if (checkpointLease === undefined || parentNode.frame.runId !== runId
-						|| parentNode.frame.caller.kind !== 'agent' || parentNode.frame.caller.agentId !== definition.id
+						|| canonicalJson(parentNode.frame.caller as unknown as JsonValue) !== canonicalJson(expectedAgentCaller as unknown as JsonValue)
 						|| parentNode.frame.invocationId !== invocation.invocationId
 						|| parentNode.frame.toolId !== entry.bindingId || parentNode.frame.callId !== entry.call.id
 						|| canonicalJson(parentNode.frame.input) !== canonicalJson(entry.call.arguments)) {
@@ -1033,12 +1067,12 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						|| (node.frame.kind === 'agent' && node.frame.state.sessionId !== activeCall.childSessionId)) {
 						throw new ApprovalResumeError('invalid_checkpoint')
 					}
-					const childOutput = await resumeTargetNode(node, entry.childRunId)
+					const hostOutcome = await resumeHostNestedOutcome(parentNode.frame, node)
 					const nestedCallId = activeCall.callId
 					const stored: HostNestedTargetCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'host_nested_target',
 						toolCallId: parentNode.frame.callId, callId: nestedCallId,
 						target: activeCall.target, route: activeCall.route, input: activeCall.input,
-						outcome: Object.freeze({ status: 'completed', output: childOutput }),
+						outcome: hostOutcome,
 						lineage: Object.freeze({ rootRunId: invocation.rootRunId, callerRunId: runId,
 							hostToolInvocationId: parentNode.frame.hostToolInvocationId, childRunId: activeCall.childRunId,
 							childInvocationId: activeCall.childInvocationId }) })
@@ -1142,7 +1176,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const workflowCheckpoint: WorkflowChildCheckpointAccess | undefined = lease === undefined ? undefined : Object.freeze({
 					rootInput: persistedInput,
 					load: (stepId: string) => storage.loadCheckpoint(runId, stepId),
-					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'host_nested_target'; schemaVersion: 1 }>) => {
+					commit: async (stepId: string, checkpointOutput: JsonValue, metadata: Readonly<{ checkpointKind: 'workflow_call' | 'workflow_call_publication' | 'host_nested_target'; schemaVersion: 1 }>) => {
 						const activeLease = lease!
 						const checkpoint = Object.freeze({ runId, sessionId: invocation.sessionId, leaseId: activeLease.leaseId, workerId: activeLease.workerId,
 							stepId, input: persistedInput, attempt: activeLease.attempt, sequence: nextCheckpointSequence(), output: checkpointOutput, metadata })
@@ -1150,6 +1184,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						lease = Object.freeze({ ...activeLease, checkpoints: Object.freeze([...(activeLease.checkpoints ?? []), checkpoint]) })
 					},
 				})
+				const restoredWorkflowToolCallIds: string[] = []
 				if (resumedWorkflowFrame !== undefined) {
 					if (resumedContinuation === undefined || approvalReceipt === undefined || pendingCheckpoint === undefined || lease === undefined
 						|| resumedContinuation.children.length !== resumedWorkflowFrame.activeCallIds.length || workflowCheckpoint === undefined) {
@@ -1160,15 +1195,16 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						const callId = resumedWorkflowFrame.activeCallIds[index]!
 						if (childNode.frame.kind === 'host-tool') {
 							const frame = childNode.frame
+							restoredWorkflowToolCallIds.push(frame.callId)
 							const nested = childNode.children[0]
 							if (callId !== frame.callId || nested === undefined || (nested.frame.kind !== 'agent' && nested.frame.kind !== 'workflow')) {
 								throw new ApprovalResumeError('invalid_checkpoint')
 							}
-							const childOutput = await resumeTargetNode(nested, frame.activeNestedCall.childRunId)
+							const hostOutcome = await resumeHostNestedOutcome(frame, nested)
 							const hostStored: HostNestedTargetCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'host_nested_target',
 								toolCallId: frame.callId, callId: frame.activeNestedCall.callId, target: frame.activeNestedCall.target,
 								route: frame.activeNestedCall.route, input: frame.activeNestedCall.input,
-								outcome: Object.freeze({ status: 'completed', output: childOutput }), lineage: Object.freeze({
+								outcome: hostOutcome, lineage: Object.freeze({
 									rootRunId: invocation.rootRunId, callerRunId: runId, hostToolInvocationId: frame.hostToolInvocationId,
 									childRunId: frame.activeNestedCall.childRunId, childInvocationId: frame.activeNestedCall.childInvocationId,
 								}) })
@@ -1183,7 +1219,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						const stored: WorkflowCallCheckpointV1 = Object.freeze({ schemaVersion: 1, kind: 'workflow_call', callId,
 							operation: 'agent_run',
 							target: Object.freeze({ kind: 'agent', id: childNode.frame.state.agentId }), input: childRun.input,
-							outcome: Object.freeze({ status: 'completed', output: childOutput }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
+							outcome: Object.freeze({ status: 'completed', output: childOutput }), publication: Object.freeze({ events: Object.freeze([]) }), lineage: Object.freeze({ rootRunId: invocation.rootRunId,
 								workflowRunId: runId, workflowInvocationId: resumedWorkflowFrame.invocationId, childRunId: childNode.frame.runId,
 								childInvocationId: childNode.frame.invocationId }) })
 						await workflowCheckpoint.commit(`workflow:call:${callId}`, stored as unknown as JsonValue,
@@ -1237,7 +1273,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					authorizeChildLaunch: async () => { await authorizeChildSandboxLaunch(definition, invocation.sessionId, runId) },
 					finishChildLaunch: childInvocationId => childSandboxPolicies.delete(childInvocationId), onChildTaskTerminal: cleanupBackgroundChildSession,
 					...(workflowCheckpoint === undefined ? {} : { checkpoint: workflowCheckpoint }),
-					...(resumedWorkflowFrame === undefined ? {} : { restoredAgentCallBudget: resumedWorkflowFrame.agentCallBudget }) })
+					...(resumedWorkflowFrame === undefined ? {} : { restoredAgentCallBudget: resumedWorkflowFrame.agentCallBudget,
+						restoredToolCallIds: Object.freeze(restoredWorkflowToolCallIds) }) })
 				activeWorkflowRuntime = runtime
 				const context = Object.freeze({ input: workflowInput, agents: runtime.agents, tools: runtime.tools, models: runtime.models, childTasks: runtime.childTasks,
 					fanOut: runtime.fanOut, signal, runId, sessionId: invocation.sessionId, metadata: invokeOptions.metadata ?? Object.freeze({}),

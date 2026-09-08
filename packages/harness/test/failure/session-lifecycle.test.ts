@@ -47,19 +47,29 @@ describe('v4 storage failure lifecycle', () => {
     const finalizationFailure = new StateError('finalizeRun failed', { op: 'finalizeRun', reason: 'injected_failure' })
     class FinalizeFailureStorage extends InMemoryHarnessStorage {
       public finalizeCalls = 0
-      public override async finalizeRun(_request: FinalizeRunRequest): Promise<void> {
+      public override async finalizeRun(request: FinalizeRunRequest): Promise<void> {
         this.finalizeCalls += 1
-        throw finalizationFailure
+        await super.finalizeRun(request)
+        if (this.finalizeCalls === 1) throw finalizationFailure
       }
     }
     const storage = new FinalizeFailureStorage()
     const instance = await instanceWith(storage)
     const session = await instance.getSession('finalize-failure')
 
-    await expect(session.workflows.lifecycleFailure.run('input', { durable: { runId: 'finalize-failure-run' } }))
-      .rejects.toBe(finalizationFailure)
-    expect(storage.finalizeCalls).toBeGreaterThan(0)
-    await session.release()
+    const stream = session.workflows.lifecycleFailure.stream('input', { durable: { runId: 'finalize-failure-run' } })
+    const liveEvents: unknown[] = []
+    const drained = (async () => { for await (const event of stream) liveEvents.push(event) })()
+
+    await expect(stream.result).rejects.toBe(finalizationFailure)
+    await expect(drained).rejects.toBe(finalizationFailure)
+    expect(storage.finalizeCalls).toBe(1)
+    expect(liveEvents).not.toContainEqual(expect.objectContaining({ type: 'run.finished' }))
+    await expect(storage.getRun('finalize-failure-run')).resolves.toMatchObject({ status: 'succeeded', output: 'input' })
+    await expect(storage.listEvents('finalize-failure-run')).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'run.finished', payload: expect.objectContaining({ outcome: expect.objectContaining({ status: 'completed' }) }) }),
+    ]))
+    await expect(session.release()).resolves.toBeUndefined()
     await instance.close()
   })
 

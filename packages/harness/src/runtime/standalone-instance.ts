@@ -1208,6 +1208,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 					agentCallBudgetState: () => resumedWorkflowFrame.agentCallBudget })
 			let activeWorkflowInput: JsonValue = resumedWorkflowFrame?.input ?? input
 		let conversationTurn: readonly Message[] = Object.freeze([])
+		let operationCompleted = false
 		try {
 			const memoryFacade = createMemoryFacade({ engine: memory, harnessName: options.name, sessionId: invocation.sessionId,
 				...(invocation.identity === undefined ? {} : { identity: invocation.identity }), runId,
@@ -1552,6 +1553,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				output = validated
 			}
 			if (conversationTurn.length > 0) await commitConversationTurn(storage, invocation.sessionId, conversationTurn, options.defaults.historyRetention)
+			operationCompleted = true
 			const outcome = Object.freeze({ status: 'completed' as const, runId, output })
 			const at = new Date().toISOString()
 			if (lease) {
@@ -1573,6 +1575,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			await workspaceAttempt?.settle('succeeded')
 			await updateSessionRunCount(session)
 		} catch (error) {
+			if (operationCompleted) throw error
 			const publicationError = recoverableEventError(error)
 			if (publicationError !== undefined) {
 				recordStandaloneSpanFailure(targetSpan, publicationError)

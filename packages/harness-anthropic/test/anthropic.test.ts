@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelCapabilityError, ModelError } from '@purista/harness'
 import { anthropic } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
@@ -18,6 +18,49 @@ const distinctiveCompiledSchema = {
 }
 
 describe('anthropic provider factory', () => {
+  it.each([
+    [{ kind: 'audio', mimeType: 'audio/wav', dataBase64: 'AA==' }, 'audio_input'],
+    [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }, 'file_input'],
+    [{ kind: 'file_url', url: 'https://example.test/report.pdf' }, 'file_input'],
+    [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }, 'video_input'],
+  ])('rejects unsupported $kind input before provider I/O', async (part, capability) => {
+    let calls = 0
+    const provider = anthropic({ client: { messages: { create: async () => { calls += 1 } } } as any })
+
+    await expect(provider.text!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: [part] as any }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'anthropic', method: capability, reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
+  it('preserves supported inline and remote image inputs', async () => {
+    const calls: any[] = []
+    const provider = anthropic({ client: { messages: { create: async (payload: any) => {
+      calls.push(payload)
+      return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }
+    } } } as any })
+
+    await provider.text!({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: [
+        { kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' },
+        { kind: 'image_url', url: 'https://example.test/image.png' },
+      ] }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0].messages[0].content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } },
+      { type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } },
+    ])
+  })
+
   it('returns provider metadata and maps text response', async () => {
     const provider = anthropic({
       client: {
@@ -125,8 +168,8 @@ describe('anthropic provider factory', () => {
       signal: mockSignal(),
     })
 
-    expect(calls[0]?.tools[0]?.input_schema).toEqual(distinctiveCompiledSchema)
-    expect(calls[0]?.tools[1]?.input_schema).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.tools[0]?.input_schema).toBe(distinctiveCompiledSchema)
+    expect(calls[0]?.tools[1]?.input_schema).toBe(distinctiveCompiledSchema)
   })
 
   it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {

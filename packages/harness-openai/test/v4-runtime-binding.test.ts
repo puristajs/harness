@@ -28,7 +28,10 @@ it('binds the OpenAI provider to a directly composed v4 agent runtime', async ()
   })
   const definition = defineHarness({ name: 'openaiV4Consumer' }).addAgent(assistant)
 
-  expect(definition.catalog.agents.assistant).toBe(assistant)
+  expect(definition.contracts.agents.assistant).toMatchObject({ kind: 'agent', id: assistant.id })
+  expect(definition.inspect().roots.agents).toEqual([
+    expect.objectContaining({ kind: 'agent', id: assistant.id }),
+  ])
   expect(definition.requirements.models.primary.capabilities).toContain('text')
 
   const instance = await definition.getInstance({

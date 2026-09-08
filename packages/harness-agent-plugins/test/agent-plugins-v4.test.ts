@@ -193,12 +193,14 @@ describe('Agent Plugins v4 public boundary', () => {
 		const digest = inspectAgentPluginSync({ root: directory }).digest!
 		const [loaded] = await loadAgentPlugins({ plugins: [{ root: directory, trust: 'trusted', expectedDigest: digest }] })
 		const input = z.object({ query: z.string() }); const output = z.object({ hits: z.array(z.string()) })
+		const resolveHeaders: NonNullable<import('@purista/harness').McpBinding & { transport: 'http' }>['resolveHeaders'] = async () => ({ authorization: 'Bearer current' })
 		const bindings = loaded.bindings({ skills: { research: { runtimes: ['python'] } }, mcpServers: {
-			knowledge: { server: 'remote', headers: { 'X-Public': 'caller', Authorization: 'Bearer private' }, tools: {
+			knowledge: { server: 'remote', headers: { 'X-Public': 'caller', Authorization: 'Bearer private' }, resolveHeaders, tools: {
 				searchDocs: { remoteName: 'search_docs', description: 'Search approved documents.', input, output },
 			} },
 		} })
-		expect(bindings.mcp).toEqual({ knowledge: { transport: 'http', url: 'https://example.test/mcp', headers: { authorization: 'Bearer private', 'x-public': 'caller' } } })
+		expect(bindings.mcp).toEqual({ knowledge: { transport: 'http', url: 'https://example.test/mcp', headers: { authorization: 'Bearer private', 'x-public': 'caller' }, resolveHeaders } })
+		expect(bindings.mcp.knowledge.resolveHeaders).toBe(resolveHeaders)
 		expect(bindings.skills.research).toMatchObject({ kind: 'skill', id: 'research', runtimes: ['python'] })
 		expect(bindings.mcpServers.knowledge.tools.searchDocs).toMatchObject({ kind: 'tool', id: 'searchDocs', remoteName: 'search_docs' })
 		expect(() => defineAgent('answerAgent', {
@@ -212,7 +214,7 @@ describe('Agent Plugins v4 public boundary', () => {
 			} } },
 		})
 		expect(Object.isFrozen(bindings.provenance.mcpServers.knowledge.tools)).toBe(true)
-		expect(Object.keys(bindings.mcp.knowledge)).toEqual(['transport', 'url', 'headers'])
+		expect(Object.keys(bindings.mcp.knowledge)).toEqual(['transport', 'url', 'headers', 'resolveHeaders'])
 	})
 
 	it('returns empty selected maps and never projects stdio', async () => {

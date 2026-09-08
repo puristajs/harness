@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { HarnessConfigError, ModelError, OperationCancelledError, OperationTimeoutError, serializeError } from '../errors/index.js'
 import { JsonLogger, type Logger } from '../logger/index.js'
 import { BaseModelProvider } from '../ports/base-model-provider.js'
-import type { ObjectRequest, ObjectResponse, ObjectStreamChunk, TextRequest, TextStreamChunk } from '../ports/model-provider.js'
+import type {
+  EmbeddingRequest, EmbeddingResponse, ImageProviderResponse, ImageRequest, ObjectRequest, ObjectResponse,
+  ObjectStreamChunk, RerankRequest, RerankResponse, SpeechProviderResponse, SpeechRequest, TextRequest,
+  TextResponse, TextStreamChunk, VideoProviderResponse, VideoProviderStreamChunk, VideoRequest,
+} from '../ports/model-provider.js'
 import type { TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 
@@ -88,6 +92,20 @@ class TestStreamProvider extends BaseModelProvider {
   }
 }
 
+class AllOperationsProvider extends BaseModelProvider {
+  public constructor() { super({ id: 'all', genAiSystem: 'test' }) }
+  protected override async doText(_req: TextRequest): Promise<TextResponse> { throw new Error('unused') }
+  protected override async *doTextStream(_req: TextRequest): AsyncIterable<TextStreamChunk> { throw new Error('unused') }
+  protected override async doObject<T extends import('./json.js').JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> { throw new Error('unused') }
+  protected override async *doObjectStream<T extends import('./json.js').JsonValue>(_req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> { throw new Error('unused') }
+  protected override async doEmbed(_req: EmbeddingRequest): Promise<EmbeddingResponse> { throw new Error('unused') }
+  protected override async doRerank(_req: RerankRequest): Promise<RerankResponse> { throw new Error('unused') }
+  protected override async doImage(_req: ImageRequest): Promise<ImageProviderResponse> { throw new Error('unused') }
+  protected override async doSpeech(_req: SpeechRequest): Promise<SpeechProviderResponse> { throw new Error('unused') }
+  protected override async doVideo(_req: VideoRequest): Promise<VideoProviderResponse> { throw new Error('unused') }
+  protected override async *doVideoStream(_req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> { throw new Error('unused') }
+}
+
 async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   const chunks: T[] = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -111,6 +129,16 @@ function harnessContext(logger: Logger, telemetry: TelemetryShim, modelTimeoutMs
 }
 
 describe('BaseModelProvider', () => {
+  it('exposes every optional provider operation exactly when its protected implementation is callable', () => {
+    const methods = ['text', 'textStream', 'object', 'objectStream', 'embed', 'rerank', 'image', 'speech', 'video', 'videoStream'] as const
+    const objectOnly = new TestProvider()
+    expect(methods.filter(method => typeof objectOnly[method] === 'function')).toEqual(['object'])
+    const streamsOnly = new TestStreamProvider()
+    expect(methods.filter(method => typeof streamsOnly[method] === 'function')).toEqual(['textStream', 'objectStream'])
+    const all = new AllOperationsProvider()
+    expect(methods.filter(method => typeof all[method] === 'function')).toEqual(methods)
+  })
+
   it('normalizes raw provider failures into ModelError', async () => {
     const provider = new TestProvider()
     provider.error = Object.assign(new Error('provider failed'), {

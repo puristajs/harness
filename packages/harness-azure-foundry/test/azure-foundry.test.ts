@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { ModelError, type ObjectStreamChunk } from '@purista/harness'
+import { ModelCapabilityError, ModelError, type ObjectStreamChunk } from '@purista/harness'
 import { azureFoundry } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
@@ -46,6 +46,50 @@ function readField(value: unknown, key: string): unknown {
 }
 
 describe('azureFoundry provider factory', () => {
+  it.each([
+    [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }, 'file_input'],
+    [{ kind: 'file_url', url: 'https://example.test/report.pdf' }, 'file_input'],
+    [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }, 'video_input'],
+  ])('rejects unsupported $kind input before provider I/O', async (part, capability) => {
+    let calls = 0
+    const provider = azureFoundry({ client: client(async () => { calls += 1 }) })
+
+    await expect(provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [part] as any }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'azure-foundry', method: capability, reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
+  it('preserves supported image and audio inputs', async () => {
+    const calls: any[] = []
+    const provider = azureFoundry({ client: client(async (_path, options) => {
+      calls.push(options)
+      return { status: '200', body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] } }
+    }) })
+
+    await provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [
+        { kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' },
+        { kind: 'image_url', url: 'https://example.test/image.png' },
+        { kind: 'audio', mimeType: 'audio/wav', dataBase64: 'AQ==' },
+      ] }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0].body.messages[0].content).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+      { type: 'input_audio', input_audio: { data: 'AQ==', format: 'wav' } },
+    ])
+  })
+
   it('returns provider metadata and maps text response', async () => {
     const provider = azureFoundry({
       client: client(async () => ({
@@ -141,8 +185,8 @@ describe('azureFoundry provider factory', () => {
       signal: mockSignal(),
     })
 
-    expect(calls[0]?.options.body.response_format.json_schema.schema).toEqual(distinctiveCompiledSchema)
-    expect(calls[0]?.options.body.tools[0]?.function.parameters).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.options.body.response_format.json_schema.schema).toBe(distinctiveCompiledSchema)
+    expect(calls[0]?.options.body.tools[0]?.function.parameters).toBe(distinctiveCompiledSchema)
   })
 
   it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {
@@ -274,24 +318,50 @@ describe('azureFoundry provider factory', () => {
   })
 
   it('maps embeddings response', async () => {
+    const calls: any[] = []
+    const requestSignal = mockSignal()
     const provider = azureFoundry({
-      client: client(async () => ({
+      client: client(async (_path, options) => {
+        calls.push(options)
+        return {
         status: '200',
         body: {
-          data: [{ index: 0, embedding: [0.1, 0.2] }],
+          data: [
+            { index: 0, embedding: [0.1, 0.2] },
+            { index: 1, embedding: [0.3, 0.4] },
+          ],
           usage: { prompt_tokens: 3, total_tokens: 3 },
         },
-      })),
+      }
+      }),
     })
 
     const response = await provider.embed!({
       model: 'text-embedding-3-small',
-      input: 'hello',
-      signal: mockSignal(),
+      input: ['hello', 'world'],
+      dimensions: 2,
+      signal: requestSignal,
     })
 
-    expect(response.embeddings).toEqual([{ index: 0, vector: [0.1, 0.2] }])
+    expect(response.embeddings).toEqual([
+      { index: 0, vector: [0.1, 0.2] },
+      { index: 1, vector: [0.3, 0.4] },
+    ])
     expect(response.usage.totalTokens).toBe(3)
+    expect(calls[0].body).toMatchObject({ input: ['hello', 'world'], dimensions: 2 })
+    expect(calls[0].abortSignal).toBe(requestSignal)
+  })
+
+  it('rejects a cancelled embedding request before provider I/O', async () => {
+    let calls = 0
+    const controller = new AbortController()
+    controller.abort()
+    const provider = azureFoundry({ client: client(async () => { calls += 1 }) })
+
+    await expect(provider.embed!({ model: 'embedding', input: 'one', signal: controller.signal })).rejects.toSatisfy(
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    )
+    expect(calls).toBe(0)
   })
 
   it('passes provider options through to body and request options', async () => {

@@ -91,6 +91,8 @@ export type AgentPluginSkillSelections = Readonly<Record<string, AgentPluginSkil
 /** Caller-owned typed tools and runtime headers for one portable HTTP server. */
 export interface AgentPluginHttpMcpServerSelection<Tools extends Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>> = Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>>> {
 	readonly server: string; readonly tools: Tools; readonly headers?: Readonly<Record<string, string>>
+	/** Exact Core per-invocation credential resolver, preserved by identity. */
+	readonly resolveHeaders?: Extract<McpBinding, { transport: 'http' }>['resolveHeaders']
 }
 /** HTTP MCP selections keyed by caller-owned local server id. */
 export type AgentPluginHttpMcpServerSelections = Readonly<Record<string, AgentPluginHttpMcpServerSelection>>
@@ -560,7 +562,7 @@ function snapshotRuntimes(value: unknown): readonly SkillRuntimeId[] {
 	if (!runtimes || runtimes.some(runtime => typeof runtime !== 'string' || !runtimeIds.has(runtime as SkillRuntimeId)) || new Set(runtimes).size !== runtimes.length) throw new AgentPluginLoadError('invalid_selection')
 	return Object.freeze([...runtimes] as SkillRuntimeId[])
 }
-function snapshotMcpSelection(value: unknown): Readonly<{ server: unknown; tools: unknown; readHeaders: () => unknown }> | undefined {
+function snapshotMcpSelection(value: unknown): Readonly<{ server: unknown; tools: unknown; readHeaders: () => unknown; readResolveHeaders: () => unknown }> | undefined {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
 	let keys: PropertyKey[]
 	try {
@@ -568,20 +570,24 @@ function snapshotMcpSelection(value: unknown): Readonly<{ server: unknown; tools
 		if (prototype !== Object.prototype && prototype !== null) return undefined
 		keys = Reflect.ownKeys(value)
 	} catch { return undefined }
-	if (keys.some(key => typeof key !== 'string' || !['server', 'tools', 'headers'].includes(key))) return undefined
+	if (keys.some(key => typeof key !== 'string' || !['server', 'tools', 'headers', 'resolveHeaders'].includes(key))) return undefined
 	if (!keys.includes('server') || !keys.includes('tools')) return undefined
 	let server: unknown
 	let tools: unknown
 	let headerDescriptor: PropertyDescriptor | undefined
+	let resolveHeadersDescriptor: PropertyDescriptor | undefined
 	try {
 		const serverDescriptor = Reflect.getOwnPropertyDescriptor(value, 'server')
 		const toolsDescriptor = Reflect.getOwnPropertyDescriptor(value, 'tools')
 		headerDescriptor = Reflect.getOwnPropertyDescriptor(value, 'headers')
-		if (!serverDescriptor?.enumerable || !toolsDescriptor?.enumerable || (keys.includes('headers') && !headerDescriptor?.enumerable)) return undefined
+		resolveHeadersDescriptor = Reflect.getOwnPropertyDescriptor(value, 'resolveHeaders')
+		if (!serverDescriptor?.enumerable || !toolsDescriptor?.enumerable || (keys.includes('headers') && !headerDescriptor?.enumerable)
+			|| (keys.includes('resolveHeaders') && !resolveHeadersDescriptor?.enumerable)) return undefined
 		server = 'value' in serverDescriptor ? serverDescriptor.value : serverDescriptor.get?.call(value)
 		tools = 'value' in toolsDescriptor ? toolsDescriptor.value : toolsDescriptor.get?.call(value)
 	} catch { return undefined }
 	let read = false
+	let resolveHeadersRead = false
 	return Object.freeze({
 		server,
 		tools,
@@ -590,6 +596,12 @@ function snapshotMcpSelection(value: unknown): Readonly<{ server: unknown; tools
 			read = true
 			if (!headerDescriptor) return undefined
 			return 'value' in headerDescriptor ? headerDescriptor.value : headerDescriptor.get?.call(value)
+		},
+		readResolveHeaders() {
+			if (resolveHeadersRead) throw new AgentPluginLoadError('invalid_selection')
+			resolveHeadersRead = true
+			if (!resolveHeadersDescriptor) return undefined
+			return 'value' in resolveHeadersDescriptor ? resolveHeadersDescriptor.value : resolveHeadersDescriptor.get?.call(value)
 		},
 	})
 }
@@ -663,7 +675,9 @@ function createLoaded(parsed: Parsed, inspection: AgentPluginInspection, sourceR
 					createHttpMcpBinding(server.url, server.headers, undefined)
 					let callerHeaders: unknown
 					try { callerHeaders = selection.readHeaders() } catch { throw new HttpBindingValidationError('invalid_http_headers') }
-					binding = createHttpMcpBinding(server.url, server.headers, callerHeaders)
+					let resolveHeaders: unknown
+					try { resolveHeaders = selection.readResolveHeaders() } catch { throw new HttpBindingValidationError('invalid_selection') }
+					binding = createHttpMcpBinding(server.url, server.headers, callerHeaders, resolveHeaders)
 				} catch (error) {
 					if (error instanceof HttpBindingValidationError) throw new AgentPluginLoadError(error.reason)
 					throw new AgentPluginLoadError('invalid_selection')

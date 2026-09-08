@@ -81,7 +81,7 @@ async function open(adapter: DockerSandbox, chosen: SandboxScope = scope) {
 function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessStorage()) {
   const noopTool = defineTool('noopTool', {
     description: 'Returns its input.', input: z.string(), output: z.string(),
-    requires: { sandbox: ['sandbox.fs'] }, handler: async ({ input }) => input,
+    requires: { sandbox: ['sandbox.fs'] }, handler: async (_context, input) => input,
   })
   const noopAgent = defineAgent('noopAgent', {
     instructions: 'Call noopTool once.', tools: [noopTool], durable: true,
@@ -91,8 +91,8 @@ function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessS
   })
 }
 
-function runtimeGuardrails(runtimes: readonly SkillRuntimeId[]): AgentGuardrailsBinding<{
-  readonly skillRuntimes: readonly SkillRuntimeId[]
+function runtimeGuardrails<const Runtimes extends readonly SkillRuntimeId[]>(runtimes: Runtimes): AgentGuardrailsBinding<{
+  readonly skillRuntimes: Runtimes
 }> {
   return {
     [agentGuardrailsBinding]: {
@@ -151,7 +151,7 @@ describe('Docker sandbox public configuration', () => {
     for (const value of invalid) expect(() => dockerSandbox(value as DockerSandboxOptions)).toThrow(HarnessConfigError)
     expect(() => dockerSandbox({ root: '/private/data', image: `sha256:${'a'.repeat(64)}` })).not.toThrow()
     expectTypeOf(dockerSandbox({ root: '/private/data', image }).capabilities).toEqualTypeOf<
-      readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs'] | undefined
+      readonly ['sandbox.fs', 'sandbox.text_search', 'sandbox.exec', 'sandbox.spawn', 'sandbox.persistent_fs']
     >()
   })
 

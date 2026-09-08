@@ -1,4 +1,5 @@
 import { modelProviderContract } from '@purista/harness/testing'
+import { describe, expect, it } from 'vitest'
 
 import { anthropic } from '../src/index.js'
 
@@ -42,4 +43,15 @@ function fakeClient() {
 
 modelProviderContract(() => anthropic({ client: fakeClient() as never }), {
   capabilities: ['text', 'text_stream', 'object', 'object_stream']
+})
+
+describe('Anthropic callable operation parity', () => {
+  it('exposes exactly the operations implemented by the adapter', () => {
+    const provider = anthropic({ client: fakeClient() as never })
+    const operationMethods = ['text', 'textStream', 'object', 'objectStream', 'embed', 'rerank', 'image', 'speech', 'video', 'videoStream'] as const
+
+    expect(operationMethods.filter((method) => typeof provider[method] === 'function')).toEqual([
+      'text', 'textStream', 'object', 'objectStream',
+    ])
+  })
 })

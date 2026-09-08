@@ -21,6 +21,7 @@ async function fixture(): Promise<DockerAdapter> {
   const adapter = dockerSandbox({ root, image, ...(context ? { context } : {}) })
   return {
     capabilities: adapter.capabilities!,
+    runtimes: adapter.runtimes,
     administration: adapter.administration,
     registerOwner: async options => await adapter.registerOwner(options),
     open: async options => {

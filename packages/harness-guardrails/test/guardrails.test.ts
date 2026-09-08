@@ -249,8 +249,8 @@ it('normalizes invalid and hostile action registries without leaking access fail
 
 it('runs canonical input and output rails with the Harness test adapter', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: 'unsafe answer',
+  provider.enqueueText({
+    content: 'unsafe answer',
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'stop',
   })
@@ -292,8 +292,8 @@ it('runs canonical input and output rails with the Harness test adapter', async 
 
 it('blocks a configured tool-input rail before the Harness tool has a side effect', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: {},
+  provider.enqueueText({
+    content: '',
     toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100 } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
@@ -330,13 +330,13 @@ it('blocks a configured tool-input rail before the Harness tool has a side effec
 
 it('masks an explicitly selected structured tool-input field before the Harness tool executes', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: {},
+  provider.enqueueText({
+    content: '',
     toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100, memo: 'refund test@example.test' } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
-  provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
   const detector: SensitiveDataDetector = {
     id: 'email-detector',
     executionMode: 'local',
@@ -403,13 +403,13 @@ it('masks an explicitly selected structured tool-input field before the Harness 
 
 it('snapshots sensitive-data helper options and codec functions while retaining the live detector', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: {},
+  provider.enqueueText({
+    content: '',
     toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { memo: 'refund test@example.test' } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
-  provider.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
   let detectorCalls = 0
   const detector: SensitiveDataDetector = {
     id: 'mutable-detector',
@@ -506,7 +506,7 @@ it('filters caller-owned retrieval chunks without creating a vector store', asyn
 
 it('uses a direct Harness model alias for a model-backed check', async () => {
   const safety = new FakeModelProvider()
-  safety.enqueue({
+  safety.enqueueObject({
     object: { allow: false },
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'stop',
@@ -542,13 +542,13 @@ it('uses a direct Harness model alias for a model-backed check', async () => {
 
 it('snapshots model-check helper configuration before caller mutation', async () => {
   const safety = new FakeModelProvider()
-  safety.enqueue({
+  safety.enqueueObject({
     object: { allow: true },
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'stop',
   })
   const assistant = new FakeModelProvider()
-  assistant.enqueue({ object: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  assistant.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
   const options = {
     phase: 'input' as const,
     model: 'safety' as const,
@@ -829,18 +829,12 @@ it('fails attached guardrail preflight before provider work when a declared depe
     },
   })
 
-  const publish = defineTool('publish', {
-    description: 'Publish.',
-    input: z.object({ message: z.string() }),
-    output: z.boolean(),
-    handler: async () => true,
-  })
   const answer = defineAgent('answer', {
     model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
   })
   const error = (() => {
     try {
-      defineHarness({ name: 'missingGuardrailTool' }).addTool(publish).addAgent(answer)
+      defineHarness({ name: 'missingGuardrailTool' }).addAgent(answer)
     } catch (value) {
       return value
     }
@@ -874,8 +868,8 @@ it('requires selected action models as exact runtime bindings before provider wo
 
 it('projects only declared attached action models and rejects unavailable requirements before action callbacks', async () => {
   const assistant = new FakeModelProvider()
-  assistant.enqueue({
-    object: 'safe answer',
+  assistant.enqueueText({
+    content: 'safe answer',
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'stop',
   })
@@ -1216,7 +1210,7 @@ it('supports model-backed retrieval checks through the typed standalone executio
   expect(calls).toBe(1)
 })
 
-it('runs a workflow-provided model handle inside the guardrail span', async () => {
+it('adapts a workflow-provided managed model handle inside the guardrail span', async () => {
   const telemetry = new RecordingTelemetry()
   class ObservedProvider extends FakeModelProvider {
     public configureHarnessContext(context: HarnessAdapterContext): void {
@@ -1227,7 +1221,7 @@ it('runs a workflow-provided model handle inside the guardrail span', async () =
     }
   }
   const provider = new ObservedProvider()
-  provider.enqueue({
+  provider.enqueueObject({
     object: { allow: true },
     usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, cachedInputTokens: 3, reasoningTokens: 2 },
     finishReason: 'stop',
@@ -1247,10 +1241,14 @@ it('runs a workflow-provided model handle inside the guardrail span', async () =
   const review = defineWorkflow('review', {
       input: z.string(),
       output: z.number(),
-      models: { safety: { alias: 'safety', capabilities: ['object'] } },
+      models: { safety: { capabilities: ['object'] } },
       handler: async (ctx) => {
         const chunks = await rails.filterRetrievedChunks([ctx.input], {
-          models: ctx.models,
+          models: {
+            safety: {
+              object: (request) => ctx.models.safety.object(JSON.parse(JSON.stringify(request)), { callId: 'guardrailSafety' }),
+            },
+          },
           signal: ctx.signal,
           logger: ctx.logger,
         })
@@ -1499,8 +1497,8 @@ it('fails closed on extra outcome fields and schema normalization without record
     },
   })
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: 'pending',
+  provider.enqueueText({
+    content: 'pending',
     toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: '10' } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
@@ -1528,7 +1526,7 @@ it('fails closed on extra outcome fields and schema normalization without record
 
 it('blocks final output before model-object delivery or assistant persistence', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({ object: 'restricted final', finishReason: 'stop' })
+  provider.enqueueText({ content: 'restricted final', finishReason: 'stop' })
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { output: { flows: ['final gate'] } } }),
     actions: { 'final gate': { phase: 'output', evaluate: () => ({ decision: 'block', reasonCode: 'restricted' }) } },
@@ -1558,14 +1556,14 @@ it('blocks final output before model-object delivery or assistant persistence', 
 
 it('applies output rails only to the final candidate after tool execution', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: 'intermediate tool text',
+  provider.enqueueText({
+    content: 'intermediate tool text',
     toolCalls: [{ id: 'lookup-1', name: 'lookup', arguments: { id: 'one' } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
   })
-  provider.enqueue({
-    object: 'restricted final',
+  provider.enqueueText({
+    content: 'restricted final',
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'stop',
   })
@@ -1713,8 +1711,8 @@ it('keeps ordered transforms and rejects malformed phase outcomes and transform 
 it('inherits the enclosing tool deadline and fences a late rail continuation', async () => {
   vi.useFakeTimers()
   const provider = new FakeModelProvider()
-  provider.enqueue({
-    object: 'pending',
+  provider.enqueueText({
+    content: 'pending',
     toolCalls: [{ id: 'lookup-timeout', name: 'lookup', arguments: { id: 'one' } }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     finishReason: 'tool_calls',
@@ -1824,8 +1822,8 @@ it.each([
   const count = mode === 'delegated' ? 2 : 1
   if (phase === 'tool_input')
     for (let index = 0; index < count; index += 1) {
-      provider.enqueueObject({
-        object: 'pending',
+      provider.enqueueText({
+        content: 'pending',
         toolCalls: [{ id: 'same-call', name: 'lookup', arguments: { id: 'one' } }],
         usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
         finishReason: 'tool_calls',
@@ -1833,6 +1831,7 @@ it.each([
     }
   const contexts: GuardrailActionContext[] = []
   const failures: DecisionBlockedError[] = []
+  const delegatedFailures: unknown[] = []
   const events: import('@purista/harness').RunEvent[] = []
   let handlers = 0
   const rails = defineGuardrails({
@@ -1869,14 +1868,15 @@ it.each([
   const review = defineWorkflow('review', {
     input: z.string(),
     output: z.string(),
-    agents: { answer },
+    agents: [answer],
     handler: async (ctx) => {
       for (let index = 0; index < count; index += 1) {
         try {
           await ctx.agents.answer.run(ctx.input, { callId: `answerCall${index}` })
         } catch (error) {
-          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'WORKFLOW_CHILD_TARGET_FAILED')
+          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'WORKFLOW_MANAGED_CALL_FAILED')
             throw error
+          delegatedFailures.push(error)
         }
       }
       return 'done'
@@ -1898,20 +1898,12 @@ it.each([
     }
   }
   const blockedFailures = mode === 'delegated'
-    ? events.flatMap((event) =>
-        event.type === 'agent.finished' && event.error?.code === 'DECISION_BLOCKED'
-          ? [event.error as unknown as DecisionBlockedError]
-          : [],
-      )
+    ? delegatedFailures
     : failures
   expect(blockedFailures).toHaveLength(count)
-  const started = events.filter((event) => event.type === 'agent.started')
   for (const [index, context] of contexts.entries()) {
     const { invocationId, runId } = context
     expect(invocationId).toBe(runId)
-    if (mode === 'delegated') {
-      expect(invocationId).toBe(started[index]?.runId)
-    }
     const evidence = createDecisionEvidence({
       occurrence: {
         invocationId,
@@ -1928,13 +1920,38 @@ it.each([
       ordinal: 1,
       reasonCode: 'restricted',
     })
-    expect(blockedFailures[index]?.meta).toEqual({
-      evidence,
+    if (mode === 'direct') expect(blockedFailures[index]?.meta).toEqual({ evidence })
+    else expect(blockedFailures[index]).toMatchObject({
+      code: 'WORKFLOW_MANAGED_CALL_FAILED',
+      meta: {
+        reason: 'operation_failed',
+        workflow_id: 'review',
+        call_id: `answerCall${index}`,
+        operation: 'agent_run',
+        target_kind: 'agent',
+        target_id: 'answer',
+      },
     })
   }
   if (mode === 'delegated') {
     expect(new Set(contexts.map((context) => context.invocationId)).size).toBe(count)
-    expect(blockedFailures[0]?.meta?.evidence.decisionId).not.toBe(blockedFailures[1]?.meta?.evidence.decisionId)
+    const decisionIds = contexts.map(context => createDecisionEvidence({
+      occurrence: {
+        invocationId: context.invocationId,
+        step: context.step,
+        ...(context.runId ? { runId: context.runId } : {}),
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        ...(context.toolId ? { toolId: context.toolId } : {}),
+        ...(context.callId ? { callId: context.callId } : {}),
+      },
+      source: { kind: 'guardrail', id: 'block second', ruleId: 'block second' },
+      phase,
+      ordinal: 1,
+      reasonCode: 'restricted',
+    }).decisionId)
+    expect(decisionIds[0]).not.toBe(decisionIds[1])
   }
   expect(handlers).toBe(0)
   expect(provider.requests).toHaveLength(phase === 'tool_input' ? count : 0)

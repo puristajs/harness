@@ -1,4 +1,5 @@
 import { modelProviderContract } from '@purista/harness/testing'
+import { describe, expect, it } from 'vitest'
 
 import { google } from '../src/index.js'
 
@@ -31,4 +32,15 @@ function fakeClient() {
 
 modelProviderContract(() => google({ client: fakeClient() }), {
   capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings'],
+})
+
+describe('Google callable operation parity', () => {
+  it('exposes exactly the operations implemented by the adapter', () => {
+    const provider = google({ client: fakeClient() })
+    const operationMethods = ['text', 'textStream', 'object', 'objectStream', 'embed', 'rerank', 'image', 'speech', 'video', 'videoStream'] as const
+
+    expect(operationMethods.filter((method) => typeof provider[method] === 'function')).toEqual([
+      'text', 'textStream', 'object', 'objectStream', 'embed',
+    ])
+  })
 })

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { BaseModelProvider, InMemoryHarnessStorage, ModelError } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/index.js'
-import type { JsonValue, ObjectRequest, ObjectStreamChunk, TextRequest, TextStreamChunk } from '../src/index.js'
+import type { JsonValue, ObjectRequest, ObjectResponse, ObjectStreamChunk, TextRequest, TextResponse, TextStreamChunk } from '../src/index.js'
 import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness as defineHarnessV4 } from '../src/definitions/harness.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
@@ -164,9 +164,15 @@ describe('stream completion accounting', () => {
               reason: 'network',
             })
         }
+        protected override doText(req: TextRequest): Promise<TextResponse> {
+          return fake.text(req)
+        }
         protected override async *doTextStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
           this.attempt()
           yield* fake.textStream(req)
+        }
+        protected override doObject<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+          return fake.object(req)
         }
         protected override async *doObjectStream<T extends JsonValue = JsonValue>(
           req: ObjectRequest<T>,

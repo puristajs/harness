@@ -10,6 +10,7 @@ const bindings = plugin.bindings({
 	mcpServers: {
 		knowledge: {
 			server: 'remote',
+			resolveHeaders: async ({ caller }) => caller.kind === 'agent' ? { authorization: 'agent' } : { authorization: 'workflow' },
 			tools: { searchDocs: { remoteName: 'search_docs', description: 'Search documents.', input, output } },
 		},
 	},
@@ -21,7 +22,8 @@ const serverId: 'knowledge' = bindings.mcpServers.knowledge.id
 const toolId: 'searchDocs' = bindings.mcpServers.knowledge.tools.searchDocs.id
 const parsedInput: string = bindings.mcpServers.knowledge.tools.searchDocs.$infer.input.query
 const parsedOutput: string = bindings.mcpServers.knowledge.tools.searchDocs.$infer.output.answer
-void [skillId, runtime, serverId, toolId, parsedInput, parsedOutput]
+const resolveHeaders = bindings.mcp.knowledge.resolveHeaders
+void [skillId, runtime, serverId, toolId, parsedInput, parsedOutput, resolveHeaders]
 
 defineAgent('researchAgent', {
 	instructions: 'Use the selected sources.',

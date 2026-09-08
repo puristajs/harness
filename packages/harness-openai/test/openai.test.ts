@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelCapabilityError, ModelError } from '@purista/harness'
 import { openai } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
@@ -27,6 +27,150 @@ const distinctiveCompiledSchema = {
 }
 
 describe('openai provider factory', () => {
+  it.each([
+    [{ kind: 'audio', mimeType: 'audio/wav', dataBase64: 'AA==' }, 'audio_input'],
+    [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }, 'file_input'],
+    [{ kind: 'file_url', url: 'https://example.test/report.pdf' }, 'file_input'],
+    [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }, 'video_input'],
+  ])('rejects unsupported $kind input before provider I/O', async (part, capability) => {
+    let calls = 0
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async () => { calls += 1 } } },
+        embeddings: { create: async () => ({ data: [] }) },
+      } as any,
+    })
+
+    await expect(provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [part] as any }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'openai', method: capability, reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
+  it('preserves supported inline and remote image inputs', async () => {
+    const calls: any[] = []
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async (payload: any) => {
+          calls.push(payload)
+          return { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }
+        } } },
+        embeddings: { create: async () => ({ data: [] }) },
+      } as any,
+    })
+
+    await provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [
+        { kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' },
+        { kind: 'image_url', url: 'https://example.test/image.png' },
+      ] }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0].messages[0].content).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+    ])
+  })
+
+  it('preserves supported Responses API images and rejects unsupported files before I/O', async () => {
+    const calls: any[] = []
+    const provider = openai({
+      api: 'responses',
+      client: {
+        chat: { completions: { create: async () => { throw new Error('unexpected chat call') } } },
+        responses: { create: async (payload: any) => {
+          calls.push(payload)
+          return {
+            output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ok' }] }],
+            status: 'completed',
+          }
+        } },
+        embeddings: { create: async () => ({ data: [] }) },
+      } as any,
+    })
+
+    await provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [
+        { kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' },
+        { kind: 'image_url', url: 'https://example.test/image.png' },
+      ] }],
+      signal: mockSignal(),
+    })
+    expect(calls[0].input[0].content).toEqual([
+      { type: 'input_image', image_url: 'data:image/png;base64,AA==' },
+      { type: 'input_image', image_url: 'https://example.test/image.png' },
+    ])
+
+    await expect(provider.text!({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }] }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toBeInstanceOf(ModelCapabilityError)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('maps one indexed embedding per input and forwards cancellation', async () => {
+    const calls: Array<{ payload: any; options: any }> = []
+    const requestSignal = mockSignal()
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async () => ({}) } },
+        embeddings: { create: async (payload: any, options: any) => {
+          calls.push({ payload, options })
+          return {
+            data: [
+              { index: 0, embedding: [0.1, 0.2] },
+              { index: 1, embedding: [0.3, 0.4] },
+            ],
+            usage: { prompt_tokens: 2 },
+          }
+        } },
+      },
+    })
+
+    const result = await provider.embed!({
+      model: 'text-embedding-3-small',
+      input: ['one', 'two'],
+      dimensions: 2,
+      signal: requestSignal,
+    })
+
+    expect(result.embeddings).toEqual([
+      { index: 0, vector: [0.1, 0.2] },
+      { index: 1, vector: [0.3, 0.4] },
+    ])
+    expect(calls[0]?.payload).toMatchObject({ input: ['one', 'two'], dimensions: 2 })
+    expect(calls[0]?.options.signal).toBe(requestSignal)
+  })
+
+  it('rejects a cancelled embedding request before provider I/O', async () => {
+    let calls = 0
+    const controller = new AbortController()
+    controller.abort()
+    const provider = openai({
+      client: {
+        chat: { completions: { create: async () => ({}) } },
+        embeddings: { create: async () => { calls += 1 } },
+      } as any,
+    })
+
+    await expect(provider.embed!({ model: 'embedding', input: 'one', signal: controller.signal })).rejects.toSatisfy(
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    )
+    expect(calls).toBe(0)
+  })
+
+
   it('maps image bytes without exposing provider URLs', async () => {
     const provider = openai({
       client: {
@@ -284,8 +428,8 @@ describe('openai provider factory', () => {
       signal: mockSignal(),
     })
 
-    expect(calls[0]?.response_format.json_schema.schema).toEqual(distinctiveCompiledSchema)
-    expect(calls[0]?.tools[0]?.function.parameters).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.response_format.json_schema.schema).toBe(distinctiveCompiledSchema)
+    expect(calls[0]?.tools[0]?.function.parameters).toBe(distinctiveCompiledSchema)
   })
 
   it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {

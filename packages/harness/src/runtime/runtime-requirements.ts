@@ -221,6 +221,7 @@ export type RuntimeRequirementsFor<
 		IsPresent<
 			ToolSandboxCapabilities<Values<Tools> | Extract<AgentSelectedTools<RuntimeGraphAgents<Agents, Workflows>> | WorkflowSelectedTools<Values<Workflows>>, AnyNonMcpToolDefinition>> | RuntimeSkillSandboxCapabilities<Values<Skills> | Extract<AgentSelectedSkills<RuntimeGraphAgents<Agents, Workflows>>, SkillDefinition>>
 			| Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'sandbox'>, SandboxCapabilityId>
+			| Extract<GuardrailArrayMember<RuntimeGraphAgents<Agents, Workflows>, 'skillRuntimes'>, SkillRuntimeId>
 			| WorkspaceSandboxCapability<RuntimeGraphAgents<Agents, Workflows>, Values<Workflows>>
 			| HasExplicitSandboxPolicy<RuntimeGraphAgents<Agents, Workflows> | Values<Workflows>>
 			| HasWorkflowChildSandboxGroups<Values<Workflows>>

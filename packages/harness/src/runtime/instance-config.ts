@@ -17,6 +17,8 @@ import { sandboxBindingOptionsSchema, type SandboxBindingOptions } from '../sand
 import type { HarnessStorage } from '../storage/types.js'
 import { validateHarnessStorage } from '../storage/types.js'
 import type { SkillRuntimeId } from '../definitions/types.js'
+import type { HarnessExecutionCaller } from '../definitions/types.js'
+import type { HarnessIdentity } from '../identity/index.js'
 import type { RuntimeRequirements } from './runtime-requirements.js'
 
 /** Runtime model selection without graph-derived capabilities. */
@@ -24,7 +26,12 @@ export type ModelRuntimeBinding = Readonly<Omit<ModelAlias, 'capabilities'>>
 
 /** Runtime-only transport configuration for one MCP server. */
 export type McpBinding =
-	| Readonly<{ transport: 'http'; url: string; headers?: Readonly<Record<string, string>> }>
+	| Readonly<{
+		transport: 'http'
+		url: string
+		headers?: Readonly<Record<string, string>>
+		resolveHeaders?: (context: McpRequestHeaderContext) => Promise<Readonly<Record<string, string>>> | Readonly<Record<string, string>>
+	}>
 	| Readonly<{
 		transport: 'stdio'
 		command: string
@@ -32,6 +39,18 @@ export type McpBinding =
 		env?: Readonly<Record<string, string>>
 		sandbox: SpawnCapableSandbox
 	}>
+
+/** Correlation available to one approval-authorized MCP credential projection. */
+export interface McpRequestHeaderContext {
+	readonly serverId: string
+	readonly toolId: string
+	readonly sessionId: string
+	readonly runId: string
+	readonly caller: HarnessExecutionCaller
+	readonly callId: string
+	readonly identity?: HarnessIdentity
+	readonly signal: AbortSignal
+}
 
 export type HasMembers<Values extends readonly unknown[]> = [Values[number]] extends [never] ? false : true
 export type Or<Left extends boolean, Right extends boolean> = true extends Left | Right ? true : false
@@ -369,10 +388,12 @@ function validateMcp(value: unknown, ids: readonly string[]): Readonly<Record<st
 function validateMcpBinding(value: unknown, path: string): McpBinding {
 	if (!isPlainRecord(value)) fail('invalid_runtime_binding', path)
 	if (value['transport'] === 'http') {
-		unknownKey(value, ['headers', 'transport', 'url'], path)
+		unknownKey(value, ['headers', 'resolveHeaders', 'transport', 'url'], path)
 		if (!nonempty(value['url']) || !isHttpUrl(value['url'])) fail('invalid_runtime_binding', `${path}.url`)
+		if (value['resolveHeaders'] !== undefined && typeof value['resolveHeaders'] !== 'function') fail('invalid_runtime_binding', `${path}.resolveHeaders`)
 		const result: Record<string, unknown> = { transport: 'http', url: value['url'] }
 		if (value['headers'] !== undefined) result['headers'] = stringRecord(value['headers'], `${path}.headers`)
+		if (value['resolveHeaders'] !== undefined) result['resolveHeaders'] = value['resolveHeaders']
 		return Object.freeze(result) as unknown as McpBinding
 	}
 	if (value['transport'] === 'stdio') {
@@ -456,9 +477,14 @@ function validateTelemetry(value: unknown): Readonly<TelemetryOptions> {
 function stringRecord(value: unknown, path: string): Readonly<Record<string, string>> {
 	if (!isPlainRecord(value)) fail('invalid_runtime_binding', path)
 	const result: Record<string, string> = {}
+	const names = new Set<string>()
 	for (const key of Object.keys(value).sort()) {
-		if (typeof value[key] !== 'string') fail('invalid_runtime_binding', `${path}.${key}`)
-		result[key] = value[key]
+		const normalizedName = key.toLowerCase()
+		if (names.has(normalizedName)) fail('invalid_runtime_binding', `${path}.${key}`)
+		names.add(normalizedName)
+		const child = value[key]
+		if (typeof child !== 'string') fail('invalid_runtime_binding', `${path}.${key}`)
+		result[key] = child
 	}
 	return Object.freeze(result)
 }

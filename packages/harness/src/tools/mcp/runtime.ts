@@ -1,10 +1,12 @@
 import { isJsonValue, type JsonValue } from '../../models/json.js'
 import type { McpServerDefinition, McpToolDefinition } from '../../definitions/types.js'
 import type { McpBinding } from '../../runtime/instance-config.js'
+import type { McpRequestHeaderContext } from '../../runtime/instance-config.js'
 import type { SandboxProcess, SandboxSessionBase, SpawnCapableSandboxSession } from '../../sandbox/index.js'
 import { isSpawnCapableSession } from '../../sandbox/index.js'
 import { McpProtocolError, OperationCancelledError, OperationTimeoutError, SandboxNoExecutorError, ToolError } from '../../errors/index.js'
 import { abortError, withAbortSignal } from '../../runtime/abort.js'
+import { projectHarnessExecutionCaller } from '../../runtime/execution-caller.js'
 import { projectModelSchema } from '../../schema/json-schema.js'
 import { bindMcpTool, type ExecutableToolBinding } from '../bindings.js'
 import { withMcpTimeout } from './timeout.js'
@@ -19,7 +21,11 @@ export interface McpRuntimeToolDescription {
 export interface McpRuntimeClient {
 	connect(transport: object, options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>): Promise<void>
 	listTools(options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>): Promise<readonly McpRuntimeToolDescription[]>
-	callTool(name: string, input: unknown, options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>): Promise<unknown>
+	callTool(name: string, input: unknown, options: Readonly<{
+		signal?: AbortSignal
+		timeoutMs?: number
+		headers?: Readonly<Record<string, string>>
+	}>): Promise<unknown>
 	/** Protocol owner closes its transport and any owned process. */
 	close(): Promise<void>
 }
@@ -27,7 +33,7 @@ export interface McpRuntimeClient {
 /** @internal Explicit dependency seam used by H4-008 and fake-transport tests. */
 export interface McpRuntimeDependencies {
 	createClient(serverId: string): McpRuntimeClient | Promise<McpRuntimeClient>
-	createHttpTransport(binding: Extract<McpBinding, { transport: 'http' }>): object | Promise<object>
+	createHttpTransport(binding: Readonly<Omit<Extract<McpBinding, { transport: 'http' }>, 'resolveHeaders'>>): object | Promise<object>
 	createStdioTransport(process: SandboxProcess): object
 }
 
@@ -75,7 +81,7 @@ async function initializeServer(
 	try { client = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => dependencies.createClient(server.id)) }
 	catch (error) {
 		if (isOperationControlError(error)) throw error
-		throw protocol(server.id, binding.transport, 'connect', error)
+		throw protocol(server.id, binding.transport, 'connect')
 	}
 	let attachment: SandboxSessionBase | undefined
 	let stdioSandbox: Extract<McpBinding, { transport: 'stdio' }>['sandbox'] | undefined
@@ -96,7 +102,9 @@ async function initializeServer(
 	try {
 		let transport: object
 		if (binding.transport === 'http') {
-			transport = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => dependencies.createHttpTransport(binding))
+			const transportBinding = Object.freeze({ transport: binding.transport, url: binding.url,
+				...(binding.headers === undefined ? {} : { headers: binding.headers }) })
+			transport = await mcpOperation(options.signal, 'MCP initialization was cancelled.', () => dependencies.createHttpTransport(transportBinding))
 		} else {
 			stdioSandbox = binding.sandbox
 			const owner = { namespace: `${options.harnessName}.mcp`, id: server.id, instanceId: options.harnessInstanceId }
@@ -127,18 +135,39 @@ async function initializeServer(
 			const candidates = discovered.filter(candidate => candidate.name === definition.remoteName)
 			if (candidates.length !== 1 || candidates[0]!.inputSchema === undefined) throw protocol(localId, binding.transport, 'list')
 			try { assertMcpJsonSchema(localId, candidates[0]!.inputSchema, 'mcp_input') }
-			catch (error) { throw protocol(localId, binding.transport, 'list', error) }
+			catch { throw protocol(localId, binding.transport, 'list') }
 			const declared = normalizeSchema(projectModelSchema(definition.input, 'tool_input', localId), localId, binding.transport)
 			const remote = normalizeSchema(candidates[0]!.inputSchema, localId, binding.transport)
 			if (JSON.stringify(declared) !== JSON.stringify(remote)) throw protocol(localId, binding.transport, 'list')
 			tools[localId] = bindMcpTool(definition, async (context, remoteName, input) => {
+				const caller = projectHarnessExecutionCaller(context.caller)
+				let headers: Readonly<Record<string, string>> | undefined
+				if (binding.transport === 'http') {
+					try {
+						const resolverContext: McpRequestHeaderContext = Object.freeze({
+							serverId: server.id, toolId: localId, sessionId: context.sessionId, runId: context.runId,
+							caller, callId: context.callId,
+							...(context.identity === undefined ? {} : { identity: context.identity }),
+							signal: context.signal,
+						})
+						const resolved = binding.resolveHeaders === undefined ? undefined : await binding.resolveHeaders(resolverContext)
+						headers = mergeMcpRequestHeaders(binding.headers, resolved)
+					} catch (error) {
+						if (isOperationControlError(error)) throw error
+						if (context.signal.aborted) throw abortError(context.signal, 'tool', 'MCP tool operation was cancelled.')
+						throw protocol(localId, binding.transport, 'call')
+					}
+				}
 				let result: unknown
 				try {
-					result = await client.callTool(remoteName, input, { ...(context.signal ? { signal: context.signal } : {}) })
+					result = await client.callTool(remoteName, input, {
+						...(context.signal ? { signal: context.signal } : {}),
+						...(headers === undefined ? {} : { headers }),
+					})
 				} catch (error) {
 					if (isOperationControlError(error)) throw error
 					if (context.signal?.aborted) throw abortError(context.signal, 'tool', 'MCP tool operation was cancelled.')
-					throw protocol(localId, binding.transport, 'call', error)
+					throw protocol(localId, binding.transport, 'call')
 				}
 				return normalizeMcpOutput(result, localId, binding.transport)
 			})
@@ -163,6 +192,30 @@ export function normalizeMcpOutput(result: unknown, toolId: string, transport: '
 	if (normalized.every(item => typeof item === 'string')) return normalized.join('\n')
 	if (normalized.length === 1) return normalized[0] ?? null
 	return Object.freeze({ content: normalized })
+}
+
+function mergeMcpRequestHeaders(
+	staticHeaders: Readonly<Record<string, string>> | undefined,
+	resolvedHeaders: unknown,
+): Readonly<Record<string, string>> | undefined {
+	if (resolvedHeaders !== undefined && !isPlain(resolvedHeaders)) throw new TypeError('MCP resolved headers are invalid.')
+	const merged = new Map<string, readonly [name: string, value: string]>()
+	for (const source of [staticHeaders, resolvedHeaders] as const) {
+		if (source === undefined) continue
+		const sourceNames = new Set<string>()
+		for (const key of Object.keys(source).sort()) {
+			const normalizedName = key.toLowerCase()
+			if (sourceNames.has(normalizedName)) throw new TypeError('MCP resolved headers are invalid.')
+			sourceNames.add(normalizedName)
+			const value = source[key]
+			if (typeof value !== 'string') throw new TypeError('MCP resolved headers are invalid.')
+			merged.set(normalizedName, [key, value])
+		}
+	}
+	if (merged.size === 0) return undefined
+	const headers: Record<string, string> = {}
+	for (const [, [name, value]] of [...merged].sort(([left], [right]) => left.localeCompare(right))) headers[name] = value
+	return Object.freeze(headers)
 }
 
 function normalizeContentBlock(block: unknown): JsonValue {
@@ -196,7 +249,11 @@ const defaultMcpRuntimeDependencies: McpRuntimeDependencies = Object.freeze({
 		return {
 			connect: async (transport: object, options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>) => sdk.connect(transport as never, { ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }) }),
 			listTools: async (options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>) => (await sdk.listTools(undefined, { ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }) })).tools,
-			callTool: async (name: string, input: unknown, options: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>) => sdk.callTool({ name, arguments: input as Record<string, unknown> }, { ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }) }),
+			callTool: async (name: string, input: unknown, options: Readonly<{ signal?: AbortSignal; timeoutMs?: number; headers?: Readonly<Record<string, string>> }>) => sdk.callTool(
+				{ name, arguments: input as Record<string, unknown> },
+				{ ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+					...(options.headers === undefined ? {} : { headers: options.headers }) },
+			),
 			close: async () => sdk.close(),
 		}
 	},
@@ -300,8 +357,8 @@ function normalizeSchema(value: unknown, toolId: string, transport: 'http' | 'st
 	return Object.freeze(normalized)
 }
 
-function protocol(id: string, transport: 'http' | 'stdio', phase: 'connect' | 'list' | 'call', cause?: unknown): McpProtocolError {
-	return new McpProtocolError('MCP server contract validation failed.', { tool_id: id, transport, phase }, cause)
+function protocol(id: string, transport: 'http' | 'stdio', phase: 'connect' | 'list' | 'call'): McpProtocolError {
+	return new McpProtocolError('MCP server contract validation failed.', { tool_id: id, transport, phase })
 }
 
 function mapInitializationError(
@@ -313,7 +370,7 @@ function mapInitializationError(
 ): Error {
 	if (isOperationControlError(error)) return error
 	if (signal?.aborted) return abortError(signal, 'tool', 'MCP initialization was cancelled.')
-	return protocol(id, transport, phase, error)
+	return protocol(id, transport, phase)
 }
 
 function throwIfMcpAborted(signal: AbortSignal | undefined, message: string): void {
@@ -337,5 +394,7 @@ function isOperationControlError(error: unknown): error is OperationCancelledErr
 }
 
 function isPlain(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+	const prototype = Object.getPrototypeOf(value)
+	return prototype === Object.prototype || prototype === null
 }

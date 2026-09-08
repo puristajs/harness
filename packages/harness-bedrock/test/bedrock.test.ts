@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelCapabilityError, ModelError } from '@purista/harness'
 import { bedrock } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
@@ -18,6 +18,46 @@ const distinctiveCompiledSchema = {
 }
 
 describe('bedrock provider factory', () => {
+  it.each([
+    [{ kind: 'image_url', url: 'https://example.test/image.png' }, 'vision_input'],
+    [{ kind: 'audio', mimeType: 'audio/wav', dataBase64: 'AA==' }, 'audio_input'],
+    [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }, 'file_input'],
+    [{ kind: 'file_url', url: 'https://example.test/report.pdf' }, 'file_input'],
+    [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }, 'video_input'],
+  ])('rejects unsupported $kind input before provider I/O', async (part, capability) => {
+    let calls = 0
+    const provider = bedrock({ client: { send: async () => { calls += 1 } } as any })
+
+    await expect(provider.text!({
+      model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      messages: [{ role: 'user', content: [part] as any }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'bedrock', method: capability, reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
+  it('preserves supported inline image input bytes', async () => {
+    const calls: any[] = []
+    const provider = bedrock({ client: { send: async (command: any) => {
+      calls.push(command.input)
+      return { output: { message: { content: [{ text: 'ok' }] } }, stopReason: 'end_turn' }
+    } } as any })
+
+    await provider.text!({
+      model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      messages: [{ role: 'user', content: [{ kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' }] }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0].messages[0].content[0]).toEqual({
+      image: { format: 'png', source: { bytes: Buffer.from('AA==', 'base64') } },
+    })
+  })
+
   it('returns provider metadata and maps text response', async () => {
     const provider = bedrock({
       client: {
@@ -118,8 +158,8 @@ describe('bedrock provider factory', () => {
       signal: mockSignal(),
     })
 
-    expect(calls[0]?.toolConfig.tools[0]?.toolSpec.inputSchema.json).toEqual(distinctiveCompiledSchema)
-    expect(calls[0]?.toolConfig.tools[1]?.toolSpec.inputSchema.json).toEqual(distinctiveCompiledSchema)
+    expect(calls[0]?.toolConfig.tools[0]?.toolSpec.inputSchema.json).toBe(distinctiveCompiledSchema)
+    expect(calls[0]?.toolConfig.tools[1]?.toolSpec.inputSchema.json).toBe(distinctiveCompiledSchema)
   })
 
   it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {

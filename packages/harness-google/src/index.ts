@@ -18,6 +18,7 @@ import type {
 } from '@purista/harness'
 import {
   BaseModelProvider,
+  ModelCapabilityError,
   parseProviderJson,
   safePartialJson,
   toTokenUsage,
@@ -291,6 +292,22 @@ function toGoogleParts(parts: ContentPart[]): unknown[] {
       case 'image_url':
       case 'file_url': return { fileData: { fileUri: part.url, ...(part.mimeType ? { mimeType: part.mimeType } : {}) } }
     }
+    return unsupportedContentPart('google', part)
+  })
+}
+
+function unsupportedContentPart(providerId: string, part: { readonly kind: string }): never {
+  const method = part.kind === 'image' || part.kind === 'image_url'
+    ? 'vision_input'
+    : part.kind === 'audio'
+      ? 'audio_input'
+      : part.kind === 'file' || part.kind === 'file_url'
+        ? 'file_input'
+        : `${part.kind}_input`
+  throw new ModelCapabilityError('Model provider does not support this content part.', {
+    alias: providerId,
+    method,
+    reason: 'missing_capability',
   })
 }
 

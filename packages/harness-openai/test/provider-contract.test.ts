@@ -1,4 +1,5 @@
 import { modelProviderContract } from '@purista/harness/testing'
+import { describe, expect, it } from 'vitest'
 
 import { openai, type OpenAiClient } from '../src/index.js'
 
@@ -43,4 +44,15 @@ function readField(value: unknown, key: string): unknown {
 
 modelProviderContract(() => openai({ client: fakeClient() }), {
   capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings']
+})
+
+describe('OpenAI callable operation parity', () => {
+  it('exposes exactly the operations implemented by the adapter', () => {
+    const provider = openai({ client: fakeClient() })
+    const operationMethods = ['text', 'textStream', 'object', 'objectStream', 'embed', 'rerank', 'image', 'speech', 'video', 'videoStream'] as const
+
+    expect(operationMethods.filter((method) => typeof provider[method] === 'function')).toEqual([
+      'text', 'textStream', 'object', 'objectStream', 'embed', 'image', 'speech', 'video', 'videoStream',
+    ])
+  })
 })

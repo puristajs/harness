@@ -58,17 +58,24 @@ export function createHttpMcpBinding(
   portableUrl: unknown,
   portableHeaders: unknown,
   callerHeaders: unknown,
+  resolveHeaders?: unknown,
 ): HttpMcpBinding {
   const url = validatePortableUrl(portableUrl)
   const portable = snapshotHeaders(portableHeaders, true)
   const caller = snapshotHeaders(callerHeaders, false)
   const headers = mergeHeaders(portable, caller)
+  if (resolveHeaders !== undefined && !isHeaderResolver(resolveHeaders)) return invalid('invalid_selection')
 
   return Object.freeze({
     transport: 'http',
     url,
     ...(headers === undefined ? {} : { headers }),
+    ...(resolveHeaders === undefined ? {} : { resolveHeaders }),
   })
+}
+
+function isHeaderResolver(value: unknown): value is NonNullable<HttpMcpBinding['resolveHeaders']> {
+  return typeof value === 'function'
 }
 
 function validatePortableUrl(value: unknown): string {

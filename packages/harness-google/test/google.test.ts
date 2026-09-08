@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelCapabilityError, ModelError } from '@purista/harness'
 
 import { google, type GoogleClient } from '../src/index.js'
 
@@ -121,6 +121,25 @@ describe('google provider factory', () => {
     ])
   })
 
+  it('rejects an unknown video input part before provider I/O', async () => {
+    let calls = 0
+    const provider = google({ client: client({ generateContent: async () => {
+      calls += 1
+      return response('ok', 'STOP')
+    } }) })
+
+    await expect(provider.text!({
+      model: 'gemini-2.5-flash',
+      messages: [{ role: 'user', content: [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }] as any }],
+      defaults: { retry: false },
+      signal: signal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'google', method: 'video_input', reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
   it('uses a safe placeholder when a persisted tool result has no matching call name', async () => {
     const requests: any[] = []
     const provider = google({
@@ -195,6 +214,7 @@ describe('google provider factory', () => {
 
   it('maps embeddings and requested dimensions', async () => {
     const requests: any[] = []
+    const requestSignal = signal()
     const provider = google({
       client: client({
         embedContent: async (request) => {
@@ -204,9 +224,25 @@ describe('google provider factory', () => {
       }),
     })
 
-    const result = await provider.embed!({ model: 'gemini-embedding-2', input: ['one', 'two'], dimensions: 2, signal: signal() })
+    const result = await provider.embed!({ model: 'gemini-embedding-2', input: ['one', 'two'], dimensions: 2, signal: requestSignal })
     expect(result.embeddings).toEqual([{ index: 0, vector: [0.1, 0.2] }, { index: 1, vector: [0.3, 0.4] }])
     expect(requests[0]).toMatchObject({ model: 'gemini-embedding-2', contents: ['one', 'two'], config: { outputDimensionality: 2 } })
+    expect(requests[0].config.abortSignal).toBe(requestSignal)
+  })
+
+  it('rejects a cancelled embedding request before provider I/O', async () => {
+    let calls = 0
+    const controller = new AbortController()
+    controller.abort()
+    const provider = google({ client: client({ embedContent: async () => {
+      calls += 1
+      return { embeddings: [] }
+    } }) })
+
+    await expect(provider.embed!({ model: 'embedding', input: 'one', signal: controller.signal })).rejects.toSatisfy(
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    )
+    expect(calls).toBe(0)
   })
 
   it('normalizes malformed structured output through the base provider', async () => {

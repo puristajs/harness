@@ -18,6 +18,7 @@ import type {
 } from '@purista/harness'
 import {
   BaseModelProvider,
+  ModelCapabilityError,
   accumulateStreamToolCallDeltas,
   createStreamToolCallState,
   finalizeStreamToolCalls,
@@ -335,7 +336,22 @@ function toContentItem(part: ContentPart): any {
   if (part.kind === 'image') return { type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.dataBase64}` } }
   if (part.kind === 'image_url') return { type: 'image_url', image_url: { url: part.url } }
   if (part.kind === 'audio') return { type: 'input_audio', input_audio: { data: part.dataBase64, format: part.mimeType.split('/')[1] ?? 'wav' } }
-  return { type: 'text', text: `[unsupported ${part.kind} content omitted]` }
+  return unsupportedContentPart('azure-foundry', part)
+}
+
+function unsupportedContentPart(providerId: string, part: { readonly kind: string }): never {
+  const method = part.kind === 'image' || part.kind === 'image_url'
+    ? 'vision_input'
+    : part.kind === 'audio'
+      ? 'audio_input'
+      : part.kind === 'file' || part.kind === 'file_url'
+        ? 'file_input'
+        : `${part.kind}_input`
+  throw new ModelCapabilityError('Model provider does not support this content part.', {
+    alias: providerId,
+    method,
+    reason: 'missing_capability',
+  })
 }
 
 function toTools(tools: ChatRequest['tools']): any[] | undefined {

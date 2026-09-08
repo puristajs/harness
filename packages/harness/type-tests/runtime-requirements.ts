@@ -13,6 +13,8 @@ import type { SandboxCapabilityId } from '../src/definitions/types.js'
 import { bashSandbox, inMemorySandbox, type Sandbox, type SandboxSessionFor, type SpawnCapableSandbox } from '../src/sandbox/index.js'
 import type { SkillDefinition, SkillRuntimeId } from '../src/definitions/types.js'
 import { builtInTools } from '../src/tools/index.js'
+import { defineAgent } from '../src/definitions/agent.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
 type Expect<T extends true> = T
@@ -31,6 +33,13 @@ type _skillMountCapabilities = Expect<Equal<SkillRequirements['sandbox']['capabi
 type GuidanceRequirements = RuntimeRequirementsFor<{}, { guide: SkillDefinition<'guide', never> }, {}, {}, {}>
 type _guidanceNoRuntime = Expect<Equal<GuidanceRequirements['skillRuntimes'][number], never>>
 type _guidanceNoSandbox = Expect<Equal<GuidanceRequirements['sandbox']['capabilities'][number], never>>
+const guardrailRuntimeAgent = defineAgent('guardrailRuntimeAgent', { instructions: 'Use the guardrail.', guardrails: {
+	[agentGuardrailsBinding]: { id: 'runtime-guardrail', requirements: { skillRuntimes: ['python'] as const } },
+} })
+type GuardrailRuntimeRequirements = RuntimeRequirementsFor<{}, {}, {}, { guardrailRuntimeAgent: typeof guardrailRuntimeAgent }, {}>
+type _guardrailRuntimeExact = Expect<Equal<GuardrailRuntimeRequirements['skillRuntimes'][number], 'python'>>
+type _guardrailRuntimeCapabilities = Expect<Equal<GuardrailRuntimeRequirements['sandbox']['capabilities'][number], never>>
+type _guardrailRuntimeRequiresSandbox = Expect<Equal<GuardrailRuntimeRequirements['sandbox']['required'], true>>
 declare const readonlySession: SandboxSessionFor<readonly ['sandbox.fs', 'sandbox.readonly_mount']>
 readonlySession.mountReadOnly(new Map(), '/skills/demo')
 declare const mutableOnlySession: SandboxSessionFor<readonly ['sandbox.fs']>
@@ -172,6 +181,12 @@ void runtimeOnlyConfig
 // @ts-expect-error a Skill runtime requirement makes sandbox.runtimes mandatory
 const missingRuntimeMetadata: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: noSpawnSandbox }
 void missingRuntimeMetadata
+
+const guardrailRuntimeConfig: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { model: modelBinding, sandbox: runtimeOnlySandbox }
+void guardrailRuntimeConfig
+// @ts-expect-error a guardrail-only Skill runtime still requires a matching sandbox
+const missingGuardrailRuntimeSandbox: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { model: modelBinding }
+void missingGuardrailRuntimeSandbox
 
 type SandboxOnlyRequirements = Requirements<EmptyModels, never, never, never, 'sandbox.fs'>
 declare const sandboxWithoutCapabilities: Sandbox

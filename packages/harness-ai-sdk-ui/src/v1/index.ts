@@ -3,8 +3,13 @@ import { createHash } from 'node:crypto'
 import type {
   ExecutionEvent,
   HarnessInterrupt,
+  HarnessInterruptKind,
+  HarnessOutputUpdateKind,
+  HarnessTargetContract,
+  HarnessTargetKind,
   HarnessTargetStream,
   JsonValue,
+  ModelSchema,
   ToolApprovalDecision,
   ToolApprovalInterrupt,
   ToolApprovalResume,
@@ -57,11 +62,12 @@ type HarnessExecutionError = Extract<
   Extract<ExecutionEvent, { type: 'run.finished' }>['outcome'],
   { status: 'failed' | 'cancelled' }
 >['error']
+type HarnessExecutionCaller = Extract<ExecutionEvent, { type: 'tool.started' }>['caller']
 
 /** Framework-neutral lifecycle data rendered by an AI SDK or AI Elements UI. */
 export type HarnessUIStatus =
   | Readonly<{ phase: 'started'; runId: string }>
-  | Readonly<{ phase: 'tool-running'; runId: string; agentId: string; toolId: string; callId: string }>
+  | Readonly<{ phase: 'tool-running'; runId: string; caller: HarnessExecutionCaller; toolId: string; callId: string }>
   | (SubagentStatusBase & Readonly<{ phase: 'subagent-started' | 'subagent-completed'; error?: never }>)
   | (SubagentStatusBase & Readonly<{ phase: 'subagent-failed'; error: HarnessExecutionError }>)
   | Readonly<{ phase: 'media-progress'; runId: string; operation: 'video'; state: 'queued' | 'running'; progress?: number }>
@@ -135,16 +141,20 @@ export async function parseHarnessUIMessageRequest(body: unknown): Promise<Parse
 }
 
 /** Convert native Harness target events to AI SDK UI Message Stream v1 chunks. */
-export function createHarnessUIMessageStream<Output extends JsonValue = JsonValue>(
-  events: HarnessTargetStream<Output>,
+export function createHarnessUIMessageStream<Target extends UIHarnessTarget>(
+  events: HarnessTargetStream<Target>,
   options: HarnessUIMessageStreamOptions,
 ): ReadableStream<UIMessageChunk<unknown, HarnessUIDataTypes>> {
   nonEmpty(options.sessionId, 'sessionId')
   if (events === null || typeof events !== 'object' || typeof events.cancel !== 'function'
-    || typeof events[Symbol.asyncIterator] !== 'function') {
+    || !(events.result instanceof Promise) || typeof events[Symbol.asyncIterator] !== 'function') {
     throw new TypeError('Harness UI streaming requires a HarnessTargetStream.')
   }
   const iterator = events[Symbol.asyncIterator]()
+  const resultFailure = events.result.then<never>(
+    () => new Promise<never>(() => {}),
+    error => Promise.reject(error),
+  )
   let rootRunId: string | undefined
   let rootTerminalSeen = false
   let activeTurnId: string | undefined
@@ -188,7 +198,7 @@ export function createHarnessUIMessageStream<Output extends JsonValue = JsonValu
       if (cancelled) return
       try {
         while (true) {
-        const next = await iterator.next()
+        const next = await Promise.race([iterator.next(), resultFailure])
         if (next.done) {
           if (!rootTerminalSeen) throw new TypeError('Harness target stream ended without a direct terminal event.')
           controller.close()
@@ -208,15 +218,33 @@ export function createHarnessUIMessageStream<Output extends JsonValue = JsonValu
 
         switch (current.type) {
           case 'run.started':
+            if ((current.parentRunId === undefined) !== (current.parentInvocationId === undefined)) {
+              throw new TypeError('Harness target stream emitted invalid parent correlation.')
+            }
             if (current.parentRunId === undefined && current.parentInvocationId === undefined) {
               throw new TypeError('Harness target stream emitted a second root run.started event.')
             }
             ignored(current.type)
             continue
           case 'run.finished':
-            if (current.runId !== rootRunId) { ignored(current.type); continue }
+            if (current.outcome.runId !== current.runId
+              || (current.parentRunId === undefined) !== (current.parentInvocationId === undefined)) {
+              throw new TypeError('Harness target stream emitted invalid terminal run correlation.')
+            }
+            if (current.runId !== rootRunId) {
+              if (current.parentRunId === undefined) throw new TypeError('Harness target stream emitted an unrelated root terminal event.')
+              ignored(current.type)
+              continue
+            }
+            if (current.parentRunId !== undefined) throw new TypeError('Harness target stream root terminal event must be parentless.')
+            const [result, afterTerminal] = await Promise.all([events.result, iterator.next()])
+            if (!sameTerminalOutcome(result, current.outcome)) {
+              throw new TypeError('Harness target stream terminal event does not match its result.')
+            }
+            if (!afterTerminal.done) throw new TypeError('Harness target stream emitted an event after its direct terminal event.')
             rootTerminalSeen = true
             enqueueTerminal(controller, current, options.sessionId, projectedToolCallIds, closeText, closeTurn)
+            controller.close()
             break
           case 'output.text.delta':
             openTurn(current.id, controller)
@@ -241,7 +269,7 @@ export function createHarnessUIMessageStream<Output extends JsonValue = JsonValu
             controller.enqueue({ type: 'tool-input-available', toolCallId: current.callId, toolName: current.toolId, input: current.input, dynamic: true })
             break
           case 'tool.started':
-            controller.enqueue(statusChunk(current.runId, { phase: 'tool-running', runId: current.runId, agentId: current.agentId, toolId: current.toolId, callId: current.callId }))
+            controller.enqueue(statusChunk(current.runId, { phase: 'tool-running', runId: current.runId, caller: current.caller, toolId: current.toolId, callId: current.callId }))
             break
           case 'tool.finished':
             controller.enqueue(current.error === undefined
@@ -288,8 +316,8 @@ export function createHarnessUIMessageStream<Output extends JsonValue = JsonValu
 }
 
 /** Return the standard AI SDK-owned, fully framed SSE response. */
-export function createHarnessUIMessageStreamResponse<Output extends JsonValue = JsonValue>(
-  events: HarnessTargetStream<Output>, options: HarnessUIMessageStreamResponseOptions,
+export function createHarnessUIMessageStreamResponse<Target extends UIHarnessTarget>(
+  events: HarnessTargetStream<Target>, options: HarnessUIMessageStreamResponseOptions,
 ): Response {
   const { sessionId, messageId, onIgnoredEvent, ...responseOptions } = options
   const response = createUIMessageStreamResponse({ ...responseOptions,
@@ -300,8 +328,8 @@ export function createHarnessUIMessageStreamResponse<Output extends JsonValue = 
 }
 
 /** Return data-only protocol records for a host that owns SSE framing. */
-export async function* createHarnessUIMessageSseEvents<Output extends JsonValue = JsonValue>(
-  events: HarnessTargetStream<Output>, options: HarnessUIMessageStreamOptions,
+export async function* createHarnessUIMessageSseEvents<Target extends UIHarnessTarget>(
+  events: HarnessTargetStream<Target>, options: HarnessUIMessageStreamOptions,
 ): AsyncIterable<HarnessUIMessageSseEvent> {
   const reader = createHarnessUIMessageStream(events, options).getReader()
   let completed = false
@@ -346,13 +374,25 @@ export function parseHarnessToolApprovalResume(messages: readonly UIMessage[]): 
 }
 
 type ChunkController = ReadableStreamDefaultController<UIMessageChunk<unknown, HarnessUIDataTypes>>
+type UIHarnessTarget = HarnessTargetContract<
+  HarnessTargetKind,
+  string,
+  ModelSchema,
+  ModelSchema,
+  HarnessOutputUpdateKind,
+  readonly HarnessInterruptKind[]
+>
 type SubagentEvent = Extract<ExecutionEvent, { type: 'agent.started' | 'agent.finished' }> & {
   parentAgentId: string; delegationCallId: string; delegationDepth: number
 }
 
-function enqueueTerminal(
+function enqueueTerminal<Target extends UIHarnessTarget>(
   controller: ChunkController,
-  event: Extract<ExecutionEvent, { type: 'run.finished' }>,
+  event: Readonly<{
+    eventId: string
+    runId: string
+    outcome: Extract<Awaited<HarnessTargetStream<Target>['result']>, { status: 'completed' | 'interrupted' | 'failed' | 'cancelled' }>
+  }>,
   sessionId: string,
   projectedToolCallIds: Set<string>,
   closeText: (controller: ChunkController) => void,
@@ -381,7 +421,7 @@ function enqueueTerminal(
 
 function enqueueApprovalRequests(
   controller: ChunkController,
-  terminal: Extract<ExecutionEvent, { type: 'run.finished' }>,
+  terminal: Readonly<{ eventId: string; runId: string }>,
   interrupt: ToolApprovalInterrupt,
   sessionId: string,
   projectedToolCallIds: Set<string>,
@@ -413,6 +453,9 @@ function enqueueApprovalRequests(
 
 function statusChunk(runId: string, data: HarnessUIStatus): UIMessageChunk<unknown, HarnessUIDataTypes> {
   return { type: 'data-status', id: `harness-status:${runId}`, data }
+}
+function sameTerminalOutcome(left: unknown, right: unknown): boolean {
+  try { return JSON.stringify(left) === JSON.stringify(right) } catch { return false }
 }
 function isSubagentEvent(event: Extract<ExecutionEvent, { type: 'agent.started' | 'agent.finished' }>): event is SubagentEvent {
   return typeof event.parentAgentId === 'string' && typeof event.delegationCallId === 'string' && typeof event.delegationDepth === 'number'

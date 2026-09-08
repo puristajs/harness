@@ -1,4 +1,12 @@
-import type { ExecutionEvent, HarnessTargetStream, JsonValue, ToolApprovalInterrupt } from '@purista/harness'
+import type {
+  ExecutionEvent,
+  HarnessInterruptKind,
+  HarnessOutputUpdateKind,
+  HarnessTargetContract,
+  HarnessTargetStream,
+  ModelSchema,
+  ToolApprovalInterrupt,
+} from '@purista/harness'
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -11,22 +19,33 @@ import {
   parseHarnessToolApprovalResume,
   parseHarnessUIMessageRequest,
   type HarnessUIApprovalDescriptor,
+  type HarnessUIStatus,
 } from '../src/index.js'
 
 const failure = { code: 'MODEL_FAILED', message: 'Safe failure.', category: 'model', retriable: false } as const
+const agentCaller = Object.freeze({ kind: 'agent' as const, agentId: 'support' })
+const workflowCaller = Object.freeze({ kind: 'workflow' as const, workflowId: 'reviewWorkflow' })
+
+// @ts-expect-error The v4 UI adapter accepts an exact target contract, not an output-only generic.
+type StaleOutputOnlyStream = HarnessTargetStream<string>
+// @ts-expect-error Caller identity is one exact discriminated union, not independent optional fields.
+const staleToolStatus: HarnessUIStatus = { phase: 'tool-running', runId: 'run', toolId: 'lookup', callId: 'call', agentId: 'support' }
+const exactAgentToolStatus: HarnessUIStatus = { phase: 'tool-running', runId: 'run', toolId: 'lookup', callId: 'call', caller: agentCaller }
+const exactWorkflowToolStatus: HarnessUIStatus = { phase: 'tool-running', runId: 'run', toolId: 'lookup', callId: 'call', caller: workflowCaller }
+void [staleToolStatus, exactAgentToolStatus, exactWorkflowToolStatus]
 
 describe('AI SDK UI Message Stream v1', () => {
   it('opens one step per provider turn and remains consumable by the official reader', async () => {
     const chunks = await collect(createHarnessUIMessageStream(stream([
       event({ type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' }),
-      event({ type: 'output.text.delta', runId: 'run-1', id: 'turn-1', delta: 'Checking' }),
-      event({ type: 'model.completed', runId: 'run-1', agentId: 'support', modelAlias: 'chat', streamId: 'turn-1', operation: 'textStream' }),
-      event({ type: 'tool.input.available', runId: 'run-1', agentId: 'support', toolId: 'lookup', callId: 'call-1', input: { id: 'tx-1' } }),
-      event({ type: 'tool.started', runId: 'run-1', agentId: 'support', toolId: 'lookup', callId: 'call-1', input: { id: 'tx-1' } }),
-      event({ type: 'tool.finished', runId: 'run-1', agentId: 'support', toolId: 'lookup', callId: 'call-1', output: { amount: 42 } }),
-      event({ type: 'output.text.delta', runId: 'run-1', id: 'turn-2', delta: 'Done' }),
-      event({ type: 'model.completed', runId: 'run-1', agentId: 'support', modelAlias: 'chat', streamId: 'turn-2', operation: 'textStream' }),
-      event({ type: 'output.text.delta', runId: 'run-1', id: 'turn-2', delta: ' safely' }),
+      event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'turn-1', delta: 'Checking' }),
+      event({ type: 'model.completed', runId: 'run-1', caller: agentCaller, modelAlias: 'chat', streamId: 'turn-1', operation: 'textStream' }),
+      event({ type: 'tool.input.available', runId: 'run-1', caller: agentCaller, toolId: 'lookup', callId: 'call-1', input: { id: 'tx-1' } }),
+      event({ type: 'tool.started', runId: 'run-1', caller: workflowCaller, toolId: 'lookup', callId: 'call-1', input: { id: 'tx-1' } }),
+      event({ type: 'tool.finished', runId: 'run-1', caller: agentCaller, toolId: 'lookup', callId: 'call-1', output: { amount: 42 } }),
+      event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'turn-2', delta: 'Done' }),
+      event({ type: 'model.completed', runId: 'run-1', caller: agentCaller, modelAlias: 'chat', streamId: 'turn-2', operation: 'textStream' }),
+      event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'turn-2', delta: ' safely' }),
       event({ type: 'run.finished', runId: 'run-1', at: '2026-09-02T10:00:01.000Z', outcome: { status: 'completed', runId: 'run-1', output: 'Done safely' } }),
     ]), { sessionId: 'session-1' }))
 
@@ -45,19 +64,22 @@ describe('AI SDK UI Message Stream v1', () => {
       expect.objectContaining({ text: 'Checking', state: 'done' }),
       expect.objectContaining({ text: 'Done safely', state: 'done' }),
     ])
+    expect(chunks).toContainEqual(expect.objectContaining({ type: 'data-status', data: {
+      phase: 'tool-running', runId: 'run-1', caller: workflowCaller, toolId: 'lookup', callId: 'call-1',
+    } }))
   })
 
   it('maps output, tools, subagents, artifacts, ignored events, and correlation exactly', async () => {
     const ignored = vi.fn(() => { throw new Error('ignored callback failures are inert') })
     const chunks = await collect(createHarnessUIMessageStream(stream([
       event({ type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' }),
-      event({ type: 'output.object.snapshot', runId: 'run-1', id: 'turn-object', value: { category: 'safe' } }),
+      event({ type: 'output.object.snapshot', runId: 'run-1', caller: agentCaller, id: 'turn-object', value: { category: 'safe' } }),
       event({ type: 'agent.started', runId: 'child-1', parentRunId: 'run-1', parentInvocationId: 'invoke-1', agentId: 'researcher', parentAgentId: 'support', delegationCallId: 'delegate-1', delegationDepth: 1, at: '2026-09-02T10:00:00.100Z' }),
       event({ type: 'agent.finished', runId: 'child-1', parentRunId: 'run-1', parentInvocationId: 'invoke-1', agentId: 'researcher', parentAgentId: 'support', delegationCallId: 'delegate-1', delegationDepth: 1, at: '2026-09-02T10:00:00.200Z', error: failure }),
-      event({ type: 'tool.input.available', runId: 'run-1', agentId: 'support', toolId: 'lookup', callId: 'call-1', input: {} }),
-      event({ type: 'tool.finished', runId: 'run-1', agentId: 'support', toolId: 'lookup', callId: 'call-1', error: failure }),
-      event({ type: 'output.progress', runId: 'run-1', id: 'video-1', modelAlias: 'video', operation: 'video', state: 'running', progress: 50 }),
-      event({ type: 'output.file', runId: 'run-1', id: 'artifact-1', modelAlias: 'video', operation: 'video', artifact: { id: 'artifact-1', url: '/artifacts/1', mediaType: 'video/mp4' } }),
+      event({ type: 'tool.input.available', runId: 'run-1', caller: agentCaller, toolId: 'lookup', callId: 'call-1', input: {} }),
+      event({ type: 'tool.finished', runId: 'run-1', caller: agentCaller, toolId: 'lookup', callId: 'call-1', error: failure }),
+      event({ type: 'output.progress', runId: 'run-1', caller: workflowCaller, callId: 'video-call', id: 'video-1', modelAlias: 'video', operation: 'video', state: 'running', progress: 50 }),
+      event({ type: 'output.file', runId: 'run-1', caller: workflowCaller, callId: 'video-call', id: 'artifact-1', modelAlias: 'video', operation: 'video', artifact: { id: 'artifact-1', url: '/artifacts/1', mediaType: 'video/mp4' } }),
       event({ type: 'stream.overflow', runId: 'run-1', at: '2026-09-02T10:00:00.300Z', dropped: 1 }),
       event({ type: 'run.finished', runId: 'run-1', at: '2026-09-02T10:00:01.000Z', outcome: { status: 'completed', runId: 'run-1', output: { category: 'safe' } } }),
     ]), { sessionId: 'session-1', onIgnoredEvent: ignored }))
@@ -74,7 +96,7 @@ describe('AI SDK UI Message Stream v1', () => {
     'maps %s terminal outcomes using official chunks', async (status, terminalChunk, finishReason) => {
       const chunks = await collect(createHarnessUIMessageStream(stream([
         event({ type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' }),
-        event({ type: 'model.completed', runId: 'run-1', agentId: 'support', modelAlias: 'chat', operation: 'text', streamId: 'turn-1' }),
+        event({ type: 'model.completed', runId: 'run-1', caller: agentCaller, modelAlias: 'chat', operation: 'text', streamId: 'turn-1' }),
         event({ type: 'run.finished', runId: 'run-1', at: '2026-09-02T10:00:01.000Z', outcome: { status, runId: 'run-1', error: failure } }),
       ]), { sessionId: 'session-1' }))
       expect(chunks).toContainEqual(expect.objectContaining({ type: 'data-status', data: { phase: status, runId: 'run-1', error: failure } }))
@@ -220,21 +242,93 @@ describe('AI SDK UI Message Stream v1', () => {
     expect(ignored).toHaveBeenCalledWith('run.finished')
     await expect(collectAsync(createHarnessUIMessageSseEvents(stream(completedEvents().slice(0, -1)), { sessionId: 'session-1' }))).rejects.toThrow(/terminal/i)
     await expect(collectAsync(createHarnessUIMessageSseEvents(stream([...completedEvents(), completedEvents().at(-1)!]), { sessionId: 'session-1' }))).rejects.toThrow(/terminal/i)
-    await expect(collectAsync(createHarnessUIMessageSseEvents(stream([...completedEvents(), event({ type: 'output.text.delta', runId: 'run-1', id: 'turn-1', delta: 'late' })]), { sessionId: 'session-1' }))).rejects.toThrow(/after/i)
+    await expect(collectAsync(createHarnessUIMessageSseEvents(stream([...completedEvents(), event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'turn-1', delta: 'late' })]), { sessionId: 'session-1' }))).rejects.toThrow(/after/i)
     const nestedStart = event({ type: 'run.started', runId: 'child-1', parentRunId: 'run-1', parentInvocationId: 'delegate-1', at: '2026-09-02T10:00:00.100Z' })
     await expect(collect(createHarnessUIMessageStream(stream([nestedStart]), { sessionId: 'session-1' }))).rejects.toThrow(/root/i)
     expect(() => createHarnessUIMessageStream(stream(completedEvents()), { sessionId: '' })).toThrow(/sessionId/i)
-    expect(() => createHarnessUIMessageStream({ async *[Symbol.asyncIterator]() {} } as unknown as HarnessTargetStream<JsonValue>, { sessionId: 'session-1' })).toThrow(/HarnessTargetStream/i)
+    expect(() => createHarnessUIMessageStream({ async *[Symbol.asyncIterator]() {} } as unknown as HarnessTargetStream<UITestTarget>, { sessionId: 'session-1' })).toThrow(/HarnessTargetStream/i)
+  })
+
+  it('rejects malformed terminal correlation and result mismatch before terminal chunks or DONE', async () => {
+    const cases: HarnessTargetStream<UITestTarget>[] = []
+    const mismatchRun = completedEvents()
+    mismatchRun[mismatchRun.length - 1] = event({ type: 'run.finished', runId: 'run-1', at: '2026-09-02T10:00:01.000Z',
+      outcome: { status: 'completed', runId: 'different-run', output: 'Hello' } })
+    cases.push(stream(mismatchRun))
+    const oneSided = completedEvents()
+    oneSided[oneSided.length - 1] = event({ type: 'run.finished', runId: 'run-1', parentRunId: 'parent', at: '2026-09-02T10:00:01.000Z',
+      outcome: { status: 'completed', runId: 'run-1', output: 'Hello' } })
+    cases.push(stream(oneSided))
+    const valid = completedEvents()
+    cases.push({ ...stream(valid), result: Promise.resolve({ status: 'completed', runId: 'run-1', output: 'different' }) } as HarnessTargetStream<UITestTarget>)
+    const duplicate = completedEvents()
+    cases.push(stream([...duplicate, duplicate.at(-1)!]))
+    cases.push(stream([...completedEvents(), event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'late', delta: 'late' })]))
+
+    for (const source of cases) {
+      const { chunks, failure } = await readUntilFailure(createHarnessUIMessageStream(source, { sessionId: 'session-1' }))
+      expect(failure).toBeInstanceOf(TypeError)
+      expect(chunks).not.toContainEqual(expect.objectContaining({ type: 'finish' }))
+    }
+    for (const source of cases) {
+      const records: unknown[] = []
+      let failure: unknown
+      try { for await (const record of createHarnessUIMessageSseEvents(source, { sessionId: 'session-1' })) records.push(record) }
+      catch (error) { failure = error }
+      expect(failure).toBeInstanceOf(TypeError)
+      expect(records).not.toContainEqual({ event: 'data', data: '[DONE]' })
+    }
   })
 
   it('cancels target execution and closes iterator observation on disconnect', async () => {
     const cancel = vi.fn(async (_reason?: string) => {})
     const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
-    const events: HarnessTargetStream<JsonValue> = { cancel, [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } } }
+    const result = new Promise<never>(() => {})
+    const events = { result, cancel, [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } } } as unknown as HarnessTargetStream<UITestTarget>
     const reader = createHarnessUIMessageStream(events, { sessionId: 'session-1' }).getReader()
     await reader.cancel('browser disconnected')
     expect(cancel).toHaveBeenCalledWith('browser disconnected')
     expect(iteratorReturn).toHaveBeenCalled()
+  })
+
+  it('surfaces producer rejection while the event iterator is still pending', async () => {
+    const producerFailure = new TypeError('Harness producer rejected input.')
+    const cancel = vi.fn(async () => {})
+    const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
+    const events = {
+      result: Promise.reject(producerFailure),
+      cancel,
+      [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } },
+    } as unknown as HarnessTargetStream<UITestTarget>
+
+    await expect(collect(createHarnessUIMessageStream(events, { sessionId: 'session-1' }))).rejects.toBe(producerFailure)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(iteratorReturn).toHaveBeenCalledOnce()
+  })
+
+  it('surfaces a terminal-boundary iterator rejection while the result is still pending', async () => {
+    const iteratorFailure = new TypeError('Harness event iterator failed after its terminal event.')
+    const cancel = vi.fn(async () => {})
+    const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
+    const values = completedEvents()
+    let index = 0
+    const events = {
+      result: new Promise<never>(() => {}),
+      cancel,
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            if (index < values.length) return { done: false as const, value: values[index++]! }
+            throw iteratorFailure
+          },
+          return: iteratorReturn,
+        }
+      },
+    } as unknown as HarnessTargetStream<UITestTarget>
+
+    await expect(collect(createHarnessUIMessageStream(events, { sessionId: 'session-1' }))).rejects.toBe(iteratorFailure)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(iteratorReturn).toHaveBeenCalledOnce()
   })
 
   it('cleans up once after protocol errors and preserves the projection error', async () => {
@@ -245,7 +339,9 @@ describe('AI SDK UI Message Stream v1', () => {
       event({ type: 'run.started', runId: 'run-2', at: '2026-09-02T10:00:00.100Z' }),
     ]
     let index = 0
-    const events: HarnessTargetStream<JsonValue> = {
+    const result = new Promise<never>(() => {})
+    const events = {
+      result,
       cancel,
       [Symbol.asyncIterator]() {
         return {
@@ -253,7 +349,7 @@ describe('AI SDK UI Message Stream v1', () => {
           return: iteratorReturn,
         }
       },
-    }
+    } as unknown as HarnessTargetStream<UITestTarget>
 
     await expect(collect(createHarnessUIMessageStream(events, { sessionId: 'session-1' })))
       .rejects.toThrow('second root run.started')
@@ -269,25 +365,44 @@ function event<T extends Omit<ExecutionEvent, 'eventId' | 'sequence'>>(value: T)
 }
 event.sequence = 0
 
-function stream<T extends JsonValue>(events: readonly ExecutionEvent<T>[], cancel = vi.fn(async (_reason?: string) => {})): HarnessTargetStream<T> {
-  return { cancel, async *[Symbol.asyncIterator]() { yield* events } }
+type UITestTarget = HarnessTargetContract<
+  'agent' | 'workflow',
+  string,
+  ModelSchema,
+  ModelSchema,
+  HarnessOutputUpdateKind,
+  readonly HarnessInterruptKind[]
+>
+
+function stream(events: readonly ExecutionEvent[], cancel = vi.fn(async (_reason?: string) => {})): HarnessTargetStream<UITestTarget> {
+  const terminal = events.find((current): current is Extract<ExecutionEvent, { type: 'run.finished' }> =>
+    current.type === 'run.finished' && current.parentRunId === undefined && current.parentInvocationId === undefined)
+  const result = terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome)
+  return { result, cancel, async *[Symbol.asyncIterator]() { yield* events } } as unknown as HarnessTargetStream<UITestTarget>
 }
 function readable(chunks: readonly UIMessageChunk[]): ReadableStream<UIMessageChunk> { return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close() } }) }
 async function collect(value: ReadableStream<UIMessageChunk>): Promise<UIMessageChunk[]> { const reader = value.getReader(); const result: UIMessageChunk[] = []; while (true) { const next = await reader.read(); if (next.done) return result; result.push(next.value) } }
 async function collectAsync<T>(values: AsyncIterable<T>): Promise<T[]> { const result: T[] = []; for await (const value of values) result.push(value); return result }
+async function readUntilFailure(stream: ReadableStream<UIMessageChunk>): Promise<{ chunks: UIMessageChunk[]; failure: unknown }> {
+  const reader = stream.getReader()
+  const chunks: UIMessageChunk[] = []
+  try {
+    while (true) { const next = await reader.read(); if (next.done) return { chunks, failure: undefined }; chunks.push(next.value) }
+  } catch (failure) { return { chunks, failure } }
+}
 
 function completedEvents(): ExecutionEvent[] { return [
   event({ type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' }),
-  event({ type: 'output.text.delta', runId: 'run-1', id: 'turn-1', delta: 'Hello' }),
-  event({ type: 'model.completed', runId: 'run-1', agentId: 'support', modelAlias: 'chat', streamId: 'turn-1', operation: 'textStream' }),
+  event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'turn-1', delta: 'Hello' }),
+  event({ type: 'model.completed', runId: 'run-1', caller: agentCaller, modelAlias: 'chat', streamId: 'turn-1', operation: 'textStream' }),
   event({ type: 'run.finished', runId: 'run-1', at: '2026-09-02T10:00:01.000Z', outcome: { status: 'completed', runId: 'run-1', output: 'Hello' } }),
 ] }
 
 function approvalEvents(): ExecutionEvent[] { return [
   event({ type: 'run.started', runId: 'run-approval', at: '2026-09-02T10:00:00.000Z' }),
-  event({ type: 'model.completed', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', agentId: 'support', modelAlias: 'chat', streamId: 'approval-turn', operation: 'textStream' }),
-  event({ type: 'tool.input.available', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', agentId: 'support', toolId: 'refund', callId: 'call-refund', input: { id: 'tx-1' } }),
-  event({ type: 'tool.input.available', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', agentId: 'support', toolId: 'notify', callId: 'call-notify', input: { id: 'tx-1' } }),
+  event({ type: 'model.completed', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', caller: agentCaller, modelAlias: 'chat', streamId: 'approval-turn', operation: 'textStream' }),
+  event({ type: 'tool.input.available', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', caller: agentCaller, toolId: 'refund', callId: 'call-refund', input: { id: 'tx-1' } }),
+  event({ type: 'tool.input.available', runId: 'agent-run-1', parentRunId: 'run-approval', parentInvocationId: 'parent-1', caller: agentCaller, toolId: 'notify', callId: 'call-notify', input: { id: 'tx-1' } }),
   { ...event({ type: 'run.finished', runId: 'run-approval', at: '2026-09-02T10:00:01.000Z', outcome: { status: 'interrupted', runId: 'run-approval', interrupt: approvalInterrupt() } }), eventId: 'event-4' },
 ] }
 function approvalReplayEvents(): ExecutionEvent[] { return [

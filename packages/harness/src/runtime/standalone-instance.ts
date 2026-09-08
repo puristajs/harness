@@ -14,7 +14,7 @@ import type {
 	HarnessTargetStream,
 } from '../definitions/execution-events.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
-import type { AnyAgentDefinition, AnyWorkflowDefinition, BuiltInToolDefinition, ToolDefinition } from '../definitions/types.js'
+import type { AnyAgentDefinition, AnyWorkflowDefinition, BuiltInToolDefinition, HarnessExecutionCaller, ToolDefinition } from '../definitions/types.js'
 import { ApprovalResumeError, HarnessConfigError, HarnessError, InternalError, OperationCancelledError, OperationTimeoutError, SandboxPermissionDeniedError, SandboxStateLostError, SessionBusyError, StateError, ValidationError, serializeError } from '../errors/index.js'
 import { agentGuardrailsBinding } from '../agents/guardrails.js'
 import type { ContentCaptureMode, TelemetryOptions } from '../telemetry/index.js'
@@ -82,7 +82,7 @@ type UncorrelatedExecutionEvent<Output extends JsonValue = JsonValue> = Executio
 type RootEventBody<Output extends JsonValue = JsonValue> =
 	| Readonly<{ type: 'run.started'; at: string }>
 	| Readonly<{ type: 'run.finished'; at: string; outcome: RunOutcome<Output> | Readonly<{ status: 'failed' | 'cancelled'; runId: string; error: ReturnType<typeof serializeError> }> }>
-	| Readonly<{ type: 'model.completed'; agentId?: string; workflowId?: string; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: import('../ports/model-provider.js').TokenUsage; finishReason?: import('../ports/model-provider.js').FinishReason }>
+	| Readonly<{ type: 'model.completed'; caller: HarnessExecutionCaller; modelAlias: string; streamId?: string; operation: 'text' | 'object' | 'textStream' | 'objectStream'; usage?: import('../ports/model-provider.js').TokenUsage; finishReason?: import('../ports/model-provider.js').FinishReason }>
 
 const recoverableEventPublicationErrors = new WeakSet<object>()
 

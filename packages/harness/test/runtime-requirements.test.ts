@@ -12,6 +12,12 @@ import { z } from 'zod'
 import { resolveHarnessExecutionDefaults } from '../src/runtime/execution-defaults.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { createHostOwnerToken, defineHostTool } from '../src/integrator/index.js'
+import { BaseModelProvider } from '../src/ports/base-model-provider.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
+
+class EmptyBaseProvider extends BaseModelProvider {
+	public constructor() { super({ id: 'empty-base-provider', genAiSystem: 'test' }) }
+}
 
 const emptyRequirements = requirements()
 
@@ -76,6 +82,22 @@ describe('exact Harness instance requirements', () => {
 		expect(required.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.readonly_mount'])
 		expect(required.models.primary?.capabilities).toContain('tool_use')
 		expect(required.sandbox.capabilities).not.toContain('sandbox.exec')
+	})
+
+	it('derives and enforces a sandbox for guardrail-only Skill runtimes', () => {
+		const guarded = defineAgent('guardrailRuntimeAgent', { instructions: 'Use the guardrail.', guardrails: {
+			[agentGuardrailsBinding]: { id: 'runtime-guardrail', requirements: { skillRuntimes: ['python'] as const } },
+		} })
+		const required = defineHarness({ name: 'guardrailRuntimeHarness' }).addAgent(guarded).requirements
+		expect(required.skillRuntimes).toEqual(['python'])
+		expect(required.sandbox).toEqual({ capabilities: [], requiredGroups: [], required: true })
+		const modelProvider = provider({ text: async () => ({}), textStream: async function* () {} })
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, {
+			model: { provider: modelProvider, model: 'demo' },
+		}))).toBe('missing_runtime_binding')
+		expect(validateHarnessInstanceConfig(required, {
+			model: { provider: modelProvider, model: 'demo' }, sandbox: sandboxAdapter(() => {}, []),
+		}).sandbox).toBeDefined()
 	})
 	it('accepts an empty graph, rejects unknown configuration, and freezes a detached snapshot', () => {
 		const snapshot = validateHarnessInstanceConfig(emptyRequirements, {})
@@ -158,6 +180,37 @@ describe('exact Harness instance requirements', () => {
 		}))).toBe('model_capability_mismatch')
 		const markerRequirements = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['tool_use'] as const) }) }) })
 		expect(validateHarnessInstanceConfig(markerRequirements, { model: { provider: provider(), model: 'marker' } }).models.primary).toBeDefined()
+	})
+
+	it.each([
+		['text', 'text'],
+		['text_stream', 'textStream'],
+		['object', 'object'],
+		['object_stream', 'objectStream'],
+		['embeddings', 'embed'],
+		['rerank', 'rerank'],
+		['image_generation', 'image'],
+		['speech_generation', 'speech'],
+		['video_generation', 'video'],
+	] as const)('rejects unsupported %s before an inherited base operation can be invoked', (capability, method) => {
+		const modelProvider = new EmptyBaseProvider()
+		expect(method in modelProvider).toBe(false)
+		const required = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze([capability]) }) }) })
+		const failure = errorOf(() => validateHarnessInstanceConfig(required, { model: { provider: modelProvider, model: 'demo' } }))
+		expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `model.provider.${method}` })
+	})
+
+	it('requires both aggregate and streaming video operations atomically', () => {
+		const required = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['video_generation']) }) }) })
+		for (const [methods, missing] of [
+			[{ video: async () => ({}) }, 'videoStream'],
+			[{ videoStream: async function* () {} }, 'video'],
+		] as const) {
+			const failure = errorOf(() => validateHarnessInstanceConfig(required, {
+				model: { provider: provider(methods), model: 'demo' },
+			}))
+			expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `model.provider.${missing}` })
+		}
 	})
 
 	it('validates required groups without calling or freezing borrowed resources', () => {
@@ -250,6 +303,22 @@ describe('exact Harness instance requirements', () => {
 			knowledge: { transport: 'stdio', command: 'node', args: ['server.js'], env: { MODE: 'test' }, sandbox: sandboxAdapter(() => {}, ['sandbox.spawn']) },
 		} })
 		expect(snapshot.mcp?.knowledge?.transport).toBe('stdio')
+		const resolveHeaders = () => Object.freeze({ authorization: 'Bearer current' })
+		let headerReads = 0
+		const headers = Object.defineProperty({}, 'authorization', { enumerable: true,
+			get() { headerReads += 1; return 'Bearer static' } })
+		const httpSnapshot = validateHarnessInstanceConfig(required, { mcp: {
+			knowledge: { transport: 'http', url: 'https://example.com/mcp', headers, resolveHeaders },
+		} })
+		expect(httpSnapshot.mcp?.knowledge).toMatchObject({ transport: 'http', resolveHeaders })
+		expect(headerReads).toBe(1)
+		expect(Object.isFrozen(httpSnapshot.mcp?.knowledge)).toBe(true)
+		expect(errorOf(() => validateHarnessInstanceConfig(required, { mcp: {
+			knowledge: { transport: 'http', url: 'https://example.com/mcp', resolveHeaders: 'invalid' },
+		} })).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'mcp.knowledge.resolveHeaders' })
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { mcp: {
+			knowledge: { transport: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'one', authorization: 'two' } },
+		} }))).toBe('invalid_runtime_binding')
 	})
 
 	it('uses stable presence and capability errors and validates optional controls', () => {

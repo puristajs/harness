@@ -73,7 +73,7 @@ flowchart TD
   - [Durable Workspaces](./guides/durable-workspaces.md): configure production replay workspaces, checkpoint references, retention, encryption, cleanup, and quotas.
   - [Evaluating AI systems](./guides/evaluating-prompts.md): run or re-score versioned cases with interchangeable scorer adapters. The [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/) owns methods, recipes, and optional platform integrations.
   - [Extending And Customizing](./guides/extending-and-customizing.md): add adapters, TypeScript tools, skills, workflows, and custom state/sandbox implementations.
-  - [MCP Tools](./guides/mcp-tools.md): register stdio and HTTP MCP tools, install stdio servers inside the sandbox, and map MCP failures.
+  - [MCP Tools](./guides/mcp-tools.md): declare selected MCP tools, bind Streamable HTTP or sandboxed stdio transports, and map MCP failures.
   - [Agent Plugins](./guides/agent-plugins.md): inspect trusted Agent Plugins v1 packages and bind selected skills or MCP tools explicitly.
   - [Guardrails](./guides/guardrails.md): configure typed input, output, tool, retrieval, and sensitive-data protection; choose Presidio or native privacy by user outcome.
   - [Decisions and Approval](./guides/decisions-and-approval.md): one current decision table, composed rails/governance, safe evidence, and durable review ownership.
@@ -85,9 +85,9 @@ flowchart TD
   - [Security Model](./security/security-model.md): trust boundaries, secret handling, sandbox execution, MCP risk, application-owned review tasks, and telemetry privacy.
 - Reference
   - [Public API](./reference/public-api.md): definitions, runtime bindings, sessions, execution events, errors, and type inference.
-  - [Decision Boundary Release Notes](./releases/decision-boundaries.md): current breaking contracts with no compatibility recipes.
-  - [Standard Schema Boundaries](./releases/standard-schema-boundaries.md): vendor-neutral validation, model-facing JSON Schema projection, and the clean breaking contract.
-  - [Harness 4 Definition and Runtime API](./releases/clean-builder-and-runtime-api.md): the clean break to immutable definitions, explicit runtime bindings, and standard target invocation.
+  - [Decision Boundaries](./releases/decision-boundaries.md): current content, authority, approval, and durable review ownership.
+  - [Standard Schema Boundaries](./releases/standard-schema-boundaries.md): vendor-neutral validation and model-facing JSON Schema projection.
+  - [Harness 4 Definition and Runtime API](./releases/definition-and-runtime-api.md): immutable definitions, explicit runtime bindings, and standard target invocation.
   - [Spec Conformance](./reference/spec-conformance.md): current implementation status against the approved specs.
 
 ## Repository Map

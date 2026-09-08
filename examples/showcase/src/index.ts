@@ -66,7 +66,7 @@ const policyAssistant = defineAgent('policyAssistant', {
 const summarizeIncident = defineWorkflow('summarizeIncident', {
   input: incidentInput,
   output: incidentOutput,
-  agents: { incidentWriter, incidentReviewer },
+  agents: [incidentWriter, incidentReviewer],
   agentCalls: { maxCalls: 2, maxParallel: 1 },
   async handler(context) {
     const draft = await context.agents.incidentWriter.run(context.input, { callId: 'writeIncident' })
@@ -78,7 +78,7 @@ const summarizeIncident = defineWorkflow('summarizeIncident', {
 const answerPolicyQuestion = defineWorkflow('answerPolicyQuestion', {
   input: policyQuestion,
   output: policyAnswer,
-  agents: { policyAssistant },
+  agents: [policyAssistant],
   async handler(context) {
     return context.agents.policyAssistant.run(context.input, { callId: 'answerPolicy' })
   },
@@ -155,8 +155,8 @@ export async function runShowcase(): Promise<void> {
   const session = await harness.getSession('showcase')
   const incident = await session.workflows.summarizeIncident.run({ incident: 'Checkout error rate increased for EU users after the 14:00 deploy.' })
   const policy = await session.workflows.answerPolicyQuestion.run({ question: 'What should we do for a customer-impacting security incident?' })
-  if (incident.status === 'interrupted') throw new Error(`Incident workflow interrupted: ${incident.interrupt.type}`)
-  if (policy.status === 'interrupted') throw new Error(`Policy workflow interrupted: ${policy.interrupt.type}`)
+  if (incident.status !== 'completed') throw new Error('Incident workflow interrupted.')
+  if (policy.status !== 'completed') throw new Error('Policy workflow interrupted.')
   console.log('incident summary:', incident.output.summary)
   console.log('policy answer:', policy.output.answer)
   await harness.close()

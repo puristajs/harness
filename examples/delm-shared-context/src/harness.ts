@@ -41,7 +41,7 @@ const researchWorker = defineAgent('researchWorker', {
 const decentralizedResearch = defineWorkflow('decentralizedResearch', {
   input: delmWorkflowInputSchema,
   output: delmWorkflowOutputSchema,
-  agents: { researchWorker },
+  agents: [researchWorker],
   agentCalls: { maxCalls: 32, maxParallel: 8 },
   durable: true,
   workspace: true,

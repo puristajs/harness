@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { defineAgent, defineHarness, type HarnessInstance, type ModelProvider } from '@purista/harness'
+import { defineAgent, defineHarness, type ModelProvider } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 import { z } from 'zod'
 
@@ -39,12 +39,10 @@ const assistant = defineAgent('assistant', {
   prompt: input => ({ role: 'user', content: `Explain ${input.topic}.` }),
 })
 
-const quickstartHarness = defineHarness({ name: 'quickstart' }).addAgent(assistant)
-
-export function createQuickstartHarness(provider?: ModelProvider): Promise<HarnessInstance<typeof quickstartHarness.contracts, typeof quickstartHarness.requirements>> {
+export function createQuickstartHarness(provider?: ModelProvider) {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'
   const modelProvider = provider ?? openai({ apiKey: requireOpenAiKey() })
-  return quickstartHarness.getInstance({
+  return defineHarness({ name: 'quickstart' }).addAgent(assistant).getInstance({
     model: { provider: modelProvider, model, retry: true },
   })
 }
@@ -53,8 +51,7 @@ export async function runQuickstart(): Promise<void> {
   const harness = await createQuickstartHarness()
   const session = await harness.getSession('quickstart')
   const response = await session.agents.assistant.run({ topic: 'enterprise agent harnesses' })
-  if (response.status === 'interrupted') throw new Error(`Quickstart agent interrupted: ${response.interrupt.type}`)
-
+  if (response.status !== 'completed') throw new Error('Assistant run was interrupted.')
   console.log(response.output.answer)
   await harness.close()
 }

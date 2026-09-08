@@ -1,4 +1,4 @@
-import { defineAgent, defineHarness, type HarnessInstance } from '@purista/harness'
+import { defineAgent, defineHarness } from '@purista/harness'
 import { z } from 'zod'
 
 import {
@@ -16,10 +16,8 @@ const invoiceStatus = defineAgent('invoiceStatus', {
   prompt: input => ({ role: 'user', content: `Report the status of invoice ${input.invoiceId}.` }),
 })
 
-const invoiceHarness = defineHarness({ name: 'internalProviderExample' }).addAgent(invoiceStatus)
-
-export function createInvoiceHarness(client: InternalJsonClient): Promise<HarnessInstance<typeof invoiceHarness.contracts, typeof invoiceHarness.requirements>> {
-  return invoiceHarness.getInstance({
+export function createInvoiceHarness(client: InternalJsonClient) {
+  return defineHarness({ name: 'internalProviderExample' }).addAgent(invoiceStatus).getInstance({
     model: { provider: new InternalModelProvider(client), model: 'internal-json-v1' },
   })
 }
@@ -41,7 +39,7 @@ export async function runCustomProviderExample(): Promise<string> {
 
   try {
     const result = await session.agents.invoiceStatus.run({ invoiceId: 'INV-42' })
-    if (result.status === 'interrupted') throw new Error(`Invoice lookup interrupted: ${result.interrupt.type}`)
+    if (result.status !== 'completed') throw new Error('Invoice status run was interrupted.')
     return result.output.message
   } finally {
     await session.release()

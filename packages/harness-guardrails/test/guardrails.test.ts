@@ -10,6 +10,7 @@ import {
   defineTool,
   defineWorkflow,
   serializeError,
+  type ExecutionEvent,
   type HarnessAdapterContext,
   type Schema,
 } from '@purista/harness'
@@ -1832,7 +1833,7 @@ it.each([
   const contexts: GuardrailActionContext[] = []
   const failures: DecisionBlockedError[] = []
   const delegatedFailures: unknown[] = []
-  const events: import('@purista/harness').RunEvent[] = []
+  const events: ExecutionEvent[] = []
   let handlers = 0
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { [phase]: { flows: ['allow first', 'block second'] } } }),

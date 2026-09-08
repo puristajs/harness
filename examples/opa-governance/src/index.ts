@@ -5,9 +5,9 @@ import {
   JsonLogger,
   type JsonValue,
   type ModelProvider,
-  type ObjectRequest,
-  type ObjectResponse,
-  type ObjectStreamChunk,
+  type TextRequest,
+  type TextResponse,
+  type TextStreamChunk,
   type ExecutionEvent,
 } from '@purista/harness'
 import { createOpaClient, opaPolicy, type OpaClient } from '@purista/harness-policy-opa'
@@ -36,22 +36,33 @@ export interface TransferScenario {
 /** Observable result used by the executable example and its deterministic tests. */
 export interface OpaGovernanceExampleResult {
   readonly output: string
-  readonly events: readonly ExecutionEvent<string>[]
+  readonly events: readonly ExecutionEvent<JsonValue>[]
   readonly handlerCalls: number
 }
 
 class ScriptedTransferProvider implements ModelProvider {
   public readonly id = 'scripted-transfer'
   public readonly genAiSystem = 'scripted-transfer'
+  public readonly info = {
+    providerId: this.id,
+    genAiSystem: this.genAiSystem,
+    models: {
+      'scripted-transfer': {
+        capabilities: ['text', 'text_stream', 'tool_use'] as const,
+        supportedInputParts: ['text'] as const,
+        supportedOutputModes: ['text'] as const,
+      },
+    },
+  }
   private calls = 0
 
   public constructor(private readonly scenario: TransferScenario) {}
 
-  public async object<T extends JsonValue = JsonValue>(_request: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+  public async text(_request: TextRequest): Promise<TextResponse> {
     this.calls += 1
     if (this.calls === 1) {
       return {
-        object: {} as T,
+        content: '',
         toolCalls: [{
           id: 'call-transfer',
           name: 'transferFunds',
@@ -62,16 +73,17 @@ class ScriptedTransferProvider implements ModelProvider {
       }
     }
     return {
-      object: 'Transfer policy evaluation finished.' as T,
+      content: 'Transfer policy evaluation finished.',
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       finishReason: 'stop',
     }
   }
 
-  public async *objectStream<T extends JsonValue = JsonValue>(request: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
-    const response = await this.object(request)
+  public async *textStream(request: TextRequest): AsyncIterable<TextStreamChunk> {
+    const response = await this.text(request)
     for (const call of response.toolCalls ?? []) yield { kind: 'tool_call', call }
-    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
+    if (response.content) yield { kind: 'delta', text: response.content }
+    yield { kind: 'finish', usage: response.usage, finishReason: response.finishReason }
   }
 }
 
@@ -141,7 +153,7 @@ export async function runOpaGovernanceScenario(
 ): Promise<OpaGovernanceExampleResult> {
   const { harness: harnessPromise, getHandlerCalls } = createOpaGovernanceHarness(scenario, client)
   const harness = await harnessPromise
-  const events: ExecutionEvent<string>[] = []
+  const events: ExecutionEvent<JsonValue>[] = []
   let output = ''
   try {
     const session = await harness.getSession(`opa-transfer-${scenario.amount}-${scenario.destination}`)
@@ -149,7 +161,7 @@ export async function runOpaGovernanceScenario(
       `Transfer ${scenario.amount} to ${scenario.destination}.`,
     )) {
       events.push(event)
-      if (event.type === 'run.finished' && event.outcome.status === 'completed') output = event.outcome.output
+      if (event.type === 'run.finished' && event.outcome.status === 'completed' && typeof event.outcome.output === 'string') output = event.outcome.output
     }
     return { output, events, handlerCalls: getHandlerCalls() }
   } finally {

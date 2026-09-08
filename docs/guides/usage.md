@@ -41,7 +41,9 @@ history. `destroy()` removes the session state.
 
 ## Choose aggregate or streaming execution
 
-`run(input, options)` waits for a terminal `RunOutcome`:
+`run(input, options)` waits for a `completed` or `interrupted` `RunOutcome`.
+Failed and cancelled aggregate executions reject with normalized Harness
+errors:
 
 ```ts
 const outcome = await session.agents.assistant.run(input, {
@@ -51,8 +53,9 @@ const outcome = await session.agents.assistant.run(input, {
 })
 ```
 
-`stream(input, options)` starts the same execution and returns ordered
-`ExecutionEvent` values:
+`stream(input, options)` starts the same target and returns ordered
+`ExecutionEvent` values. Its terminal `run.finished` outcome can also be
+`failed` or `cancelled`:
 
 ```ts
 const stream = session.agents.assistant.stream(input)
@@ -106,10 +109,15 @@ const input = parsed.lastUserMessage.parts
   .filter(part => part.type === 'text')
   .map(part => part.text)
   .join('')
-const events = session.agents.assistant.stream(
+const targetStream = session.agents.assistant.stream(
   input,
   parsed.resume === undefined ? undefined : { resume: parsed.resume },
 )
+const events = {
+  result: targetStream.result.finally(() => session.release()),
+  cancel: (reason?: string) => targetStream.cancel(reason),
+  [Symbol.asyncIterator]: () => targetStream[Symbol.asyncIterator](),
+}
 return createHarnessUIMessageStreamResponse(events, {
   sessionId: parsed.sessionId,
   ...(parsed.assistantMessageId === undefined

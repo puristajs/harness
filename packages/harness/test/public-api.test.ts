@@ -1,17 +1,32 @@
 import type {
+  AgentResponseMode,
+  AnyHarnessTargetContract,
   AgentAdmission,
   AgentAdmissionLease,
   AgentAdmissionRequest,
   InMemoryAgentAdmissionOptions,
   ExecutionEvent,
   ExecutionTerminalOutcome,
+  HarnessExecutionCaller,
   HarnessExecutionEventType,
+  HarnessInterruptForKinds,
+  HarnessTargetExecutionEvent,
+  HarnessTargetDefinitionInference,
   HarnessTargetExecutionTerminalOutcome,
+  HarnessTargetInference,
+  HarnessTargetInput,
+  HarnessTargetOutput,
   HarnessTargetRunOutcome,
   HarnessTargetStream,
+  HarnessValidatedTargetInput,
+  HarnessUpdateFor,
+  McpServerInference,
   McpBinding,
   McpServerOptions,
   ModelRuntimeBinding,
+	NestedExecutionEvent,
+	RootExecutionEventFor,
+	SkillInference,
 	WorkflowCallCheckpointV1,
 	WorkflowCallStoredErrorV1,
 	WorkflowCallStoredOutcomeV1,
@@ -23,8 +38,16 @@ import type {
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import * as mainEntry from '../src/index.js'
+import * as adapterEntry from '../src/adapter/index.js'
+import * as integratorEntry from '../src/integrator/index.js'
 import * as testingEntry from '../src/testing/index.js'
 import type {
+	HarnessTargetDefinitionInference as DefinitionsHarnessTargetDefinitionInference,
+	HarnessTargetExecutionEvent as DefinitionsHarnessTargetExecutionEvent,
+	McpServerInference as DefinitionsMcpServerInference,
+	NestedExecutionEvent as DefinitionsNestedExecutionEvent,
+	RootExecutionEventFor as DefinitionsRootExecutionEventFor,
+	SkillInference as DefinitionsSkillInference,
 	WorkflowModelCallOptions as DefinitionsWorkflowModelCallOptions,
 	WorkflowToolCallOptions as DefinitionsWorkflowToolCallOptions,
 	WorkflowToolDefinitions as DefinitionsWorkflowToolDefinitions,
@@ -36,6 +59,17 @@ type PublicWorkflowTypes = readonly [
 ]
 const publicWorkflowTypes: PublicWorkflowTypes | undefined = undefined
 void publicWorkflowTypes
+
+type PublicInferenceAndEventAliases = readonly [
+	DefinitionsHarnessTargetDefinitionInference<AnyHarnessTargetContract>,
+	DefinitionsHarnessTargetExecutionEvent<AnyHarnessTargetContract>,
+	DefinitionsMcpServerInference<Readonly<Record<string, import('../src/index.js').McpToolDefinition>>>,
+	DefinitionsNestedExecutionEvent,
+	DefinitionsRootExecutionEventFor<AnyHarnessTargetContract>,
+	DefinitionsSkillInference<readonly ['node']>,
+]
+const publicInferenceAndEventAliases: PublicInferenceAndEventAliases | undefined = undefined
+void publicInferenceAndEventAliases
 
 /**
  * Locked value-export surface of `@purista/harness` for the v4 clean break.
@@ -196,7 +230,6 @@ const EXPECTED_TESTING_EXPORTS = [
   'fakeSnapshotSandbox',
   'inMemoryDurableWorkspace',
   'loggerContract',
-  'makeHarness',
   'memoryEngineContract',
   'modelProviderContract',
   'recordEvents',
@@ -208,6 +241,35 @@ const EXPECTED_TESTING_EXPORTS = [
   'sandboxSnapshotContract',
   'sandboxTextSearchContract',
   'harnessStorageContract',
+]
+
+/** Locked v4 value-export surface of `@purista/harness/adapter`. */
+const EXPECTED_ADAPTER_EXPORTS = [
+  'asExternalWaitResolved',
+  'assertSessionSandboxBindingTransition',
+  'createExternalWaitCancellation',
+  'normalizeSkillRuntimes',
+  'projectExternalWaitRequest',
+  'sameHarnessIdentity',
+  'sandboxScopeKey',
+  'validateBoundExternalWaitRequest',
+  'validateExternalWaitId',
+  'validateExternalWaitRegistration',
+  'validateExternalWaitSignal',
+  'validateExternalWaitSignalResult',
+  'validateExternalWaitSnapshot',
+  'validateSandboxOpenOptions',
+  'validateSandboxScope',
+  'validateSandboxTerminateOptions',
+]
+
+/** Locked v4 value-export surface of `@purista/harness/integrator`. */
+const EXPECTED_INTEGRATOR_EXPORTS = [
+  'createHostOwnerToken',
+  'defineHostTool',
+  'hostToolOwner',
+  'instantiateHostedHarness',
+  'isHostOwnerToken',
 ]
 
 describe('v4 public API export surface', () => {
@@ -225,7 +287,24 @@ describe('v4 public API export surface', () => {
 	})
 
 	it('publishes the canonical cancellable target event stream from the root', () => {
-		const target = mainEntry.defineAgent('publicApiTarget', { instructions: 'Answer.' }).contract
+		const definition = mainEntry.defineAgent('publicApiTarget', { instructions: 'Answer.' })
+		const target = definition.contract
+		const mcp = mainEntry.defineMcpServer('publicApiMcp', {
+			tools: { lookup: { remoteName: 'lookup', description: 'Look up.', input: target.input, output: target.output } },
+		})
+		const skill = mainEntry.defineSkill('public-api-skill', {
+			directory: new URL('./public-api-skill/', import.meta.url), runtimes: ['node', 'shell'],
+		})
+		expectTypeOf<typeof target>().toExtend<AnyHarnessTargetContract>()
+		expectTypeOf<HarnessTargetDefinitionInference<typeof target>>().toEqualTypeOf<typeof definition.$infer>()
+		expectTypeOf<HarnessTargetInput<typeof target>>().toEqualTypeOf<string>()
+		expectTypeOf<HarnessValidatedTargetInput<typeof target>>().toEqualTypeOf<string>()
+		expectTypeOf<HarnessTargetOutput<typeof target>>().toEqualTypeOf<string>()
+		expectTypeOf<HarnessTargetExecutionEvent<typeof target>>().toExtend<ExecutionEvent<string>>()
+		expectTypeOf<HarnessTargetExecutionEvent<typeof target>>()
+			.toEqualTypeOf<RootExecutionEventFor<typeof target> | NestedExecutionEvent>()
+		expectTypeOf<McpServerInference<typeof mcp.tools>>().toEqualTypeOf<typeof mcp.$infer>()
+		expectTypeOf<SkillInference<readonly ['node', 'shell']>>().toEqualTypeOf<typeof skill.$infer>()
 		expectTypeOf<HarnessTargetStream<typeof target>>().toExtend<AsyncIterable<ExecutionEvent<string>>>()
 		expectTypeOf<HarnessTargetStream<typeof target>['cancel']>().toEqualTypeOf<(reason?: string) => Promise<void>>()
 		expectTypeOf<HarnessTargetStream<typeof target>['result']>().toEqualTypeOf<Promise<HarnessTargetExecutionTerminalOutcome<typeof target>>>()
@@ -235,6 +314,15 @@ describe('v4 public API export surface', () => {
 		>()
 		expectTypeOf<ExecutionTerminalOutcome<string, never>>().toMatchTypeOf<
 			HarnessTargetExecutionTerminalOutcome<typeof target>>()
+		expectTypeOf<HarnessTargetInference<typeof target.input, typeof target.output, 'text-delta', readonly []>['update']>()
+			.toEqualTypeOf<string>()
+		expectTypeOf<HarnessUpdateFor<typeof target.output, 'none'>>().toEqualTypeOf<never>()
+		expectTypeOf<HarnessInterruptForKinds<readonly []>>().toEqualTypeOf<never>()
+		expectTypeOf<AgentResponseMode>().toEqualTypeOf<'text' | 'structured'>()
+		expectTypeOf<HarnessExecutionCaller>().toMatchTypeOf<
+			| Readonly<{ kind: 'agent'; agentId: string; workflowId?: string }>
+			| Readonly<{ kind: 'workflow'; workflowId: string; agentId?: never }>
+		>()
 	})
 
   it('publishes v4 runtime binding, admission, and event inventory types', () => {
@@ -292,5 +380,13 @@ describe('v4 public API export surface', () => {
 
   it('testing subpath exports exactly the locked value list', () => {
     expect(Object.keys(testingEntry).sort()).toEqual([...EXPECTED_TESTING_EXPORTS].sort())
+  })
+
+  it('adapter subpath exports exactly the locked value list', () => {
+    expect(Object.keys(adapterEntry).sort()).toEqual([...EXPECTED_ADAPTER_EXPORTS].sort())
+  })
+
+  it('integrator subpath exports exactly the locked value list', () => {
+    expect(Object.keys(integratorEntry).sort()).toEqual([...EXPECTED_INTEGRATOR_EXPORTS].sort())
   })
 })

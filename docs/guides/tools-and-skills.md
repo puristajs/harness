@@ -81,14 +81,15 @@ import { defineSkill } from '@purista/harness'
 
 export const supportMethod = defineSkill('support-method', {
   directory: new URL('../skills/support-method/', import.meta.url),
-  runtimes: ['node'],
 })
 ```
 
-The directory contains `SKILL.md` and any supporting files. `runtimes`
-declares what must be available if the skill includes executable scripts. The
-Harness mounts files read-only. Runtime availability never grants tool
-authority; the agent still needs an allowed tool to execute anything.
+The directory contains `SKILL.md` and any supporting files. Harness exposes
+reviewed text through the scoped `read_skill` tool. Add `runtimes: ['node']`,
+`['python']`, or `['shell']` only when the Skill includes scripts that need that
+runtime. Runtime-bearing Skills additionally require a sandbox with filesystem
+and read-only-mount capabilities. Runtime availability never grants tool
+authority; the agent still needs a selected tool to execute anything.
 
 ```ts
 const support = defineAgent('support', {
@@ -111,8 +112,9 @@ const definition = defineHarness({ name: 'app' }).use(supportCatalog)
 ```
 
 `defineCatalog` is an immutable package of definitions. It is useful for reuse
-and distribution; direct `.addAgent` and `.addTool` calls remain the
-simplest choice inside one application.
+and distribution. Inside one application, add the agent directly; its tool and
+Skill references bring those leaf definitions into the compiled dependency
+closure.
 
 ## Test tools
 

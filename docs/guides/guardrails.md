@@ -15,7 +15,7 @@ flowchart TD
   request[Typed request] --> input[Input rails]
   input --> retrieval[Caller-owned retrieval]
   retrieval --> filter[Explicit retrieval filter]
-  filter --> model[Registered model]
+  filter --> model[Selected model]
   model --> tool{Tool turn?}
   tool -- yes --> toolInput[Tool-input rails]
   toolInput --> authority[Binding, permissions, governance, approval]
@@ -157,7 +157,8 @@ values.
 
 ## Model checks and retrieval
 
-`modelCheckRail` uses a direct, already-registered Harness model alias. It
+`modelCheckRail` uses a direct Harness model alias declared by the attached
+Guardrails binding. It
 does not resolve aliases indirectly or create a provider.
 
 ```ts

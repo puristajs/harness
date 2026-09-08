@@ -1,6 +1,17 @@
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { JsonLogger, serializeError, type ExecutionEvent, type HarnessTargetStream, type JsonValue } from '@purista/harness'
+import {
+  JsonLogger,
+  serializeError,
+  type ExecutionEvent,
+  type HarnessInterruptKind,
+  type HarnessOutputUpdateKind,
+  type HarnessTargetContract,
+  type HarnessTargetKind,
+  type HarnessTargetStream,
+  type JsonValue,
+  type ModelSchema,
+} from '@purista/harness'
 import {
   createHarnessUIMessageStreamResponse,
   parseHarnessUIMessageRequest,
@@ -20,7 +31,7 @@ import {
 
 type RunStatus = 'running' | 'succeeded' | 'interrupted' | 'failed' | 'cancelled'
 type LivingWikiRunEvent = ExecutionEvent | {
-  type: 'run.failed'
+  type: 'transport.error'
   runId: string
   at: string
   error: ReturnType<typeof serializeError>
@@ -509,7 +520,7 @@ export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}
         pending.error = error instanceof Error ? { message: error.message } : { message: 'Run failed.' }
         if (pending.runId) {
           const failedEvent: LivingWikiRunEvent = {
-            type: 'run.failed',
+            type: 'transport.error',
             runId: pending.runId,
             at: new Date().toISOString(),
             error: serializeError(error)
@@ -553,10 +564,17 @@ export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}
   }
 }
 
-function releaseSessionAfterStream<Output extends JsonValue>(
-  stream: HarnessTargetStream<Output>,
+export function releaseSessionAfterStream<
+  Kind extends HarnessTargetKind,
+  Id extends string,
+  Input extends ModelSchema,
+  Output extends ModelSchema,
+  Updates extends HarnessOutputUpdateKind,
+  Interrupts extends readonly HarnessInterruptKind[],
+>(
+  stream: HarnessTargetStream<HarnessTargetContract<Kind, Id, Input, Output, Updates, Interrupts>>,
   release: () => Promise<void>,
-): HarnessTargetStream<Output> {
+): HarnessTargetStream<HarnessTargetContract<Kind, Id, Input, Output, Updates, Interrupts>> {
   let released = false
   const releaseOnce = async () => {
     if (released) return
@@ -564,19 +582,10 @@ function releaseSessionAfterStream<Output extends JsonValue>(
     await release()
   }
   return {
-    async cancel(reason) {
-      try {
-        await stream.cancel(reason)
-      } finally {
-        await releaseOnce()
-      }
-    },
+    result: stream.result.finally(releaseOnce),
+    cancel: reason => stream.cancel(reason),
     async *[Symbol.asyncIterator]() {
-      try {
-        yield* stream
-      } finally {
-        await releaseOnce()
-      }
+      yield* stream
     },
   }
 }

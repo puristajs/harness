@@ -3,6 +3,7 @@ import {
   type JsonValue,
   type ObjectRequest,
   type ObjectResponse,
+  type ObjectStreamChunk,
   type TokenUsage,
 } from '@purista/harness'
 
@@ -54,6 +55,20 @@ export class InternalModelProvider extends BaseModelProvider {
         finishReason,
         providerFinishReason: result.stopReason,
       },
+    }
+  }
+
+  protected override async *doObjectStream<T extends JsonValue = JsonValue>(
+    request: ObjectRequest<T>,
+  ): AsyncIterable<ObjectStreamChunk<T>> {
+    const response = await this.doObject(request)
+    yield {
+      kind: 'finish',
+      object: response.object,
+      usage: response.usage,
+      finishReason: response.finishReason,
+      ...(response.outcome ? { outcome: response.outcome } : {}),
+      ...(response.providerContinuation ? { providerContinuation: response.providerContinuation } : {}),
     }
   }
 

@@ -35,16 +35,19 @@ export type {
 	HarnessInterruptKind,
 	HarnessOutputUpdateKind,
 	HarnessTargetContract,
+	HarnessTargetDefinitionInference,
 	HarnessTargetInference,
 	HarnessTargetKind,
 	HarnessUpdateFor,
 	HostToolDefinition,
 	McpServerDefinition,
+	McpServerInference,
 	McpToolDefinition,
 	McpToolOptions,
 	ModelAliasId,
 	SandboxCapabilityId,
 	SkillDefinition,
+	SkillInference,
 	SkillRuntimeId,
 	ToolDefinition,
 	ToolHandlerContext,
@@ -69,6 +72,7 @@ export type {
 export type { DefinitionReference } from './identity.js'
 export type { SkillOptions } from './skill.js'
 export type { McpServerOptions } from './mcp-server.js'
+export type { HarnessTargetExecutionEvent, NestedExecutionEvent, RootExecutionEventFor } from './execution-events.js'
 export type {
 	CatalogOptions,
 	HarnessCatalogDefinition,

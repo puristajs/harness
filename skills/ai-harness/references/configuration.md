@@ -4,6 +4,19 @@
 
 ```ts
 const instance = await definition.getInstance({
+  model: {
+    provider: openai({ apiKey }),
+    model: 'gpt-5-mini',
+  },
+})
+```
+
+The singular `model` field binds the default `primary` alias. When definitions
+select additional model aliases or infrastructure capabilities, bind the exact
+projected requirements:
+
+```ts
+const advancedInstance = await advancedDefinition.getInstance({
   models: {
     primary: { provider: openai({ apiKey }), model: 'gpt-5-mini', retry: true },
     embeddings: { provider, model: 'text-embedding-3-small' },

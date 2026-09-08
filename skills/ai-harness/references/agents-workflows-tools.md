@@ -43,7 +43,7 @@ An agent is the standard bounded model loop. It can declare tools, skills, subag
 const resolveQuestion = defineWorkflow('resolveQuestion', {
   input: questionSchema,
   output: answerSchema,
-  agents: { answerQuestion },
+  agents: [answerQuestion],
   agentCalls: { maxCalls: 2, maxParallel: 1 },
   async handler(context) {
     return context.agents.answerQuestion.run(context.input, { callId: 'answerQuestion' })
@@ -56,8 +56,15 @@ Workflow agent calls always go through the runtime dispatcher and preserve traci
 ## Composition
 
 ```ts
-const shared = defineCatalog('supportCatalog', { tools: [findAccount], agents: [answerQuestion] })
-const definition = defineHarness({ name: 'support' }).use(shared).addWorkflow(resolveQuestion)
+const definition = defineHarness({ name: 'support' })
+  .addAgent(answerQuestion)
+  .addWorkflow(resolveQuestion)
+
+const shared = defineCatalog('supportCatalog', {
+  agents: [answerQuestion],
+  workflows: [resolveQuestion],
+})
+const packagedDefinition = defineHarness({ name: 'packagedSupport' }).use(shared)
 ```
 
-Catalogs contain definitions only. Duplicate ids fail during composition. Runtime adapters are never catalog members.
+Direct composition is the shortest path. Use a catalog only to package reusable definitions. Catalogs contain definitions only; duplicate ids fail during composition, and runtime adapters are never catalog members.

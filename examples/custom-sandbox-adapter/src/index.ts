@@ -28,7 +28,7 @@ export function createReportHarness() {
         instructions: 'Use create_report, then return a concise status.',
         prompt: input => ({ role: 'user', content: input }),
       })
-  const harness = defineHarness({ name: 'customSandboxExample' }).addTool(createReport).addAgent(reporter).getInstance({
+  const harness = defineHarness({ name: 'customSandboxExample' }).addAgent(reporter).getInstance({
     model: { provider, model: 'scripted-report-model' },
     sandbox,
   })
@@ -39,8 +39,8 @@ export function createReportHarness() {
 export async function runCustomSandboxExample() {
   const { harness: harnessPromise, provider, sandbox } = createReportHarness()
   const harness = await harnessPromise
-  provider.enqueueObject({
-    object: {},
+  provider.enqueueText({
+    content: '',
     toolCalls: [{
       id: 'create-report-1',
       name: 'createReport',
@@ -49,12 +49,12 @@ export async function runCustomSandboxExample() {
     usage,
     finishReason: 'tool_calls',
   })
-  provider.enqueueObject({ object: 'report ready', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'report ready', usage, finishReason: 'stop' })
   const session = await harness.getSession('report-42')
 
   try {
     const output = await session.agents.reporter.run('Create the quarterly report.')
-    if (output.status === 'interrupted') throw new Error(`Report agent interrupted: ${output.interrupt.type}`)
+    if (output.status !== 'completed') throw new Error('Report agent interrupted.')
     await session.destroy()
     return { output: output.output, operations: { ...sandbox.operations } }
   } finally {

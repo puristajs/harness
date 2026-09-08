@@ -23,7 +23,7 @@ const clarifier = defineAgent('clarifier', {
 const startReview = defineWorkflow('startReview', {
   input: reviewInput,
   output: z.object({ taskId: z.string() }),
-  agents: { reviewer, clarifier },
+  agents: [reviewer, clarifier],
   agentCalls: { maxParallel: 2 },
   async handler(context) {
     const task = await context.childTasks.start('reviewer', { documentId: context.input.documentId }, {
@@ -36,7 +36,7 @@ const startReview = defineWorkflow('startReview', {
 const privateFollowUp = defineWorkflow('privateFollowUp', {
   input: z.string(),
   output: z.string(),
-  agents: { reviewer, clarifier },
+  agents: [reviewer, clarifier],
   async handler(context) {
     const task = await context.childTasks.start('clarifier', context.input, {
       callId: 'privateClarification',
@@ -55,8 +55,8 @@ const reviewHarness = defineHarness({ name: 'workflowChildTasksExample' })
 export function createReviewHarness() {
   const provider = new FakeModelProvider({ strict: true })
   provider.enqueueObject({ object: { documentId: 'DOC-42', verdict: 'approved' }, usage, finishReason: 'stop' })
-  provider.enqueueObject({ object: 'first response', usage, finishReason: 'stop' })
-  provider.enqueueObject({ object: 'follow-up response', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'first response', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'follow-up response', usage, finishReason: 'stop' })
   return reviewHarness.getInstance({ model: { provider, model: 'example' } })
 }
 
@@ -64,10 +64,10 @@ export async function runExample(): Promise<void> {
   const harness = await createReviewHarness()
   const session = await harness.getSession('review-demo')
   const start = await session.workflows.startReview.run({ documentId: 'DOC-42' })
-  if (start.status === 'interrupted') throw new Error(`Review workflow interrupted: ${start.interrupt.type}`)
+  if (start.status !== 'completed') throw new Error('Review workflow interrupted.')
   const review = await (await session.childTasks.get(start.output.taskId))?.result()
   const followUp = await session.workflows.privateFollowUp.run('first note')
-  if (followUp.status === 'interrupted') throw new Error(`Follow-up workflow interrupted: ${followUp.interrupt.type}`)
+  if (followUp.status !== 'completed') throw new Error('Follow-up workflow interrupted.')
   console.log({ review, followUp: followUp.output })
   await harness.close()
 }

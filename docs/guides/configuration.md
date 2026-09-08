@@ -27,9 +27,10 @@ export const supportHarness = defineHarness({
 }).addAgent(assistant)
 ```
 
-Definitions are frozen values. Add tools, skills, MCP servers, agents, and
-workflows directly, or add an immutable catalog with `.use(catalog)`. There is
-no terminal build step.
+Definitions are frozen values. Add agents and workflows as executable roots;
+their direct tool, Skill, MCP tool, and agent references form the dependency
+closure. Use `.use(catalog)` only when executable definitions need reusable
+packaging.
 
 ## Bind the runtime
 

@@ -117,7 +117,7 @@ OPA returns a defined decision as:
 The OPA `result` shape is application-owned. Validate it explicitly and map it
 to Harness's closed `allow`, `deny`, `audit`, or `require_approval` effects.
 
-When the client is registered through `opaPolicy(...)`, it inherits the active
+When the client is selected through `opaPolicy(...)`, it inherits the active
 Harness OpenTelemetry context and forwards only W3C `traceparent` to the fixed
 trusted OPA endpoint. It never records policy input, results, URLs, headers,
 or credentials in Harness telemetry.

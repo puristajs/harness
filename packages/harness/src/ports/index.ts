@@ -5,3 +5,9 @@ export * from './capabilities.js'
 export * from './feedback.js'
 export * from './memory.js'
 export * from './workspace.js'
+export type {
+	AnyHarnessTargetContract,
+	HarnessTargetInput,
+	HarnessTargetOutput,
+	HarnessValidatedTargetInput,
+} from './target-dispatcher.js'

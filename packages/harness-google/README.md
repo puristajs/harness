@@ -10,7 +10,7 @@ npm install @purista/harness @purista/harness-google
 
 ## Gemini API
 
-Create the provider with an API key from Google AI Studio and register only the
+Create the provider with an API key from Google AI Studio and bind only the
 capabilities supported by your selected Gemini model:
 
 ```ts

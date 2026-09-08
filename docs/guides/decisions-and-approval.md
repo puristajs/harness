@@ -13,7 +13,7 @@ concerns.
 | Workflow business wait | `ExternalWaitOutcome` plus an application execution claim | Harness checkpoints and signals; the application owns business state, action binding, claims, and receipts. |
 
 Tool exposure is a separate pre-model `expose`/`hide` policy. It narrows the
-agent's configured tool set and never grants an additional capability.
+agent's selected tool set and never grants an additional capability.
 
 ## Start with the runnable examples
 
@@ -52,8 +52,9 @@ idempotent and authorize business actions from trusted application state.
 
 ## Handle and resume a tool approval
 
-Both `run(...)` and `stream(...)` use the same provider-neutral outcome. A
-stream delivers it through its terminal `run.finished` event.
+Aggregate `run(...)` returns completed and interrupted outcomes, while failed
+and cancelled executions reject with normalized Harness errors. A stream
+delivers all four terminal states through its `run.finished` event.
 
 ```ts
 const first = await session.agents.banker.run(input)

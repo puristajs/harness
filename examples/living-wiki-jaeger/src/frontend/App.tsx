@@ -12,7 +12,7 @@ import { Message, MessageContent, MessageResponse } from './components/ai-elemen
 import { PromptInput, PromptInputActionAddAttachments, PromptInputBody, PromptInputFooter, PromptInputSubmit, PromptInputTextarea, PromptInputTools, type ChatStatus } from './components/ai-elements/prompt-input.js'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState } from './components/ai-elements/tool.js'
 import { ReviewRequestPanel, isReviewRequest, type ReviewDecisionPayload, type ReviewRequest } from './components/review/ReviewRequestPanel.js'
-import { adaptRunEvent, mergeTool, readArtifacts, readReviewRequest, type RunEvent, type SseState, type ToolIndicator } from './streamAdapter.js'
+import { adaptExecutionEvent, mergeTool, readArtifacts, readReviewRequest, type SseExecutionEvent, type SseState, type ToolIndicator } from './streamAdapter.js'
 
 const MermaidDiagram = lazy(() => import('./MermaidDiagram.js'))
 const KnowledgeGraph3D = lazy(() => import('./KnowledgeGraph3D.js'))
@@ -185,7 +185,7 @@ export function App() {
   const [editing, setEditing] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [run, setRun] = useState<RunInfo | undefined>()
-  const [events, setEvents] = useState<RunEvent[]>([])
+  const [events, setEvents] = useState<SseExecutionEvent[]>([])
   const [sseState, setSseState] = useState<SseState>('idle')
   const [overflow, setOverflow] = useState(0)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -334,9 +334,9 @@ export function App() {
     source.onopen = () => setSseState('SSE connected')
     source.onerror = () => setSseState((current) => current === 'completed' || current === 'failed' || current === 'cancelled' ? current : 'SSE reconnecting')
     source.onmessage = async (message) => {
-      const event = JSON.parse(message.data) as RunEvent
+      const event = JSON.parse(message.data) as SseExecutionEvent
       setEvents((current) => [...current, event])
-      for (const update of adaptRunEvent(event)) {
+      for (const update of adaptExecutionEvent(event)) {
         if (update.kind === 'overflow') setOverflow((current) => current + update.dropped)
         if (update.kind === 'tool') setActiveTools((current) => mergeTool(current, update.tool))
         if (update.kind === 'answer_delta') {
@@ -347,11 +347,9 @@ export function App() {
         if (update.kind === 'review' && isReviewRequest(update.reviewRequest)) setReviewRequest(update.reviewRequest)
         if (update.kind === 'artifacts') setRunArtifacts(normalizeArtifacts(update.artifacts))
       }
-      if (event.type === 'run.finished' || event.type === 'run.failed') {
+      if (event.type === 'run.finished' || event.type === 'transport.error') {
         source.close()
-        const terminalState = event.type === 'run.failed'
-          ? event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : 'failed'
-          : event.outcome?.status === 'interrupted' ? 'interrupted' : 'completed'
+        const terminalState = event.type === 'transport.error' ? 'failed' : event.outcome.status
         setSseState(terminalState)
         const lookup = await apiJson<RunInfo>(`/api/runs/${runId}`)
         setRun(lookup)
@@ -360,8 +358,9 @@ export function App() {
         if (isReviewRequest(resultReviewRequest)) setReviewRequest(resultReviewRequest)
         const artifacts = normalizeArtifacts(readArtifacts(lookup.result))
         setRunArtifacts(artifacts)
-        if (event.type === 'run.failed') {
-          setChatMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, content: event.error?.message ?? 'Workflow failed.', status: 'failed' } : item))
+        if (event.type === 'transport.error' || terminalState === 'failed' || terminalState === 'cancelled') {
+          const message = event.type === 'transport.error' ? event.error?.message : event.outcome.status === 'failed' || event.outcome.status === 'cancelled' ? event.outcome.error.message : undefined
+          setChatMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, content: message ?? `Workflow ${terminalState}.`, status: 'failed' } : item))
         } else {
           const finalAnswer = answerFromResult(lookup.result) ?? 'Workflow completed.'
           setChatMessages((current) => current.map((item) => item.id === assistantMessageId

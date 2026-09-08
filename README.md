@@ -39,7 +39,7 @@ and combines input/tool/output rails with durable tool approval interruption and
 resume.
 [Durable review](examples/durable-human-review/README.md) keeps wait/claim/receipt
 state at the application boundary. See the
-[breaking contract notes](docs/releases/decision-boundaries.md).
+[decision boundary reference](docs/releases/decision-boundaries.md).
 
 ```bash
 npm install
@@ -67,8 +67,8 @@ bounded fan-out, isolated background task lookup, and short continuable task
 conversations.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
-The [Harness 4 definition and runtime API notes](docs/releases/clean-builder-and-runtime-api.md)
-describe the intentional Harness 4 breaking surface.
+The [Harness 4 definition and runtime API](docs/releases/definition-and-runtime-api.md)
+describes the current composition and invocation surface.
 
 ## Verification
 

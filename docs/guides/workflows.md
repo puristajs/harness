@@ -28,7 +28,7 @@ const assessRisk = defineAgent('assessRisk', {
 const reviewIncident = defineWorkflow('reviewIncident', {
   input: incidentInput,
   output: reviewOutput,
-  agents: { collectFacts, assessRisk },
+  agents: [collectFacts, assessRisk],
   agentCalls: { maxCalls: 4, maxParallel: 2 },
   async handler(ctx) {
     const facts = await ctx.agents.collectFacts.run(ctx.input, {
@@ -45,7 +45,8 @@ const definition = defineHarness({ name: 'incidentReview' })
   .addWorkflow(reviewIncident)
 ```
 
-The workflow context exposes only the agents named in `agents`. Each call
+The workflow context exposes only the agents referenced in `agents`, keyed by
+their definition ids. Each call
 needs a stable `callId`, which gives durable replay a deterministic identity.
 The compiler includes referenced agents and their tools automatically.
 
@@ -70,12 +71,12 @@ const embedDocuments = defineWorkflow('embedDocuments', {
   input: documentsInput,
   output: embeddingsOutput,
   models: {
-    embeddings: { alias: 'embeddings', capabilities: ['embeddings'] },
+    embeddings: { capabilities: ['embeddings'] },
   },
   async handler(ctx) {
     return ctx.models.embeddings.embed(
       { input: ctx.input.documents },
-      ctx.signal,
+      { callId: 'embedDocuments' },
     )
   },
 })
@@ -91,7 +92,7 @@ const publishReport = defineWorkflow('publishReport', {
   input,
   output,
   durable: true,
-  agents: { writer },
+  agents: [writer],
   async handler(ctx) {
     const draft = await ctx.step('draft', () =>
       ctx.agents.writer.run(ctx.input, { callId: 'writer' }),
@@ -120,7 +121,7 @@ application-owned business checkpoint such as legal review or payment approval.
 `ctx.childTasks.start` creates an isolated child-agent task. Use
 `mode: 'one_shot'` for background work or `mode: 'continuable'` for a short
 sequential conversation. The child agent must appear in the workflow's
-`agents` map, and sandbox groups must be declared in
+`agents` array, and sandbox groups must be declared in
 `childTaskSandboxGroups`.
 
 ## Stream a workflow

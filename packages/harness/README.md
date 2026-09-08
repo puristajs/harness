@@ -25,8 +25,8 @@ capture. `InvokeOptions.traceparent` and `tracestate` accept inbound W3C Trace
 Context so application traces can parent harness run spans.
 
 Workflows orchestrate exact agent references through
-`ctx.agents.<localName>.run(input, { callId })`. The workflow's `agents` map
-provides the compile-time allowlist; `agentCalls` bounds total and parallel
+`ctx.agents.<agentId>.run(input, { callId })`. The workflow's direct `agents`
+array provides the compile-time allowlist; `agentCalls` bounds total and parallel
 calls. Child runs retain lineage in the public execution stream.
 
 For explicit background work, a workflow can use
@@ -62,8 +62,8 @@ remain the separate primitive for workflow business events. Read the
 
 Use `model.completed` for generative invocation/token accounting, including
 direct and nested model calls. Message/object/delta events describe content and
-must not be counted again. Current breaking contracts are listed in the
-[release notes](../../docs/releases/decision-boundaries.md).
+must not be counted again. The [decision boundary reference](../../docs/releases/decision-boundaries.md)
+describes the current lifecycle.
 
 ## Sandboxes
 

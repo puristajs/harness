@@ -80,7 +80,8 @@ must not log patterns, paths, or matching text.
 
 - Built-ins are absent by default; attach only explicit direct references such
   as `builtInTools.read`.
-- A skill-backed agent normally needs only `builtInTools.read`.
+- A Skill-backed agent receives the scoped `read_skill` tool automatically; it
+  does not need a general filesystem reader for Skill disclosure.
 - Bind only explicit TypeScript/MCP tools to an agent; validate input and output.
 - Use permission policies and an agent's `governance` definition for tool decisions that depend
   on typed domain facts.
@@ -88,10 +89,10 @@ must not log patterns, paths, or matching text.
   transaction boundary, and an application-owned durable review task where
   human review is required.
 
-Declaring a skill does not grant tools. Registration and mounting do not run
-skill scripts, but `SKILL.md` and supporting files remain model-readable
-instruction content. A separately allowed `bash`, custom tool, MCP server, or
-host integration can make script execution possible. Frontmatter
+Declaring a Skill does not grant tools. Reading or mounting a Skill does not
+run its scripts, but `SKILL.md` and referenced text files remain model-readable
+instruction content. A separately selected `bash`, custom tool, or MCP tool can
+make script execution possible. Frontmatter
 `allowed-tools` is not enforced and must never be treated as a permission.
 
 Harness governance makes a bounded immediate tool decision. Static permission

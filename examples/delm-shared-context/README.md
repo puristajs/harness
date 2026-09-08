@@ -94,7 +94,7 @@ network access or an API key.
   formatter.
 - `src/incident-data.ts` contains the concrete log, metric, runbook, and
   reproduction records used by the workers.
-- `src/harness.ts` shows how the scenario is wired into `defineHarness()`.
+- `src/harness.ts` shows how the scenario is wired into `defineHarness({ name })`.
 - `src/shared-context.ts` is the reusable admission/digest/unfolding layer.
 - `src/task-queue.ts` is the dependency-aware claim/complete queue.
 - `src/scripted-provider.ts` makes tests deterministic; `npm start` uses
@@ -123,7 +123,7 @@ src/
   task-queue.ts        Dependency-aware claim/complete queue
   shared-context.ts    Admission, digest rendering, evidence unfolding
   scripted-provider.ts Hermetic deterministic provider used by tests
-  harness.ts           defineHarness() composition and workflow
+  harness.ts           defineHarness({ name }) composition and workflow
   index.ts             Public exports and runnable demo
   index.test.ts        Primitive and workflow tests
 ```

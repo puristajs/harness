@@ -32,25 +32,24 @@ core gate is statements `80`, branches `75`, functions `80`, and lines `80`.
 ## Test With A Fake Model Provider
 
 ```ts
-const provider = {
-	id: 'fake',
-	genAiSystem: 'fake',
-	async object() {
-		return {
-			object: { answer: 'fake answer', citations: [] },
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-			finishReason: 'stop',
-		}
-	},
-}
+const provider = new FakeModelProvider({ strict: true })
+provider.enqueueObject({
+	object: { answer: 'fake answer', citations: [] },
+	usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+	finishReason: 'stop',
+})
 
-const harness = createAppHarness(provider)
-const session = await harness.getSession('test')
+const instance = await definition.getInstance({
+	model: { provider, model: 'fake' },
+})
+const session = await instance.getSession('test')
 await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({
 	status: 'completed',
 	runId: expect.any(String),
 	output: { answer: 'fake answer' },
 })
+provider.assertExhausted()
+await instance.close()
 ```
 
 ## Test Streaming Events
@@ -65,8 +64,10 @@ expect(events).toContain('run.started')
 expect(events).toContain('run.finished')
 ```
 
-This test consumes the portable `ExecutionEvent` contract. Assert that the
-terminal `run.finished.outcome` matches the corresponding aggregate call.
+This test consumes the portable `ExecutionEvent` contract. Completed and
+interrupted terminal outcomes use the same `RunOutcome` shape returned by an
+aggregate call; failed and cancelled terminals contain normalized serialized
+errors.
 
 For model streaming, queue deterministic provider chunks and consume the
 target's `.stream(...)` result. Assert the public `ExecutionEvent` sequence,
@@ -104,19 +105,19 @@ CPU/memory limits, and content-free telemetry.
 
 ## Test Skills
 
-Skill tests should cover both catalog behavior and runtime activation:
+Skill tests should cover definition behavior and runtime activation:
 
 - valid `SKILL.md` frontmatter is parsed without inlining the body into the
   system prompt;
 - invalid strict frontmatter fails before the body can be mounted or logged;
 - discovery reports trust, collisions, and scan-limit diagnostics;
-- an agent with `skills: [...]` has the `read` built-in available before model
+- an agent with `skills: [...]` has the synthesized `read_skill` tool available before model
   I/O starts;
-- reading `/skills/<name>/SKILL.md` returns the mounted skill file and repeated
-  reads do not remount duplicate copies.
+- reading `SKILL.md` through `read_skill({ name, path })` returns the reviewed
+  Skill file and repeated reads do not remount duplicate copies.
 
 Use a temporary skill directory and a scripted model for end-to-end tests. The
-first model response should call the `read` tool for `/skills/<name>/SKILL.md`;
+first model response should call `read_skill` with the Skill name and `path: 'SKILL.md'`;
 the second response should return the final validated object. Assert the first
 request contains the catalog entry and does not contain the skill body.
 

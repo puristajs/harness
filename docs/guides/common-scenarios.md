@@ -76,7 +76,7 @@ evidence to a normal object-output agent.
 ```ts
 const queryEmbedding = await ctx.models.retrieval.embed({
 	input: ctx.input.question,
-}, ctx.signal)
+}, { callId: 'embedQuery' })
 
 const candidates = await vectorIndex.search(queryEmbedding.embeddings[0].vector)
 
@@ -88,7 +88,7 @@ const ranked = await ctx.models.ranker.rerank({
 		metadata: { source: doc.source },
 	})),
 	topN: 5,
-}, ctx.signal)
+}, { callId: 'rerankCandidates' })
 ```
 
 The harness owns provider calls, timeout/cancellation, usage metadata, and

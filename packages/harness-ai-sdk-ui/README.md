@@ -35,10 +35,18 @@ async function handleChat(request: Request) {
     .map(part => part.text)
     .join('')
 
-  const events = session.agents.support.stream(
+  const targetStream = session.agents.support.stream(
     input,
     parsed.resume === undefined ? undefined : { resume: parsed.resume },
   )
+
+  // The response consumes both the iterator and its terminal result. Release
+  // the borrowed session only after that result settles, including on cancel.
+  const events = {
+    result: targetStream.result.finally(() => session.release()),
+    cancel: (reason?: string) => targetStream.cancel(reason),
+    [Symbol.asyncIterator]: () => targetStream[Symbol.asyncIterator](),
+  }
 
   return createHarnessUIMessageStreamResponse(events, {
     sessionId: parsed.sessionId,

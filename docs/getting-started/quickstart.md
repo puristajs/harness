@@ -106,10 +106,12 @@ for await (const event of session.agents.assistant.stream({
 }
 ```
 
-The terminal value represents the same result as `run()`. Browser chat
-applications should use `@purista/harness-ai-sdk-ui/v1`, which converts this
-stream to AI SDK UI Message Stream v1. Keep persisted run summaries and
-operational telemetry in a separate operator view.
+The terminal `run.finished` event carries `completed`, `interrupted`, `failed`,
+or `cancelled`. Aggregate `run()` returns completed and interrupted outcomes;
+failed and cancelled aggregate executions reject with normalized Harness
+errors. Browser chat applications should use `@purista/harness-ai-sdk-ui/v1`,
+which converts this stream to AI SDK UI Message Stream v1. Keep persisted run
+summaries and operational telemetry in a separate operator view.
 
 ## Verify
 

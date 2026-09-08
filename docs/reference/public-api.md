@@ -13,7 +13,7 @@ definition graph.
 | `defineMcpServer(id, options)` | Transport-free MCP server and selected typed tools. |
 | `defineAgent(id, options)` | Standard bounded agent loop with tools, skills, subagents, policy, and guardrails. |
 | `defineWorkflow(id, options)` | Typed application orchestration over exact agent and model references. |
-| `defineCatalog(id, options)` | Reusable package of definitions and their transitive dependencies. |
+| `defineCatalog(id, options)` | Optional reusable package of explicitly exported definitions. |
 | `defineHarness(options)` | Root definition with composition, inspection, and runtime creation. |
 
 Definitions are frozen identity-bearing values. Use direct references throughout
@@ -48,10 +48,10 @@ mapper. Supplying an output schema selects structured generation and
 
 `HarnessDefinition` exposes:
 
-- `.addTool`, `.addSkill`, `.addMcpServer`, `.addAgent`, and `.addWorkflow`;
+- `.addAgent(agent)` and `.addWorkflow(workflow)` for direct executable roots;
 - `.use(catalog)` for reusable definition packages;
 - `.inspect()` for a sanitized definition and requirement projection;
-- `.catalog`, `.contracts`, `.requirements`, and type-only `.$infer`;
+- `.contracts`, `.requirements`, and type-only `.$infer`;
 - `.getInstance(config)` to validate runtime bindings and create an executable instance.
 
 Composition is additive and immutable. Duplicate IDs and conflicting foreign
@@ -65,24 +65,14 @@ an instance:
 
 ```ts
 const instance = await definition.getInstance({
-  models: {
-    primary: { provider, model: 'gpt-5-mini', retry: true },
-  },
-  storage,
-  memory,
-  sandbox,
-  telemetry: { contentCaptureMode: 'NO_CONTENT' },
-})
-```
-
-For a graph that only uses `primary`, the singular `model` binding is the
-short form:
-
-```ts
-const instance = await definition.getInstance({
   model: { provider, model: 'gpt-5-mini' },
 })
 ```
+
+The singular `model` field is the exact binding for a graph that only uses the
+default `primary` alias. Use an exact `models` record when definitions select
+additional aliases, and add storage, memory, sandbox, workspace, MCP, logger,
+or telemetry bindings only when the graph or deployment requires them.
 
 The exact `HarnessInstanceConfig<typeof definition.requirements>` type requires
 only resources projected by the graph and rejects unknown bindings.
@@ -111,7 +101,7 @@ Every target has the same address-first surface:
 - `session.workflows.<id>.run(input, options?)`
 - `session.workflows.<id>.stream(input, options?)`
 
-`run` resolves to `RunOutcome<Output>` with status `completed` or
+`run` resolves to `HarnessTargetRunOutcome<Target>` with status `completed` or
 `interrupted`. Failures and cancellation throw normalized Harness errors.
 `stream` returns a cancellable `HarnessTargetStream`; call `stream.cancel()`
 when a client disconnects. The terminal `run.finished` event carries the same
@@ -186,19 +176,18 @@ The compiled graph collects these dependencies recursively and detects cycles.
 
 ## Workflows
 
-A workflow declares exact local names for the agents and direct model handles
-its handler may call:
+A workflow declares direct agent references and exact model handles its handler
+may call:
 
 ```ts
 const investigate = defineWorkflow('investigate', {
   input: z.object({ question: z.string() }),
   output: z.object({ answer: z.string() }),
-  agents: { researcher },
+  agents: [researcher],
   agentCalls: { maxCalls: 4, maxParallel: 2 },
   handler: async (ctx) => {
     const answer = await ctx.agents.researcher.run(ctx.input.question, {
       callId: 'research',
-      signal: ctx.signal,
     })
     return { answer }
   },

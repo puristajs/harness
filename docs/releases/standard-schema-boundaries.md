@@ -1,9 +1,8 @@
 # Standard Schema boundaries
 
-`@purista/harness` now accepts any [Standard Schema](https://standardschema.dev/)
-validator at its public validation boundaries. This is a clean breaking change:
-the public schema contract no longer exposes Zod types, parsing APIs, or
-provider-specific conversion paths.
+`@purista/harness` accepts any [Standard Schema](https://standardschema.dev/)
+validator at its public validation boundaries. Providers receive only the
+normalized JSON Schema projection required for model-facing values.
 
 Zod remains the default documentation choice. Existing Zod definitions work
 without wrapping. ArkType works directly. Valibot works directly for

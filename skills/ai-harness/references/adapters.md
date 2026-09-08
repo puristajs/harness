@@ -10,8 +10,14 @@ Agent Plugins are data-only packages. Inspect and pin a trusted digest, then sel
 const [plugin] = await loadAgentPlugins({ plugins: [{ root, trust: 'trusted', expectedDigest }] })
 const selected = await plugin.bindings({
   skills: { playbook: { runtimes: [] } },
-  mcpServers: { docs: { server: 'docs', tools: { searchDocs: remoteSearchDefinition } } },
+  mcpServers: {
+    docs: {
+      server: 'docs',
+      tools: { searchDocs: remoteSearchDefinition },
+      resolveHeaders: async context => credentials.forIdentity(context.identity),
+    },
+  },
 })
 ```
 
-Compose `selected.skills` and `selected.mcpServers.*.tools` as definitions and pass `selected.mcp` to `getInstance`. Plugins never load code, credentials, installers, or implicit tools.
+Compose `selected.skills` and `selected.mcpServers.*.tools` as definitions and pass `selected.mcp` to `getInstance`. The optional `resolveHeaders` value is Core's HTTP MCP callback and retains its identity. Plugins never load code, credentials, installers, or implicit tools.

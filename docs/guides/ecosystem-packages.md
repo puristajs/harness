@@ -13,7 +13,7 @@ that enforce a boundary your application actually needs.
 | `@purista/harness-storage-postgres` | Distributed Harness sessions, runs, leases, checkpoints, events, and external waits. | Supply exactly one connection string or caller-owned `pg.Pool`. | [Package guide](../../packages/harness-storage-postgres/README.md), [durability guide](./durable-workspaces.md) |
 | `@purista/harness-openai` | OpenAI and OpenAI-compatible Chat Completions provider. | `openai({ apiKey, baseURL })`; use `api: 'responses'` only for the OpenAI Responses API. | [Configuration](./configuration.md) |
 | `@purista/harness-google` | Google Gemini API provider. | `google({ apiKey })`; supports text, structured output, tools, streams, embeddings, and supported multimodal input. | Package README |
-| `@purista/harness-anthropic` | Anthropic model provider. | `anthropic({ apiKey })`; register under a model alias. | Package README |
+| `@purista/harness-anthropic` | Anthropic model provider. | `anthropic({ apiKey })`; bind it to a model alias. | Package README |
 | `@purista/harness-bedrock` | Amazon Bedrock provider. | `bedrock({ region })`; use the AWS credential chain. | Package README |
 | `@purista/harness-azure-foundry` | Azure AI Foundry provider. | `azureFoundry({ endpoint, apiKey or credential })`. | Package README |
 | `@purista/harness-guardrails` | Ordered fail-closed input, output, tool, retrieval, and model-check controls. | Define inline typed configuration and action tokens, then set `guardrails: rails` on a default-loop agent. | [Guardrails](./guardrails.md) |

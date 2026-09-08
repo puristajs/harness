@@ -47,6 +47,9 @@ const bindings = plugin.bindings({
         },
       },
       headers: { 'x-tenant': 'application-owned-value' },
+      resolveHeaders: async ({ identity }) => ({
+        authorization: `Bearer ${await credentials.forTenant(identity?.tenantId)}`,
+      }),
     },
   },
 })
@@ -66,7 +69,9 @@ const instance = await defineHarness({ name: 'pluginApp' })
 ```
 
 `bindings.skills` and `bindings.mcpServers` are package-owned definitions.
-`bindings.mcp` contains the runtime HTTP transports. `bindings.provenance`
+`bindings.mcp` contains the runtime HTTP transports. A selected server's
+`resolveHeaders` callback is the Core HTTP MCP callback and is preserved by
+identity for per-invocation credential projection. `bindings.provenance`
 contains content-free plugin name, version, and digest data for review records.
 
 ## Security boundary

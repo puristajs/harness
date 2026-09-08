@@ -35,7 +35,7 @@ const supportCatalog = defineCatalog('supportCatalog', { agents: [answerTicket] 
 const answerSupportTicket = defineWorkflow('answerSupportTicket', {
   input: supportTicketInput,
   output: supportTicketOutput,
-  agents: { answerTicket },
+  agents: [answerTicket],
   async handler(context) {
     return context.agents.answerTicket.run(context.input, { callId: 'answerTicket' })
   },
@@ -80,7 +80,7 @@ export async function runCatalogSupportHarness(): Promise<void> {
   const response = await session.workflows.answerSupportTicket.run({
     customer: 'Acme Corp', question: 'I cannot sign in after resetting my password.',
   })
-  if (response.status === 'interrupted') throw new Error(`Support workflow interrupted: ${response.interrupt.type}`)
+  if (response.status !== 'completed') throw new Error('Support workflow interrupted.')
   console.log(`${response.output.priority}: ${response.output.answer}`)
   await harness.close()
 }

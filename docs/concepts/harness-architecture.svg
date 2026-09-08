@@ -138,7 +138,7 @@
   <rect x="654" y="734" width="178" height="40" rx="14" class="outside"/>
   <text x="690" y="759" class="mono">default: off</text>
   <rect x="654" y="794" width="178" height="34" rx="14" class="yellowPill"/>
-  <text x="682" y="816" class="mono">typed agent maps</text>
+  <text x="676" y="816" class="mono">direct agent refs</text>
   <text x="650" y="856" class="small">budgets: total, parallel, depth</text>
   <text x="650" y="878" class="small">each child owns its declared model alias</text>
 

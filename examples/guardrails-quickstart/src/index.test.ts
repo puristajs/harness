@@ -11,7 +11,7 @@ it('allows an ordinary request and returns the scripted result', async () => {
     model: 'scripted-support-model',
     provider,
   })
-  provider.enqueueObject({ object: 'Order demo-42 is ready.', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'Order demo-42 is ready.', usage, finishReason: 'stop' })
   const session = await harness.getSession('allowed-test')
 
   try {

@@ -6,10 +6,10 @@ import {
   type ExecutionEvent,
   type JsonValue,
   type ModelProvider,
-  type ObjectRequest,
-  type ObjectResponse,
-  type ObjectStreamChunk,
   type RunOutcome,
+  type TextRequest,
+  type TextResponse,
+  type TextStreamChunk,
   sqliteHarnessStorage,
 } from '@purista/harness'
 import { z } from 'zod'
@@ -44,15 +44,26 @@ export interface TransferScenario {
 class ScriptedTransferProvider implements ModelProvider {
   public readonly id = 'scripted-bank'
   public readonly genAiSystem = 'scripted-bank'
+  public readonly info = {
+    providerId: this.id,
+    genAiSystem: this.genAiSystem,
+    models: {
+      'scripted-bank-model': {
+        capabilities: ['text', 'text_stream', 'tool_use'] as const,
+        supportedInputParts: ['text'] as const,
+        supportedOutputModes: ['text'] as const,
+      },
+    },
+  }
   private calls = 0
 
   public constructor(private readonly scenario: TransferScenario) {}
 
-  public async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
+  public async text(_request: TextRequest): Promise<TextResponse> {
     this.calls += 1
     if (this.calls === 1) {
       return {
-        object: {} as T,
+        content: '',
         toolCalls: [
           {
             id: 'call_transfer',
@@ -65,16 +76,17 @@ class ScriptedTransferProvider implements ModelProvider {
       }
     }
     return {
-      object: 'transaction reviewed' as T,
+      content: 'transaction reviewed',
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       finishReason: 'stop',
     }
   }
 
-  public async *objectStream<T extends JsonValue = JsonValue>(request: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
-    const response = await this.object(request)
+  public async *textStream(request: TextRequest): AsyncIterable<TextStreamChunk> {
+    const response = await this.text(request)
     for (const call of response.toolCalls ?? []) yield { kind: 'tool_call', call }
-    yield { kind: 'finish', object: response.object, usage: response.usage, finishReason: response.finishReason }
+    if (response.content) yield { kind: 'delta', text: response.content }
+    yield { kind: 'finish', usage: response.usage, finishReason: response.finishReason }
   }
 }
 
@@ -154,20 +166,20 @@ export function createBankGovernanceHarness(scenario: TransferScenario, opts: Ba
 export async function runTransferScenario(
   scenario: TransferScenario,
   opts?: BankGovernanceOptions,
-): Promise<{ output: string; events: ExecutionEvent<string>[]; balances: AccountBalances }> {
+): Promise<{ output: string; events: ExecutionEvent<JsonValue>[]; balances: AccountBalances }> {
   const { harness: harnessPromise, balances, storage } = createBankGovernanceHarness(scenario, opts)
   const harness = await harnessPromise
   const session = await harness.getSession(`bank-${scenario.from}-${scenario.to}-${scenario.amount}`)
-  const events: ExecutionEvent<string>[] = []
+  const events: ExecutionEvent<JsonValue>[] = []
   let output = ''
-  let interrupted: Extract<RunOutcome<string>, { status: 'interrupted' }> | undefined
+  let interrupted: Extract<RunOutcome<JsonValue>, { status: 'interrupted' }> | undefined
   const input = `Transfer ${scenario.amount} from ${scenario.from} to ${scenario.to}.`
 
   try {
     for await (const event of session.agents.banker.stream(input)) {
       events.push(event)
       if (event.type !== 'run.finished') continue
-      if (event.outcome.status === 'completed') output = event.outcome.output
+      if (event.outcome.status === 'completed' && typeof event.outcome.output === 'string') output = event.outcome.output
       else if (event.outcome.status === 'interrupted') interrupted = event.outcome
     }
     if (interrupted?.interrupt.type === 'tool-approval') {
@@ -187,7 +199,7 @@ export async function runTransferScenario(
           },
       })) {
         events.push(resumed)
-        if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed') output = resumed.outcome.output
+        if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed' && typeof resumed.outcome.output === 'string') output = resumed.outcome.output
       }
     }
     return { output, events, balances }

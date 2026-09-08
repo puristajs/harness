@@ -113,7 +113,8 @@ type RootExecutionEventCorrelation = Readonly<{
 	parentRunId?: never
 	parentInvocationId?: never
 }>
-type NestedExecutionEvent = ExecutionEvent & Readonly<{ parentRunId: string; parentInvocationId: string }>
+/** Fully correlated event emitted by a descendant of the invoked root target. */
+export type NestedExecutionEvent = ExecutionEvent & Readonly<{ parentRunId: string; parentInvocationId: string }>
 type StripExecutionEventCorrelation<Event> = Event extends ExecutionEventCorrelation & infer Payload ? Payload : never
 type ExecutionEventPayload<Output, Interrupt> = StripExecutionEventCorrelation<ExecutionEvent<Output, Interrupt>>
 type RootAlwaysEventPayload<Output, Interrupt> = Exclude<ExecutionEventPayload<Output, Interrupt>,
@@ -144,7 +145,8 @@ type RootInterruptEventPayload<Target extends AnyHarnessTargetContract> =
 type CorrelateRootEvent<Payload> = Payload extends { readonly type: 'child_task.started' | 'child_task.settled' }
 	? Omit<RootExecutionEventCorrelation, 'parentRunId'> & Payload
 	: RootExecutionEventCorrelation & Payload
-type RootExecutionEventFor<Target extends AnyHarnessTargetContract> = CorrelateRootEvent<
+/** Exact event union emitted directly by one root target contract. */
+export type RootExecutionEventFor<Target extends AnyHarnessTargetContract> = CorrelateRootEvent<
 	| RootAlwaysEventPayload<Target['$infer']['output'], Target['$infer']['interrupt']>
 	| RootUpdateEventPayload<Target>
 	| RootWorkflowModelActivityPayload<Target>

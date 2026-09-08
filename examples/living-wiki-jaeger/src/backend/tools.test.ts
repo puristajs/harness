@@ -37,9 +37,9 @@ function toolContext(): ToolHandlerContext<Record<string, never>> {
     telemetry: { span: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()) } as unknown as ToolHandlerContext<Record<string, never>>['telemetry'],
     metrics: {} as ToolHandlerContext<Record<string, never>>['metrics'],
     runId: 'run_test',
+    caller: { kind: 'agent', agentId: 'testAgent' },
     invocationId: 'invocation_test',
     sessionId: 'session_test',
-    agentId: 'wikiCurator',
     toolId: 'testTool',
     callId: 'call_test',
     idempotencyKey: 'run_test:call_test'

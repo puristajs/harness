@@ -5,6 +5,7 @@ import {
   defineTool,
   inMemorySandbox,
   JsonLogger,
+  type JsonValue,
   type RunOutcome,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
@@ -41,8 +42,8 @@ export interface GuardrailsExamplePreflight {
 export async function createGuardrailsExample(options: GuardrailsExampleOptions = {}) {
   const provider = new FakeModelProvider()
   const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
-  provider.enqueueObject({
-    object: null,
+  provider.enqueueText({
+    content: '',
     usage,
     finishReason: 'tool_calls',
     toolCalls: [
@@ -51,7 +52,7 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
       { id: 'call_write', name: 'write', arguments: { path: '/workspace/note.txt', content: 'Reviewed note.' } },
     ],
   })
-  provider.enqueueObject({ object: 'The [secret] answer.', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'The [secret] answer.', usage, finishReason: 'stop' })
   const approvalRequests: ToolApprovalRequest[] = []
   const handledNotes: string[] = []
   const lifecycle: string[] = []
@@ -77,18 +78,16 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
   const sensitiveDataActions = createSensitiveDataActions({ detector })
   const publishNoteRailSchema = z.strictObject({ message: z.string(), visibility: z.literal('internal') })
   const publicStatusRailSchema = z.strictObject({ status: z.string() })
-  const rails = defineGuardrails({
-    config: {
-      rails: {
-        input: { flows: ['block unsafe content', 'remove secret marker', 'mask sensitive data on input'] },
-        output: { flows: ['redact final answer'] },
-        tool_input: { flows: ['redact note'] },
-        tool_output: { flows: ['present public status'] },
-      },
-      sensitiveData: { input: { entities: ['EMAIL_ADDRESS'], maskToken: '<MASKED>', scoreThreshold: 0.6 } },
+  const guardrailConfig = {
+    rails: {
+      input: { flows: ['block unsafe content', 'remove secret marker', 'mask sensitive data on input'] },
+      output: { flows: ['redact final answer'] },
+      tool_input: { flows: ['redact note'] },
+      tool_output: { flows: ['present public status'] },
     },
-    actions: {
-      ...sensitiveDataActions,
+    sensitiveData: { input: { entities: ['EMAIL_ADDRESS'] as string[], maskToken: '<MASKED>', scoreThreshold: 0.6 } },
+  } as const
+  const guardrailActions = {
       'mask sensitive data on input': sensitiveDataActions['mask sensitive data on input']!,
       'block unsafe content': defineGuardrailAction({
         phase: 'input',
@@ -149,7 +148,10 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
               }
             : { decision: 'allow' },
       }),
-    },
+  } as const
+  const rails = defineGuardrails<typeof guardrailActions, typeof guardrailConfig>({
+    config: guardrailConfig,
+    actions: guardrailActions,
   })
   const lookupStatus = defineTool('lookupStatus', {
         description: 'Read a synthetic ticket status.',
@@ -173,7 +175,6 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
         },
       })
   const support = defineAgent('support', {
-      model: 'assistant',
       input: z.string(),
       output: z.string(),
       instructions: 'Answer safely and use the available tools when needed.',
@@ -212,7 +213,7 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
     revision: 'v1',
     defaults: { decisionTimeoutMs: options.decisionTimeoutMs ?? 1_000, toolTimeoutMs: 5_000 },
   }).addAgent(support).getInstance({
-    models: { assistant: { provider, model: 'fake' } },
+    model: { provider, model: 'fake' },
     sandbox: inMemorySandbox(),
     storage,
     logger: new JsonLogger({ level: 'error' }),
@@ -243,7 +244,7 @@ export async function runSupportRequest(
     reason: 'Approved for the local example.',
   }),
   signal?: AbortSignal,
-): Promise<RunOutcome<string>> {
+): Promise<RunOutcome<JsonValue>> {
   const session = await example.harness.getSession(sessionId)
   try {
     const first = await session.agents.support.run(input, signal ? { signal } : undefined)
@@ -275,6 +276,7 @@ export async function runGuardrailsExample(): Promise<string> {
   try {
     const outcome = await runSupportRequest(example, 'example-session', 'Where is [secret] [email]?')
     if (outcome.status === 'interrupted') throw new Error(`Guardrails example interrupted: ${outcome.interrupt.type}`)
+    if (typeof outcome.output !== 'string') throw new Error('Guardrails example returned a non-text output.')
     return outcome.output
   } finally {
     await example.harness.close()

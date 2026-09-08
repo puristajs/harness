@@ -78,7 +78,9 @@ describe('durable human review reference', () => {
     const storage = new CrashAfterCreationCheckpointStorage({ now: runtimeNow })
     const app = fixture({ now: runtimeNow, tasks, storage })
 
-    await expect(app.app.run(payment)).rejects.toThrow('creation checkpoint crash')
+    await expect(app.app.run(payment)).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR', cause: expect.objectContaining({ message: 'creation checkpoint crash' }),
+    })
     const created = (await tasks.get('payment:p-1'))!
     expect(created.status).toBe('pending')
     const retried = await tasks.getOrCreate({ action: payment, waitId: '' })
@@ -241,7 +243,9 @@ describe('durable human review reference', () => {
     })
     await app.app.run(payment)
     await approve(app.tasks, app.storage, payment)
-    await expect(app.app.run(payment)).rejects.toThrow('transient executor failure')
+    await expect(app.app.run(payment)).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR', cause: expect.objectContaining({ message: 'transient executor failure' }),
+    })
     expect((await app.tasks.readExecution(reviewIdentity(payment).runId))?.status).toBe('claimed')
     time = new Date('2029-01-01T00:02:00.000Z')
     authorized = false
@@ -255,7 +259,9 @@ describe('durable human review reference', () => {
     const beforeReceiptApp = fixture({ tasks: beforeReceipt, now: () => new Date('2029-01-01T00:00:00.000Z') })
     await beforeReceiptApp.app.run(payment)
     await approve(beforeReceiptApp.tasks, beforeReceiptApp.storage, payment)
-    await expect(beforeReceiptApp.app.run(payment)).rejects.toThrow('receipt persistence crash')
+    await expect(beforeReceiptApp.app.run(payment)).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR', cause: expect.objectContaining({ message: 'receipt persistence crash' }),
+    })
     expect((await beforeReceiptApp.tasks.readExecution(reviewIdentity(payment).runId))?.status).toBe('claimed')
     await expect(beforeReceiptApp.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(beforeReceiptApp.payments)).toBe(1)
@@ -264,7 +270,9 @@ describe('durable human review reference', () => {
     const first = fixture({ tasks: afterReceipt, now: () => new Date('2029-01-01T00:00:00.000Z') })
     await first.app.run(payment)
     await approve(first.tasks, first.storage, payment)
-    await expect(first.app.run(payment)).rejects.toThrow('receipt write crash')
+    await expect(first.app.run(payment)).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR', cause: expect.objectContaining({ message: 'receipt write crash' }),
+    })
     await expect(first.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(first.payments)).toBe(1)
 
@@ -272,7 +280,9 @@ describe('durable human review reference', () => {
     const second = fixture({ storage })
     await second.app.run(payment)
     await approve(second.tasks, second.storage, payment)
-    await expect(second.app.run(payment)).rejects.toThrow('checkpoint crash')
+    await expect(second.app.run(payment)).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR', cause: expect.objectContaining({ message: 'checkpoint crash' }),
+    })
     await expect(second.app.run(payment)).rejects.toMatchObject({ code: 'INTERNAL_ERROR' })
     expect(effectsOf(second.payments)).toBe(1)
   })

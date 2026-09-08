@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { access, readdir, readFile } from 'node:fs/promises'
 import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+const ts = createRequire(import.meta.url)('typescript')
 const examplesRoot = join(repositoryRoot, 'examples')
 const ignoredDirectories = new Set(['dist', 'node_modules', 'coverage'])
-const sourceExtensions = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.md'])
+const sourceExtensions = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.md', '.mdx', '.svg', '.mermaid', '.yaml', '.yml'])
 const codeExtensions = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx'])
 
 async function files(directory) {
@@ -56,29 +58,136 @@ for (const file of exampleFiles) {
 const removedApiPatterns = [
   ['defineHarnessModule', /\bdefineHarnessModule\b/],
   ['HarnessBuilder', /\bHarnessBuilder\b/],
+  ['HarnessModule', /\bHarnessModule\b/],
+  ['HarnessModuleBuilder', /\bHarnessModuleBuilder\b/],
   ['BuilderState', /\bBuilderState\b/],
+  ['RunEvent', /\bRunEvent\b/],
+  ['retired prompt evaluator', /\b(?:evaluatePromptCandidates|PromptCandidate|EvaluationItem|CandidateScore|EvaluatePromptCandidatesInput|evaluateDeterministicScorer|DeterministicScorerDefinition|ScorerTarget|ScorerResult)\b/],
+  ['alternate test Harness constructor', /\bmakeHarness\b/],
+  ['definition wrapper', /\bgetDefinition\s*\(/],
+  ['terminal definition method', /\.define\s*\(/],
   ['empty defineHarness()', /\bdefineHarness\s*\(\s*\)/],
   ['one-argument defineAgent({...})', /\bdefineAgent\s*\(\s*\{/],
   ['one-argument defineWorkflow({...})', /\bdefineWorkflow\s*\(\s*\{/],
-  ['fluent registration or build', /\.(?:agent|agents|workflow|workflows|tool|tools|skill|skills|models|memory|sandbox|storage|telemetry|logger|build)\s*\(/],
+  ['fluent registration or build', /\.(?:agent|agents|workflow|workflows|tool|tools|skill|skills|models|memory|sandbox|storage|telemetry|logger|build|addTool|addSkill|addMcpServer)\s*\(/],
+  ['public model registry', /\b(?:createModelRegistry|modelRegistry)\b/],
+  ['manual host-tool binding map', /\bhostTools\s*:/],
   ['removed Harness shutdown', /(?:\b\w+\.)*harness\.shutdown\s*\(/],
 ]
 
+function unwrapExpression(node) {
+  while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) node = node.expression
+  return node
+}
+
+function propertyName(node) {
+  const name = node.name
+  return name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) ? name.text : undefined
+}
+
+function directProperty(object, name) {
+  return object.properties.find(property => propertyName(property) === name)
+}
+
+function propertyValue(property) {
+  if (!property) return undefined
+  if (ts.isPropertyAssignment(property)) return unwrapExpression(property.initializer)
+  if (ts.isShorthandPropertyAssignment(property)) return property.name
+  return property
+}
+
+function containsProperty(node, names) {
+  let found = false
+  const visit = current => {
+    if (found) return
+    if ((ts.isPropertyAssignment(current) || ts.isShorthandPropertyAssignment(current) || ts.isMethodDeclaration(current)) && names.has(propertyName(current))) {
+      found = true
+      return
+    }
+    ts.forEachChild(current, visit)
+  }
+  visit(node)
+  return found
+}
+
+function structuralDefinitionViolations(source, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true,
+    fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : fileName.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS)
+  const labels = []
+  const visit = node => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && (node.expression.text === 'defineAgent' || node.expression.text === 'defineWorkflow')) {
+      const options = node.arguments[1] && unwrapExpression(node.arguments[1])
+      if (options && ts.isObjectLiteralExpression(options)) {
+        if (node.expression.text === 'defineAgent' && directProperty(options, 'handler')) labels.push('custom agent handler')
+        if (node.expression.text === 'defineWorkflow') {
+          const agents = propertyValue(directProperty(options, 'agents'))
+          if (agents && ts.isObjectLiteralExpression(agents)) labels.push('workflow agents object map')
+          const models = propertyValue(directProperty(options, 'models'))
+          if (models && ts.isObjectLiteralExpression(models) && containsProperty(models, new Set(['provider', 'model']))) {
+            labels.push('workflow raw model binding')
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return labels
+}
+
+function fencedCode(source) {
+  return [...source.matchAll(/^\s*```(?:ts|tsx|js|jsx|mts|cts|mjs|cjs|typescript|javascript)?\s*\n([\s\S]*?)^\s*```\s*$/gmi)]
+    .map((match, index) => ({ source: match[1], suffix: `.fence-${index}.ts` }))
+}
+
+function structuralViolationsForFile(source, file) {
+  if (codeExtensions.has(extname(file))) return structuralDefinitionViolations(source, file)
+  if (extname(file) === '.md' || extname(file) === '.mdx') {
+    return fencedCode(source).flatMap(fence => structuralDefinitionViolations(fence.source, file + fence.suffix))
+  }
+  return []
+}
+
+for (const fixture of [
+  {
+    label: 'custom agent handler',
+    source: "defineAgent('bad', { input: z.object({ nested: z.object({ value: z.string() }) }), handler() {} })",
+  },
+  {
+    label: 'workflow agents object map',
+    source: "defineWorkflow('bad', { input: z.object({ nested: z.object({ value: z.string() }) }), agents: { reviewer } })",
+  },
+  {
+    label: 'workflow raw model binding',
+    source: "defineWorkflow('bad', { options: { nested: { enabled: true } }, models: { writer: { retry: { attempts: 2 }, provider, model: 'x' } } })",
+  },
+]) {
+  assert.ok(structuralDefinitionViolations(fixture.source, 'adversarial.ts').includes(fixture.label), `AST scanner missed ${fixture.label}`)
+  assert.ok(structuralViolationsForFile(`Documentation\n\n\`\`\`ts\n${fixture.source}\n\`\`\`\n`, 'adversarial.md').includes(fixture.label), `fenced AST scanner missed ${fixture.label}`)
+}
+assert.deepEqual(structuralDefinitionViolations(
+  "defineAgent('ok', { input: z.object({ handler: z.string() }) }); defineWorkflow('ok', { agents: [reviewer], models: [writer] })",
+  'allowed.ts',
+), [])
+
 const docsFiles = await files(join(repositoryRoot, 'docs'))
+const architectureFiles = await files(join(repositoryRoot, 'architecture'))
 const skillFiles = await files(join(repositoryRoot, 'skills', 'ai-harness'))
 const packageDirectories = await readdir(join(repositoryRoot, 'packages'), { withFileTypes: true })
 const packageReadmes = packageDirectories
   .filter(entry => entry.isDirectory())
   .map(entry => join(repositoryRoot, 'packages', entry.name, 'README.md'))
-const knowledgeFiles = [join(repositoryRoot, 'README.md'), ...docsFiles, ...skillFiles, ...packageReadmes]
+const knowledgeFiles = [join(repositoryRoot, 'README.md'), ...docsFiles, ...architectureFiles, ...skillFiles, ...packageReadmes]
 
 for (const file of [...exampleFiles.filter(path => codeExtensions.has(extname(path))), ...knowledgeFiles]) {
-  if (!codeExtensions.has(extname(file)) && extname(file) !== '.md' && extname(file) !== '.svg') continue
-  if (relative(repositoryRoot, file).startsWith('docs/releases/')) continue
+  if (!sourceExtensions.has(extname(file))) continue
   const source = await readFile(file, 'utf8').catch(() => undefined)
   if (source === undefined) continue
   for (const [label, pattern] of removedApiPatterns) {
     if (pattern.test(source)) failures.push(`${relative(repositoryRoot, file)}: teaches removed v3 API (${label})`)
+  }
+  for (const label of structuralViolationsForFile(source, file)) {
+    failures.push(`${relative(repositoryRoot, file)}: teaches removed v3 API (${label})`)
   }
 }
 
@@ -90,7 +199,6 @@ const literalHarnessNamePattern = /\bdefineHarness\s*\(\s*\{[\s\S]{0,240}?\bname
 
 for (const file of [...exampleFiles.filter(path => codeExtensions.has(extname(path))), ...knowledgeFiles]) {
   if (!codeExtensions.has(extname(file)) && extname(file) !== '.md') continue
-  if (relative(repositoryRoot, file).startsWith('docs/releases/')) continue
   const source = await readFile(file, 'utf8').catch(() => undefined)
   if (source === undefined) continue
   for (const pattern of [literalDefinitionPattern, literalHarnessNamePattern]) {

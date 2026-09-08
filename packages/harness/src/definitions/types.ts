@@ -81,6 +81,18 @@ export interface DefinitionInference<Input extends Schema, Output extends Schema
 	readonly output: Infer<Output>
 }
 
+/** Exact invocation inference carried by one executable target contract. */
+export type HarnessTargetDefinitionInference<
+	Contract extends HarnessTargetContract<
+		HarnessTargetKind,
+		string,
+		ModelSchema,
+		ModelSchema,
+		HarnessOutputUpdateKind,
+		readonly HarnessInterruptKind[]
+	>,
+> = Contract['$infer']
+
 /** One execution caller always has exactly one owning target family. */
 export type HarnessExecutionCaller =
 	| Readonly<{ kind: 'agent'; agentId: string; workflowId?: string }>
@@ -256,7 +268,7 @@ export type McpServerDefinition<Id extends string, Tools extends Readonly<Record
 	id: Id
 	tools: Readonly<Tools>
 	/** Type-only selected-tool inference. The runtime value is a hidden frozen marker. */
-	readonly $infer: Readonly<{ tools: Readonly<{ [Name in keyof Tools]: Tools[Name]['$infer'] }> }>
+	readonly $infer: McpServerInference<Tools>
 }> & DefinitionReference<'mcp-server', Id>
 
 /** Closed logical runtime vocabulary for Agent Skill availability checks. */
@@ -269,8 +281,16 @@ export type SkillDefinition<Id extends string = string, Runtimes extends readonl
 	directory: URL
 	runtimes?: Runtimes
 	/** Type-only runtime inference. The runtime value is a hidden frozen marker. */
-	readonly $infer: Readonly<{ runtimes: Runtimes }>
+	readonly $infer: SkillInference<Runtimes>
 }> & DefinitionReference<'skill', Id>
+
+/** Type-only selected-tool projection exposed by one MCP server definition. */
+export type McpServerInference<Tools extends Readonly<Record<string, McpToolDefinition<any, any, any>>>> = Readonly<{
+	tools: Readonly<{ [Name in keyof Tools]: Tools[Name]['$infer'] }>
+}>
+
+/** Type-only runtime projection exposed by one Agent Skill definition. */
+export type SkillInference<Runtimes extends readonly SkillRuntimeId[]> = Readonly<{ runtimes: Runtimes }>
 
 /** Lower-camel runtime model alias referenced by definitions. */
 export type ModelAliasId = string

@@ -13,7 +13,7 @@ const harnessPrefix = 'ai-harness/'
 const core = 'ai-harness/packages/harness/src/'
 const addon = 'ai-harness/packages/harness-guardrails/src/'
 const roots = [
-  'ai-harness/packages', 'ai-harness/examples', 'ai-harness/docs', 'ai-harness/skills', 'ai-harness/README.md',
+  'ai-harness/packages', 'ai-harness/examples', 'ai-harness/docs', 'ai-harness/architecture', 'ai-harness/skills', 'ai-harness/README.md',
   'purista/packages/core/src/HarnessMount', 'purista/skills/purista', 'purista/packages/core/skills/purista',
   'purista/web/src/data/harness-markdown.ts', 'purista/web/src/content/handbook/harness',
   'purista/web/src/content/handbook-cards/harness', 'purista/web/src/content/handbook-cards/blocks/agent-pattern',
@@ -21,6 +21,7 @@ const roots = [
   'starter', 'create-purista',
 ]
 const negativeFixtureFiles = [
+  'ai-harness/packages/harness/type-tests/removed-v3-api.ts',
   'ai-harness/packages/harness/type-tests/harness-typing.ts',
   'ai-harness/packages/harness/test/harness.test.ts',
   'ai-harness/packages/harness/test/governance.test.ts',
@@ -28,6 +29,12 @@ const negativeFixtureFiles = [
   'ai-harness/packages/harness-guardrails/test/guardrails.test.ts',
   'ai-harness/packages/harness-guardrails/type-tests/guardrails-typing.ts',
 ]
+const retiredHarnessIdentifiers = new Set([
+  'BuilderState', 'HarnessBuilder', 'HarnessModule', 'HarnessModuleBuilder', 'defineHarnessModule', 'RunEvent',
+  'HarnessContributionCatalog', 'HarnessModuleContribution', 'HarnessModuleInspection', 'HarnessRuntimeModels',
+  'evaluatePromptCandidates', 'PromptCandidate', 'EvaluationItem', 'CandidateScore', 'EvaluatePromptCandidatesInput',
+  'evaluateDeterministicScorer', 'DeterministicScorerDefinition', 'ScorerTarget', 'ScorerResult', 'makeHarness',
+])
 // These are ownership constraints, not a second public-export inventory.
 const owners = {
   runDecisionOperation: core + 'decisions/execution.ts',
@@ -63,8 +70,9 @@ const guardrailNarrativeExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.t
 function boundaryLayout(root) {
   const workspace = existsSync(join(root, 'ai-harness'))
   const local = path => path.startsWith(harnessPrefix)
+  const configuredRoots = workspace ? roots : roots.filter(local).map(path => path.slice(harnessPrefix.length))
   return {
-    roots: workspace ? roots : roots.filter(local).map(path => path.slice(harnessPrefix.length)),
+    roots: configuredRoots.filter(path => path !== 'ai-harness/architecture' && path !== 'architecture' || existsSync(join(root, path))),
     negativeFixtureFiles: workspace ? negativeFixtureFiles : negativeFixtureFiles.map(path => path.slice(harnessPrefix.length)),
     absolute: path => workspace || !local(path) ? join(root, path) : join(root, path.slice(harnessPrefix.length)),
     virtual: path => (workspace ? relative(root, path) : harnessPrefix + relative(root, path)).replaceAll('\\', '/'),
@@ -181,6 +189,30 @@ export function checkDecisionSource(ts, path, content) {
   return findings
 }
 
+/** Reject retired Harness runtime/evaluation names outside the exact negative fixture. */
+export function checkHarnessV4CleanBreak(ts, path, content, documentation = false) {
+  const normalized = path.replaceAll('\\', '/')
+  if (!normalized.startsWith('ai-harness/')) return []
+  if (normalized.endsWith('/packages/harness/type-tests/removed-v3-api.ts')) return []
+  const findings = []
+  const report = (line, symbol) => findings.push({ path, line, rule: 'retired-harness-api', symbol })
+  if (documentation) {
+    for (const match of content.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+      if (retiredHarnessIdentifiers.has(match[0])) report(content.slice(0, match.index).split('\n').length, match[0])
+    }
+    return findings
+  }
+  const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true)
+  const visit = node => {
+    if (ts.isIdentifier(node) && retiredHarnessIdentifiers.has(node.text)) {
+      report(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1, node.text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return findings
+}
+
 async function exportedNames(ts, path, visited = new Set()) {
   if (visited.has(path) || !existsSync(path)) return new Set()
   visited.add(path)
@@ -243,9 +275,14 @@ export async function checkDecisionBoundaries(root = defaultRoot) {
   const findings = removed.map(item => ({ ...item, path: layout.virtual(item.path), rule: 'removed-api' }))
   const files = new Set((await Promise.all(layout.roots.map(path => filesUnder(join(root, path))))).flat())
   for (const path of files) {
-    if (!['.ts', '.tsx', '.js', '.mjs', '.cjs', '.mts', '.cts'].includes(extname(path))) continue
     const content = await readFile(path, 'utf8')
     const localPath = layout.virtual(path)
+    if (['.md', '.mdx', '.svg', '.mermaid', '.yaml', '.yml', '.json'].includes(extname(path))) {
+      findings.push(...checkHarnessV4CleanBreak(ts, localPath, content, true))
+      continue
+    }
+    if (!['.ts', '.tsx', '.js', '.mjs', '.cjs', '.mts', '.cts'].includes(extname(path))) continue
+    findings.push(...checkHarnessV4CleanBreak(ts, localPath, content))
     findings.push(...checkDecisionSource(ts, localPath, content))
     findings.push(...verifyPublicHarnessImports(ts, path, content).map(item => ({ ...item, path: localPath })))
   }

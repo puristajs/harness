@@ -1,16 +1,30 @@
 import { z } from 'zod'
 import { defineAgent } from '../src/definitions/agent.js'
+import { defineMcpServer } from '../src/definitions/mcp-server.js'
+import { defineSkill } from '../src/definitions/skill.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import type { Schema } from '../src/schema/index.js'
-import type { HarnessExecutionCaller } from '../src/definitions/index.js'
+import type {
+	HarnessExecutionCaller,
+	HarnessTargetDefinitionInference,
+	HarnessTargetExecutionEvent as DefinitionsHarnessTargetExecutionEvent,
+	McpServerInference,
+	NestedExecutionEvent as DefinitionsNestedExecutionEvent,
+	RootExecutionEventFor as DefinitionsRootExecutionEventFor,
+	SkillInference,
+} from '../src/definitions/index.js'
 import type { HarnessTargetRunOutcome } from '../src/runtime/outcomes.js'
 import type {
 	HarnessTargetExecutionTerminalOutcome,
-	HarnessTargetExecutionEvent,
 	HarnessTargetStream,
 } from '../src/definitions/execution-events.js'
+import type {
+	HarnessTargetExecutionEvent,
+	NestedExecutionEvent,
+	RootExecutionEventFor,
+} from '../src/index.js'
 import type { HarnessTargetInvoker } from '../src/runtime/standalone-instance.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
@@ -33,6 +47,18 @@ const absentCaller: HarnessExecutionCaller = { kind: 'agent' }
 void agentCaller; void workflowCaller; void mixedCaller; void absentCaller
 
 const noInterruptAgent = defineAgent('noInterrupt', { instructions: 'Answer.' })
+const inferenceMcp = defineMcpServer('inferenceMcp', {
+	tools: { search: { remoteName: 'search', description: 'Search.', input: z.string(), output: z.number() } },
+})
+const inferenceSkill = defineSkill('inference-skill', {
+	directory: new URL('./inference-skill/', import.meta.url), runtimes: ['node', 'python'],
+})
+type _TargetDefinitionInferenceAlias = Expect<Equal<
+	HarnessTargetDefinitionInference<typeof noInterruptAgent.contract>,
+	typeof noInterruptAgent.contract.$infer
+>>
+type _McpServerInferenceAlias = Expect<Equal<McpServerInference<typeof inferenceMcp.tools>, typeof inferenceMcp.$infer>>
+type _SkillInferenceAlias = Expect<Equal<SkillInference<readonly ['node', 'python']>, typeof inferenceSkill.$infer>>
 const approvalAgent = defineAgent('approvalAgent', { instructions: 'Review.', tools: [lookup], governance: ({ native, rule }) => ({
 	policies: [native({ id: 'approval', rules: [rule({ id: 'review', tools: ['lookup'], effect: 'require_approval' })] })],
 }) })
@@ -55,12 +81,30 @@ type _ExternalWaitInterrupt = Expect<Equal<Extract<Awaited<typeof externalWaitSt
 plainInvoker.run('question', { resume: { type: 'tool-approval', runId: 'r', interruptId: 'i', revision: 'v', eventId: 'e', decisions: [] } })
 
 type PlainEvent = HarnessTargetExecutionEvent<typeof noInterruptAgent.contract>
+type PlainRootEvent = RootExecutionEventFor<typeof noInterruptAgent.contract>
+type _TargetEventAlias = Expect<Equal<PlainEvent, PlainRootEvent | NestedExecutionEvent>>
+type _DefinitionsTargetEventAlias = Expect<Equal<
+	DefinitionsHarnessTargetExecutionEvent<typeof noInterruptAgent.contract>, PlainEvent
+>>
+type _DefinitionsRootEventAlias = Expect<Equal<
+	DefinitionsRootExecutionEventFor<typeof noInterruptAgent.contract>, PlainRootEvent
+>>
+type _DefinitionsNestedEventAlias = Expect<Equal<DefinitionsNestedExecutionEvent, NestedExecutionEvent>>
 const plainTerminal: PlainEvent = { type: 'run.finished', eventId: 'e', sequence: 2, runId: 'r', at: 'x', outcome: { status: 'completed', runId: 'r', output: 'ok' } }
+const nestedStarted: NestedExecutionEvent = {
+	type: 'run.started', eventId: 'nested-e', sequence: 3, runId: 'nested', at: 'x',
+	parentRunId: 'parent', parentInvocationId: 'parent-invocation',
+}
+// @ts-expect-error a direct root event cannot contain descendant correlation
+const correlatedRoot: PlainRootEvent = { ...plainTerminal, parentRunId: 'parent', parentInvocationId: 'parent-invocation' }
+// @ts-expect-error descendant events require both parent correlation fields
+const incompleteNested: NestedExecutionEvent = { ...nestedStarted, parentInvocationId: undefined }
 // @ts-expect-error text agent root events cannot expose object snapshots
 const plainObjectUpdate: PlainEvent = { type: 'output.object.snapshot', eventId: 'e', sequence: 2, runId: 'r', id: 'o', caller: { kind: 'agent', agentId: 'noInterrupt' }, value: {} }
 // @ts-expect-error root events cannot carry one-sided parent correlation
 const invalidRootParent: PlainEvent = { ...plainTerminal, parentRunId: 'parent' }
-void plainRun; void plainStream; void approvalStream; void externalWaitStream; void plainTerminal; void plainObjectUpdate; void invalidRootParent
+void plainRun; void plainStream; void approvalStream; void externalWaitStream; void plainTerminal; void nestedStarted
+void correlatedRoot; void incompleteNested; void plainObjectUpdate; void invalidRootParent
 
 defineAgent('badTool', { instructions: 'Bad.', tools: [lookup], governance: ({ native, rule }) => ({ policies: [native({ id: 'p', rules: [rule({
 	id: 'r',

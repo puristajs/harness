@@ -1,5 +1,3 @@
-import { defineHarness, type HarnessOptions } from '../definitions/harness.js'
-
 // Fakes
 export { FakeModelProvider, type FakeModelProviderOptions } from './fakeModelProvider.js'
 export { FakeHarnessStorage, type FakeHarnessStorageOp } from './fakeHarnessStorage.js'
@@ -43,8 +41,3 @@ export type {
 // AI eval test helpers (re-exported from the main entry for test ergonomics)
 export { createDeterministicEvaluationScorer } from '../eval/index.js'
 export type { DeterministicEvaluationScorerDefinition } from '../eval/index.js'
-
-/** Returns a fresh v4 Harness definition for tests. */
-export function makeHarness<const Name extends string = 'test-harness'>(options?: HarnessOptions<Name>) {
-  return defineHarness(options ?? { name: 'test-harness' as Name })
-}

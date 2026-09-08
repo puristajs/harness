@@ -2,10 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
-import type { ModelProvider } from '@purista/harness'
+import {
+  defineAgent,
+  type HarnessTargetExecutionTerminalOutcome,
+  type HarnessTargetStream,
+  type ModelProvider,
+} from '@purista/harness'
 import { FakeModelProvider } from '@purista/harness/testing'
-import { createLivingWikiApi } from './app.js'
-import { createScriptedLivingWikiProvider } from './harness.js'
+import { createLivingWikiApi, releaseSessionAfterStream } from './app.js'
+import { createLivingWikiHarness, createScriptedLivingWikiProvider } from './harness.js'
 
 async function createFixture(): Promise<{ dataRoot: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), 'living-wiki-api-'))
@@ -19,7 +24,107 @@ async function createFixture(): Promise<{ dataRoot: string; cleanup: () => Promi
   return { dataRoot, cleanup: () => rm(root, { recursive: true, force: true }) }
 }
 
+const releaseProbe = defineAgent('releaseProbe', { instructions: 'Test stream cleanup.' })
+type ReleaseProbeOutcome = HarnessTargetExecutionTerminalOutcome<typeof releaseProbe.contract>
+type ReleaseProbeStream = HarnessTargetStream<typeof releaseProbe.contract>
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+function releaseProbeStream(result: Promise<ReleaseProbeOutcome>): ReleaseProbeStream {
+  return {
+    result,
+    cancel: async () => undefined,
+    async *[Symbol.asyncIterator]() {
+      yield {
+        type: 'run.started',
+        eventId: 'release-event-1',
+        sequence: 1,
+        runId: 'release-run',
+        at: '2026-01-01T00:00:00.000Z',
+      }
+    },
+  }
+}
+
 describe('living wiki API', () => {
+  test('releases a borrowed chat session when result settles without iteration', async () => {
+    const settled = deferred<ReleaseProbeOutcome>()
+    let releases = 0
+    const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
+
+    settled.resolve({ status: 'completed', runId: 'release-run', output: 'done' })
+    await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+    expect(releases).toBe(1)
+  })
+
+  test('releases an authentic borrowed Harness session after an unobserved result settles', async () => {
+    const fixture = await createFixture()
+    const { harness, storage } = await createLivingWikiHarness({
+      dataRoot: fixture.dataRoot,
+      provider: createScriptedLivingWikiProvider(),
+      model: 'fake-wiki-model',
+    })
+    try {
+      const session = await harness.getSession('result-only-session')
+      const wrapped = releaseSessionAfterStream(
+        session.agents.wikiAnswerer.stream({ question: 'What stores traces?' }),
+        () => session.release(),
+      )
+      await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+      const reacquired = await harness.getSession('result-only-session')
+      await reacquired.release()
+    } finally {
+      await harness.close()
+      await storage.close()
+      await fixture.cleanup()
+    }
+  })
+
+  test('releases an authentic borrowed Harness session after full stream consumption', async () => {
+    const fixture = await createFixture()
+    const { harness, storage } = await createLivingWikiHarness({
+      dataRoot: fixture.dataRoot,
+      provider: createScriptedLivingWikiProvider(),
+      model: 'fake-wiki-model',
+    })
+    try {
+      const session = await harness.getSession('consumed-stream-session')
+      const wrapped = releaseSessionAfterStream(
+        session.agents.wikiAnswerer.stream({ question: 'What stores traces?' }),
+        () => session.release(),
+      )
+      const events = []
+      for await (const event of wrapped) events.push(event)
+      await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.finished' }))
+      const reacquired = await harness.getSession('consumed-stream-session')
+      await reacquired.release()
+    } finally {
+      await harness.close()
+      await storage.close()
+      await fixture.cleanup()
+    }
+  })
+
+  test('does not release a borrowed chat session when observation stops before result settles', async () => {
+    const settled = deferred<ReleaseProbeOutcome>()
+    let releases = 0
+    const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
+    const iterator = wrapped[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { type: 'run.started' } })
+    await iterator.return?.()
+    expect(releases).toBe(0)
+
+    settled.resolve({ status: 'completed', runId: 'release-run', output: 'done' })
+    await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+    expect(releases).toBe(1)
+  })
+
   test('streams chat with the standard AI SDK UI Message Stream v1 protocol', async () => {
     const fixture = await createFixture()
     const { app, shutdown } = await createLivingWikiApi({
@@ -300,8 +405,8 @@ describe('living wiki API', () => {
       const { runId } = await started.json() as { runId: string }
       const events = await app.request(`/api/runs/${runId}/events`)
       const eventText = await events.text()
-      expect(eventText).toContain('VALIDATION_ERROR')
-      expect(eventText).toContain('agent_output')
+      expect(eventText).toContain('WORKFLOW_MANAGED_CALL_FAILED')
+      expect(eventText).toContain('agent_run')
     } finally {
       await shutdown()
       await fixture.cleanup()

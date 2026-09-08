@@ -3,7 +3,7 @@
 Optional local token-classification/NER detector for
 `@purista/harness-guardrails`. It keeps model inference in-process and uses an
 application-provisioned model directory. It does not bundle a model, download
-model files, configure a model registry, or fall back to a remote service.
+model files, accept configurable model locations, or fall back to a remote service.
 
 Install it only where model-based entity recognition is required:
 

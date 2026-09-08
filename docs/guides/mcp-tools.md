@@ -38,7 +38,6 @@ const assistant = defineAgent('assistant', {
 })
 
 const supportHarness = defineHarness({ name: 'support' })
-  .addMcpServer(knowledge)
   .addAgent(assistant)
 ```
 
@@ -64,6 +63,25 @@ const instance = await supportHarness.getInstance({
 
 Treat the URL and headers as trusted deployment configuration. Never derive
 them from a prompt, model result, tenant input, or tool arguments.
+
+For per-invocation credentials, use `resolveHeaders` instead of creating one
+Harness instance per tenant:
+
+```ts
+const binding = {
+  transport: 'http',
+  url: process.env.KNOWLEDGE_MCP_URL!,
+  headers: { 'x-client': 'support-service' },
+  resolveHeaders: async ({ identity }) => ({
+    authorization: `Bearer ${await credentials.forTenant(identity?.tenantId)}`,
+  }),
+} as const
+```
+
+Harness calls the resolver after approval and immediately before the tool
+request. Startup discovery uses static headers only. Resolved headers may
+override static values, and neither the callback nor returned credentials enter
+inspection, events, logs, telemetry, persistence, or error metadata.
 
 ## Bind stdio in a sandbox
 

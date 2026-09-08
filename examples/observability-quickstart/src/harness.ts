@@ -30,7 +30,7 @@ export function createObservedHarness(options: {
   const handleTicket = defineWorkflow('handleTicket', {
     input: ticketInput,
     output: ticketOutput,
-    agents: { answerTicket },
+    agents: [answerTicket],
     handler: async ctx => {
       ctx.logger.info('Handling support ticket.', { ticket_id: ctx.input.ticketId })
       ctx.metrics.counter('support.tickets.started', 1, { workflow: 'handleTicket' })

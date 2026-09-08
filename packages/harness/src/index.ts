@@ -185,8 +185,11 @@ export type {
   ExecutionEventCorrelation,
   ExecutionTerminalOutcome,
   HarnessExecutionEventType,
+  HarnessTargetExecutionEvent,
   HarnessTargetExecutionTerminalOutcome,
   HarnessTargetStream,
+  NestedExecutionEvent,
+  RootExecutionEventFor,
 } from './definitions/execution-events.js'
 export type {
   ToolApprovalDecision,
@@ -244,6 +247,12 @@ export type {
 } from './ports/memory.js'
 export { inMemoryMemoryEngine } from './memory/in-memory.js'
 export type { HarnessIdentity } from './identity/index.js'
+export type {
+  AnyHarnessTargetContract,
+  HarnessTargetInput,
+  HarnessTargetOutput,
+  HarnessValidatedTargetInput,
+} from './ports/target-dispatcher.js'
 
 // Feedback port
 export type { FeedbackRecord, FeedbackTarget } from './ports/feedback.js'
@@ -519,19 +528,27 @@ export type {
   ContinuableChildTaskHandle,
   ContinuableChildTaskStartOptions,
   DefinitionInference,
+  AgentResponseMode,
+  HarnessExecutionCaller,
   HarnessExecutionMode,
+  HarnessInterruptForKinds,
   HarnessInterruptKind,
   HarnessOutputUpdateKind,
   HarnessTargetContract,
+  HarnessTargetDefinitionInference,
+  HarnessTargetInference,
   HarnessTargetKind,
+  HarnessUpdateFor,
   HostToolDefinition,
   McpServerDefinition,
+  McpServerInference,
   McpServerOptions,
   McpToolDefinition,
   McpToolOptions,
   ModelAliasId,
   SandboxCapabilityId,
   SkillDefinition,
+  SkillInference,
   SkillOptions,
   SkillRuntimeId,
   ToolDefinition,

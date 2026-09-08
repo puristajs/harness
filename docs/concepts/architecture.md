@@ -58,13 +58,13 @@ flowchart TB
 
 | Concept | What It Does | User Decision |
 |---|---|---|
-| Harness definition | Immutable graph of tools, skills, MCP servers, agents, workflows, and defaults. | What capabilities exist? |
+| Harness definition | Immutable executable roots plus the recursively referenced tools, Skills, MCP servers, agents, workflows, and defaults. | Which agent and workflow targets are callable? |
 | Harness instance | A definition bound to live models, storage, memory, sandbox, MCP transports, and telemetry. | Which infrastructure runs this graph? |
 | `Session` | Isolated operational context with memory, history, sandbox, and one active run at a time. | What user/thread/tenant is this run for? |
 | `Agent` | A typed LLM conversation loop. It prepares messages, calls the model, executes tool invocations, appends tool results, repeats until the model returns, validates output, and emits events. | What single model-driven job should this loop perform? |
 | `Workflow` | Application-owned orchestration around one or more agent invocations. It can sequence, branch, fan out, reflect, judge, request human approval, and perform durable writes. | What business process or multi-step flow must happen around agents? |
 | `Tool` | Callable capability exposed to an agent: built-in, TypeScript, or MCP. | What can the agent do besides model calls? |
-| `Skill` | Mounted instruction directory with `SKILL.md` frontmatter. | What reusable method or domain guidance should the agent follow? |
+| `Skill` | Reviewed instruction directory disclosed on demand through `read_skill`; runtime-bearing Skills also require a read-only sandbox mount. | What reusable method or domain guidance should the agent follow? |
 | `Sandbox` | Filesystem and optional command execution boundary. | Can this run execute commands, and with what isolation? |
 | `DurableWorkspace` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
 

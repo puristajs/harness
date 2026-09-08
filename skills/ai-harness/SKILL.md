@@ -12,36 +12,35 @@ Use this skill for `@purista/harness` applications and first-party `@purista/har
 Definitions describe behavior and requirements. Runtime bindings supply adapters and credentials:
 
 ```ts
-const lookup = defineTool('lookup', { description: 'Look up a policy.', input, output, handler })
 const assistant = defineAgent('assistant', {
-  model: 'primary', input, output, tools: [lookup],
-  instructions: 'Use lookup and answer from its result.',
-  prompt: value => ({ role: 'user', content: value.question }),
+  instructions: 'Answer the user clearly and concisely.',
 })
 const definition = defineHarness({ name: 'support' }).addAgent(assistant)
 const instance = await definition.getInstance({
-  models: { primary: { provider: openai({ apiKey }), model: 'gpt-5-mini' } },
+  model: { provider: openai({ apiKey }), model: 'gpt-5-mini' },
 })
+const session = await instance.getSession('conversation-1')
+const outcome = await session.agents.assistant.run('How can I reset my PIN?')
 ```
 
 Keep these layers separate:
 
 - `defineTool`, `defineSkill`, `defineMcpServer`, `defineAgent`, and `defineWorkflow` create immutable, reusable definitions.
 - `defineCatalog` optionally groups trusted definitions for reuse.
-- `defineHarness(...).add*()` or `.use(catalog)` composes a typed graph.
+- `defineHarness(...).addAgent(...)`, `.addWorkflow(...)`, or `.use(catalog)` composes executable roots. Leaf dependencies arrive through direct references from those roots.
 - `getInstance(...)` validates and binds the exact runtime resources projected by that graph.
 - `getSession(id)` exposes only the composed agents and workflows.
 - HTTP, queues, authentication, business data, and UI protocol handling remain application concerns.
 
 ## Hard rules
 
-- Use direct definition factories. Do not introduce mutable or string registries, terminal builder calls, compatibility wrappers, or callback-defined agents.
+- Use direct definition factories and exact definition references throughout the graph.
 - Put custom orchestration and application code in `defineWorkflow`. An agent is the configurable bounded model loop: instructions, prompt, tools, skills, guardrails, governance, subagents, memory, and sandbox policy.
 - Definition ids use lower camel case except Skill ids, which use their manifest-compatible kebab form.
-- Pass definition objects in arrays and maps. Do not refer to local tools, agents, workflows, or skills by string.
+- Pass definition objects in definition arrays and maps. Runtime address APIs use their compiled ids, such as `session.agents.support` and `context.childTasks.start(agentId, input, options)`; do not replace definition references with strings while authoring the graph.
 - Keep providers, secrets, storage clients, memory engines, MCP transports, sandboxes, workspaces, logger, and telemetry in `getInstance(...)`.
 - Use model aliases when definitions need different models. Bind the exact aliases through `models`; use singular `model` only for the default `primary` alias.
-- A workflow calling an agent declares it in `agents` and invokes `context.agents.name.run(input, { callId })`. Keep every call id stable and unique in the workflow.
+- A workflow calling an agent declares the direct reference in its `agents` array and invokes `context.agents.name.run(input, { callId })`. Keep every call id stable and unique in the workflow.
 - Use `context.step(id, operation)` for durable replay-safe steps. Use `context.externalWait.wait(...)` for persisted human or external decisions.
 - Use `HarnessStorage` for sessions, runs, events, checkpoints, and waits; `MemoryEngine` for scoped application memory; `DurableWorkspace` for resumable files. Never substitute a general application state store for these ports.
 - Use `run` for one final `RunOutcome`; use `stream` for portable lifecycle and output updates. Build authorized operational views from persisted run summaries, safe telemetry, and application-owned records.
@@ -58,7 +57,7 @@ Keep these layers separate:
 
 1. Define schemas with Zod or another Standard Schema implementation. Model-facing structured schemas must also expose JSON Schema.
 2. Define tools and skills first, then agents, then workflows.
-3. Compose definitions directly or through an immutable catalog.
+3. Compose agents and workflows directly. Introduce an immutable catalog only when definitions need reusable packaging.
 4. Inspect `definition.requirements` or TypeScript errors to learn the exact runtime bindings.
 5. Create one instance with production adapters and safe telemetry.
 6. Invoke through a stable session id and handle every terminal outcome.

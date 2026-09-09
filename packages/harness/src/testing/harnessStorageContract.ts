@@ -40,14 +40,15 @@ const messages: Message[] = [
 ]
 const [m1, m2, m3] = messages
 
-const run: CreateRunRequest = {
+const run = {
   id: 'run_1',
   sessionId: session.id,
   kind: 'workflow',
   target: 'wf',
   startedAt: '2026-01-01T00:00:00.000Z',
-  input: null
-}
+  input: { prompt: 'wire' },
+  validatedInput: { prompt: 'validated' },
+} satisfies CreateRunRequest
 
 const event: PersistedRunEvent = {
   id: eventId(run.id, 1, 'run.started'),
@@ -185,7 +186,8 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
       await store.upsertSession(proposed, 'create')
       proposed.identity.tenantId = 'changed-through-input'
       const read = await store.getSession(session.id)
-      if (read) read.createdAt = 'changed-through-read'
+      expect(Object.isFrozen(read)).toBe(true)
+      if (read) expect(() => { read.createdAt = 'changed-through-read' }).toThrow(TypeError)
       await expect(store.getSession(session.id)).resolves.toEqual({ ...session, identity: { tenantId: 'tenant' } })
     })
 
@@ -262,17 +264,26 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
     it('creates every run kind as a recursively frozen authoritative record', async () => {
       const store = await make()
       for (const [index, kind] of (['agent', 'workflow', 'child_task'] as const).entries()) {
-        const request: CreateRunRequest = {
-          ...run,
+        const base = {
           id: `kind-${index}`,
-          kind,
+          sessionId: run.sessionId,
+          target: run.target,
+          startedAt: run.startedAt,
           input: { nested: [kind] },
           metadata: { owner: { index } },
         }
+        const request: CreateRunRequest = kind === 'child_task'
+          ? { ...base, kind: 'child_task' }
+          : { ...base, kind, validatedInput: { normalized: [kind] } }
         const created = await store.createRun(request)
         expect(created).toMatchObject({ ...request, status: 'running', revision: 1 })
         expect(Object.isFrozen(created)).toBe(true)
         expect(Object.isFrozen(created.input)).toBe(true)
+        if (created.kind === 'child_task') {
+          expect(Object.hasOwn(created, 'validatedInput')).toBe(false)
+        } else {
+          expect(Object.isFrozen(created.validatedInput)).toBe(true)
+        }
         expect(Object.isFrozen(created.metadata)).toBe(true)
         expect(Object.isFrozen(created.metadata?.['owner'])).toBe(true)
       }
@@ -293,6 +304,10 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
       sparse.length = 1
       const invalid = [
         { ...run, input: undefined },
+        { ...run, validatedInput: undefined },
+        { ...run, validatedInput: Number.NaN },
+        { ...run, validatedInput: sparse },
+        { ...run, validatedInput: Object.assign(Object.create({ inherited: true }), { own: true }) },
         { ...run, metadata: undefined },
         { ...run, input: Number.NaN },
         { ...run, input: sparse },
@@ -304,6 +319,112 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
         })
         await expect(store.getRun(run.id)).resolves.toBeUndefined()
       }
+    })
+
+    it('rejects accessors and hidden properties in every root creation JSON field without invoking getters', async () => {
+      const store = await make()
+      for (const field of ['input', 'validatedInput', 'metadata'] as const) {
+        let getterCalls = 0
+        const accessorField = Object.defineProperty({ ...run, id: `hostile-${field}-field` }, field, {
+          enumerable: true,
+          get: () => { getterCalls += 1; return { secret: 'must-not-run' } },
+        })
+        const accessor = Object.defineProperty({}, 'secret', {
+          enumerable: true,
+          get: () => { getterCalls += 1; return 'must-not-run' },
+        })
+        const hidden = Object.defineProperty({}, 'hidden', { enumerable: false, value: 'must-not-store' })
+        await expect(store.createRun(accessorField as unknown as CreateRunRequest))
+          .rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
+        expect(getterCalls).toBe(0)
+        await expect(store.getRun(`hostile-${field}-field`)).resolves.toBeUndefined()
+        for (const candidate of [accessor, hidden]) {
+          await expect(store.createRun({ ...run, id: `hostile-${field}`, [field]: candidate } as unknown as CreateRunRequest))
+            .rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
+          expect(getterCalls).toBe(0)
+          await expect(store.getRun(`hostile-${field}`)).resolves.toBeUndefined()
+        }
+      }
+    })
+
+    it('requires validated input for roots and forbids it for child tasks', async () => {
+      const store = await make()
+      const { validatedInput: _validatedInput, ...withoutValidatedInput } = run
+      const invalid = [
+        withoutValidatedInput,
+        { ...withoutValidatedInput, kind: 'agent' },
+        { ...withoutValidatedInput, kind: 'child_task', validatedInput: null },
+        { ...withoutValidatedInput, kind: 'child_task', validatedInput: undefined },
+      ]
+      for (const request of invalid) {
+        await expect(store.createRun(request as unknown as CreateRunRequest)).rejects.toMatchObject({
+          code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' },
+        })
+      }
+    })
+
+    it('copies and deeply freezes validated input independently of caller and reader mutations', async () => {
+      const store = await make()
+      const validatedInput = { account: { labels: ['reviewed'] } }
+      const request = { ...run, id: 'validated-copy', validatedInput } satisfies CreateRunRequest
+      const created = await store.createRun(request)
+      validatedInput.account.labels[0] = 'mutated'
+      expect(created).toMatchObject({ validatedInput: { account: { labels: ['reviewed'] } } })
+      if (created.kind === 'child_task') throw new Error('Expected a root run record.')
+      expect(Object.isFrozen(created.validatedInput)).toBe(true)
+      const read = await store.getRun(request.id)
+      expect(read).toMatchObject({ validatedInput: { account: { labels: ['reviewed'] } } })
+      if (!read || read.kind === 'child_task') throw new Error('Expected a stored root run record.')
+      expect(Object.isFrozen(read.validatedInput)).toBe(true)
+    })
+
+    it('returns a fresh deeply frozen snapshot for create, retry, and every read', async () => {
+      const store = await make()
+      const request = {
+        ...run,
+        id: 'fresh-run-snapshots',
+        input: { nested: { wire: true } },
+        validatedInput: { nested: { validated: true } },
+        metadata: { nested: { metadata: true } },
+      } satisfies CreateRunRequest
+      const created = await store.createRun(request)
+      const retry = await store.createRun(request)
+      const firstRead = await store.getRun(request.id)
+      const secondRead = await store.getRun(request.id)
+      expect(retry).toEqual(created)
+      expect(firstRead).toEqual(created)
+      expect(secondRead).toEqual(created)
+      for (const snapshot of [created, retry, firstRead, secondRead]) {
+        expect(snapshot).toBeDefined()
+        expect(Object.isFrozen(snapshot)).toBe(true)
+        expect(Object.isFrozen(snapshot?.input)).toBe(true)
+        expect(Object.isFrozen(snapshot?.metadata?.['nested'])).toBe(true)
+        if (!snapshot || snapshot.kind === 'child_task') throw new Error('Expected a root run snapshot.')
+        expect(Object.isFrozen(snapshot.validatedInput)).toBe(true)
+      }
+      expect(retry).not.toBe(created)
+      expect(firstRead).not.toBe(created)
+      expect(secondRead).not.toBe(firstRead)
+      expect(retry.input).not.toBe(created.input)
+      expect(firstRead?.metadata).not.toBe(created.metadata)
+    })
+
+    it('uses canonical wire, validated, and metadata bytes for an exact creation retry', async () => {
+      const store = await make()
+      const request = {
+        ...run,
+        id: 'canonical-input-retry',
+        input: { z: 1, nested: { right: true, left: false } },
+        validatedInput: { account: { risk: 7, id: 'account-1' }, accepted: true },
+        metadata: { z: 1, a: 2 },
+      } satisfies CreateRunRequest
+      const created = await store.createRun(request)
+      await expect(store.createRun({
+        ...request,
+        input: { nested: { left: false, right: true }, z: 1 },
+        validatedInput: { accepted: true, account: { id: 'account-1', risk: 7 } },
+        metadata: { a: 2, z: 1 },
+      })).resolves.toEqual(created)
     })
 
     it('rejects changed immutable creation identity before acquisition', async () => {
@@ -324,6 +445,7 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
           { ...request, target: 'other-target' },
           { ...request, startedAt: '2026-01-01T00:00:01.000Z' },
           { ...request, input: { prompt: 'changed' } },
+          { ...request, validatedInput: { prompt: 'changed' } },
           { ...request, metadata: { source: 'changed' } },
         ]
         for (const conflict of conflicts) {
@@ -827,6 +949,7 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
 
       await store.finalizeRun(request)
       const terminal = await store.getRun(created.id)
+      expect(terminal).toMatchObject({ validatedInput: run.validatedInput })
       await expect(store.loadCheckpoint(created.id)).resolves.toBeUndefined()
       await expect(store.listEvents(created.id)).resolves.toHaveLength(2)
       await expect(store.listEvents(created.id)).resolves.toEqual([
@@ -1072,7 +1195,10 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
       }
 
       const childStore = await make()
-      const child = await childStore.createRun({ ...run, id: 'child-run', kind: 'child_task', target: 'child-agent' })
+      const child = await childStore.createRun({
+        id: 'child-run', sessionId: run.sessionId, kind: 'child_task', target: 'child-agent',
+        startedAt: run.startedAt, input: run.input,
+      })
       const childLease = await childStore.acquireRun(await acquisition(childStore, {
         runId: child.id, sessionId: child.sessionId, workerId: 'worker', stepId: 'approval',
       }))

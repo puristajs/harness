@@ -106,12 +106,66 @@ describe('postgresHarnessStorage', () => {
     expect(Object.isFrozen(storage.info)).toBe(true)
   })
 
+  it('persists immutable validated input and enforces the root/child storage discriminator', async () => {
+    const pool = pglitePool()
+    const first = postgresHarnessStorage({ pool: pool as never })
+    const validatedInput = { account: { id: 'account-1', labels: ['verified'] } }
+    const request = {
+      id: 'validated-run', sessionId: 'validated-session', kind: 'workflow' as const, target: 'review',
+      startedAt: '2026-01-01T00:00:00.000Z', input: { accountId: 'account-1' }, validatedInput,
+    }
+    const created = await first.createRun(request)
+    validatedInput.account.labels[0] = 'mutated'
+    expect(created).toMatchObject({ validatedInput: { account: { id: 'account-1', labels: ['verified'] } } })
+    expect(Object.isFrozen(created)).toBe(true)
+    if (created.kind === 'child_task') throw new Error('Expected a root run record.')
+    expect(Object.isFrozen(created.validatedInput)).toBe(true)
+    await first.finishRun(request.id, {
+      status: 'succeeded', finishedAt: '2026-01-01T00:00:01.000Z', output: { accepted: true },
+    })
+
+    const second = postgresHarnessStorage({ pool: pool as never })
+    await expect(second.getRun(request.id)).resolves.toMatchObject({
+      status: 'succeeded',
+      input: request.input,
+      validatedInput: { account: { id: 'account-1', labels: ['verified'] } },
+    })
+    await expect(second.createRun({ ...request, validatedInput: { account: { id: 'account-1', labels: ['verified'] } } })).resolves.toMatchObject({
+      status: 'succeeded', validatedInput: { account: { id: 'account-1', labels: ['verified'] } },
+    })
+    await expect(second.createRun({ ...request, validatedInput: { account: { id: 'account-1', labels: ['changed'] } } }))
+      .rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
+    const { validatedInput: _validatedInput, ...missingValidatedInput } = request
+    await expect(second.createRun({ ...missingValidatedInput, id: 'missing-validated' } as never))
+      .rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
+    await expect(second.createRun({ ...request, id: 'invalid-child', kind: 'child_task', validatedInput: undefined } as never))
+      .rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
+    await expect(pool.query('update purista_harness_runs set validated_input_json = null where id = $1', [request.id]))
+      .rejects.toBeDefined()
+  })
+
+  it('accepts a renamed exact validated-input constraint and rejects a same-name weakened constraint', async () => {
+    const exactPool = pglitePool()
+    await postgresHarnessStorage({ pool: exactPool as never }).getSession('missing')
+    await exactPool.query(`alter table purista_harness_runs
+      rename constraint purista_harness_runs_validated_input_kind to exact_but_renamed`)
+    await expect(postgresHarnessStorage({ pool: exactPool as never }).getSession('missing')).resolves.toBeUndefined()
+
+    const weakenedPool = pglitePool()
+    await postgresHarnessStorage({ pool: weakenedPool as never }).getSession('missing')
+    await weakenedPool.query('alter table purista_harness_runs drop constraint purista_harness_runs_validated_input_kind')
+    await weakenedPool.query(`alter table purista_harness_runs
+      add constraint purista_harness_runs_validated_input_kind check (true)`)
+    await expect(postgresHarnessStorage({ pool: weakenedPool as never }).getSession('missing'))
+      .rejects.toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'postgres_schema_incompatible' } })
+  })
+
   it('rejects non-JSON run creation before storage mutation', async () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never })
     for (const input of [Number.NaN, new Date(), [, 'sparse']]) {
       await expect(storage.createRun({
         id: 'invalid-run', sessionId: 'invalid-session', kind: 'agent', target: 'agent',
-        startedAt: '2026-01-01T00:00:00.000Z', input: input as never,
+        startedAt: '2026-01-01T00:00:00.000Z', input: input as never, validatedInput: null,
       })).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'createRun', reason: 'run_conflict' } })
     }
     await expect(storage.getRun('invalid-run')).resolves.toBeUndefined()
@@ -122,7 +176,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never, now: () => now })
     const created = await storage.createRun({
       id: 'ordinary-run', sessionId: 'ordinary-session', kind: 'agent', target: 'ordinaryAgent',
-      startedAt: '2026-01-01T00:00:00.000Z', input: null,
+      startedAt: '2026-01-01T00:00:00.000Z', input: null, validatedInput: null,
     })
     for (const patch of [
       { status: 'succeeded' },
@@ -147,7 +201,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pool as never })
     const created = await storage.createRun({
       id: 'malformed-row-run', sessionId: 'malformed-row-session', kind: 'agent', target: 'malformedRowAgent',
-      startedAt: '2026-01-01T00:00:00.000Z', input: null,
+      startedAt: '2026-01-01T00:00:00.000Z', input: null, validatedInput: null,
     })
     const malformed = { code: 'STATE_ERROR', meta: { op: 'getRun', reason: 'malformed_storage_row' } }
 
@@ -165,7 +219,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never })
     const created = await storage.createRun({
       id: 'null-run', sessionId: 'null-session', kind: 'workflow', target: 'nullWorkflow',
-      startedAt: '2026-01-01T00:00:00.000Z', input: null,
+      startedAt: '2026-01-01T00:00:00.000Z', input: null, validatedInput: null,
     })
     await storage.appendEvents(created.id, [{
       id: eventId(created.id, 1, 'run.started'), sequence: 1, runId: created.id,
@@ -217,7 +271,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pool as never, leaseTtlMs: 1_000, now: () => now })
     const created = await storage.createRun({
       id: 'checkpoint-retry-run', sessionId: 'checkpoint-retry-session', kind: 'workflow', target: 'checkpointWorkflow',
-      startedAt: '2026-01-01T00:00:00.000Z', input: { request: true },
+      startedAt: '2026-01-01T00:00:00.000Z', input: { request: true }, validatedInput: { request: true },
     })
     const expected = { revision: created.revision, status: 'running' as const, checkpoint: { stepId: 'step', sequence: null } }
     const lease = await storage.acquireRun({
@@ -263,7 +317,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never })
     const created = await storage.createRun({
       id: 'checkpoint-identity-run', sessionId: 'checkpoint-identity-session', kind: 'workflow', target: 'checkpointWorkflow',
-      startedAt: '2026-01-01T00:00:00.000Z', input: { root: true },
+      startedAt: '2026-01-01T00:00:00.000Z', input: { root: true }, validatedInput: { root: true },
     })
     const expected = { revision: 1, status: 'running' as const, checkpoint: { stepId: 'step', sequence: null } }
     const lease = await storage.acquireRun({
@@ -296,7 +350,7 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never })
     const created = await storage.createRun({
       id: 'lease-shape-run', sessionId: 'lease-shape-session', kind: 'agent', target: 'assistant',
-      startedAt: '2026-01-01T00:00:00.000Z', input: { prompt: 'safe' }, metadata: { version: 1 },
+      startedAt: '2026-01-01T00:00:00.000Z', input: { prompt: 'safe' }, validatedInput: { prompt: 'safe' }, metadata: { version: 1 },
     })
     const expected = { revision: 1, status: 'running' as const, checkpoint: { stepId: 'start', sequence: null } }
     const lease = await storage.acquireRun({
@@ -323,7 +377,7 @@ describe('postgresHarnessStorage', () => {
     const second = postgresHarnessStorage({ pool: pool as never })
     const created = await first.createRun({
       id: 'replay-run', sessionId: 'replay-session', kind: 'workflow', target: 'replayWorkflow',
-      startedAt: '2026-01-01T00:00:00.000Z', input: { stable: true },
+      startedAt: '2026-01-01T00:00:00.000Z', input: { stable: true }, validatedInput: { stable: true },
     })
     const expected = { revision: 1, status: 'running' as const, checkpoint: { stepId: 'start', sequence: null } }
     const request = {
@@ -389,7 +443,7 @@ describe('postgresHarnessStorage', () => {
     await first.upsertSession(record, 'create')
     const created = await first.createRun({
       id: 'lease-run', sessionId: record.id, kind: 'workflow', target: 'test',
-      startedAt: '2026-01-01T00:00:00.000Z', input: null,
+      startedAt: '2026-01-01T00:00:00.000Z', input: null, validatedInput: null,
     })
     const firstExpected = { revision: created.revision, status: 'running' as const, checkpoint: { stepId: 'start', sequence: null } }
     const oldRequest = {

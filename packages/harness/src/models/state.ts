@@ -56,20 +56,16 @@ export interface SerializedError {
   meta?: Record<string, unknown>
 }
 
-/** Run record persisted by Harness storage. */
-export interface RunRecord {
+interface RunRecordBase {
   readonly id: string
   readonly sessionId: string
-  readonly kind: 'workflow' | 'agent' | 'child_task'
   readonly target: string
   readonly startedAt: string
   readonly finishedAt?: string
   readonly status: RunStatus
   readonly revision: number
-  readonly input: JsonValue
   readonly output?: JsonValue
   readonly error?: SerializedError
-  readonly approvalReceipt?: import('../storage/types.js').TerminalApprovalReceiptV1
   /** Current durable attempt. Omitted for ordinary non-durable runs. */
   readonly attempt?: number
   /** Worker currently associated with a durable attempt. */
@@ -79,6 +75,26 @@ export interface RunRecord {
   /** Adapter-neutral durable execution metadata. */
   readonly metadata?: Readonly<Record<string, JsonValue>>
 }
+
+/** Run record persisted by Harness storage. */
+export type RunRecord =
+  | RunRecordBase & Readonly<{
+      readonly kind: 'workflow' | 'agent'
+      /** Canonical pre-transform wire input. */
+      readonly input: JsonValue
+      /**
+       * Canonical result of the root target's single schema transform.
+       * Trusted stored application data; runtime integrations must not project it into public outcomes or telemetry.
+       */
+      readonly validatedInput: JsonValue
+      readonly approvalReceipt?: import('../storage/types.js').TerminalApprovalReceiptV1
+    }>
+  | RunRecordBase & Readonly<{
+      readonly kind: 'child_task'
+      readonly input: JsonValue
+      readonly validatedInput?: never
+      readonly approvalReceipt?: never
+    }>
 
 /** Exact persisted metadata for one workflow-owned child task. */
 export interface ChildTaskRecordMetadataV1 {

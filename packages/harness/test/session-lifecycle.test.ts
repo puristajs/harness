@@ -785,7 +785,7 @@ describe('v4 session lifecycle', () => {
 		expect(effects).toBe(0)
 		const privateScopesBefore = sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
 		expect(privateScopesBefore).toHaveLength(2)
-		expect(privateScopesBefore.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
+		expect(privateScopesBefore).toEqual([privateScope, privateScope])
 		const beforeResume = authorizations
 		await expect(session.workflows.nestedApprovalScope.run('/approval.txt', { resume: {
 			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
@@ -804,8 +804,9 @@ describe('v4 session lifecycle', () => {
 			expect(event).toMatchObject({ runId: leafRunId,
 				payload: { caller: { kind: 'agent', agentId: reviewer.id, workflowId: workflow.id } } })
 		}
-		expect(sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')
-			.every(scope => JSON.stringify(scope) === JSON.stringify(privateScope))).toBe(true)
+		for (const scope of sandbox.openedScopes.filter(scope => scope.partition.kind === 'agent')) {
+			expect(scope).toEqual(privateScope)
+		}
 		await session.destroy()
 		await harness.close()
 	})

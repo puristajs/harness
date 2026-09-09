@@ -186,6 +186,8 @@ describe('local durable execution', () => {
       .prepare('pragma table_info(harness_sessions)')
       .all()
       .map((row) => row['name'])
+    const runColumns = db.prepare('pragma table_info(harness_runs)').all().map((row) => row['name'])
+    const runTableSql = db.prepare("select sql from sqlite_master where type = 'table' and name = 'harness_runs'").all()[0]?.['sql']
     db.close()
     expect(tables).toEqual(
       expect.arrayContaining([
@@ -202,6 +204,8 @@ describe('local durable execution', () => {
     expect(tables).not.toContain('harness_durable_runs')
     expect(tables).not.toContain('harness_context_checkpoints')
     expect(sessionColumns).toContain('sandbox_binding_json')
+    expect(runColumns).toContain('validated_input_json')
+    expect(runTableSql).toContain('harness_runs_validated_input_kind')
   })
 
   it('rejects a Harness 2 SQLite schema instead of silently retaining legacy tables', async () => {
@@ -249,6 +253,7 @@ describe('local durable execution', () => {
       target: 'review',
       startedAt: new Date().toISOString(),
       input: null,
+      validatedInput: null,
     })
     await acquireRun(first, 'run-a', 'session-a', 'worker-a', 'review')
     await first.registerWait({
@@ -284,6 +289,7 @@ describe('local durable execution', () => {
       target: 'step-a',
       startedAt: new Date().toISOString(),
       input: { ok: true },
+      validatedInput: { ok: true },
     })
     const lease = await acquireRun(storage, 'run-1', 'session-1', 'worker-1', 'step-a')
     await storage.commitCheckpoint({
@@ -760,6 +766,7 @@ describe('local durable execution', () => {
       target: 'collect',
       startedAt: new Date().toISOString(),
       input: { prompt: 'private prompt text' },
+      validatedInput: { prompt: 'validated private prompt text' },
     })
     const lease = await acquireRun(local.storage, 'run-otel', 'session-otel', 'worker-otel', 'collect')
     await local.storage.loadCheckpoint('run-otel')
@@ -928,6 +935,7 @@ describe('SQLite Harness storage durability', () => {
         target: 'step-a',
         startedAt: new Date().toISOString(),
         input: { ok: true },
+        validatedInput: { ok: true },
       })
     }
     return acquireRun(storage, runId, sessionId, workerId, 'step-a')
@@ -1092,6 +1100,7 @@ describe('SQLite Harness storage durability', () => {
         target: 'step-a',
         startedAt: new Date().toISOString(),
         input: { index },
+        validatedInput: { index },
       })
       const lease = await acquireRun(local.storage, runId, sessionId, 'worker-1', 'step-a')
       for (let sequence = 1; sequence <= 5; sequence += 1) {

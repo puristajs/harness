@@ -8,7 +8,10 @@ import type {
 	AnyAgentDefinition,
 	AnyNonMcpToolDefinition,
 	AnyWorkflowDefinition,
+	HarnessInterruptKind,
+	HarnessOutputUpdateKind,
 	HarnessTargetContract,
+	HarnessTargetKind,
 	McpServerDefinition,
 	McpToolDefinition,
 	SkillDefinition,
@@ -32,8 +35,8 @@ type DirectSubagents<Agent> = Agent extends { readonly subagents: infer Subagent
 type AgentClosure<Agent, SeenIds extends string = never> = Agent extends AnyAgentDefinition
 	? Agent['id'] extends SeenIds ? never : Agent | AgentClosure<DirectSubagents<Agent>, SeenIds | Agent['id']>
 	: never
-type WorkflowAgents<Workflow> = Workflow extends { readonly agents: infer Agents extends Readonly<Record<string, AnyAgentDefinition>> }
-	? MapValue<Agents>
+type WorkflowAgents<Workflow> = Workflow extends { readonly agents: infer Agents extends readonly AnyAgentDefinition[] }
+	? ArrayValue<Agents>
 	: never
 type AllAgents<Agents, Workflows> = AgentClosure<ArrayValue<Agents> | WorkflowAgents<ArrayValue<Workflows>>>
 type AgentTools<Agent> = Agent extends { readonly tools: infer Tools extends readonly unknown[] } ? ArrayValue<Tools> : never
@@ -62,7 +65,15 @@ export type HarnessContracts<
 	workflows: Readonly<{ [Key in keyof Workflows]: Workflows[Key]['contract'] }>
 }>
 
-type AnyHarnessTargetContract = HarnessTargetContract<any, any, ModelSchema, ModelSchema, any, any>
+type AnyHarnessTargetContract = HarnessTargetContract<
+	HarnessTargetKind,
+	string,
+	ModelSchema,
+	ModelSchema,
+	HarnessOutputUpdateKind,
+	readonly HarnessInterruptKind[],
+	any
+>
 
 /** Input and output types inferred from an exact map of target contracts. */
 export type HarnessTargetInferMap<Targets extends Readonly<Record<string, AnyHarnessTargetContract>>> = Readonly<{

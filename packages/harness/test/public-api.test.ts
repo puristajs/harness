@@ -13,7 +13,7 @@ import type {
   HarnessTargetExecutionEvent,
   HarnessTargetDefinitionInference,
   HarnessTargetExecutionTerminalOutcome,
-  HarnessTargetInference,
+  HarnessTargetInferenceFor,
   HarnessTargetInput,
   HarnessTargetOutput,
   HarnessTargetRunOutcome,
@@ -43,6 +43,7 @@ import * as integratorEntry from '../src/integrator/index.js'
 import * as testingEntry from '../src/testing/index.js'
 import type {
 	HarnessTargetDefinitionInference as DefinitionsHarnessTargetDefinitionInference,
+	HarnessTargetInferenceFor as DefinitionsHarnessTargetInferenceFor,
 	HarnessTargetExecutionEvent as DefinitionsHarnessTargetExecutionEvent,
 	McpServerInference as DefinitionsMcpServerInference,
 	NestedExecutionEvent as DefinitionsNestedExecutionEvent,
@@ -62,6 +63,7 @@ void publicWorkflowTypes
 
 type PublicInferenceAndEventAliases = readonly [
 	DefinitionsHarnessTargetDefinitionInference<AnyHarnessTargetContract>,
+	DefinitionsHarnessTargetInferenceFor<string, string, string, 'text-delta', readonly []>,
 	DefinitionsHarnessTargetExecutionEvent<AnyHarnessTargetContract>,
 	DefinitionsMcpServerInference<Readonly<Record<string, import('../src/index.js').McpToolDefinition>>>,
 	DefinitionsNestedExecutionEvent,
@@ -270,6 +272,7 @@ const EXPECTED_INTEGRATOR_EXPORTS = [
   'defineHostTool',
   'instantiateHostedHarness',
   'isHarnessTargetContract',
+  'visitHostedHarnessTargets',
 ]
 
 describe('v4 public API export surface', () => {
@@ -314,7 +317,7 @@ describe('v4 public API export surface', () => {
 		>()
 		expectTypeOf<ExecutionTerminalOutcome<string, never>>().toMatchTypeOf<
 			HarnessTargetExecutionTerminalOutcome<typeof target>>()
-		expectTypeOf<HarnessTargetInference<typeof target.input, typeof target.output, 'text-delta', readonly []>['update']>()
+		expectTypeOf<HarnessTargetInferenceFor<string, string, string, 'text-delta', readonly []>['update']>()
 			.toEqualTypeOf<string>()
 		expectTypeOf<HarnessUpdateFor<typeof target.output, 'none'>>().toEqualTypeOf<never>()
 		expectTypeOf<HarnessInterruptForKinds<readonly []>>().toEqualTypeOf<never>()

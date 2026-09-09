@@ -15,16 +15,27 @@ import { HarnessConfigError } from '../errors/catalog.js'
 /** Fields allowed when marking a run as finished. */
 export type FinishRunPatch = Pick<RunRecord, 'status'> & Partial<Pick<RunRecord, 'finishedAt' | 'output' | 'error'>>
 
-/** Immutable caller-owned fields used to create one logical run. */
-export interface CreateRunRequest {
+interface CreateRunRequestBase {
   readonly id: string
   readonly sessionId: string
-  readonly kind: 'agent' | 'workflow' | 'child_task'
   readonly target: string
   readonly startedAt: string
+  /** Canonical pre-transform wire input for roots, or canonical child-call input for child tasks. */
   readonly input: import('../models/json.js').JsonValue
   readonly metadata?: Readonly<Record<string, import('../models/json.js').JsonValue>>
 }
+
+/** Immutable caller-owned fields used to create one logical run. */
+export type CreateRunRequest =
+  | CreateRunRequestBase & Readonly<{
+      readonly kind: 'agent' | 'workflow'
+      /** Canonical result of the root target's single schema transform. */
+      readonly validatedInput: import('../models/json.js').JsonValue
+    }>
+  | CreateRunRequestBase & Readonly<{
+      readonly kind: 'child_task'
+      readonly validatedInput?: never
+    }>
 
 export type RunAcquisitionMode = 'initial' | 'resume'
 export interface RunAcquisitionCheckpointExpectation { readonly stepId: string; readonly sequence: number | null }

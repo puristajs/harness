@@ -3,14 +3,10 @@ import { HTTPException } from 'hono/http-exception'
 import {
   JsonLogger,
   serializeError,
+  type AnyHarnessTargetContract,
   type ExecutionEvent,
-  type HarnessInterruptKind,
-  type HarnessOutputUpdateKind,
-  type HarnessTargetContract,
-  type HarnessTargetKind,
   type HarnessTargetStream,
   type JsonValue,
-  type ModelSchema,
 } from '@purista/harness'
 import {
   createHarnessUIMessageStreamResponse,
@@ -564,17 +560,10 @@ export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}
   }
 }
 
-export function releaseSessionAfterStream<
-  Kind extends HarnessTargetKind,
-  Id extends string,
-  Input extends ModelSchema,
-  Output extends ModelSchema,
-  Updates extends HarnessOutputUpdateKind,
-  Interrupts extends readonly HarnessInterruptKind[],
->(
-  stream: HarnessTargetStream<HarnessTargetContract<Kind, Id, Input, Output, Updates, Interrupts>>,
+export function releaseSessionAfterStream<Target extends AnyHarnessTargetContract>(
+  stream: HarnessTargetStream<Target>,
   release: () => Promise<void>,
-): HarnessTargetStream<HarnessTargetContract<Kind, Id, Input, Output, Updates, Interrupts>> {
+): HarnessTargetStream<Target> {
   let released = false
   const releaseOnce = async () => {
     if (released) return

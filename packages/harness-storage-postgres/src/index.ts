@@ -55,7 +55,7 @@ type FinalizeRunRequest = Parameters<HarnessStorage['finalizeRun']>[0]
 type PersistedFinalRunEvent = FinalizeRunRequest['terminalEvent']
 type SerializedError = NonNullable<RunRecord['error']>
 type PgRow = Record<string, unknown>
-const RUN_PROJECTION = '*, output_json is not null as has_output, approval_receipt_json is not null as has_approval_receipt'
+const RUN_PROJECTION = '*, output_json is not null as has_output, approval_receipt_json is not null as has_approval_receipt, validated_input_json is not null as has_validated_input'
 const CHECKPOINT_PROJECTION = '*, output_json is not null as has_output'
 
 const STORAGE_CAPABILITIES = Object.freeze([
@@ -298,13 +298,15 @@ class PostgresHarnessStorage implements HarnessStorage {
       const inserted = await client.query(
         `insert into purista_harness_runs
           (id, session_id, kind, target, started_at, finished_at, status, revision, input_json,
-           output_json, error_json, approval_receipt_json, attempt, worker_id, initial_step_id, metadata_json)
+           validated_input_json, output_json, error_json, approval_receipt_json, attempt, worker_id, initial_step_id, metadata_json)
          values ($1, $2, $3, $4, $5, null, 'running', 1, $6::jsonb,
-           null, null, null, null, null, null, $7::jsonb)
+           $7::jsonb, null, null, null, null, null, null, $8::jsonb)
          on conflict (id) do nothing returning *, output_json is not null as has_output,
-           approval_receipt_json is not null as has_approval_receipt`,
+           approval_receipt_json is not null as has_approval_receipt,
+           validated_input_json is not null as has_validated_input`,
         [record.id, record.sessionId, record.kind, record.target, record.startedAt,
-          JSON.stringify(record.input), stringify(record.metadata)],
+          JSON.stringify(record.input), record.kind === 'child_task' ? null : JSON.stringify(record.validatedInput),
+          stringify(record.metadata)],
       )
       const insertedRow = inserted.rows[0] as PgRow | undefined
       if (insertedRow) return rowToRun(insertedRow)
@@ -663,7 +665,7 @@ class PostgresHarnessStorage implements HarnessStorage {
           || existing.definitionVersion !== validated.definitionVersion || existing.deadline !== validated.deadline) {
           throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
         }
-        return { created: false, snapshot: existing }
+        return deepFreeze({ created: false, snapshot: existing })
       }
       const runRows = await client.query(`select ${RUN_PROJECTION} from purista_harness_runs where id = $1 for update`, [validated.runId])
       const runRow = runRows.rows[0] as PgRow | undefined
@@ -689,7 +691,7 @@ class PostgresHarnessStorage implements HarnessStorage {
       )
       await client.query("update purista_harness_runs set status = 'waiting', revision = revision + 1 where id = $1", [validated.runId])
       await client.query('delete from purista_harness_run_leases where run_id = $1', [validated.runId])
-      return { created: true, snapshot }
+      return deepFreeze({ created: true, snapshot: deepFreeze(snapshot) })
     })))
   }
 
@@ -761,7 +763,7 @@ class PostgresHarnessStorage implements HarnessStorage {
 
   private async assertV4Schema(client: PoolClient): Promise<void> {
     const required: Readonly<Record<string, Readonly<Record<string, string | undefined>>>> = {
-      purista_harness_runs: { revision: 'bigint', input_json: 'jsonb', approval_receipt_json: undefined },
+      purista_harness_runs: { revision: 'bigint', input_json: 'jsonb', validated_input_json: 'jsonb', approval_receipt_json: undefined },
       purista_harness_run_events: { sequence: 'bigint', at: 'timestamp with time zone' },
       purista_harness_run_leases: { acquisition_id: 'text', request_json: 'jsonb', acquired_revision: 'bigint' },
     }
@@ -775,11 +777,21 @@ class PostgresHarnessStorage implements HarnessStorage {
       for (const [column, type] of Object.entries(columns)) {
         const row = actual.get(column)
         if (!row || (type !== undefined && row['data_type'] !== type)
-          || (column !== 'approval_receipt_json' && row['is_nullable'] !== 'NO')) throw incompatibleSchema()
+          || (!['approval_receipt_json', 'validated_input_json'].includes(column) && row['is_nullable'] !== 'NO')) throw incompatibleSchema()
       }
     }
     await this.assertUniqueConstraint(client, 'purista_harness_run_events', ['run_id', 'sequence'])
     await this.assertUniqueConstraint(client, 'purista_harness_run_leases', ['acquisition_id'])
+    await this.assertValidatedInputKindSemantics(client)
+  }
+
+  private async assertValidatedInputKindSemantics(client: PoolClient): Promise<void> {
+    const constraints = await client.query(
+      `select pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conrelid = 'purista_harness_runs'::regclass and contype = 'c'`,
+    )
+    if (!constraints.rows.some((row) => hasValidatedInputKindSemantics(row['definition']))) throw incompatibleSchema()
   }
 
   private async assertUniqueConstraint(client: PoolClient, table: string, columns: readonly string[]): Promise<void> {
@@ -887,7 +899,7 @@ class PostgresHarnessStorage implements HarnessStorage {
     const rows = await client.query('select * from purista_harness_external_waits where wait_id = $1 for update', [waitId])
     const row = rows.rows[0] as PgRow | undefined
     if (!row) return undefined
-    return validateExternalWaitSnapshot({
+    return deepFreeze(validateExternalWaitSnapshot({
       waitId: text(row['wait_id']),
       kind: text(row['kind']),
       schemaVersion: text(row['schema_version']),
@@ -897,7 +909,7 @@ class PostgresHarnessStorage implements HarnessStorage {
       createdAt: date(row['created_at']),
       ...optional('resolvedAt', nullableDate(row['resolved_at'])),
       ...optional('eventId', nullableText(row['event_id'])),
-    })
+    }))
   }
 
   private async expireExternalWait(client: PoolClient, snapshot: ExternalWaitSnapshot | undefined): Promise<ExternalWaitSnapshot | undefined> {
@@ -918,23 +930,23 @@ class PostgresHarnessStorage implements HarnessStorage {
       'update purista_harness_external_waits set status = $1, resolved_at = $2 where wait_id = $3',
       [resolved.status, resolved.resolvedAt, resolved.waitId],
     )
-    return resolved
+    return deepFreeze(resolved)
   }
 
   private async resolveExternalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
     return this.transaction(async (client) => {
       const snapshot = await this.expireExternalWait(client, await this.loadExternalWait(client, signal.waitId))
-      if (!snapshot) return validateExternalWaitSignalResult({ kind: 'not_found' })
+      if (!snapshot) return deepFreeze(validateExternalWaitSignalResult({ kind: 'not_found' }))
       const duplicate = await client.query(
         'select event_id from purista_harness_external_wait_signals where wait_id = $1 and event_id = $2',
         [signal.waitId, signal.eventId],
       )
-      if (duplicate.rows[0]) return validateExternalWaitSignalResult({ kind: 'duplicate', snapshot })
+      if (duplicate.rows[0]) return deepFreeze(validateExternalWaitSignalResult({ kind: 'duplicate', snapshot }))
       await client.query(
         'insert into purista_harness_external_wait_signals(wait_id, event_id) values ($1, $2)',
         [signal.waitId, signal.eventId],
       )
-      if (snapshot.status !== 'waiting') return validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot })
+      if (snapshot.status !== 'waiting') return deepFreeze(validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot }))
       const resolved = validateExternalWaitSnapshot({
         waitId: snapshot.waitId,
         kind: snapshot.kind,
@@ -952,7 +964,7 @@ class PostgresHarnessStorage implements HarnessStorage {
         'update purista_harness_external_waits set status = $1, resolved_at = $2, event_id = $3 where wait_id = $4',
         [terminal.status, terminal.resolvedAt, signal.eventId, signal.waitId],
       )
-      return validateExternalWaitSignalResult({ kind: 'applied', snapshot: terminal })
+      return deepFreeze(validateExternalWaitSignalResult({ kind: 'applied', snapshot: terminal }))
     })
   }
 
@@ -1005,7 +1017,7 @@ function rowToSession(row: PgRow): SessionRecord {
   const sandboxBinding = json<SessionRecord['sandboxBinding']>(row['sandbox_binding_json'])
   if (!sandboxBinding) throw malformedRow()
   assertSessionSandboxBindingTransition(sandboxBinding, sandboxBinding, 'getSession')
-  return {
+  return deepFreeze({
     id: text(row['id']),
     instanceId: text(row['instance_id']),
     createdAt: date(row['created_at']),
@@ -1014,11 +1026,11 @@ function rowToSession(row: PgRow): SessionRecord {
     ...optional('identity', json<SessionRecord['identity']>(row['identity_json'])),
     sandboxBinding,
     ...optional('metadata', json<Record<string, JsonValue>>(row['metadata_json'])),
-  }
+  })
 }
 
 function rowToMessage(row: PgRow): Message {
-  return {
+  return deepFreeze({
     id: text(row['id']),
     sessionId: text(row['session_id']),
     ...optional('runId', nullableText(row['run_id'])),
@@ -1027,24 +1039,28 @@ function rowToMessage(row: PgRow): Message {
     ...optional('toolCalls', json<Message['toolCalls']>(row['tool_calls_json'])),
     ...optional('toolResults', json<Message['toolResults']>(row['tool_results_json'])),
     timestamp: date(row['created_at']),
-  }
+  })
 }
 
 function rowToRun(row: PgRow): RunRecord {
   const input = json<JsonValue>(row['input_json']) ?? null
+  const kind = text(row['kind']) as RunRecord['kind']
+  const hasValidatedInput = boolean(row['has_validated_input'])
+  const validatedInput = jsonIncludingNull<JsonValue>(row['validated_input_json'])
   const hasOutput = boolean(row['has_output'])
   const hasApprovalReceipt = boolean(row['has_approval_receipt'])
   const output = json<JsonValue>(row['output_json']) ?? null
   const record = {
     id: text(row['id']),
     sessionId: text(row['session_id']),
-    kind: text(row['kind']) as RunRecord['kind'],
+    kind,
     target: text(row['target']),
     startedAt: date(row['started_at']),
     ...optional('finishedAt', nullableDate(row['finished_at'])),
     status: text(row['status']) as RunRecord['status'],
     revision: number(row['revision']),
     input,
+    ...(hasValidatedInput ? { validatedInput } : {}),
     ...(hasOutput ? { output } : {}),
     ...optional('error', json<NonNullable<RunRecord['error']>>(row['error_json'])),
     ...(hasApprovalReceipt ? { approvalReceipt: json<NonNullable<RunRecord['approvalReceipt']>>(row['approval_receipt_json']) } : {}),
@@ -1066,6 +1082,9 @@ function validateRunRecord(record: RunRecord): void {
     || (record.attempt !== undefined && !positive(record.attempt))
     || (record.workerId !== undefined && !validId(record.workerId))
     || (record.initialStepId !== undefined && !validId(record.initialStepId))) throw malformedRow()
+  const hasValidatedInput = Object.hasOwn(record, 'validatedInput')
+  if (record.kind === 'child_task' ? hasValidatedInput : !hasValidatedInput
+    || !isJsonValue(record.validatedInput)) throw malformedRow()
   const terminal = isTerminal(record.status)
   if (!terminal) {
     if (record.finishedAt !== undefined || Object.hasOwn(record, 'output') || record.error !== undefined
@@ -1131,6 +1150,11 @@ function json<T>(value: unknown): T | undefined {
   return (typeof value === 'string' ? JSON.parse(value) : value) as T
 }
 
+function jsonIncludingNull<T>(value: unknown): T | undefined {
+  if (value === undefined) return undefined
+  return (typeof value === 'string' ? JSON.parse(value) : value) as T
+}
+
 function text(value: unknown): string {
   if (typeof value !== 'string') throw malformedRow()
   return value
@@ -1186,23 +1210,47 @@ function optional<K extends string, V>(key: K, value: V | undefined): { [P in K]
 }
 
 function canonicalJson(value: unknown): string {
+  return encodeCanonicalJson(value, new Set<object>())
+}
+
+function encodeCanonicalJson(value: unknown, ancestors: Set<object>): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value)
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError('Canonical JSON numbers must be finite.')
     return JSON.stringify(value)
   }
-  if (Array.isArray(value)) {
-    const allowed = new Set<PropertyKey>(['length', ...Array.from({ length: value.length }, (_, index) => String(index))])
-    if (Reflect.ownKeys(value).some((key) => !allowed.has(key))
-      || Array.from({ length: value.length }, (_, index) => index).some((index) => !(index in value))) {
-      throw new TypeError('Canonical JSON arrays must be dense.')
+  if (typeof value !== 'object') throw new TypeError('Canonical JSON values must contain only JSON data.')
+  if (ancestors.has(value)) throw new TypeError('Canonical JSON values must not contain cycles.')
+  ancestors.add(value)
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const keys = Reflect.ownKeys(descriptors)
+    if (keys.some((key) => typeof key !== 'string')) throw new TypeError('Canonical JSON values must not contain symbol keys.')
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError('Canonical JSON arrays must use the standard prototype.')
+      const length = descriptors['length']
+      if (!length || !('value' in length) || length.value !== value.length) throw new TypeError('Canonical JSON arrays must have a data length.')
+      const items: string[] = []
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)]
+        if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) throw new TypeError('Canonical JSON arrays must be dense enumerable data.')
+        items.push(encodeCanonicalJson(descriptor.value, ancestors))
+      }
+      if (keys.length !== value.length + 1) throw new TypeError('Canonical JSON arrays must contain only indexes and length.')
+      return `[${items.join(',')}]`
     }
-    return `[${value.map(canonicalJson).join(',')}]`
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError('Canonical JSON objects must be plain records.')
+    const stringKeys = keys as string[]
+    for (const key of stringKeys) {
+      const descriptor = descriptors[key]
+      if (!descriptor?.enumerable || !('value' in descriptor)) throw new TypeError('Canonical JSON objects must contain only enumerable data properties.')
+    }
+    stringKeys.sort(codePointCompare)
+    return `{${stringKeys.map((key) => `${JSON.stringify(key)}:${encodeCanonicalJson((descriptors[key] as PropertyDescriptor & { value: unknown }).value, ancestors)}`).join(',')}}`
+  } finally {
+    ancestors.delete(value)
   }
-  if (!plain(value)) throw new TypeError('Canonical JSON objects must be plain records.')
-  if (Reflect.ownKeys(value).some((key) => typeof key !== 'string')) throw new TypeError('Canonical JSON objects must not contain symbol keys.')
-  const entries = Object.entries(value).sort(([left], [right]) => codePointCompare(left, right))
-  return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(',')}}`
 }
 
 function jsonCanonical(value: unknown): string {
@@ -1218,6 +1266,12 @@ function codePointCompare(left: string, right: string): number {
   return leftPoints.length - rightPoints.length
 }
 
+function hasValidatedInputKindSemantics(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const normalized = value.toLowerCase().replace(/\s+/g, '')
+  return normalized === "check((((kind=any(array['agent'::text,'workflow'::text]))and(validated_input_jsonisnotnull))or((kind='child_task'::text)and(validated_input_jsonisnull))))"
+}
+
 function definedAttrs(attrs: SpanAttrs): Record<string, string | number | boolean | string[]> {
   const out: Record<string, string | number | boolean | string[]> = {}
   for (const [key, value] of Object.entries(attrs)) if (value !== undefined) out[key] = value
@@ -1228,14 +1282,16 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/
 const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 
 function normalizeCreateRunRequest(value: CreateRunRequest): CreateRunRequest {
-  if (!plain(value) || !isJsonValue(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'metadata'])
+  if (!plain(value) || !isJsonValue(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'validatedInput', 'metadata'])
     || !hasKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input'])
     || !validId(value.id) || !validId(value.sessionId) || !validId(value.target)
     || !['agent', 'workflow', 'child_task'].includes(value.kind) || !validTimestamp(value.startedAt)
+    || (value.kind === 'child_task' ? Object.hasOwn(value, 'validatedInput') : !Object.hasOwn(value, 'validatedInput'))
     || !isJsonValue(value.input)
     || (Object.hasOwn(value, 'metadata') && (value.metadata === undefined || !plain(value.metadata) || !isJsonValue(value.metadata)))) throw runConflict()
   try {
     canonicalJson(value.input)
+    if (value.kind !== 'child_task') canonicalJson(value['validatedInput'])
     if (value.metadata !== undefined) canonicalJson(value.metadata)
   } catch { throw runConflict() }
   return deepFreeze(structuredClone(value))
@@ -1435,7 +1491,8 @@ function validSerializedError(value: unknown): value is SerializedError {
 
 function runCreationBytes(value: CreateRunRequest | RunRecord): string {
   return canonicalJson(['harness-run-create-v1', value.id, value.sessionId, value.kind, value.target,
-    value.startedAt, value.input, Object.hasOwn(value, 'metadata'), value.metadata ?? null])
+    value.startedAt, value.input, Object.hasOwn(value, 'validatedInput'), value.kind === 'child_task' ? null : value.validatedInput,
+    Object.hasOwn(value, 'metadata'), value.metadata ?? null])
 }
 function runConflict(): StateError { return new StateError('Run creation conflicts with an existing logical run.', { op: 'createRun', reason: 'run_conflict' }) }
 function acquisitionConflict(): StateError { return new StateError('Run acquisition conflicts with the observed state.', { op: 'acquireRun', reason: 'acquisition_conflict' }) }

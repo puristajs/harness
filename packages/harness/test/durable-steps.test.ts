@@ -32,6 +32,7 @@ async function createContext(options: Parameters<typeof createDurableWorkflowCon
     target: 'initial',
     startedAt: new Date().toISOString(),
     input: { prompt: 'hello' },
+    validatedInput: { prompt: 'hello' },
   })
   const lease = await acquire(runtime, 'run-step', 'session-step', 'worker-step', 'initial')
   return { runtime, lease, ctx: createDurableWorkflowContext(runtime, lease, options) }
@@ -80,6 +81,7 @@ it('replays committed steps on resume without re-running side effects', async ()
     target: start.stepId,
     startedAt: new Date().toISOString(),
     input: start.input,
+    validatedInput: start.input,
   })
 
   // First attempt: run two steps, then "crash" (release the lease) after committing.

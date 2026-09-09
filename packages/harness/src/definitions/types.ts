@@ -39,19 +39,54 @@ type HarnessInterruptForKind<Kind extends HarnessInterruptKind> =
 		: Extract<import('../runtime/outcomes.js').HarnessInterrupt, { readonly type: 'external-wait' }>
 export type HarnessInterruptForKinds<Kinds extends readonly HarnessInterruptKind[]> = HarnessInterruptForKind<Kinds[number]>
 
-/** Sole portable invocation inference owned by a target contract. */
-export interface HarnessTargetInference<
+declare const harnessTargetInferenceInvariant: unique symbol
+
+type HarnessTargetInferenceInvariantTuple<
+	WireInput extends JsonValue,
+	ValidatedInput extends JsonValue,
+	Output extends JsonValue,
+	Updates extends HarnessOutputUpdateKind,
+	Interrupts extends readonly HarnessInterruptKind[],
+> = readonly [WireInput, ValidatedInput, Output, Updates, Interrupts]
+
+/** Exact invariant invocation inference for a trusted generated target contract. */
+export interface HarnessTargetInferenceFor<
+	WireInput extends JsonValue,
+	ValidatedInput extends JsonValue,
+	Output extends JsonValue,
+	Updates extends HarnessOutputUpdateKind,
+	Interrupts extends readonly HarnessInterruptKind[],
+> {
+	readonly input: WireInput
+	readonly validatedInput: ValidatedInput
+	readonly output: Output
+	readonly update: HarnessUpdateFor<ModelSchema, Updates>
+	readonly interrupt: HarnessInterruptForKinds<Interrupts>
+	readonly [harnessTargetInferenceInvariant]: (
+		value: HarnessTargetInferenceInvariantTuple<WireInput, ValidatedInput, Output, Updates, Interrupts>,
+	) => HarnessTargetInferenceInvariantTuple<WireInput, ValidatedInput, Output, Updates, Interrupts>
+}
+
+type HarnessTargetInference<
 	Input extends ModelSchema,
 	Output extends ModelSchema,
 	Updates extends HarnessOutputUpdateKind,
 	Interrupts extends readonly HarnessInterruptKind[],
-> {
-	readonly input: InferIn<Input> & JsonValue
-	readonly validatedInput: Infer<Input> & JsonValue
-	readonly output: Infer<Output> & JsonValue
-	readonly update: HarnessUpdateFor<Output, Updates>
-	readonly interrupt: HarnessInterruptForKinds<Interrupts>
-}
+> = HarnessTargetInferenceFor<
+	InferIn<Input> & JsonValue,
+	Infer<Input> & JsonValue,
+	Infer<Output> & JsonValue,
+	Updates,
+	Interrupts
+>
+
+type HarnessTargetInferenceShape<
+	WireInput extends JsonValue,
+	ValidatedInput extends JsonValue,
+	Output extends JsonValue,
+	Updates extends HarnessOutputUpdateKind,
+	Interrupts extends readonly HarnessInterruptKind[],
+> = HarnessTargetInferenceFor<WireInput, ValidatedInput, Output, Updates, Interrupts>
 
 /** Portable data-only contract exposed by an executable Harness target. */
 export interface HarnessTargetContract<
@@ -61,6 +96,8 @@ export interface HarnessTargetContract<
 	Output extends ModelSchema,
 	Updates extends HarnessOutputUpdateKind,
 	Interrupts extends readonly HarnessInterruptKind[],
+	Inference extends HarnessTargetInferenceShape<any, any, Infer<Output> & JsonValue, Updates, Interrupts>
+		= HarnessTargetInference<Input, Output, Updates, Interrupts>,
 > {
 	readonly kind: Kind
 	readonly id: Id
@@ -71,7 +108,7 @@ export interface HarnessTargetContract<
 	readonly updates: Updates
 	readonly interrupts: Interrupts
 	/** Type-only invocation contract. The frozen runtime value is non-enumerable. */
-	readonly $infer: HarnessTargetInference<Input, Output, Updates, Interrupts>
+	readonly $infer: Inference
 }
 
 /** Type-only input, validated-input, and output projection on a definition. */
@@ -89,7 +126,8 @@ export type HarnessTargetDefinitionInference<
 		ModelSchema,
 		ModelSchema,
 		HarnessOutputUpdateKind,
-		readonly HarnessInterruptKind[]
+		readonly HarnessInterruptKind[],
+		any
 	>,
 > = Contract['$infer']
 
@@ -356,9 +394,9 @@ export type AnyAgentDefinition = Readonly<{
 	sandbox?: SandboxPolicy | undefined
 	workspace?: true | undefined
 	durable?: true | undefined
-	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any>
+	contract: HarnessTargetContract<'agent', string, ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any, any>
 	/** Exact definition inference shared with `contract.$infer`. */
-	readonly $infer: HarnessTargetInference<ModelSchema, ModelSchema, 'text-delta' | 'object-snapshot', any>
+	readonly $infer: any
 }> & DefinitionReference<'agent', string>
 /** Direct child-agent reference or its parent-facing description override. */
 export type AgentSubagentReference = AnyAgentDefinition | Readonly<{ agent: AnyAgentDefinition; description?: string }>
@@ -746,7 +784,7 @@ export type AnyWorkflowDefinition = Readonly<{
 	workspace?: true | undefined
 	durable?: true | undefined
 	handler: (...args: any[]) => Promise<any>
-	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', any>
+	contract: HarnessTargetContract<'workflow', string, ModelSchema, ModelSchema, 'none', any, any>
 	/** Exact definition inference shared with `contract.$infer`. */
-	readonly $infer: HarnessTargetInference<ModelSchema, ModelSchema, 'none', any>
+	readonly $infer: any
 }> & DefinitionReference<'workflow', string>

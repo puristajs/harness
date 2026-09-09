@@ -6,6 +6,7 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineHarness, getHarnessRuntimeBlueprint } from '../src/definitions/harness.js'
 import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
+import type { ToolApprovalResume } from '../src/approvals/index.js'
 import type { HarnessExecutionCaller } from '../src/definitions/types.js'
 import {
 	HarnessConfigError, HarnessTargetRouteReceiptMismatchError, HostNestedTargetError, InternalError,
@@ -13,6 +14,7 @@ import {
 } from '../src/errors/index.js'
 import {
 	assertHarnessHostToolOwner, createHostOwnerToken, defineHostTool, instantiateHostedHarness,
+	visitHostedHarnessTargets,
 	type HarnessHostContextRequest, type HarnessNestedTargetInvoker,
 } from '../src/integrator/index.js'
 import { hostToolOwner, isHostOwnerToken } from '../src/integrator/host-tool.js'
@@ -23,7 +25,7 @@ import type {
 } from '../src/ports/target-dispatcher.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
-import { createTelemetryShim } from '../src/telemetry/index.js'
+import { createTelemetryShim, OtelTelemetryShim } from '../src/telemetry/index.js'
 import { canonicalJson } from '../src/runtime/canonical-json.js'
 import type { RunCheckpoint } from '../src/storage/execution.js'
 import type { JsonValue } from '../src/models/json.js'
@@ -33,6 +35,7 @@ const trace = Object.freeze({
 	traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
 	tracestate: 'vendor=value',
 })
+const allowHostedTarget = () => {}
 
 function persistentStorage(): InMemoryHarnessStorage {
 	const storage = new InMemoryHarnessStorage()
@@ -178,7 +181,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 		},
 	})
 	const parent = defineAgent('remoteApprovalParent', {
-		input: z.string(), instructions: 'Use the host tool.', tools: [hostTool],
+		input: z.string(), instructions: 'Use the host tool.', tools: [hostTool], subagents: { child },
 		prompt: input => ({ role: 'user', content: input }),
 	})
 	const childDefinition = defineHarness({ name: 'remoteApprovalReceiver', revision: 'v1' }).addAgent(child)
@@ -192,7 +195,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	const remoteBindings = {
 		hostOwner: owner,
 		targetDispatcher: undefined as unknown as HarnessTargetDispatcher,
-		projectIdentity: () => undefined,
+		projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 		projectTraceContext: () => undefined,
 		createHostContext: request => Object.freeze({ generation: 'remote', nestedTargets: request.nestedTargets,
 			checkpointStep: request.checkpointStep }),
@@ -239,7 +242,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	const stopRemote = async () => { await remoteInstance?.close(); remoteInstance = undefined }
 	const startParent = (provider: FakeModelProvider) => instantiateHostedHarness(parentDefinition,
 		{ model: { provider, model: 'fake' }, storage }, {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined,
 			createHostContext(request: HarnessHostContextRequest<HostInvocation>) {
 				hostContextInvocations.push(request.hostInvocation)
@@ -262,8 +265,8 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 		invocationId: 'workflow-parent-agent-run', rootRunId: 'workflow-root-run', parentRunId: 'workflow-run',
 		parentWorkflowId: options.callerWorkflowId, depth: 1, remainingDepth: 3, signal: new AbortController().signal })
 	let interrupted: any
-	if (rootInvocation === undefined) interrupted = await firstParent.runHosted({ target: parent.contract, input: 'root-input',
-		invokeOptions: { sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run' }, hostInvocation: {} })
+	if (rootInvocation === undefined) interrupted = await firstParent.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'root-input', input: 'root-input',
+		invokeOptions: { sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run' }, hostInvocation: {}, authorize: allowHostedTarget })
 	else {
 		const opened = await firstParent.streamDispatched({ delivery: 'fresh', target: parent.contract, wireInput: 'root-input', input: 'root-input',
 			invocation: rootInvocation, hostInvocation: {} })
@@ -288,6 +291,57 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 }
 
 describe('hosted Harness runtime', () => {
+	it('visits the authentic compiled target closure once in deterministic root-aware order', () => {
+		const alpha = defineAgent('alphaDependency', { instructions: 'Dependency.' })
+		const zulu = defineAgent('zuluRoot', { instructions: 'Root.', subagents: { alpha } })
+		const beta = defineWorkflow('betaRoot', { agents: [alpha], async handler() { return 'done' } })
+		const definition = defineHarness({ name: 'visitorHarness', revision: 'v1' }).addAgent(zulu).addWorkflow(beta)
+		const entries: Array<Readonly<{ target: AnyHarnessTargetContract; visibility: 'root' | 'dependency' }>> = []
+
+		expect(visitHostedHarnessTargets(definition, entry => entries.push(entry))).toBeUndefined()
+		expect(entries.map(entry => [entry.target.kind, entry.target.id, entry.visibility])).toEqual([
+			['agent', 'alphaDependency', 'dependency'],
+			['agent', 'zuluRoot', 'root'],
+			['workflow', 'betaRoot', 'root'],
+		])
+		expect(entries.map(entry => entry.target)).toEqual([alpha.contract, zulu.contract, beta.contract])
+		expect(entries.every(entry => Object.isFrozen(entry))).toBe(true)
+		expect(entries.map(entry => Reflect.ownKeys(entry))).toEqual([
+			['target', 'visibility'], ['target', 'visibility'], ['target', 'visibility'],
+		])
+
+		const emptyVisitor = vi.fn()
+		expect(visitHostedHarnessTargets(defineHarness({ name: 'emptyVisitorHarness' }), emptyVisitor)).toBeUndefined()
+		expect(emptyVisitor).not.toHaveBeenCalled()
+	})
+
+	it('preflights definition authenticity before callbacks and propagates visitor failure exactly', () => {
+		const dependency = defineAgent('visitorFailureDependency', { instructions: 'Dependency.' })
+		const root = defineWorkflow('visitorFailureRoot', { agents: [dependency], async handler() { return 'done' } })
+		const definition = defineHarness({ name: 'visitorFailureHarness', revision: 'v1' }).addWorkflow(root)
+		const callback = vi.fn()
+		const reflected = {}
+		for (const key of Reflect.ownKeys(definition)) {
+			Object.defineProperty(reflected, key, Object.getOwnPropertyDescriptor(definition, key)!)
+		}
+		Object.freeze(reflected)
+
+		for (const candidate of [{ ...definition }, reflected, { kind: 'harness', name: definition.name }]) {
+			expect(() => visitHostedHarnessTargets(candidate as typeof definition, callback)).toThrow(expect.objectContaining({
+				code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'foreign_definition', path: 'definition' },
+			}))
+		}
+		expect(callback).not.toHaveBeenCalled()
+
+		const sentinel = new Error('visitor failed')
+		let callbacks = 0
+		expect(() => visitHostedHarnessTargets(definition, () => {
+			callbacks += 1
+			throw sentinel
+		})).toThrow(sentinel)
+		expect(callbacks).toBe(1)
+	})
+
 	it('dispatches an authentic dependency-only graph target while keeping hosted root entrypoints root-only', async () => {
 		const dependency = defineAgent('hostedDependencyOnly', { instructions: 'Answer.' })
 		const root = defineWorkflow('hostedDependencyRoot', { agents: [dependency], async handler() { return 'root' } })
@@ -298,7 +352,7 @@ describe('hosted Harness runtime', () => {
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' } }, {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})
 		const opened = await instance.streamDispatched({ delivery: 'fresh', target: dependency.contract,
@@ -308,8 +362,8 @@ describe('hosted Harness runtime', () => {
 			}, hostInvocation: {} })
 		await expect(opened.result).resolves.toMatchObject({ status: 'completed', runId: 'dependency-run', output: 'dependency answer' })
 		for await (const _event of opened) void _event
-		await expect(instance.runHosted({ target: dependency.contract, input: 'question',
-			invokeOptions: { sessionId: 'root-only-session' }, hostInvocation: {} } as never))
+		await expect(instance.runHosted({ delivery: 'fresh', target: dependency.contract, wireInput: 'question', input: 'question',
+			invokeOptions: { sessionId: 'root-only-session' }, hostInvocation: {}, authorize: allowHostedTarget } as never))
 			.rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'unknown_hosted_target' } } })
 		await expect(instance.streamDispatched({ delivery: 'fresh', target: { ...dependency.contract },
 			wireInput: 'question', input: 'question', invocation: {
@@ -339,11 +393,11 @@ describe('hosted Harness runtime', () => {
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const instance = await instantiateHostedHarness(definition, { storage: persistentStorage() }, {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})
-		const hosted = await instance.streamHosted({ target: workflow.contract, input: 'root',
-			invokeOptions: { sessionId: 'hosted-result-root' }, hostInvocation: {} })
+		const hosted = await instance.streamHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'root', input: 'root',
+			invokeOptions: { sessionId: 'hosted-result-root' }, hostInvocation: {}, authorize: allowHostedTarget })
 		const hostedOutcome = await hosted.result
 		expect(hostedOutcome).toMatchObject({ status: 'completed', output: 'done:root' })
 		const hostedEvents = []
@@ -377,11 +431,11 @@ describe('hosted Harness runtime', () => {
 		const storage = persistentStorage()
 		const projectedTargets: unknown[] = []; const projectedCallers: unknown[] = []
 		const instance = await instantiateHostedHarness(definition, { storage }, {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => trace,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => trace,
 			createHostContext: request => { projectedTargets.push(request.target); projectedCallers.push(request.caller); return { marker: 'host', nestedTargets: request.nestedTargets } },
 			logger: logger(), telemetry: createTelemetryShim(),
 		})
-		const result = await instance.runHosted({ target: workflow.contract, input: 'value', invokeOptions: { sessionId: 'workflow-host-session' }, hostInvocation: {} })
+		const result = await instance.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'value', input: 'value', invokeOptions: { sessionId: 'workflow-host-session' }, hostInvocation: {}, authorize: allowHostedTarget })
 		expect(result).toMatchObject({ status: 'completed', output: 'host:child-answer:child-answer' })
 		expect(hostEffects).toBe(1)
 		expect(counts().opens).toBe(1)
@@ -416,10 +470,10 @@ describe('hosted Harness runtime', () => {
 		const workflow = defineWorkflow('workflowFailure', { input: z.string(), output: z.string(), tools: [tool], durable: true,
 			async handler({ input, tools }) { return tools.workflowFailureHost.run(input, { callId: 'host' }) } })
 		const instance = await instantiateHostedHarness(defineHarness({ name: 'workflowFailureHarness', revision: 'v1' }).addWorkflow(workflow), { storage: persistentStorage() }, {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 			createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 		})
-		await expect(instance.runHosted({ target: workflow.contract, input: 'go', invokeOptions: { sessionId: 'workflow-failure-session' }, hostInvocation: {} }))
+		await expect(instance.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'go', input: 'go', invokeOptions: { sessionId: 'workflow-failure-session' }, hostInvocation: {}, authorize: allowHostedTarget }))
 			.resolves.toMatchObject({ status: 'completed', output: 'handled' })
 		expect(opens).toBe(1)
 		await instance.close()
@@ -435,7 +489,7 @@ describe('hosted Harness runtime', () => {
 			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
 		const hostTool = defineHostTool(owner, 'workflowInterruptedHost', { description: 'Call child.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(child.contract, input, { callId: 'nested-child' }) } })
-		const workflow = defineWorkflow('workflowInterrupted', { input: z.string(), output: z.string(), tools: [hostTool], durable: true,
+		const workflow = defineWorkflow('workflowInterrupted', { input: z.string(), output: z.string(), tools: [hostTool], agents: [child], durable: true,
 			async handler({ input, tools }) { return tools.workflowInterruptedHost.run(input, { callId: 'host-call' }) } })
 		const definition = defineHarness({ name: 'workflowInterruptedHarness', revision: 'v1', defaults: { maxDepth: 3 } }).addAgent(child).addWorkflow(workflow)
 		const storage = persistentStorage(); const route = routeFor(child.contract, '9')
@@ -456,41 +510,41 @@ describe('hosted Harness runtime', () => {
 					wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
 			},
 		}
-		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => trace,
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => trace,
 			createHostContext: (request: HarnessHostContextRequest<object>) => { callers.push(request.caller); return { nestedTargets: request.nestedTargets } },
 			logger: logger(), telemetry: createTelemetryShim() }
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: effect.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		current = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
-		const interrupted = await current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
+		const interrupted = await current.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'go', input: 'go', invokeOptions: {
 			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root',
-		}, hostInvocation: {} })
+		}, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow host interruption.')
 		await current.close()
 		const approval = interrupted.interrupt.requests[0]!
 		const repeatedProvider = new FakeModelProvider({ strict: true })
 		repeatedProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call-2', name: effect.id, arguments: 'go-again' }], usage, finishReason: 'tool_calls' })
 		current = await instantiateHostedHarness(definition, { model: { provider: repeatedProvider, model: 'fake' }, storage }, bindings)
-		const interruptedAgain = await current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
-			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root', resume: {
+		const interruptedAgain = await current.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'go', invokeOptions: {
+			sessionId: 'workflow-interrupted-session', resume: {
 				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 				revision: interrupted.interrupt.revision, eventId: 'workflow-interrupted-resume-1',
 				decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })
+		}, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interruptedAgain.status !== 'interrupted' || interruptedAgain.interrupt.type !== 'tool-approval') throw new Error('Expected repeated workflow host interruption.')
 		await current.close()
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'child-complete', toolCalls: [], usage, finishReason: 'stop' })
 		current = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
 		const repeatedApproval = interruptedAgain.interrupt.requests[0]!
-		await expect(current.runHosted({ target: workflow.contract, input: 'go', invokeOptions: {
-			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root', resume: {
+		await expect(current.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'go', invokeOptions: {
+			sessionId: 'workflow-interrupted-session', resume: {
 				type: 'tool-approval', runId: interruptedAgain.runId, interruptId: interruptedAgain.interrupt.id,
 				revision: interruptedAgain.interrupt.revision, eventId: 'workflow-interrupted-resume-2',
 				decisions: [{ approvalId: repeatedApproval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed', output: 'child-complete' })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed', output: 'child-complete' })
 		expect(approvedEffects).toBe(2)
 		expect(callers).toEqual(callers.map(() => ({ kind: 'workflow', workflowId: 'workflowInterrupted' })))
 		const lifecycle = (await storage.listEvents(interrupted.runId)).filter(event => {
@@ -581,13 +635,13 @@ describe('hosted Harness runtime', () => {
 		})
 		const parent = await fixture.startParent(parentProvider)
 		const approval = fixture.interrupted.interrupt.requests[0]!
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId, interruptId: fixture.interrupted.interrupt.id,
 				revision: fixture.interrupted.interrupt.revision, eventId: `resumed-${status}`,
 				decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed', output: 'parent-complete' })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed', output: 'parent-complete' })
 		expect(committed).toEqual([expect.objectContaining({ kind: 'host_nested_target', outcome: expect.objectContaining({ status }) })])
 		expect(JSON.stringify(parentProvider.requests[0])).toContain(status === 'cancelled' ? 'OPERATION_CANCELLED' : 'HOST_NESTED_TARGET_FAILED')
 		await parent.close(); await fixture.stopRemote()
@@ -619,7 +673,7 @@ describe('hosted Harness runtime', () => {
 			model: { provider, model: 'fake' }, storage: persistentStorage(),
 		}, {
 			hostOwner: otherOwner, targetDispatcher: dispatcher,
-			projectIdentity: () => undefined, projectTraceContext: () => undefined,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 			createHostContext: () => ({ nestedTargets: {} as HarnessNestedTargetInvoker }), logger: logger(), telemetry: createTelemetryShim(),
 		})).rejects.toMatchObject({ meta: { reason: 'host_owner_mismatch', path: 'hostOwner', id: 'hostedLookup' } })
 		expect(initialized).toBe(0)
@@ -632,7 +686,7 @@ describe('hosted Harness runtime', () => {
 		const unreadConfig = new Proxy({}, { get() { configReads += 1; throw new Error('runtime config was read') } })
 		await expect(instantiateHostedHarness(portable, unreadConfig as never, {
 			hostOwner: copiedOwner as never, targetDispatcher: dispatcher,
-			projectIdentity: () => undefined, projectTraceContext: () => undefined,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 			createHostContext: () => ({ nestedTargets: {} as HarnessNestedTargetInvoker }), logger: logger(), telemetry: createTelemetryShim(),
 		})).rejects.toMatchObject({ meta: { reason: 'invalid_host_binding', path: 'hostBindings.hostOwner' } })
 		expect(configReads).toBe(0)
@@ -707,43 +761,107 @@ describe('hosted Harness runtime', () => {
 		const definition = defineHarness({ name: 'validatedHosted' }).addAgent(agent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
+		const storage = persistentStorage()
+		const authorizations: unknown[] = []
 		let identities = 0
 		let traces = 0
 		const unused = defineAgent('unusedValidationTarget', { instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
-		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' } }, {
+		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' }, storage }, {
 			hostOwner: owner, targetDispatcher: dispatcher,
 			projectIdentity: () => { identities += 1; return { tenantId: 'tenant-a', principalId: 'principal-a' } },
 			projectTraceContext: () => { traces += 1; return trace }, createHostContext: () => ({}),
 			logger: logger(), telemetry: createTelemetryShim(),
 		})
-		await expect(instance.runHosted({ target: { ...agent.contract } as never, input: 5,
-			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }) }))
+		const invalidRequests: ReadonlyArray<readonly [Record<PropertyKey, unknown>, string]> = [
+			[{ target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {}, authorize: allowHostedTarget }, 'delivery'],
+			[{ delivery: 'fresh', wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {}, authorize: allowHostedTarget }, 'target'],
+			[{ delivery: 'fresh', target: agent.contract, input: 5, invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {}, authorize: allowHostedTarget }, 'wireInput'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, hostInvocation: {}, authorize: allowHostedTarget }, 'invokeOptions'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session' }, authorize: allowHostedTarget }, 'hostInvocation'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {} }, 'authorize'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {}, authorize: allowHostedTarget }, 'input'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session', resume: undefined }, hostInvocation: {}, authorize: allowHostedTarget }, 'resume'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session', resumeIdentity: undefined }, hostInvocation: {}, authorize: allowHostedTarget }, 'resumeIdentity'],
+			[{ delivery: 'resume', target: agent.contract, wireInput: 'hello', input: undefined, invokeOptions: { sessionId: 'hosted-session', resume: {} }, hostInvocation: {}, authorize: allowHostedTarget }, 'input'],
+			[{ delivery: 'resume', target: agent.contract, wireInput: 'hello', invokeOptions: { sessionId: 'hosted-session', resume: {}, idempotencyKey: undefined }, hostInvocation: {}, authorize: allowHostedTarget }, 'idempotencyKey'],
+			[{ delivery: 'resume', target: agent.contract, wireInput: 'hello', invokeOptions: { sessionId: 'hosted-session', resume: undefined }, hostInvocation: {}, authorize: allowHostedTarget }, 'resume'],
+			[{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5, invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: {}, authorize: allowHostedTarget, extra: true }, 'extra'],
+		]
+		for (const [request, field] of invalidRequests) {
+			await expect(instance.runHosted(request as never)).rejects.toMatchObject({
+				code: 'VALIDATION_ERROR', meta: { issues: { reason: 'invalid_hosted_request', field } },
+			})
+		}
+		expect({ identities, traces }).toEqual({ identities: 0, traces: 0 })
+		await expect(instance.runHosted({ delivery: 'fresh', target: { ...agent.contract } as never, wireInput: 5, input: 5,
+			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: allowHostedTarget }))
 			.rejects.toBeInstanceOf(ValidationError)
 		expect({ identities, traces }).toEqual({ identities: 0, traces: 0 })
-		await expect(instance.runHosted({ target: agent.contract, input: new Date() as never,
-			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }) }))
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: new Date() as never, input: new Date() as never,
+			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: allowHostedTarget }))
 			.rejects.toBeInstanceOf(ValidationError)
+		const boundaryAuthorize = vi.fn()
+		const hiddenWireInput = Object.defineProperty({}, 'secret', { enumerable: false, value: 'private' })
+		const hiddenValidatedInput = Object.defineProperty([], '0', { enumerable: false, value: 'private' })
+		for (const request of [
+			{ delivery: 'fresh', target: agent.contract, wireInput: hiddenWireInput, input: 5,
+				invokeOptions: { sessionId: 'hidden-wire-session' }, hostInvocation: {}, authorize: boundaryAuthorize },
+			{ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: hiddenValidatedInput,
+				invokeOptions: { sessionId: 'hidden-input-session' }, hostInvocation: {}, authorize: boundaryAuthorize },
+		] as const) {
+			await expect(instance.runHosted(request as never)).rejects.toMatchObject({
+				code: 'VALIDATION_ERROR', meta: { issues: { reason: 'non_json_input' } },
+			})
+		}
+		expect(boundaryAuthorize).not.toHaveBeenCalled()
 		expect({ identities, traces }).toEqual({ identities: 0, traces: 0 })
 		for (const field of ['traceparent', 'tracestate'] as const) {
-			await expect(instance.runHosted({ target: agent.contract, input: 5, invokeOptions: {
+			await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 5, input: 5, invokeOptions: {
 				sessionId: 'hosted-session', [field]: 'caller-owned',
-			} as never, hostInvocation: Object.freeze({ token: 'opaque' }) })).rejects.toMatchObject({
+			} as never, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: allowHostedTarget })).rejects.toMatchObject({
 				meta: { where: 'invoke_options', issues: { reason: 'host_owned_trace_context', field } },
 			})
 		}
 		const aborted = new AbortController()
 		aborted.abort('private cancellation detail')
-		await expect(instance.runHosted({ target: agent.contract, input: 5,
-			invokeOptions: { sessionId: 'hosted-session', signal: aborted.signal }, hostInvocation: Object.freeze({ token: 'opaque' }) }))
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 5, input: 5,
+			invokeOptions: { sessionId: 'hosted-session', signal: aborted.signal }, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: allowHostedTarget }))
 			.rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
 		expect({ identities, traces }).toEqual({ identities: 0, traces: 0 })
-
-		await expect(instance.runHosted({ target: agent.contract, input: 5,
-			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }) }))
-			.resolves.toMatchObject({ status: 'completed', output: 'done' })
+		const denied = new Error('host business authorization denied')
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
+			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: () => { throw denied } }))
+			.rejects.toBe(denied)
+		expect(await storage.getSession('hosted-session')).toBeUndefined()
+		expect(await storage.listRuns('hosted-session')).toEqual([])
 		expect({ identities, traces, transforms }).toEqual({ identities: 1, traces: 1, transforms: 0 })
+		const cancelledAfterAuthorization = new AbortController()
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
+			invokeOptions: { sessionId: 'post-authorization-cancel', signal: cancelledAfterAuthorization.signal }, hostInvocation: {},
+			authorize: () => { cancelledAfterAuthorization.abort('private post-authorization cancellation') },
+		})).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+		expect(await storage.getSession('post-authorization-cancel')).toBeUndefined()
+		expect(await storage.listRuns('post-authorization-cancel')).toEqual([])
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
+			invokeOptions: { sessionId: 'post-authorization-timeout', timeoutMs: 1 }, hostInvocation: {},
+			authorize: async () => { await new Promise(resolve => setTimeout(resolve, 5)) },
+		})).rejects.toMatchObject({ code: 'OPERATION_TIMEOUT' })
+		expect(await storage.getSession('post-authorization-timeout')).toBeUndefined()
+		expect(await storage.listRuns('post-authorization-timeout')).toEqual([])
+
+		await expect(instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
+			invokeOptions: { sessionId: 'hosted-session' }, hostInvocation: Object.freeze({ token: 'opaque' }), authorize: request => {
+				authorizations.push(request)
+				expect(Object.isFrozen(request)).toBe(true)
+			} }))
+			.resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect({ identities, traces, transforms }).toEqual({ identities: 4, traces: 4, transforms: 0 })
+		expect(authorizations).toEqual([{ delivery: 'fresh', target: agent.contract, input: 5 }])
+		expect(await storage.listRuns('hosted-session')).toEqual([
+			expect.objectContaining({ kind: 'agent', input: 'hello', validatedInput: 5 }),
+		])
 		await instance.close()
 	})
 
@@ -795,6 +913,365 @@ describe('hosted Harness runtime', () => {
 		await instance.close()
 	})
 
+	it('restores and authorizes the stored validated root input before resuming or replaying a terminal result', async () => {
+		let transforms = 0
+		let effects = 0
+		const input = z.string().transform(value => { transforms += 1; return value.length })
+		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
+			async handler(_context, value) { effects += 1; return value } })
+		const agent = defineAgent('hostedResumeRoot', { input, instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: String(value) }) })
+		const definition = defineHarness({ name: 'hostedResumeHarness', revision: 'v1' }).addAgent(agent)
+		const storage = persistentStorage()
+		const unused = defineAgent('unusedResumeDispatchTarget', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const owner = createHostOwnerToken<object>()
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
+
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
+		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
+			invokeOptions: { sessionId: 'hosted-resume-session' }, hostInvocation: {}, authorize: allowHostedTarget })
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
+		await instance.close()
+		const approval = interrupted.interrupt.requests[0]!
+		const resume = Object.freeze({ type: 'tool-approval' as const, runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'hosted-resume-event',
+			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
+		const authorized: unknown[] = []
+		const resumedProvider = new FakeModelProvider({ strict: true })
+		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
+		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'hello',
+			invokeOptions: { sessionId: 'hosted-resume-session', resume }, hostInvocation: {}, authorize: request => { authorized.push(request) } }))
+			.resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect(authorized).toEqual([{ delivery: 'resume', target: agent.contract, input: 5 }])
+		expect({ transforms, effects }).toEqual({ transforms: 0, effects: 1 })
+		expect(await storage.loadCheckpoint(interrupted.runId, 'harness:interrupt:v1')).toBeUndefined()
+		await instance.close()
+
+		const replayProvider = new FakeModelProvider({ strict: true })
+		instance = await instantiateHostedHarness(definition, { model: { provider: replayProvider, model: 'fake' }, storage }, bindings)
+		const eventsBeforeReplay = await storage.listEvents(interrupted.runId)
+		const acquireRun = vi.spyOn(storage, 'acquireRun')
+		const originalGetRun = storage.getRun.bind(storage)
+		let terminalReads = 0
+		const deletingGetRun = vi.spyOn(storage, 'getRun').mockImplementation(async runId => {
+			const run = await originalGetRun(runId)
+			terminalReads += 1
+			return terminalReads === 2 ? undefined : run
+		})
+		const staleAuthorizer = vi.fn()
+		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'hello',
+			invokeOptions: { sessionId: 'hosted-resume-session', resume }, hostInvocation: {}, authorize: staleAuthorizer }))
+			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		expect(staleAuthorizer).toHaveBeenCalledOnce()
+		expect(await storage.listEvents(interrupted.runId)).toEqual(eventsBeforeReplay)
+		expect({ transforms, effects }).toEqual({ transforms: 0, effects: 1 })
+		deletingGetRun.mockRestore()
+		const replayAuthorizer = vi.fn()
+		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'hello',
+			invokeOptions: { sessionId: 'hosted-resume-session', resume }, hostInvocation: {}, authorize: replayAuthorizer }))
+			.resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect(replayAuthorizer).toHaveBeenCalledWith({ delivery: 'resume', target: agent.contract, input: 5 })
+		expect({ transforms, effects }).toEqual({ transforms: 0, effects: 1 })
+		const concurrentAuthorizer = vi.fn(async () => { await Promise.resolve() })
+		const replayRequest = () => instance.runHosted({ delivery: 'resume' as const, target: agent.contract, wireInput: 'hello',
+			invokeOptions: { sessionId: 'hosted-resume-session', resume }, hostInvocation: {}, authorize: concurrentAuthorizer })
+		await expect(Promise.all([replayRequest(), replayRequest()])).resolves.toEqual([
+			expect.objectContaining({ status: 'completed', output: 'done' }),
+			expect.objectContaining({ status: 'completed', output: 'done' }),
+		])
+		expect(concurrentAuthorizer).toHaveBeenCalledTimes(2)
+		expect(acquireRun).not.toHaveBeenCalled()
+		expect(await storage.listEvents(interrupted.runId)).toEqual(eventsBeforeReplay)
+		expect(replayProvider.requests).toHaveLength(0)
+		acquireRun.mockRestore()
+		await instance.close()
+	})
+
+	it('uses the current reviewer for authorization and host bindings while stored-run-owner execution keeps the creation identity', async () => {
+		interface HostInvocation {
+			readonly tenantId: string
+			readonly principalId: string
+			readonly token: string
+		}
+		interface HostContext { readonly token: string }
+		const owner = createHostOwnerToken<HostContext>()
+		const effects: string[] = []
+		const publicObservability: unknown[] = []
+		const spanSpy = vi.spyOn(OtelTelemetryShim.prototype, 'span').mockImplementation(async (name, attrs, fn) => {
+			publicObservability.push({ kind: 'span', name, attrs })
+			const span = {
+				setAttribute() { return span }, setAttributes(next: Record<string, unknown>) { publicObservability.push(next); return span },
+				addEvent() { return span }, addLink() { return span }, addLinks() { return span }, updateName() { return span },
+				recordException(error: unknown) { publicObservability.push(error) }, setStatus(status: unknown) { publicObservability.push(status); return span },
+				end() {}, isRecording() { return true }, spanContext() { return { traceId: '', spanId: '', traceFlags: 0 } },
+			} as never
+			return fn(span)
+		})
+		const histogramSpy = vi.spyOn(OtelTelemetryShim.prototype, 'recordHistogram').mockImplementation((name, value, attrs) => {
+			publicObservability.push({ kind: 'histogram', name, value, attrs })
+		})
+		const counterSpy = vi.spyOn(OtelTelemetryShim.prototype, 'recordCounter').mockImplementation((name, value, attrs) => {
+			publicObservability.push({ kind: 'counter', name, value, attrs })
+		})
+		const publicLogs: unknown[] = []
+		const capturedLogger = {
+			trace(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			debug(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			info(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			warn(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			error(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			fatal(message: string, fields?: Record<string, unknown>) { publicLogs.push({ message, fields }) },
+			child(fields: Record<string, unknown>) { publicLogs.push({ child: fields }); return capturedLogger },
+		}
+		const effect = defineHostTool(owner, 'bash', {
+			description: 'An approval-controlled host effect.', input: z.string(), output: z.string(),
+			async handler(context, value) { effects.push(context.token); return value },
+		})
+		const agent = defineAgent('storedOwnerRoot', {
+			input: z.string(), instructions: 'Use the reviewed effect.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }),
+		})
+		const definition = defineHarness({ name: 'storedOwnerHarness', revision: 'v1' }).addAgent(agent)
+		const storage = persistentStorage()
+		const unused = defineAgent('unusedStoredOwnerDispatchTarget', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const bindings = {
+			hostOwner: owner, targetDispatcher: dispatcher,
+			projectIdentity: (invocation: HostInvocation) => Object.freeze({ tenantId: invocation.tenantId, principalId: invocation.principalId }),
+			projectTraceContext: () => undefined,
+			createHostContext: (request: HarnessHostContextRequest<HostInvocation>) => Object.freeze({ token: request.hostInvocation.token }),
+			logger: capturedLogger, telemetry: createTelemetryShim(),
+		}
+		const creator = Object.freeze({ tenantId: 'tenant-a-private', principalId: 'owner-private', token: 'creator-host-context' })
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'reviewed-effect-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
+		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'wire-request', input: 'validated-input-private',
+			invokeOptions: { sessionId: 'stored-owner-session' }, hostInvocation: creator, authorize: allowHostedTarget })
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
+		await instance.close()
+		const approval = interrupted.interrupt.requests[0]!
+		const resume = Object.freeze({ type: 'tool-approval' as const, runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'stored-owner-resume-event',
+			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
+		const resumedProvider = new FakeModelProvider({ strict: true })
+		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
+		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		const rejectedAuthorizer = vi.fn()
+		const reviewer = Object.freeze({ tenantId: 'tenant-a-private', principalId: 'reviewer-private', token: 'reviewer-host-context' })
+		const currentCallerError = await instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'wire-request',
+			invokeOptions: { sessionId: 'stored-owner-session', resume }, hostInvocation: reviewer, authorize: rejectedAuthorizer })
+			.catch(error => error)
+		expect(currentCallerError).toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'session_identity_mismatch' } })
+		for (const malformedReviewer of [
+			{ tenantId: '', principalId: 'reviewer-private', token: 'empty-tenant-host-context' },
+			{ tenantId: 'tenant-a-private', principalId: '', token: 'empty-principal-host-context' },
+		]) {
+			const malformedError = await instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'wire-request',
+				invokeOptions: { sessionId: 'stored-owner-session', resume }, hostInvocation: malformedReviewer,
+				authorize: rejectedAuthorizer }).catch(error => error)
+			expect(malformedError).toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'session_identity_mismatch' } })
+		}
+		const crossTenantError = await instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'wire-request',
+			invokeOptions: { sessionId: 'stored-owner-session', resume, resumeIdentity: 'stored-run-owner' },
+			hostInvocation: { tenantId: 'tenant-b-private', principalId: 'reviewer-private', token: 'cross-tenant-host-context' }, authorize: rejectedAuthorizer })
+			.catch(error => error)
+		expect(crossTenantError).toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'session_identity_mismatch' } })
+		expect(rejectedAuthorizer).not.toHaveBeenCalled()
+		const authorized = vi.fn()
+		const completed = await instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'wire-request',
+			invokeOptions: { sessionId: 'stored-owner-session', resume, resumeIdentity: 'stored-run-owner' },
+			hostInvocation: reviewer, authorize: authorized })
+		expect(completed).toMatchObject({ status: 'completed', output: 'done' })
+		expect(authorized).toHaveBeenCalledWith({ delivery: 'resume', target: agent.contract, input: 'validated-input-private' })
+		expect(effects).toEqual(['reviewer-host-context'])
+		expect((await storage.getSession('stored-owner-session'))?.identity).toEqual({ tenantId: 'tenant-a-private', principalId: 'owner-private' })
+		const publicProjection = JSON.stringify({ completed, currentCallerError, crossTenantError,
+			events: await storage.listEvents(interrupted.runId), inspection: definition.inspect(), publicLogs, publicObservability })
+		for (const secret of ['tenant-a-private', 'tenant-b-private', 'owner-private', 'reviewer-private', 'validated-input-private']) {
+			expect(publicProjection).not.toContain(secret)
+		}
+		await instance.close()
+		spanSpy.mockRestore()
+		histogramSpy.mockRestore()
+		counterSpy.mockRestore()
+	})
+
+	it.each(['failed', 'cancelled'] as const)('reauthorizes and replays a hosted root %s terminal without a lease or execution', async status => {
+		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
+			async handler(_context, value) { return value } })
+		const agent = defineAgent(`terminalReplay${status}`, { input: z.string(), instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
+		const definition = defineHarness({ name: `terminalReplayHarness${status}`, revision: 'v1' }).addAgent(agent)
+		const storage = persistentStorage()
+		const unused = defineAgent(`unusedTerminalReplay${status}`, { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const owner = createHostOwnerToken<object>()
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: `terminal-${status}-call`, name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
+		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'request', input: 'request',
+			invokeOptions: { sessionId: `terminal-${status}-session` }, hostInvocation: {}, authorize: allowHostedTarget })
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
+		await instance.close()
+		const approval = interrupted.interrupt.requests[0]!
+		const resume = Object.freeze({ type: 'tool-approval' as const, runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: `terminal-${status}-resume-event`,
+			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
+		const terminalProvider = new FakeModelProvider({ strict: true })
+		vi.spyOn(terminalProvider, 'text').mockRejectedValue(status === 'cancelled'
+			? new OperationCancelledError('cancelled', { scope: 'agent' }) : new Error('private provider failure'))
+		instance = await instantiateHostedHarness(definition, { model: { provider: terminalProvider, model: 'fake' }, storage }, bindings)
+		const expectedCode = status === 'cancelled' ? 'OPERATION_CANCELLED' : 'INTERNAL_ERROR'
+		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'request',
+			invokeOptions: { sessionId: `terminal-${status}-session`, resume }, hostInvocation: {}, authorize: allowHostedTarget }))
+			.rejects.toMatchObject({ code: expectedCode })
+		await instance.close()
+		expect((await storage.getRun(interrupted.runId))?.status).toBe(status)
+		expect(await storage.loadCheckpoint(interrupted.runId, 'harness:interrupt:v1')).toBeUndefined()
+		const eventsBeforeReplay = await storage.listEvents(interrupted.runId)
+		const acquireRun = vi.spyOn(storage, 'acquireRun')
+		const replayProvider = new FakeModelProvider({ strict: true })
+		instance = await instantiateHostedHarness(definition, { model: { provider: replayProvider, model: 'fake' }, storage }, bindings)
+		const authorize = vi.fn()
+		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'request',
+			invokeOptions: { sessionId: `terminal-${status}-session`, resume }, hostInvocation: {}, authorize }))
+			.rejects.toMatchObject({ code: expectedCode })
+		expect(authorize).toHaveBeenCalledWith({ delivery: 'resume', target: agent.contract, input: 'request' })
+		expect(acquireRun).not.toHaveBeenCalled()
+		expect(await storage.listEvents(interrupted.runId)).toEqual(eventsBeforeReplay)
+		expect(replayProvider.requests).toHaveLength(0)
+		acquireRun.mockRestore()
+		await instance.close()
+	})
+
+	it.each(['run', 'stream'] as const)('releases the hosted lease when %s replays the prior approval receipt', async mode => {
+		const storage = persistentStorage()
+		let effects = 0
+		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
+			async handler(_context, value) { effects += 1; return value } })
+		const agent = defineAgent(`hostedPriorReceipt${mode}`, { input: z.string(), instructions: 'Use effects.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
+		const definition = defineHarness({ name: `hostedPriorReceiptHarness${mode}`, revision: 'v1' }).addAgent(agent)
+		const unused = defineAgent(`unusedPriorReceipt${mode}`, { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const bindings = { hostOwner: createHostOwnerToken<object>(), targetDispatcher: dispatcher,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
+		const firstProvider = new FakeModelProvider({ strict: true })
+		for (const [id, argument] of [['first-call', 'first'], ['second-call', 'second']] as const) {
+			if (mode === 'run') {
+				firstProvider.enqueueText({ content: '', toolCalls: [{ id, name: effect.id, arguments: argument }], usage, finishReason: 'tool_calls' })
+			} else {
+				firstProvider.enqueueTextStream([
+					{ kind: 'tool_call', call: { id, name: effect.id, arguments: argument } },
+					{ kind: 'finish', usage, finishReason: 'tool_calls' },
+				])
+			}
+		}
+		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const invokeFresh = async () => {
+			const request = { delivery: 'fresh' as const, target: agent.contract, wireInput: 'start', input: 'start',
+				invokeOptions: { sessionId: `hosted-prior-receipt-${mode}` }, hostInvocation: {}, authorize: allowHostedTarget }
+			if (mode === 'run') return instance.runHosted(request)
+			const stream = await instance.streamHosted(request)
+			for await (const _event of stream) { /* consume the complete transport stream */ }
+			return stream.result
+		}
+		const invokeResume = async (resume: ToolApprovalResume) => {
+			const request = { delivery: 'resume' as const, target: agent.contract, wireInput: 'start',
+				invokeOptions: { sessionId: `hosted-prior-receipt-${mode}`, resume }, hostInvocation: {}, authorize: allowHostedTarget }
+			if (mode === 'run') return instance.runHosted(request)
+			const stream = await instance.streamHosted(request)
+			for await (const _event of stream) { /* consume the complete transport stream */ }
+			return stream.result
+		}
+		const first = await invokeFresh()
+		if (first.status !== 'interrupted' || first.interrupt.type !== 'tool-approval') {
+			throw new Error(`Expected first approval interruption, received ${JSON.stringify(first)}.`)
+		}
+		const firstResume = Object.freeze({ type: 'tool-approval' as const, runId: first.runId,
+			interruptId: first.interrupt.id, revision: first.interrupt.revision, eventId: 'first-hosted-resume',
+			decisions: Object.freeze([{ approvalId: first.interrupt.requests[0]!.approvalId, approved: true }]) })
+		const second = await invokeResume(firstResume)
+		if (second.status !== 'interrupted' || second.interrupt.type !== 'tool-approval') throw new Error('Expected second approval interruption.')
+		await instance.close()
+
+		const finalProvider = new FakeModelProvider({ strict: true })
+		if (mode === 'run') finalProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
+		else finalProvider.enqueueTextStream([{ kind: 'delta', text: 'done' }, { kind: 'finish', usage, finishReason: 'stop' }])
+		instance = await instantiateHostedHarness(definition, { model: { provider: finalProvider, model: 'fake' }, storage }, bindings)
+		await expect(invokeResume(firstResume)).resolves.toEqual(second)
+		expect(finalProvider.requests).toHaveLength(0)
+		const secondResume = Object.freeze({ type: 'tool-approval' as const, runId: second.runId,
+			interruptId: second.interrupt.id, revision: second.interrupt.revision, eventId: 'second-hosted-resume',
+			decisions: Object.freeze([{ approvalId: second.interrupt.requests[0]!.approvalId, approved: true }]) })
+		await expect(invokeResume(secondResume)).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect(effects).toBe(2)
+		expect(finalProvider.requests).toHaveLength(1)
+		await instance.close()
+	})
+
+	it('loses a post-authorization resume race before events or execution effects', async () => {
+		let effects = 0
+		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
+			async handler(_context, value) { effects += 1; return value } })
+		const agent = defineAgent('authorizationRaceRoot', { input: z.string(), instructions: 'Use the effect.', tools: [effect],
+			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
+		const definition = defineHarness({ name: 'authorizationRaceHarness', revision: 'v1' }).addAgent(agent)
+		const storage = persistentStorage()
+		const unused = defineAgent('unusedAuthorizationRaceTarget', { instructions: 'Unused.' })
+		const { dispatcher } = dispatcherFor(unused, () => {})
+		const owner = createHostOwnerToken<object>()
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
+			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
+			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'authorization-race-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
+		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'request', input: 'request',
+			invokeOptions: { sessionId: 'authorization-race-session' }, hostInvocation: {}, authorize: allowHostedTarget })
+		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
+		await instance.close()
+		const approval = interrupted.interrupt.requests[0]!
+		const resume = Object.freeze({ type: 'tool-approval' as const, runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'authorization-race-resume-event',
+			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
+		const resumedProvider = new FakeModelProvider({ strict: true })
+		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
+		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		let releaseAuthorizers!: () => void
+		const bothAuthorized = new Promise<void>(resolve => { releaseAuthorizers = resolve })
+		let authorizationCount = 0
+		const authorize = vi.fn(async () => {
+			authorizationCount += 1
+			if (authorizationCount === 2) releaseAuthorizers()
+			await bothAuthorized
+		})
+		const request = () => instance.runHosted({ delivery: 'resume' as const, target: agent.contract, wireInput: 'request',
+			invokeOptions: { sessionId: 'authorization-race-session', resume }, hostInvocation: {}, authorize })
+		const results = await Promise.allSettled([request(), request()])
+		expect(authorize).toHaveBeenCalledTimes(2)
+		expect(results.filter(result => result.status === 'fulfilled')).toEqual([
+			expect.objectContaining({ value: expect.objectContaining({ status: 'completed', output: 'done' }) }),
+		])
+		expect(results.filter(result => result.status === 'rejected')).toEqual([
+			expect.objectContaining({ reason: expect.objectContaining({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } }) }),
+		])
+		expect(resumedProvider.requests).toHaveLength(1)
+		expect(effects).toBe(1)
+		await instance.close()
+	})
+
 	it('binds opaque host context per call and replays an equal nested call without another dispatch', async () => {
 		interface HostInvocation { readonly token: string }
 		interface HostContext { readonly token: string; readonly nestedTargets: HarnessNestedTargetInvoker }
@@ -835,8 +1312,8 @@ describe('hosted Harness runtime', () => {
 			},
 			logger: boundLogger, telemetry: boundTelemetry,
 		})
-		await expect(instance.runHosted({ target: parent.contract, input: 'question',
-			invokeOptions: { sessionId: 'host-call-session' }, hostInvocation }))
+		await expect(instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'question', input: 'question',
+			invokeOptions: { sessionId: 'host-call-session' }, hostInvocation, authorize: allowHostedTarget }))
 			.resolves.toMatchObject({ status: 'completed', output: 'complete' })
 		expect(contextRequests).toBe(1)
 		expect(dispatch.counts()).toMatchObject({ opens: 1, assertions: 3 })
@@ -886,14 +1363,14 @@ describe('hosted Harness runtime', () => {
 		const dispatch = dispatcherFor(child, () => {})
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage }, {
-				hostOwner: owner, targetDispatcher: dispatch.dispatcher, projectIdentity: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatch.dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 				projectTraceContext: () => undefined,
 				createHostContext: request => Object.freeze({ runId: request.runId,
 					hostToolInvocationId: request.hostToolInvocationId, nestedTargets: request.nestedTargets,
 					checkpointStep: request.checkpointStep }), logger: logger(), telemetry: createTelemetryShim(),
 			})
-		await expect(instance.runHosted({ target: parent.contract, input: 'root-input',
-			invokeOptions: { sessionId: 'checkpoint-session' }, hostInvocation: {} }))
+		await expect(instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'root-input', input: 'root-input',
+			invokeOptions: { sessionId: 'checkpoint-session' }, hostInvocation: {}, authorize: allowHostedTarget }))
 			.resolves.toMatchObject({ status: 'completed', output: 'done' })
 		expect(managedEffects).toBe(1)
 		expect(dispatch.counts().opens).toBe(1)
@@ -969,11 +1446,11 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
-				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
-		await expect(instance.runHosted({ target: parent.contract, input: 'go',
-			invokeOptions: { sessionId: 'conflict-session' }, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed' })
+		await expect(instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'go', input: 'go',
+			invokeOptions: { sessionId: 'conflict-session' }, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed' })
 		expect(opens).toBe(1)
 		expect(assertions).toBe(5)
 		await instance.close()
@@ -1039,11 +1516,11 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
-				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
-		await expect(instance.runHosted({ target: parent.contract, input: 'go',
-			invokeOptions: { sessionId: 'terminal-session' }, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed' })
+		await expect(instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'go', input: 'go',
+			invokeOptions: { sessionId: 'terminal-session' }, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed' })
 		expect(observed).toEqual(['failedHostChild:0', 'failedHostChild:1', 'cancelledHostChild:0', 'cancelledHostChild:1'])
 		expect(opens).toBe(2)
 		await instance.close()
@@ -1096,11 +1573,11 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
-				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
-		await expect(instance.runHosted({ target: parent.contract, input: 'go',
-			invokeOptions: { sessionId: 'concurrent-session' }, hostInvocation: {} })).resolves.toMatchObject({ status: 'completed' })
+		await expect(instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'go', input: 'go',
+			invokeOptions: { sessionId: 'concurrent-session' }, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed' })
 		expect(opens).toBe(1)
 		await instance.close()
 	})
@@ -1131,7 +1608,7 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
-				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
 		const stream = await instance.streamDispatched({ delivery: 'fresh', target: parent.contract, wireInput: 'go', input: 'go',
@@ -1183,12 +1660,12 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'cancel-host-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		const instance = await instantiateHostedHarness(definition,
 			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
-				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined, projectTraceContext: () => undefined,
+				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
 		const controller = new AbortController()
-		const running = instance.runHosted({ target: parent.contract, input: 'go',
-			invokeOptions: { sessionId: 'parent-cancellation-session', signal: controller.signal }, hostInvocation: {} })
+		const running = instance.runHosted({ delivery: 'fresh', target: parent.contract, wireInput: 'go', input: 'go',
+			invokeOptions: { sessionId: 'parent-cancellation-session', signal: controller.signal }, hostInvocation: {}, authorize: allowHostedTarget })
 		await didOpen
 		controller.abort('private parent cancellation detail')
 		const cancellation = await running.then(() => undefined, error => error)
@@ -1212,7 +1689,7 @@ describe('hosted Harness runtime', () => {
 		const unused = defineAgent('unusedMixedOwnerTarget', { instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		await expect(instantiateHostedHarness(definition, config as never, {
-			hostOwner: firstOwner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			hostOwner: firstOwner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})).rejects.toMatchObject({ meta: { reason: 'host_owner_mismatch', id: 'betaOwnerTool' } })
 		expect(configReads).toBe(0)
@@ -1230,7 +1707,7 @@ describe('hosted Harness runtime', () => {
 			projectIdentity: () => { throw new Error('private identity detail') }, projectTraceContext: () => undefined,
 			createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})
-		const error = await instance.runHosted({ target: agent.contract, input: 'hello', invokeOptions: { sessionId: 'failure-session' }, hostInvocation: {} })
+		const error = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'failure-session' }, hostInvocation: {}, authorize: allowHostedTarget })
 			.then(() => undefined, value => value)
 		expect(error).toBeInstanceOf(InternalError)
 		expect(JSON.stringify(error)).not.toContain('private identity detail')
@@ -1248,15 +1725,15 @@ describe('hosted Harness runtime', () => {
 		const unused = defineAgent('unusedDigestTarget', { instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const bindings = {
-			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		}
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: transfer.id, arguments: '€10' }],
 			usage, finishReason: 'tool_calls' })
 		const first = await instantiateHostedHarness(firstDefinition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
-		const interrupted = await first.runHosted({ target: firstAgent.contract, input: 'send',
-			invokeOptions: { sessionId: 'digest-session', idempotencyKey: 'stable-digest-run' }, hostInvocation: {} })
+		const interrupted = await first.runHosted({ delivery: 'fresh', target: firstAgent.contract, wireInput: 'send', input: 'send',
+			invokeOptions: { sessionId: 'digest-session', idempotencyKey: 'stable-digest-run' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
 		await first.close()
 
@@ -1268,13 +1745,13 @@ describe('hosted Harness runtime', () => {
 		const changed = await instantiateHostedHarness(changedDefinition,
 			{ model: { provider: new FakeModelProvider(), model: 'fake' }, storage }, bindings)
 		const request = interrupted.interrupt.requests[0]!
-		await expect(changed.runHosted({ target: changedAgent.contract, input: 'send', invokeOptions: {
-			sessionId: 'digest-session', idempotencyKey: 'stable-digest-run', resume: {
+		await expect(changed.runHosted({ delivery: 'resume', target: changedAgent.contract, wireInput: 'send', invokeOptions: {
+			sessionId: 'digest-session', resume: {
 				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 				revision: interrupted.interrupt.revision, eventId: 'digest-resume-event',
 				decisions: [{ approvalId: request.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'graph_mismatch' } })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'graph_mismatch' } })
 		await changed.close()
 	})
 
@@ -1301,13 +1778,13 @@ describe('hosted Harness runtime', () => {
 		const rootResumeEventId = 'remote-root-resume-event'
 		const rootDecisions = [{ approvalId: approval.approvalId, approved: true }] as const
 
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId,
 				interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision,
 				eventId: rootResumeEventId, decisions: rootDecisions,
 			},
-		}, hostInvocation: {} })).resolves.toEqual({ status: 'completed', runId: fixture.interrupted.runId, output: 'parent-complete' })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toEqual({ status: 'completed', runId: fixture.interrupted.runId, output: 'parent-complete' })
 		expect(remoteProvider.requests).toHaveLength(1)
 		expect(parentProvider.requests).toHaveLength(1)
 
@@ -1345,13 +1822,13 @@ describe('hosted Harness runtime', () => {
 		const parent = await fixture.startParent(parentProvider)
 		const decisions = fixture.interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true as const }))
 
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId,
 				interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision,
 				eventId: 'two-leaf-root-resume', decisions,
 			},
-		}, hostInvocation: { generation: 'two-leaf-resume' } })).resolves.toEqual({
+		}, hostInvocation: { generation: 'two-leaf-resume' }, authorize: allowHostedTarget })).resolves.toEqual({
 			status: 'completed', runId: fixture.interrupted.runId, output: 'parent-complete',
 		})
 		const counts = fixture.counts()
@@ -1375,13 +1852,13 @@ describe('hosted Harness runtime', () => {
 		], usage, finishReason: 'tool_calls' })
 		await fixture.startRemote(secondRemoteProvider)
 		const secondParent = await fixture.startParent(new FakeModelProvider({ strict: true }))
-		const interruptedAgain = await secondParent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		const interruptedAgain = await secondParent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId, interruptId: fixture.interrupted.interrupt.id,
 				revision: fixture.interrupted.interrupt.revision, eventId: 'first-repeated-resume',
 				decisions: [{ approvalId: firstApproval.approvalId, approved: true }],
 			},
-		}, hostInvocation: { generation: 'second' } })
+		}, hostInvocation: { generation: 'second' }, authorize: allowHostedTarget })
 		if (interruptedAgain.status !== 'interrupted' || interruptedAgain.interrupt.type !== 'tool-approval') {
 			throw new Error('Expected the resumed child to interrupt again.')
 		}
@@ -1395,13 +1872,13 @@ describe('hosted Harness runtime', () => {
 		finalParentProvider.enqueueText({ content: 'parent-complete', toolCalls: [], usage, finishReason: 'stop' })
 		const finalParent = await fixture.startParent(finalParentProvider)
 		const secondApproval = interruptedAgain.interrupt.requests[0]!
-		await expect(finalParent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(finalParent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: interruptedAgain.runId, interruptId: interruptedAgain.interrupt.id,
 				revision: interruptedAgain.interrupt.revision, eventId: 'second-repeated-resume',
 				decisions: [{ approvalId: secondApproval.approvalId, approved: true }],
 			},
-		}, hostInvocation: { generation: 'final' } })).resolves.toEqual({ status: 'completed', runId: interruptedAgain.runId, output: 'parent-complete' })
+		}, hostInvocation: { generation: 'final' }, authorize: allowHostedTarget })).resolves.toEqual({ status: 'completed', runId: interruptedAgain.runId, output: 'parent-complete' })
 		expect(fixture.counts()).toMatchObject({ freshOpens: 1, persistedDispatchEffects: 2, remoteEffectCalls: 2,
 			managedEffects: 1, hostContextInvocations: [{}, { generation: 'final' }] })
 		expect(JSON.stringify(finalParentProvider.requests[0])).toContain('final:remote-complete')
@@ -1427,7 +1904,7 @@ describe('hosted Harness runtime', () => {
 			async handler(context) { return context.agents.workflowApprovalMiddle.run(context.input, { callId: 'workflow-middle' }) } })
 		const hostTool = defineHostTool(owner, 'workflowHostTool', { description: 'Invoke workflow.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(workflow.contract, input, { callId: 'host-workflow' }) } })
-		const parentAgent = defineAgent('workflowHostParent', { input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool],
+		const parentAgent = defineAgent('workflowHostParent', { input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool, effect], permissions: { bash: 'require_approval' },
 			prompt: input => ({ role: 'user', content: input }) })
 		const receiverDefinition = defineHarness({ name: 'workflowHostReceiver', revision: 'v1', defaults: { maxDepth: 4 } })
 			.addAgent(leaf).addAgent(middle).addWorkflow(workflow)
@@ -1467,7 +1944,7 @@ describe('hosted Harness runtime', () => {
 					wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
 			},
 		}
-		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => undefined,
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => trace, createHostContext: (request: HarnessHostContextRequest<object>) => ({ nestedTargets: request.nestedTargets }),
 			logger: logger(), telemetry: createTelemetryShim() }
 		const firstReceiverProvider = new FakeModelProvider({ strict: true })
@@ -1479,8 +1956,8 @@ describe('hosted Harness runtime', () => {
 		firstParentProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-host-call', name: hostTool.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		const firstParent = await instantiateHostedHarness(parentDefinition,
 			{ model: { provider: firstParentProvider, model: 'fake' }, storage }, bindings)
-		const interrupted = await firstParent.runHosted({ target: parentAgent.contract, input: 'transfer',
-			invokeOptions: { sessionId: 'workflow-host-session', idempotencyKey: 'workflow-host-root' }, hostInvocation: {} })
+		const interrupted = await firstParent.runHosted({ delivery: 'fresh', target: parentAgent.contract, wireInput: 'transfer', input: 'transfer',
+			invokeOptions: { sessionId: 'workflow-host-session', idempotencyKey: 'workflow-host-root' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow leaf approval.')
 		const checkpoint = await storage.loadCheckpoint(interrupted.runId, 'harness:interrupt:v1')
 		if (checkpoint?.output === undefined) throw new Error('Expected workflow approval checkpoint.')
@@ -1525,13 +2002,13 @@ describe('hosted Harness runtime', () => {
 		const resumedParent = await instantiateHostedHarness(parentDefinition,
 			{ model: { provider: resumedParentProvider, model: 'fake' }, storage }, bindings)
 		const approval = interrupted.interrupt.requests[0]!
-		await expect(resumedParent.runHosted({ target: parentAgent.contract, input: 'transfer', invokeOptions: {
-			sessionId: 'workflow-host-session', idempotencyKey: 'workflow-host-root', resume: {
+		await expect(resumedParent.runHosted({ delivery: 'resume', target: parentAgent.contract, wireInput: 'transfer', invokeOptions: {
+			sessionId: 'workflow-host-session', resume: {
 				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 				revision: interrupted.interrupt.revision, eventId: 'workflow-host-resume',
 				decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'workflow-parent-complete' })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'workflow-parent-complete' })
 		expect(approvedEffects).toBe(1)
 		expect(resumedReceiverProvider.requests).toHaveLength(2)
 		expect(persistedTraces.length).toBeGreaterThan(0)
@@ -1558,13 +2035,13 @@ describe('hosted Harness runtime', () => {
 		const parent = await fixture.startParent(parentProvider)
 		const approval = fixture.interrupted.interrupt.requests[0]!
 
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId,
 				interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision,
 				eventId: 'changed-route-resume-event', decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).rejects.toMatchObject({
+		}, hostInvocation: {}, authorize: allowHostedTarget })).rejects.toMatchObject({
 			code: 'HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH',
 			meta: { reason: 'route_receipt_mismatch', target_kind: 'agent', target_id: fixture.child.id },
 		})
@@ -1611,14 +2088,14 @@ describe('hosted Harness runtime', () => {
 		})
 		const parent = await fixture.startParent(new FakeModelProvider({ strict: true }))
 		const approval = fixture.interrupted.interrupt.requests[0]!
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId,
 				interruptId: fixture.interrupted.interrupt.id, revision: fixture.interrupted.interrupt.revision,
 				eventId: `tampered-${_label.replaceAll(' ', '-')}`,
 				decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } })
 		expect(fixture.counts().persistedRequests).toHaveLength(0)
 		expect(fixture.counts().persistedDispatchEffects).toBe(0)
 		expect(fixture.counts().remoteEffectCalls).toBe(0)
@@ -1680,13 +2157,13 @@ describe('hosted Harness runtime', () => {
 		const replace = vi.spyOn(fixture.storage, 'replaceCheckpoint')
 		const parent = await fixture.startParent(new FakeModelProvider({ strict: true }))
 		const approval = fixture.interrupted.interrupt.requests[0]!
-		await expect(parent.runHosted({ target: fixture.parent.contract, input: 'root-input', invokeOptions: {
-			sessionId: 'remote-route-session', idempotencyKey: 'stable-remote-route-run', resume: {
+		await expect(parent.runHosted({ delivery: 'resume', target: fixture.parent.contract, wireInput: 'root-input', invokeOptions: {
+			sessionId: 'remote-route-session', resume: {
 				type: 'tool-approval', runId: fixture.interrupted.runId, interruptId: fixture.interrupted.interrupt.id,
 				revision: fixture.interrupted.interrupt.revision, eventId: `tampered-correlation-${_label.replaceAll(' ', '-')}`,
 				decisions: [{ approvalId: approval.approvalId, approved: true }],
 			},
-		}, hostInvocation: {} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } })
+		}, hostInvocation: {}, authorize: allowHostedTarget })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' } })
 		expect(replace).not.toHaveBeenCalled()
 		expect(fixture.counts()).toMatchObject({ persistedDispatchEffects: 0, remoteEffectCalls: 0 })
 		await parent.close()

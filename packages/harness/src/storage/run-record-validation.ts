@@ -7,7 +7,7 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/
 const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const runKeys = new Set([
   'id', 'sessionId', 'kind', 'target', 'startedAt', 'finishedAt', 'status', 'revision', 'input',
-  'output', 'error', 'approvalReceipt', 'attempt', 'workerId', 'initialStepId', 'metadata',
+  'validatedInput', 'output', 'error', 'approvalReceipt', 'attempt', 'workerId', 'initialStepId', 'metadata',
 ])
 
 /** @internal Validates one authoritative run after it crosses a storage boundary. */
@@ -21,6 +21,9 @@ export function assertStoredRunRecord(record: RunRecord, malformed: () => Error)
     || (record.attempt !== undefined && !positive(record.attempt))
     || (record.workerId !== undefined && !validId(record.workerId))
     || (record.initialStepId !== undefined && !validId(record.initialStepId))) throw malformed()
+
+  const hasValidatedInput = Object.hasOwn(record, 'validatedInput')
+  if (record.kind === 'child_task' ? hasValidatedInput : !hasValidatedInput || !json(record.validatedInput)) throw malformed()
 
   const terminal = record.status === 'succeeded' || record.status === 'failed' || record.status === 'cancelled'
   if (!terminal) {

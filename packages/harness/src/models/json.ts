@@ -39,13 +39,15 @@ function isJsonValueInner(value: unknown, ancestors: Set<object>): value is Json
 }
 
 function isJsonArray(value: unknown[], ancestors: Set<object>): boolean {
+	if (Object.getPrototypeOf(value) !== Array.prototype) return false
   const descriptors = Object.getOwnPropertyDescriptors(value)
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key === 'symbol') return false
     if (key === 'length') continue
     if (!isArrayIndex(key, value.length)) return false
     const descriptor = descriptors[key]
-    if (!descriptor || !('value' in descriptor) || !isJsonValueInner(descriptor.value, ancestors)) return false
+    if (!descriptor || descriptor.enumerable !== true || !('value' in descriptor)
+      || !isJsonValueInner(descriptor.value, ancestors)) return false
   }
   return Object.keys(descriptors).filter((key) => key !== 'length').length === value.length
 }
@@ -57,7 +59,8 @@ function isJsonObject(value: object, ancestors: Set<object>): boolean {
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key === 'symbol') return false
     const descriptor = descriptors[key]
-    if (!descriptor || !('value' in descriptor) || !isJsonValueInner(descriptor.value, ancestors)) return false
+    if (!descriptor || descriptor.enumerable !== true || !('value' in descriptor)
+      || !isJsonValueInner(descriptor.value, ancestors)) return false
   }
   return true
 }

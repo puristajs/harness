@@ -241,7 +241,7 @@ describe('v4 workflow direct-call replay', () => {
 
 	it.each(['append', 'ack'] as const)('preallocates a stable event id and recovers an actual storage %s failure without repeating the effect', async failureAt => {
 		const storage = new InMemoryHarnessStorage()
-		await storage.createRun({ id: 'run', sessionId: 'session', kind: 'workflow', target: 'stableFlow', startedAt: '2026-01-01T00:00:00.000Z', input: 'root' })
+		await storage.createRun({ id: 'run', sessionId: 'session', kind: 'workflow', target: 'stableFlow', startedAt: '2026-01-01T00:00:00.000Z', input: 'root', validatedInput: 'root' })
 		const append = storage.appendEvents.bind(storage)
 		let fail = true; const appendedIds: string[] = []; const publicationOrder: string[] = []
 		storage.appendEvents = async (runId, events) => {

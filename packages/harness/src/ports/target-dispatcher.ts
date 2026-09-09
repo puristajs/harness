@@ -18,7 +18,8 @@ export type AnyHarnessTargetContract = HarnessTargetContract<
 	ModelSchema,
 	ModelSchema,
 	HarnessOutputUpdateKind,
-	readonly HarnessInterruptKind[]
+	readonly HarnessInterruptKind[],
+	any
 >
 export type HarnessTargetInput<T> = T extends AnyHarnessTargetContract ? T['$infer']['input'] : never
 export type HarnessValidatedTargetInput<T> = T extends AnyHarnessTargetContract ? T['$infer']['validatedInput'] : never

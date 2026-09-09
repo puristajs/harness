@@ -88,7 +88,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
 
   public async getSession(id: string): Promise<SessionRecord | undefined> {
     const record = this.sessions.get(id)
-    return record ? structuredClone(record) : undefined
+    return record ? snapshotJson(record) : undefined
   }
 
   public async upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean> {
@@ -111,7 +111,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       assertSessionSandboxBindingTransition(existing.sandboxBinding, record.sandboxBinding, 'upsertSession')
       if (record.updatedAt < existing.updatedAt || record.runCount < existing.runCount) return false
     }
-    this.sessions.set(record.id, structuredClone(record))
+    this.sessions.set(record.id, snapshotJson(record))
     return existing === undefined
   }
 
@@ -148,7 +148,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
         }
         ids.add(message.id)
       }
-      this.messages.set(sessionId, [...current, ...messages])
+      this.messages.set(sessionId, [...current, ...messages.map(snapshotJson)])
     })
   }
 
@@ -167,7 +167,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       rows = rows.slice(Math.max(0, rows.length - opts.limit))
     }
 
-    return rows
+    return rows.map(snapshotJson)
   }
 
   public async clearMessages(sessionId: string): Promise<void> {
@@ -187,7 +187,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       }
       // Atomic clear+append under one lock: validate first, then commit so a
       // failure never leaves history partially replaced.
-      this.messages.set(sessionId, [...messages])
+      this.messages.set(sessionId, messages.map(snapshotJson))
     })
   }
 
@@ -195,12 +195,12 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     const normalized = normalizeCreateRunRequest(request)
     const existing = this.runs.get(normalized.id)
     if (existing) {
-      if (runCreationBytes(existing) === runCreationBytes(normalized)) return existing
+      if (runCreationBytes(existing) === runCreationBytes(normalized)) return snapshotJson(existing)
       throw runConflict()
     }
     const record = deepFreeze({ ...normalized, status: 'running' as const, revision: 1 })
     this.runs.set(record.id, record)
-    return record
+    return snapshotJson(record)
   }
 
   public async finishRun(runId: string, patch: FinishRunPatch): Promise<void> {
@@ -217,7 +217,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   public async getRun(runId: string): Promise<RunRecord | undefined> {
     const record = this.runs.get(runId)
     if (record) assertStoredRunRecord(record, malformedRun)
-    return record
+    return record ? snapshotJson(record) : undefined
   }
 
   public async listRuns(sessionId: string, opts: { limit?: number; before?: string } = {}): Promise<RunRecord[]> {
@@ -237,7 +237,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     }
 
     for (const row of rows) assertStoredRunRecord(row, malformedRun)
-    return rows
+    return rows.map(snapshotJson)
   }
 
   public async appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void> {
@@ -273,7 +273,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       rows = rows.slice(0, opts.limit)
     }
 
-    return rows
+    return rows.map(snapshotJson)
   }
 
   public async acquireRun(request: AcquireRunRequest): Promise<DurableRunLease> {
@@ -378,12 +378,13 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined> {
-    return this.storageSpan('load_checkpoint', { 'harness.run.id': runId }, async () => (
-      [...(this.checkpoints.get(runId)?.values() ?? [])]
+    return this.storageSpan('load_checkpoint', { 'harness.run.id': runId }, async () => {
+      const checkpoint = [...(this.checkpoints.get(runId)?.values() ?? [])]
         .filter(checkpoint => stepId === undefined || checkpoint.stepId === stepId)
         .sort((a, b) => a.sequence - b.sequence)
         .at(-1)
-    ))
+      return checkpoint ? snapshotJson(checkpoint) : undefined
+    })
   }
 
   public async commitCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
@@ -442,7 +443,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       const existing = this.expireWait(this.waits.get(validated.waitId))
       if (existing) {
         if (!sameWait(existing, validated)) throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
-        return { created: false, snapshot: externalSnapshot(existing) }
+        return snapshotJson({ created: false, snapshot: externalSnapshot(existing) })
       }
       const run = this.runs.get(validated.runId)
       if (!run || run.sessionId !== validated.sessionId) throw new ExternalWaitError('External wait run binding is invalid.', 'invalid_request')
@@ -460,7 +461,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
       this.waitSignals.set(validated.waitId, new Set())
       this.runs.set(validated.runId, deepFreeze({ ...run, status: 'waiting', revision: run.revision + 1 }))
       this.releaseRunLease(validated.runId)
-      return { created: true, snapshot: externalSnapshot(stored) }
+      return snapshotJson({ created: true, snapshot: externalSnapshot(stored) })
     }))
   }
 
@@ -548,13 +549,15 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     run: RunRecord,
     checkpoint: RunCheckpoint | undefined,
   ): DurableRunLease {
-    const checkpoints = Object.freeze([...(this.checkpoints.get(request.runId)?.values() ?? [])].sort((left, right) => left.sequence - right.sequence))
+    const checkpoints = snapshotJson([...(this.checkpoints.get(request.runId)?.values() ?? [])].sort((left, right) => left.sequence - right.sequence))
     const acquiredFrom = deepFreeze(copyJson(request.expected))
+    const runSnapshot = snapshotJson(run)
+    const checkpointSnapshot = checkpoint === undefined ? undefined : snapshotJson(checkpoint)
     return Object.freeze({
       runId: request.runId, sessionId: request.sessionId, workerId: request.workerId,
       acquisitionId: request.acquisitionId, leaseId: active.leaseId, attempt: run.attempt!,
-      resumed: request.mode === 'resume', acquiredFrom, run,
-      ...(checkpoint === undefined ? {} : { checkpoint }), checkpoints,
+      resumed: request.mode === 'resume', acquiredFrom, run: runSnapshot,
+      ...(checkpointSnapshot === undefined ? {} : { checkpoint: checkpointSnapshot }), checkpoints,
       release: async () => {
         await this.withSessionLock(request.sessionId, async () => {
           const currentLease = this.runLeases.get(request.runId)
@@ -570,12 +573,12 @@ export class InMemoryHarnessStorage implements HarnessStorage {
 
   private resolveWait(signal: ExternalWaitSignal): ExternalWaitSignalResult {
     const wait = this.expireWait(this.waits.get(signal.waitId))
-    if (!wait) return validateExternalWaitSignalResult({ kind: 'not_found' })
+    if (!wait) return snapshotJson(validateExternalWaitSignalResult({ kind: 'not_found' }))
     const delivered = this.waitSignals.get(signal.waitId) ?? new Set<string>()
     this.waitSignals.set(signal.waitId, delivered)
-    if (delivered.has(signal.eventId)) return validateExternalWaitSignalResult({ kind: 'duplicate', snapshot: externalSnapshot(wait) })
+    if (delivered.has(signal.eventId)) return snapshotJson(validateExternalWaitSignalResult({ kind: 'duplicate', snapshot: externalSnapshot(wait) }))
     delivered.add(signal.eventId)
-    if (wait.status !== 'waiting') return validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot: externalSnapshot(wait) })
+    if (wait.status !== 'waiting') return snapshotJson(validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot: externalSnapshot(wait) }))
     const resolvedSnapshot = validateExternalWaitSnapshot({
       waitId: wait.waitId,
       kind: wait.kind,
@@ -591,7 +594,7 @@ export class InMemoryHarnessStorage implements HarnessStorage {
     if (!resolved) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
     const stored: StoredExternalWait = { ...resolved, runId: wait.runId, sessionId: wait.sessionId }
     this.waits.set(signal.waitId, stored)
-    return validateExternalWaitSignalResult({ kind: 'applied', snapshot: externalSnapshot(stored) })
+    return snapshotJson(validateExternalWaitSignalResult({ kind: 'applied', snapshot: externalSnapshot(stored) }))
   }
 
   private expireWait(wait: StoredExternalWait | undefined): StoredExternalWait | undefined {
@@ -632,22 +635,20 @@ function sameWait(existing: StoredExternalWait, request: BoundExternalWaitReques
 
 function externalSnapshot(wait: StoredExternalWait): ExternalWaitSnapshot {
   const { runId: _runId, sessionId: _sessionId, ...snapshot } = wait
-  return validateExternalWaitSnapshot(snapshot)
+  return snapshotJson(validateExternalWaitSnapshot(snapshot))
 }
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/
 const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 
 function normalizeCreateRunRequest(value: CreateRunRequest): CreateRunRequest {
-  if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'metadata'])
-    || !validId(value.id) || !validId(value.sessionId) || !validId(value.target)
+  if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'validatedInput', 'metadata'])) throw runConflict()
+  try { canonicalJson(value) } catch { throw runConflict() }
+  if (!validId(value.id) || !validId(value.sessionId) || !validId(value.target)
     || !['agent', 'workflow', 'child_task'].includes(value.kind) || !validTimestamp(value.startedAt)
+    || (value.kind === 'child_task' ? Object.hasOwn(value, 'validatedInput') : !Object.hasOwn(value, 'validatedInput'))
     || (Object.hasOwn(value, 'metadata') && value.metadata === undefined)
     || (value.metadata !== undefined && !plain(value.metadata))) throw runConflict()
-  try {
-    canonicalJson(value.input)
-    if (value.metadata !== undefined) canonicalJson(value.metadata)
-  } catch { throw runConflict() }
   return deepFreeze(copyJson(value))
 }
 
@@ -789,6 +790,7 @@ function validSerializedError(value: unknown): boolean {
 
 function runCreationBytes(value: CreateRunRequest | RunRecord): string {
   return canonicalJson(['harness-run-create-v1', value.id, value.sessionId, value.kind, value.target, value.startedAt, value.input,
+    Object.prototype.hasOwnProperty.call(value, 'validatedInput'), value.kind === 'child_task' ? null : value.validatedInput,
     Object.prototype.hasOwnProperty.call(value, 'metadata'), value.metadata ?? null])
 }
 function runConflict(): StateError { return new StateError('Run creation conflicts with an existing logical run.', { op: 'createRun', reason: 'run_conflict' }) }
@@ -806,7 +808,8 @@ function validTimestamp(value: unknown): value is string { return typeof value =
 function positive(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) > 0 }
 function plain(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) }
 function exactKeys(value: object, allowed: readonly string[]): boolean { return Reflect.ownKeys(value).every(key => typeof key === 'string' && allowed.includes(key)) }
-function copyJson<T>(value: T): T { canonicalJson(value); return structuredClone(value) }
+function copyJson<T>(value: T): T { return JSON.parse(canonicalJson(value)) as T }
+function snapshotJson<T>(value: T): T { return deepFreeze(copyJson(value)) }
 function deepFreeze<T>(value: T): T {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) deepFreeze(child)

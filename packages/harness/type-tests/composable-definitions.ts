@@ -5,11 +5,24 @@ import { defineCatalog } from '../src/definitions/catalog.js'
 import { defineHarness } from '../src/definitions/harness.js'
 import type { HarnessCatalogDefinition, HarnessCatalogView } from '../src/definitions/catalog.js'
 import type { AnyAgentDefinition } from '../src/definitions/types.js'
-import type { HarnessUpdateFor, ToolRequirements } from '../src/definitions/index.js'
+import type {
+	HarnessTargetContract,
+	HarnessTargetInferenceFor,
+	HarnessUpdateFor,
+	ToolRequirements,
+} from '../src/definitions/index.js'
 import { builtInTools } from '../src/tools/index.js'
 import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
 import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
-import type { AgentModelResponse, HarnessTargetStream } from '../src/index.js'
+import type {
+	AgentModelResponse,
+	HarnessTargetInput,
+	HarnessTargetOutput,
+	HarnessTargetStream,
+	HarnessValidatedTargetInput,
+	ModelSchema,
+} from '../src/index.js'
+import type { AnyHarnessTargetContract, HarnessTargetInterrupt } from '../src/ports/target-dispatcher.js'
 import type { JsonValue } from '../src/models/json.js'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
@@ -24,6 +37,83 @@ const input = z.object({ message: z.string() })
 const output = z.object({ answer: z.string() })
 const transformedInput = z.string().transform(value => value.length)
 type _ObjectSnapshotIsExactlyJsonValue = Expect<Equal<HarnessUpdateFor<typeof output, 'object-snapshot'>, JsonValue>>
+
+type ExactTargetInference = HarnessTargetInferenceFor<
+	{ readonly wire: string },
+	{ readonly validated: number },
+	{ readonly answer: string },
+	'object-snapshot',
+	readonly ['external-wait']
+>
+declare const exactTargetInference: ExactTargetInference
+// @ts-expect-error wire input is invariant rather than structurally widened
+const widenedWireInference: HarnessTargetInferenceFor<JsonValue, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error wire input cannot be replaced with never
+const neverWireInference: HarnessTargetInferenceFor<never, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error validated input is invariant rather than structurally widened
+const widenedValidatedInference: HarnessTargetInferenceFor<{ readonly wire: string }, JsonValue, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error output is invariant rather than structurally widened
+const widenedOutputInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, JsonValue, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error output cannot be narrowed to a structural subtype
+const narrowedOutputInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: 'fixed' }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error update kind is part of the invariant target tuple
+const changedUpdateInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: string }, 'text-delta', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error interrupt tuple is part of the invariant target tuple
+const changedInterruptInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly []> = exactTargetInference
+void widenedWireInference
+void neverWireInference
+void widenedValidatedInference
+void widenedOutputInference
+void narrowedOutputInference
+void changedUpdateInference
+void changedInterruptInference
+
+declare const transportedInputSchema: ModelSchema<{ readonly wire: string }, { readonly wire: string }>
+declare const transportedOutputSchema: ModelSchema<{ readonly answer: string }, { readonly answer: string }>
+type RemoteInference = HarnessTargetInferenceFor<
+	{ readonly wire: string },
+	{ readonly validated: number },
+	{ readonly answer: string },
+	'object-snapshot',
+	readonly ['external-wait']
+>
+type RemoteTarget = HarnessTargetContract<
+	'agent', 'remoteTarget', typeof transportedInputSchema, typeof transportedOutputSchema,
+	'object-snapshot', readonly ['external-wait'], RemoteInference
+>
+type BadRemoteOutputInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly wrong: true },
+	'object-snapshot', readonly ['external-wait']
+>
+// @ts-expect-error remote output inference must match the contract output schema exactly
+type BadRemoteOutputTarget = HarnessTargetContract<'agent', 'badRemoteOutput', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteOutputInference>
+type BadRemoteUpdateInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly answer: string },
+	'text-delta', readonly ['external-wait']
+>
+// @ts-expect-error remote update inference must match the contract update discriminant exactly
+type BadRemoteUpdateTarget = HarnessTargetContract<'agent', 'badRemoteUpdate', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteUpdateInference>
+type BadRemoteInterruptInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly answer: string },
+	'object-snapshot', readonly []
+>
+// @ts-expect-error remote interrupt inference must match the contract interrupt tuple exactly
+type BadRemoteInterruptTarget = HarnessTargetContract<'agent', 'badRemoteInterrupt', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteInterruptInference>
+type _RemoteWire = Expect<Equal<RemoteTarget['$infer']['input'], { readonly wire: string }>>
+type _RemoteIsCommonTarget = Expect<RemoteTarget extends AnyHarnessTargetContract ? true : false>
+type _RemoteValidated = Expect<Equal<RemoteTarget['$infer']['validatedInput'], { readonly validated: number }>>
+type _RemoteOutput = Expect<Equal<RemoteTarget['$infer']['output'], { readonly answer: string }>>
+type _DispatcherRemoteWire = Expect<Equal<HarnessTargetInput<RemoteTarget>, { readonly wire: string }>>
+type _DispatcherRemoteValidated = Expect<Equal<HarnessValidatedTargetInput<RemoteTarget>, { readonly validated: number }>>
+type _DispatcherRemoteOutput = Expect<Equal<HarnessTargetOutput<RemoteTarget>, { readonly answer: string }>>
+type _DispatcherRemoteInterrupt = Expect<Equal<HarnessTargetInterrupt<RemoteTarget>, RemoteTarget['$infer']['interrupt']>>
+declare const readableInference: Pick<RemoteInference, 'input' | 'validatedInput' | 'output' | 'update' | 'interrupt'>
+// @ts-expect-error the hidden invariant witness prevents handwritten inference objects
+const handwrittenInference: RemoteInference = readableInference
+void handwrittenInference
+void (0 as unknown as BadRemoteOutputTarget)
+void (0 as unknown as BadRemoteUpdateTarget)
+void (0 as unknown as BadRemoteInterruptTarget)
 
 const lookup = defineTool('lookup', {
 	description: 'Look up a message.', input, output,

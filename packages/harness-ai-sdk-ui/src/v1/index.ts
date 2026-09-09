@@ -141,8 +141,8 @@ export async function parseHarnessUIMessageRequest(body: unknown): Promise<Parse
 }
 
 /** Convert native Harness target events to AI SDK UI Message Stream v1 chunks. */
-export function createHarnessUIMessageStream<Target extends UIHarnessTarget>(
-  events: HarnessTargetStream<Target>,
+export function createHarnessUIMessageStream<const Stream>(
+  events: ExactHarnessTargetStream<Stream>,
   options: HarnessUIMessageStreamOptions,
 ): ReadableStream<UIMessageChunk<unknown, HarnessUIDataTypes>> {
   nonEmpty(options.sessionId, 'sessionId')
@@ -316,8 +316,8 @@ export function createHarnessUIMessageStream<Target extends UIHarnessTarget>(
 }
 
 /** Return the standard AI SDK-owned, fully framed SSE response. */
-export function createHarnessUIMessageStreamResponse<Target extends UIHarnessTarget>(
-  events: HarnessTargetStream<Target>, options: HarnessUIMessageStreamResponseOptions,
+export function createHarnessUIMessageStreamResponse<const Stream>(
+  events: ExactHarnessTargetStream<Stream>, options: HarnessUIMessageStreamResponseOptions,
 ): Response {
   const { sessionId, messageId, onIgnoredEvent, ...responseOptions } = options
   const response = createUIMessageStreamResponse({ ...responseOptions,
@@ -328,8 +328,8 @@ export function createHarnessUIMessageStreamResponse<Target extends UIHarnessTar
 }
 
 /** Return data-only protocol records for a host that owns SSE framing. */
-export async function* createHarnessUIMessageSseEvents<Target extends UIHarnessTarget>(
-  events: HarnessTargetStream<Target>, options: HarnessUIMessageStreamOptions,
+export async function* createHarnessUIMessageSseEvents<const Stream>(
+  events: ExactHarnessTargetStream<Stream>, options: HarnessUIMessageStreamOptions,
 ): AsyncIterable<HarnessUIMessageSseEvent> {
   const reader = createHarnessUIMessageStream(events, options).getReader()
   let completed = false
@@ -374,13 +374,16 @@ export function parseHarnessToolApprovalResume(messages: readonly UIMessage[]): 
 }
 
 type ChunkController = ReadableStreamDefaultController<UIMessageChunk<unknown, HarnessUIDataTypes>>
+type HarnessUIStreamTarget<Stream> = Stream extends HarnessTargetStream<infer Target> ? Target : never
+type ExactHarnessTargetStream<Stream> = Stream & HarnessTargetStream<HarnessUIStreamTarget<Stream>>
 type UIHarnessTarget = HarnessTargetContract<
   HarnessTargetKind,
   string,
   ModelSchema,
   ModelSchema,
   HarnessOutputUpdateKind,
-  readonly HarnessInterruptKind[]
+  readonly HarnessInterruptKind[],
+  any
 >
 type SubagentEvent = Extract<ExecutionEvent, { type: 'agent.started' | 'agent.finished' }> & {
   parentAgentId: string; delegationCallId: string; delegationDepth: number

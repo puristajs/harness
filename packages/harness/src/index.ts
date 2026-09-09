@@ -536,7 +536,7 @@ export type {
   HarnessOutputUpdateKind,
   HarnessTargetContract,
   HarnessTargetDefinitionInference,
-  HarnessTargetInference,
+  HarnessTargetInferenceFor,
   HarnessTargetKind,
   HarnessUpdateFor,
   HostToolDefinition,

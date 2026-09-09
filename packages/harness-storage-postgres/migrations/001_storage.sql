@@ -43,13 +43,18 @@ create table if not exists purista_harness_runs (
   status text not null,
   revision bigint not null check (revision > 0),
   input_json jsonb not null,
+  validated_input_json jsonb,
   output_json jsonb,
   error_json jsonb,
   approval_receipt_json jsonb,
   attempt bigint check (attempt > 0),
   worker_id text,
   initial_step_id text,
-  metadata_json jsonb
+  metadata_json jsonb,
+  constraint purista_harness_runs_validated_input_kind check (
+    (kind in ('agent', 'workflow') and validated_input_json is not null)
+    or (kind = 'child_task' and validated_input_json is null)
+  )
 );
 
 create index if not exists purista_harness_runs_session_order

@@ -110,6 +110,7 @@ describe('composable definition factories', () => {
 			expect(descriptor).toMatchObject({ enumerable: false, configurable: false, writable: false })
 			expect(Object.isFrozen(descriptor?.value)).toBe(true)
 			expect(Object.keys(descriptor?.value ?? {})).toEqual([])
+			expect(Reflect.ownKeys(descriptor?.value ?? {})).toEqual([])
 			expect(Object.keys(definition)).not.toContain('$infer')
 			expect({ ...definition }).not.toHaveProperty('$infer')
 			expect(JSON.stringify(definition)).not.toContain('$infer')

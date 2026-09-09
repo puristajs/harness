@@ -636,7 +636,7 @@ describe('v4 durable session execution', () => {
 		const storage = persistentStorage()
 		const runId = 'already-running-run'
 		await storage.createRun({ id: runId, sessionId: 'already-running-session', kind: 'workflow', target: 'alreadyRunning',
-			startedAt: '2026-09-08T00:00:00.000Z', input: 'value' })
+			startedAt: '2026-09-08T00:00:00.000Z', input: 'value', validatedInput: 'value' })
 		const startId = `event_${createHash('sha256').update(canonicalJson(['harness.event.v1', runId, 1, 'run.started'])).digest('hex')}`
 		await storage.appendEvents(runId, [{ id: startId, sequence: 1, runId,
 			at: '2026-09-08T00:00:00.000Z', type: 'run.started', payload: {} }])
@@ -734,7 +734,7 @@ describe('v4 durable session execution', () => {
 	it('reacquires an interrupted ordinary durable run with its stable caller run id', async () => {
 		const storage = persistentStorage()
 		const created = await storage.createRun({ id: 'recover-run', sessionId: 'recover-session', kind: 'workflow', target: 'recover',
-			startedAt: '2026-09-05T00:00:00.000Z', input: 'same' })
+			startedAt: '2026-09-05T00:00:00.000Z', input: 'same', validatedInput: 'same' })
 		const request = { mode: 'initial' as const, runId: created.id, sessionId: created.sessionId, workerId: 'crashed-worker',
 			expected: { revision: created.revision, status: 'running' as const, checkpoint: { stepId: 'harness:root:v1', sequence: null } } }
 		const crashed = await storage.acquireRun({ ...request, acquisitionId: acquisitionId(request) })

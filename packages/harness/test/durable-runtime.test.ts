@@ -33,7 +33,7 @@ async function acquire(storage: HarnessStorage, record: { runId: string; session
   const prior = await storage.getRun(record.runId)
   const run = prior ?? await storage.createRun({
     id: record.runId, sessionId: record.sessionId, kind: 'workflow', target: record.stepId,
-    startedAt: new Date().toISOString(), input: record.input,
+    startedAt: new Date().toISOString(), input: record.input, validatedInput: record.input,
     ...(record.metadata ? { metadata: record.metadata } : {})
   })
   const checkpoint = await storage.loadCheckpoint(record.runId)

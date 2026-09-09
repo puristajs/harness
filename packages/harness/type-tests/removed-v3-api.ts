@@ -7,7 +7,7 @@ import type {
 	HarnessInterruptForKinds,
 	HarnessTargetDefinitionInference,
 	HarnessTargetExecutionEvent,
-	HarnessTargetInference,
+	HarnessTargetInferenceFor,
 	HarnessTargetInput,
 	HarnessTargetOutput,
 	HarnessUpdateFor,
@@ -17,6 +17,12 @@ import type {
 	RootExecutionEventFor,
 	SkillInference,
 } from '../src/index.js'
+// @ts-expect-error HarnessTargetInference is package-private in v4.
+import type { HarnessTargetInference } from '../src/index.js'
+// @ts-expect-error the invariant witness shape is package-private in v4.
+import type { HarnessTargetInferenceShape } from '../src/index.js'
+// @ts-expect-error HarnessTargetInference is absent from the definitions barrel too.
+import type { HarnessTargetInference as DefinitionsHarnessTargetInference } from '../src/definitions/index.js'
 // @ts-expect-error BuilderState was removed by the v4 clean break.
 import type { BuilderState } from '../src/index.js'
 // @ts-expect-error HarnessModule was removed by the v4 clean break.
@@ -74,7 +80,7 @@ type CurrentV4Surface = readonly [
 	HarnessInterruptForKinds<readonly []>,
 	HarnessTargetDefinitionInference<any>,
 	HarnessTargetExecutionEvent<any>,
-	HarnessTargetInference<any, any, any, any>,
+	HarnessTargetInferenceFor<string, string, string, 'text-delta', readonly []>,
 	HarnessTargetInput<any>,
 	HarnessTargetOutput<any>,
 	HarnessUpdateFor<any, any>,
@@ -85,3 +91,6 @@ type CurrentV4Surface = readonly [
 	SkillInference<readonly ['node']>,
 ]
 void (0 as unknown as CurrentV4Surface)
+void (0 as unknown as HarnessTargetInference)
+void (0 as unknown as HarnessTargetInferenceShape)
+void (0 as unknown as DefinitionsHarnessTargetInference)

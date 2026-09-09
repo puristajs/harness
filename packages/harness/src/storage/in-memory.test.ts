@@ -49,7 +49,7 @@ describe('InMemoryHarnessStorage message operations', () => {
         maxParallelToolCalls: 1
       }
     })
-    const created = await store.createRun({ id: 'run-otel', sessionId: 'session-otel', kind: 'workflow', target: 'test', startedAt: new Date().toISOString(), input: { private: 'must-not-leak' } })
+    const created = await store.createRun({ id: 'run-otel', sessionId: 'session-otel', kind: 'workflow', target: 'test', startedAt: new Date().toISOString(), input: { private: 'must-not-leak' }, validatedInput: { private: 'validated-must-not-leak' } })
     const stepId = 'start'
     const expected = Object.freeze({ revision: created.revision, status: 'running' as const, checkpoint: Object.freeze({ stepId, sequence: null }) })
     const acquisitionId = `acq_${createHash('sha256').update(canonicalJson([

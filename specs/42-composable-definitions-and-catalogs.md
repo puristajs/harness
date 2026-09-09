@@ -182,13 +182,13 @@ type HarnessTargetInferenceInvariantTuple<
   Interrupts extends readonly HarnessInterruptKind[],
 > = readonly [WireInput, ValidatedInput, Output, Updates, Interrupts]
 
-type HarnessTargetInferenceFor<
+interface HarnessTargetInferenceFor<
   WireInput extends JsonValue,
   ValidatedInput extends JsonValue,
   Output extends JsonValue,
   Updates extends HarnessOutputUpdateKind,
   Interrupts extends readonly HarnessInterruptKind[],
-> = Readonly<{
+> {
   readonly input: WireInput
   readonly validatedInput: ValidatedInput
   readonly output: Output
@@ -209,7 +209,7 @@ type HarnessTargetInferenceFor<
     Updates,
     Interrupts
   >
-}>
+}
 
 type HarnessTargetInference<
   Input extends ModelSchema,
@@ -256,8 +256,11 @@ output, update kind, or interrupt tuple therefore fails at the contract generic
 before a dispatcher helper can observe `$infer`.
 
 `HarnessTargetInferenceFor<WireInput, ValidatedInput, Output, Updates,
-Interrupts>` is the only exported type constructor for this inference. Core
-uses that type alias for generated remote input, validated-input, output,
+Interrupts>` is the only exported type constructor for this inference. It is a
+named interface so an external package can emit declarations for an exported
+factory whose inferred return type contains an exact target contract without
+naming the hidden symbol. Core
+uses that type for generated remote input, validated-input, output,
 update, and interrupt witnesses. The `harnessTargetInferenceInvariant` symbol,
 `HarnessTargetInferenceInvariantTuple`, `HarnessTargetInference`, and
 `HarnessTargetInferenceShape` are package-private and absent from every export
@@ -4681,7 +4684,11 @@ This is a deliberate hosted-boundary exception to the standalone wire-input
 contract. For `runHosted` and `streamHosted`, the host adapter owns wire parsing
 and transformation for a fresh request. Harness performs only the bounded JSON
 shape checks required by the hosted envelope: it does not revalidate or
-transform the fresh logical value. Harness persists the root `wireInput` for
+transform the fresh logical value. Those shape checks accept only ordinary
+own-enumerable JSON data: they reject accessors, non-enumerable own properties,
+symbol keys, sparse arrays, custom prototypes, cycles, non-finite numbers, and
+other values whose exact own data would be changed by snapshotting. Harness
+persists the root `wireInput` for
 conflict and resume comparison and stores the validated logical value once as
 required trusted `RunRecord.validatedInput`. On resume it compares the supplied
 wire value and restores that persisted validated value without accepting another
@@ -4695,6 +4702,11 @@ retained unchanged through terminalization even when every checkpoint is
 deleted. A child-task record retains only its canonical child-call `input` and
 forbids `validatedInput`. No resume derives root validated input from a
 checkpoint or invokes a target transform.
+
+Fresh hosted execution must consume the exact trusted validated root input
+prepared by the facade. If that private value is absent, the kernel fails
+closed before `createRun`; it never falls back to the wire input or reconstructs
+a logical value.
 
 `HostInvocation` is supplied only by the host target adapter for each run. It is
 opaque to Harness application logic, absent from public `InvokeOptions`, never
@@ -4810,6 +4822,13 @@ have completed authorization but must not emit or execute. The callback is invok
 request, including every separate or concurrent resume request; it is never
 checkpointed, replayed, or retried by Harness. An authorizer must not rely on
 exactly-once callback side effects.
+
+When a nonterminal hosted run or stream matches the retained immediately prior
+approval receipt and returns the current interruption without executing it,
+the request releases any acquired lease and removes its process-local active
+resume claim before returning or closing. A later valid resume of the current
+interruption can therefore proceed, and neither aggregate nor streaming replay
+leaks continuation ownership.
 
 The selected execution identity and projected trace cannot be supplied or
 overridden by `HostedTargetRequest`. Nested dispatch carries the frozen
@@ -6880,10 +6899,12 @@ trusted remote inference with a distinct validated-input type. Negative tests
 also reject an unbranded structural
 contract, a hand-authored `$infer` object, and attempts to obtain
 producer-transform authority. Declaration tests prove generated Core witnesses
-use the public `HarnessTargetInferenceFor` alias without naming or recreating
+use the public `HarnessTargetInferenceFor` type constructor without naming or recreating
 the hidden symbol. Runtime tests prove every `$infer` remains the same frozen
 empty phantom and remote wire validation never executes or claims the producer
-transform. Root, definitions-barrel, and packed-declaration tests export only
+transform. External declaration-emit fixtures must also export inferred Harness
+factories without `TS4058` or another reference to the hidden symbol. Root,
+definitions-barrel, and packed-declaration tests export only
 `HarnessTargetInferenceFor` and the existing consumer inference helpers; the
 invariant symbol, invariant tuple, local schema alias, and structural shape are
 absent, and no compatibility constructor or overload is public.
@@ -6899,6 +6920,7 @@ must include `packages/harness/src/definitions/types.ts`,
 `packages/harness/src/integrator/hosted-target-visitor.ts`,
 `packages/harness/src/integrator/target-contract.ts`,
 `packages/harness/src/integrator/index.ts`,
+`packages/harness/src/models/json.ts`,
 `packages/harness/src/models/state.ts`,
 `packages/harness/src/runtime/canonical-json.ts`,
 `packages/harness/src/runtime/standalone-instance.ts`,
@@ -6923,6 +6945,7 @@ must include `packages/harness/src/definitions/types.ts`,
 `packages/harness/test/durable-session.test.ts`,
 `packages/harness/test/durable-runtime.test.ts`,
 `packages/harness/test/durable-steps.test.ts`,
+`packages/harness/test/session-lifecycle.test.ts`,
 `packages/harness/test/failure/session-lifecycle.test.ts`,
 `packages/harness/test/local-durable-execution.test.ts`,
 `packages/harness/test/target-dispatcher.test.ts`,
@@ -6943,9 +6966,10 @@ input fields, canonical creation identity, durable retention, first-party
 adapter schema/read validation, terminal authorizer/re-read sequence, and
 privacy assertions frozen here and in specs 11, 22, and 32. First-party SQLite
 and PostgreSQL startup checks must validate the semantic validated-input kind
-constraint rather than trust its database constraint name. Canonical JSON and
-storage-contract tests include hostile getters, non-enumerable properties,
-symbol keys, sparse arrays, custom prototypes, mutation attempts, and fresh
+constraint rather than trust its database constraint name. Canonical JSON,
+hosted-envelope, and storage-contract tests include hostile getters,
+non-enumerable properties, symbol keys, sparse arrays, custom prototypes,
+mutation attempts, and fresh
 deeply frozen repeated reads/retries for `input`, `validatedInput`, `metadata`,
 and other persisted JSON-bearing values. Every scoped direct
 `createRun` fixture must supply the required validated input for an
@@ -6954,7 +6978,9 @@ be recovered with an optional field, default, cast, or compatibility overload.
 The AI SDK UI adapter, living-wiki backend, and OPA test additions are limited
 to downstream clean-break compile and API remediation for the exact target and
 execution-event contracts; they do not own another target, storage, protocol,
-or policy design.
+or policy design. The adapter's public projection helpers must infer and accept
+an exact concrete `HarnessTargetStream<Target>` without widening it to a
+synthetic umbrella target.
 The removed-v3 declaration fixture must change its positive
 `HarnessTargetInference` import into an exact clean-break negative while
 retaining `HarnessTargetInferenceFor` as the only public construction helper.
@@ -7169,14 +7195,18 @@ removed patterns.
     remote target can retain producer `validatedInput` inference beside a
     validation-only wire schema, while no remote consumer executes or claims
     the producer transform and every dispatcher helper remains `$infer`-based.
-    The one public `HarnessTargetInferenceFor` alias carries a hidden invariant
+    The one public named `HarnessTargetInferenceFor` type constructor carries a hidden invariant
     witness over the exact wire/validated/output/update-kind/interrupt-kinds
     tuple, so structurally compatible wider, narrower, or `never` substitutions
-    fail while the symbol and runtime witness remain inaccessible.
+    fail while the symbol and runtime witness remain inaccessible. External
+    exported Harness factories emit declarations without naming that symbol,
+    and exact concrete target streams are accepted by the AI SDK UI adapter.
 19. Hosted root requests use one exact fresh/resume union with `wireInput` on
     both branches, fresh-only validated input, resume-only approval state, and
-    one required request-owned `authorize` gate. Fresh execution persists
-    canonical wire and validated inputs once on the authoritative run. Every
+    one required request-owned `authorize` gate. Both inputs pass strict
+    own-enumerable JSON validation. Fresh execution persists canonical wire and
+    validated inputs once on the authoritative run and fails closed if its
+    trusted validated input is absent; no wire-input fallback exists. Every
     resume restores the deeply frozen retained `RunRecord.validatedInput`
     without a transform; authorization occurs after identity, trace,
     stored-run, wire, tenant, receipt/event, and decision-set validation but before a
@@ -7185,3 +7215,7 @@ removed patterns.
     and an atomic continuation-revision compare-and-swap before execution. A
     terminal receipt replay authorizes, exact re-reads its immutable terminal
     run/revision/receipt, and returns without lease, event, effect, or transform.
+    Missing or empty resume identity dimensions map to
+    `session_identity_mismatch`. Immediately-prior receipt replay through both
+    hosted run and stream releases its lease and active claim before returning
+    the current interruption.

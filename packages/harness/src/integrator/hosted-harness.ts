@@ -7,7 +7,7 @@ import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { HarnessExecutionCaller, HostToolDefinition } from '../definitions/types.js'
 import type { HarnessTargetStream } from '../definitions/execution-events.js'
 import {
-	AgentLoopBudgetError, HarnessConfigError, HostNestedTargetError, HostNestedTargetReplayConflictError, InternalError,
+	AgentLoopBudgetError, ApprovalResumeError, HarnessConfigError, HostNestedTargetError, HostNestedTargetReplayConflictError, InternalError,
 	HarnessTargetRouteReceiptMismatchError, OperationCancelledError, ValidationError,
 } from '../errors/index.js'
 import type { HarnessIdentity } from '../identity/index.js'
@@ -33,7 +33,8 @@ import {
 import { consumeHarnessTargetStream } from '../runtime/subagent-execution.js'
 import {
 	createTrustedHostedInvocationEnvironment, instantiateHarnessRuntime,
-	normalizeInvokeOptions, normalizeToolApprovalResume, type InvokeOptions,
+	normalizeInvokeOptions, normalizeToolApprovalResume, type HarnessTargetApprovalResume,
+	type HarnessTargetInvokeOptions, type InvokeOptions, type TrustedHostedInvokeOptions,
 } from '../runtime/standalone-instance.js'
 import type { HarnessTargetRunOutcome } from '../runtime/outcomes.js'
 import type { RuntimeRequirements } from '../runtime/runtime-requirements.js'
@@ -116,20 +117,66 @@ export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements
 	HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & { readonly logger?: never; readonly telemetry?: never }
 >
 
-/** Per-call options accepted at a hosted boundary. Trace context is projected by the host. */
-export type HostedInvokeOptions = Readonly<Omit<InvokeOptions, 'traceparent' | 'tracestate'> & {
-	readonly sessionId: string
-	readonly traceparent?: never
-	readonly tracestate?: never
+type HostedInvokeBaseOptions<Target extends AnyHarnessTargetContract> = Readonly<
+	Omit<HarnessTargetInvokeOptions<Target>, 'traceparent' | 'tracestate' | 'resume'> & {
+		readonly sessionId: string
+		readonly traceparent?: never
+		readonly tracestate?: never
+	}
+>
+
+/** Options for a fresh hosted invocation. */
+export type HostedFreshInvokeOptions<Target extends AnyHarnessTargetContract> = Readonly<HostedInvokeBaseOptions<Target> & {
+	readonly resume?: never
+	readonly resumeIdentity?: never
 }>
 
-/** One already-authenticated and schema-transformed hosted target request. */
-export type HostedTargetRequest<Target extends AnyHarnessTargetContract, HostInvocation> = Readonly<{
+/** Options for resuming an approval-interrupted hosted invocation. */
+export type HostedResumeInvokeOptions<Target extends AnyHarnessTargetContract> = Readonly<
+	Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey'> & {
+		readonly idempotencyKey?: never
+		readonly resume: HarnessTargetApprovalResume<Target>
+		readonly resumeIdentity?: 'current-caller' | 'stored-run-owner'
+	}
+>
+
+/** Per-call options accepted at a hosted boundary. */
+export type HostedInvokeOptions<Target extends AnyHarnessTargetContract> =
+	| HostedFreshInvokeOptions<Target>
+	| HostedResumeInvokeOptions<Target>
+
+/** Frozen business-authorization input owned by the hosting integration. */
+export type HostedTargetAuthorizationRequest<Target extends AnyHarnessTargetContract> = Readonly<{
+	delivery: 'fresh' | 'resume'
 	target: Target
 	input: HarnessValidatedTargetInput<Target>
-	invokeOptions: HostedInvokeOptions
-	hostInvocation: HostInvocation
 }>
+
+/** Required host-owned business authorizer for one root invocation. */
+export type HostedTargetAuthorizer<Target extends AnyHarnessTargetContract> = (
+	request: HostedTargetAuthorizationRequest<Target>,
+) => void | Promise<void>
+
+/** Exact fresh/resume union for one hosted root invocation. */
+export type HostedTargetRequest<Target extends AnyHarnessTargetContract, HostInvocation> =
+	| Readonly<{
+		delivery: 'fresh'
+		target: Target
+		wireInput: HarnessTargetInput<Target>
+		input: HarnessValidatedTargetInput<Target>
+		invokeOptions: HostedFreshInvokeOptions<Target>
+		hostInvocation: HostInvocation
+		authorize: HostedTargetAuthorizer<Target>
+	}>
+	| Readonly<{
+		delivery: 'resume'
+		target: Target
+		wireInput: HarnessTargetInput<Target>
+		input?: never
+		invokeOptions: HostedResumeInvokeOptions<Target>
+		hostInvocation: HostInvocation
+		authorize: HostedTargetAuthorizer<Target>
+	}>
 
 /** Runtime-authored nested dispatch identity. Authentication and trace remain host owned. */
 type StripHostOwnedInvocation<T> = T extends unknown ? Readonly<Omit<T, 'identity' | 'trace'> & {
@@ -193,12 +240,17 @@ export async function instantiateHostedHarness<
 	})
 	let closed = false
 
-	const projectEnvironment = async (hostInvocation: HostInvocation) => {
+	const projectEnvironment = async (hostInvocation: HostInvocation, delivery: 'fresh' | 'resume') => {
 		if (closed) throw new InternalError('Hosted Harness instance is closed.')
 		let projectedIdentity: HarnessIdentity | undefined
 		try { projectedIdentity = hostBindings.projectIdentity(hostInvocation) }
 		catch { throw new InternalError('Hosted identity projection failed.') }
-		const identity = normalizeHarnessIdentity(projectedIdentity)
+		let identity: HarnessIdentity | undefined
+		try { identity = normalizeHarnessIdentity(projectedIdentity) }
+		catch (error) {
+			if (delivery === 'resume') throw new ApprovalResumeError('session_identity_mismatch')
+			throw error
+		}
 		let traceContext: HarnessTraceContext | undefined
 		let projectedTrace: HarnessTraceContext | undefined
 		try { projectedTrace = hostBindings.projectTraceContext(hostInvocation) }
@@ -217,24 +269,36 @@ export async function instantiateHostedHarness<
 	}
 	const prepare = async <Target extends AnyHarnessTargetContract>(request: HostedTargetRequest<Target, HostInvocation>) => {
 		if (closed) throw new InternalError('Hosted Harness instance is closed.')
-		const invokeOptions = validateHostedRequest(request, definition.contracts)
+		const parsed = validateHostedRequest(request, definition.contracts, blueprint.graph)
+		const invokeOptions = parsed.invokeOptions
 		if (invokeOptions.signal?.aborted) throw abortError(invokeOptions.signal, 'run', 'Hosted run was cancelled.')
-		return Object.freeze({ environment: await projectEnvironment(request.hostInvocation), invokeOptions })
+		const environment = await projectEnvironment(request.hostInvocation, parsed.delivery)
+		const prepared = await kernel.prepareHostedRootTrusted(request.target, parsed.wireInput,
+			parsed.delivery === 'fresh' ? parsed.input : undefined, invokeOptions as unknown as TrustedHostedInvokeOptions<Target>, environment)
+		return Object.freeze({ ...parsed, environment, prepared })
 	}
 	return Object.freeze({
 		async runHosted<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedTargetRequest<Target, HostInvocation>) {
 			const prepared = await prepare(request)
-			return kernel.runTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment)
+			try {
+				await request.authorize(Object.freeze({ delivery: prepared.delivery, target: request.target, input: prepared.prepared.input }))
+			} catch (error) { kernel.discardHostedRootTrusted(prepared.environment); throw error }
+			return kernel.runTrusted(request.target, prepared.wireInput, prepared.prepared.input,
+				prepared.invokeOptions as unknown as TrustedHostedInvokeOptions<Target>, prepared.environment)
 		},
 		async streamHosted<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedTargetRequest<Target, HostInvocation>) {
 			const prepared = await prepare(request)
-			return kernel.streamTrusted(request.target, request.input, prepared.invokeOptions, prepared.environment)
+			try {
+				await request.authorize(Object.freeze({ delivery: prepared.delivery, target: request.target, input: prepared.prepared.input }))
+			} catch (error) { kernel.discardHostedRootTrusted(prepared.environment); throw error }
+			return kernel.streamTrusted(request.target, prepared.wireInput, prepared.prepared.input,
+				prepared.invokeOptions as unknown as TrustedHostedInvokeOptions<Target>, prepared.environment)
 		},
 		async streamDispatched<Target extends CompiledTargetOf<Graph>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>) {
 			if (closed) throw new InternalError('Hosted Harness instance is closed.')
 			const validated = validateHostedDispatchedRequest(request, blueprint.graph, blueprint.defaults.maxDepth)
 			if (validated.invocation.signal.aborted) throw abortError(validated.invocation.signal, request.target.kind, 'Hosted target dispatch was cancelled.')
-			const environment = await projectEnvironment(request.hostInvocation)
+			const environment = await projectEnvironment(request.hostInvocation, validated.delivery)
 			const invocation = Object.freeze({ ...validated.invocation,
 				...(environment.identity === undefined ? {} : { identity: environment.identity }),
 				...(environment.traceContext === undefined ? {} : { trace: environment.traceContext }),
@@ -495,13 +559,32 @@ function hostFailure(context: ToolInvocationContext, definition: HostToolDefinit
 			target_kind: target.kind, target_id: target.id }) })
 }
 
-function validateHostedRequest(value: unknown, contracts: HarnessContracts): HostedInvokeOptions {
+function validateHostedRequest<Target extends AnyHarnessTargetContract>(
+	value: HostedTargetRequest<Target, unknown>,
+	contracts: HarnessContracts,
+	graph: CompiledDefinitionGraph,
+): Readonly<{
+	delivery: 'fresh' | 'resume'
+	wireInput: HarnessTargetInput<Target>
+	input?: HarnessValidatedTargetInput<Target>
+	invokeOptions: HostedInvokeOptions<Target>
+}> {
+	const invalid = (field?: string): never => { throw new ValidationError('Hosted request is invalid.', {
+		where: 'invoke_options', issues: Object.freeze({ reason: 'invalid_hosted_request', ...(field === undefined ? {} : { field }) }),
+	}) }
 	if (!plain(value)) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request' } })
-	for (const field of ['target', 'input', 'invokeOptions', 'hostInvocation']) if (!Object.prototype.hasOwnProperty.call(value, field)) {
-		throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request', field } })
+	for (const field of ['delivery', 'target', 'wireInput', 'invokeOptions', 'hostInvocation', 'authorize']) {
+		if (!Object.prototype.hasOwnProperty.call(value, field)) invalid(field)
 	}
-	const unknown = Reflect.ownKeys(value).filter(key => typeof key !== 'string' || !['target', 'input', 'invokeOptions', 'hostInvocation'].includes(key)).map(String).sort(codePointCompare)[0]
-	if (unknown !== undefined) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request', field: unknown } })
+	const unknown = Reflect.ownKeys(value).filter(key => typeof key !== 'string'
+		|| !['delivery', 'target', 'wireInput', 'input', 'invokeOptions', 'hostInvocation', 'authorize'].includes(key))
+		.map(String).sort(codePointCompare)[0]
+	if (unknown !== undefined) invalid(unknown)
+	if (value.delivery !== 'fresh' && value.delivery !== 'resume') invalid('delivery')
+	if (typeof value.authorize !== 'function') invalid('authorize')
+	if (value.delivery === 'fresh') {
+		if (!Object.prototype.hasOwnProperty.call(value, 'input')) invalid('input')
+	} else if (Object.prototype.hasOwnProperty.call(value, 'input')) invalid('input')
 	const target = value['target'] as AnyHarnessTargetContract
 	if (!isHarnessTargetContract(target)) throw new ValidationError('Hosted target is not part of this Harness graph.', {
 		where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
@@ -510,20 +593,47 @@ function validateHostedRequest(value: unknown, contracts: HarnessContracts): Hos
 	const known = identity === undefined ? undefined : [...Object.values(contracts.agents), ...Object.values(contracts.workflows)]
 		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate === target)
 	if (known === undefined) throw new ValidationError('Hosted target is not part of this Harness graph.', { where: 'invoke_options', issues: { reason: 'unknown_hosted_target' } })
-	if (!isJsonValue(value['input'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
+	if (!isJsonValue(value['wireInput'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
+	if (value.delivery === 'fresh' && !isJsonValue(value['input'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
 	const invokeOptions = value['invokeOptions']
 	if (!plain(invokeOptions)) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request' } })
+	const allowedInvokeKeys = ['sessionId', 'signal', 'timeoutMs', 'historyWindow', 'idempotencyKey', 'contextProjection', 'traceparent', 'tracestate', 'metadata', 'resume', 'resumeIdentity', 'durable']
+	const unknownInvokeField = Reflect.ownKeys(invokeOptions)
+		.filter(key => typeof key !== 'string' || !allowedInvokeKeys.includes(key)).map(String).sort(codePointCompare)[0]
+	if (unknownInvokeField !== undefined) invalid(unknownInvokeField)
 	for (const field of ['traceparent', 'tracestate'] as const) if (Object.prototype.hasOwnProperty.call(invokeOptions, field)) {
 		throw new ValidationError('Hosted invocation cannot supply host-owned trace context.', { where: 'invoke_options', issues: { reason: 'host_owned_trace_context', field } })
 	}
 	const sessionId = invokeOptions['sessionId']
-	if (typeof sessionId !== 'string' || sessionId.length === 0) throw new ValidationError('Invocation options are invalid.', {
+	if (!Object.prototype.hasOwnProperty.call(invokeOptions, 'sessionId') || typeof sessionId !== 'string' || sessionId.length === 0) throw new ValidationError('Invocation options are invalid.', {
 		where: 'invoke_options', issues: { reason: 'invalid_invoke_options' },
 	})
-	const { sessionId: _sessionId, ...ordinaryOptions } = invokeOptions
-	const normalized = normalizeInvokeOptions(ordinaryOptions as InvokeOptions)
+	const hasResume = Object.prototype.hasOwnProperty.call(invokeOptions, 'resume')
+	const hasResumeIdentity = Object.prototype.hasOwnProperty.call(invokeOptions, 'resumeIdentity')
+	const hasIdempotencyKey = Object.prototype.hasOwnProperty.call(invokeOptions, 'idempotencyKey')
+	if (value.delivery === 'fresh') {
+		if (hasResume) invalid('resume')
+		if (hasResumeIdentity) invalid('resumeIdentity')
+	} else {
+		if (!hasResume || invokeOptions['resume'] === undefined) invalid('resume')
+		if (hasIdempotencyKey) invalid('idempotencyKey')
+		const approvalReachable = target.kind === 'agent'
+			? graph.approval.agents[target.id]?.reachable === true
+			: graph.approval.workflows[target.id]?.reachable === true
+		if (!target.interrupts.includes('tool-approval') && !approvalReachable) invalid(hasResumeIdentity ? 'resumeIdentity' : 'resume')
+		if (invokeOptions['resumeIdentity'] === 'stored-run-owner' && !target.interrupts.includes('tool-approval')) invalid('resumeIdentity')
+		if (hasResumeIdentity && !['current-caller', 'stored-run-owner'].includes(String(invokeOptions['resumeIdentity']))) invalid('resumeIdentity')
+	}
+	const resumeIdentity = hasResumeIdentity ? invokeOptions['resumeIdentity'] : undefined
+	const ordinaryOptions = Object.fromEntries(Object.entries(invokeOptions)
+		.filter(([key]) => key !== 'sessionId' && key !== 'resumeIdentity'))
+	const normalized = normalizeInvokeOptions(ordinaryOptions as unknown as InvokeOptions)
 	const { traceparent: _traceparent, tracestate: _tracestate, ...hostedOptions } = normalized
-	return Object.freeze({ sessionId, ...hostedOptions })
+	const normalizedHosted = Object.freeze({ sessionId, ...hostedOptions,
+		...(value.delivery === 'resume' && resumeIdentity !== undefined ? { resumeIdentity } : {}) }) as HostedInvokeOptions<Target>
+	return Object.freeze({ delivery: value.delivery, wireInput: deepFreezeJsonCopy(value.wireInput) as HarnessTargetInput<Target>,
+		...(value.delivery === 'fresh' ? { input: deepFreezeJsonCopy(value.input) as HarnessValidatedTargetInput<Target> } : {}),
+		invokeOptions: normalizedHosted })
 }
 
 function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract, HostInvocation>(

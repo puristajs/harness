@@ -104,7 +104,8 @@ type AnyHarnessTargetContract = HarnessTargetContract<
 	ModelSchema,
 	ModelSchema,
 	HarnessOutputUpdateKind,
-	readonly HarnessInterruptKind[]
+	readonly HarnessInterruptKind[],
+	any
 >
 type RootExecutionEventCorrelation = Readonly<{
 	eventId: string

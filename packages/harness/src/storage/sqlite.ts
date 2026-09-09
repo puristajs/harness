@@ -315,8 +315,10 @@ export class SqliteHarnessStorage implements HarnessStorage {
         throw runConflict()
       }
       try {
-        this.stmt('insert into harness_runs(id, session_id, kind, target, started_at, finished_at, status, revision, input_json, output_json, error_json, approval_receipt_json, attempt, worker_id, initial_step_id, metadata_json) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(record.id, record.sessionId, record.kind, record.target, record.startedAt, null, 'running', 1, JSON.stringify(record.input), null, null, null, null, null, null, stringify(record.metadata))
+        this.stmt('insert into harness_runs(id, session_id, kind, target, started_at, finished_at, status, revision, input_json, validated_input_json, output_json, error_json, approval_receipt_json, attempt, worker_id, initial_step_id, metadata_json) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(record.id, record.sessionId, record.kind, record.target, record.startedAt, null, 'running', 1,
+            JSON.stringify(record.input), record.kind === 'child_task' ? null : JSON.stringify(record.validatedInput),
+            null, null, null, null, null, null, stringify(record.metadata))
       } catch (error) {
         if (isConstraintViolation(error)) {
           const winner = this.loadRun(record.id)
@@ -561,7 +563,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
         if (binding?.['run_id'] !== validated.runId || binding?.['session_id'] !== validated.sessionId || existing.kind !== validated.kind || existing.schemaVersion !== validated.schemaVersion || existing.definitionVersion !== validated.definitionVersion || existing.deadline !== validated.deadline) {
           throw new ExternalWaitError('External wait id is already bound to a different request.', 'request_conflict')
         }
-        return { created: false, snapshot: existing }
+        return deepFreeze({ created: false, snapshot: existing })
       }
       const run = this.loadRun(validated.runId)
       if (!run || run.sessionId !== validated.sessionId || run.status !== 'running') {
@@ -579,7 +581,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
         .run(snapshot.waitId, validated.runId, validated.sessionId, snapshot.kind, snapshot.schemaVersion, snapshot.definitionVersion, snapshot.deadline, snapshot.status, snapshot.createdAt)
       this.stmt('update harness_runs set status = ?, revision = revision + 1 where id = ?').run('waiting', validated.runId)
       this.stmt('delete from harness_run_leases where run_id = ?').run(validated.runId)
-      return { created: true, snapshot }
+      return deepFreeze({ created: true, snapshot: deepFreeze(snapshot) })
     }))
   }
 
@@ -614,7 +616,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       create table if not exists harness_sessions(id text primary key, instance_id text not null, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, sandbox_binding_json text, metadata_json text);
       create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null);
       create index if not exists idx_harness_messages_session_order on harness_messages(session_id, timestamp, id);
-      create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, revision integer not null, input_json text not null, output_json text, error_json text, approval_receipt_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text);
+      create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, revision integer not null, input_json text not null, validated_input_json text, output_json text, error_json text, approval_receipt_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text, constraint harness_runs_validated_input_kind check ((kind in ('agent', 'workflow') and validated_input_json is not null) or (kind = 'child_task' and validated_input_json is null)));
       create index if not exists idx_harness_runs_session_order on harness_runs(session_id, started_at, id);
       create table if not exists harness_run_events(id text primary key, sequence integer not null, run_id text not null, at text not null, type text not null, payload_json text not null, unique(run_id, sequence));
       create index if not exists idx_harness_run_events_run_order on harness_run_events(run_id, sequence);
@@ -634,7 +636,9 @@ export class SqliteHarnessStorage implements HarnessStorage {
     const runsTable = this.db.prepare("select name from sqlite_master where type = 'table' and name = 'harness_runs'").get()
     if (runsTable) {
       const columns = new Set(this.db.prepare('pragma table_info(harness_runs)').all().map((row) => row['name']))
-      if (!columns.has('attempt') || !columns.has('initial_step_id') || !columns.has('revision') || !columns.has('approval_receipt_json')) legacyTables.push('harness_runs')
+      if (!columns.has('attempt') || !columns.has('initial_step_id') || !columns.has('revision')
+        || !columns.has('approval_receipt_json') || !columns.has('validated_input_json')
+        || !this.hasValidatedInputKindSemantics()) legacyTables.push('harness_runs')
     }
     for (const [table, required] of [['harness_run_events', ['sequence']], ['harness_run_leases', ['acquisition_id', 'request_json', 'acquired_revision']]] as const) {
       const exists = this.db.prepare("select name from sqlite_master where type = 'table' and name = ?").get(table)
@@ -655,6 +659,33 @@ export class SqliteHarnessStorage implements HarnessStorage {
         path: 'localDurableExecution.databaseFile',
         id: legacyTables.join(',')
       })
+    }
+  }
+
+  private hasValidatedInputKindSemantics(): boolean {
+    const insert = this.db.prepare(`insert into harness_runs
+      (id, session_id, kind, target, started_at, status, revision, input_json, validated_input_json)
+      values (?, 'schema-probe-session', ?, 'schemaProbe', '2026-01-01T00:00:00.000Z', 'running', 1, 'null', ?)`)
+    this.db.exec('savepoint harness_validated_input_probe')
+    try {
+      insert.run('schema-probe-agent-valid', 'agent', 'null')
+      insert.run('schema-probe-workflow-valid', 'workflow', 'null')
+      insert.run('schema-probe-child-valid', 'child_task', null)
+      for (const [id, kind, validatedInput] of [
+        ['schema-probe-agent-invalid', 'agent', null],
+        ['schema-probe-workflow-invalid', 'workflow', null],
+        ['schema-probe-child-invalid', 'child_task', 'null'],
+      ] as const) {
+        let rejected = false
+        try { insert.run(id, kind, validatedInput) } catch { rejected = true }
+        if (!rejected) return false
+      }
+      return true
+    } catch {
+      return false
+    } finally {
+      this.db.exec('rollback to harness_validated_input_probe')
+      this.db.exec('release harness_validated_input_probe')
     }
   }
 
@@ -699,7 +730,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
     const row = this.stmt('select * from harness_external_waits where wait_id = ?').get(waitId)
     if (!row) return undefined
     const status = requiredString(row, 'status', 'getRun')
-    return validateExternalWaitSnapshot({
+    return deepFreeze(validateExternalWaitSnapshot({
       waitId: requiredString(row, 'wait_id', 'getRun'),
       kind: requiredString(row, 'kind', 'getRun'),
       schemaVersion: requiredString(row, 'schema_version', 'getRun'),
@@ -709,7 +740,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       createdAt: requiredString(row, 'created_at', 'getRun'),
       ...optional('resolvedAt', typeof row['resolved_at'] === 'string' ? row['resolved_at'] : undefined),
       ...optional('eventId', typeof row['event_id'] === 'string' ? row['event_id'] : undefined)
-    })
+    }))
   }
 
   private expireExternalWait(snapshot: ExternalWaitSnapshot | undefined): ExternalWaitSnapshot | undefined {
@@ -727,17 +758,17 @@ export class SqliteHarnessStorage implements HarnessStorage {
     const resolved = asExternalWaitResolved(expired)
     if (!resolved) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
     this.stmt('update harness_external_waits set status = ?, resolved_at = ? where wait_id = ?').run(resolved.status, resolved.resolvedAt, resolved.waitId)
-    return resolved
+    return deepFreeze(resolved)
   }
 
   private async resolveExternalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult> {
     return this.transaction(() => {
       const snapshot = this.expireExternalWait(this.loadExternalWait(signal.waitId))
-      if (!snapshot) return validateExternalWaitSignalResult({ kind: 'not_found' })
+      if (!snapshot) return deepFreeze(validateExternalWaitSignalResult({ kind: 'not_found' }))
       const duplicate = this.stmt('select event_id from harness_external_wait_signals where wait_id = ? and event_id = ?').get(signal.waitId, signal.eventId)
-      if (duplicate) return validateExternalWaitSignalResult({ kind: 'duplicate', snapshot })
+      if (duplicate) return deepFreeze(validateExternalWaitSignalResult({ kind: 'duplicate', snapshot }))
       this.stmt('insert into harness_external_wait_signals(wait_id, event_id) values(?, ?)').run(signal.waitId, signal.eventId)
-      if (snapshot.status !== 'waiting') return validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot })
+      if (snapshot.status !== 'waiting') return deepFreeze(validateExternalWaitSignalResult({ kind: 'already_terminal', snapshot }))
       const resolved = validateExternalWaitSnapshot({
         waitId: snapshot.waitId,
         kind: snapshot.kind,
@@ -753,7 +784,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
       if (!terminal) throw new ExternalWaitError('External wait adapter returned an invalid snapshot.', 'invalid_snapshot')
       this.stmt('update harness_external_waits set status = ?, resolved_at = ?, event_id = ? where wait_id = ?')
         .run(terminal.status, terminal.resolvedAt, signal.eventId, signal.waitId)
-      return validateExternalWaitSignalResult({ kind: 'applied', snapshot: terminal })
+      return deepFreeze(validateExternalWaitSignalResult({ kind: 'applied', snapshot: terminal }))
     })
   }
 
@@ -802,7 +833,7 @@ export class SqliteHarnessStorage implements HarnessStorage {
   private rowToSession(row: SqlRow): SessionRecord {
     const sandboxBinding = parseJson<SessionRecord['sandboxBinding']>(row['sandbox_binding_json'])
     assertSessionSandboxBindingTransition(sandboxBinding, sandboxBinding, 'getSession')
-    return {
+    return deepFreeze({
       id: requiredString(row, 'id', 'getSession'),
       instanceId: requiredString(row, 'instance_id', 'getSession'),
       createdAt: requiredString(row, 'created_at', 'getSession'),
@@ -811,13 +842,13 @@ export class SqliteHarnessStorage implements HarnessStorage {
       ...optional('identity', parseJson<SessionRecord['identity']>(row['identity_json'])),
       ...optional('sandboxBinding', sandboxBinding),
       ...optional('metadata', parseJson<Record<string, JsonValue>>(row['metadata_json']))
-    }
+    })
   }
 
   private rowToMessage(row: SqlRow): Message {
     const toolCalls = parseJson<Message['toolCalls']>(row['tool_calls_json'])
     const toolResults = parseJson<Message['toolResults']>(row['tool_results_json'])
-    return {
+    return deepFreeze({
       id: requiredString(row, 'id', 'listMessages'),
       sessionId: requiredString(row, 'session_id', 'listMessages'),
       role: requiredString(row, 'role', 'listMessages') as Message['role'],
@@ -825,24 +856,30 @@ export class SqliteHarnessStorage implements HarnessStorage {
       ...optional('toolCalls', toolCalls),
       ...optional('toolResults', toolResults),
       timestamp: requiredString(row, 'timestamp', 'listMessages')
-    }
+    })
   }
 
   private rowToRun(row: SqlRow): RunRecord {
     const output = parseJson<JsonValue>(row['output_json'])
     const error = parseJson<SerializedError>(row['error_json'])
     const input = parseJson<JsonValue>(row['input_json'])
+    const kind = requiredString(row, 'kind', 'getRun') as RunRecord['kind']
+    const validatedInput = parseJson<JsonValue>(row['validated_input_json'])
     if (input === undefined) throw new StateError('SQLite run input is invalid.', { op: 'getRun', reason: 'invalid_record' })
+    if (kind === 'child_task' ? row['validated_input_json'] !== null : validatedInput === undefined) {
+      throw new StateError('SQLite validated run input is invalid.', { op: 'getRun', reason: 'invalid_record' })
+    }
     const record = {
       id: requiredString(row, 'id', 'getRun'),
       sessionId: requiredString(row, 'session_id', 'getRun'),
-      kind: requiredString(row, 'kind', 'getRun') as RunRecord['kind'],
+      kind,
       target: requiredString(row, 'target', 'getRun'),
       startedAt: requiredString(row, 'started_at', 'getRun'),
       ...(row['finished_at'] ? { finishedAt: requiredString(row, 'finished_at', 'getRun') } : {}),
       status: requiredString(row, 'status', 'getRun') as RunRecord['status'],
       revision: requiredNumber(row, 'revision', 'getRun'),
       input,
+      ...(kind === 'child_task' ? {} : { validatedInput }),
       ...optional('output', output),
       ...optional('error', error),
       ...optional('approvalReceipt', parseJson<RunRecord['approvalReceipt']>(row['approval_receipt_json'])),
@@ -928,11 +965,12 @@ function optional<K extends string, V>(key: K, value: V | undefined): V extends 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/
 const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 function normalizeCreateRunRequest(value: CreateRunRequest): CreateRunRequest {
-  if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'metadata'])
-    || !validId(value.id) || !validId(value.sessionId) || !validId(value.target) || !['agent', 'workflow', 'child_task'].includes(value.kind)
+  if (!plain(value) || !exactKeys(value, ['id', 'sessionId', 'kind', 'target', 'startedAt', 'input', 'validatedInput', 'metadata'])) throw runConflict()
+  try { canonicalJson(value) } catch { throw runConflict() }
+  if (!validId(value.id) || !validId(value.sessionId) || !validId(value.target) || !['agent', 'workflow', 'child_task'].includes(value.kind)
+    || (value.kind === 'child_task' ? Object.hasOwn(value, 'validatedInput') : !Object.hasOwn(value, 'validatedInput'))
     || !validTimestamp(value.startedAt) || (Object.hasOwn(value, 'metadata') && value.metadata === undefined)
     || (value.metadata !== undefined && !plain(value.metadata))) throw runConflict()
-  try { canonicalJson(value.input); if (value.metadata !== undefined) canonicalJson(value.metadata) } catch { throw runConflict() }
   return deepFreeze(structuredClone(value))
 }
 function normalizeAcquireRunRequest(value: AcquireRunRequest): AcquireRunRequest {
@@ -1067,7 +1105,11 @@ function validSerializedError(value: unknown): boolean {
   try { canonicalJson(value) } catch { return false }
   return true
 }
-function runCreationBytes(value: CreateRunRequest | RunRecord): string { return canonicalJson(['harness-run-create-v1', value.id, value.sessionId, value.kind, value.target, value.startedAt, value.input, Object.prototype.hasOwnProperty.call(value, 'metadata'), value.metadata ?? null]) }
+function runCreationBytes(value: CreateRunRequest | RunRecord): string {
+  return canonicalJson(['harness-run-create-v1', value.id, value.sessionId, value.kind, value.target, value.startedAt, value.input,
+    Object.prototype.hasOwnProperty.call(value, 'validatedInput'), value.kind === 'child_task' ? null : value.validatedInput,
+    Object.prototype.hasOwnProperty.call(value, 'metadata'), value.metadata ?? null])
+}
 function runConflict(): StateError { return new StateError('Run creation conflicts with an existing logical run.', { op: 'createRun', reason: 'run_conflict' }) }
 function leaseConflict(): StateError { return new StateError('Run or session lease is already held.', { op: 'acquireRun', reason: 'lease_conflict' }) }
 function eventSequenceConflict(): StateError { return new StateError('Run event sequence is not contiguous.', { op: 'appendEvents', reason: 'event_sequence_conflict' }) }

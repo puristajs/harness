@@ -28,6 +28,20 @@ const workflowCaller = Object.freeze({ kind: 'workflow' as const, workflowId: 'r
 
 // @ts-expect-error The v4 UI adapter accepts an exact target contract, not an output-only generic.
 type StaleOutputOnlyStream = HarnessTargetStream<string>
+type ExactObjectTarget = HarnessTargetContract<
+  'agent',
+  'exactObjectTarget',
+  ModelSchema<{ readonly question: string }, { readonly question: string }>,
+  ModelSchema<{ readonly answer: string }, { readonly answer: string }>,
+  'object-snapshot',
+  readonly ['tool-approval']
+>
+function acceptsExactConcreteTarget(stream: HarnessTargetStream<ExactObjectTarget>): void {
+  createHarnessUIMessageStream(stream, { sessionId: 'session-1' })
+  createHarnessUIMessageStreamResponse(stream, { sessionId: 'session-1' })
+  createHarnessUIMessageSseEvents(stream, { sessionId: 'session-1' })
+}
+void acceptsExactConcreteTarget
 // @ts-expect-error Caller identity is one exact discriminated union, not independent optional fields.
 const staleToolStatus: HarnessUIStatus = { phase: 'tool-running', runId: 'run', toolId: 'lookup', callId: 'call', agentId: 'support' }
 const exactAgentToolStatus: HarnessUIStatus = { phase: 'tool-running', runId: 'run', toolId: 'lookup', callId: 'call', caller: agentCaller }

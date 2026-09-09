@@ -517,8 +517,10 @@ describe('opaPolicy', () => {
     const first = await instantiateHostedHarness(definition, { model: { provider: provider(false), model: 'fake' } }, bindings(firstTelemetry) as never)
     const second = await instantiateHostedHarness(definition, { model: { provider: provider(true), model: 'fake' } }, bindings(secondTelemetry) as never)
     const outcomes = await Promise.allSettled([
-      first.runHosted({ target: agent.contract, input: 'first', invokeOptions: { sessionId: 'first' }, hostInvocation: {} }),
-      second.runHosted({ target: agent.contract, input: 'second', invokeOptions: { sessionId: 'second' }, hostInvocation: {} }),
+      first.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'first', input: 'first',
+        invokeOptions: { sessionId: 'first' }, hostInvocation: {}, authorize: () => undefined }),
+      second.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'second', input: 'second',
+        invokeOptions: { sessionId: 'second' }, hostInvocation: {}, authorize: () => undefined }),
     ])
     expect(outcomes.map(outcome => outcome.status)).toEqual(['rejected', 'fulfilled'])
     expect(requestTraceparents.sort()).toEqual([firstTrace, secondTrace].sort())

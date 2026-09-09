@@ -12,6 +12,7 @@ import {
 	createVerificationLayout,
 	npmVerificationArguments,
 	requireOfflineCache,
+	restorePublishedHarnessDependency,
 	runCheckedCommand,
 	runPuristaSandboxVerification,
 	withVerificationScratch,
@@ -80,6 +81,24 @@ test('applies offline workspace-cache arguments to package installs and packs', 
 		assert.deepEqual(command.slice(0, 3), ['--offline', '--cache', layout.cache])
 	}
 	assert.deepEqual(npmVerificationArguments(layout, 'pack', ['--ignore-scripts', '--json']).slice(3), ['pack', '--ignore-scripts', '--json'])
+})
+
+test('restores the published Harness range before packing staged Core', async () => {
+	const root = await temporaryRoot()
+	const manifestPath = join(root, 'package.json')
+	await writeFile(manifestPath, JSON.stringify({
+		name: '@purista/core',
+		dependencies: { '@purista/harness': 'file:../../../tarballs/purista-harness-4.0.0.tgz' },
+	}))
+
+	await restorePublishedHarnessDependency(manifestPath, '^4.0.0')
+
+	const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+	assert.equal(manifest.dependencies['@purista/harness'], '^4.0.0')
+	await assert.rejects(
+		restorePublishedHarnessDependency(manifestPath, 'file:../purista-harness-4.0.0.tgz'),
+		/published @purista\/harness dependency range/i,
+	)
 })
 
 test('rejects a stale installed Harness version instead of accepting the manifest range', async () => {

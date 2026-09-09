@@ -170,6 +170,16 @@ async function writeJson(path, value) {
 	await writeFile(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
+/** Restore the dependency range that belongs in the published Core package after its staged build. */
+export async function restorePublishedHarnessDependency(coreManifestPath, publishedHarnessDependency) {
+	if (typeof publishedHarnessDependency !== 'string' || publishedHarnessDependency.startsWith('file:')) {
+		throw new Error('PURISTA Core must declare a published @purista/harness dependency range.')
+	}
+	const coreManifest = await readJson(coreManifestPath)
+	coreManifest.dependencies['@purista/harness'] = publishedHarnessDependency
+	await writeJson(coreManifestPath, coreManifest)
+}
+
 function installArguments(layout) {
 	return npmVerificationArguments(layout, 'install', ['--ignore-scripts', '--no-audit', '--no-fund'])
 }
@@ -221,12 +231,20 @@ async function stageCoreSource(scratchDirectory, harnessTarball) {
 	for (const config of ['tsconfig.json', 'vitest.config.unit.ts', 'vitest.workspaceAliases.ts']) {
 		await cp(join(puristaRoot, config), join(stagedRoot, config))
 	}
+	await mkdir(join(stagedRoot, 'scripts'), { recursive: true })
+	await cp(join(puristaRoot, 'scripts/syncPackageSkills.mjs'), join(stagedRoot, 'scripts/syncPackageSkills.mjs'))
+	await cp(join(puristaRoot, 'skills'), join(stagedRoot, 'skills'), {
+		recursive: true,
+		filter: source => !source.includes('/node_modules/'),
+	})
 	await cp(join(puristaRoot, 'test/service'), join(stagedRoot, 'test/service'), {
 		recursive: true,
 		filter: source => !source.includes('/node_modules/') && !source.includes('/dist/'),
 	})
 	const coreManifestPath = join(stagedCore, 'package.json')
 	const coreManifest = await readJson(coreManifestPath)
+	const publishedHarnessDependency = coreManifest.dependencies['@purista/harness']
+	const consumerNodeTypes = coreManifest.devDependencies['@types/node']
 	coreManifest.dependencies['@purista/harness'] = `file:${relative(stagedCore, harnessTarball)}`
 	await writeJson(coreManifestPath, coreManifest)
 	await writeJson(join(stagedRoot, 'package.json'), {
@@ -238,7 +256,7 @@ async function stageCoreSource(scratchDirectory, harnessTarball) {
 		},
 	})
 	await copyPublicFixture(join(harnessRoot, 'scripts/fixtures/purista-sandbox-source.ts'), join(stagedCore, 'src/purista-sandbox-source.ts'))
-	return { stagedRoot, stagedCore }
+	return { stagedRoot, stagedCore, publishedHarnessDependency, consumerNodeTypes }
 }
 
 function compilerPath(root) {
@@ -258,10 +276,11 @@ async function runSourceMode(layout, scratchDirectory, harness, signal) {
 }
 
 async function runConsumerMode(layout, scratchDirectory, harness, signal) {
-	const { stagedRoot, stagedCore } = await stageCoreSource(scratchDirectory, harness.tarball)
+	const { stagedRoot, stagedCore, publishedHarnessDependency, consumerNodeTypes } = await stageCoreSource(scratchDirectory, harness.tarball)
 	runCheckedCommand('npm', installArguments(layout), { cwd: stagedRoot, signal })
 	await assertInstalledHarness(stagedRoot, { ...harness.manifest, tarball: harness.tarball })
 	runCheckedCommand('npm', npmVerificationArguments(layout, 'run', ['build', '--workspace', '@purista/core']), { cwd: stagedRoot, signal })
+	await restorePublishedHarnessDependency(join(stagedCore, 'package.json'), publishedHarnessDependency)
 	const tarballs = join(scratchDirectory, 'tarballs')
 	const coreTarball = await packPackageDirectory(tarballs, { cwd: stagedCore, layout, signal })
 	const consumerRoot = join(scratchDirectory, 'consumer')
@@ -273,7 +292,7 @@ async function runConsumerMode(layout, scratchDirectory, harness, signal) {
 			'@purista/harness': `file:${relative(consumerRoot, harness.tarball)}`,
 		},
 		devDependencies: {
-			'@types/node': harness.manifest.devDependencies['@types/node'],
+			'@types/node': consumerNodeTypes,
 			typescript: (await readJson(join(puristaRoot, 'package.json'))).devDependencies.typescript,
 		},
 	})

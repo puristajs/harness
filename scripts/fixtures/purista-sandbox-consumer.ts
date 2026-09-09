@@ -2,7 +2,7 @@ import { ServiceBuilder } from '@purista/core'
 import { defineHarness, inMemorySandbox, type Sandbox } from '@purista/harness'
 
 const sandbox: Sandbox = inMemorySandbox()
-const harness = defineHarness({ name: 'packed-boundary' })
+const harness = defineHarness({ name: 'packedBoundary' })
 void sandbox
 void harness
 void ServiceBuilder

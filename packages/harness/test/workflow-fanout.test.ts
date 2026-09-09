@@ -4,12 +4,16 @@ import { defineWorkflow as defineWorkflowV4 } from '../src/definitions/workflow.
 import { defineAgent as defineAgentV4 } from '../src/definitions/agent.js'
 import type { ExecutionEvent } from '../src/definitions/execution-events.js'
 import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
+function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: string }) {
+	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
+}
+
 
 describe('v4 workflow fan-out admission', () => {
 	it('bounds workers, preserves input order, and does not consume the workflow agent-call budget', async () => {
 		const workflow = defineWorkflowV4('workersOnly', { input: z.string(), output: z.string(), agentCalls: { maxCalls: 1, maxParallel: 2 }, async handler({ input }) { return input } })
 		let active = 0; let peak = 0; let opens = 0
-		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async () => { opens += 1; throw new Error('unexpected') } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opens += 1; throw new Error('unexpected') } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		await expect(runtime.fanOut([1, 2, 3], async item => {
@@ -29,7 +33,7 @@ describe('v4 workflow fan-out admission', () => {
 			input: z.string(), output: z.string(),
 			async handler({ input }) { return input },
 		})
-		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async () => { throw new Error('unexpected') } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		await expect(runtime.fanOut(['x'], async value => value, { concurrency: 0 })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
@@ -38,7 +42,7 @@ describe('v4 workflow fan-out admission', () => {
 	it('lets bounded fan-out workers make agent calls without acquiring a fan-out slot', async () => {
 		const agent = defineAgentV4('fanWorker', { input: z.number(), output: z.number(), instructions: 'Work.', prompt: value => ({ role: 'user', content: String(value) }) })
 		const workflow = defineWorkflowV4('fanCalls', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 3, maxParallel: 2 }, async handler({ input }) { return input } })
-		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async request => {
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 			const outcome = { status: 'completed' as const, runId: request.invocation.invocationId, output: (request.input as number) * 2 }
 			return {
 			result: Promise.resolve(outcome),

@@ -11,6 +11,10 @@ import type { ExecutionEvent } from '../src/definitions/execution-events.js'
 import type { HarnessTargetDispatcher } from '../src/ports/target-dispatcher.js'
 import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
+
+function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: string }) {
+	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
+}
 import { compileDefinitionGraph } from '../src/runtime/compiled-graph.js'
 
 function persistentStorage(): InMemoryHarnessStorage {
@@ -41,8 +45,23 @@ describe('v4 workflow child-task runtime', () => {
 		const storage = new InMemoryHarnessStorage()
 		let allowed = false
 		let opened = 0
+		let routeAssertions = 0
+		const route = Object.freeze({ schemaVersion: 1 as const, kind: 'harness_target_route' as const,
+			target: Object.freeze({ kind: agent.contract.kind, id: agent.contract.id }), bindingDigest: `sha256:${'a'.repeat(64)}` })
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage,
-			targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 'done') as never } },
+			targetDispatcher: {
+				assertTarget: target => {
+					if (target !== agent.contract) throw new Error('unexpected target')
+					routeAssertions += 1
+					return route
+				},
+				open: async request => {
+					expect(routeAssertions).toBe(1)
+					opened += 1
+					return terminalStream(request, 'done') as never
+				},
+				openPersisted: async () => { throw new Error('unexpected persisted open') },
+			},
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'workflow-invocation',
 			depth: 0, remainingDepth: 1, defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 },
 			prepareChildLaunch: async () => { if (!allowed) throw new StateError('revoked', { op: 'getSession', reason: 'session_identity_mismatch' }) },
@@ -56,6 +75,7 @@ describe('v4 workflow child-task runtime', () => {
 		expect(runtime.agentCallBudgetState().usedCalls).toBe(0)
 		allowed = true
 		await expect(runtime.agents[agent.id].run('direct', { callId: 'direct-allowed' })).resolves.toBe('done')
+		expect(routeAssertions).toBe(1)
 	})
 
 	it.each(['failed', 'cancelled'] as const)('runs background cleanup after the %s terminal record is persisted', async status => {
@@ -67,7 +87,7 @@ describe('v4 workflow child-task runtime', () => {
 		const storage = new InMemoryHarnessStorage()
 		const observed: string[] = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage,
-			targetDispatcher: { open: async request => {
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 				const outcome = { status, runId: request.invocation.invocationId,
 					error: { code: status === 'cancelled' ? 'OPERATION_CANCELLED' : 'INTERNAL_ERROR', message: 'safe' } }
 				return { result: Promise.resolve(outcome), async *[Symbol.asyncIterator]() {
@@ -95,7 +115,7 @@ describe('v4 workflow child-task runtime', () => {
 			childTaskSandboxGroups: ['reviewers'] as const, async handler({ input }) { return input } })
 		const selected: Array<{ invocationId: string; policy: unknown }> = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {},
-			targetDispatcher: { open: async request => terminalStream(request, 'done') as never },
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'done') as never },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'workflow-invocation',
 			depth: 0, remainingDepth: 1, defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 },
 			prepareChildLaunch: async request => { selected.push({ invocationId: request.childInvocationId, policy: request.policy }) },
@@ -140,7 +160,7 @@ describe('v4 workflow child-task runtime', () => {
 		const workflow = defineWorkflowV4('v4flow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
 		const events: ExecutionEvent[] = []
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async request => terminalStream(request, 'done') as any },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'done') as any },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { events.push(event) } })
 		const task = await runtime.childTasks.start(agent.id, 'input', { callId: 'task' })
@@ -157,7 +177,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('approvalWorker', { instructions: 'Ask.', tools: [tool], permissions: { bash: 'require_approval' } })
 		const workflow = defineWorkflowV4('approvalFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		let opened = 0; const events: ExecutionEvent[] = []; const storage = new InMemoryHarnessStorage()
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async () => { opened += 1; throw new Error('unexpected') } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opened += 1; throw new Error('unexpected') } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { events.push(event) } })
 		await expect(runtime.childTasks.start(agent.id, 'input', { callId: 'task' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', meta: { issues: { reason: 'approval_capable_child_task_unsupported' } } })
@@ -168,7 +188,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('depthWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('depthFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0; const events: ExecutionEvent[] = []
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async () => { opened += 1; throw new Error('unexpected') } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opened += 1; throw new Error('unexpected') } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 3, remainingDepth: 0,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { events.push(event) } })
 		await expect(runtime.childTasks.start(agent.id, 'input', { callId: 'task' })).rejects.toMatchObject({ code: 'AGENT_LOOP_BUDGET_EXCEEDED', meta: { reason: 'max_depth', limit: 3 } })
@@ -180,7 +200,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('chatWorker', { input: z.string(), output: z.string(), instructions: 'Chat.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('chatFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const seen: string[] = []; const sessions: string[] = []
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { open: async request => { seen.push(request.input as string); sessions.push(request.invocation.sessionId); return terminalStream(request, `${request.input}!`) as any } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { seen.push(request.input as string); sessions.push(request.invocation.sessionId); return terminalStream(request, `${request.input}!`) as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 3, maxParallelWorkflowAgentCalls: 1 } })
 		const task = await runtime.childTasks.start(agent.id, 'first', { callId: 'chat', mode: 'continuable' })
@@ -207,7 +227,7 @@ describe('v4 workflow child-task runtime', () => {
 		let authorizations = 0
 		let opened = 0
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {},
-			targetDispatcher: { open: async request => {
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 				opened += 1
 				if (opened === 1) {
 					initialOpened()
@@ -246,7 +266,7 @@ describe('v4 workflow child-task runtime', () => {
 		const opened: string[] = []
 		let slowOpened!: () => void
 		const slowStarted = new Promise<void>(resolve => { slowOpened = resolve })
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { open: async request => {
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 			opened.push(request.input as string)
 			if (request.input === 'slow') { slowOpened(); return new Promise((_resolve, reject) => request.invocation.signal.addEventListener('abort', () => reject(request.invocation.signal.reason), { once: true })) }
 			return terminalStream(request, `${request.input}!`) as any
@@ -268,7 +288,7 @@ describe('v4 workflow child-task runtime', () => {
 		const workflow = defineWorkflowV4('reasonFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
 		const build = (signal = new AbortController().signal) => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true,
-			targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 'done') as any } }, signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'done') as any } }, signal,
 			sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 4, maxParallelWorkflowAgentCalls: 1 } })
 		await expect(build().childTasks.start(agent.id, 'x', { callId: 'bad id', idempotencyKey: 'stable' })).rejects.toMatchObject({ meta: { issues: { reason: 'invalid_workflow_call_id' } } })
@@ -287,7 +307,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('durableWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('durableFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
-		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 'persisted') as any } },
+		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'persisted') as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'durable-parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 } })
 		const first = await build().childTasks.start(agent.id, 'same', { callId: 'task', idempotencyKey: 'stable' })
@@ -305,7 +325,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('strictWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('strictFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
-		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { open: async request => terminalStream(request, 'valid') as any },
+		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'valid') as any },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 } })
 		const task = await build().childTasks.start(agent.id, 'input', { callId: 'task', idempotencyKey: 'stable' }); await task.result()
@@ -331,7 +351,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('transformTaskWorker', { input: z.string(), output: z.string().transform(Number), responseMode: 'text', instructions: 'Transform once.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('transformTaskFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
-		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 9) as any } },
+		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 9) as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 } })
 		await expect((await build().childTasks.start(agent.id, '9', { callId: 'task', idempotencyKey: 'stable' })).result()).resolves.toBe(9)
@@ -344,7 +364,7 @@ describe('v4 workflow child-task runtime', () => {
 		const workflow = defineWorkflowV4('rollbackFlow', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 1, maxParallel: 1 }, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); const originalCreate = storage.createRun.bind(storage); let failCreate = true; let opened = 0
 		storage.createRun = async record => { if (failCreate) throw new Error('storage unavailable'); return originalCreate(record) }
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 'done') as any } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'done') as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		await expect(runtime.childTasks.start(agent.id, 'input', { callId: 'retry' })).rejects.toThrow('storage unavailable')
@@ -359,7 +379,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('eventWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('eventFlow', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 1, maxParallel: 1 }, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0; let failEvent = true; const emitted: string[] = []
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async request => { opened += 1; return terminalStream(request, 'done') as any } },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'done') as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { emitted.push(event.type); if (failEvent && event.type === 'child_task.started') throw new StateError('Event storage failed.', { op: 'appendEvents', reason: 'backend_failure' }) } })
 		await expect(runtime.childTasks.start(agent.id, 'input', { callId: 'event' })).rejects.toMatchObject({ code: 'STATE_ERROR', meta: { op: 'appendEvents', reason: 'backend_failure' } })
@@ -379,7 +399,7 @@ describe('v4 workflow child-task runtime', () => {
 		let enteredFinish!: () => void; let releaseFinish!: () => void
 		const finishEntered = new Promise<void>(resolve => { enteredFinish = resolve }); const finishGate = new Promise<void>(resolve => { releaseFinish = resolve })
 		storage.finishRun = async (id, patch) => { enteredFinish(); await finishGate; return originalFinish(id, patch) }
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async request => terminalStream(request, 'done') as any },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'done') as any },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		const task = await runtime.childTasks.start(agent.id, 'input', { callId: 'race' })
@@ -398,7 +418,7 @@ describe('v4 workflow child-task runtime', () => {
 		const workflow = defineWorkflowV4('commitFailureFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); const originalFinish = storage.finishRun.bind(storage)
 		storage.finishRun = async () => { throw new StateError('Run persistence failed.', { op: 'finishRun', reason: 'backend_failure' }) }
-		const withStorage = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async request => terminalStream(request, 'done') as any },
+		const withStorage = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'done') as any },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		const storageTask = await withStorage.childTasks.start(agent.id, 'input', { callId: 'storage-failure' })
@@ -407,7 +427,7 @@ describe('v4 workflow child-task runtime', () => {
 		storage.finishRun = originalFinish
 		await expect(storage.getRun(storageTask.id)).resolves.toMatchObject({ status: 'running' })
 
-		const withoutStorage = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { open: async request => terminalStream(request, 'done') as any },
+		const withoutStorage = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'done') as any },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'other-parent', rootRunId: 'root', invocationId: 'other-invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { if (event.type === 'child_task.settled') throw new StateError('Event persistence failed.', { op: 'appendEvents', reason: 'backend_failure' }) } })
 		const eventTask = await withoutStorage.childTasks.start(agent.id, 'input', { callId: 'event-failure' })
@@ -419,7 +439,7 @@ describe('v4 workflow child-task runtime', () => {
 		const agent = defineAgentV4('slowWorker', { input: z.string(), output: z.string(), instructions: 'Wait.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('timeoutFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
-		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { open: async () => new Promise(() => {}) },
+		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => new Promise(() => {}) },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'parent', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
 		const task = await runtime.childTasks.start(agent.id, 'input', { callId: 'slow', timeoutMs: 5 })
@@ -434,7 +454,7 @@ describe('v4 workflow child-task runtime', () => {
 			const workflow = defineWorkflowV4(`terminalFlow${terminal}`, { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 			const storage = new InMemoryHarnessStorage(); let opened = 0
 			const controller = new AbortController()
-			const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { open: async request => {
+			const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 				opened += 1
 				const outcome = terminal === 'failed'
 						? { status: 'failed', runId: request.invocation.invocationId, error: { code: 'REMOTE', message: 'private' } }

@@ -83,6 +83,7 @@ async function executeSubagent(
 	})
 	const childInvocationId = deriveOpaqueId('invocation', [context.runId, 'agent', context.agentId, context.callId, agent.id])
 	const childSessionId = deriveOpaqueId('session', [context.sessionId, context.rootRunId, childInvocationId, agent.id])
+	const route = context.targetDispatcher.assertTarget(agent.contract)
 	const stream = await withAbortSignal(context.signal, 'agent', 'Subagent execution was cancelled.', () => context.targetDispatcher.open({
 		target: agent.contract,
 		input: wireInput,
@@ -107,7 +108,7 @@ async function executeSubagent(
 	})
 	const outcome = consumed.outcome
 	if (outcome.status === 'completed') return outcome.output
-	if (outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, outcome)
+	if (outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, outcome, route, wireInput)
 	if (outcome.status === 'cancelled') throw new OperationCancelledError('Subagent execution was cancelled.', { scope: 'agent' }, outcome.error)
 	throw new ToolError('Subagent execution failed.', { tool_id: providerName, tool_kind: 'subagent' }, outcome.error)
 }

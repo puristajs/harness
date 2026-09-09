@@ -69,9 +69,13 @@ function context(open: any, overrides: Record<string, unknown> = {}) {
 	}
 	return { harnessName: 'h', sessionId: 'parent-session', runId: 'parent-run', rootRunId: 'root-run', invocationId: 'parent-invocation',
 		agentId: 'parent', depth: 1, remainingDepth: 2, step: 1, toolId: 'analyst', callId: 'call-1', signal: new AbortController().signal,
-		metadata: {}, logger: {}, metrics: {}, telemetry: {}, memory: {}, sandbox: {}, targetDispatcher: { open: correlatedOpen }, relayChildEvent: vi.fn(async () => {}),
+		metadata: {}, logger: {}, metrics: {}, telemetry: {}, memory: {}, sandbox: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: correlatedOpen }, relayChildEvent: vi.fn(async () => {}),
 		checkpointStep: async (_id: string, work: () => Promise<unknown>) => work(), ...overrides }
 }
+function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: string }) {
+	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
+}
+
 
 describe('subagent execution', () => {
 	it('creates a finalized binding, dispatches wire input, derives stable lineage, and relays the child stream', async () => {

@@ -493,6 +493,7 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 			release = budget.acquireDirect(agent.id)
 			executionAdmitted = true
 			markAdmitted()
+			const route = options.targetDispatcher.assertTarget(agent.contract)
 			const stream = await withAbortSignal(signal, 'agent', 'Workflow managed call was cancelled.', () => options.targetDispatcher.open({
 				target: agent.contract, input,
 				invocation: Object.freeze({ sessionId: childSessionId, invocationId: childInvocationId,
@@ -502,7 +503,8 @@ export function createWorkflowExecutionRuntime<Agents extends WorkflowAgentMap |
 					...(options.deadline === undefined ? {} : { deadline: options.deadline }), ...(idempotencyKey === undefined ? {} : { idempotencyKey }), signal }),
 			}))
 			const consumed = await consumeHarnessTargetStream({ stream, signal, parentRunId: options.runId, childInvocationId, relay: relayEvent })
-			if (consumed.outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, consumed.outcome)
+			if (consumed.outcome.status === 'interrupted') throw createHarnessChildTargetInterruption(childInvocationId, consumed.outcome,
+				route, input)
 			let stored: WorkflowCallStoredOutcomeV1
 			if (consumed.outcome.status === 'completed') stored = Object.freeze({ status: 'completed', output: consumed.outcome.output })
 			else if (consumed.outcome.status === 'cancelled') stored = storedManagedCancelled('agent')

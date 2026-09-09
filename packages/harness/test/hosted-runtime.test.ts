@@ -81,6 +81,11 @@ function routeFor(target: AnyHarnessTargetContract, fill = 'a'): HarnessTargetRo
 		target: Object.freeze({ kind: target.kind, id: target.id }), bindingDigest: `sha256:${fill.repeat(64)}` })
 }
 
+function storedRouteFor(kind: 'agent' | 'workflow', id: string, fill = 'a'): HarnessTargetRouteReceiptV1 {
+	return Object.freeze({ schemaVersion: 1, kind: 'harness_target_route',
+		target: Object.freeze({ kind, id }), bindingDigest: `sha256:${fill.repeat(64)}` })
+}
+
 function dispatchStream<Output>(events: readonly ExecutionEvent<Output>[], cancel: (reason?: string) => Promise<void> = async () => {}) {
 	const directRunId = events[0]?.runId
 	const terminal = events.findLast(event => event.type === 'run.finished' && event.runId === directRunId)
@@ -2028,6 +2033,92 @@ describe('hosted Harness runtime', () => {
 		await receiver.close()
 	})
 
+	it('restarts a hosted workflow-to-agent child through the persisted inner route twice', async () => {
+		const storage = persistentStorage()
+		const owner = createHostOwnerToken<object>()
+		let receiver: Awaited<ReturnType<typeof instantiateHostedHarness>> | undefined
+		const persistedRequests: PersistedHarnessTargetDispatchRequest[] = []
+		let effectCalls = 0
+		const effect = defineTool('bash', { description: 'Approve the child effect.', input: z.string(), output: z.string(),
+			async handler(_context, input) { effectCalls += 1; return `approved:${input}` } })
+		const child = defineAgent('persistedWorkflowChild', { input: z.string(), output: z.string(), instructions: 'Use the approval effect.',
+			tools: [effect], permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
+		const workflow = defineWorkflow('persistedWorkflowParent', { input: z.string(), output: z.string(), agents: [child], durable: true,
+			async handler({ input, agents }) { return agents.persistedWorkflowChild.run(input, { callId: 'persisted-child-call' }) } })
+		const callerDefinition = defineHarness({ name: 'persistedWorkflowCaller', revision: 'v1' }).addWorkflow(workflow)
+		const receiverDefinition = defineHarness({ name: 'persistedWorkflowReceiver', revision: 'v1' }).addAgent(child)
+		const route = routeFor(child.contract, '7')
+		const dispatcher: HarnessTargetDispatcher = {
+			assertTarget(target) {
+				if (target !== child.contract) throw new Error('unexpected target')
+				return route
+			},
+			async open(request) {
+				if (request.target !== child.contract || receiver === undefined) throw new Error('unexpected fresh target')
+				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
+				return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'fresh', target: child.contract,
+					wireInput: request.input as string, input: request.input as string, invocation, hostInvocation: {} }), request.invocation)
+			},
+			async openPersisted(request) {
+				persistedRequests.push(request)
+				expect(request.route).toEqual(route)
+				expect(request.route.target).toEqual({ kind: 'agent', id: child.id })
+				expect(request.wireInput).toBe('child-wire')
+				if (receiver === undefined) throw new Error('receiver unavailable')
+				const { identity: _identity, trace: _trace, ...invocation } = request.invocation
+				return correlateRemoteStream(await receiver.streamDispatched({ delivery: 'resume', target: child.contract,
+					wireInput: request.wireInput as string, invocation, resume: request.resume, hostInvocation: {} }), request.invocation)
+			},
+		}
+		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
+			projectTraceContext: () => trace, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
+		const startReceiver = async (provider: FakeModelProvider) => {
+			receiver = await instantiateHostedHarness(receiverDefinition, { model: { provider, model: 'fake' }, storage }, bindings)
+		}
+		const startCaller = async () => instantiateHostedHarness(callerDefinition,
+			{ model: { provider: new FakeModelProvider({ strict: true }), model: 'fake' }, storage }, bindings)
+
+		const firstProvider = new FakeModelProvider({ strict: true })
+		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-child-approval-1', name: effect.id, arguments: 'first' }], usage, finishReason: 'tool_calls' })
+		await startReceiver(firstProvider)
+		let caller = await startCaller()
+		const first = await caller.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'child-wire', input: 'child-wire',
+			invokeOptions: { sessionId: 'persisted-workflow-session', idempotencyKey: 'persisted-workflow-run' }, hostInvocation: {}, authorize: allowHostedTarget })
+		if (first.status !== 'interrupted' || first.interrupt.type !== 'tool-approval') throw new Error('Expected first child approval interruption.')
+		await caller.close()
+		await receiver?.close()
+
+		const secondProvider = new FakeModelProvider({ strict: true })
+		secondProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-child-approval-2', name: effect.id, arguments: 'second' }], usage, finishReason: 'tool_calls' })
+		await startReceiver(secondProvider)
+		caller = await startCaller()
+		const firstApproval = first.interrupt.requests[0]!
+		const second = await caller.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'child-wire', invokeOptions: {
+			sessionId: 'persisted-workflow-session', resume: { type: 'tool-approval', runId: first.runId, interruptId: first.interrupt.id,
+				revision: first.interrupt.revision, eventId: 'persisted-workflow-resume-1', decisions: [{ approvalId: firstApproval.approvalId, approved: true }] },
+		}, hostInvocation: {}, authorize: allowHostedTarget })
+		if (second.status !== 'interrupted' || second.interrupt.type !== 'tool-approval') throw new Error('Expected second child approval interruption.')
+		await caller.close()
+		await receiver?.close()
+
+		const finalProvider = new FakeModelProvider({ strict: true })
+		finalProvider.enqueueText({ content: 'child-complete', toolCalls: [], usage, finishReason: 'stop' })
+		await startReceiver(finalProvider)
+		caller = await startCaller()
+		const secondApproval = second.interrupt.requests[0]!
+		await expect(caller.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'child-wire', invokeOptions: {
+			sessionId: 'persisted-workflow-session', resume: { type: 'tool-approval', runId: second.runId, interruptId: second.interrupt.id,
+				revision: second.interrupt.revision, eventId: 'persisted-workflow-resume-2', decisions: [{ approvalId: secondApproval.approvalId, approved: true }] },
+		}, hostInvocation: {}, authorize: allowHostedTarget })).resolves.toMatchObject({ status: 'completed', output: 'child-complete' })
+		expect(persistedRequests).toHaveLength(2)
+		expect(persistedRequests.map(request => ({ route: request.route, wireInput: request.wireInput }))).toEqual([
+			{ route, wireInput: 'child-wire' }, { route, wireInput: 'child-wire' },
+		])
+		expect(effectCalls).toBe(2)
+		await caller.close()
+		await receiver?.close()
+	})
+
 	it('rejects a changed current remote route before input conflict or child resume effects', async () => {
 		const fixture = await interruptedRemoteHostFixture()
 		fixture.setRoute(routeFor(fixture.child.contract, 'e'))
@@ -2063,6 +2154,18 @@ describe('hosted Harness runtime', () => {
 		['interrupt id', (descriptor: Record<string, unknown>) => { descriptor['interruptId'] = 'tampered-interrupt' }],
 		['revision', (descriptor: Record<string, unknown>) => { descriptor['revision'] = 'tampered-revision' }],
 		['approval ids', (descriptor: Record<string, unknown>) => { descriptor['approvalIds'] = ['tampered-approval'] }],
+		['route without wire input', (descriptor: Record<string, unknown>) => {
+			descriptor['route'] = storedRouteFor('agent', 'remoteApprovalChild', 'b')
+		}],
+		['wire input without route', (descriptor: Record<string, unknown>) => { descriptor['wireInput'] = 'tampered-wire-input' }],
+		['route target', (descriptor: Record<string, unknown>) => {
+			descriptor['route'] = storedRouteFor('agent', 'tamperedTarget', 'c')
+			descriptor['wireInput'] = 'tampered-wire-input'
+		}],
+		['non-json wire input', (descriptor: Record<string, unknown>) => {
+			descriptor['route'] = storedRouteFor('agent', 'remoteApprovalChild', 'd')
+			descriptor['wireInput'] = new Date()
+		}],
 		['unknown field', (descriptor: Record<string, unknown>) => { descriptor['unknown'] = true }],
 	])('rejects a tampered persisted child resume descriptor (%s) before persisted dispatch', async (_label, tamper) => {
 		const fixture = await interruptedRemoteHostFixture()

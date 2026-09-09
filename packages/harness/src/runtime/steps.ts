@@ -39,6 +39,8 @@ export interface ChildApprovalResumeDescriptorV1 {
 	readonly interruptId: string
 	readonly revision: string
 	readonly approvalIds: readonly string[]
+	readonly route?: import('../ports/target-dispatcher.js').HarnessTargetRouteReceiptV1
+	readonly wireInput?: JsonValue
 }
 
 /** @internal Exact persisted parent frame for an interrupted host nested call. */
@@ -71,6 +73,8 @@ export interface SuspendedHostToolFrameV1 {
 export function createHarnessChildTargetInterruption(
 	childInvocationId: string,
 	outcome: Extract<RunOutcome<never>, { readonly status: 'interrupted' }>,
+	resumeRoute?: import('../ports/target-dispatcher.js').HarnessTargetRouteReceiptV1,
+	resumeWireInput?: JsonValue,
 ): HarnessChildTargetInterruption {
 	if (childInvocationId.length === 0) throw new TypeError('Child invocation id is required.')
 	if (outcome.interrupt.type !== 'tool-approval') throw new TypeError('Child interruption is not approval-resumable.')
@@ -78,7 +82,9 @@ export function createHarnessChildTargetInterruption(
 	if (new Set(approvalIds).size !== approvalIds.length) throw new TypeError('Child approval interruption is invalid.')
 	const resumeDescriptor = Object.freeze({ schemaVersion: 1 as const, kind: 'child_approval_resume' as const,
 		runId: outcome.runId, interruptId: outcome.interrupt.id, revision: outcome.interrupt.revision,
-		approvalIds: Object.freeze(approvalIds) })
+		approvalIds: Object.freeze(approvalIds),
+		...(resumeRoute === undefined ? {} : { route: resumeRoute }),
+		...(resumeWireInput === undefined ? {} : { wireInput: resumeWireInput }) })
 	const state: { preparedState?: SuspendedAgentTurnStateV1; hostFrame?: SuspendedHostToolFrameV1 } = {}
 	return Object.freeze({ [harnessChildTargetInterruptionBrand]: true as const, [harnessChildTargetInterruptionState]: state,
 		childInvocationId, resumeDescriptor, outcome, get preparedState() { return state.preparedState }, get hostFrame() { return state.hostFrame } })

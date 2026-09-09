@@ -35,17 +35,21 @@ const other = defineAgent('other', { input: z.record(z.string(), z.string()), ou
 function runtime(open: HarnessTargetDispatcher['open'], checkpoint?: { load(stepId: string): Promise<RunCheckpoint | undefined>; commit(stepId: string, output: any, metadata: any): Promise<void> }, workflow = defineWorkflow('flow', {
 	input: z.string(), output: z.string(), agents: [worker, other], async handler({ input }) { return input },
 })) {
-	return createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open }, signal: new AbortController().signal,
+	return createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open }, signal: new AbortController().signal,
 		sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 2,
 		defaults: { maxWorkflowAgentCalls: 32, maxParallelWorkflowAgentCalls: 8 }, ...(checkpoint === undefined ? {} : { checkpoint: { rootInput: 'root', ...checkpoint } }) })
 }
+function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: string }) {
+	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
+}
+
 
 describe('v4 workflow direct-call replay', () => {
 	const modelWorkflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
 	function modelRuntime(handle: unknown, options: { load?: (stepId: string) => Promise<RunCheckpoint | undefined>; commit?: (stepId: string, output: any, metadata: any) => Promise<void>; emit?: (event: any) => Promise<void> } = {}) {
 		return createWorkflowExecutionRuntime({ workflow: modelWorkflow, models: { scoped: handle } as never,
 			toolContext: { caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness' } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			identity: { tenantId: 'tenant' }, trace: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 },
@@ -153,7 +157,7 @@ describe('v4 workflow direct-call replay', () => {
 		} }
 		const build = () => createWorkflowExecutionRuntime({ workflow: modelWorkflow, models: { scoped: { async *textStream() { effects += 1; yield* chunks } } } as never,
 			toolContext: { caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness' } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, ...options })
 		const consume = async (value: ReturnType<typeof build>) => { const output = []; for await (const chunk of (value.models as any).scoped.textStream({ messages: [] }, { callId: 'recover-events' })) output.push(chunk); return output }
@@ -200,7 +204,7 @@ describe('v4 workflow direct-call replay', () => {
 			const value = createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { persistenceTool: bindPortableTool(tool) },
 				toolContext: { caller: { kind: 'workflow', workflowId: 'persistenceFlow' }, harnessName: 'harness',
 					telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
-				targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+				targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 				sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 				defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', load: async () => undefined,
 					commit: async stepId => { if (stepId.startsWith('workflow:call:')) commits += 1; if (failureAt === 'checkpoint' && stepId.startsWith('workflow:call:')) throw sentinel } },
@@ -219,7 +223,7 @@ describe('v4 workflow direct-call replay', () => {
 		const build = () => createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { publishedTool: bindPortableTool(tool) },
 			toolContext: { caller: { kind: 'workflow', workflowId: 'publishedFlow' }, harnessName: 'harness',
 				telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root',
 				load: async stepId => stored.get(stepId), commit: async (stepId, output, metadata) => {
@@ -257,7 +261,7 @@ describe('v4 workflow direct-call replay', () => {
 			liveStreams.push(live)
 			return createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { stableTool: bindPortableTool(tool) },
 			toolContext: { caller: { kind: 'workflow', workflowId: 'stableFlow' }, harnessName: 'harness', telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'run', rootRunId: 'run', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', load: async id => stored.get(id),
 				commit: async (stepId, output, metadata) => {
@@ -307,7 +311,7 @@ describe('v4 workflow direct-call replay', () => {
 		const workflow = defineWorkflow('ephemeralFlow', { input: z.string(), output: z.string(), tools: [tool], async handler({ input }) { return input } })
 		const value = createWorkflowExecutionRuntime({ workflow, models: {}, toolBindings: { ephemeralTool: bindPortableTool(tool) },
 			toolContext: { caller: { kind: 'workflow', workflowId: 'ephemeralFlow' }, harnessName: 'harness', telemetry: { span: async (_name: string, _attrs: unknown, effect: () => Promise<unknown>) => effect() } } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, emit: async event => { toolEvents.push(event.type) } })
 		await expect(value.tools.ephemeralTool.run('x', { callId: 'failure' })).rejects.toMatchObject({ code: 'WORKFLOW_MANAGED_CALL_FAILED' })
@@ -393,7 +397,7 @@ describe('v4 workflow direct-call replay', () => {
 			const workflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
 			const checkpoint = { async load(stepId: string) { return stored.get(stepId) }, async commit(stepId: string, output: any, metadata: any) { stored.set(stepId, { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: stored.size + 1, output, metadata }) } }
 			const build = (caller: unknown = { kind: 'workflow', workflowId: 'modelFlow' }) => createWorkflowExecutionRuntime({ workflow, models: { scoped: handle } as never, toolContext: { caller, harnessName: 'modelHarness' } as never,
-				targetDispatcher: { open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
+				targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
 				sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 				defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', ...checkpoint } })
 			await invoke((build().models as any).scoped, operation)
@@ -418,7 +422,7 @@ describe('v4 workflow direct-call replay', () => {
 		const build = (caller: unknown = { kind: 'workflow', workflowId: 'toolReplay' }) => createWorkflowExecutionRuntime({ workflow, models: {},
 			toolBindings: { managedTool: bindPortableTool(tool) }, toolContext: { caller, harnessName: 'toolHarness', sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 				metadata: {}, telemetry: { span: async (_name: string, _attributes: unknown, handler: () => Promise<unknown>) => handler() } } as never,
-			targetDispatcher: { open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
+			targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
 			sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', ...checkpoint } })
 		await expect(build().tools.managedTool.run({ value: 'ok' }, { callId: 'tool-call' })).resolves.toEqual({ value: 'OK' })
@@ -475,7 +479,7 @@ describe('v4 workflow direct-call replay', () => {
 		await expect(runtime(open, checkpoint).agents.worker.run({ a: '1' }, { callId: 'answer' })).resolves.toBe('saved')
 		const aborted = new AbortController(); aborted.abort('late caller')
 		const replay = createWorkflowExecutionRuntime({ workflow: defineWorkflow('flow', { input: z.string(), output: z.string(), agents: [worker], async handler({ input }) { return input } }), models: {},
-			targetDispatcher: { open }, signal: aborted.signal, sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 2,
+			targetDispatcher: { assertTarget: target => testRoute(target), open }, signal: aborted.signal, sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 2,
 			defaults: { maxWorkflowAgentCalls: 32, maxParallelWorkflowAgentCalls: 8 }, checkpoint: { rootInput: 'root', ...checkpoint } })
 		await expect(replay.agents.worker.run({ a: '1' }, { callId: 'answer' })).resolves.toBe('saved')
 		expect(opened).toBe(1)
@@ -491,7 +495,7 @@ describe('v4 workflow direct-call replay', () => {
 		const workflow = defineWorkflow('transformFlow', { input: z.string(), output: z.string(), agents: [transformed], durable: true, async handler({ input }) { return input } })
 		let stored: RunCheckpoint | undefined; let opened = 0
 		const checkpoint = { async load() { return stored }, async commit(stepId: string, output: any, metadata: any) { stored = { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: 1, output, metadata } } }
-		const build = () => createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async request => { opened += 1; return completed(request.invocation.parentRunId, request.invocation.invocationId, 7) as any } },
+		const build = () => createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return completed(request.invocation.parentRunId, request.invocation.invocationId, 7) as any } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 }, checkpoint: { rootInput: 'root', ...checkpoint } })
 		await expect(build().agents.transformed.run('7', { callId: 'transform' })).resolves.toBe(7)
@@ -515,12 +519,12 @@ describe('v4 workflow direct-call replay', () => {
 			seen.push(request.invocation)
 			return completed(request.invocation.parentRunId, request.invocation.invocationId, 'ok') as any
 		}
-		const first = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open }, signal: new AbortController().signal,
+		const first = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open }, signal: new AbortController().signal,
 			sessionId: 'parent-session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 3, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 2 } })
 		await first.agents.worker.run({ a: '1' }, { callId: 'one' })
 		expect(first.agentCallBudgetState()).toEqual({ schemaVersion: 1, usedCalls: 1 })
-		const resumed = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open }, signal: new AbortController().signal,
+		const resumed = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open }, signal: new AbortController().signal,
 			sessionId: 'parent-session', runId: 'workflow-run', rootRunId: 'root-run', invocationId: 'workflow-invocation', depth: 3, remainingDepth: 1,
 			restoredAgentCallBudget: first.agentCallBudgetState(), defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 2 } })
 		await resumed.agents.worker.run({ a: '2' }, { callId: 'two' })
@@ -530,7 +534,7 @@ describe('v4 workflow direct-call replay', () => {
 		expect(seen[0]!.sessionId).not.toBe('parent-session')
 		expect(seen[1]!.sessionId).not.toBe(seen[0]!.sessionId)
 
-		const exhausted = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open }, signal: new AbortController().signal,
+		const exhausted = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open }, signal: new AbortController().signal,
 			sessionId: 'parent-session', runId: 'other-run', rootRunId: 'root-run', invocationId: 'other-invocation', depth: 4, remainingDepth: 0,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 2 } })
 		await expect(exhausted.agents.worker.run({ a: 'x' }, { callId: 'depth' })).rejects.toMatchObject({ code: 'AGENT_LOOP_BUDGET_EXCEEDED', meta: { reason: 'max_depth', limit: 4 } })
@@ -558,7 +562,7 @@ describe('v4 workflow direct-call replay', () => {
 
 	it('rejects malformed restored budget snapshots before exposing execution', () => {
 		const workflow = defineWorkflow('budgetValidation', { input: z.string(), output: z.string(), agents: [worker], agentCalls: { maxCalls: 2, maxParallel: 1 }, async handler({ input }) { return input } })
-		const create = (restoredAgentCallBudget: any) => createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { open: async () => { throw new Error('unexpected') } },
+		const create = (restoredAgentCallBudget: any) => createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } },
 			signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
 			defaults: { maxWorkflowAgentCalls: 2, maxParallelWorkflowAgentCalls: 1 }, restoredAgentCallBudget })
 		expect(() => create({ schemaVersion: 1, usedCalls: 3 })).toThrow(expect.objectContaining({ code: 'VALIDATION_ERROR', meta: { where: 'workflow_output', issues: { reason: 'invalid_checkpoint' } } }))

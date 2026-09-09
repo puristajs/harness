@@ -1137,12 +1137,18 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				const stream = parentNode.frame.kind === 'host-tool'
 					? await executionDispatcher.openPersisted({ route: parentNode.frame.activeNestedCall.route,
 						wireInput: parentNode.frame.activeNestedCall.input, resume: childResume, invocation: childInvocation })
-					: await openTarget(child!, childRun!.input, childInvocation)
+					: hostedEnvironment === undefined
+						? await openTarget(child!, childRun!.input, childInvocation)
+						: node.resumeDescriptor?.route === undefined || node.resumeDescriptor.wireInput === undefined
+							? (() => { throw new ApprovalResumeError('invalid_checkpoint') })()
+							: await executionDispatcher.openPersisted({ route: node.resumeDescriptor.route,
+							wireInput: node.resumeDescriptor.wireInput, resume: childResume, invocation: childInvocation })
 				const consumed = await consumeHarnessTargetStream({ stream, signal, parentRunId: parentNode.frame.runId,
 					childInvocationId: node.frame.invocationId, relay: relayChildEvent })
 				if (consumed.outcome.status === 'completed') return consumed.outcome.output
 				if (consumed.outcome.status === 'interrupted') {
-					const interruption = createHarnessChildTargetInterruption(node.frame.invocationId, consumed.outcome)
+					const interruption = createHarnessChildTargetInterruption(node.frame.invocationId, consumed.outcome,
+						node.resumeDescriptor?.route, node.resumeDescriptor?.wireInput)
 					if (parentNode.frame.kind === 'host-tool') {
 						throw attachHarnessChildTargetHostFrame(interruption, Object.freeze({ ...parentNode.frame,
 							activeNestedCall: Object.freeze({ ...parentNode.frame.activeNestedCall,
@@ -3914,6 +3920,12 @@ function validSuspensionNode(value: unknown, root: boolean): value is Suspension
 	if (root || frame['kind'] === 'host-tool') {
 		if (descriptor !== undefined) return false
 	} else if (!validChildApprovalResumeDescriptor(descriptor) || descriptor.runId !== frame['runId']) return false
+	if (frame['kind'] !== 'host-tool' && isPlainRecord(descriptor) && isPlainRecord(descriptor['route'])) {
+		const target = frame['kind'] === 'agent'
+			? { kind: 'agent' as const, id: (frame['state'] as { agentId: string }).agentId }
+			: { kind: 'workflow' as const, id: frame['workflowId'] as string }
+		if (descriptor['route']['target']['kind'] !== target.kind || descriptor['route']['target']['id'] !== target.id) return false
+	}
 	if (frame['kind'] === 'host-tool') {
 		if (value['children'].length !== 1) return false
 		const child = value['children'][0]
@@ -3968,11 +3980,15 @@ function validHarnessExecutionCaller(value: unknown): boolean {
 }
 
 function validChildApprovalResumeDescriptor(value: unknown): value is ChildApprovalResumeDescriptorV1 {
-	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['schemaVersion', 'kind', 'runId', 'interruptId', 'revision', 'approvalIds'])
+	if (!isPlainRecord(value) || !hasOnlyStringKeys(value, ['schemaVersion', 'kind', 'runId', 'interruptId', 'revision', 'approvalIds', 'route', 'wireInput'])
 		|| value['schemaVersion'] !== 1 || value['kind'] !== 'child_approval_resume'
 		|| !validIdentifier(value['runId']) || !validIdentifier(value['interruptId']) || typeof value['revision'] !== 'string'
 		|| !Array.isArray(value['approvalIds'])
-		|| !(value['approvalIds'] as unknown[]).every(validIdentifier)) return false
+		|| !(value['approvalIds'] as unknown[]).every(validIdentifier)
+		|| (value['route'] === undefined) !== (value['wireInput'] === undefined)
+		|| (value['route'] !== undefined && (!isPlainRecord(value['route']) || !isPlainRecord(value['route']['target'])
+			|| !validTargetRouteReceipt(value['route'], value['route']['target'] as { kind: 'agent' | 'workflow'; id: string })))
+		|| (value['wireInput'] !== undefined && !isJsonValue(value['wireInput']))) return false
 	const ids = value['approvalIds'] as string[]
 	return new Set(ids).size === ids.length && ids.every((id, index) => index === 0 || codePointCompare(ids[index - 1]!, id) < 0)
 }

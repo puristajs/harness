@@ -260,7 +260,13 @@ creation fields shown above. It excludes `revision`, `status`, `finishedAt`,
 `output`, `error`, `approvalReceipt`, `attempt`, `workerId`, `initialStepId`,
 lease identity, and every other storage-authored field. `id`, `sessionId`,
 `kind`, `target`, and `startedAt` use their existing validators;
-`startedAt` is ISO 8601 UTC. `input` must be canonicalizable JSON. An agent or
+`startedAt` is ISO 8601 UTC. `input` must be canonicalizable JSON. Every stored
+or read `JsonValue` uses only own enumerable data descriptors. Accessors,
+non-enumerable properties, symbol keys, sparse arrays, and custom prototypes
+are rejected at every boundary. Canonicalization inspects own property
+descriptors and recursively reads descriptor values; it never invokes a getter
+or another user-defined accessor while validating, copying, comparing, or
+encoding data. An agent or
 workflow request requires `validatedInput`, also canonicalizable JSON, and it
 is the exact result produced by the root target's one initial schema transform.
 A child-task request forbids an own `validatedInput` key, including when its
@@ -275,7 +281,12 @@ storage mutation with the same fixed
 `createRun` atomically creates
 `{...request,status:'running',revision:1}` and returns a recursively frozen
 authoritative `RunRecord`. Storage canonicalizes and copies `input`, a present
-`validatedInput`, and `metadata`; it never retains a caller-mutable object. The immutable creation
+`validatedInput`, and `metadata`; it never retains a caller-mutable object.
+Every adapter result that contains stored JSON, including a create winner, an
+exact create retry, and every get/list/transition result, is a fresh deeply
+frozen snapshot. An adapter never returns its retained object or a previously
+returned snapshot, and a caller can neither mutate storage nor observe later
+storage mutation through an earlier result. The immutable creation
 identity is the canonical tuple
 `['harness-run-create-v1',id,sessionId,kind,target,startedAt,input,
 validated-input-is-present,validatedInput ?? null,
@@ -708,7 +719,12 @@ Implementation is incomplete until all of the following pass:
    authorizer error, and exposes neither stored input through public surfaces.
 3. SQLite rebuild tests prove history, one run record, attempt increments,
    checkpoint replay, wait suspension/signal/resume, lease takeover, and
-   idempotent close.
+   idempotent close. SQLite and PostgreSQL schema compatibility checks validate
+   the semantic `validatedInput` kind constraint—agent/workflow rows require a
+   non-null validated input and child-task rows require null—rather than
+   accepting a constraint merely because its name matches. A renamed but
+   semantically exact constraint is accepted; missing, adversarial, or
+   semantically weakened constraints fail closed.
 4. Schema inspection proves forbidden legacy tables are not created.
 5. Failure tests prove durable errors become resumable `interrupted` runs and
    terminal statuses cannot resume.

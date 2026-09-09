@@ -112,6 +112,14 @@ option types reject a schema whose inferred input or output is not
 JSON-compatible; target inference additionally intersects both sides with
 `JsonValue` so no non-portable value appears in an invocation contract.
 
+Canonical JSON accepts only own enumerable data descriptors at every nested
+level. It rejects accessors without invoking them, non-enumerable properties,
+symbol keys, sparse arrays, and custom prototypes. Its descriptor-based encoder
+reads only approved descriptor values, sorts object keys by Unicode code point,
+and preserves array order. Every storage adapter returns a fresh deeply frozen
+snapshot for every stored/read JSON-bearing result, including create and exact
+retry results; it never exposes a retained object or reuses a prior result.
+
 The public shape is exact and intentionally small:
 
 ```ts
@@ -6892,6 +6900,7 @@ must include `packages/harness/src/definitions/types.ts`,
 `packages/harness/src/integrator/target-contract.ts`,
 `packages/harness/src/integrator/index.ts`,
 `packages/harness/src/models/state.ts`,
+`packages/harness/src/runtime/canonical-json.ts`,
 `packages/harness/src/runtime/standalone-instance.ts`,
 `packages/harness/src/storage/types.ts`,
 `packages/harness/src/storage/run-record-validation.ts`,
@@ -6907,6 +6916,7 @@ must include `packages/harness/src/definitions/types.ts`,
 `packages/harness-ai-sdk-ui/test/v1.test.ts`,
 `packages/harness-policy-opa/test/opa.test.ts`,
 `examples/living-wiki-jaeger/src/backend/app.ts`,
+`packages/harness/test/canonical-json.test.ts`,
 `packages/harness/test/definition-factories.test.ts`,
 `packages/harness/test/portable-definition.test.ts`,
 `packages/harness/test/hosted-runtime.test.ts`,
@@ -6931,7 +6941,13 @@ implementations, public export and pack inventory, and clean-removal scans. It
 must implement the strict discriminated `CreateRunRequest`/`RunRecord` root
 input fields, canonical creation identity, durable retention, first-party
 adapter schema/read validation, terminal authorizer/re-read sequence, and
-privacy assertions frozen here and in specs 11, 22, and 32. Every scoped direct
+privacy assertions frozen here and in specs 11, 22, and 32. First-party SQLite
+and PostgreSQL startup checks must validate the semantic validated-input kind
+constraint rather than trust its database constraint name. Canonical JSON and
+storage-contract tests include hostile getters, non-enumerable properties,
+symbol keys, sparse arrays, custom prototypes, mutation attempts, and fresh
+deeply frozen repeated reads/retries for `input`, `validatedInput`, `metadata`,
+and other persisted JSON-bearing values. Every scoped direct
 `createRun` fixture must supply the required validated input for an
 agent/workflow and must not add it to a child task; fixture compilation may not
 be recovered with an optional field, default, cast, or compatibility overload.

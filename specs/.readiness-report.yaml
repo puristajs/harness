@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, autonomous implementation, the trusted-host integrator target visitor, the strict hosted fresh/resume and request-authorizer boundary, the explicit same-tenant stored-run-owner approval-resume mode, canonical HarnessDefinition generic order, invariant phantom inference, and nominal branded remote target contracts. Earlier content-bound review evidence remains historical; the repaired digest passed fresh independent review on 2026-09-09."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
+      scope_digest: "sha256:f167ba863333e4b06d74ad74f5ec822fa1d982c67348c718e50258d1e5268cc4"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -472,10 +472,12 @@ follow_up_waves:
       requested_at: "2026-09-08"
       source_revision: "72462ce1d68ddc2f39efd6c6b7718f878759bbfe"
       changed_spec: "specs/42-composable-definitions-and-catalogs.md"
-      changed_spec_digest: "sha256:3876bb800140976d5f7e04a355bc35d957b8d913ca5d0d5db41ab95e5923cd76"
+      changed_spec_digest: "sha256:9d9756691b1a95888dc4f3775aee5c9a7355e635a7711fd8c1e861add413ce96"
+      storage_spec: "specs/32-harness-storage.md"
+      storage_spec_digest: "sha256:865701cc4b1cde9b145b47d40e229c521a1144927f901dee35ae86d40e51d299"
       companion_spec: "../purista/specs/20-agents/88-harness-first-service-integration.md"
       companion_spec_digest: "sha256:1192a1f4bad919108680cd089149d3c2cc1051cf4d8953069cf738d889bfdef2"
-      scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
+      scope_digest: "sha256:f167ba863333e4b06d74ad74f5ec822fa1d982c67348c718e50258d1e5268cc4"
       evidence: "The independently reviewed amendment closes the reported Harness and PURISTA companion blockers: canonical public inference with the full invariant schema witness; nominal local, remote, and queue authenticity; trusted closure visitation; strict hosted fresh/resume authorization and stored-owner privacy; durable validatedInput retention and terminal receipt re-read; generated validation-only remote contracts; and server-side AI SDK UI Message Stream v1 protocol projection without a client library. The exact source set contains no excluded product reference, compiled-graph exposure, or compatibility API."
       repaired_findings:
         count: 6
@@ -565,6 +567,13 @@ follow_up_waves:
         scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
         blocking_findings_count: 0
         evidence: "PASS under TypeScript 6.0.3. The existing AnyHarnessTargetContract uses seventh-generic any only as TypeScript's existential consumer wildcard; exact concrete targets retain invariant wire, validated-input, output, update, and interrupt inference plus runtime authenticity. The implementation scope includes every compile-affected execution-event, AI SDK UI adapter, example, and OPA consumer, with zero excluded-repository references."
+      - review: "independent strict JSON, storage snapshots, and adapter-schema amendment review"
+        status: passed_after_plan_scope_repair
+        reviewed_at: "2026-09-09"
+        reviewer: "independent storage contract hard gate"
+        scope_digest: "sha256:f167ba863333e4b06d74ad74f5ec822fa1d982c67348c718e50258d1e5268cc4"
+        blocking_findings_count: 0
+        evidence: "PASS after the canonical plan took ownership of the shared canonical JSON source and tests. The contract requires descriptor-only traversal without getter invocation, rejects hidden/accessor/symbol/sparse/custom-prototype values, returns fresh deeply frozen adapter snapshots, and verifies the semantic SQLite/PostgreSQL validated-input constraint rather than trusting its name. A renamed equivalent constraint passes; missing, weakened, or non-equivalent constraints fail."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"
       standard_schema:
@@ -624,7 +633,7 @@ follow_up_waves:
         status: passed
       independent_readiness_reviews:
         status: passed
-        completed_count: 18
+        completed_count: 19
         pending_count: 0
       contradiction_check:
         status: passed

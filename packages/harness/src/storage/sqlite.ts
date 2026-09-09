@@ -256,10 +256,11 @@ export class SqliteHarnessStorage implements HarnessStorage {
 
   public async appendMessages(sessionId: string, messages: Message[]): Promise<void> {
     await this.transaction(() => {
-      const insert = this.stmt('insert into harness_messages(id, session_id, role, content, tool_calls_json, tool_results_json, timestamp) values(?, ?, ?, ?, ?, ?, ?)')
+      let messageOrder = this.nextMessageOrder(sessionId)
+      const insert = this.stmt('insert into harness_messages(id, session_id, role, content, tool_calls_json, tool_results_json, timestamp, message_order) values(?, ?, ?, ?, ?, ?, ?, ?)')
       for (const message of messages) {
         try {
-          insert.run(message.id, sessionId, message.role, message.content, stringify(message.toolCalls), stringify(message.toolResults), message.timestamp)
+          insert.run(message.id, sessionId, message.role, message.content, stringify(message.toolCalls), stringify(message.toolResults), message.timestamp, messageOrder++)
         } catch (error) {
           if (isConstraintViolation(error)) {
             throw new StateError('Message id already exists.', { op: 'appendMessages', reason: 'duplicate_message_id' }, error)
@@ -271,17 +272,17 @@ export class SqliteHarnessStorage implements HarnessStorage {
   }
 
   public async listMessages(sessionId: string, opts: { limit?: number; before?: string } = {}): Promise<Message[]> {
-    const before = opts.before ? this.stmt('select timestamp, id from harness_messages where id = ? and session_id = ?').get(opts.before, sessionId) : undefined
-    const beforeClause = before ? ' and (timestamp < ? or (timestamp = ? and id < ?))' : ''
+    const before = opts.before ? this.stmt('select message_order from harness_messages where id = ? and session_id = ?').get(opts.before, sessionId) : undefined
+    const beforeClause = before ? ' and message_order < ?' : ''
     const beforeParams: SqlValue[] = before
-      ? [requiredString(before, 'timestamp', 'listMessages'), requiredString(before, 'timestamp', 'listMessages'), opts.before ?? '']
+      ? [requiredNumber(before, 'message_order', 'listMessages')]
       : []
     if (opts.limit === undefined) {
-      const rows = this.stmt(`select * from harness_messages where session_id = ?${beforeClause} order by timestamp asc, id asc`).all(sessionId, ...beforeParams)
+      const rows = this.stmt(`select * from harness_messages where session_id = ?${beforeClause} order by message_order asc`).all(sessionId, ...beforeParams)
       return rows.map((row) => this.rowToMessage(row))
     }
     // Tail semantics: fetch the newest `limit` rows and restore ascending order.
-    const rows = this.stmt(`select * from harness_messages where session_id = ?${beforeClause} order by timestamp desc, id desc limit ?`).all(sessionId, ...beforeParams, Math.max(0, opts.limit))
+    const rows = this.stmt(`select * from harness_messages where session_id = ?${beforeClause} order by message_order desc limit ?`).all(sessionId, ...beforeParams, Math.max(0, opts.limit))
     return rows.reverse().map((row) => this.rowToMessage(row))
   }
 
@@ -292,10 +293,10 @@ export class SqliteHarnessStorage implements HarnessStorage {
   public async replaceMessages(sessionId: string, messages: Message[]): Promise<void> {
     await this.transaction(() => {
       this.stmt('delete from harness_messages where session_id = ?').run(sessionId)
-      const insert = this.stmt('insert into harness_messages(id, session_id, role, content, tool_calls_json, tool_results_json, timestamp) values(?, ?, ?, ?, ?, ?, ?)')
-      for (const message of messages) {
+      const insert = this.stmt('insert into harness_messages(id, session_id, role, content, tool_calls_json, tool_results_json, timestamp, message_order) values(?, ?, ?, ?, ?, ?, ?, ?)')
+      for (const [index, message] of messages.entries()) {
         try {
-          insert.run(message.id, sessionId, message.role, message.content, stringify(message.toolCalls), stringify(message.toolResults), message.timestamp)
+          insert.run(message.id, sessionId, message.role, message.content, stringify(message.toolCalls), stringify(message.toolResults), message.timestamp, index + 1)
         } catch (error) {
           if (isConstraintViolation(error)) {
             throw new StateError('Message id already exists.', { op: 'replaceMessages', reason: 'duplicate_message_id' }, error)
@@ -614,8 +615,8 @@ export class SqliteHarnessStorage implements HarnessStorage {
       pragma foreign_keys = ON;
       pragma busy_timeout = 5000;
       create table if not exists harness_sessions(id text primary key, instance_id text not null, created_at text not null, updated_at text not null, run_count integer not null, identity_json text, sandbox_binding_json text, metadata_json text);
-      create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null);
-      create index if not exists idx_harness_messages_session_order on harness_messages(session_id, timestamp, id);
+      create table if not exists harness_messages(id text primary key, session_id text not null, role text not null, content text not null, tool_calls_json text, tool_results_json text, timestamp text not null, message_order integer not null);
+      create unique index if not exists idx_harness_messages_session_order on harness_messages(session_id, message_order);
       create table if not exists harness_runs(id text primary key, session_id text not null, kind text not null, target text not null, started_at text not null, finished_at text, status text not null, revision integer not null, input_json text not null, validated_input_json text, output_json text, error_json text, approval_receipt_json text, attempt integer, worker_id text, initial_step_id text, metadata_json text, constraint harness_runs_validated_input_kind check ((kind in ('agent', 'workflow') and validated_input_json is not null) or (kind = 'child_task' and validated_input_json is null)));
       create index if not exists idx_harness_runs_session_order on harness_runs(session_id, started_at, id);
       create table if not exists harness_run_events(id text primary key, sequence integer not null, run_id text not null, at text not null, type text not null, payload_json text not null, unique(run_id, sequence));
@@ -652,6 +653,22 @@ export class SqliteHarnessStorage implements HarnessStorage {
       const columns = new Set(this.db.prepare('pragma table_info(harness_sessions)').all().map((row) => row['name']))
       if (!columns.has('identity_json') || !columns.has('instance_id') || !columns.has('sandbox_binding_json')) legacyTables.push('harness_sessions')
     }
+    const messagesTable = this.db.prepare("select name from sqlite_master where type = 'table' and name = 'harness_messages'").get()
+    if (messagesTable) {
+      const columns = new Map(this.db.prepare('pragma table_info(harness_messages)').all().map(row => [row['name'], row]))
+      const messageOrder = columns.get('message_order')
+      const indexes = this.db.prepare('pragma index_list(harness_messages)').all()
+      const hasOrderIndex = indexes.some((index) => {
+        if (index['unique'] !== 1 || index['partial'] !== 0 || typeof index['name'] !== 'string') return false
+        const name = index['name'].replaceAll('"', '""')
+        const columns = this.db.prepare(`pragma index_info("${name}")`).all()
+        return columns.length === 2 && columns[0]?.['name'] === 'session_id' && columns[1]?.['name'] === 'message_order'
+      })
+      if (!messageOrder || typeof messageOrder['type'] !== 'string' || messageOrder['type'].toUpperCase() !== 'INTEGER'
+        || messageOrder['notnull'] !== 1 || !hasOrderIndex) {
+        legacyTables.push('harness_messages')
+      }
+    }
     if (legacyTables.length > 0) {
       this.db.close()
       throw new HarnessConfigError('Legacy Harness SQLite schema detected. Create a new database for this clean-break release.', {
@@ -660,6 +677,11 @@ export class SqliteHarnessStorage implements HarnessStorage {
         id: legacyTables.join(',')
       })
     }
+  }
+
+  private nextMessageOrder(sessionId: string): number {
+    const row = this.stmt('select coalesce(max(message_order), 0) + 1 as next_order from harness_messages where session_id = ?').get(sessionId)
+    return requiredNumber(row!, 'next_order', 'appendMessages')
   }
 
   private hasValidatedInputKindSemantics(): boolean {

@@ -1,9 +1,10 @@
 import { PGlite } from '@electric-sql/pglite'
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 
-import type { SessionRecord } from '@purista/harness'
-import { harnessStorageContract } from '@purista/harness/testing'
+import { defineAgent, defineHarness, type SessionRecord } from '@purista/harness'
+import { FakeModelProvider, harnessStorageContract } from '@purista/harness/testing'
 import { postgresHarnessStorage } from './index.js'
 
 function pglitePool(database = new PGlite()) {
@@ -104,6 +105,72 @@ describe('postgresHarnessStorage', () => {
     })
     expect(Object.isFrozen(storage.capabilities)).toBe(true)
     expect(Object.isFrozen(storage.info)).toBe(true)
+  })
+
+  it('creates the append-order column and rejects the previous schema version', async () => {
+    const pool = pglitePool()
+    const storage = postgresHarnessStorage({ pool: pool as never })
+    await storage.getSession('missing')
+    await expect(pool.query(
+      "select version from purista_harness_storage_schema where id = 1",
+    )).resolves.toMatchObject({ rows: [{ version: 3 }] })
+    await expect(pool.query(
+      "select column_name from information_schema.columns where table_name = 'purista_harness_messages' and column_name = 'message_order'",
+    )).resolves.toMatchObject({ rows: [{ column_name: 'message_order' }] })
+    await expect(pool.query(
+      `select index_definition.indisvalid, index_definition.indisready
+       from pg_index index_definition
+       join pg_class index_relation on index_relation.oid = index_definition.indexrelid
+       where index_relation.relname = 'purista_harness_messages_session_order'`,
+    )).resolves.toMatchObject({ rows: [{ indisvalid: true, indisready: true }] })
+    await storage.close()
+
+    const legacyPool = pglitePool()
+    await legacyPool.query('create table purista_harness_storage_schema(id smallint primary key, version integer not null)')
+    await legacyPool.query('insert into purista_harness_storage_schema values (1, 2)')
+    const legacy = postgresHarnessStorage({ pool: legacyPool as never })
+    await expect(legacy.getSession('missing')).rejects.toMatchObject({ meta: { reason: 'postgres_schema_incompatible' } })
+  })
+
+  it.each([
+    ['a nonunique order index', 'create index purista_harness_messages_session_order on purista_harness_messages(session_id, message_order)'],
+    ['an index with the wrong order columns', 'create unique index purista_harness_messages_session_order on purista_harness_messages(message_order, session_id)'],
+  ])('rejects %s in an otherwise current schema', async (_name, replacement) => {
+    const pool = pglitePool()
+    const storage = postgresHarnessStorage({ pool: pool as never })
+    await storage.getSession('missing')
+    await pool.query('drop index purista_harness_messages_session_order')
+    await pool.query(replacement)
+    await storage.close()
+
+    await expect(postgresHarnessStorage({ pool: pool as never }).getSession('missing'))
+      .rejects.toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'postgres_schema_incompatible' } })
+  })
+
+  it('retains complete tied-timestamp turns through the runtime', async () => {
+    const storage = postgresHarnessStorage({ pool: pglitePool() as never })
+    const provider = new FakeModelProvider()
+    const agent = defineAgent('historyAgent', {
+      input: z.object({ question: z.string() }), output: z.object({ answer: z.string() }), instructions: 'Answer every question.',
+    })
+    const harness = await defineHarness({ name: 'postgresHistory', defaults: { historyRetention: { maxTurns: 8 } } })
+      .addAgent(agent)
+      .getInstance({ storage, model: { provider, model: 'fake' } })
+    try {
+      const session = await harness.getSession('history')
+      for (let index = 0; index < 9; index += 1) {
+        provider.enqueueObject({ object: { answer: `answer-${index}` }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+        await expect(session.agents.historyAgent.run({ question: `question-${index}` })).resolves.toMatchObject({ status: 'completed' })
+      }
+      const history = await session.history.list()
+      expect(history).toHaveLength(16)
+      expect(history.map((message) => message.role)).toEqual(Array.from({ length: 8 }, () => ['user', 'assistant']).flat())
+      expect(history[0]?.content).toContain('question-1')
+      expect(history.at(-1)?.content).toContain('answer-8')
+    } finally {
+      await harness.close()
+      await storage.close()
+    }
   })
 
   it('persists immutable validated input and enforces the root/child storage discriminator', async () => {

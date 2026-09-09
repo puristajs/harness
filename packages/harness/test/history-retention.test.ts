@@ -24,6 +24,17 @@ describe('v4 durable conversation-history retention', () => {
     expect(retained.map(entry => entry.id)).toEqual(['u2', 'a2'])
   })
 
+  it('retains eight complete turns when every message timestamp ties', () => {
+    const messages = Array.from({ length: 9 }, (_, index) => [
+      message(`z-user-${index}`, 'user', `question ${index}`),
+      message(`a-assistant-${index}`, 'assistant', `answer ${index}`),
+    ]).flat()
+    const retained = retainCompleteTurns(messages, { maxTurns: 8 })
+    expect(retained).toHaveLength(16)
+    expect(retained.map(entry => entry.role)).toEqual(Array.from({ length: 8 }, () => ['user', 'assistant']).flat())
+    expect(retained[0]?.id).toBe('z-user-1')
+  })
+
   it('rejects an oversized newest turn instead of splitting it', () => {
     expect(() => retainCompleteTurns([
       message('u1', 'user', 'x'.repeat(500)),

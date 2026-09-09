@@ -43,6 +43,27 @@ describe.skipIf(!first || !second)('PostgreSQL Harness storage live multi-client
     await first!.closeSession(id, record.instanceId)
   })
 
+  it('serializes same-session concurrent appends in whole caller batches', async () => {
+    const id = `append-${suffix}`
+    const record = sessionRecord(id)
+    await first!.upsertSession(record, 'create')
+    const timestamp = '2026-09-09T00:00:00.000Z'
+    const left = [
+      { id: `${id}-left-user`, sessionId: id, role: 'user' as const, content: 'left question', timestamp },
+      { id: `${id}-left-assistant`, sessionId: id, role: 'assistant' as const, content: 'left answer', timestamp },
+    ]
+    const right = [
+      { id: `${id}-right-user`, sessionId: id, role: 'user' as const, content: 'right question', timestamp },
+      { id: `${id}-right-assistant`, sessionId: id, role: 'assistant' as const, content: 'right answer', timestamp },
+    ]
+    await Promise.all([first!.appendMessages(id, left), second!.appendMessages(id, right)])
+    const ids = (await first!.listMessages(id)).map((message) => message.id)
+    const leftIds = left.map((message) => message.id)
+    const rightIds = right.map((message) => message.id)
+    expect([[...leftIds, ...rightIds], [...rightIds, ...leftIds]]).toContainEqual(ids)
+    await first!.closeSession(id, record.instanceId)
+  })
+
   it('recovers persisted state after every adapter client has restarted', async () => {
     const id = `restart-${suffix}`
     const record = sessionRecord(id)

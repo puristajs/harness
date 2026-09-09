@@ -153,8 +153,9 @@ export class InMemoryHarnessStorage implements HarnessStorage {
   }
 
   public async listMessages(sessionId: string, opts: { limit?: number; before?: string } = {}): Promise<Message[]> {
+    // Append/replace order is canonical. Timestamps can tie for every message
+    // in a run, and ids are identity keys rather than chronological keys.
     let rows = [...(this.messages.get(sessionId) ?? [])]
-      .sort((a, b) => a.timestamp === b.timestamp ? a.id.localeCompare(b.id) : a.timestamp.localeCompare(b.timestamp))
 
     if (opts.before) {
       const beforeIndex = rows.findIndex((row) => row.id === opts.before)

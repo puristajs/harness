@@ -126,6 +126,7 @@ export interface HarnessStorage {
   closeSession(id: string, expectedInstanceId: string): Promise<void>
 
   appendMessages(sessionId: string, messages: Message[]): Promise<void>
+  /** Returns messages in append/replace order, including when timestamps tie. */
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<Message[]>
   clearMessages(sessionId: string): Promise<void>
   /**

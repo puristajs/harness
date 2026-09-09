@@ -241,6 +241,24 @@ export function harnessStorageContract(make: () => HarnessStorage | Promise<Harn
       await expect(store.listMessages(session.id)).resolves.toEqual(messages)
     })
 
+    it('preserves append order when message timestamps tie', async () => {
+      const store = await make()
+      const timestamp = '2026-01-01T00:00:00.000Z'
+      const tied = [
+        { id: 'z-user', sessionId: session.id, role: 'user' as const, content: 'question', timestamp },
+        { id: 'a-assistant', sessionId: session.id, role: 'assistant' as const, content: 'answer', timestamp },
+        { id: 'z-tool', sessionId: session.id, role: 'tool' as const, content: 'result', timestamp },
+      ]
+      await store.appendMessages(session.id, tied)
+      await expect(store.listMessages(session.id)).resolves.toEqual(tied)
+      await expect(store.listMessages(session.id, { limit: 2 })).resolves.toEqual(tied.slice(1))
+      await expect(store.listMessages(session.id, { before: 'a-assistant' })).resolves.toEqual([tied[0]])
+      if (store.replaceMessages) {
+        await store.replaceMessages(session.id, [tied[2]!, tied[0]!, tied[1]!])
+        await expect(store.listMessages(session.id)).resolves.toEqual([tied[2], tied[0], tied[1]])
+      }
+    })
+
     it('listMessages honors limit and before cursor', async () => {
       const store = await make()
       await store.appendMessages(session.id, messages)

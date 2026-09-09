@@ -58,13 +58,13 @@ Each contract suite calls `make()` per test for isolation. Required tests:
 
 1. `getSession` returns undefined for unknown id.
 2. `upsertSession` then `getSession` returns the record.
-3. `appendMessages` is order-preserving across calls.
-4. `listMessages` honors `limit`, `before` (exclusive).
+3. `appendMessages` preserves append order across calls even when timestamps tie; `replaceMessages`, when supported, establishes the supplied replacement order.
+4. `listMessages` honors tail `limit` and an exclusive existing-message-id `before` cursor in canonical append/replace order.
 5. `appendMessages` is atomic — partial writes not observable on concurrent reads.
 6. `clearMessages` removes every message for the session and is atomic.
 7. `createRun` then `getRun` returns the record.
 8. `finishRun` updates only the listed fields.
-9. `listRuns` returns runs for a session ordered by `startedAt` descending then `id` descending; `listMessages` returns ascending by `(timestamp, id)`.
+9. `listRuns` returns runs for a session ordered by `startedAt` descending then `id` descending; `listMessages` returns ascending canonical append/replace order, independent of timestamp and message id.
 10. `appendEvents` and `listEvents` round-trip; `after` cursor is exclusive.
 11. Backend failure surfaces as `StateError`.
 

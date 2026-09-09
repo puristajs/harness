@@ -5,7 +5,7 @@ create table if not exists purista_harness_storage_schema (
 );
 
 insert into purista_harness_storage_schema(id, version)
-values (1, 2)
+values (1, 3)
 on conflict (id) do nothing;
 
 create table if not exists purista_harness_sessions (
@@ -27,11 +27,12 @@ create table if not exists purista_harness_messages (
   content text not null,
   tool_calls_json jsonb,
   tool_results_json jsonb,
-  created_at timestamptz not null
+  created_at timestamptz not null,
+  message_order bigint not null
 );
 
-create index if not exists purista_harness_messages_session_order
-  on purista_harness_messages(session_id, created_at, id);
+create unique index if not exists purista_harness_messages_session_order
+  on purista_harness_messages(session_id, message_order);
 
 create table if not exists purista_harness_runs (
   id text primary key,

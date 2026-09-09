@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 
@@ -9,6 +10,9 @@ import { harnessStorageContract } from '../testing/harnessStorageContract.js'
 import { InMemoryHarnessStorage } from '../storage/in-memory.js'
 import { sqliteHarnessStorage } from '../storage/sqlite.js'
 import { canonicalJson } from '../runtime/canonical-json.js'
+import { defineAgent } from '../definitions/agent.js'
+import { defineHarness } from '../definitions/harness.js'
+import { FakeModelProvider } from '../testing/fakeModelProvider.js'
 
 function sandboxBinding(id: string, instanceId: string, identity?: { tenantId?: string; principalId?: string }) {
   return {
@@ -58,6 +62,59 @@ describe('SqliteHarnessStorage', () => {
         }))
       }
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['a nullable order column', 'integer', 'create unique index harness_messages_order on harness_messages(session_id, message_order)'],
+    ['a noninteger order column', 'text not null', 'create unique index harness_messages_order on harness_messages(session_id, message_order)'],
+    ['a nonunique order index', 'integer not null', 'create index harness_messages_order on harness_messages(session_id, message_order)'],
+    ['an index with the wrong order columns', 'integer not null', 'create unique index harness_messages_order on harness_messages(message_order, session_id)'],
+  ] as const)('rejects %s in an existing messages table', async (_name, orderDefinition, index) => {
+    const root = await mkdtemp(join(tmpdir(), 'purista-message-schema-'))
+    const file = join(root, 'state.sqlite')
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+      DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void }
+    }
+    const database = new DatabaseSync(file)
+    database.exec(`create table harness_messages(
+      id text primary key, session_id text not null, role text not null, content text not null,
+      tool_calls_json text, tool_results_json text, timestamp text not null, message_order ${orderDefinition}
+    ); ${index}`)
+    database.close()
+    try {
+      expect(() => sqliteHarnessStorage({ file })).toThrow(expect.objectContaining({
+        code: 'HARNESS_CONFIG_ERROR', meta: expect.objectContaining({ reason: 'sqlite_schema_incompatible' }),
+      }))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('retains complete tied-timestamp turns through the runtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'purista-history-retention-'))
+    const storage = sqliteHarnessStorage({ file: join(root, 'state.sqlite') })
+    const provider = new FakeModelProvider()
+    const agent = defineAgent('historyAgent', {
+      input: z.object({ question: z.string() }), output: z.object({ answer: z.string() }), instructions: 'Answer every question.',
+    })
+    const harness = await defineHarness({ name: 'sqliteHistory', defaults: { historyRetention: { maxTurns: 8 } } })
+      .addAgent(agent)
+      .getInstance({ storage, model: { provider, model: 'fake' } })
+    try {
+      const session = await harness.getSession('history')
+      for (let index = 0; index < 9; index += 1) {
+        provider.enqueueObject({ object: { answer: `answer-${index}` }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+        await expect(session.agents.historyAgent.run({ question: `question-${index}` })).resolves.toMatchObject({ status: 'completed' })
+      }
+      const history = await session.history.list()
+      expect(history).toHaveLength(16)
+      expect(history.map((message) => message.role)).toEqual(Array.from({ length: 8 }, () => ['user', 'assistant']).flat())
+      expect(history[0]?.content).toContain('question-1')
+      expect(history.at(-1)?.content).toContain('answer-8')
+    } finally {
+      await harness.close()
       await rm(root, { recursive: true, force: true })
     }
   })

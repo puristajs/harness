@@ -187,7 +187,7 @@ transition, or terminal mutation. Event and message appends do not change it.
   implement atomic `replaceMessages`; harness construction rejects adapters
   without it. A clear-then-append fallback is forbidden for retained history.
 - `clearMessages` is atomic: either every message for the session is removed or none is.
-- `listMessages` returns messages in ascending order by `(timestamp, id)`. `before` cursor is a message id; pagination is exclusive.
+- `listMessages` returns messages in their canonical append order, or in the caller-provided replacement order after `replaceMessages`. Timestamps MAY tie and do not determine message order. `before` is an existing message id cursor: it exclusively returns only messages before that id in canonical order. `limit` selects the newest matching messages while preserving ascending canonical order.
 - `listRuns` returns runs in descending order by `startedAt` then by `id` descending. `before` cursor is a run id; pagination is exclusive.
 - `appendEvents` / `listEvents` preserve insertion order; `after` cursor is an event id; pagination is exclusive.
 - Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted regardless of telemetry span content capture until a future spec adds a dedicated persisted-event content flag.

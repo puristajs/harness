@@ -220,12 +220,14 @@ class PostgresHarnessStorage implements HarnessStorage {
 
   public async appendMessages(sessionId: string, messages: Message[]): Promise<void> {
     await this.transaction(async (client) => {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [sessionId])
       try {
         for (const message of messages) {
           await client.query(
             `insert into purista_harness_messages
-              (id, session_id, run_id, role, content, tool_calls_json, tool_results_json, created_at)
-             values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)`,
+              (id, session_id, run_id, role, content, tool_calls_json, tool_results_json, created_at, message_order)
+             values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8,
+               (select coalesce(max(message_order), 0) + 1 from purista_harness_messages where session_id = $2))`,
             [message.id, sessionId, message.runId ?? null, message.role, message.content,
               stringify(message.toolCalls), stringify(message.toolResults), message.timestamp],
           )
@@ -243,24 +245,22 @@ class PostgresHarnessStorage implements HarnessStorage {
     let cursor: PgRow | undefined
     if (opts.before) {
       cursor = (await this.query(
-        'select created_at, id from purista_harness_messages where id = $1 and session_id = $2',
+        'select message_order from purista_harness_messages where id = $1 and session_id = $2',
         [opts.before, sessionId],
       ))[0]
     }
     const values: unknown[] = [sessionId]
-    const beforeClause = cursor
-      ? ` and (created_at < $${push(values, date(cursor['created_at']))} or (created_at = $${push(values, date(cursor['created_at']))} and id < $${push(values, opts.before ?? '')}))`
-      : ''
+    const beforeClause = cursor ? ` and message_order < $${push(values, bigint(cursor['message_order']))}` : ''
     if (opts.limit === undefined) {
       const rows = await this.query(
-        `select * from purista_harness_messages where session_id = $1${beforeClause} order by created_at asc, id asc`,
+        `select * from purista_harness_messages where session_id = $1${beforeClause} order by message_order asc`,
         values,
       )
       return rows.map(rowToMessage)
     }
     const limit = push(values, Math.max(0, opts.limit))
     const rows = await this.query(
-      `select * from purista_harness_messages where session_id = $1${beforeClause} order by created_at desc, id desc limit $${limit}`,
+      `select * from purista_harness_messages where session_id = $1${beforeClause} order by message_order desc limit $${limit}`,
       values,
     )
     return rows.reverse().map(rowToMessage)
@@ -272,15 +272,16 @@ class PostgresHarnessStorage implements HarnessStorage {
 
   public async replaceMessages(sessionId: string, messages: Message[]): Promise<void> {
     await this.transaction(async (client) => {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [sessionId])
       await client.query('delete from purista_harness_messages where session_id = $1', [sessionId])
       try {
-        for (const message of messages) {
+        for (const [index, message] of messages.entries()) {
           await client.query(
             `insert into purista_harness_messages
-              (id, session_id, run_id, role, content, tool_calls_json, tool_results_json, created_at)
-             values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)`,
+              (id, session_id, run_id, role, content, tool_calls_json, tool_results_json, created_at, message_order)
+             values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
             [message.id, sessionId, message.runId ?? null, message.role, message.content,
-              stringify(message.toolCalls), stringify(message.toolResults), message.timestamp],
+              stringify(message.toolCalls), stringify(message.toolResults), message.timestamp, String(index + 1)],
           )
         }
       } catch (error) {
@@ -744,13 +745,13 @@ class PostgresHarnessStorage implements HarnessStorage {
       }
       if (schemaTable.rows[0]?.['name']) {
         const version = await client.query('select version from purista_harness_storage_schema where id = 1')
-        if (!version.rows[0] || Number(version.rows[0]['version']) !== 2) throw incompatibleSchema()
+        if (!version.rows[0] || Number(version.rows[0]['version']) !== 3) throw incompatibleSchema()
       }
       for (const statement of migration.split(/;\s*(?:\r?\n|$)/).map((value) => value.trim()).filter(Boolean)) {
         await client.query(statement)
       }
       const version = await client.query('select version from purista_harness_storage_schema where id = 1')
-      if (Number(version.rows[0]?.['version']) !== 2) throw incompatibleSchema()
+      if (Number(version.rows[0]?.['version']) !== 3) throw incompatibleSchema()
       await this.assertV4Schema(client)
       await client.query('commit')
     } catch (error) {
@@ -763,6 +764,7 @@ class PostgresHarnessStorage implements HarnessStorage {
 
   private async assertV4Schema(client: PoolClient): Promise<void> {
     const required: Readonly<Record<string, Readonly<Record<string, string | undefined>>>> = {
+      purista_harness_messages: { message_order: 'bigint' },
       purista_harness_runs: { revision: 'bigint', input_json: 'jsonb', validated_input_json: 'jsonb', approval_receipt_json: undefined },
       purista_harness_run_events: { sequence: 'bigint', at: 'timestamp with time zone' },
       purista_harness_run_leases: { acquisition_id: 'text', request_json: 'jsonb', acquired_revision: 'bigint' },
@@ -782,6 +784,7 @@ class PostgresHarnessStorage implements HarnessStorage {
     }
     await this.assertUniqueConstraint(client, 'purista_harness_run_events', ['run_id', 'sequence'])
     await this.assertUniqueConstraint(client, 'purista_harness_run_leases', ['acquisition_id'])
+    await this.assertUniqueIndex(client, 'purista_harness_messages', ['session_id', 'message_order'])
     await this.assertValidatedInputKindSemantics(client)
   }
 
@@ -805,6 +808,23 @@ class PostgresHarnessStorage implements HarnessStorage {
       [table],
     )
     if (!constraints.rows.some((row) => canonicalJson(row['columns']) === canonicalJson(columns))) throw incompatibleSchema()
+  }
+
+  private async assertUniqueIndex(client: PoolClient, table: string, columns: readonly string[]): Promise<void> {
+    const indexes = await client.query(
+      `select array_agg(attribute.attname order by key_column.ordinality) as columns
+       from pg_index index_definition
+       join pg_class relation on relation.oid = index_definition.indrelid
+       join pg_namespace namespace on namespace.oid = relation.relnamespace
+       join unnest(index_definition.indkey) with ordinality as key_column(attribute_number, ordinality) on true
+       join pg_attribute attribute on attribute.attrelid = relation.oid and attribute.attnum = key_column.attribute_number
+       where namespace.nspname = current_schema() and relation.relname = $1
+         and index_definition.indisunique and index_definition.indisvalid and index_definition.indisready
+         and index_definition.indpred is null
+       group by index_definition.indexrelid`,
+      [table],
+    )
+    if (!indexes.rows.some((row) => canonicalJson(row['columns']) === canonicalJson(columns))) throw incompatibleSchema()
   }
 
   private async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -1040,6 +1060,13 @@ function rowToMessage(row: PgRow): Message {
     ...optional('toolResults', json<Message['toolResults']>(row['tool_results_json'])),
     timestamp: date(row['created_at']),
   })
+}
+
+function bigint(value: unknown): string {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return value
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+  throw malformedRow()
 }
 
 function rowToRun(row: PgRow): RunRecord {

@@ -478,6 +478,32 @@ describe('v4 session lifecycle', () => {
 		await harness.close()
 	})
 
+	it('retains ordered complete turns across retention and session reopen', async () => {
+		const { owner } = lifecycleDefinitions()
+		const storage = persistentStorage()
+		const sandbox = new TrackingSandbox()
+		const provider = new FakeModelProvider()
+		const harness = await defineHarness({ name: 'orderedHistory', defaults: { historyRetention: { maxTurns: 8 } } })
+			.addAgent(owner)
+			.getInstance({ storage, sandbox, model: { provider, model: 'fake' } })
+		const session = await harness.getSession('ordered-history')
+		for (let index = 0; index < 9; index += 1) {
+			provider.enqueueText({ content: `answer-${index}`, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+			await expect(session.agents.owner.run(`question-${index}`)).resolves.toMatchObject({ status: 'completed' })
+		}
+		const expectedRoles = Array.from({ length: 8 }, () => ['user', 'assistant']).flat()
+		const expectedContents = Array.from({ length: 8 }, (_, index) => [`question-${index + 1}`, `answer-${index + 1}`]).flat()
+		const history = await session.history.list()
+		expect(history).toHaveLength(16)
+		expect(history.map(message => message.role)).toEqual(expectedRoles)
+		expect(history.map(message => message.content)).toEqual(expectedContents)
+		await session.release()
+		const reopened = await harness.getSession('ordered-history')
+		expect((await reopened.history.list()).map(message => message.content)).toEqual(expectedContents)
+		await reopened.destroy()
+		await harness.close()
+	})
+
 	it('settles result after session cleanup for every operational terminal', async () => {
 		const completed = defineWorkflow('resultCompleted', { async handler({ input }) { return input } })
 		const interrupted = defineWorkflow('resultInterrupted', { durable: true, async handler({ input, externalWait }) {

@@ -1,14 +1,28 @@
 import { PGlite } from '@electric-sql/pglite'
 import { createHash } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { defineAgent, defineHarness, type SessionRecord } from '@purista/harness'
 import { FakeModelProvider, harnessStorageContract } from '@purista/harness/testing'
 import { postgresHarnessStorage } from './index.js'
 
+const openPgliteDatabases = new Set<() => Promise<void>>()
+
+afterEach(async () => {
+  await Promise.all([...openPgliteDatabases].map((close) => close()))
+})
+
 function pglitePool(database = new PGlite()) {
   let connectionTail = Promise.resolve()
+  let closed = false
+  const close = async () => {
+    if (closed) return
+    closed = true
+    openPgliteDatabases.delete(close)
+    await database.close()
+  }
+  openPgliteDatabases.add(close)
   const query = async (text: string, values?: readonly unknown[]) => {
     const result = await database.query(text, values as never)
     return {
@@ -33,7 +47,7 @@ function pglitePool(database = new PGlite()) {
         },
       }
     },
-    end: async () => database.close(),
+    end: close,
   }
 }
 
@@ -107,7 +121,7 @@ describe('postgresHarnessStorage', () => {
     expect(Object.isFrozen(storage.info)).toBe(true)
   })
 
-  it('creates the append-order column and rejects the previous schema version', async () => {
+  it('creates the append-order column and index', async () => {
     const pool = pglitePool()
     const storage = postgresHarnessStorage({ pool: pool as never })
     await storage.getSession('missing')
@@ -124,7 +138,9 @@ describe('postgresHarnessStorage', () => {
        where index_relation.relname = 'purista_harness_messages_session_order'`,
     )).resolves.toMatchObject({ rows: [{ indisvalid: true, indisready: true }] })
     await storage.close()
+  })
 
+  it('rejects the previous schema version', async () => {
     const legacyPool = pglitePool()
     await legacyPool.query('create table purista_harness_storage_schema(id smallint primary key, version integer not null)')
     await legacyPool.query('insert into purista_harness_storage_schema values (1, 2)')

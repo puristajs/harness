@@ -4,6 +4,7 @@ import { ValidationError } from '../errors/index.js'
 import { RecordingTelemetry } from '../testing/recordingTelemetry.js'
 import {
   createDeterministicEvaluationScorer,
+  evaluationResultToFeedbackRecords,
   runEvaluation,
   scoreEvaluation,
   type EvaluationObservation,
@@ -197,5 +198,165 @@ describe('generic evaluation runs', () => {
     expect(telemetry.spans[0]?.attrs).toMatchObject({ 'harness.eval.candidate.count': 1, 'harness.eval.case.count': 1, 'harness.eval.scorer.count': 1 })
     const emitted = JSON.stringify({ spans: telemetry.spans, metrics: telemetry.metrics })
     for (const secret of ['private-run', 'dataset', 'secret input', 'secret assessment', 'secret output', 'private-reference', 'candidate config']) expect(emitted).not.toContain(secret)
+  })
+
+  it('aggregates every score shape across segment scopes and projects feedback records', async () => {
+    const aggregateScorer: EvaluationScorer = {
+      id: 'aggregate', version: '2',
+      dimensions: [
+        { id: 'quality', kind: 'number' },
+        { id: 'safe', kind: 'boolean' },
+        { id: 'route', kind: 'label', labels: ['fast', 'slow'] }
+      ],
+      async score({ observation }) {
+        const isFirst = observation.caseId === 'first'
+        return {
+          correlation: { runId: 'run', traceId: '1'.repeat(32), spanId: '2'.repeat(16) },
+          accounting: { completeness: 'complete', modelCalls: [{ model: { providerId: 'judge', model: 'v1', alias: 'judge', responseModel: 'served-v1' }, usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5, cachedInputTokens: 1, cacheCreationInputTokens: 1, reasoningTokens: 1 }, cost: { amount: 0.02, currency: 'USD' } }] },
+          dimensions: [
+            { outcome: 'scored', dimensionId: 'quality', kind: 'number', value: isFirst ? 0.9 : 0.4, passed: isFirst },
+            { outcome: 'scored', dimensionId: 'safe', kind: 'boolean', value: isFirst, passed: isFirst },
+            { outcome: 'scored', dimensionId: 'route', kind: 'label', value: isFirst ? 'fast' : 'slow' }
+          ]
+        }
+      }
+    }
+    const result = await scoreEvaluation({
+      runId: 'aggregate-run',
+      aggregateBy: ['locale'],
+      observations: [
+        { id: 'one', datasetId: 'dataset', datasetVersion: '2', caseId: 'first', segments: { locale: 'en' }, candidateId: 'candidate', candidateVersion: '2', taskId: 'task', taskVersion: '2', trialId: 'first', trialOrdinal: 0, output: { answer: 'one' }, outputRef: 'output/one', execution: { attempts: 2, startedAt: '2026-01-01T00:00:00.000Z', finishedAt: '2026-01-01T00:00:01.000Z', durationMs: 1000, correlation: { runId: 'run', traceId: '1'.repeat(32), spanId: '2'.repeat(16) }, accounting: { completeness: 'partial', modelCalls: [{ model: { providerId: 'task', model: 'v1' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, cost: { amount: 0.01, currency: 'EUR' } }] } } },
+        { id: 'two', datasetId: 'dataset', datasetVersion: '2', caseId: 'second', candidateId: 'candidate', candidateVersion: '2', taskId: 'task', taskVersion: '2', trialId: 'first', trialOrdinal: 0, output: { answer: 'two' } }
+      ],
+      scorers: [aggregateScorer]
+    })
+
+    expect(result.candidateAggregates.map((item) => item.scope)).toEqual([
+      { kind: 'all' }, { kind: 'segment', key: 'locale', value: 'en' }, { kind: 'segment_missing', key: 'locale' }
+    ])
+    expect(result.dimensionAggregates.filter((item) => item.scope.kind === 'all').map((item) => [item.dimensionId, item.kind])).toEqual([
+      ['quality', 'number'], ['safe', 'boolean'], ['route', 'label']
+    ])
+    expect(result.dimensionAggregates.find((item) => item.dimensionId === 'quality' && item.scope.kind === 'all')).toMatchObject({ numeric: { count: 2, min: 0.4, max: 0.9 }, passCounts: { passed: 1, failed: 1 } })
+    expect(result.dimensionAggregates.find((item) => item.dimensionId === 'safe' && item.scope.kind === 'all')).toMatchObject({ booleanCounts: { true: 1, false: 1 } })
+    expect(result.dimensionAggregates.find((item) => item.dimensionId === 'route' && item.scope.kind === 'all')).toMatchObject({ labelCounts: [{ label: 'fast', count: 1 }, { label: 'slow', count: 1 }] })
+
+    const feedback = evaluationResultToFeedbackRecords(result, { target: (row) => row.caseId === 'first' ? { kind: 'run', runId: 'run' } : undefined })
+    expect(feedback.map((record) => [record.label, record.score])).toEqual([
+      ['aggregate/quality', 0.9], ['aggregate/safe', 1], ['aggregate/route', undefined]
+    ])
+    expect(feedback[2]).toMatchObject({ metadata: { value: 'fast' } })
+  })
+
+  it('returns cancellation placeholders before scorer work when the caller has already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('caller cancelled'))
+    let scored = false
+    const result = await scoreEvaluation({
+      runId: 'cancelled', signal: controller.signal,
+      observations: [
+        { id: 'one', datasetId: 'dataset', datasetVersion: '1', caseId: 'one', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'trial', trialOrdinal: 0, output: null },
+        { id: 'two', datasetId: 'dataset', datasetVersion: '1', caseId: 'two', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'trial', trialOrdinal: 0, output: null }
+      ],
+      scorers: [{ id: 'never', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { scored = true; return { dimensions: [] } } }]
+    })
+    expect(scored).toBe(false)
+    expect(result.status).toBe('cancelled')
+    expect(result.cases.map((row) => [row.status, row.task.status, row.scorers[0]?.status, row.skipReason])).toEqual([
+      ['cancelled', 'cancelled', 'cancelled', 'cancelled'],
+      ['cancelled', 'cancelled', 'cancelled', 'cancelled']
+    ])
+  })
+
+  it('retries a retriable task and falls back when optional telemetry throws before an invocation', async () => {
+    let attempts = 0
+    const result = await runEvaluation({
+      runId: 'retry',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: 'input' }] },
+      candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { attempts += 1; if (attempts === 1) throw new (await import('../errors/index.js')).StateError('temporary', {}, undefined); return { output: 'done' } } },
+      scorers: [{ id: 'pass', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true }] } } }],
+      retry: { task: { maxAttempts: 2 } },
+      telemetry: {
+        async span() { throw new Error('telemetry unavailable') },
+        recordCounter() { throw new Error('telemetry unavailable') },
+        recordHistogram() { throw new Error('telemetry unavailable') },
+        currentTraceparent() { return undefined }
+      }
+    })
+    expect(attempts).toBe(2)
+    expect(result.cases[0]?.task).toMatchObject({ status: 'completed', attempts: 2 })
+    expect(result.status).toBe('completed')
+  })
+
+  it('classifies task cancellation, malformed scores, and timed-out scorer work without stopping later scorers', async () => {
+    const cancelled = await runEvaluation({
+      runId: 'task-cancelled',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: null }] }, candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { throw new (await import('../errors/index.js')).OperationCancelledError('cancelled', { scope: 'run' }) } },
+      scorers: [{ id: 'skipped', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [] } } }]
+    })
+    expect(cancelled.cases[0]).toMatchObject({ status: 'cancelled', task: { status: 'cancelled' }, scorers: [{ status: 'skipped', skipReason: 'task_failed' }] })
+
+    const scored = await runEvaluation({
+      runId: 'scorer-failures', timeouts: { scorerMs: 1 },
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: null }] }, candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { return { output: null } } },
+      scorers: [
+        { id: 'malformed', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [] } } },
+        { id: 'timeout', version: '1', dimensions: [{ id: 'wait', kind: 'boolean' }], async score(_target, signal) { return await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) } },
+        { id: 'complete', version: '1', dimensions: [{ id: 'done', kind: 'boolean' }], async score() { return { dimensions: [{ outcome: 'scored', dimensionId: 'done', kind: 'boolean', value: true }] } } }
+      ]
+    })
+    expect(scored.cases[0]?.scorers.map((item) => item.status)).toEqual(['error', 'timed_out', 'completed'])
+    expect(scored.status).toBe('completed_with_errors')
+  })
+
+  it('keeps an invoked evaluation alive when an optional telemetry span throws after its callback', async () => {
+    let scorerCalls = 0
+    const result = await scoreEvaluation({
+      runId: 'telemetry-after-callback',
+      observations: [{ id: 'one', datasetId: 'dataset', datasetVersion: '1', caseId: 'one', candidateId: 'candidate', candidateVersion: '1', taskId: 'task', taskVersion: '1', trialId: 'trial', trialOrdinal: 0, output: null }],
+      scorers: [{ id: 'pass', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { scorerCalls += 1; return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true }] } } }],
+      telemetry: {
+        async span(_name, _attrs, callback) { await callback({} as never); throw new Error('telemetry unavailable') },
+        recordCounter() {}, recordHistogram() {}, currentTraceparent() { return undefined }
+      }
+    })
+    expect(result.status).toBe('completed')
+    expect(scorerCalls).toBe(1)
+  })
+
+  it('reports a run deadline as a timed-out task and honors a retry delay before a later success', async () => {
+    const timedOut = await runEvaluation({
+      runId: 'deadline', timeouts: { runMs: 1 },
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: null }] }, candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run(_target, signal) { return await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) } },
+      scorers: [{ id: 'pass', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true }] } } }]
+    })
+    expect(timedOut).toMatchObject({ status: 'timed_out', cases: [{ status: 'timed_out', task: { status: 'timed_out' } }] })
+
+    let calls = 0
+    const retried = await runEvaluation({
+      runId: 'delayed-retry',
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: null }] }, candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { calls += 1; if (calls === 1) throw new (await import('../errors/index.js')).StateError('temporary', {}, undefined); return { output: null } } },
+      retry: { task: { maxAttempts: 2, delayMs: 1 } },
+      scorers: [{ id: 'pass', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true }] } } }]
+    })
+    expect(retried.cases[0]?.task.attempts).toBe(2)
+  })
+
+  it('cancels a pending retry delay when the enclosing run reaches its deadline', async () => {
+    let calls = 0
+    const result = await runEvaluation({
+      runId: 'retry-deadline', timeouts: { runMs: 1 },
+      dataset: { id: 'dataset', version: '1', cases: [{ id: 'case', input: null }] }, candidates: [{ id: 'candidate', version: '1', config: {} }],
+      task: { id: 'task', version: '1', async run() { calls += 1; throw new (await import('../errors/index.js')).StateError('temporary', {}, undefined) } },
+      retry: { task: { maxAttempts: 2, delayMs: 100 } },
+      scorers: [{ id: 'pass', version: '1', dimensions: [{ id: 'check', kind: 'boolean' }], async score() { return { dimensions: [{ outcome: 'scored', dimensionId: 'check', kind: 'boolean', value: true }] } } }]
+    })
+    expect(calls).toBe(1)
+    expect(result.status).toBe('timed_out')
   })
 })

@@ -406,4 +406,24 @@ describe('Agent Plugin immutable package snapshot', () => {
 		)
 		expect(failure.message).not.toContain('sensitive path')
 	})
+
+	it('maps root resolution and descriptor failures to content-free snapshot errors', () => {
+		const root = temporaryDirectory()
+		write(root, 'value.txt', 'A')
+		const base = nodeFileSystem()
+		expectSnapshotFailure(
+			() => captureAgentPluginSnapshot(root, process.cwd(), {}, nodeFileSystem({ realpath() { throw new Error('secret root') } })),
+			'plugin_root_invalid',
+		)
+		const denied = nodeFileSystem({ open() { throw new Error('secret file') } })
+		const failure = expectSnapshotFailure(() => captureAgentPluginSnapshot(root, process.cwd(), {}, denied), 'plugin_root_invalid')
+		expect(failure.message).toBe('Agent Plugin snapshot failed.')
+		const unstable = nodeFileSystem({
+			fstat(descriptor) {
+				const stat = base.fstat(descriptor)
+				return { ...stat, size: stat.size + 1n }
+			},
+		})
+		expectSnapshotFailure(() => captureAgentPluginSnapshot(root, process.cwd(), {}, unstable), 'manifest_invalid')
+	})
 })

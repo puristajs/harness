@@ -88,6 +88,46 @@ describe('Agent Plugins v4 public boundary', () => {
 		expect(inspectAgentPluginSync({ root: directory })).toMatchObject({ valid: false, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'manifest_invalid' })]) })
 	})
 
+	it('accepts valid manifest metadata and isolates every MCP transport/config shape', () => {
+		const directory = root()
+		manifest(directory, {
+			description: 'Research', homepage: 'https://example.test', repository: 'repo', license: 'MIT',
+			author: { name: 'Research Team', email: 'team@example.test', url: 'https://example.test/team' },
+			keywords: ['research', 'remote'],
+		})
+		json(path.join(directory, 'mcp.json'), { $schema: AGENT_PLUGIN_MCP_SCHEMA, mcpServers: {
+			badShape: null,
+			badSse: { type: 'sse', url: 'https://example.test/events' },
+			badSseConfig: { type: 'sse', url: '' },
+			badStdio: { type: 'stdio', command: '', args: [1] },
+			goodStdio: { type: 'stdio', command: './server', args: ['--safe'], env: { MODE: 'test' }, cwd: './runtime' },
+			badStdioEnv: { type: 'stdio', command: './server', env: { PLUGIN_ROOT: 'override' } },
+			badStdioCwd: { type: 'stdio', command: './server', cwd: '/tmp' },
+			badHttp: { type: 'streamable-http', url: 'https://example.test/mcp', headers: { 'x-count': 1 } },
+			goodHttp: { type: 'streamable-http', url: 'https://example.test/mcp' },
+			unknown: { type: 'other' },
+		} })
+
+		const inspection = inspectAgentPluginSync({ root: directory })
+		expect(inspection.valid).toBe(true)
+		expect(inspection.manifest).toMatchObject({
+			name: 'acme.research', description: 'Research', license: 'MIT', keywords: ['research', 'remote'],
+			author: { name: 'Research Team' },
+		})
+		expect(inspection.mcpServers).toEqual([
+			{ name: 'goodHttp', transport: 'streamable-http', supported: true },
+			{ name: 'goodStdio', transport: 'stdio', supported: false },
+		])
+		expect(inspection.diagnostics).toEqual(expect.arrayContaining([
+			expect.objectContaining({ code: 'server_invalid', item: 'badShape' }),
+			expect.objectContaining({ code: 'transport_unsupported', item: 'badSse' }),
+			expect.objectContaining({ code: 'server_invalid', item: 'badSseConfig' }),
+			expect.objectContaining({ code: 'transport_unsupported', item: 'goodStdio' }),
+			expect.objectContaining({ code: 'server_invalid', item: 'badHttp' }),
+			expect.objectContaining({ code: 'server_invalid', item: 'unknown' }),
+		]))
+	})
+
 	it('diagnoses unsafe component containers without exposing their paths', () => {
 		const directory = root(); manifest(directory)
 		fs.writeFileSync(path.join(directory, 'skills'), 'not a directory')

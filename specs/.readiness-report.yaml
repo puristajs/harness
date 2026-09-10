@@ -421,7 +421,7 @@ follow_up_waves:
       approver: "repo owner (active interactive Codex task)"
       source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, autonomous implementation, the trusted-host integrator target visitor, the strict hosted fresh/resume and request-authorizer boundary, the explicit same-tenant stored-run-owner approval-resume mode, canonical HarnessDefinition generic order, invariant phantom inference, and nominal branded remote target contracts. Earlier content-bound review evidence remains historical; the repaired digest passed fresh independent review on 2026-09-09."
       approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
-      scope_digest: "sha256:b19baf3206bb28fdc225e1e988c2f03c4237b202a04f61eb92ce3b79cf2c11c5"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
       digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
     scope:
       specs:
@@ -476,8 +476,8 @@ follow_up_waves:
       storage_spec: "specs/32-harness-storage.md"
       storage_spec_digest: "sha256:865701cc4b1cde9b145b47d40e229c521a1144927f901dee35ae86d40e51d299"
       companion_spec: "../purista/specs/20-agents/88-harness-first-service-integration.md"
-      companion_spec_digest: "sha256:1192a1f4bad919108680cd089149d3c2cc1051cf4d8953069cf738d889bfdef2"
-      scope_digest: "sha256:b19baf3206bb28fdc225e1e988c2f03c4237b202a04f61eb92ce3b79cf2c11c5"
+      companion_spec_digest: "sha256:1ae997183804f8ab03a5dea715f4308c7081b962a21fe3f0a06812f40f66d2be"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
       evidence: "The independently reviewed amendment closes the reported Harness and PURISTA companion blockers: canonical public inference with the full invariant schema witness and declaration-safe external emit; nominal local, remote, and queue authenticity; trusted closure visitation; strict hosted fresh/resume authorization and stored-owner privacy; strict own-enumerable canonical JSON; no wire-input fallback for fresh validated input; durable validatedInput retention and terminal receipt re-read; prior-receipt run and stream cleanup; generated validation-only remote contracts; and concrete server-side AI SDK UI Message Stream v1 protocol projection without a client library. The exact source set contains no excluded product reference, compiled-graph exposure, or compatibility API."
       repaired_findings:
         count: 8
@@ -580,7 +580,7 @@ follow_up_waves:
         status: passed_after_runtime_repair
         reviewed_at: "2026-09-09"
         reviewer: "independent Harness storage/runtime reviewer"
-        scope_digest: "sha256:b19baf3206bb28fdc225e1e988c2f03c4237b202a04f61eb92ce3b79cf2c11c5"
+        scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
         blocking_findings_count: 0
         evidence: "PASS after the storage contract defined append and replace order explicitly and the in-memory, SQLite, and PostgreSQL adapters preserved that order for equal timestamps. Focused contract, retention, cursor, replacement, reopen, schema-integrity, and two-client PostgreSQL tests cover the repaired behavior; the live test remains credential-gated and does not claim execution without configuration."
     conversation_append_order_amendment:
@@ -590,7 +590,7 @@ follow_up_waves:
       storage_contract_digest: "sha256:851f1a57a54d501f3889be502e6621ad5e40b5961aa7429a1c50400f383d7be1"
       testing_contract: "specs/16-testing.md"
       testing_contract_digest: "sha256:96d6ade97b115adbea26f30940701994df09add30c413870e72f2f153922cffb"
-      scope_digest: "sha256:b19baf3206bb28fdc225e1e988c2f03c4237b202a04f61eb92ce3b79cf2c11c5"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
       evidence: "The amendment removes timestamp-plus-id ordering ambiguity and requires adapters to preserve append order, including tied timestamps, cursor and limit reads, replacement, retention, reopen, and concurrent PostgreSQL append batches."
     dependency_and_ui_protocol_evidence:
       captured_at: "2026-09-05"

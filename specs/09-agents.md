@@ -14,13 +14,15 @@ types, inference, graph, execution, subagent, and interruption behavior.
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer clearly and concisely.',
 })
 ```
 
-Defaults are:
+The application must select a model alias explicitly. Harness gives `chat` no
+special meaning; it is simply the name chosen in this example. Other defaults
+are:
 
-- model alias `primary`;
 - Harness string input and output schemas;
 - safe input-to-user-message projection;
 - text response with live text deltas;

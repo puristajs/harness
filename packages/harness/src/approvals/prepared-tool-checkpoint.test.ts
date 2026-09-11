@@ -15,7 +15,7 @@ function acceptedCursor() {
     schemaVersion: 1 as const,
     kind: 'accepted_model_turn' as const,
     phase: 'after_model' as const,
-    rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'primary', input: { question: 'hello' },
+    rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'chat', input: { question: 'hello' },
     mode: 'run' as const,
     operation: 'text' as const,
     request: {
@@ -39,14 +39,14 @@ describe('prepared tool checkpoint persistence', () => {
     const first = new ToolApprovalPendingError([request], [call])
     const second = new ToolApprovalPendingError([request], [call])
     expect(first.interrupt).toEqual(second.interrupt)
-    expect(Object.isFrozen(first.attachState({ input: {}, step: 1, modelAlias: 'primary', modelMessages: [], emitted: [], toolCalls: [] }).state)).toBe(true)
-    expect(first.attachPreparedState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'primary', input: {}, messages: [], entries: [], agentStarted: true }).preparedState).toMatchObject({ agentId: 'agent' })
+    expect(Object.isFrozen(first.attachState({ input: {}, step: 1, modelAlias: 'chat', modelMessages: [], emitted: [], toolCalls: [] }).state)).toBe(true)
+    expect(first.attachPreparedState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'chat', input: {}, messages: [], entries: [], agentStarted: true }).preparedState).toMatchObject({ agentId: 'agent' })
     expect(() => new ToolApprovalPendingError([], [])).toThrow(TypeError)
   })
 
   it('accepts and deeply freezes valid suspended and accepted model turn state', () => {
     const entry = freezePreparedToolCheckpointEntry({ state: 'ready', call, input: { query: 'value' }, bindingId: 'binding', bindingContractDigest: 'digest', approvalId: 'approval' })
-    const suspended = freezeSuspendedAgentTurnState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'primary', input: { question: 'hello' }, messages: [{ role: 'assistant', content: 'answer', toolCalls: [call] }], entries: [entry], agentStarted: true })
+    const suspended = freezeSuspendedAgentTurnState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'chat', input: { question: 'hello' }, messages: [{ role: 'assistant', content: 'answer', toolCalls: [call] }], entries: [entry], agentStarted: true })
     const accepted = freezeAcceptedModelTurnCursor(acceptedCursor())
 
     expect(Object.isFrozen(entry)).toBe(true)
@@ -57,7 +57,7 @@ describe('prepared tool checkpoint persistence', () => {
 
   it('rejects continuation leakage and incoherent streaming state', () => {
     expect(() => freezePreparedToolCheckpointEntry({ state: 'ready', call: { ...call, providerContinuation: {} } as never, input: {}, bindingId: 'binding', bindingContractDigest: 'digest' })).toThrow(HarnessConfigError)
-    expect(() => freezeSuspendedAgentTurnState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'primary', input: {}, messages: [], entries: [], providerContinuation: { providerId: 'fake' } as never, agentStarted: true })).toThrow(HarnessConfigError)
+    expect(() => freezeSuspendedAgentTurnState({ rootRunId: 'root', agentRunId: 'agent-run', sessionId: 'session', agentId: 'agent', invocationId: 'invoke', step: 1, modelAlias: 'chat', input: {}, messages: [], entries: [], providerContinuation: { providerId: 'fake' } as never, agentStarted: true })).toThrow(HarnessConfigError)
     expect(() => freezeAcceptedModelTurnCursor({ ...acceptedCursor(), operation: 'textStream', mode: 'run' } as never)).toThrow(HarnessConfigError)
   })
 

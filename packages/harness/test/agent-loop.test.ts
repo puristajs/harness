@@ -27,7 +27,7 @@ function baseOptions(agent: ReturnType<typeof defineAgent>, model: object, mode:
 		invocationId: 'run1', agentId: agent.id, caller: Object.freeze({ kind: 'agent' as const, agentId: agent.id }), signal: new AbortController().signal,
 		metadata: Object.freeze({}),
 	}
-	const models = Object.freeze({ primary: model as never })
+	const models = Object.freeze({ chat: model as never })
 	const toolContext = {
 		...invocation, depth: 0, remainingDepth: 1,
 		logger: {}, metrics: {}, telemetry: {}, memory: {}, sandbox: {}, targetDispatcher: {}, relayChildEvent: async () => {},
@@ -44,7 +44,7 @@ function baseOptions(agent: ReturnType<typeof defineAgent>, model: object, mode:
 			input: 'hello',
 			history,
 			model: model as never,
-			modelAlias: 'primary',
+			modelAlias: 'chat',
 			bindings: Object.freeze({}),
 			skills: Object.freeze({}),
 			defaults: resolveHarnessExecutionDefaults(),
@@ -67,14 +67,14 @@ function attachToolRuntime(run: ReturnType<typeof baseOptions>, overrides: Recor
 
 function directInterceptorRuntime() {
 	return {
-		history: Object.freeze({ list: async () => [] }), models: Object.freeze({ primary: Object.freeze({}) }),
+		history: Object.freeze({ list: async () => [] }), models: Object.freeze({ chat: Object.freeze({}) }),
 		memory: Object.freeze({}), metrics: Object.freeze({}), logger: Object.freeze({}), telemetry: Object.freeze({}),
 	} as never
 }
 
 describe('v4 standard agent loop', () => {
 	it('rejects erased caller aliases before model or event effects and snapshots one frozen caller', async () => {
-		const agent = defineAgent('callerBoundaryAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('callerBoundaryAgent', { model: 'chat', instructions: 'Answer.' })
 		const inherited = Object.create({ kind: 'agent', agentId: agent.id })
 		for (const hostile of [
 			{ kind: 'agent' },
@@ -106,7 +106,7 @@ describe('v4 standard agent loop', () => {
 
 	it('applies the effective context projection only to model-visible tool results', async () => {
 		let providerMessages: readonly import('../src/ports/model-provider.js').ModelMessage[] = []
-		const agent = defineAgent('projectedAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('projectedAgent', { model: 'chat', instructions: 'Answer.' })
 		const run = baseOptions(agent, { async text(request: { messages: readonly import('../src/ports/model-provider.js').ModelMessage[] }) {
 			providerMessages = request.messages
 			return { content: 'done', usage, finishReason: 'stop' as const }
@@ -125,7 +125,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('returns only the current logical conversation turn for persistence', async () => {
-		const agent = defineAgent('conversationProjectionAgent', { instructions: 'Application instructions.' })
+		const agent = defineAgent('conversationProjectionAgent', { model: 'chat', instructions: 'Application instructions.' })
 		const run = baseOptions(agent, { async text() { return { content: 'answer', usage, finishReason: 'stop' as const } } }, 'run')
 		run.options.history.push({ role: 'user', content: 'old question' }, { role: 'assistant', content: 'old answer' })
 		;(run.options as any).skills = { reporting: { manifest: { name: 'reporting', description: 'Report facts.' } } }
@@ -145,11 +145,11 @@ describe('v4 standard agent loop', () => {
 		let modelCompleted = 0
 		const phases: string[] = []
 		const guardrails = { [agentGuardrailsBinding]: { id: 'cursorGuard', afterModel() { afterModelCalls += 1; return { decision: 'allow' as const } } } }
-		const agent = defineAgent('cursorAgent', { instructions: 'Answer.', guardrails: guardrails as never })
+		const agent = defineAgent('cursorAgent', { model: 'chat', instructions: 'Answer.', guardrails: guardrails as never })
 		const run = baseOptions(agent, { async text() { providerCalls += 1; return { content: 'unexpected', usage, finishReason: 'stop' as const } } }, 'run')
 		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase,
 			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
-			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			step: 1, modelAlias: 'chat', input: 'hello', mode: 'run', operation: 'text',
 			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], tools: [] },
 			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
 		;(run.options as any).onModelCompleted = async () => { modelCompleted += 1 }
@@ -188,17 +188,17 @@ describe('v4 standard agent loop', () => {
 				yield { kind: 'finish' as const, object: { answer: 'done' }, usage, finishReason: 'stop' as const }
 			})() },
 		}
-		const model = createModelRegistry({ primary: { provider, model: 'test-model',
+		const model = createModelRegistry({ chat: { provider, model: 'test-model',
 			capabilities: ['text', 'object', 'text_stream', 'object_stream'] as const,
 			providerOptions: { aliasOnly: true }, defaults: { temperature: 0.2, maxTokens: 64,
-				providerOptions: { defaultOnly: true }, retry: false } } }).primary!
+				providerOptions: { defaultOnly: true }, retry: false } } }).chat!
 		const agent = structured
-			? defineAgent(`effective${operation}`, { instructions: 'Answer.', output: z.object({ answer: z.string() }), guardrails: guardrails as never })
-			: defineAgent(`effective${operation}`, { instructions: 'Answer.', guardrails: guardrails as never })
+			? defineAgent(`effective${operation}`, { model: 'chat', instructions: 'Answer.', output: z.object({ answer: z.string() }), guardrails: guardrails as never })
+			: defineAgent(`effective${operation}`, { model: 'chat', instructions: 'Answer.', guardrails: guardrails as never })
 		const run = baseOptions(agent, model, mode)
 		const accepted: Array<ReturnType<typeof freezeAcceptedModelTurnCursor>> = []
 		const state = freezeSuspendedAgentTurnState({ rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1',
-			agentId: agent.id, invocationId: 'run1', step: 1, modelAlias: 'primary', input: 'hello',
+			agentId: agent.id, invocationId: 'run1', step: 1, modelAlias: 'chat', input: 'hello',
 			messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], entries: [], agentStarted: true })
 		;(run.options as any).resume = { state, onAcceptedModelTurn: async (cursor: ReturnType<typeof freezeAcceptedModelTurnCursor>) => { accepted.push(cursor) } }
 
@@ -224,9 +224,9 @@ describe('v4 standard agent loop', () => {
 			providerCalls += 1
 			return { content: 'unexpected', usage, finishReason: 'stop' as const }
 		} }
-		const model = createModelRegistry({ primary: { provider, model: 'test-model', capabilities: ['text'] as const,
-			defaults: { providerOptions: { invalid: new Date() } } } }).primary!
-		const agent = defineAgent('invalidEffectiveCall', { instructions: 'Answer.' })
+		const model = createModelRegistry({ chat: { provider, model: 'test-model', capabilities: ['text'] as const,
+			defaults: { providerOptions: { invalid: new Date() } } } }).chat!
+		const agent = defineAgent('invalidEffectiveCall', { model: 'chat', instructions: 'Answer.' })
 		const run = baseOptions(agent, model, 'run')
 
 		await expect(executeStandardAgent(run.options)).rejects.toMatchObject({
@@ -242,18 +242,18 @@ describe('v4 standard agent loop', () => {
 			observedCall = context.request.call
 			return { decision: 'allow' as const }
 		} } }
-		const agent = defineAgent('persistedCallAgent', { instructions: 'Answer.', guardrails: guardrails as never })
+		const agent = defineAgent('persistedCallAgent', { model: 'chat', instructions: 'Answer.', guardrails: guardrails as never })
 		const provider = { id: 'changed-alias-provider', genAiSystem: 'test', async text() {
 			providerCalls += 1
 			return { content: 'unexpected', usage, finishReason: 'stop' as const }
 		} }
-		const currentModel = createModelRegistry({ primary: { provider, model: 'changed-model', capabilities: ['text'] as const,
-			defaults: { providerOptions: { invalidIfRecomputed: new Date() } } } }).primary!
+		const currentModel = createModelRegistry({ chat: { provider, model: 'changed-model', capabilities: ['text'] as const,
+			defaults: { providerOptions: { invalidIfRecomputed: new Date() } } } }).chat!
 		const run = baseOptions(agent, currentModel, 'run')
 		const persistedCall = { temperature: 0.7, providerOptions: { deployment: 'old' } }
 		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'after_model',
 			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
-			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			step: 1, modelAlias: 'chat', input: 'hello', mode: 'run', operation: 'text',
 			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }], tools: [], call: persistedCall },
 			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
 		;(run.options as any).resume = { state: cursor }
@@ -269,7 +269,7 @@ describe('v4 standard agent loop', () => {
 		let exposureCalls = 0
 		let providerCalls = 0
 		const tool = defineTool('cursorVisible', { description: 'Visible tool.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
-		const agent = defineAgent('cursorExposureAgent', { instructions: 'Answer.', tools: [tool], governance: ({ exposureRule }) => ({
+		const agent = defineAgent('cursorExposureAgent', { model: 'chat', instructions: 'Answer.', tools: [tool], governance: ({ exposureRule }) => ({
 			exposure: { rules: [exposureRule({ id: 'countExposure', tools: [tool.id], effect: 'expose', when: () => {
 				exposureCalls += 1
 				return true
@@ -282,7 +282,7 @@ describe('v4 standard agent loop', () => {
 		;(run.options as any).bindings = { [tool.id]: binding }
 		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'continue_turn',
 			rootRunId: 'run1', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
-			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			step: 1, modelAlias: 'chat', input: 'hello', mode: 'run', operation: 'text',
 			request: { messages: [{ role: 'system', content: 'Answer.' }, { role: 'user', content: 'hello' }],
 				tools: [{ name: tool.id, description: tool.description!, parameters: { type: 'string' } }] },
 			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
@@ -296,7 +296,7 @@ describe('v4 standard agent loop', () => {
 
 	it('rejects malformed accepted-model cursor request and response projections', () => {
 		const valid = { schemaVersion: 1, kind: 'accepted_model_turn', phase: 'after_model', rootRunId: 'run1', agentRunId: 'run1',
-			sessionId: 'session1', agentId: 'cursorAgent', invocationId: 'run1', step: 1, modelAlias: 'primary', input: 'hello',
+			sessionId: 'session1', agentId: 'cursorAgent', invocationId: 'run1', step: 1, modelAlias: 'chat', input: 'hello',
 			mode: 'run', operation: 'text', request: { messages: [{ role: 'user', content: 'hello' }], tools: [] },
 			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true } as const
 		for (const malformed of [
@@ -320,11 +320,11 @@ describe('v4 standard agent loop', () => {
 
 	it('rejects accepted-model cursor correlation drift before provider I/O', async () => {
 		let providerCalls = 0
-		const agent = defineAgent('cursorCorrelationAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('cursorCorrelationAgent', { model: 'chat', instructions: 'Answer.' })
 		const run = baseOptions(agent, { async text() { providerCalls += 1; return { content: 'unexpected', usage, finishReason: 'stop' as const } } }, 'run')
 		const cursor = freezeAcceptedModelTurnCursor({ schemaVersion: 1, kind: 'accepted_model_turn', phase: 'continue_turn',
 			rootRunId: 'different-run', agentRunId: 'run1', sessionId: 'session1', agentId: agent.id, invocationId: 'run1',
-			step: 1, modelAlias: 'primary', input: 'hello', mode: 'run', operation: 'text',
+			step: 1, modelAlias: 'chat', input: 'hello', mode: 'run', operation: 'text',
 			request: { messages: [{ role: 'user', content: 'hello' }], tools: [] },
 			response: { content: 'accepted', toolCalls: [], usage, finishReason: 'stop' }, agentStarted: true })
 		;(run.options as any).resume = { state: cursor }
@@ -340,8 +340,9 @@ describe('v4 standard agent loop', () => {
 			async text() { textCalls += 1; return { content: 'plain', usage, finishReason: 'stop' as const } },
 			async object() { objectCalls += 1; return { object: 'structured', usage, finishReason: 'stop' as const } },
 		}
-		const textAgent = defineAgent('textAgent', { instructions: 'Answer.' })
+		const textAgent = defineAgent('textAgent', { model: 'chat', instructions: 'Answer.' })
 		const structuredStringAgent = defineAgent('structuredStringAgent', {
+			model: 'chat',
 			instructions: 'Answer.', output: z.string(),
 		})
 
@@ -364,7 +365,7 @@ describe('v4 standard agent loop', () => {
 				})()
 			},
 		}
-		const agent = defineAgent('streamAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('streamAgent', { model: 'chat', instructions: 'Answer.' })
 		const run = baseOptions(agent, model, 'stream')
 		const result = await executeStandardAgent(run.options)
 		expect(result.output).toBe('hello')
@@ -379,7 +380,7 @@ describe('v4 standard agent loop', () => {
 		const model = {
 			textStream() { return (async function* () { yield { kind: 'delta' as const, text: 'partial' } })() },
 		}
-		const agent = defineAgent('brokenStreamAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('brokenStreamAgent', { model: 'chat', instructions: 'Answer.' })
 		const run = baseOptions(agent, model, 'stream')
 		await expect(executeStandardAgent(run.options)).rejects.toMatchObject({
 			constructor: ValidationError,
@@ -388,7 +389,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('streams structured snapshots and rejects unknown or duplicate stream events', async () => {
-		const agent = defineAgent('objectStreamAgent', { instructions: 'Answer.', output: z.object({ answer: z.string() }) })
+		const agent = defineAgent('objectStreamAgent', { model: 'chat', instructions: 'Answer.', output: z.object({ answer: z.string() }) })
 		const model = { objectStream() { return (async function* () {
 			yield { kind: 'partial' as const, partial: { answer: 'dra' } }
 			yield { kind: 'delta' as const, path: ['answer'], value: 'draft' }
@@ -417,7 +418,7 @@ describe('v4 standard agent loop', () => {
 		}
 		const knowledge = Object.freeze({ id: 'knowledge', manifest: Object.freeze({ name: 'knowledge', description: 'Search reviewed facts.', ignored: true }) })
 		const analysis = Object.freeze({ id: 'analysis', manifest: Object.freeze({ name: 'Analysis', description: 'Analyze records.' }) })
-		const agent = defineAgent('skilledAgent', { instructions: 'Application rules.', skills: [] as never })
+		const agent = defineAgent('skilledAgent', { model: 'chat', instructions: 'Application rules.', skills: [] as never })
 		const run = baseOptions(agent, model, 'run')
 		run.options.skills = Object.freeze({ knowledge, analysis }) as never
 		await executeStandardAgent(run.options)
@@ -438,7 +439,7 @@ describe('v4 standard agent loop', () => {
 		}
 		const hidden = defineTool('hidden', { description: 'Hidden.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
 		const visible = defineTool('visible', { description: 'Visible.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
-		const agent = defineAgent('governedAgent', { instructions: 'Answer.', tools: [hidden, visible], governance: ({ exposureRule }) => ({
+		const agent = defineAgent('governedAgent', { model: 'chat', instructions: 'Answer.', tools: [hidden, visible], governance: ({ exposureRule }) => ({
 			exposure: { rules: [exposureRule({ id: 'hide-private', tools: ['hidden'], effect: 'hide' })] },
 		}) })
 		const run = baseOptions(agent, model, 'run')
@@ -464,7 +465,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(hidden)!, digestDefinition: ['tool', hidden.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { hiddenCalls += 1; return 'secret' } })
 		const guardrails = { [agentGuardrailsBinding]: { id: 'hiddenCallGuard', beforeTool: () => { railCalls += 1; return { decision: 'allow' as const } } } }
-		const agent = defineAgent('hiddenCallAgent', { instructions: 'Do not call hidden tools.', tools: [hidden], guardrails, governance: ({ exposureRule }) => ({
+		const agent = defineAgent('hiddenCallAgent', { model: 'chat', instructions: 'Do not call hidden tools.', tools: [hidden], guardrails, governance: ({ exposureRule }) => ({
 			exposure: { rules: [exposureRule({ id: 'hideHidden', tools: [hidden.id], effect: 'hide' })] },
 		}) })
 		const requests: Array<{ tools: readonly { name: string }[]; messages: readonly unknown[] }> = []
@@ -492,7 +493,7 @@ describe('v4 standard agent loop', () => {
 			yield { kind: 'finish' as const, usage, finishReason: 'stop' as const }
 		})() } }
 		const guardrails = { [agentGuardrailsBinding]: { id: 'outputGuard', beforeOutput: () => ({ decision: 'transform' as const, value: 'approved' }) } }
-		const agent = defineAgent('guardedStream', { instructions: 'Answer.', guardrails })
+		const agent = defineAgent('guardedStream', { model: 'chat', instructions: 'Answer.', guardrails })
 		const run = baseOptions(agent, model, 'stream')
 		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: 'approved' })
 		expect(run.events.filter(event => event.type === 'output.text.delta')).toEqual([
@@ -509,7 +510,7 @@ describe('v4 standard agent loop', () => {
 			() => ({ decision: 'transform', value: 42 }),
 		]) {
 			const guardrails = { [agentGuardrailsBinding]: { id: 'strictInput', beforeInput } }
-			const agent = defineAgent('strictInputAgent', { instructions: 'Answer.', guardrails: guardrails as never })
+			const agent = defineAgent('strictInputAgent', { model: 'chat', instructions: 'Answer.', guardrails: guardrails as never })
 			const run = baseOptions(agent, model, 'run')
 			await expect(executeStandardAgent(run.options)).rejects.toBeInstanceOf(DecisionEvaluationError)
 		}
@@ -519,7 +520,7 @@ describe('v4 standard agent loop', () => {
 	it('routes every remaining interceptor phase through the strict closed parser', async () => {
 		for (const phase of ['beforeModel', 'afterModel', 'beforeOutput'] as const) {
 			const guardrails = { [agentGuardrailsBinding]: { id: `strict${phase}`, [phase]: () => ({ decision: 'allow', extra: true }) } }
-			const agent = defineAgent(`strict${phase}`, { instructions: 'Answer.', guardrails: guardrails as never })
+			const agent = defineAgent(`strict${phase}`, { model: 'chat', instructions: 'Answer.', guardrails: guardrails as never })
 			const run = baseOptions(agent, { async text() { return { content: 'ok', usage, finishReason: 'stop' as const } } }, 'run')
 			await expect(executeStandardAgent(run.options)).rejects.toBeInstanceOf(DecisionEvaluationError)
 		}
@@ -530,7 +531,7 @@ describe('v4 standard agent loop', () => {
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'ok' } })
 		for (const phase of ['beforeTool', 'afterTool'] as const) {
 			const guardrails = { [agentGuardrailsBinding]: { id: `strict${phase}`, [phase]: () => ({ decision: 'allow', extra: true }) } }
-			const agent = defineAgent(`strict${phase}`, { instructions: 'Use a tool.', tools: [tool], guardrails: guardrails as never })
+			const agent = defineAgent(`strict${phase}`, { model: 'chat', instructions: 'Use a tool.', tools: [tool], guardrails: guardrails as never })
 			const run = baseOptions(agent, { async text() { return { content: '', toolCalls: [{ id: `call-${phase}`, name: tool.id, arguments: 'input' }], usage, finishReason: 'tool_calls' as const } } }, 'run')
 			;(run.options as any).bindings = { [tool.id]: binding }
 			attachToolRuntime(run)
@@ -555,13 +556,13 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'tool output' } })
 		let turn = 0
-		const primary = { async text() { turn += 1; return turn === 1
+		const chat = { async text() { turn += 1; return turn === 1
 			? { content: '', toolCalls: [{ id: 'context-call', name: tool.id, arguments: 'input' }], usage, finishReason: 'tool_calls' as const }
 			: { content: 'done', usage, finishReason: 'stop' as const } } }
-		const agent = defineAgent('completeContextAgent', { instructions: 'Use.', tools: [tool],
+		const agent = defineAgent('completeContextAgent', { model: 'chat', instructions: 'Use.', tools: [tool],
 			guardrails: { [agentGuardrailsBinding]: interceptor } })
-		const run = baseOptions(agent, primary, 'run')
-		const models = Object.freeze({ primary: primary as never, secondary: Object.freeze({}) as never })
+		const run = baseOptions(agent, chat, 'run')
+		const models = Object.freeze({ chat: chat as never, secondary: Object.freeze({}) as never })
 		const memory = Object.freeze({ marker: 'memory' })
 		const metrics = Object.freeze({ marker: 'metrics' })
 		const logger = Object.freeze({ marker: 'logger' })
@@ -582,7 +583,7 @@ describe('v4 standard agent loop', () => {
 			for (const context of phaseContexts) {
 				expect(context).toMatchObject({
 					agentInput: 'hello', interceptorId: interceptor.id, invocationId: 'run1', agentId: agent.id,
-					runId: 'run1', sessionId: 'session1', model: 'primary', metadata: run.options.invocation.metadata,
+					runId: 'run1', sessionId: 'session1', model: 'chat', metadata: run.options.invocation.metadata,
 					models, memory, metrics, logger, telemetry, history,
 					decision: { signal: expect.any(AbortSignal), deadline: expect.any(Number) },
 				})
@@ -610,7 +611,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'tool output' } })
 		const interceptorId = `blocked${hook}Interceptor`
-		const agent = defineAgent(`blocked${hook}Agent`, { instructions: 'Block.', tools: [tool], guardrails: {
+		const agent = defineAgent(`blocked${hook}Agent`, { model: 'chat', instructions: 'Block.', tools: [tool], guardrails: {
 			[agentGuardrailsBinding]: { id: interceptorId, [hook]: () => ({ decision: 'block' as const, reasonCode: 'blocked_test' }) },
 		} as never })
 		const requiresTool = hook === 'beforeTool' || hook === 'afterTool'
@@ -666,7 +667,7 @@ describe('v4 standard agent loop', () => {
 			}
 			return { content: 'done', usage, finishReason: 'stop' as const }
 		} }
-		const agent = defineAgent('protectedTranscriptAgent', { instructions: 'Use tools.', tools: [tool], guardrails: guardrails as never })
+		const agent = defineAgent('protectedTranscriptAgent', { model: 'chat', instructions: 'Use tools.', tools: [tool], guardrails: guardrails as never })
 		const run = baseOptions(agent, model, 'run')
 		;(run.options as any).bindings = { [tool.id]: binding }
 		attachToolRuntime(run)
@@ -698,7 +699,7 @@ describe('v4 standard agent loop', () => {
 				? { content: '', toolCalls: [{ id: callId, name: tool.id, arguments: 'input' }],
 					providerContinuation: { providerId: 'test', items: [{ kind: 'tool_call' as const, callId }] }, usage, finishReason: 'tool_calls' as const }
 				: { content: 'unsafe', usage, finishReason: 'stop' as const } } }
-			const agent = defineAgent(`transcriptGuardAgent${index}`, { instructions: 'Use tools.', tools: [tool], guardrails: guardrails as never })
+			const agent = defineAgent(`transcriptGuardAgent${index}`, { model: 'chat', instructions: 'Use tools.', tools: [tool], guardrails: guardrails as never })
 			const run = baseOptions(agent, model, 'run')
 			;(run.options as any).bindings = { [tool.id]: binding }
 			attachToolRuntime(run)
@@ -713,7 +714,7 @@ describe('v4 standard agent loop', () => {
 		const unchangedGuardrails = { [agentGuardrailsBinding]: { id: 'unchangedParts', beforeModel: ({ request }: any) => ({
 			decision: 'transform' as const, value: { messages: JSON.parse(JSON.stringify(request.messages)) },
 		}) } }
-		const unchangedAgent = defineAgent('unchangedPartsAgent', { instructions: 'Answer.', guardrails: unchangedGuardrails as never })
+		const unchangedAgent = defineAgent('unchangedPartsAgent', { model: 'chat', instructions: 'Answer.', guardrails: unchangedGuardrails as never })
 		const unchanged = baseOptions(unchangedAgent, { async text() { return { content: 'ok', usage, finishReason: 'stop' as const } } }, 'run')
 		unchanged.options.history.push(protectedAssistantMessage)
 		await expect(executeStandardAgent(unchanged.options)).resolves.toMatchObject({ output: 'ok' })
@@ -724,7 +725,7 @@ describe('v4 standard agent loop', () => {
 			messages[1].content[0].text = 'rewritten content part'
 			return { decision: 'transform' as const, value: { messages } }
 		} } }
-		const changedAgent = defineAgent('changedPartsAgent', { instructions: 'Answer.', guardrails: changedGuardrails as never })
+		const changedAgent = defineAgent('changedPartsAgent', { model: 'chat', instructions: 'Answer.', guardrails: changedGuardrails as never })
 		const changed = baseOptions(changedAgent, { async text() { providerCalls += 1; return { content: 'unsafe', usage, finishReason: 'stop' as const } } }, 'run')
 		changed.options.history.push(protectedAssistantMessage)
 		await expect(executeStandardAgent(changed.options)).rejects.toMatchObject({
@@ -736,7 +737,7 @@ describe('v4 standard agent loop', () => {
 			const messages = JSON.parse(JSON.stringify(request.messages))
 			return { decision: 'transform' as const, value: { messages: [messages[0], messages[2], messages[1], messages[3]] } }
 		} } }
-		const swappedAgent = defineAgent('swappedPartsAgent', { instructions: 'Answer.', guardrails: swappedGuardrails as never })
+		const swappedAgent = defineAgent('swappedPartsAgent', { model: 'chat', instructions: 'Answer.', guardrails: swappedGuardrails as never })
 		const swapped = baseOptions(swappedAgent, { async text() { providerCalls += 1; return { content: 'unsafe', usage, finishReason: 'stop' as const } } }, 'run')
 		swapped.options.history.push({ role: 'assistant', content: 'editable plain assistant text' }, protectedAssistantMessage)
 		await expect(executeStandardAgent(swapped.options)).rejects.toMatchObject({
@@ -748,7 +749,7 @@ describe('v4 standard agent loop', () => {
 	it('rejects undeclared prompt media capabilities before provider I/O', async () => {
 		let called = false
 		const input = z.object({ image: z.string() })
-		const agent = defineAgent('unsafePrompt', { instructions: 'Inspect.', input,
+		const agent = defineAgent('unsafePrompt', { model: 'chat', instructions: 'Inspect.', input,
 			prompt: (() => ({ role: 'user', content: [{ kind: 'image_url', url: 'https://example.invalid/image.png' }] })) as never })
 		const run = baseOptions(agent, { async text() { called = true; return { content: 'no', usage, finishReason: 'stop' as const } } }, 'run')
 		;(run.options as any).input = { image: 'x' }
@@ -758,7 +759,7 @@ describe('v4 standard agent loop', () => {
 
 	it('races a non-cooperative provider and preserves cancellation identity', async () => {
 		vi.useFakeTimers()
-		const agent = defineAgent('timedAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('timedAgent', { model: 'chat', instructions: 'Answer.' })
 		const timed = baseOptions(agent, { text: () => new Promise(() => {}) }, 'run')
 		;(timed.options as any).defaults = resolveHarnessExecutionDefaults({ modelTimeoutMs: 5 })
 		const timeoutRun = executeStandardAgent(timed.options).catch(error => error)
@@ -791,7 +792,7 @@ describe('v4 standard agent loop', () => {
 			beforeTool: ({ input, agentInput }: any) => { toolAgentInputs.push(agentInput); return { decision: 'transform' as const, value: { value: `${input.value}-changed` } } },
 			afterTool: ({ agentInput }: any) => { toolAgentInputs.push(agentInput); return { decision: 'allow' as const } },
 		} }
-		const agent = defineAgent('toolAgent', { instructions: 'Use tools.', tools: [tool], guardrails })
+		const agent = defineAgent('toolAgent', { model: 'chat', instructions: 'Use tools.', tools: [tool], guardrails })
 		const run = baseOptions(agent, model, 'run')
 		;(run.options as any).bindings = { lookup: binding }
 		attachToolRuntime(run, { trace: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' } })
@@ -818,7 +819,7 @@ describe('v4 standard agent loop', () => {
 			if (current === 1) yield { kind: 'tool_call' as const, call: { id: 'call-live', name: 'lookupLive', arguments: 'query' } }
 			yield { kind: 'finish' as const, usage, finishReason: current === 1 ? 'tool_calls' as const : 'stop' as const }
 		})() } }
-		const agent = defineAgent('liveToolAgent', { instructions: 'Use tools.', tools: [tool] })
+		const agent = defineAgent('liveToolAgent', { model: 'chat', instructions: 'Use tools.', tools: [tool] })
 		const run = baseOptions(agent, model, 'stream')
 		;(run.options as any).bindings = { lookupLive: binding }
 		attachToolRuntime(run)
@@ -829,7 +830,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('preflights the full batch and preserves branded child interruptions without tool failure events', async () => {
-		const child = defineAgent('child', { instructions: 'Answer.' })
+		const child = defineAgent('child', { model: 'chat', instructions: 'Answer.' })
 		const interruption = createHarnessChildTargetInterruption('child-invocation', {
 			status: 'interrupted', runId: 'child-run', interrupt: { type: 'tool-approval', id: 'approval', revision: 'v1', requests: [] },
 		})
@@ -837,7 +838,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
 			mcpOwner: null, remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { throw interruption } })
 		const events: AgentPipelineEvent[] = []
-		const agent = defineAgent('parent', { instructions: 'Delegate.' })
+		const agent = defineAgent('parent', { model: 'chat', instructions: 'Delegate.' })
 		let suspended: unknown
 		const options = { agent, calls: [{ id: 'call-1', name: 'delegate', arguments: 'question' }], bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(),
 			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'parent-run', rootRunId: 'parent-run', sessionId: 's1', invocationId: 'parent-run', metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
@@ -852,7 +853,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it.each(['onChildInterruption', 'onEntry'] as const)('does not let a throwing %s observer mask child interruption', async observer => {
-		const child = defineAgent(`observerChild${observer}`, { instructions: 'Answer.' })
+		const child = defineAgent(`observerChild${observer}`, { model: 'chat', instructions: 'Answer.' })
 		const interruption = createHarnessChildTargetInterruption(`observer-${observer}`, {
 			status: 'interrupted', runId: `child-${observer}`, interrupt: { type: 'tool-approval', id: 'approval', revision: 'v1', requests: [] },
 		})
@@ -860,7 +861,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
 			mcpOwner: null, remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { throw interruption } })
 		const events: AgentPipelineEvent[] = []
-		const agent = defineAgent(`observerParent${observer}`, { instructions: 'Delegate.' })
+		const agent = defineAgent(`observerParent${observer}`, { model: 'chat', instructions: 'Delegate.' })
 		const options = { agent, agentInput: 'question', calls: [{ id: 'observer-call', name: 'delegateObserver', arguments: 'question' }],
 			bindings: { delegateObserver: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'observer-parent', rootRunId: 'observer-parent', sessionId: 'observer-session',
 				invocationId: 'observer-parent', metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
@@ -873,14 +874,14 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('attaches the complete parent frame to a child interruption in the standard loop', async () => {
-		const child = defineAgent('frameChild', { instructions: 'Answer.' })
+		const child = defineAgent('frameChild', { model: 'chat', instructions: 'Answer.' })
 		const interruption = createHarnessChildTargetInterruption('frame-child-invocation', {
 			status: 'interrupted', runId: 'frame-child-run', interrupt: { type: 'tool-approval', id: 'approval', revision: 'v1', requests: [] },
 		})
 		const binding = createAgentExecutableBinding({ id: 'delegateFrame', description: 'Delegate.', input: z.string(), output: z.string(),
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { throw interruption } })
-		const parent = defineAgent('frameParent', { instructions: 'Delegate.' })
+		const parent = defineAgent('frameParent', { model: 'chat', instructions: 'Delegate.' })
 		const run = baseOptions(parent, { async text() { return { content: 'discard', toolCalls: [{ id: 'frame-call', name: 'delegateFrame', arguments: 'question' }],
 			usage, finishReason: 'tool_calls' as const } } }, 'run')
 		;(run.options as any).bindings = { delegateFrame: binding }
@@ -891,7 +892,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('resumes a suspended child through output completion without invoking or starting it twice', async () => {
-		const child = defineAgent('resumeChild', { instructions: 'Answer.' })
+		const child = defineAgent('resumeChild', { model: 'chat', instructions: 'Answer.' })
 		let invocations = 0
 		let outputValidations = 0
 		const output = z.string().transform(value => { outputValidations += 1; return value.toUpperCase() })
@@ -899,7 +900,7 @@ describe('v4 standard agent loop', () => {
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
 			mcpOwner: null, remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { invocations += 1; return 'unused' } })
 		const events: AgentPipelineEvent[] = []
-		const agent = defineAgent('resumeParent', { instructions: 'Delegate.' })
+		const agent = defineAgent('resumeParent', { model: 'chat', instructions: 'Delegate.' })
 		const entry = Object.freeze({ state: 'suspended-child' as const, call: Object.freeze({ id: 'resume-call', name: 'resumeDelegate', arguments: 'question' }),
 			input: 'question', bindingId: 'resumeDelegate', bindingContractDigest: binding.contractDigest, toolStarted: true as const,
 			childInvocationId: 'child-invocation', childRunId: 'child-run' })
@@ -929,7 +930,7 @@ describe('v4 standard agent loop', () => {
 		const guardrails = { [agentGuardrailsBinding]: { id: 'preflightTransform', beforeTool: ({ toolId }: { toolId: string }) => toolId === lookup.id
 			? { decision: 'transform' as const, value: { query: 42 } }
 			: { decision: 'allow' as const } } }
-		const agent = defineAgent('preflightAgent', { instructions: 'Use tools.', tools: [bash, lookup], permissions: { bash: 'deny' }, guardrails: guardrails as never })
+		const agent = defineAgent('preflightAgent', { model: 'chat', instructions: 'Use tools.', tools: [bash, lookup], permissions: { bash: 'deny' }, guardrails: guardrails as never })
 		const events: AgentPipelineEvent[] = []
 		const options = { agent, agentInput: 'question', calls: [
 			{ id: 'missing-call', name: 'missing', arguments: { raw: true } },
@@ -954,7 +955,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('awaits a subagent launch fence before tool lifecycle and invocation effects', async () => {
-		const child = defineAgent('revokedChild', { instructions: 'Reply.' })
+		const child = defineAgent('revokedChild', { model: 'chat', instructions: 'Reply.' })
 		let invoked = 0
 		const binding = createAgentExecutableBinding({ id: 'delegate', description: 'Delegate.', input: child.input, output: child.output,
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id],
@@ -962,7 +963,7 @@ describe('v4 standard agent loop', () => {
 			async beforeInvoke() { throw new SandboxPermissionDeniedError('owner_not_authorized') },
 			async invokeValidated() { invoked += 1; return 'never' },
 		})
-		const parent = defineAgent('revokedParent', { instructions: 'Delegate.', subagents: { delegate: child } })
+		const parent = defineAgent('revokedParent', { model: 'chat', instructions: 'Delegate.', subagents: { delegate: child } })
 		const events: AgentPipelineEvent[] = []
 		const options = { agent: parent, agentInput: 'question', calls: [{ id: 'call-1', name: 'delegate', arguments: 'input' }],
 			bindings: { delegate: binding }, interceptorRuntime: directInterceptorRuntime(), invocation: { caller: { kind: 'agent' as const, agentId: parent.id }, runId: 'run', rootRunId: 'run', sessionId: 's',
@@ -983,7 +984,7 @@ describe('v4 standard agent loop', () => {
 		const binding = createAgentExecutableBinding({ id: tool.id, description: tool.description, input: tool.input, output: tool.output,
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'must not run' } })
-		const agent = defineAgent('reviewAgent', { instructions: 'Review.', tools: [tool], governance: ({ native, rule }) => ({
+		const agent = defineAgent('reviewAgent', { model: 'chat', instructions: 'Review.', tools: [tool], governance: ({ native, rule }) => ({
 			policies: [native({ id: 'reviewPolicy', rules: [rule({ id: 'reviewRule', tools: [tool.id], effect: 'require_approval' })] })],
 		}) })
 		const standard = baseOptions(agent, { async text() { return { content: '', toolCalls: [{ id: 'standard-review-call', name: tool.id, arguments: 'input' }], usage, finishReason: 'tool_calls' as const } } }, 'run')
@@ -1023,7 +1024,7 @@ describe('v4 standard agent loop', () => {
 			beforeTool: ({ decision }: any) => { observed.push(decision.deadline); return { decision: 'allow' as const } },
 			afterTool: ({ decision }: any) => { observed.push(decision.deadline); return { decision: 'allow' as const } },
 		} }
-		const agent = defineAgent('deadlineAgent', { instructions: 'Use.', tools: [tool], guardrails: guardrails as never })
+		const agent = defineAgent('deadlineAgent', { model: 'chat', instructions: 'Use.', tools: [tool], guardrails: guardrails as never })
 		const options = { agent, agentInput: 'question', calls: [{ id: 'deadline-call', name: tool.id, arguments: 'input' }], bindings: { [tool.id]: binding }, interceptorRuntime: directInterceptorRuntime(),
 			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'deadline-run', rootRunId: 'deadline-run', sessionId: 'deadline-session', invocationId: 'deadline-run', depth: 0,
 				remainingDepth: 1, deadline: Date.now() + 500, metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
@@ -1041,7 +1042,7 @@ describe('v4 standard agent loop', () => {
 		const binding = createAgentExecutableBinding({ id: tool.id, description: tool.description, input: tool.input, output: tool.output,
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { handlerCalls += 1; return 'ok' } })
-		const agent = defineAgent('eventAgent', { instructions: 'Use.', tools: [tool] })
+		const agent = defineAgent('eventAgent', { model: 'chat', instructions: 'Use.', tools: [tool] })
 		const makeOptions = (emit: (event: AgentPipelineEvent) => Promise<void>) => ({ agent, agentInput: 'question', interceptorRuntime: directInterceptorRuntime(),
 			calls: [{ id: 'event-call', name: tool.id, arguments: 'input' }], bindings: { [tool.id]: binding },
 			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'event-run', rootRunId: 'event-run', sessionId: 'event-session', invocationId: 'event-run', depth: 0,
@@ -1088,7 +1089,7 @@ describe('v4 standard agent loop', () => {
 	})
 
 	it('reports exact loop budgets and preserves per-tool timeout identity with event pairing', async () => {
-		const agent = defineAgent('budgetAgent', { instructions: 'Bounded.' })
+		const agent = defineAgent('budgetAgent', { model: 'chat', instructions: 'Bounded.' })
 		const budgetBase = { agent, agentInput: 'question', calls: [{ id: 'one', name: 'unknown', arguments: null }], bindings: {}, interceptorRuntime: directInterceptorRuntime(),
 			invocation: { caller: { kind: 'agent' as const, agentId: agent.id }, runId: 'run', rootRunId: 'run', sessionId: 's', invocationId: 'run', depth: 0, remainingDepth: 0,
 				metadata: {}, signal: new AbortController().signal, telemetry: undefined } as never,
@@ -1097,7 +1098,7 @@ describe('v4 standard agent loop', () => {
 		await expect(prepareAgentToolBatch({ ...budgetBase, remainingToolCalls: 0, remainingSubagentCalls: 1 })).rejects.toMatchObject({
 			constructor: AgentLoopBudgetError, meta: { reason: 'max_tool_calls', limit: 1 },
 		})
-		const child = defineAgent('budgetChild', { instructions: 'Child.' })
+		const child = defineAgent('budgetChild', { model: 'chat', instructions: 'Child.' })
 		const childBinding = createAgentExecutableBinding({ id: 'delegateBudget', description: 'Delegate.', input: z.string(), output: z.string(),
 			implementationKind: 'subagent', definitionIdentity: getDefinitionIdentity(child)!, digestDefinition: ['agent', child.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'already-validated-target', async invokeValidated() { return 'ok' } })
@@ -1131,7 +1132,7 @@ describe('v4 standard agent loop', () => {
 		const binding = createAgentExecutableBinding({ id: tool.id, description: tool.description, input: tool.input, output: tool.output,
 			implementationKind: 'portable', definitionIdentity: getDefinitionIdentity(tool)!, digestDefinition: ['tool', tool.id], mcpOwner: null,
 			remoteMcpName: null, outputValidation: 'required', async invokeValidated() { return 'again' } })
-		const agent = defineAgent('stepBudget', { instructions: 'Repeat.', tools: [tool], loop: { maxSteps: 1 } })
+		const agent = defineAgent('stepBudget', { model: 'chat', instructions: 'Repeat.', tools: [tool], loop: { maxSteps: 1 } })
 		const run = baseOptions(agent, { async text() { return { content: 'draft', toolCalls: [{ id: 'repeat-1', name: 'repeat', arguments: 'x' }], usage, finishReason: 'tool_calls' as const } } }, 'run')
 		;(run.options as any).bindings = { repeat: binding }
 		attachToolRuntime(run)

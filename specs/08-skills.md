@@ -24,6 +24,7 @@ A Skill is made available only through a direct reference from an agent:
 
 ```ts
 const analyst = defineAgent('analyst', {
+  model: 'chat',
   instructions: 'Analyze the supplied transaction.',
   skills: [transactionAnalysis],
 })

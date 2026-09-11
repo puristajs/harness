@@ -146,12 +146,12 @@ describe('v4 durable session execution', () => {
 			await originalAppend(runId, events)
 			if (childStart) { fail = false; throw sentinel }
 		}
-		const child = defineAgent('recoverableChild', { input: z.string(), output: z.string(), durable: true,
+		const child = defineAgent('recoverableChild', { model: 'chat', input: z.string(), output: z.string(), durable: true,
 			instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflow('recoverableChildParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
 			async handler({ input, agents }) { return agents.recoverableChild.run(input, { callId: 'child-call' }) } })
 		const instance = await defineHarness({ name: persisted ? 'recoverableChildAfter' : 'recoverableChildBefore', revision: 'v1' })
-			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+			.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('recoverable-child-session')
 		const invoke = { durable: { runId: parentRunId } } as const
 		if (!persisted) {
@@ -180,7 +180,7 @@ describe('v4 durable session execution', () => {
 				await originalAppend(runId, events)
 				if (target) { fail = false; throw sentinel }
 			}
-			const child = defineAgent('recoverableTaskChild', { input: z.string(), output: z.string(), durable: true,
+			const child = defineAgent('recoverableTaskChild', { model: 'chat', input: z.string(), output: z.string(), durable: true,
 				instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
 			let caught: unknown
 			const workflow = defineWorkflow('recoverableTaskParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
@@ -194,7 +194,7 @@ describe('v4 durable session execution', () => {
 					return task.result()
 				} })
 			const instance = await defineHarness({ name: persisted ? 'recoverableTaskStartAfter' : 'recoverableTaskStartBefore', revision: 'v1' })
-				.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+				.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 			const session = await instance.getSession('recoverable-task-session')
 			const invoke = { durable: { runId: `recoverable-task-${eventType}-${persisted}` } } as const
 			await expect(session.workflows.recoverableTaskParent.run('value', invoke))
@@ -220,7 +220,7 @@ describe('v4 durable session execution', () => {
 			if (fail && events.some(event => event.type === 'child_task.settled')) { fail = false; throw sentinel }
 			return originalAppend(runId, events)
 		}
-		const child = defineAgent('settlementReplayChild', { input: z.string(), output: z.string(), durable: true,
+		const child = defineAgent('settlementReplayChild', { model: 'chat', input: z.string(), output: z.string(), durable: true,
 			instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflow('settlementReplayParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
 			async handler({ input, childTasks }) {
@@ -228,7 +228,7 @@ describe('v4 durable session execution', () => {
 				return task.result()
 			} })
 		const instance = await defineHarness({ name: 'settlementReplayHarness', revision: 'v1' })
-			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, storage })
+			.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('settlement-replay-session')
 		const invoke = { durable: { runId: 'settlement-replay-run' } } as const
 		await expect(session.workflows.settlementReplayParent.run('value', invoke)).rejects.toBe(sentinel)
@@ -283,7 +283,7 @@ describe('v4 durable session execution', () => {
 			if (failReadback) { failReadback = false; throw readback }
 			return listEvents(runId)
 		}
-		const child = defineAgent('persistedSettlementChild', { input: z.string(), output: z.string(), durable: true,
+		const child = defineAgent('persistedSettlementChild', { model: 'chat', input: z.string(), output: z.string(), durable: true,
 			sandbox: 'private', instructions: 'Return the answer.', prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflow('persistedSettlementParent', { input: z.string(), output: z.string(), durable: true, agents: [child],
 			async handler({ input, childTasks }) {
@@ -291,7 +291,7 @@ describe('v4 durable session execution', () => {
 				return task.result()
 			} })
 		const instance = await defineHarness({ name: 'persistedSettlementHarness', revision: 'v1' })
-			.addAgent(child).addWorkflow(workflow).getInstance({ model: { provider, model: 'fake' }, sandbox, storage })
+			.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, sandbox, storage })
 		const session = await instance.getSession('persisted-settlement-session')
 		const invoke = { durable: { runId: 'persisted-settlement-run' } } as const
 		await expect(session.workflows.persistedSettlementParent.run('value', invoke)).rejects.toBe(sentinel)
@@ -810,11 +810,12 @@ describe('v4 durable session execution', () => {
     const provider = new FakeModelProvider({ strict: true })
     provider.enqueueText({ content: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
     const agent = defineAgent('durableAgent', {
+      model: 'chat',
       input: z.string(), output: z.string(), durable: true, instructions: 'Answer.',
       prompt: input => ({ role: 'user', content: input }),
     })
     const instance = await defineHarness({ name: 'durableAgentHarness', revision: 'release-1' }).addAgent(agent)
-      .getInstance({ model: { provider, model: 'fake' }, storage })
+      .getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
     const session = await instance.getSession('session-4')
 
     await expect(session.agents.durableAgent.run('hello', { durable: { runId: 'agent-run' } })).resolves.toEqual({

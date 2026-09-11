@@ -33,6 +33,7 @@ function requireOpenAiKey(): string {
 }
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   input: quickstartInput,
   output: quickstartOutput,
   instructions: 'Return a concise answer matching the output schema.',
@@ -43,7 +44,7 @@ export function createQuickstartHarness(provider?: ModelProvider) {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'
   const modelProvider = provider ?? openai({ apiKey: requireOpenAiKey() })
   return defineHarness({ name: 'quickstart' }).addAgent(assistant).getInstance({
-    model: { provider: modelProvider, model, retry: true },
+    models: { chat: { provider: modelProvider, model, retry: true } },
   })
 }
 

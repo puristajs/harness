@@ -22,6 +22,7 @@ export function createReportHarness() {
         },
       })
   const reporter = defineAgent('reporter', {
+        model: 'chat',
         input: z.string().min(1),
         output: z.string().min(1),
         tools: [createReport],
@@ -29,7 +30,7 @@ export function createReportHarness() {
         prompt: input => ({ role: 'user', content: input }),
       })
   const harness = defineHarness({ name: 'customSandboxExample' }).addAgent(reporter).getInstance({
-    model: { provider, model: 'scripted-report-model' },
+    models: { chat: { provider, model: 'scripted-report-model' } },
     sandbox,
   })
 

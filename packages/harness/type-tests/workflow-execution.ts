@@ -4,6 +4,7 @@ import { defineAgent } from '../src/definitions/agent.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 
 const worker = defineAgent('worker', {
+	model: 'chat',
 	input: z.object({ value: z.string() }), output: z.object({ answer: z.string() }),
 	instructions: 'Answer.', prompt: input => ({ role: 'user', content: input.value }),
 })
@@ -43,13 +44,13 @@ defineWorkflow('durable', {
 
 defineWorkflow('modelScope', {
 	input: z.string(), output: z.string(),
-	models: { primaryText: { alias: 'primary', capabilities: ['text'] } },
+	models: { chatText: { alias: 'chat', capabilities: ['text'] } },
 	async handler(context) {
-		void context.models.primaryText.text
+		void context.models.chatText.text
 		// @ts-expect-error undeclared model handles are absent
 		context.models.embeddings
 		// @ts-expect-error a text-only handle has no embedding operation
-		context.models.primaryText.embed
+		context.models.chatText.embed
 		return context.input
 	},
 })

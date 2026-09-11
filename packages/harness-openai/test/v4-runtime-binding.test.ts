@@ -24,6 +24,7 @@ it('binds the OpenAI provider to a directly composed v4 agent runtime', async ()
   }
   const provider = openai({ client })
   const assistant = defineAgent('assistant', {
+    model: 'chat',
     instructions: 'Answer through the configured OpenAI model.',
   })
   const definition = defineHarness({ name: 'openaiV4Consumer' }).addAgent(assistant)
@@ -32,10 +33,10 @@ it('binds the OpenAI provider to a directly composed v4 agent runtime', async ()
   expect(definition.inspect().roots.agents).toEqual([
     expect.objectContaining({ kind: 'agent', id: assistant.id }),
   ])
-  expect(definition.requirements.models.primary.capabilities).toContain('text')
+  expect(definition.requirements.models.chat.capabilities).toContain('text')
 
   const instance = await definition.getInstance({
-    model: { provider, model: 'gpt-4.1-mini' },
+    models: { chat: { provider, model: 'gpt-4.1-mini' } },
   })
   try {
     const session = await instance.getSession('openai-v4-session')

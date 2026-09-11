@@ -22,6 +22,7 @@ export function createObservedHarness(options: {
   logger?: Logger
 } = {}) {
   const answerTicket = defineAgent('answerTicket', {
+    model: 'chat',
     input: ticketInput,
     output: ticketOutput,
     instructions: 'Give a concise support answer matching the output schema.',
@@ -50,6 +51,6 @@ export function createObservedHarness(options: {
       flavor: 'dual',
       contentCaptureMode: 'NO_CONTENT',
     },
-    model: { provider: options.provider ?? liveProvider(), model: process.env['OPENAI_MODEL'] ?? 'gpt-5-mini' },
+    models: { chat: { provider: options.provider ?? liveProvider(), model: process.env['OPENAI_MODEL'] ?? 'gpt-5-mini' } },
   })
 }

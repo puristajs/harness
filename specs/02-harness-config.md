@@ -104,23 +104,23 @@ derive a different answer.
 
 ```ts
 const runtime = await supportHarness.getInstance({
-  model: {
+  models: { chat: {
     provider: openaiProvider,
     model: 'gpt-5.5',
-  },
+  } },
 })
 ```
 
-The `primary` alias always uses singular `model`. Additional or exclusively
-non-primary aliases use an exact `models` map:
+Every alias is application-defined and uses the exact `models` map. Harness
+reserves no alias and exposes no singular model shortcut:
 
 ```ts
 const runtime = await knowledgeHarness.getInstance({
-  model: {
-    provider: openaiProvider,
-    model: 'gpt-5.5',
-  },
   models: {
+    chat: {
+      provider: openaiProvider,
+      model: 'gpt-5.5',
+    },
     embeddings: {
       provider: openaiProvider,
       model: 'text-embedding-3-large',
@@ -163,7 +163,7 @@ selects the transport and credentials:
 
 ```ts
 const runtime = await knowledgeHarness.getInstance({
-  model: { provider, model: 'gpt-5.5' },
+  models: { chat: { provider, model: 'gpt-5.5' } },
   mcp: {
     knowledge: {
       transport: 'http',

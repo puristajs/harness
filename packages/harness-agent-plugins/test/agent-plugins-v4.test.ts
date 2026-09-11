@@ -244,6 +244,7 @@ describe('Agent Plugins v4 public boundary', () => {
 		expect(bindings.skills.research).toMatchObject({ kind: 'skill', id: 'research', runtimes: ['python'] })
 		expect(bindings.mcpServers.knowledge.tools.searchDocs).toMatchObject({ kind: 'tool', id: 'searchDocs', remoteName: 'search_docs' })
 		expect(() => defineAgent('answerAgent', {
+			model: 'chat',
 			input: z.string(), output: z.string(), prompt: value => ({ role: 'user', content: value }), instructions: 'Answer.',
 			skills: [bindings.skills.research], tools: [bindings.mcpServers.knowledge.tools.searchDocs],
 		})).not.toThrow()

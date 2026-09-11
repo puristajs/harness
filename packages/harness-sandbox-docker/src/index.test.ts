@@ -84,10 +84,11 @@ function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessS
     requires: { sandbox: ['sandbox.fs'] }, handler: async (_context, input) => input,
   })
   const noopAgent = defineAgent('noopAgent', {
+    model: 'chat',
     instructions: 'Call noopTool once.', tools: [noopTool], durable: true,
   })
   return defineHarness({ name: 'dockerNoLiveSession', revision: '1' }).addAgent(noopAgent).getInstance({
-    model: { provider: new FakeModelProvider(), model: 'fake' }, storage, sandbox: adapter,
+    models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, storage, sandbox: adapter,
   })
 }
 
@@ -201,13 +202,14 @@ describe('Docker sandbox public configuration', () => {
 
   it('uses explicit runtimes during Core instance preflight without opening a sandbox', async () => {
     const agent = defineAgent('runtimeGuardAgent', {
+      model: 'chat',
       instructions: 'Return a short answer.', guardrails: runtimeGuardrails(['python']),
     })
     const definition = defineHarness({ name: 'dockerRuntimeGuard' }).addAgent(agent)
     const matching = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
     const matchingOpen = vi.spyOn(matching, 'open')
     const instance = await definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: matching,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: matching,
     })
     expect(matchingOpen).not.toHaveBeenCalled()
     await instance.close()
@@ -215,7 +217,7 @@ describe('Docker sandbox public configuration', () => {
     const missing = dockerSandbox({ root: '/private/data', image, runtimes: [] })
     const missingOpen = vi.spyOn(missing, 'open')
     expect(() => definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: missing,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: missing,
     })).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
     }))
@@ -227,13 +229,14 @@ describe('Docker sandbox public configuration', () => {
       directory: new URL('./fixtures/runtime-skill/', import.meta.url), runtimes: ['python'],
     })
     const agent = defineAgent('runtimeSkillAgent', {
+      model: 'chat',
       instructions: 'Use the supplied Skill.', skills: [skill],
     })
     const definition = defineHarness({ name: 'dockerRuntimeSkill' }).addAgent(agent)
     const adapter = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
     const open = vi.spyOn(adapter, 'open')
     expect(() => definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: adapter,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: adapter,
     } as never)).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
     }))

@@ -13,11 +13,14 @@ Definitions describe behavior and requirements. Runtime bindings supply adapters
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer the user clearly and concisely.',
 })
 const definition = defineHarness({ name: 'support' }).addAgent(assistant)
 const instance = await definition.getInstance({
-  model: { provider: openai({ apiKey }), model: 'gpt-5-mini' },
+  models: {
+    chat: { provider: openai({ apiKey }), model: 'gpt-5-mini' },
+  },
 })
 const session = await instance.getSession('conversation-1')
 const outcome = await session.agents.assistant.run('How can I reset my PIN?')
@@ -39,7 +42,7 @@ Keep these layers separate:
 - Definition ids use lower camel case except Skill ids, which use their manifest-compatible kebab form.
 - Pass definition objects in definition arrays and maps. Runtime address APIs use their compiled ids, such as `session.agents.support` and `context.childTasks.start(agentId, input, options)`; do not replace definition references with strings while authoring the graph.
 - Keep providers, secrets, storage clients, memory engines, MCP transports, sandboxes, workspaces, logger, and telemetry in `getInstance(...)`.
-- Use model aliases when definitions need different models. Bind the exact aliases through `models`; use singular `model` only for the default `primary` alias.
+- Give every agent an explicit application-defined model alias. Harness reserves no alias. Bind every inferred alias through one exact `models` map; do not use a singular runtime `model` field.
 - A workflow calling an agent declares the direct reference in its `agents` array and invokes `context.agents.name.run(input, { callId })`. Keep every call id stable and unique in the workflow.
 - Use `context.step(id, operation)` for durable replay-safe steps. Use `context.externalWait.wait(...)` for persisted human or external decisions.
 - Use `HarnessStorage` for sessions, runs, events, checkpoints, and waits; `MemoryEngine` for scoped application memory; `DurableWorkspace` for resumable files. Never substitute a general application state store for these ports.

@@ -2,6 +2,7 @@ import { defineAgent, defineHarness, type ModelProvider } from '@purista/harness
 import { sqliteMemoryEngine } from '@purista/harness-memory-sqlite'
 
 const memoryUser = defineAgent('memoryUser', {
+  model: 'chat',
   instructions: 'Use the persistent session memory configured by the application.',
   memory: { capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.ttl', 'memory.text_search', 'memory.persistent'] },
 })
@@ -15,7 +16,7 @@ const provider: ModelProvider = {
 
 export function createMemoryExample(file = '.purista/memory-example.sqlite') {
   return memoryHarness.getInstance({
-    model: { provider, model: 'not-called' },
+    models: { chat: { provider, model: 'not-called' } },
     memory: sqliteMemoryEngine({ file }),
   })
 }

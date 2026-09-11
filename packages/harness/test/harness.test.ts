@@ -13,11 +13,12 @@ describe('v4 Harness lifecycle entrypoint', () => {
       finishReason: 'stop',
     })
     const answer = defineAgent('answer', {
+      model: 'chat',
       input: z.string(), output: z.object({ answer: z.string() }),
       instructions: 'Answer briefly.', prompt: input => ({ role: 'user', content: input }),
     })
     const instance = await defineHarness({ name: 'lifecycleHarness' }).addAgent(answer)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
     const session = await instance.getSession('conversation')
 
     await expect(session.agents.answer.run('status')).resolves.toMatchObject({
@@ -35,10 +36,11 @@ describe('v4 Harness lifecycle entrypoint', () => {
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' },
     ])
     const answer = defineAgent('streamAnswer', {
+      model: 'chat',
       input: z.string(), instructions: 'Answer briefly.', prompt: input => ({ role: 'user', content: input }),
     })
     const instance = await defineHarness({ name: 'streamLifecycleHarness' }).addAgent(answer)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
     const session = await instance.getSession('stream-conversation')
     const stream = session.agents.streamAnswer.stream('status')
     const events = []

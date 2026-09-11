@@ -151,7 +151,7 @@ const stateful = defineTool('stateful', {
 		return { answer: value.message }
 	},
 })
-const resourceToolAgent = defineAgent('resourceToolAgent', { instructions: 'Use the stateful tool.', tools: [stateful] })
+const resourceToolAgent = defineAgent('resourceToolAgent', { model: 'chat', instructions: 'Use the stateful tool.', tools: [stateful] })
 const resourceToolHarness = defineHarness({ name: 'resourceToolHarness' }).addAgent(resourceToolAgent)
 const resourceToolSandboxRequired: true = resourceToolHarness.$infer.requirements.sandbox.required
 type _ResourceToolSandbox = Expect<Equal<typeof resourceToolHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.exec'>>
@@ -244,18 +244,19 @@ mcp.tools.searchKnowledge.serverId
 // @ts-expect-error MCP definitions never contain runtime transport
 defineMcpServer('badMcp', { url: 'https://example.com', tools: { search: { remoteName: 'search', description: 'Search.', input, output } } })
 
-const textAgent = defineAgent('assistant', { instructions: 'Help.', tools: [lookup], skills: [skill] })
+const textAgent = defineAgent('assistant', { model: 'chat', instructions: 'Help.', tools: [lookup], skills: [skill] })
 type _TextInput = Expect<typeof textAgent.contract.$infer.input extends string ? true : false>
 type _TextOutput = Expect<typeof textAgent.contract.$infer.output extends string ? true : false>
 type _AgentDefinitionInference = Expect<Equal<typeof textAgent.$infer, typeof textAgent.contract.$infer>>
 const agentId: 'assistant' = textAgent.id
 const agentKind: 'agent' = textAgent.kind
-const primaryModel: 'primary' = textAgent.model
+const chatModel: 'chat' = textAgent.model
 void agentId
 void agentKind
-void primaryModel
+void chatModel
 
 const structuredAgent = defineAgent('classify', {
+	model: 'chat',
 	input, output, instructions: 'Classify.', tools: [lookup, mcp.tools.searchKnowledge], skills: [skill],
 	prompt: value => ({ role: 'user', content: value.message }),
 })
@@ -263,20 +264,22 @@ type _StructuredInput = Expect<typeof structuredAgent.contract.$infer.input exte
 type _StructuredOutput = Expect<typeof structuredAgent.contract.$infer.output extends { answer: string } ? true : false>
 
 const transformedAgent = defineAgent('measure', {
+	model: 'chat',
 	input: transformedInput, instructions: 'Measure.', prompt: value => ({ role: 'user', content: String(value) }),
 })
 type _TransformedAgentInput = Expect<typeof transformedAgent.contract.$infer.input extends string ? true : false>
 type _TransformedAgentValidatedInput = Expect<typeof transformedAgent.contract.$infer.validatedInput extends number ? true : false>
 
-const explicitStringOutput = defineAgent('extractText', { output: z.string(), instructions: 'Extract.' })
+const explicitStringOutput = defineAgent('extractText', { model: 'chat', output: z.string(), instructions: 'Extract.' })
 const textUpdates: 'text-delta' = explicitStringOutput.contract.updates
 void textUpdates
 // @ts-expect-error a structured output cannot select text mode
-defineAgent('incompatibleResponseMode', { output, instructions: 'Reject.', responseMode: 'text' })
+defineAgent('incompatibleResponseMode', { model: 'chat', output, instructions: 'Reject.', responseMode: 'text' })
 const ambiguousResponseOutput = z.union([z.string(), output])
-defineAgent('explicitAmbiguousResponseMode', { output: ambiguousResponseOutput, instructions: 'Choose.', responseMode: 'text' })
+defineAgent('explicitAmbiguousResponseMode', { model: 'chat', output: ambiguousResponseOutput, instructions: 'Choose.', responseMode: 'text' })
 
 const parent = defineAgent('parent', {
+	model: 'chat',
 	instructions: 'Delegate.',
 	subagents: { helper: textAgent, reviewer: { agent: structuredAgent, description: 'Review classifications.' } },
 })
@@ -285,36 +288,39 @@ const reviewerId: 'classify' = parent.subagents.reviewer.agent.id
 void helperId
 void reviewerId
 
-defineAgent('defaultStructuredPrompt', { input, instructions: 'allowed' })
+defineAgent('defaultStructuredPrompt', { model: 'chat', input, instructions: 'allowed' })
 // @ts-expect-error media capabilities require an explicit prompt mapper
-defineAgent('missingMediaPrompt', { instructions: 'bad', inputCapabilities: ['vision_input'] })
+defineAgent('missingMediaPrompt', { model: 'chat', instructions: 'bad', inputCapabilities: ['vision_input'] })
 // @ts-expect-error agents do not accept custom execution handlers
-defineAgent('customAgent', { instructions: 'bad', async handler() { return 'bad' } })
+defineAgent('customAgent', { model: 'chat', instructions: 'bad', async handler() { return 'bad' } })
 // @ts-expect-error agent definitions reject unknown fields
-defineAgent('unknownAgentField', { instructions: 'bad', temperature: 0 })
+defineAgent('unknownAgentField', { model: 'chat', instructions: 'bad', temperature: 0 })
 // @ts-expect-error instructions are static strings
-defineAgent('callbackInstructions', { instructions: () => 'bad' })
+defineAgent('callbackInstructions', { model: 'chat', instructions: () => 'bad' })
 // @ts-expect-error update modes are derived from the output contract
-defineAgent('manualUpdates', { instructions: 'bad', updates: 'none' })
+defineAgent('manualUpdates', { model: 'chat', instructions: 'bad', updates: 'none' })
 // @ts-expect-error tools use definition references
-defineAgent('stringTool', { instructions: 'bad', tools: ['lookup'] })
+defineAgent('stringTool', { model: 'chat', instructions: 'bad', tools: ['lookup'] })
 // @ts-expect-error Skills use definition references
-defineAgent('stringSkill', { instructions: 'bad', skills: ['support-policy'] })
+defineAgent('stringSkill', { model: 'chat', instructions: 'bad', skills: ['support-policy'] })
 // @ts-expect-error subagents use direct definitions
-defineAgent('stringSubagent', { instructions: 'bad', subagents: { helper: 'assistant' } })
+defineAgent('stringSubagent', { model: 'chat', instructions: 'bad', subagents: { helper: 'assistant' } })
 // @ts-expect-error structural lookalikes are not definition references
-defineAgent('structuralTool', { instructions: 'bad', tools: [{ kind: 'tool', id: 'lookup', description: 'bad', input, output, handler: lookup.handler }] })
+defineAgent('structuralTool', { model: 'chat', instructions: 'bad', tools: [{ kind: 'tool', id: 'lookup', description: 'bad', input, output, handler: lookup.handler }] })
 defineAgent('badPromptRole', {
+	model: 'chat',
 	input, instructions: 'bad',
 	// @ts-expect-error prompt messages can only have the user role
 	prompt: value => ({ role: 'system', content: value.message }),
 })
 defineAgent('undeclaredImage', {
+	model: 'chat',
 	input, instructions: 'bad',
 	// @ts-expect-error image content requires vision_input
 	prompt: () => ({ role: 'user', content: [{ kind: 'image_url', url: 'https://example.com/a.png' }] }),
 })
 defineAgent('visionAgent', {
+	model: 'chat',
 	input, instructions: 'See.', inputCapabilities: ['vision_input'],
 	prompt: () => ({ role: 'user', content: [{ kind: 'image_url', url: 'https://example.com/a.png' }] }),
 })
@@ -481,6 +487,7 @@ const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgen
 const usedHarness = defineHarness({ name: 'support' }).use(catalog)
 const reusedCatalogHarness = usedHarness.use(catalog)
 const governedAgent = defineAgent('governedAgent', {
+	model: 'chat',
 	instructions: 'Apply the declared policy.',
 	tools: [lookup],
 	governance: ({ native, rule }) => ({
@@ -497,6 +504,7 @@ const governedAgent = defineAgent('governedAgent', {
 })
 const governedHarness = defineHarness({ name: 'governed' }).addAgent(governedAgent)
 const memoryAgent = defineAgent('memoryAgent', {
+	model: 'chat',
 	instructions: 'Remember.',
 	memory: {
 		capabilities: ['memory.kv', 'memory.vector_search'],
@@ -504,7 +512,7 @@ const memoryAgent = defineAgent('memoryAgent', {
 		summary: { model: 'summary' },
 	},
 })
-const knowledgeAgent = defineAgent('knowledgeAgent', { instructions: 'Search.', tools: [mcp.tools.searchKnowledge] })
+const knowledgeAgent = defineAgent('knowledgeAgent', { model: 'chat', instructions: 'Search.', tools: [mcp.tools.searchKnowledge] })
 const inferredHarness = defineHarness({ name: 'inferred' }).addAgent(memoryAgent).addAgent(knowledgeAgent)
 type _HarnessAgentInput = Expect<typeof directHarness.$infer.agents.classify.input extends { message: string } ? true : false>
 type _HarnessWorkflowOutput = Expect<typeof usedHarness.$infer.workflows.resolveCase.output extends { answer: string } ? true : false>
@@ -517,11 +525,12 @@ type _MemoryModelAliases = Expect<Equal<
 	'embeddings' | 'summary'
 >>
 type _McpServerIds = Expect<Equal<typeof inferredHarness.$infer.requirements.mcpServers[number], 'knowledge'>>
-type _InferredModelAliases = Expect<Equal<keyof typeof inferredHarness.$infer.requirements.models, 'primary' | 'embeddings' | 'summary'>>
+type _InferredModelAliases = Expect<Equal<keyof typeof inferredHarness.$infer.requirements.models, 'chat' | 'embeddings' | 'summary'>>
 // @ts-expect-error Harness definitions expose roots, never catalog exports
 directHarness.catalog
 
 const fullRequirementsAgent = defineAgent('fullRequirementsAgent', {
+	model: 'chat',
 	instructions: 'Guard.', tools: [lookup], workspace: true, durable: true,
 	permissions: { bash: 'require_approval' },
 	guardrails: { [agentGuardrailsBinding]: {
@@ -599,17 +608,20 @@ const bashTool = defineTool('bash', {
 	async handler(_context, value) { return { answer: value.message } },
 })
 const approvalAgent = defineAgent('approvalAgent', {
+	model: 'chat',
 	instructions: 'Ask first.', tools: [bashTool], permissions: { bash: 'require_approval' },
 })
 const approvalDurable: true = defineHarness({ name: 'approvalHarness' })
 	.addAgent(approvalAgent).$infer.requirements.storage.durable
 void approvalDurable
 
-const plainInterruptAgent = defineAgent('plainInterruptAgent', { instructions: 'Plain.' })
+const plainInterruptAgent = defineAgent('plainInterruptAgent', { model: 'chat', instructions: 'Plain.' })
 const approvalInterruptChild = defineAgent('approvalInterruptChild', {
+	model: 'chat',
 	instructions: 'Approve.', tools: [bashTool], permissions: { bash: 'require_approval' },
 })
 const approvalInterruptParent = defineAgent('approvalInterruptParent', {
+	model: 'chat',
 	instructions: 'Delegate.', subagents: { child: approvalInterruptChild },
 })
 const nonDurableInterruptWorkflow = defineWorkflow('nonDurableInterruptWorkflow', {
@@ -634,10 +646,11 @@ const dependencyOnlyAgent = defineAgent('dependencyOnlyAgent', {
 	instructions: 'Use private dependencies.', model: 'dependencyModel', tools: [dependencyOnlyTool], skills: [dependencyOnlySkill],
 })
 const rootWithPrivateDependency = defineAgent('rootWithPrivateDependency', {
+	model: 'chat',
 	instructions: 'Delegate.', subagents: { child: dependencyOnlyAgent },
 })
 const privateClosureHarness = defineHarness({ name: 'privateClosureHarness' }).addAgent(rootWithPrivateDependency)
-type _PrivateClosureModel = Expect<Equal<keyof typeof privateClosureHarness.$infer.requirements.models, 'primary' | 'dependencyModel'>>
+type _PrivateClosureModel = Expect<Equal<keyof typeof privateClosureHarness.$infer.requirements.models, 'chat' | 'dependencyModel'>>
 type _PrivateClosureSkill = Expect<Equal<typeof privateClosureHarness.$infer.requirements.skillRuntimes[number], 'python'>>
 type _PrivateClosureTool = Expect<'sandbox.exec' extends typeof privateClosureHarness.$infer.requirements.sandbox.capabilities[number] ? true : false>
 
@@ -650,21 +663,21 @@ const runtimeHarness = defineHarness({ name: 'runtimeHarness' }).addWorkflow(run
 const runtimeInstancePromise = runtimeHarness.getInstance({})
 declare const typedModelProvider: import('../src/ports/model-provider.js').ModelProvider
 declare const typedSandbox: import('../src/sandbox/index.js').Sandbox
-const groupedAgent = defineAgent('groupedRuntimeAgent', { instructions: 'Reply.', sandbox: { group: 'banking' } })
+const groupedAgent = defineAgent('groupedRuntimeAgent', { model: 'chat', instructions: 'Reply.', sandbox: { group: 'banking' } })
 const groupedRuntimeHarness = defineHarness({ name: 'groupedRuntimeHarness' }).addAgent(groupedAgent)
 type _GraphSandboxGroup = Expect<Equal<typeof groupedRuntimeHarness.$infer.requirements.sandbox.requiredGroups[number], 'banking'>>
 const groupedRuntimeInstance = groupedRuntimeHarness.getInstance({
-	model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox,
+	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
 	sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'banking' } },
 })
 const additionalGroupRuntimeInstance = groupedRuntimeHarness.getInstance({
-	model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox,
+	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
 	sandboxBinding: { groups: ['banking', 'support'] as const, defaultPolicy: { group: 'support' } },
 })
 // @ts-expect-error every graph-required group must be present in the configured tuple
-groupedRuntimeHarness.getInstance({ model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox, sandboxBinding: { groups: ['support'] as const } })
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['support'] as const } })
 // @ts-expect-error default policy cannot widen the configured group tuple
-groupedRuntimeHarness.getInstance({ model: { provider: typedModelProvider, model: 'model' }, sandbox: typedSandbox, sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'typo' } } })
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'typo' } } })
 void groupedRuntimeInstance
 void additionalGroupRuntimeInstance
 type InferredRuntimeInstance = Awaited<ReturnType<typeof directHarness.getInstance>>

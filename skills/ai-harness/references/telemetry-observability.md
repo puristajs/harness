@@ -4,7 +4,7 @@ The application starts its OpenTelemetry SDK before creating a Harness instance,
 
 ```ts
 const instance = await definition.getInstance({
-  model,
+  models: { chat: model },
   logger: new JsonLogger({ level: 'info' }),
   telemetry: { flavor: 'dual', contentCaptureMode: 'NO_CONTENT' },
 })

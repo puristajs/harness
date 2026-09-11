@@ -58,7 +58,7 @@ describe('exact Harness instance requirements', () => {
 			async handler(_context, input) { return input } })
 		const second = defineHostTool(owner, 'alphaHost', { description: 'Alpha.', input: z.string(), output: z.string(),
 			async handler(_context, input) { return input } })
-		const agent = defineAgent('hostRequirementsAgent', { instructions: 'Use host tools.', tools: [first, second] })
+		const agent = defineAgent('hostRequirementsAgent', { model: 'chat', instructions: 'Use host tools.', tools: [first, second] })
 		const required = defineHarness({ name: 'hostRequirements', revision: 'v1' }).addAgent(agent).requirements
 		expect(required.hostTools).toEqual(['alphaHost', 'zetaHost'])
 		expect(required.storage.durable).toBe(true)
@@ -66,26 +66,26 @@ describe('exact Harness instance requirements', () => {
 		expect(() => defineHarness({ name: 'unversionedHostRequirements' }).addAgent(agent)).toThrowError(expect.objectContaining({
 			meta: expect.objectContaining({ reason: 'missing_harness_revision' }),
 		}))
-		const portable = defineAgent('portableRequirementsAgent', { instructions: 'No host tools.' })
+		const portable = defineAgent('portableRequirementsAgent', { model: 'chat', instructions: 'No host tools.' })
 		const withoutHost = defineHarness({ name: 'portableRequirements' }).addAgent(portable).requirements
 		expect(withoutHost.hostTools).toEqual([])
 	})
 	it('derives guidance and runtime Skill requirements without granting execution', () => {
 		const guidance = defineSkill('guidance', { directory: new URL('file:///tmp/guidance') })
 		const runtime = defineSkill('runtime', { directory: new URL('file:///tmp/runtime'), runtimes: ['python', 'shell'] as const })
-		const agent = defineAgent('helper', { instructions: 'Use selected guidance.', skills: [guidance], output: z.string() })
+		const agent = defineAgent('helper', { model: 'chat', instructions: 'Use selected guidance.', skills: [guidance], output: z.string() })
 		const required = deriveRuntimeRequirements(
 			{ tools: {}, skills: { guidance, runtime }, mcpServers: {}, agents: { helper: agent }, workflows: {} },
 			Object.freeze({ agents: Object.freeze({ helper: Object.freeze({ reachable: false, agentIds: Object.freeze([]) }) }), workflows: Object.freeze({}) }),
 		)
 		expect(required.skillRuntimes).toEqual(['python', 'shell'])
 		expect(required.sandbox.capabilities).toEqual(['sandbox.fs', 'sandbox.readonly_mount'])
-		expect(required.models.primary?.capabilities).toContain('tool_use')
+		expect(required.models.chat?.capabilities).toContain('tool_use')
 		expect(required.sandbox.capabilities).not.toContain('sandbox.exec')
 	})
 
 	it('derives and enforces a sandbox for guardrail-only Skill runtimes', () => {
-		const guarded = defineAgent('guardrailRuntimeAgent', { instructions: 'Use the guardrail.', guardrails: {
+		const guarded = defineAgent('guardrailRuntimeAgent', { model: 'chat', instructions: 'Use the guardrail.', guardrails: {
 			[agentGuardrailsBinding]: { id: 'runtime-guardrail', requirements: { skillRuntimes: ['python'] as const } },
 		} })
 		const required = defineHarness({ name: 'guardrailRuntimeHarness' }).addAgent(guarded).requirements
@@ -93,10 +93,10 @@ describe('exact Harness instance requirements', () => {
 		expect(required.sandbox).toEqual({ capabilities: [], requiredGroups: [], required: true })
 		const modelProvider = provider({ text: async () => ({}), textStream: async function* () {} })
 		expect(reasonOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo' },
+			models: { chat: { provider: modelProvider, model: 'demo' } },
 		}))).toBe('missing_runtime_binding')
 		expect(validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo' }, sandbox: sandboxAdapter(() => {}, []),
+			models: { chat: { provider: modelProvider, model: 'demo' } }, sandbox: sandboxAdapter(() => {}, []),
 		}).sandbox).toBeDefined()
 	})
 	it('accepts an empty graph, rejects unknown configuration, and freezes a detached snapshot', () => {
@@ -108,78 +108,81 @@ describe('exact Harness instance requirements', () => {
 		expect(unknown.meta).toMatchObject({ reason: 'unexpected_runtime_binding', path: 'aaa' })
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, null))).toBe('invalid_instance_config')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, new Date()))).toBe('invalid_instance_config')
-		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { model: {}, models: {} }))).toBe('unexpected_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { model: {} }))).toBe('unexpected_runtime_binding')
+		expect(errorOf(() => validateHarnessInstanceConfig(emptyRequirements, { models: {} })).meta).toMatchObject({
+			reason: 'unexpected_runtime_binding', path: 'models',
+		})
 	})
 
-	it('normalizes the primary selector, injects capabilities, and preserves provider identity', () => {
+	it('normalizes the chat selector, injects capabilities, and preserves provider identity', () => {
 		const modelProvider = provider({ text: async () => ({}) })
-		const required = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['text'] as const) }) }) })
-		const snapshot = validateHarnessInstanceConfig(required, { model: { provider: modelProvider, model: 'demo' } })
-		expect(snapshot.models.primary).toEqual({ provider: modelProvider, model: 'demo', capabilities: ['text'] })
-		expect(snapshot.models.primary?.provider).toBe(modelProvider)
-		expect(Object.isFrozen(snapshot.models.primary)).toBe(true)
-		expect(Object.isFrozen(snapshot.models.primary?.capabilities)).toBe(true)
+		const required = requirements({ models: Object.freeze({ chat: Object.freeze({ capabilities: Object.freeze(['text'] as const) }) }) })
+		const snapshot = validateHarnessInstanceConfig(required, { models: { chat: { provider: modelProvider, model: 'demo' } } })
+		expect(snapshot.models.chat).toEqual({ provider: modelProvider, model: 'demo', capabilities: ['text'] })
+		expect(snapshot.models.chat?.provider).toBe(modelProvider)
+		expect(Object.isFrozen(snapshot.models.chat)).toBe(true)
+		expect(Object.isFrozen(snapshot.models.chat?.capabilities)).toBe(true)
 		expect(reasonOf(() => validateHarnessInstanceConfig(required, {}))).toBe('missing_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { primary: {} } }))).toBe('missing_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: { provider: modelProvider, model: 'demo', capabilities: [] } }))).toBe('unexpected_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { chat: {} } }))).toBe('invalid_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { chat: { provider: modelProvider, model: 'demo', capabilities: [] } } }))).toBe('unexpected_runtime_binding')
 		const invalidOptions = errorOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', providerOptions: { nested: new Map() } },
+			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: { nested: new Map() } } },
 		}))
-		expect(invalidOptions.meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'model.providerOptions.nested' })
+		expect(invalidOptions.meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.nested' })
 		class CustomOption {}
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', defaults: { providerOptions: { custom: new CustomOption() } } },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'model.defaults.providerOptions.custom' })
+			models: { chat: { provider: modelProvider, model: 'demo', defaults: { providerOptions: { custom: new CustomOption() } } } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.defaults.providerOptions.custom' })
 		const directCycle: Record<string, unknown> = {}
 		directCycle.self = directCycle
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', providerOptions: directCycle },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'model.providerOptions.self' })
+			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: directCycle } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.self' })
 		const nestedCycle: Record<string, unknown> = { child: {} }
 		;(nestedCycle.child as Record<string, unknown>).parent = nestedCycle
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', providerOptions: nestedCycle },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'model.providerOptions.child.parent' })
+			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: nestedCycle } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.child.parent' })
 		const shared = { value: 'same' }
 		const sharedSnapshot = validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', providerOptions: { left: shared, right: shared } },
+			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: { left: shared, right: shared } } },
 		})
-		const copiedOptions = sharedSnapshot.models.primary?.providerOptions as Record<string, unknown>
+		const copiedOptions = sharedSnapshot.models.chat?.providerOptions as Record<string, unknown>
 		expect(copiedOptions.left).toEqual({ value: 'same' })
 		expect(copiedOptions.left).not.toBe(copiedOptions.right)
 		const invalidRetry = errorOf(() => validateHarnessInstanceConfig(required, {
-			model: { provider: modelProvider, model: 'demo', retry: { maxAttempts: 0 } },
+			models: { chat: { provider: modelProvider, model: 'demo', retry: { maxAttempts: 0 } } },
 		}))
-		expect(invalidRetry.meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'model.retry.maxAttempts' })
+		expect(invalidRetry.meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.retry.maxAttempts' })
 	})
 
 	it('requires exact multi-model aliases and validates methods plus optional provider metadata', () => {
 		const required = requirements({ models: Object.freeze({
 			fast: Object.freeze({ capabilities: Object.freeze(['text_stream'] as const) }),
-			primary: Object.freeze({ capabilities: Object.freeze(['text'] as const) }),
+			chat: Object.freeze({ capabilities: Object.freeze(['text'] as const) }),
 		}) })
 		const valid = {
 			fast: { provider: provider({ textStream: async function* () {} }), model: 'fast-model' },
-			primary: { provider: provider({ text: async () => ({}) }), model: 'primary-model' },
+			chat: { provider: provider({ text: async () => ({}) }), model: 'chat-model' },
 		}
-		expect(Object.keys(validateHarnessInstanceConfig(required, { model: valid.primary, models: { fast: valid.fast } }).models)).toEqual(['fast', 'primary'])
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: {} }))).toBe('missing_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: { fast: valid.fast, extra: valid.primary } }))).toBe('unexpected_runtime_binding')
-		const mixedAliases = errorOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: { aaa: valid.primary } }))
+		expect(Object.keys(validateHarnessInstanceConfig(required, { models: { chat: valid.chat, fast: valid.fast } }).models)).toEqual(['chat', 'fast'])
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { chat: valid.chat } }))).toBe('missing_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { chat: valid.chat, fast: valid.fast, extra: valid.chat } }))).toBe('unexpected_runtime_binding')
+		const mixedAliases = errorOf(() => validateHarnessInstanceConfig(required, { models: { aaa: valid.chat } }))
 		expect(mixedAliases.meta).toMatchObject({ reason: 'unexpected_runtime_binding', path: 'models.aaa' })
-		expect(reasonOf(() => validateHarnessInstanceConfig(required, { model: valid.primary, models: {
+		expect(reasonOf(() => validateHarnessInstanceConfig(required, { models: { chat: valid.chat,
 			fast: { provider: provider(), model: 'fast-model' },
 		} }))).toBe('model_capability_mismatch')
 
 		const metadataProvider = provider({
 			text: async () => ({}), info: { providerId: 'provider', genAiSystem: 'test', models: { other: { capabilities: ['text'] } } },
 		})
-		const primaryOnly = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['text'] as const) }) }) })
-		expect(reasonOf(() => validateHarnessInstanceConfig(primaryOnly, {
-			model: { provider: metadataProvider, model: 'missing' },
+		const chatOnly = requirements({ models: Object.freeze({ chat: Object.freeze({ capabilities: Object.freeze(['text'] as const) }) }) })
+		expect(reasonOf(() => validateHarnessInstanceConfig(chatOnly, {
+			models: { chat: { provider: metadataProvider, model: 'missing' } },
 		}))).toBe('model_capability_mismatch')
-		const markerRequirements = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['tool_use'] as const) }) }) })
-		expect(validateHarnessInstanceConfig(markerRequirements, { model: { provider: provider(), model: 'marker' } }).models.primary).toBeDefined()
+		const markerRequirements = requirements({ models: Object.freeze({ chat: Object.freeze({ capabilities: Object.freeze(['tool_use'] as const) }) }) })
+		expect(validateHarnessInstanceConfig(markerRequirements, { models: { chat: { provider: provider(), model: 'marker' } } }).models.chat).toBeDefined()
 	})
 
 	it.each([
@@ -195,21 +198,21 @@ describe('exact Harness instance requirements', () => {
 	] as const)('rejects unsupported %s before an inherited base operation can be invoked', (capability, method) => {
 		const modelProvider = new EmptyBaseProvider()
 		expect(method in modelProvider).toBe(false)
-		const required = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze([capability]) }) }) })
-		const failure = errorOf(() => validateHarnessInstanceConfig(required, { model: { provider: modelProvider, model: 'demo' } }))
-		expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `model.provider.${method}` })
+		const required = requirements({ models: Object.freeze({ chat: Object.freeze({ capabilities: Object.freeze([capability]) }) }) })
+		const failure = errorOf(() => validateHarnessInstanceConfig(required, { models: { chat: { provider: modelProvider, model: 'demo' } } }))
+		expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `models.chat.provider.${method}` })
 	})
 
 	it('requires both aggregate and streaming video operations atomically', () => {
-		const required = requirements({ models: Object.freeze({ primary: Object.freeze({ capabilities: Object.freeze(['video_generation']) }) }) })
+		const required = requirements({ models: Object.freeze({ chat: Object.freeze({ capabilities: Object.freeze(['video_generation']) }) }) })
 		for (const [methods, missing] of [
 			[{ video: async () => ({}) }, 'videoStream'],
 			[{ videoStream: async function* () {} }, 'video'],
 		] as const) {
 			const failure = errorOf(() => validateHarnessInstanceConfig(required, {
-				model: { provider: provider(methods), model: 'demo' },
+				models: { chat: { provider: provider(methods), model: 'demo' } },
 			}))
-			expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `model.provider.${missing}` })
+			expect(failure.meta).toMatchObject({ reason: 'model_capability_mismatch', path: `models.chat.provider.${missing}` })
 		}
 	})
 
@@ -270,7 +273,7 @@ describe('exact Harness instance requirements', () => {
 	})
 
 	it('derives exact sandbox group requirements from definition policies', () => {
-		const grouped = defineAgent('groupedAgent', { instructions: 'Reply.', sandbox: { group: 'banking' } })
+		const grouped = defineAgent('groupedAgent', { model: 'chat', instructions: 'Reply.', sandbox: { group: 'banking' } })
 		const requirement = defineHarness({ name: 'groupedHarness' }).addAgent(grouped).requirements.sandbox
 		expect(requirement).toEqual({ capabilities: [], requiredGroups: ['banking'], required: true })
 		expect(Object.isFrozen(requirement.requiredGroups)).toBe(true)
@@ -438,13 +441,13 @@ function logger() {
 describe('agent-scoped governance requirements', () => {
 	it('requires a revision whenever agent governance can require approval', () => {
 		const tool = defineTool('lookup', { description: 'Lookup.', input: z.string(), output: z.string(), async handler(_context, value) { return value } })
-		const agent = defineAgent('reviewer', { instructions: 'Review.', tools: [tool], governance: ({ native, rule }) => ({
+		const agent = defineAgent('reviewer', { model: 'chat', instructions: 'Review.', tools: [tool], governance: ({ native, rule }) => ({
 			policies: [native({ id: 'policy', rules: [rule({ id: 'approval', tools: ['lookup'], effect: 'require_approval' })] })],
 		}) })
 		expect(() => defineHarness({ name: 'missingRevision' }).addAgent(agent)).toThrow(HarnessConfigError)
 		const harness = defineHarness({ name: 'versioned', revision: '2026-09-04' }).addAgent(agent)
 		expect(harness.requirements.storage.durable).toBe(true)
-		const direct = defineAgent('directReviewer', { instructions: 'Review.', tools: [tool], governance: { policies: [{
+		const direct = defineAgent('directReviewer', { model: 'chat', instructions: 'Review.', tools: [tool], governance: { policies: [{
 			kind: 'native', id: 'directPolicy', rules: [{ id: 'directApproval', tools: ['lookup'], effect: 'require_approval' }],
 		}] } })
 		expect(() => defineHarness({ name: 'missingDirectRevision' }).addAgent(direct)).toThrow(HarnessConfigError)
@@ -452,8 +455,8 @@ describe('agent-scoped governance requirements', () => {
 	})
 
 	it('requires durable revision storage for every configured subagent', () => {
-		const child = defineAgent('durableChild', { instructions: 'Child.' })
-		const parent = defineAgent('durableParent', { instructions: 'Parent.', subagents: { child } })
+		const child = defineAgent('durableChild', { model: 'chat', instructions: 'Child.' })
+		const parent = defineAgent('durableParent', { model: 'chat', instructions: 'Parent.', subagents: { child } })
 		expect(() => defineHarness({ name: 'missingSubagentRevision' }).addAgent(parent)).toThrow(HarnessConfigError)
 		const harness = defineHarness({ name: 'subagents', revision: '2026-09-04' }).addAgent(parent)
 		expect(harness.requirements.storage.durable).toBe(true)

@@ -27,7 +27,7 @@ const definition = defineHarness({ name: 'support' })
   .addWorkflow(resolveCase)
 
 const runtime = await definition.getInstance({
-  model: { provider, model: 'chat-model' },
+  models: { chat: { provider, model: 'chat-model' } },
   storage,
 })
 ```

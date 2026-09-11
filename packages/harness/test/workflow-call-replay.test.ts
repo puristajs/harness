@@ -29,8 +29,8 @@ function completed(parentRunId: string, childInvocationId: string, output: unkno
 	return stream([{ type: 'run.finished', runId, parentRunId, parentInvocationId: childInvocationId, at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId, output } } as ExecutionEvent])
 }
 
-const worker = defineAgent('worker', { input: z.record(z.string(), z.string()), output: z.string(), instructions: 'Work.', prompt: () => ({ role: 'user', content: 'work' }) })
-const other = defineAgent('other', { input: z.record(z.string(), z.string()), output: z.string(), instructions: 'Other.', prompt: () => ({ role: 'user', content: 'work' }) })
+const worker = defineAgent('worker', { model: 'chat', input: z.record(z.string(), z.string()), output: z.string(), instructions: 'Work.', prompt: () => ({ role: 'user', content: 'work' }) })
+const other = defineAgent('other', { model: 'chat', input: z.record(z.string(), z.string()), output: z.string(), instructions: 'Other.', prompt: () => ({ role: 'user', content: 'work' }) })
 
 function runtime(open: HarnessTargetDispatcher['open'], checkpoint?: { load(stepId: string): Promise<RunCheckpoint | undefined>; commit(stepId: string, output: any, metadata: any): Promise<void> }, workflow = defineWorkflow('flow', {
 	input: z.string(), output: z.string(), agents: [worker, other], async handler({ input }) { return input },
@@ -45,7 +45,7 @@ function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: s
 
 
 describe('v4 workflow direct-call replay', () => {
-	const modelWorkflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
+	const modelWorkflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'chat', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
 	function modelRuntime(handle: unknown, options: { load?: (stepId: string) => Promise<RunCheckpoint | undefined>; commit?: (stepId: string, output: any, metadata: any) => Promise<void>; emit?: (event: any) => Promise<void> } = {}) {
 		return createWorkflowExecutionRuntime({ workflow: modelWorkflow, models: { scoped: handle } as never,
 			toolContext: { caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness' } as never,
@@ -394,7 +394,7 @@ describe('v4 workflow direct-call replay', () => {
 				async video(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; return value({ artifact }) },
 				async *videoStream(_request: unknown, _signal: AbortSignal, modelContext: unknown) { context = modelContext; value(null); yield { kind: 'queued' }; yield { kind: 'finish', artifact } },
 			}
-			const workflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'primary', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
+			const workflow = defineWorkflow('modelFlow', { input: z.string(), output: z.string(), models: { scoped: { alias: 'chat', capabilities: ['text', 'text_stream', 'object', 'object_stream', 'embeddings', 'rerank', 'image_generation', 'speech_generation', 'video_generation'] } }, async handler({ input }) { return input } })
 			const checkpoint = { async load(stepId: string) { return stored.get(stepId) }, async commit(stepId: string, output: any, metadata: any) { stored.set(stepId, { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: stored.size + 1, output, metadata }) } }
 			const build = (caller: unknown = { kind: 'workflow', workflowId: 'modelFlow' }) => createWorkflowExecutionRuntime({ workflow, models: { scoped: handle } as never, toolContext: { caller, harnessName: 'modelHarness' } as never,
 				targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected dispatch') } }, signal: new AbortController().signal,
@@ -405,7 +405,7 @@ describe('v4 workflow direct-call replay', () => {
 			expect(effects).toBe(1)
 			expect(context).toMatchObject({ caller: { kind: 'workflow', workflowId: 'modelFlow' }, harnessName: 'modelHarness', runId: 'workflow-run' })
 			expect(Object.isFrozen(context.caller)).toBe(true)
-			expect(stored.get(`workflow:call:${operation}`)?.output).toMatchObject({ operation, target: { kind: 'model', id: 'primary' }, outcome: { status: 'completed' } })
+			expect(stored.get(`workflow:call:${operation}`)?.output).toMatchObject({ operation, target: { kind: 'model', id: 'chat' }, outcome: { status: 'completed' } })
 			await expect(invoke((build({ kind: 'workflow', workflowId: 'modelFlow', agentId: 'forged' }).models as any).scoped, operation)).rejects.toBeInstanceOf(TypeError)
 			expect(effects).toBe(1)
 		}
@@ -491,7 +491,7 @@ describe('v4 workflow direct-call replay', () => {
 	})
 
 	it('does not re-run transforming output schemas for live or persisted direct replay', async () => {
-		const transformed = defineAgent('transformed', { input: z.string(), output: z.string().transform(Number), responseMode: 'text', instructions: 'Transform once.', prompt: value => ({ role: 'user', content: value }) })
+		const transformed = defineAgent('transformed', { model: 'chat', input: z.string(), output: z.string().transform(Number), responseMode: 'text', instructions: 'Transform once.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflow('transformFlow', { input: z.string(), output: z.string(), agents: [transformed], durable: true, async handler({ input }) { return input } })
 		let stored: RunCheckpoint | undefined; let opened = 0
 		const checkpoint = { async load() { return stored }, async commit(stepId: string, output: any, metadata: any) { stored = { runId: 'workflow-run', sessionId: 'session', leaseId: 'lease', workerId: 'worker', stepId, input: 'root', attempt: 1, sequence: 1, output, metadata } } }

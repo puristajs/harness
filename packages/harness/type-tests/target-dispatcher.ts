@@ -4,7 +4,7 @@ import type { HarnessTargetContract } from '../src/definitions/types.js'
 import type { HarnessTargetDispatchRequest, HarnessTargetInput, HarnessTargetOutput } from '../src/ports/target-dispatcher.js'
 import { createSubagentBinding } from '../src/runtime/subagent-execution.js'
 
-const child = defineAgent('child', { instructions: 'Help.', input: z.object({ id: z.string() }), output: z.object({ answer: z.string() }), prompt: value => ({ role: 'user', content: value.id }) })
+const child = defineAgent('child', { model: 'chat', instructions: 'Help.', input: z.object({ id: z.string() }), output: z.object({ answer: z.string() }), prompt: value => ({ role: 'user', content: value.id }) })
 const request: HarnessTargetDispatchRequest<typeof child.contract> = {
 	target: child.contract, input: { id: '1' }, invocation: { sessionId: 's', invocationId: 'i', rootRunId: 'r', parentRunId: 'p', parentAgentId: 'parent-agent', depth: 1, remainingDepth: 0, signal: new AbortController().signal },
 }

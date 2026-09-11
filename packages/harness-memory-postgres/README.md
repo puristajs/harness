@@ -19,7 +19,7 @@ const memory = postgresMemoryEngine({
 })
 
 const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
-const harness = await definition.getInstance({ model, memory })
+const harness = await definition.getInstance({ models: { chat: model }, memory })
 ```
 
 Alternatively pass an application-owned `pg` pool. Exactly one connection mode

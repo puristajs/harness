@@ -67,14 +67,8 @@ type OptionalOrRequiredField<Needed extends boolean, Key extends PropertyKey, Va
 type ModelAliases<Requirements extends RuntimeRequirements> = keyof Requirements['models'] & string
 export type ModelFields<Requirements extends RuntimeRequirements> =
 	[ModelAliases<Requirements>] extends [never]
-		? Readonly<{ model?: never; models?: never }>
-		: 'primary' extends ModelAliases<Requirements>
-			? Readonly<{ model: ModelRuntimeBinding } & (
-				[Exclude<ModelAliases<Requirements>, 'primary'>] extends [never]
-					? { models?: never }
-					: { models: Readonly<{ [Alias in Exclude<ModelAliases<Requirements>, 'primary'>]: ModelRuntimeBinding }> }
-			)>
-			: Readonly<{ model?: never; models: Readonly<{ [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding }> }>
+		? Readonly<{ models?: never }>
+		: Readonly<{ models: Readonly<{ [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding }> }>
 
 export type SandboxBinding<Requirements extends RuntimeRequirements> = Sandbox
 	& (HasMembers<Requirements['sandbox']['capabilities']> extends true
@@ -132,7 +126,9 @@ export type HarnessRuntimeBindingFields<
  * @example
  * ```ts
  * const config: HarnessInstanceConfig<typeof definition.requirements> = {
- *   model: { provider, model: 'gpt-5' },
+ *   models: {
+ *     chat: { provider, model: 'gpt-5' },
+ *   },
  * }
  * ```
  */
@@ -164,7 +160,7 @@ export interface ValidatedHarnessInstanceBindings {
 
 type PlainRecord = Record<string, unknown>
 const TOP_LEVEL_KEYS = Object.freeze([
-	'admission', 'agentAdmission', 'artifacts', 'logger', 'mcp', 'memory', 'model', 'models',
+	'admission', 'agentAdmission', 'artifacts', 'logger', 'mcp', 'memory', 'models',
 	'sandbox', 'sandboxBinding', 'storage', 'telemetry', 'workspace',
 ])
 const MODEL_KEYS = Object.freeze([
@@ -213,26 +209,11 @@ function validateRuntimeConfig(
 	unknownKey(config, hosted ? TOP_LEVEL_KEYS.filter(key => key !== 'logger' && key !== 'telemetry') : TOP_LEVEL_KEYS, '')
 
 	const aliases = Object.keys(requirements.models).sort()
-	const hasModel = own(config, 'model')
 	const hasModels = own(config, 'models')
 	let selected: Record<string, unknown> = {}
 	if (aliases.length === 0) {
-		if (hasModel) fail('unexpected_runtime_binding', 'model')
 		if (hasModels) fail('unexpected_runtime_binding', 'models')
-	} else if (aliases.includes('primary')) {
-		if (!hasModel) fail('missing_runtime_binding', 'model')
-		selected = { primary: config['model'] }
-		const extraAliases = aliases.filter(alias => alias !== 'primary')
-		if (extraAliases.length === 0) {
-			if (hasModels) fail('unexpected_runtime_binding', 'models')
-		} else {
-			if (!hasModels) fail('missing_runtime_binding', 'models')
-			if (!isPlainRecord(config['models'])) fail('invalid_runtime_binding', 'models')
-			validateExactKeys(config['models'], extraAliases, 'models')
-			selected = { ...selected, ...config['models'] }
-		}
 	} else {
-		if (hasModel) fail('unexpected_runtime_binding', 'model')
 		if (!hasModels) fail('missing_runtime_binding', 'models')
 		if (!isPlainRecord(config['models'])) fail('invalid_runtime_binding', 'models')
 		const supplied = config['models']
@@ -242,8 +223,7 @@ function validateRuntimeConfig(
 
 	const models: Record<string, Readonly<ModelAlias>> = {}
 	for (const alias of aliases) {
-		const path = alias === 'primary' ? 'model' : `models.${alias}`
-		models[alias] = validateModelBinding(selected[alias], requirements.models[alias]!.capabilities, path)
+		models[alias] = validateModelBinding(selected[alias], requirements.models[alias]!.capabilities, `models.${alias}`)
 	}
 
 	const groups = [

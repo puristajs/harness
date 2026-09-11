@@ -26,7 +26,7 @@ const memory = redisMemoryEngine({
 })
 
 const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
-const harness = await definition.getInstance({ model, memory })
+const harness = await definition.getInstance({ models: { chat: model }, memory })
 ```
 
 Pass `client` instead of `url` when the application owns the official

@@ -107,14 +107,14 @@ describe('stream completion accounting', () => {
         ])
         const storage = persistentStorage()
         const agent = operation === 'textStream'
-          ? defineAgent('streamAccounting', { input: z.string(), instructions: 'Respond.', durable: true,
+          ? defineAgent('streamAccounting', { model: 'chat', input: z.string(), instructions: 'Respond.', durable: true,
             prompt: value => ({ role: 'user', content: value }),
           })
-          : defineAgent('streamAccounting', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+          : defineAgent('streamAccounting', { model: 'chat', input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
             prompt: value => ({ role: 'user', content: value }),
           })
         const harness = await defineHarnessV4({ name: `streamAccounting${operation}`, revision: 'v1' }).addAgent(agent)
-          .getInstance({ storage, model: { provider, model: 'fake' } })
+          .getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
         const session = await harness.getSession('stream-accounting')
         try {
           const live = []
@@ -193,14 +193,14 @@ describe('stream completion accounting', () => {
       ])
       const storage = persistentStorage()
       const agent = operation === 'textStream'
-        ? defineAgent('streamRetry', { input: z.string(), instructions: 'Respond.', durable: true,
+        ? defineAgent('streamRetry', { model: 'chat', input: z.string(), instructions: 'Respond.', durable: true,
           prompt: value => ({ role: 'user', content: value }),
         })
-        : defineAgent('streamRetry', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+        : defineAgent('streamRetry', { model: 'chat', input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
           prompt: value => ({ role: 'user', content: value }),
         })
       const harness = await defineHarnessV4({ name: `streamRetry${operation}`, revision: 'v1' }).addAgent(agent)
-        .getInstance({ storage, model: { provider, model: 'fake', retry: { minDelayMs: 0, maxDelayMs: 0 } } })
+        .getInstance({ storage, models: { chat: { provider, model: 'fake', retry: { minDelayMs: 0, maxDelayMs: 0 } } } })
       try {
         const session = await harness.getSession('stream-retry')
         const events = []
@@ -275,14 +275,14 @@ describe('model completion metadata validation', () => {
       else provider.enqueueObjectStream([response as never])
       const storage = persistentStorage()
       const agent = operation === 'text' || operation === 'textStream'
-        ? defineAgent('metadataAgent', { input: z.string(), instructions: 'Respond.', durable: true,
+        ? defineAgent('metadataAgent', { model: 'chat', input: z.string(), instructions: 'Respond.', durable: true,
           prompt: value => ({ role: 'user', content: value }),
         })
-        : defineAgent('metadataAgent', { input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
+        : defineAgent('metadataAgent', { model: 'chat', input: z.string(), output: z.object({ ok: z.boolean() }), instructions: 'Respond.', durable: true,
           prompt: value => ({ role: 'user', content: value }),
         })
       const harness = await defineHarnessV4({ name: `metadata${operation}`, revision: 'v1' }).addAgent(agent)
-        .getInstance({ storage, model: { provider, model: 'fake' } })
+        .getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
       try {
         const session = await harness.getSession('metadata')
         let terminal
@@ -307,7 +307,7 @@ describe('model completion metadata validation', () => {
         if (valid) {
           expect(completed[0]!.payload).toEqual({
             caller: { kind: 'agent', agentId: 'metadataAgent' },
-            modelAlias: 'primary',
+            modelAlias: 'chat',
             operation,
             ...(operation.endsWith('Stream') ? { streamId: expect.any(String) } : {}),
             ...(reported ? { usage, finishReason: 'stop' } : {}),
@@ -341,11 +341,11 @@ describe('model completion metadata validation', () => {
         })
       provider.enqueueObjectStream([finish as never])
       const storage = persistentStorage()
-      const agent = defineAgent('invalidObjectAgent', { input: z.string(), output: z.object({ ok: z.boolean() }),
+      const agent = defineAgent('invalidObjectAgent', { model: 'chat', input: z.string(), output: z.object({ ok: z.boolean() }),
         durable: true, instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
       })
       const harness = await defineHarnessV4({ name: 'invalidObject', revision: 'v1' }).addAgent(agent)
-        .getInstance({ storage, model: { provider, model: 'fake' } })
+        .getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
       try {
         const session = await harness.getSession('invalid-object')
         const events = []
@@ -373,11 +373,11 @@ describe('model stream run events', () => {
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
       finishReason: 'stop',
     }])
-    const agent = defineAgent('answerer', { input: z.string(), output: z.object({ answer: z.string() }),
+    const agent = defineAgent('answerer', { model: 'chat', input: z.string(), output: z.object({ answer: z.string() }),
       instructions: 'Return a final object.', prompt: value => ({ role: 'user', content: value }),
     })
     const harness = await defineHarnessV4({ name: 'structuredOnly' }).addAgent(agent)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
 
     const session = await harness.getSession('s1')
     const events = []
@@ -388,7 +388,7 @@ describe('model stream run events', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'model.completed',
-          modelAlias: 'primary',
+          modelAlias: 'chat',
           operation: 'objectStream',
           usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
           finishReason: 'stop',
@@ -409,7 +409,7 @@ describe('model stream run events', () => {
     ])
     const workflow = defineWorkflow('wf', {
         input: z.string(), output: z.string(),
-        models: { fake: { alias: 'primary', capabilities: ['text_stream'] } },
+        models: { fake: { alias: 'chat', capabilities: ['text_stream'] } },
         handler: async (ctx) => {
           let text = ''
           for await (const chunk of ctx.models.fake.textStream(
@@ -422,7 +422,7 @@ describe('model stream run events', () => {
         },
       })
     const harness = await defineHarnessV4({ name: 'workflowPrivateStream' }).addWorkflow(workflow)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
 
     const session = await harness.getSession('s1')
     const events = []
@@ -430,8 +430,8 @@ describe('model stream run events', () => {
     expect(events.some((event) => event.type === 'output.text.delta')).toBe(false)
     expect(events).toEqual(
       expect.arrayContaining([
-		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'primary', callId: 'private-stream', delta: 'hel' }),
-		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'primary', callId: 'private-stream', delta: 'lo' }),
+		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'chat', callId: 'private-stream', delta: 'hel' }),
+		expect.objectContaining({ type: 'model.output.text.delta', caller: { kind: 'workflow', workflowId: 'wf' }, modelAlias: 'chat', callId: 'private-stream', delta: 'lo' }),
         expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) }),
       ]),
     )
@@ -446,11 +446,11 @@ describe('model stream run events', () => {
       { kind: 'finish', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }, finishReason: 'stop' },
     ])
     const state = persistentStorage()
-    const agent = defineAgent('streamed', { input: z.string(), durable: true, instructions: 'Respond.',
+    const agent = defineAgent('streamed', { model: 'chat', input: z.string(), durable: true, instructions: 'Respond.',
       prompt: value => ({ role: 'user', content: value }),
     })
     const harness = await defineHarnessV4({ name: 'publicTextStream', revision: 'v1' }).addAgent(agent)
-      .getInstance({ storage: state, model: { provider, model: 'fake' } })
+      .getInstance({ storage: state, models: { chat: { provider, model: 'fake' } } })
 
     const session = await harness.getSession('s1')
     const events = []
@@ -462,8 +462,8 @@ describe('model stream run events', () => {
     const streamId = deltas[0]?.id
     expect(typeof streamId).toBe('string')
     expect(deltas).toEqual([
-      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'primary', id: streamId, delta: 'hel' }),
-      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'primary', id: streamId, delta: 'lo' }),
+      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'chat', id: streamId, delta: 'hel' }),
+      expect.objectContaining({ type: 'output.text.delta', caller: { kind: 'agent', agentId: 'streamed' }, modelAlias: 'chat', id: streamId, delta: 'lo' }),
     ])
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'run.finished', outcome: expect.objectContaining({ status: 'completed', output: 'hello' }) })]))
     expect(JSON.stringify(persisted)).not.toContain('hello')
@@ -482,11 +482,11 @@ describe('model stream run events', () => {
       finishReason: 'stop',
     }])
     const state = persistentStorage()
-    const agent = defineAgent('custom', { input: z.string(), output: z.object({ answer: z.string() }), durable: true,
+    const agent = defineAgent('custom', { model: 'chat', input: z.string(), output: z.object({ answer: z.string() }), durable: true,
       instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
     })
     const harness = await defineHarnessV4({ name: 'structuredLifecycle', revision: 'v1' }).addAgent(agent)
-      .getInstance({ storage: state, model: { provider, model: 'fake' } })
+      .getInstance({ storage: state, models: { chat: { provider, model: 'fake' } } })
 
     const session = await harness.getSession('s1')
     const events = []
@@ -509,7 +509,7 @@ describe('model stream run events', () => {
           type: 'model.completed',
           runId: run.id,
           caller: { kind: 'agent', agentId: 'custom' },
-          modelAlias: 'primary',
+          modelAlias: 'chat',
           operation: 'objectStream',
           streamId: expect.any(String),
           usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
@@ -529,7 +529,7 @@ describe('model stream run events', () => {
           type: 'model.completed',
           payload: {
             caller: { kind: 'agent', agentId: 'custom' },
-            modelAlias: 'primary',
+            modelAlias: 'chat',
             operation: 'objectStream',
             streamId: expect.any(String),
             usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
@@ -558,11 +558,11 @@ describe('model stream run events', () => {
         finishReason: 'stop',
       },
     ])
-    const agent = defineAgent('structuredSnapshots', { input: z.string(), output: z.object({ ok: z.boolean() }),
+    const agent = defineAgent('structuredSnapshots', { model: 'chat', input: z.string(), output: z.object({ ok: z.boolean() }),
       instructions: 'Respond.', prompt: value => ({ role: 'user', content: value }),
     })
     const harness = await defineHarnessV4({ name: 'structuredSnapshots' }).addAgent(agent)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
 
     const session = await harness.getSession('s1')
     const events = []
@@ -572,13 +572,13 @@ describe('model stream run events', () => {
       expect.objectContaining({
         type: 'output.object.snapshot',
         caller: { kind: 'agent', agentId: 'structuredSnapshots' },
-        modelAlias: 'primary',
+        modelAlias: 'chat',
         value: { ok: false },
       }),
       expect.objectContaining({
         type: 'output.object.snapshot',
         caller: { kind: 'agent', agentId: 'structuredSnapshots' },
-        modelAlias: 'primary',
+        modelAlias: 'chat',
         value: { ok: true },
       }),
     ])
@@ -591,7 +591,7 @@ describe('model stream run events', () => {
         expect.objectContaining({
           type: 'model.completed',
 		  caller: { kind: 'agent', agentId: 'structuredSnapshots' },
-          modelAlias: 'primary',
+          modelAlias: 'chat',
           streamId,
           operation: 'objectStream',
           usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },

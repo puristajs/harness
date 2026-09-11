@@ -8,6 +8,7 @@ waits.
 
 ```ts
 const collectFacts = defineAgent('collectFacts', {
+  model: 'chat',
   input: incidentInput,
   output: factsOutput,
   instructions: 'Extract verified facts only.',
@@ -15,6 +16,7 @@ const collectFacts = defineAgent('collectFacts', {
 })
 
 const assessRisk = defineAgent('assessRisk', {
+  model: 'chat',
   input: factsOutput,
   output: riskOutput,
   instructions: 'Assess operational risk from the supplied facts.',

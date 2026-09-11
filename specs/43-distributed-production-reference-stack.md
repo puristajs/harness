@@ -48,8 +48,10 @@ const mountedService = serviceBuilder.mountHarness(productionHarness)
 
 const service = await mountedService.getInstance(eventBridge, {
   ai: {
-    model: models.primary,
-    models: models.additional,
+    models: {
+      chat: chatModel,
+      embeddings: embeddingModel,
+    },
     storage,
     sandbox: execution.sandbox,
     sandboxBinding: sandboxOptions,

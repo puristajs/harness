@@ -120,7 +120,8 @@ The backend builds one harness using:
 - local TypeScript tools for wiki operations;
 - optional MCP tools only when configured.
 
-The default model alias is `main`. The default real model is `gpt-5-mini`.
+This example application chooses `main` as its model alias and binds
+`gpt-5-mini` by default. Neither name is a Harness-wide default.
 
 Privacy defaults:
 

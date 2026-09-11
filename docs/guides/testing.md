@@ -40,7 +40,7 @@ provider.enqueueObject({
 })
 
 const instance = await definition.getInstance({
-	model: { provider, model: 'fake' },
+	models: { chat: { provider, model: 'fake' } },
 })
 const session = await instance.getSession('test')
 await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({

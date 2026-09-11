@@ -282,7 +282,7 @@ export function deriveRuntimeRequirements(sources: RuntimeRequirementSources, ap
 			: ['object', 'object_stream']
 		if ((agent.tools?.length ?? 0) > 0 || (agent.skills?.length ?? 0) > 0 || Object.keys(agent.subagents ?? {}).length > 0) capabilities.push('tool_use')
 		capabilities.push(...(agent.inputCapabilities ?? []))
-		addModel('model' in agent ? agent.model : 'primary', capabilities)
+		addModel(agent.model, capabilities)
 
 		for (const capability of agent.memory?.capabilities ?? []) memoryCapabilities.add(capability)
 		if (agent.memory?.embedding !== undefined) {

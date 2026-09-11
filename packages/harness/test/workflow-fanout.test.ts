@@ -40,7 +40,7 @@ describe('v4 workflow fan-out admission', () => {
 	})
 
 	it('lets bounded fan-out workers make agent calls without acquiring a fan-out slot', async () => {
-		const agent = defineAgentV4('fanWorker', { input: z.number(), output: z.number(), instructions: 'Work.', prompt: value => ({ role: 'user', content: String(value) }) })
+		const agent = defineAgentV4('fanWorker', { model: 'chat', input: z.number(), output: z.number(), instructions: 'Work.', prompt: value => ({ role: 'user', content: String(value) }) })
 		const workflow = defineWorkflowV4('fanCalls', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 3, maxParallel: 2 }, async handler({ input }) { return input } })
 		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
 			const outcome = { status: 'completed' as const, runId: request.invocation.invocationId, output: (request.input as number) * 2 }

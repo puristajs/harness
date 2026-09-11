@@ -48,6 +48,7 @@ function fixture() {
 	})
 	const helper = defineAgent('helper', { instructions: 'Help.', model: 'fast' })
 	const assistant = defineAgent('assistant', {
+		model: 'chat',
 		input, output, instructions: 'Answer.', prompt: value => ({ role: 'user', content: value.message }),
 		tools: [lookup, knowledge.tools.search], skills: [policy], subagents: { helper },
 		inputCapabilities: ['vision_input'],
@@ -74,7 +75,7 @@ describe('catalog composition and graph compilation', () => {
 	})
 
 	it('keeps child-task sandbox groups out of the workflow target-policy digest tuple', () => {
-		const worker = defineAgent('digestWorker', { instructions: 'Work.' })
+		const worker = defineAgent('digestWorker', { model: 'chat', instructions: 'Work.' })
 		const workflow = defineWorkflow('digestWorkflow', { input: z.string(), output: z.string(), agents: [worker],
 			childTaskSandboxGroups: ['reviewers'] as const, sandbox: { group: 'workflow-scope' }, durable: true,
 			async handler({ input }) { return input } })
@@ -114,7 +115,7 @@ describe('catalog composition and graph compilation', () => {
 	})
 
 	it('retains catalog identity provenance across immutable Harness composition', () => {
-		const root = defineAgent('sharedRoot', { instructions: 'Help.' })
+		const root = defineAgent('sharedRoot', { model: 'chat', instructions: 'Help.' })
 		const first = defineCatalog('sharedCatalog', { agents: [root] })
 		const conflicting = defineCatalog('sharedCatalog', { agents: [root] })
 		const harness = defineHarness({ name: 'catalogConsumer' }).use(first)
@@ -129,15 +130,15 @@ describe('catalog composition and graph compilation', () => {
 			description: 'Leaf.', input, output,
 			async handler(_context, value) { return { answer: value.message } },
 		})
-		const dependency = defineAgent('catalogDependency', { instructions: 'Help.' })
-		const root = defineAgent('catalogRoot', { instructions: 'Delegate.', subagents: { helper: { agent: dependency, description: 'Help.' } } })
+		const dependency = defineAgent('catalogDependency', { model: 'chat', instructions: 'Help.' })
+		const root = defineAgent('catalogRoot', { model: 'chat', instructions: 'Delegate.', subagents: { helper: { agent: dependency, description: 'Help.' } } })
 		const catalog = defineCatalog('explicitOnly', { tools: [leaf], agents: [root] })
 		const harness = defineHarness({ name: 'rootOnly', revision: 'v1' }).use(catalog)
 
 		expect(catalog.tools.catalogLeaf).toBe(leaf)
 		expect(catalog.agents.catalogRoot).toBe(root)
 		expect(catalog.agents).not.toHaveProperty('catalogDependency')
-		expect(catalog.requirements.models).toHaveProperty('primary')
+		expect(catalog.requirements.models).toHaveProperty('chat')
 		expect(harness.contracts.agents).toHaveProperty('catalogRoot')
 		expect(harness.contracts.agents).not.toHaveProperty('catalogDependency')
 		expect(harness).not.toHaveProperty('catalog')
@@ -153,6 +154,7 @@ describe('catalog composition and graph compilation', () => {
 			async handler(_context, value) { return { answer: value.message } },
 		})
 		const guarded = defineAgent('fullyGuarded', {
+			model: 'chat',
 			instructions: 'Guard.', tools: [selected],
 			guardrails: { [agentGuardrailsBinding]: {
 				id: 'fullRequirements',
@@ -185,6 +187,7 @@ describe('catalog composition and graph compilation', () => {
 		{ unknown: true },
 	] as const)('rejects an invalid Guardrail requirement declaration %#', requirements => {
 		expect(() => defineAgent('invalidGuardrail', {
+			model: 'chat',
 			instructions: 'Guard.', guardrails: {
 				[agentGuardrailsBinding]: { id: 'invalid', requirements } as never,
 			},
@@ -197,9 +200,10 @@ describe('catalog composition and graph compilation', () => {
 			async handler(_context, value) { return { answer: value.message } },
 		})
 		const approval = defineAgent('approval', {
+			model: 'chat',
 			instructions: 'Ask.', tools: [bash], permissions: { bash: 'require_approval' },
 		})
-		const parent = defineAgent('parentApproval', { instructions: 'Delegate.', subagents: { child: approval } })
+		const parent = defineAgent('parentApproval', { model: 'chat', instructions: 'Delegate.', subagents: { child: approval } })
 		const workflow = defineWorkflow('approvalRoot', { input: z.string(), output: z.string(), agents: [parent], async handler() { return 'done' } })
 		const compiled = compileDefinitionGraph({ workflows: [workflow] })
 		expect(compiled.approval.agents.parentApproval).toEqual({ reachable: true, agentIds: ['approval'] })
@@ -211,6 +215,7 @@ describe('catalog composition and graph compilation', () => {
 			input, output, workspace: false, async handler() { return { answer: 'bad' } },
 		} as never)).toThrow(HarnessConfigError)
 		expect(() => defineAgent('duplicateMemory', {
+			model: 'chat',
 			instructions: 'Bad.', memory: { capabilities: ['memory.kv', 'memory.kv'] },
 		})).toThrow(HarnessConfigError)
 		expect(() => defineWorkflow('duplicateModelCapability', {
@@ -253,7 +258,7 @@ describe('catalog composition and graph compilation', () => {
 				fast: { capabilities: ['text', 'text_stream'] },
 				guard: { capabilities: ['text'] },
 				image: { capabilities: ['image_generation'] },
-				primary: { capabilities: ['object', 'object_stream', 'tool_use', 'vision_input'] },
+				chat: { capabilities: ['object', 'object_stream', 'tool_use', 'vision_input'] },
 			},
 			mcpServers: ['knowledge'],
 			skillRuntimes: ['python'],
@@ -265,7 +270,7 @@ describe('catalog composition and graph compilation', () => {
 			hostTools: [],
 		})
 		for (const value of Object.values(catalog.requirements.models)) expect(Object.isFrozen(value.capabilities)).toBe(true)
-		expect(Object.keys(catalog.requirements.models)).toEqual(['embeddings', 'fast', 'guard', 'image', 'primary'])
+		expect(Object.keys(catalog.requirements.models)).toEqual(['chat', 'embeddings', 'fast', 'guard', 'image'])
 		expect(Object.isFrozen(catalog.requirements.memory)).toBe(true)
 		expect(Object.isFrozen(catalog.requirements.sandbox)).toBe(true)
 	})
@@ -293,18 +298,19 @@ describe('catalog composition and graph compilation', () => {
 	it.each([
 		['foreign_definition', () => defineCatalog('foreign', { agents: [{ kind: 'agent', id: 'fake' } as never] })],
 		['foreign_definition', () => {
-			const original = defineAgent('copied', { instructions: 'Original.' })
+			const original = defineAgent('copied', { model: 'chat', instructions: 'Original.' })
 			return defineCatalog('copied', { agents: [{ ...original }] as never })
 		}],
 		['invalid_agent', () => {
 			const guarded = defineAgent('guarded', {
+				model: 'chat',
 				instructions: 'Guarded.',
 				guardrails: { [agentGuardrailsBinding]: { id: 'requiresMissing', requirements: { tools: ['missing'] } } },
 			})
 			return defineCatalog('missingGuardrailTool', { agents: [guarded] })
 		}],
 		['duplicate_definition', () => defineCatalog('duplicate', { agents: [
-			defineAgent('same', { instructions: 'One.' }), defineAgent('same', { instructions: 'Two.' }),
+			defineAgent('same', { model: 'chat', instructions: 'One.' }), defineAgent('same', { model: 'chat', instructions: 'Two.' }),
 		] })],
 		['duplicate_definition', () => {
 			const portable = defineTool('sameTool', {
@@ -319,14 +325,14 @@ describe('catalog composition and graph compilation', () => {
 		}],
 		['model_name_collision', () => {
 			const tool = defineTool('helper', { description: 'Tool.', input, output, async handler(_context, value) { return { answer: value.message } } })
-			const helper = defineAgent('helperAgent', { instructions: 'Help.' })
-			const parent = defineAgent('parent', { instructions: 'Parent.', tools: [tool], subagents: { helper } })
+			const helper = defineAgent('helperAgent', { model: 'chat', instructions: 'Help.' })
+			const parent = defineAgent('parent', { model: 'chat', instructions: 'Parent.', tools: [tool], subagents: { helper } })
 			return defineCatalog('collision', { agents: [parent] })
 		}],
 		['model_name_collision', () => {
 			const first = defineMcpServer('firstCollision', { tools: { search: { remoteName: 'one', description: 'One.', input, output } } })
 			const second = defineMcpServer('secondCollision', { tools: { search: { remoteName: 'two', description: 'Two.', input, output } } })
-			const parent = defineAgent('mcpCollision', { instructions: 'Search.', tools: [first.tools.search, second.tools.search] })
+			const parent = defineAgent('mcpCollision', { model: 'chat', instructions: 'Search.', tools: [first.tools.search, second.tools.search] })
 			return defineCatalog('mcpCollision', { agents: [parent] })
 		}],
 	] as const)('fails graph validation with stable reason %s', (reason, create) => {
@@ -335,6 +341,7 @@ describe('catalog composition and graph compilation', () => {
 
 	it('reports an absent Guardrail tool under the agent requirements path', () => {
 		const guarded = defineAgent('guarded', {
+			model: 'chat',
 			instructions: 'Guarded.',
 			guardrails: { [agentGuardrailsBinding]: { id: 'requiresMissing', requirements: { tools: ['missing'] } } },
 		})
@@ -363,7 +370,7 @@ describe('catalog composition and graph compilation', () => {
 	it('keeps catalog availability separate from an agent access list', () => {
 		const visible = defineTool('visible', { description: 'Visible.', input, output, async handler(_context, value) { return { answer: value.message } } })
 		const unavailable = defineTool('unavailable', { description: 'Unavailable.', input, output, async handler(_context, value) { return { answer: value.message } } })
-		const agent = defineAgent('assistant', { instructions: 'Answer.', tools: [visible] })
+		const agent = defineAgent('assistant', { model: 'chat', instructions: 'Answer.', tools: [visible] })
 		const catalog = defineCatalog('access', { tools: [unavailable], agents: [agent] })
 
 		expect(catalog.tools.unavailable).toBe(unavailable)
@@ -480,7 +487,7 @@ describe('catalog composition and graph compilation', () => {
 		const sandboxProbe = defineTool('sandboxProbe', { description: 'Require the session sandbox.', input, output,
 			requires: { sandbox: ['sandbox.fs'] }, async handler(_context, value) { return { answer: value.message } },
 		})
-		const sandboxAgent = defineAgent('sandboxAgent', { input: z.string(), output: z.string(),
+		const sandboxAgent = defineAgent('sandboxAgent', { model: 'chat', input: z.string(), output: z.string(),
 			instructions: 'Keep the sandbox available.', tools: [sandboxProbe], prompt: message => ({ role: 'user', content: message }),
 		})
 		const echo = defineWorkflow('lazyEcho', { input, output, agents: [sandboxAgent], durable: true,
@@ -490,7 +497,7 @@ describe('catalog composition and graph compilation', () => {
 		const model = new FakeModelProvider({ strict: true })
 		model.enqueueText({ content: 'one', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		model.enqueueText({ content: 'two', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		const firstInstance = await definition.getInstance({ storage, sandbox, model: { provider: model, model: 'fake' } })
+		const firstInstance = await definition.getInstance({ storage, sandbox, models: { chat: { provider: model, model: 'fake' } } })
 		const first = await firstInstance.getSession('shared-session')
 		const secondFacade = await firstInstance.getSession('shared-session')
 		expect(first).not.toBe(secondFacade)
@@ -504,7 +511,7 @@ describe('catalog composition and graph compilation', () => {
 		expect(await storage.getSession('shared-session')).toMatchObject({ runCount: 1 })
 		await first.release()
 
-		const secondInstance = await definition.getInstance({ storage, sandbox, model: { provider: model, model: 'fake' } })
+		const secondInstance = await definition.getInstance({ storage, sandbox, models: { chat: { provider: model, model: 'fake' } } })
 		const reopened = await secondInstance.getSession('shared-session')
 		expect(ownerModes).toEqual(['create'])
 		expect(opens).toBe(1)
@@ -612,11 +619,12 @@ describe('catalog composition and graph compilation', () => {
 		const transfer = defineTool('bash', { description: 'Transfer funds.', input: z.string(), output: z.string(),
 			async handler(_context, value) { executions += 1; return value } })
 		const agent = defineAgent('reviewTransfer', {
+			model: 'chat',
 			input: z.string(), output: z.string(), instructions: 'Use the transfer tool.', tools: [transfer],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }),
 		})
 		const instance = await defineHarness({ name: 'approvalStandalone', revision: 'release-1' }).addAgent(agent)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('approvalSession')
 
 		const outcome = await session.agents.reviewTransfer.run('send')
@@ -659,12 +667,13 @@ describe('catalog composition and graph compilation', () => {
 		const transfer = defineTool('bash', { description: 'Transfer funds.', input: toolInput, output: z.string(),
 			async handler(_context, value) { executions += 1; return value } })
 		const agent = defineAgent('reviewTransfer', {
+			model: 'chat',
 			input: rootInput, output: z.string(), instructions: 'Use the transfer tool.', tools: [transfer],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }),
 			guardrails: { [agentGuardrailsBinding]: { id: 'resumeOrder', afterModel() { lifecycle.push('hook:afterModel'); return { decision: 'allow' } } } } as never,
 		})
 		const instance = await defineHarness({ name: 'approvalResume', revision: 'release-1' }).addAgent(agent)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('approvalResumeSession')
 		const interrupted = await session.agents.reviewTransfer.run('send')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval interruption')
@@ -703,11 +712,11 @@ describe('catalog composition and graph compilation', () => {
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
 		let afterModel = 0
 		const effect = defineTool('bash', { description: 'Effect.', input: z.string(), output: z.string(), async handler() { return 'unused' } })
-		const agent = defineAgent('cursorRestart', { instructions: 'Use effect.', input: z.string(), output: z.string(), tools: [effect], prompt: value => ({ role: 'user', content: value }),
+		const agent = defineAgent('cursorRestart', { model: 'chat', instructions: 'Use effect.', input: z.string(), output: z.string(), tools: [effect], prompt: value => ({ role: 'user', content: value }),
 			permissions: { bash: 'require_approval' },
 			guardrails: { [agentGuardrailsBinding]: { id: 'cursorRestartGuard', afterModel() { afterModel += 1; return { decision: 'allow' } } } } as never })
 		const instance = await defineHarness({ name: 'cursorRestartHarness', revision: 'release-1' }).addAgent(agent)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('cursorRestartSession')
 		const interrupted = await session.agents.cursorRestart.run('start')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected interruption')
@@ -725,7 +734,7 @@ describe('catalog composition and graph compilation', () => {
 		const previous = pending.continuation.frame.state
 		const cursor = { schemaVersion: 1, kind: 'accepted_model_turn', phase: 'after_model', rootRunId: run.id, agentRunId: run.id,
 			 sessionId: run.sessionId, agentId: agent.id, invocationId: run.id,
-			step: previous.step + 1, modelAlias: 'primary', input: previous.input, mode: 'run', operation: 'object',
+			step: previous.step + 1, modelAlias: 'chat', input: previous.input, mode: 'run', operation: 'object',
 			request: { messages: previous.messages, tools: [], schema: {} },
 			response: { object: 'from durable cursor', toolCalls: [], usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }, finishReason: 'stop' },
 			agentStarted: true }
@@ -743,7 +752,7 @@ describe('catalog composition and graph compilation', () => {
 			pending.nextEventSequence, 'model.completed'])).digest('hex')}`
 		await storage.appendEvents(run.id, [{ id: acceptedEventId, runId: run.id, sequence: pending.nextEventSequence,
 			at: '2026-09-05T00:00:00.000Z', type: 'model.completed', payload: {
-				agentId: agent.id, modelAlias: 'primary', operation: 'object', usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }, finishReason: 'stop' } }])
+				agentId: agent.id, modelAlias: 'chat', operation: 'object', usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }, finishReason: 'stop' } }])
 		await lease.release()
 		const resume = { type: 'tool-approval', runId: run.id, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'cursor-resume-event', decisions } as const
@@ -767,9 +776,9 @@ describe('catalog composition and graph compilation', () => {
 		provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Effect.', input: z.string(), output: z.string(), async handler(_context, value) { effects += 1; return value } })
-		const agent = defineAgent('receiptReplay', { instructions: 'Use effects.', tools: [effect], permissions: { bash: 'require_approval' } })
+		const agent = defineAgent('receiptReplay', { model: 'chat', instructions: 'Use effects.', tools: [effect], permissions: { bash: 'require_approval' } })
 		const instance = await defineHarness({ name: 'receiptReplayHarness', revision: 'release-1' }).addAgent(agent)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('receiptReplaySession')
 		const first = await session.agents.receiptReplay.run('start')
 		if (first.status !== 'interrupted' || first.interrupt.type !== 'tool-approval') throw new Error('expected first interruption')
@@ -800,10 +809,10 @@ describe('catalog composition and graph compilation', () => {
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Approved effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
-		const child = defineAgent('childReviewer', { instructions: 'Review.', tools: [effect], permissions: { bash: 'require_approval' } })
-		const parent = defineAgent('parentReviewer', { instructions: 'Delegate.', subagents: { reviewer: child } })
+		const child = defineAgent('childReviewer', { model: 'chat', instructions: 'Review.', tools: [effect], permissions: { bash: 'require_approval' } })
+		const parent = defineAgent('parentReviewer', { model: 'chat', instructions: 'Delegate.', subagents: { reviewer: child } })
 		const instance = await defineHarness({ name: 'nestedResume', revision: 'release-1' }).addAgent(parent)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('nestedSession')
 		const interrupted = await session.agents.parentReviewer.run('start')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected interruption')
@@ -830,7 +839,7 @@ describe('catalog composition and graph compilation', () => {
 		let inputParses = 0
 		const effect = defineTool('bash', { description: 'Approved effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
-		const reviewer = defineAgent('workflowReviewer', { input: z.string(), output: z.string(), instructions: 'Review.',
+		const reviewer = defineAgent('workflowReviewer', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Review.',
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflow('approvalWorkflow', {
 			input: z.string().transform(value => { inputParses += 1; return value }), output: z.string(), durable: true,
@@ -845,7 +854,7 @@ describe('catalog composition and graph compilation', () => {
 			},
 		})
 		const instance = await defineHarness({ name: 'workflowApprovalResume', revision: 'release-1' }).addWorkflow(workflow)
-			.getInstance({ model: { provider, model: 'fake' }, storage })
+			.getInstance({ models: { chat: { provider, model: 'fake' } }, storage })
 		const session = await instance.getSession('workflowApprovalSession')
 		const durable = { durable: { runId: 'workflow-approval-run' } } as const
 		const interrupted = await session.workflows.approvalWorkflow.run('start', durable)
@@ -873,9 +882,9 @@ describe('catalog composition and graph compilation', () => {
 			{ kind: 'delta', text: 'streamed' },
 			{ kind: 'finish', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' },
 		])
-		const agent = defineAgent('streamRoot', { instructions: 'Stream.' })
+		const agent = defineAgent('streamRoot', { model: 'chat', instructions: 'Stream.' })
 		const instance = await defineHarness({ name: 'streamRootHarness' }).addAgent(agent)
-			.getInstance({ model: { provider, model: 'fake' } })
+			.getInstance({ models: { chat: { provider, model: 'fake' } } })
 		const session = await instance.getSession('streamRootSession')
 		const events = []
 		for await (const event of session.agents.streamRoot.stream('start')) events.push(event)

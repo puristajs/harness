@@ -65,15 +65,15 @@ interface ModelDefaults {
 ```
 
 Definitions name model aliases and thereby compile the exact required capability
-set. Agents use `model` (`'primary'` by default); workflows declare additional
-aliases in their `models` map. Providers and concrete model names are supplied
-only at instance creation. The `primary` alias uses singular `model`; every
-non-primary alias uses the exact `models` record beside it:
+set. Every agent explicitly names its application-defined `model` alias;
+workflows declare aliases in their `models` map. Providers and concrete model
+names are supplied only at instance creation. Harness reserves no alias. Every
+required alias uses the exact `models` record:
 
 ```ts
 const runtime = await definition.getInstance({
-  model: { provider, model: 'chat-model' },
   models: {
+    chat: { provider, model: 'chat-model' },
     embeddings: { provider, model: 'embedding-model' },
   },
 })

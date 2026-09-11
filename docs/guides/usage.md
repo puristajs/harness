@@ -7,6 +7,7 @@ storage, memory, sandbox, and MCP transports remain behind the Harness instance.
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   input,
   output,
   instructions: 'Answer with verified information.',
@@ -15,7 +16,7 @@ const assistant = defineAgent('assistant', {
 
 const definition = defineHarness({ name: 'support' }).addAgent(assistant)
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 

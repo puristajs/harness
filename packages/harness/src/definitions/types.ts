@@ -461,7 +461,7 @@ export type AgentOptions<
 	Sandbox extends SandboxPolicy | undefined = undefined,
 > = AgentPromptField<Input, Capabilities> & AgentOutputField<Output> & AgentResponseModeField<Output> & {
 	readonly description?: string
-	readonly model?: Model
+	readonly model: Model
 	readonly instructions: string
 	readonly inputCapabilities?: Capabilities
 	readonly tools?: Tools

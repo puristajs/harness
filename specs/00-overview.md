@@ -57,6 +57,7 @@ import { defineAgent, defineHarness } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer clearly and concisely.',
 })
 
@@ -64,10 +65,10 @@ const assistantHarness = defineHarness({ name: 'assistant' })
   .addAgent(assistant)
 
 const runtime = await assistantHarness.getInstance({
-  model: {
+  models: { chat: {
     provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
     model: 'gpt-5-mini',
-  },
+  } },
 })
 
 const session = await runtime.getSession('conversation-1')
@@ -76,8 +77,10 @@ await session.release()
 await runtime.close()
 ```
 
-This form defaults to model alias `primary`, string input and output, streaming
-text updates, a bounded model loop, process-local storage and memory, and
+The application explicitly names the `chat` alias and binds that same name in
+`models`. Harness does not reserve or select any alias. This form defaults only
+the string input and output schemas, streaming text updates, a bounded model
+loop, process-local storage and memory, and
 content-free production telemetry. Adding schemas, tools, Skills, subagents,
 Guardrails, workflows, persistence, admission, or custom adapters extends the
 same pattern.

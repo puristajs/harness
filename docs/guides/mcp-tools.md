@@ -33,6 +33,7 @@ const knowledge = defineMcpServer('knowledge', {
 })
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer from the approved documentation. Use search when needed.',
   tools: [knowledge.tools.search],
 })
@@ -50,7 +51,7 @@ Use HTTP when the server already runs remotely or beside the application:
 
 ```ts
 const instance = await supportHarness.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
   mcp: {
     knowledge: {
       transport: 'http',
@@ -91,7 +92,7 @@ reuses the connection until the instance closes.
 
 ```ts
 const instance = await supportHarness.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
   mcp: {
     knowledge: {
       transport: 'stdio',

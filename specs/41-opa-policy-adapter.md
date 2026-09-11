@@ -269,6 +269,7 @@ const client = createOpaClient({
 })
 
 const transferAgent = defineAgent('transferAgent', {
+  model: 'chat',
   instructions: 'Use transferFunds only for the requested transfer.',
   tools: [transferFunds],
   governance: helpers => ({
@@ -309,10 +310,10 @@ const definition = defineHarness({ name: 'transferService' })
   .addAgent(transferAgent)
 
 const runtime = await definition.getInstance({
-  model: {
+  models: { chat: {
     provider,
     model: 'approved-model',
-  },
+  } },
   storage,
 })
 ```

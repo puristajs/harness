@@ -6,6 +6,7 @@ const incidentGuide = defineSkill('incident-guide', {
 })
 
 const responder = defineAgent('responder', {
+  model: 'chat',
   instructions: 'Follow the incident guide.',
   skills: [incidentGuide],
 })

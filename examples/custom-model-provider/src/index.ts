@@ -10,6 +10,7 @@ const invoiceInput = z.object({ invoiceId: z.string().min(1) })
 const invoiceOutput = z.object({ message: z.string().min(1) })
 
 const invoiceStatus = defineAgent('invoiceStatus', {
+  model: 'chat',
   input: invoiceInput,
   output: invoiceOutput,
   instructions: 'Return a concise invoice status matching the output schema.',
@@ -18,7 +19,7 @@ const invoiceStatus = defineAgent('invoiceStatus', {
 
 export function createInvoiceHarness(client: InternalJsonClient) {
   return defineHarness({ name: 'internalProviderExample' }).addAgent(invoiceStatus).getInstance({
-    model: { provider: new InternalModelProvider(client), model: 'internal-json-v1' },
+    models: { chat: { provider: new InternalModelProvider(client), model: 'internal-json-v1' } },
   })
 }
 

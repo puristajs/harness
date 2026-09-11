@@ -19,7 +19,7 @@ function stream(events: readonly any[]) {
 
 describe('local target dispatcher', () => {
 	it('returns the executor stream unchanged so cancellation reaches the target', async () => {
-		const child = defineAgent('cancellableChild', { instructions: 'Answer.' })
+		const child = defineAgent('cancellableChild', { model: 'chat', instructions: 'Answer.' })
 		const cancel = vi.fn(async (_reason?: string) => {})
 		const result = Promise.resolve({ status: 'completed' as const, runId: 'child-run', output: 'done' })
 		const targetStream = { result, cancel, async *[Symbol.asyncIterator]() {} }
@@ -43,7 +43,7 @@ describe('local target dispatcher', () => {
 		const input = z.string().transform(value => { validations += 1; return { value } })
 		let outputValidations = 0
 		const output = z.string().transform(value => { outputValidations += 1; return { answer: value } })
-		const child = defineAgent('child', { instructions: 'Answer.', input, output, responseMode: 'text', prompt: value => ({ role: 'user', content: value.value }), loop: { maxDepth: 2 } })
+		const child = defineAgent('child', { model: 'chat', instructions: 'Answer.', input, output, responseMode: 'text', prompt: value => ({ role: 'user', content: value.value }), loop: { maxDepth: 2 } })
 		const execute = vi.fn(async (request: any) => stream([
 			{ type: 'run.finished', runId: 'child-run', at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId: 'child-run', output: { answer: 'ok' } } },
 		]))
@@ -72,12 +72,12 @@ describe('local target dispatcher', () => {
 	})
 
 	it('rejects copied, unknown, and same-address foreign contracts without dispatch', async () => {
-		const first = defineAgent('sameId', { instructions: 'First.' })
-		const foreign = defineAgent('sameId', { instructions: 'Second.' })
+		const first = defineAgent('sameId', { model: 'chat', instructions: 'First.' })
+		const foreign = defineAgent('sameId', { model: 'chat', instructions: 'Second.' })
 		const execute = vi.fn(async () => stream([]))
 		const dispatcher = createLocalTargetDispatcher({ defaultMaxDepth: 1, routeBindingRevision: 'deploy-1:graph-a', bindings: [{ definition: first, execute }] })
 		const invocation = { sessionId: 's', invocationId: 'i', rootRunId: 'r', parentRunId: 'p', parentAgentId: 'parent-agent', depth: 1, remainingDepth: 0, signal: new AbortController().signal }
-		for (const target of [{ ...first.contract }, foreign.contract, defineAgent('other', { instructions: 'Other.' }).contract]) {
+		for (const target of [{ ...first.contract }, foreign.contract, defineAgent('other', { model: 'chat', instructions: 'Other.' }).contract]) {
 			await expect(dispatcher.open({ target: target as never, input: 'x', invocation })).rejects.toMatchObject({ constructor: HarnessConfigError, meta: { reason: 'foreign_definition' } })
 		}
 		expect(execute).not.toHaveBeenCalled()
@@ -92,7 +92,7 @@ describe('local target dispatcher', () => {
 	})
 
 	it('returns one canonical deeply frozen route receipt and binds it to the route revision', () => {
-		const child = defineAgent('receiptChild', { instructions: 'Answer.' })
+		const child = defineAgent('receiptChild', { model: 'chat', instructions: 'Answer.' })
 		const dispatcher = createLocalTargetDispatcher({
 			defaultMaxDepth: 1,
 			routeBindingRevision: 'deploy-1:graph-a',
@@ -124,6 +124,7 @@ describe('local target dispatcher', () => {
 	it('opens a persisted route without re-running input transforms and forwards the exact resume', async () => {
 		let validations = 0
 		const child = defineAgent('persistedChild', {
+			model: 'chat',
 			instructions: 'Answer.',
 			input: z.string().transform(value => { validations += 1; return { value } }),
 			prompt: value => ({ role: 'user', content: value.value }),
@@ -157,6 +158,7 @@ describe('local target dispatcher', () => {
 	it('rejects malformed, unknown, and revision-stale persisted receipts before validation or execution', async () => {
 		let validations = 0
 		const child = defineAgent('staleChild', {
+			model: 'chat',
 			instructions: 'Answer.',
 			input: z.string().transform(value => { validations += 1; return value }),
 			prompt: value => ({ role: 'user', content: value }),
@@ -195,8 +197,8 @@ describe('local target dispatcher', () => {
 	})
 
 	it('rejects invalid route revisions and duplicate logical routes at construction', () => {
-		const first = defineAgent('duplicateRoute', { instructions: 'First.' })
-		const second = defineAgent('duplicateRoute', { instructions: 'Second.' })
+		const first = defineAgent('duplicateRoute', { model: 'chat', instructions: 'First.' })
+		const second = defineAgent('duplicateRoute', { model: 'chat', instructions: 'Second.' })
 		expect(() => createLocalTargetDispatcher({ defaultMaxDepth: 1, routeBindingRevision: '', bindings: [] }))
 			.toThrowError(HarnessConfigError)
 		expect(() => createLocalTargetDispatcher({ defaultMaxDepth: 1, routeBindingRevision: 'deploy-1', bindings: [

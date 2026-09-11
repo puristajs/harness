@@ -14,7 +14,7 @@ import { natsMemoryEngine } from '@purista/harness-memory-nats'
 
 const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
 const harness = await definition.getInstance({
-  model,
+  models: { chat: model },
   memory: natsMemoryEngine({ servers: 'nats://127.0.0.1:4222' }),
 })
 ```

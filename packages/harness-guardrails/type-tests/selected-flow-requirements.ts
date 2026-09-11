@@ -215,7 +215,7 @@ const readLedger = defineTool('readLedger', {
 	description: 'Read ledger.', input: z.string(), output: z.string(), handler: async (_context, input) => input,
 })
 const guardedAgent = defineAgent('guardedAgent', {
-	model: 'primary',
+	model: 'chat',
 	instructions: 'Answer safely.',
 	tools: [zetaTool, alphaTool, lookupAccount, readLedger],
 	guardrails: rails,

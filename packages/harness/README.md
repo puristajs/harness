@@ -103,11 +103,11 @@ application code: they are not discovered, downloaded, or hot-reloaded.
 ```ts
 import { defineAgent, defineCatalog, defineHarness } from '@purista/harness'
 
-const support = defineAgent('support', { instructions: 'Help the user.' })
+const support = defineAgent('support', { model: 'chat', instructions: 'Help the user.' })
 const catalog = defineCatalog('supportDefinitions', { agents: [support] })
 const definition = defineHarness({ name: 'supportApp' }).use(catalog)
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 

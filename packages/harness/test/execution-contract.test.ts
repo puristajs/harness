@@ -101,7 +101,7 @@ describe('portable execution contract', () => {
 
 	it('resolves one frozen v4 defaults snapshot and preserves it through composition', () => {
 		const definition = defineV4Harness({ name: 'defaultsHarness', defaults: { maxSteps: 4, historyWindow: 0 } })
-		const next = definition.addAgent(defineV4Agent('answerAgent', { instructions: 'Answer.' }))
+		const next = definition.addAgent(defineV4Agent('answerAgent', { model: 'chat', instructions: 'Answer.' }))
 		expect(definition.defaults).toMatchObject({ maxSteps: 4, historyWindow: 0, maxToolCalls: 32 })
 		expect(Object.isFrozen(definition.defaults)).toBe(true)
 		expect(next.defaults).toBe(definition.defaults)

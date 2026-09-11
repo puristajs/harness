@@ -743,6 +743,7 @@ const selected = plugin.bindings({
 })
 
 const researcher = defineAgent('researcher', {
+  model: 'chat',
   instructions: 'Research only approved knowledge sources.',
   skills: [selected.skills['research-playbook']],
   tools: [selected.mcpServers.knowledge.tools.searchDocs],
@@ -752,7 +753,7 @@ const definition = defineHarness({ name: 'researchHarness' })
   .addAgent(researcher)
 
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5' },
+  models: { chat: { provider, model: 'gpt-5' } },
   mcp: selected.mcp,
 })
 ```

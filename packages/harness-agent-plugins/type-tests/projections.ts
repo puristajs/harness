@@ -26,6 +26,7 @@ const resolveHeaders = bindings.mcp.knowledge.resolveHeaders
 void [skillId, runtime, serverId, toolId, parsedInput, parsedOutput, resolveHeaders]
 
 defineAgent('researchAgent', {
+	model: 'chat',
 	instructions: 'Use the selected sources.',
 	tools: [bindings.mcpServers.knowledge.tools.searchDocs],
 	skills: [bindings.skills.research],
@@ -38,6 +39,6 @@ bindings.mcpServers.other
 // @ts-expect-error Unselected tool keys do not appear in exact result maps.
 bindings.mcpServers.knowledge.tools.other
 // @ts-expect-error Structurally forged values do not satisfy the Core definition brand.
-defineAgent('forgedAgent', { instructions: 'Invalid.', skills: [{ kind: 'skill', id: 'research', directory: new URL('file:///tmp/research') }] })
+defineAgent('forgedAgent', { model: 'chat', instructions: 'Invalid.', skills: [{ kind: 'skill', id: 'research', directory: new URL('file:///tmp/research') }] })
 // @ts-expect-error Both selection maps are mandatory.
 plugin.bindings({ skills: {} })

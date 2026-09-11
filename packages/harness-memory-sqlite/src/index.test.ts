@@ -22,9 +22,9 @@ describe('sqliteMemoryEngine', () => {
     expect(Object.isFrozen(engine.info)).toBe(true)
     expect(Object.isFrozen(engine.capabilities)).toBe(true)
     const close = vi.spyOn(engine, 'close')
-    const agent = defineAgent('memoryReader', { instructions: 'Remember.', memory: { capabilities: ['memory.kv'] } })
+    const agent = defineAgent('memoryReader', { model: 'chat', instructions: 'Remember.', memory: { capabilities: ['memory.kv'] } })
     const instance = await defineHarness({ name: 'sqliteMemoryHarness' }).addAgent(agent)
-      .getInstance({ model: { provider: new FakeModelProvider(), model: 'fake' }, memory: engine })
+      .getInstance({ models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, memory: engine })
     await instance.close()
     expect(close).not.toHaveBeenCalled()
     await expect(engine.list({ kind: 'session', scopeKey: 'after-close', sessionId: 'after-close' }, {}, {

@@ -24,7 +24,7 @@ async function createFixture(): Promise<{ dataRoot: string; cleanup: () => Promi
   return { dataRoot, cleanup: () => rm(root, { recursive: true, force: true }) }
 }
 
-const releaseProbe = defineAgent('releaseProbe', { instructions: 'Test stream cleanup.' })
+const releaseProbe = defineAgent('releaseProbe', { model: 'chat', instructions: 'Test stream cleanup.' })
 type ReleaseProbeOutcome = HarnessTargetExecutionTerminalOutcome<typeof releaseProbe.contract>
 type ReleaseProbeStream = HarnessTargetStream<typeof releaseProbe.contract>
 

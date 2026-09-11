@@ -55,6 +55,7 @@ const bindings = plugin.bindings({
 })
 
 const researcher = defineAgent('researcher', {
+  model: 'chat',
   instructions: 'Use approved research resources when relevant.',
   skills: [bindings.skills.playbook],
   tools: [bindings.mcpServers.pluginDocs.tools.searchPluginDocs],
@@ -63,7 +64,7 @@ const researcher = defineAgent('researcher', {
 const instance = await defineHarness({ name: 'pluginApp' })
   .addAgent(researcher)
   .getInstance({
-    model: { provider, model: 'gpt-5-mini' },
+    models: { chat: { provider, model: 'gpt-5-mini' } },
     mcp: bindings.mcp,
   })
 ```

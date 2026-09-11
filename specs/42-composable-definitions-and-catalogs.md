@@ -35,6 +35,7 @@ The shortest useful application remains small:
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer the user clearly and concisely.',
 })
 
@@ -42,18 +43,19 @@ const assistantHarness = defineHarness({ name: 'assistant' })
   .addAgent(assistant)
 
 const runtime = await assistantHarness.getInstance({
-  model: {
+  models: { chat: {
     provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
     model: 'gpt-5-mini',
-  },
+  } },
 })
 
 const session = await runtime.getSession('conversation-1')
 const outcome = await session.agents.assistant.run('How can I reset my PIN?')
 ```
 
-Defaults for this form are model alias `primary`, string input and output,
-streaming text updates, the standard bounded loop, no optional capabilities,
+The model alias is explicit and application-defined; Harness reserves no alias.
+Defaults for this form are string input and output, streaming text updates, the
+standard bounded loop, no optional capabilities,
 and content-free production telemetry. Adding schemas, tools, Skills,
 subagents, Guardrails, persistence, admission, or custom adapters refines the same
 definition without changing its mental model.
@@ -978,6 +980,7 @@ const knowledgeMcp = defineMcpServer('knowledge', {
 })
 
 const answerQuestion = defineAgent('answerQuestion', {
+  model: 'chat',
   instructions: 'Answer with evidence from approved knowledge.',
   tools: [knowledgeMcp.tools.searchKnowledge],
 })
@@ -1336,7 +1339,7 @@ The definition-time fields are closed and have these requirement effects:
 | Field | Public type and behavior | Requirement contribution |
 | --- | --- | --- |
 | `description` | optional nonempty string | none |
-| `model` | `ModelAliasId`, default `primary` | selected output/tool/input capabilities |
+| `model` | required application-defined `ModelAliasId` | selected output/tool/input capabilities |
 | `input` | Standard JSON Schema; omission means Harness string schema | none |
 | `output` | Standard JSON Schema; omission means Harness string schema | inferred text or structured mode |
 | `responseMode` | optional `text | structured`; required only for an ambiguous output projection | selected response capabilities |
@@ -1748,7 +1751,7 @@ manually synchronized string ids. The Harness compiler converts them into
 provider-facing names and schemas.
 
 If `input` or `output` is omitted, that boundary uses the Harness string
-schema. If `model` is omitted, the alias is `primary`. The response operation is
+schema. `model` cannot be omitted. The response operation is
 derived from the normalized Standard JSON Schema projection of the validated
 output: an unambiguously string-only top-level schema selects `text` and
 `textStream`; an unambiguously non-string JSON schema selects `object` and
@@ -1797,6 +1800,7 @@ A prompt mapper is optional, including for structured JSON input:
 
 ```ts
 const classify = defineAgent('classify', {
+  model: 'chat',
   input: classifyInputSchema,
   output: classifyOutputSchema,
   instructions: 'Classify the support request.',
@@ -1834,6 +1838,7 @@ and not a JavaScript function call.
 
 ```ts
 const answerQuestion = defineAgent('answerQuestion', {
+  model: 'chat',
   instructions: 'Answer the question. Delegate transaction analysis when needed.',
   input: questionSchema,
   output: answerSchema,
@@ -3249,18 +3254,12 @@ type ModelRuntimeBinding = Readonly<Omit<ModelAlias, 'capabilities'>>
 
 type ModelFields<Requirements extends RuntimeRequirements> =
   [ModelAliases<Requirements>] extends [never]
-    ? Readonly<{ model?: never; models?: never }>
-    : ('primary' extends ModelAliases<Requirements>
-        ? Readonly<{ model: ModelRuntimeBinding }>
-        : Readonly<{ model?: never }>)
-      & ([Exclude<ModelAliases<Requirements>, 'primary'>] extends [never]
-        ? Readonly<{ models?: never }>
-        : Readonly<{
-            models: Readonly<{
-              [Alias in Exclude<ModelAliases<Requirements>, 'primary'>]:
-                ModelRuntimeBinding
-            }>
-          }>)
+    ? Readonly<{ models?: never }>
+    : Readonly<{
+        models: Readonly<{
+          [Alias in ModelAliases<Requirements>]: ModelRuntimeBinding
+        }>
+      }>
 
 type RequiredOrOptionalField<
   Needed extends boolean,
@@ -3364,12 +3363,11 @@ type HarnessInstanceConfig<
 
 The model cases are exact and additive:
 
-- an empty model-alias set forbids both `model` and `models`;
-- a graph requiring `primary` always binds it through `model`;
-- required non-primary aliases always form the exact `models` record beside
-  `model` when primary is also required; and
-- a graph with only non-primary aliases forbids `model` and requires that exact
-  `models` record.
+- an empty model-alias set forbids `models`; and
+- any nonempty model-alias set requires one exact `models` record containing
+  every inferred alias and no additional aliases.
+
+No alias is reserved and there is no singular `model` runtime field.
 
 The caller never supplies `capabilities` on a model binding. The compiler
 injects the exact, frozen capability tuple from
@@ -3411,8 +3409,8 @@ graph with multiple aliases therefore uses this shape:
 
 ```ts
 const runtime = await bankingHarness.getInstance({
-  model: { provider: openaiProvider, model: 'gpt-5.5' },
   models: {
+    chat: { provider: openaiProvider, model: 'gpt-5.5' },
     fast: { provider: openaiProvider, model: 'gpt-5-mini' },
     embeddings: { provider: openaiProvider, model: 'text-embedding-3-large' },
   },
@@ -3511,7 +3509,7 @@ stable order and stops at the first failure:
 1. reject a graph with host-tool requirements;
 2. require a non-array object config;
 3. reject the lexicographically first unknown top-level key;
-4. validate the empty, exact-primary, or multi-model selector form;
+4. validate the empty or exact `models` selector form;
 5. validate exact aliases and model binding structure;
 6. validate provider methods and optional provider model metadata;
 7. validate required or forbidden groups in `mcp`, `storage`, `memory`,
@@ -6717,7 +6715,7 @@ composition statement the user must add. It never regex-rewrites arbitrary
 code. Generated dependencies come from one versioned CLI release package map.
 The v4 release map uses published `@purista/harness@^4.0.0`; adding the first
 agent in the standard starter also adds `@purista/harness-openai@^4.0.0`, an
-`OPENAI_API_KEY` entry to `.env.example`, and the canonical `ai.model`
+`OPENAI_API_KEY` entry to `.env.example`, and the canonical `ai.models`
 bootstrap. Tests use `@purista/harness/testing` and never require credentials.
 The stream projection additionally adds
 `@purista/harness-ai-sdk-ui@^4.0.0` and its tested `ai@^7.0.0` peer.

@@ -42,12 +42,13 @@ export async function reviewAndBindPlugin(root: string) {
 export async function createPluginHarness(root: string, provider: ModelProvider) {
   const bindings = await reviewAndBindPlugin(root)
   const researcher = defineAgent('researcher', {
+    model: 'chat',
     instructions: 'Use the approved research resources when relevant.',
     tools: [bindings.mcpServers.pluginDocs.tools.searchPluginDocs],
     skills: [bindings.skills.playbook],
   })
   return defineHarness({ name: 'agentPluginExample' }).addAgent(researcher).getInstance({
-    model: { provider, model: 'provider-model' },
+    models: { chat: { provider, model: 'provider-model' } },
     mcp: bindings.mcp,
   })
 }

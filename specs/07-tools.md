@@ -66,6 +66,7 @@ Agents select built-ins through direct references:
 
 ```ts
 const analyst = defineAgent('analyst', {
+  model: 'chat',
   instructions: 'Inspect the supplied workspace and report evidence.',
   tools: [builtInTools.read, builtInTools.glob, builtInTools.grep],
 })
@@ -98,6 +99,7 @@ const knowledgeMcp = defineMcpServer('knowledge', {
 })
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer with evidence from approved knowledge.',
   tools: [knowledgeMcp.tools.searchKnowledge],
 })

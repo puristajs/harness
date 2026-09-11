@@ -10,7 +10,7 @@ Start with direct definition references:
 ```ts
 // Harness 4
 const lookup = defineTool('lookup', toolOptions)
-const support = defineAgent('support', { ...agentOptions, tools: [lookup] })
+const support = defineAgent('support', { model: 'chat', ...agentOptions, tools: [lookup] })
 const definition = defineHarness({ name: 'support' }).addAgent(support)
 ```
 
@@ -24,7 +24,7 @@ Provider clients and infrastructure belong in instance configuration:
 
 ```ts
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 

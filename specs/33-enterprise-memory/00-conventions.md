@@ -20,6 +20,7 @@ instance configuration:
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   memory: {
     capabilities: ['memory.kv', 'memory.vector_search'],
     embedding: { model: 'embeddings' },
@@ -28,8 +29,10 @@ const assistant = defineAgent('assistant', {
 
 const definition = defineHarness({ name: 'support' }).addAgent(assistant)
 const runtime = await definition.getInstance({
-  model: { provider, model: 'chat-model' },
-  models: { embeddings: { provider, model: 'embedding-model' } },
+  models: {
+    chat: { provider, model: 'chat-model' },
+    embeddings: { provider, model: 'embedding-model' },
+  },
   memory: engine,
 })
 ```

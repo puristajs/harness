@@ -589,13 +589,13 @@ describe('local durable execution', () => {
     let effects = 0
     const effect = defineTool('effect', { description: 'Apply one approved effect.', input: z.string(), output: z.string(),
       async handler(_context, value) { effects += 1; return value } })
-    const agent = defineAgent('workspaceApproval', { input: z.string(), output: z.string(), instructions: 'Use the effect.',
+    const agent = defineAgent('workspaceApproval', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Use the effect.',
       prompt: value => ({ role: 'user', content: value }), tools: [effect], permissions: { bash: 'allow', write: 'allow', edit: 'allow' },
       governance: { policies: [{ kind: 'native', id: 'approvalPolicy', rules: [{ id: 'approveEffect', tools: ['effect'], effect: 'require_approval' }] }] },
       durable: true, workspace: true })
     const definition = defineV4Harness({ name: 'workspaceApprovalHarness', revision: 'v1' }).addAgent(agent)
     const first = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
-      model: { provider, model: 'fake' } })
+      models: { chat: { provider, model: 'fake' } } })
     const firstSession = await first.getSession('workspace-approval-session')
     const interrupted = await firstSession.agents.workspaceApproval.run('start', { durable: { runId: 'workspace-approval-run' } })
     if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -603,7 +603,7 @@ describe('local durable execution', () => {
     await first.close()
 
     const second = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
-      model: { provider, model: 'fake' } })
+      models: { chat: { provider, model: 'fake' } } })
     try {
       const session = await second.getSession('workspace-approval-session')
       const request = interrupted.interrupt.requests[0]!

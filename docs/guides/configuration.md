@@ -14,6 +14,7 @@ connections, and deployment choices out of shared packages.
 import { defineAgent, defineHarness } from '@purista/harness'
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Answer clearly and briefly.',
 })
 
@@ -36,19 +37,19 @@ packaging.
 
 ```ts
 const instance = await supportHarness.getInstance({
-  model: {
+  models: { chat: {
     provider,
     model: 'gpt-5-mini',
     retry: true,
-  },
+  } },
   logger,
   telemetry: { contentCaptureMode: 'NO_CONTENT' },
 })
 ```
 
-The graph determines the required fields. A graph with only the default
-`primary` model alias accepts `model`. A graph with named aliases accepts an
-exact `models` record:
+The graph determines the required fields. Every model alias is
+application-defined and every graph uses one exact `models` record. Harness
+does not reserve an alias or expose a singular shortcut:
 
 ```ts
 const answerer = defineAgent('answerer', {
@@ -74,6 +75,7 @@ Declare memory on the agent that uses it:
 
 ```ts
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   instructions: 'Use relevant session memory.',
   memory: {
     capabilities: ['memory.kv', 'memory.vector_search'],
@@ -87,7 +89,7 @@ The instance now requires a compatible `memory` engine and both model aliases:
 ```ts
 await definition.getInstance({
   models: {
-    primary: { provider, model: 'gpt-5-mini' },
+    chat: { provider, model: 'gpt-5-mini' },
     embeddings: { provider, model: 'text-embedding-3-small' },
   },
   memory,

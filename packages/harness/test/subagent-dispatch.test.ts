@@ -79,7 +79,7 @@ function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: s
 
 describe('subagent execution', () => {
 	it('creates a finalized binding, dispatches wire input, derives stable lineage, and relays the child stream', async () => {
-		const child = defineAgent('riskAnalyst', { description: 'Analyze risk.', instructions: 'Analyze.', input: z.object({ value: z.string() }), output: z.object({ answer: z.string() }), prompt: value => ({ role: 'user', content: value.value }) })
+		const child = defineAgent('riskAnalyst', { model: 'chat', description: 'Analyze risk.', instructions: 'Analyze.', input: z.object({ value: z.string() }), output: z.object({ answer: z.string() }), prompt: value => ({ role: 'user', content: value.value }) })
 		const events = [
 			{ type: 'agent.started', runId: 'child-run', agentId: child.id, at: '2026-01-01T00:00:00.000Z' },
 			{ type: 'run.finished', runId: 'child-run', at: '2026-01-01T00:00:00.000Z', outcome: { status: 'completed', runId: 'child-run', output: { answer: 'safe' } } },
@@ -109,7 +109,7 @@ describe('subagent execution', () => {
 	})
 
 	it('relays nested run terminals while consuming only the direct child terminal as its outcome', async () => {
-		const child = defineAgent('workflowLikeChild', { instructions: 'Coordinate nested work.' })
+		const child = defineAgent('workflowLikeChild', { model: 'chat', instructions: 'Coordinate nested work.' })
 		const events = [
 			{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
 			{ type: 'run.started', eventId: 'nested-1', sequence: 1, runId: 'nested-run', at: 'x',
@@ -132,7 +132,7 @@ describe('subagent execution', () => {
 	})
 
 	it('enforces descendant start, parent lifetime, and monotonic per-run sequences', async () => {
-		const child = defineAgent('strictNestedChild', { instructions: 'Coordinate nested work.' })
+		const child = defineAgent('strictNestedChild', { model: 'chat', instructions: 'Coordinate nested work.' })
 		const cases = [
 			[
 				{ type: 'agent.started', eventId: 'root-1', sequence: 1, runId: 'child-run', agentId: child.id, at: 'x' },
@@ -178,15 +178,15 @@ describe('subagent execution', () => {
 	})
 
 	it('uses override, child, and exact fallback descriptions', () => {
-		const described = defineAgent('described', { description: 'Child description.', instructions: 'Help.' })
-		const bare = defineAgent('bareChild', { instructions: 'Help.' })
+		const described = defineAgent('described', { model: 'chat', description: 'Child description.', instructions: 'Help.' })
+		const bare = defineAgent('bareChild', { model: 'chat', instructions: 'Help.' })
 		expect(createSubagentBinding('a', { agent: described, description: 'Override.' }).description).toBe('Override.')
 		expect(createSubagentBinding('b', described).description).toBe('Child description.')
 		expect(createSubagentBinding('c', bare).description).toBe('Delegate to the "bareChild" agent.')
 	})
 
 	it('rejects exhausted depth before opening dispatch with the absolute ceiling', async () => {
-		const child = defineAgent('child', { instructions: 'Help.' })
+		const child = defineAgent('child', { model: 'chat', instructions: 'Help.' })
 		const open = vi.fn()
 		const binding = createSubagentBinding('child', child)
 		await expect(binding.invokeValidated(context(open, { depth: 3, remainingDepth: 0 }) as never, 'x', 'x')).rejects.toMatchObject({
@@ -204,13 +204,13 @@ describe('subagent execution', () => {
 		['cancelled', [{ type: 'run.finished', runId: 'r', at: 'x', outcome: { status: 'cancelled', runId: 'r', error: { code: 'X', message: 'secret' } } }], OperationCancelledError],
 		['failed', [{ type: 'run.finished', runId: 'r', at: 'x', outcome: { status: 'failed', runId: 'r', error: { code: 'EVIL', message: 'secret', meta: { secret: true } } } }], ToolError],
 	])('maps the %s child terminal safely', async (_name, events, ErrorType) => {
-		const child = defineAgent('child', { instructions: 'Help.' })
+		const child = defineAgent('child', { model: 'chat', instructions: 'Help.' })
 		const binding = createSubagentBinding('delegate', child)
 		await expect(binding.invokeValidated(context(async () => childStream(events)) as never, 'x', 'x')).rejects.toMatchObject({ constructor: ErrorType })
 	})
 
 	it('does not trust transported failure fields as local ToolError metadata', async () => {
-		const child = defineAgent('failedChild', { instructions: 'Help.' })
+		const child = defineAgent('failedChild', { model: 'chat', instructions: 'Help.' })
 		const binding = createSubagentBinding('safeDelegate', child)
 		let thrown: unknown
 		try { await binding.invokeValidated(context(async () => childStream([{ type: 'run.finished', runId: 'r', at: 'x', outcome: {
@@ -221,7 +221,7 @@ describe('subagent execution', () => {
 	})
 
 	it('cancels a non-cooperative child stream and preserves canonical cancellation', async () => {
-		const child = defineAgent('slowChild', { instructions: 'Help.' })
+		const child = defineAgent('slowChild', { model: 'chat', instructions: 'Help.' })
 		const cancel = vi.fn(async () => {})
 		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
 		const hanging = { result: new Promise<never>(() => {}), cancel, [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<any>>(() => {}), return: close } } }
@@ -236,7 +236,7 @@ describe('subagent execution', () => {
 	})
 
 	it('preserves a canonical timeout while cleaning a non-cooperative child stream', async () => {
-		const child = defineAgent('timedChild', { instructions: 'Help.' })
+		const child = defineAgent('timedChild', { model: 'chat', instructions: 'Help.' })
 		const controller = new AbortController()
 		const cancel = vi.fn(async () => {})
 		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
@@ -264,7 +264,7 @@ describe('subagent execution', () => {
 		['malformed terminal', [{ type: 'run.finished', runId: 'r', at: 'x', extra: true, outcome: { status: 'completed', runId: 'r', output: 'x' } }], 0],
 		['malformed interrupt', [{ type: 'run.finished', runId: 'r', at: 'x', outcome: { status: 'interrupted', runId: 'r', interrupt: { type: 'tool-approval', id: 'a', requests: [] } } }], 0],
 	] as const)('rejects %s before unsafe relay and cleans up', async (_name, events, relayCount) => {
-		const child = defineAgent('protocolChild', { instructions: 'Help.' })
+		const child = defineAgent('protocolChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream(events)
 		const runtime = context(async () => tracked.stream)
 		await expect(createSubagentBinding('protocolDelegate', child).invokeValidated(runtime as never, 'x', 'x')).rejects.toBeInstanceOf(ValidationError)
@@ -274,7 +274,7 @@ describe('subagent execution', () => {
 	})
 
 	it('rejects inconsistent run correlation without relaying the bad event', async () => {
-		const child = defineAgent('correlationChild', { instructions: 'Help.' })
+		const child = defineAgent('correlationChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([
 			{ type: 'agent.started', runId: 'first-run', agentId: child.id, at: 'x' },
 			{ type: 'run.finished', runId: 'other-run', at: 'x', outcome: { status: 'completed', runId: 'other-run', output: 'ok' } },
@@ -287,7 +287,7 @@ describe('subagent execution', () => {
 	})
 
 	it('rejects a dispatcher that substitutes the runtime-authored direct run id', async () => {
-		const child = defineAgent('substitutedRunChild', { instructions: 'Help.' })
+		const child = defineAgent('substitutedRunChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([{ type: 'run.finished', runId: 'substituted-run', __preserveRunId: true, at: 'x',
 			outcome: { status: 'completed', runId: 'substituted-run', output: 'unsafe' } }])
 		const runtime = context(async () => tracked.stream)
@@ -299,7 +299,7 @@ describe('subagent execution', () => {
 	})
 
 	it('rejects a producer result that disagrees with the direct terminal before relaying it', async () => {
-		const child = defineAgent('mismatchedResultChild', { instructions: 'Help.' })
+		const child = defineAgent('mismatchedResultChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([{ type: 'run.finished', runId: 'r', at: 'x',
 			outcome: { status: 'completed', runId: 'r', output: 'event-output' } }])
 		Object.defineProperty(tracked.stream, 'result', {
@@ -314,7 +314,7 @@ describe('subagent execution', () => {
 	})
 
 	it('observes producer result rejection while the iterator hangs and awaits cleanup', async () => {
-		const child = defineAgent('rejectedResultChild', { instructions: 'Help.' })
+		const child = defineAgent('rejectedResultChild', { model: 'chat', instructions: 'Help.' })
 		const cancel = vi.fn(async () => {})
 		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
 		const primary = new Error('private producer failure')
@@ -333,7 +333,7 @@ describe('subagent execution', () => {
 	})
 
 	it('rejects and cleans up when iteration ends after a terminal but producer result remains pending', async () => {
-		const child = defineAgent('pendingResultChild', { instructions: 'Help.' })
+		const child = defineAgent('pendingResultChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([{ type: 'run.finished', runId: 'r', at: 'x',
 			outcome: { status: 'completed', runId: 'r', output: 'event-output' } }])
 		Object.defineProperty(tracked.stream, 'result', { value: new Promise<never>(() => {}) })
@@ -351,7 +351,7 @@ describe('subagent execution', () => {
 		['wrong parent run', { parentRunId: 'wrong', parentInvocationId: 'wrong' }],
 		['wrong parent invocation', { parentRunId: 'parent-run', parentInvocationId: 'wrong' }],
 	] as const)('rejects %s before relaying', async (_name, parent) => {
-		const child = defineAgent('parentCorrelationChild', { instructions: 'Help.' })
+		const child = defineAgent('parentCorrelationChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([{ type: 'agent.started', runId: 'r', agentId: child.id, at: 'x', ...parent }])
 		const runtime = context(async () => tracked.stream)
 		await expect(createSubagentBinding('parentCorrelationDelegate', child).invokeValidated(runtime as never, 'x', 'x'))
@@ -360,7 +360,7 @@ describe('subagent execution', () => {
 	})
 
 	it('relays nested child-task lifecycle only with exact immediate-parent correlation', async () => {
-		const child = defineAgent('nestedTaskCorrelationChild', { instructions: 'Help.' })
+		const child = defineAgent('nestedTaskCorrelationChild', { model: 'chat', instructions: 'Help.' })
 		const tracked = trackedStream([
 			{ type: 'run.started', sequence: 1, runId: 'r', at: 'x' },
 			{ type: 'run.started', sequence: 1, runId: 'nested', parentRunId: 'r', parentInvocationId: 'nested-invocation', at: 'x' },
@@ -379,7 +379,7 @@ describe('subagent execution', () => {
 	})
 
 	it('cleans up iterator and relay failures without masking the primary error', async () => {
-		const child = defineAgent('cleanupChild', { instructions: 'Help.' })
+		const child = defineAgent('cleanupChild', { model: 'chat', instructions: 'Help.' })
 		const iteratorFailure = trackedStream([], 0)
 		await expect(createSubagentBinding('iteratorDelegate', child).invokeValidated(context(async () => iteratorFailure.stream) as never, 'x', 'x')).rejects.toThrow('iterator failed')
 		expect(iteratorFailure.cancel).toHaveBeenCalledTimes(1)
@@ -394,7 +394,7 @@ describe('subagent execution', () => {
 	})
 
 	it('awaits asynchronous cancel and iterator cleanup before rethrowing the exact primary error', async () => {
-		const child = defineAgent('deferredCleanupChild', { instructions: 'Help.' })
+		const child = defineAgent('deferredCleanupChild', { model: 'chat', instructions: 'Help.' })
 		const primary = new Error('primary iterator failure')
 		let resolveCancel!: () => void
 		let resolveReturn!: () => void
@@ -415,7 +415,7 @@ describe('subagent execution', () => {
 	})
 
 	it('throws the private child interruption with child invocation id', async () => {
-		const child = defineAgent('child', { instructions: 'Help.' })
+		const child = defineAgent('child', { model: 'chat', instructions: 'Help.' })
 		const binding = createSubagentBinding('delegate', child)
 		let thrown: unknown
 		try { await binding.invokeValidated(context(async () => childStream([{ type: 'run.finished', runId: 'r', at: 'x', outcome: { status: 'interrupted', runId: 'r', interrupt: { type: 'tool-approval', id: 'a', revision: 'v1', requests: [] } } }])) as never, 'x', 'x') } catch (error) { thrown = error }

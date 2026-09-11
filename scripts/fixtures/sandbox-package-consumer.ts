@@ -33,12 +33,13 @@ const docker = dockerSandbox({
   runtimes: ['shell'],
 })
 const sandboxProbe = defineAgent('sandboxProbe', {
+  model: 'chat',
   instructions: 'Exercise the packed sandbox declaration boundary.',
   sandbox: 'private',
 })
 const packedHarness = defineHarness({ name: 'packedConsumer' }).addAgent(sandboxProbe)
 const packedInstance = await packedHarness.getInstance({
-  model: { provider: new FakeModelProvider(), model: 'fake' },
+  models: { chat: { provider: new FakeModelProvider(), model: 'fake' } },
   sandbox: docker,
 })
 await packedInstance.close()

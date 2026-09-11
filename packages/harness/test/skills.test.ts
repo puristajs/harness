@@ -41,7 +41,7 @@ describe('v4 Agent Skill snapshots', () => {
 		const loaded = await loadSkillSnapshots([definition])
 		expect(loaded.demo.manifest).toMatchObject({ 'allowed-tools': 'bash write', metadata: { owner: 'docs' } })
 		await fs.writeFile(path.join(new URL(definition.directory).pathname, 'notes.txt'), 'changed later')
-		const reader = createReadSkillBinding(defineAgent('readerAgent', { instructions: 'Read.' }), loaded)!
+		const reader = createReadSkillBinding(defineAgent('readerAgent', { model: 'chat', instructions: 'Read.' }), loaded)!
 		expect(reader.id).toBe('read_skill')
 		expect(reader.implementationKind).toBe('read-skill')
 		expect(Object.isFrozen(reader)).toBe(true)

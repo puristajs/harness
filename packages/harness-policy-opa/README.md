@@ -43,6 +43,7 @@ const transferFunds = defineTool('transferFunds', {
 })
 
 const transferAgent = defineAgent('transferAgent', {
+  model: 'chat',
   instructions: 'Use transferFunds for a requested transfer.',
   tools: [transferFunds],
   governance: (helpers) => ({
@@ -78,7 +79,7 @@ const transferAgent = defineAgent('transferAgent', {
 
 const definition = defineHarness({ name: 'transfers' }).addAgent(transferAgent)
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 

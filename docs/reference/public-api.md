@@ -31,7 +31,7 @@ const search = defineTool('search', {
 })
 
 const answer = defineAgent('answer', {
-  model: 'primary',
+  model: 'chat',
   instructions: 'Answer from approved documents and use search when needed.',
   tools: [search],
 })
@@ -39,8 +39,8 @@ const answer = defineAgent('answer', {
 const definition = defineHarness({ name: 'knowledge' }).addAgent(answer)
 ```
 
-`defineAgent` defaults to string input, string output, model alias `primary`, and
-text-delta streaming. Supplying an input schema also requires a pure `prompt`
+`defineAgent` requires an application-defined model alias and defaults to string
+input, string output, and text-delta streaming. Supplying an input schema also requires a pure `prompt`
 mapper. Supplying an output schema selects structured generation and
 `output.object.snapshot` updates.
 
@@ -65,13 +65,13 @@ an instance:
 
 ```ts
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 
-The singular `model` field is the exact binding for a graph that only uses the
-default `primary` alias. Use an exact `models` record when definitions select
-additional aliases, and add storage, memory, sandbox, workspace, MCP, logger,
+Every model alias comes from the application definition. Harness reserves none.
+Use one exact `models` record containing all aliases inferred from the graph,
+and add storage, memory, sandbox, workspace, MCP, logger,
 or telemetry bindings only when the graph or deployment requires them.
 
 The exact `HarnessInstanceConfig<typeof definition.requirements>` type requires
@@ -163,6 +163,7 @@ Subagents are direct references on their parent:
 
 ```ts
 const coordinator = defineAgent('coordinator', {
+  model: 'chat',
   instructions: 'Delegate specialist work when useful.',
   subagents: {
     researcher,

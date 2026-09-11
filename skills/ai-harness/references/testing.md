@@ -8,7 +8,7 @@ provider.enqueueObject({
   object: { answer: 'ok' }, finishReason: 'stop',
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 })
-const instance = await definition.getInstance({ model: { provider, model: 'fake' } })
+const instance = await definition.getInstance({ models: { chat: { provider, model: 'fake' } } })
 const session = await instance.getSession('test')
 await expect(session.agents.assistant.run(input)).resolves.toMatchObject({ status: 'completed' })
 provider.assertExhausted()

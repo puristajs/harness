@@ -163,6 +163,7 @@ import { createOpaClient, opaPolicy } from '@purista/harness-policy-opa'
 const client = createOpaClient({ baseUrl: process.env.OPA_URL! })
 
 const transferAgent = defineAgent('transferAgent', {
+  model: 'chat',
   instructions: 'Use the transfer tool for an approved request.',
   tools: [transferFunds],
   governance: (helpers) => ({

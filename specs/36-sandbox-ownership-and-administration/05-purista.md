@@ -18,7 +18,7 @@ const service = serviceBuilder.mountHarness(supportHarness)
 
 const instance = await service.getInstance(eventBridge, {
   ai: {
-    model: { provider, model: 'chat-model' },
+    models: { chat: { provider, model: 'chat-model' } },
     sandbox,
     sandboxBinding: {
       groups: ['support-review'],

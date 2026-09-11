@@ -290,7 +290,7 @@ describe('v4 public API export surface', () => {
 	})
 
 	it('publishes the canonical cancellable target event stream from the root', () => {
-		const definition = mainEntry.defineAgent('publicApiTarget', { instructions: 'Answer.' })
+		const definition = mainEntry.defineAgent('publicApiTarget', { model: 'chat', instructions: 'Answer.' })
 		const target = definition.contract
 		const mcp = mainEntry.defineMcpServer('publicApiMcp', {
 			tools: { lookup: { remoteName: 'lookup', description: 'Look up.', input: target.input, output: target.output } },

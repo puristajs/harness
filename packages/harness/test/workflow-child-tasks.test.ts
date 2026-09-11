@@ -38,7 +38,7 @@ function approvalFor(workflow: AnyWorkflowDefinition) {
 
 describe('v4 workflow child-task runtime', () => {
 	it('awaits child launch authorization before direct budgets and background persistence', async () => {
-		const agent = defineAgentV4('authorizedWorker', { input: z.string(), output: z.string(), instructions: 'Work.',
+		const agent = defineAgentV4('authorizedWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.',
 			prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflowV4('authorizedFlow', { input: z.string(), output: z.string(), agents: [agent],
 			agentCalls: { maxCalls: 1, maxParallel: 1 }, async handler({ input }) { return input } })
@@ -80,7 +80,7 @@ describe('v4 workflow child-task runtime', () => {
 
 	it.each(['failed', 'cancelled'] as const)('runs background cleanup after the %s terminal record is persisted', async status => {
 		const suffix = status === 'failed' ? 'Failed' : 'Cancelled'
-		const agent = defineAgentV4(`terminal${suffix}`, { input: z.string(), output: z.string(), instructions: 'Work.',
+		const agent = defineAgentV4(`terminal${suffix}`, { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.',
 			prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflowV4(`terminalFlow${suffix}`, { input: z.string(), output: z.string(), agents: [agent],
 			async handler({ input }) { return input } })
@@ -110,7 +110,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('passes only a declared child-task sandbox policy to the selected child invocation', async () => {
-		const agent = defineAgentV4('sandboxedWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('sandboxedWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('sandboxedFlow', { input: z.string(), output: z.string(), agents: [agent],
 			childTaskSandboxGroups: ['reviewers'] as const, async handler({ input }) { return input } })
 		const selected: Array<{ invocationId: string; policy: unknown }> = []
@@ -130,7 +130,7 @@ describe('v4 workflow child-task runtime', () => {
 	it('exposes a completed standalone child through its session owner after the workflow returns', async () => {
 		const provider = new FakeModelProvider()
 		provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		const worker = defineAgentV4('worker', { input: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const worker = defineAgentV4('worker', { model: 'chat', input: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		let taskId = ''
 		const launch = defineWorkflowV4('launch', { input: z.string(), output: z.string(), agents: [worker], durable: true,
 			async handler({ childTasks, input }) {
@@ -142,7 +142,7 @@ describe('v4 workflow child-task runtime', () => {
 		})
 		const storage = persistentStorage()
 		const harness = await defineHarnessV4({ name: 'standaloneChild', revision: 'v1' }).addWorkflow(launch)
-			.getInstance({ storage, model: { provider, model: 'fake' } })
+			.getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('owner')
 		const outcome = await session.workflows.launch.run('input')
 		expect(outcome).toMatchObject({ status: 'completed', output: taskId })
@@ -150,13 +150,13 @@ describe('v4 workflow child-task runtime', () => {
 		expect(recovered).toBeDefined()
 		await expect(recovered?.result()).resolves.toBe('done')
 		await expect(recovered?.status()).resolves.toMatchObject({ status: 'succeeded', descriptor: {
-			workflowId: 'launch', workflowInvocationId: expect.any(String), callId: 'background', agentId: 'worker', modelAlias: 'primary',
+			workflowId: 'launch', workflowInvocationId: expect.any(String), callId: 'background', agentId: 'worker', modelAlias: 'chat',
 		} })
 		await harness.close()
 	})
 
 	it('settles a one-shot task and persists the exact child-task record', async () => {
-		const agent = defineAgentV4('v4worker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('v4worker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('v4flow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
 		const events: ExecutionEvent[] = []
@@ -174,7 +174,7 @@ describe('v4 workflow child-task runtime', () => {
 
 	it('rejects approval-capable tasks before storage, budget, events, or dispatch', async () => {
 		const tool = defineToolV4('bash', { description: 'Danger.', input: z.string(), output: z.string(), async handler(_context, input) { return input } })
-		const agent = defineAgentV4('approvalWorker', { instructions: 'Ask.', tools: [tool], permissions: { bash: 'require_approval' } })
+		const agent = defineAgentV4('approvalWorker', { model: 'chat', instructions: 'Ask.', tools: [tool], permissions: { bash: 'require_approval' } })
 		const workflow = defineWorkflowV4('approvalFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		let opened = 0; const events: ExecutionEvent[] = []; const storage = new InMemoryHarnessStorage()
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opened += 1; throw new Error('unexpected') } },
@@ -185,7 +185,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('rejects exhausted child-task depth before reservation, storage, event, or dispatch', async () => {
-		const agent = defineAgentV4('depthWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('depthWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('depthFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0; const events: ExecutionEvent[] = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opened += 1; throw new Error('unexpected') } },
@@ -197,7 +197,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('uses one lifetime timeout and exposes typed continuable FIFO turns', async () => {
-		const agent = defineAgentV4('chatWorker', { input: z.string(), output: z.string(), instructions: 'Chat.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('chatWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Chat.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('chatFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const seen: string[] = []; const sessions: string[] = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { seen.push(request.input as string); sessions.push(request.invocation.sessionId); return terminalStream(request, `${request.input}!`) as any } },
@@ -214,7 +214,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('authorizes each continuable send before reservation and rolls back a queued revoked send', async () => {
-		const agent = defineAgentV4('revocableWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('revocableWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('revocableFlow', { input: z.string(), output: z.string(), agents: [agent],
 			agentCalls: { maxCalls: 2, maxParallel: 1 }, async handler({ input }) { return input } })
 		let finishInitial!: () => void
@@ -261,7 +261,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('keeps continuable sends FIFO and lets cancellation overtake an uncommitted close', async () => {
-		const agent = defineAgentV4('raceWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('raceWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('raceFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const opened: string[] = []
 		let slowOpened!: () => void
@@ -284,7 +284,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('uses exact invoke-option reasons and resolves durable replay before cancellation', async () => {
-		const agent = defineAgentV4('reasonWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('reasonWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('reasonFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
 		const build = (signal = new AbortController().signal) => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true,
@@ -304,7 +304,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('replays durable terminal handles and detects stable tuple collisions', async () => {
-		const agent = defineAgentV4('durableWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('durableWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('durableFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
 		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'persisted') as any } },
@@ -322,7 +322,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('validates durable task persisted identity before reconstruction', async () => {
-		const agent = defineAgentV4('strictWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('strictWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('strictFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
 		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => terminalStream(request, 'valid') as any },
@@ -348,7 +348,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('does not re-run a transforming output schema for persisted task replay', async () => {
-		const agent = defineAgentV4('transformTaskWorker', { input: z.string(), output: z.string().transform(Number), responseMode: 'text', instructions: 'Transform once.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('transformTaskWorker', { model: 'chat', input: z.string(), output: z.string().transform(Number), responseMode: 'text', instructions: 'Transform once.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('transformTaskFlow', { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0
 		const build = () => createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, durable: true, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 9) as any } },
@@ -360,7 +360,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('rolls back task admission and resident state when start persistence fails', async () => {
-		const agent = defineAgentV4('rollbackWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('rollbackWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('rollbackFlow', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 1, maxParallel: 1 }, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); const originalCreate = storage.createRun.bind(storage); let failCreate = true; let opened = 0
 		storage.createRun = async record => { if (failCreate) throw new Error('storage unavailable'); return originalCreate(record) }
@@ -376,7 +376,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('closes a partially persisted task when the start event fails', async () => {
-		const agent = defineAgentV4('eventWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('eventWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('eventFlow', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 1, maxParallel: 1 }, async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); let opened = 0; let failEvent = true; const emitted: string[] = []
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => { opened += 1; return terminalStream(request, 'done') as any } },
@@ -393,7 +393,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('serializes terminal persistence so a racing cancellation waits and committed success wins', async () => {
-		const agent = defineAgentV4('commitRaceWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('commitRaceWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('commitRaceFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); const originalFinish = storage.finishRun.bind(storage)
 		let enteredFinish!: () => void; let releaseFinish!: () => void
@@ -414,7 +414,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('projects terminal storage and event commit failures without a false succeeded status', async () => {
-		const agent = defineAgentV4('commitFailureWorker', { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('commitFailureWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('commitFailureFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage(); const originalFinish = storage.finishRun.bind(storage)
 		storage.finishRun = async () => { throw new StateError('Run persistence failed.', { op: 'finishRun', reason: 'backend_failure' }) }
@@ -436,7 +436,7 @@ describe('v4 workflow child-task runtime', () => {
 	})
 
 	it('times out a non-cooperative one-shot task across its whole lifetime', async () => {
-		const agent = defineAgentV4('slowWorker', { input: z.string(), output: z.string(), instructions: 'Wait.', prompt: value => ({ role: 'user', content: value }) })
+		const agent = defineAgentV4('slowWorker', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Wait.', prompt: value => ({ role: 'user', content: value }) })
 		const workflow = defineWorkflowV4('timeoutFlow', { input: z.string(), output: z.string(), agents: [agent], async handler({ input }) { return input } })
 		const storage = new InMemoryHarnessStorage()
 		const runtime = createWorkflowExecutionRuntime({ workflow, approval: approvalFor(workflow), models: {}, storage, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => new Promise(() => {}) },
@@ -450,7 +450,7 @@ describe('v4 workflow child-task runtime', () => {
 
 	it('reconstructs failed and cancelled durable terminals with fixed local classes', async () => {
 		for (const terminal of ['failed', 'cancelled'] as const) {
-			const agent = defineAgentV4(`terminalWorker${terminal}`, { input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
+			const agent = defineAgentV4(`terminalWorker${terminal}`, { model: 'chat', input: z.string(), output: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 			const workflow = defineWorkflowV4(`terminalFlow${terminal}`, { input: z.string(), output: z.string(), agents: [agent], durable: true, async handler({ input }) { return input } })
 			const storage = new InMemoryHarnessStorage(); let opened = 0
 			const controller = new AbortController()

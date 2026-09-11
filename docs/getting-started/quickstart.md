@@ -40,6 +40,7 @@ import { z } from 'zod'
 import { defineAgent } from '@purista/harness'
 
 const assistant = defineAgent('assistant', {
+  model: 'chat',
   input: z.object({ topic: z.string() }),
   output: z.object({ answer: z.string() }),
   instructions: 'Return a concise answer matching the output schema.',
@@ -59,16 +60,16 @@ import { openai } from '@purista/harness-openai'
 const definition = defineHarness({ name: 'quickstart' }).addAgent(assistant)
 
 const instance = await definition.getInstance({
-  model: {
+  models: { chat: {
     provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-  },
+  } },
 })
 ```
 
 `defineHarness` compiles immutable definitions and infers the runtime
-requirements. Because this graph uses only the default `primary` model alias,
-`getInstance` asks for one `model` binding. Adding memory, MCP, durable
+requirements. The application chose `chat`, so `getInstance` requires exactly
+`models.chat`. Harness does not reserve or default an alias. Adding memory, MCP, durable
 execution, or sandbox capabilities makes the corresponding bindings required by
 TypeScript.
 

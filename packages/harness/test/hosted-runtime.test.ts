@@ -168,6 +168,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 		async handler(_context, input) { remoteEffectCalls += 1; return `approved:${input}` },
 	})
 	const child = defineAgent('remoteApprovalChild', {
+		model: 'chat',
 		input: z.string(), instructions: 'Use the approval effect.', tools: [remoteEffect],
 		permissions: { bash: 'require_approval' },
 		prompt: input => ({ role: 'user', content: input }),
@@ -186,6 +187,7 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 		},
 	})
 	const parent = defineAgent('remoteApprovalParent', {
+		model: 'chat',
 		input: z.string(), instructions: 'Use the host tool.', tools: [hostTool], subagents: { child },
 		prompt: input => ({ role: 'user', content: input }),
 	})
@@ -242,11 +244,11 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 	const startRemote = async (provider: FakeModelProvider) => {
 		await remoteInstance?.close()
 		remoteInstance = await instantiateHostedHarness(childDefinition,
-			{ model: { provider, model: 'fake' }, storage }, remoteBindings)
+			{ models: { chat: { provider, model: 'fake' } }, storage }, remoteBindings)
 	}
 	const stopRemote = async () => { await remoteInstance?.close(); remoteInstance = undefined }
 	const startParent = (provider: FakeModelProvider) => instantiateHostedHarness(parentDefinition,
-		{ model: { provider, model: 'fake' }, storage }, {
+		{ models: { chat: { provider, model: 'fake' } }, storage }, {
 			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined,
 			createHostContext(request: HarnessHostContextRequest<HostInvocation>) {
@@ -297,8 +299,8 @@ async function interruptedRemoteHostFixture(options: Readonly<{ leafCount?: numb
 
 describe('hosted Harness runtime', () => {
 	it('visits the authentic compiled target closure once in deterministic root-aware order', () => {
-		const alpha = defineAgent('alphaDependency', { instructions: 'Dependency.' })
-		const zulu = defineAgent('zuluRoot', { instructions: 'Root.', subagents: { alpha } })
+		const alpha = defineAgent('alphaDependency', { model: 'chat', instructions: 'Dependency.' })
+		const zulu = defineAgent('zuluRoot', { model: 'chat', instructions: 'Root.', subagents: { alpha } })
 		const beta = defineWorkflow('betaRoot', { agents: [alpha], async handler() { return 'done' } })
 		const definition = defineHarness({ name: 'visitorHarness', revision: 'v1' }).addAgent(zulu).addWorkflow(beta)
 		const entries: Array<Readonly<{ target: AnyHarnessTargetContract; visibility: 'root' | 'dependency' }>> = []
@@ -321,7 +323,7 @@ describe('hosted Harness runtime', () => {
 	})
 
 	it('preflights definition authenticity before callbacks and propagates visitor failure exactly', () => {
-		const dependency = defineAgent('visitorFailureDependency', { instructions: 'Dependency.' })
+		const dependency = defineAgent('visitorFailureDependency', { model: 'chat', instructions: 'Dependency.' })
 		const root = defineWorkflow('visitorFailureRoot', { agents: [dependency], async handler() { return 'done' } })
 		const definition = defineHarness({ name: 'visitorFailureHarness', revision: 'v1' }).addWorkflow(root)
 		const callback = vi.fn()
@@ -348,15 +350,15 @@ describe('hosted Harness runtime', () => {
 	})
 
 	it('dispatches an authentic dependency-only graph target while keeping hosted root entrypoints root-only', async () => {
-		const dependency = defineAgent('hostedDependencyOnly', { instructions: 'Answer.' })
+		const dependency = defineAgent('hostedDependencyOnly', { model: 'chat', instructions: 'Answer.' })
 		const root = defineWorkflow('hostedDependencyRoot', { agents: [dependency], async handler() { return 'root' } })
 		const definition = defineHarness({ name: 'hostedDependencyGraph', revision: 'v1' }).addWorkflow(root)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: 'dependency answer', toolCalls: [], usage, finishReason: 'stop' })
-		const unused = defineAgent('hostedDependencyDispatcherUnused', { instructions: 'Unused.' })
+		const unused = defineAgent('hostedDependencyDispatcherUnused', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
-		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' } }, {
+		const instance = await instantiateHostedHarness(definition, { models: { chat: { provider, model: 'fake' } } }, {
 			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})
@@ -394,7 +396,7 @@ describe('hosted Harness runtime', () => {
 		const workflow = defineWorkflow('hostedResultWorkflow', { input: z.string(), output: z.string(),
 			async handler({ input }) { return `done:${input}` } })
 		const definition = defineHarness({ name: 'hostedResultHarness', revision: 'v1' }).addWorkflow(workflow)
-		const unused = defineAgent('unusedHostedResultTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedHostedResultTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const instance = await instantiateHostedHarness(definition, { storage: persistentStorage() }, {
@@ -426,7 +428,7 @@ describe('hosted Harness runtime', () => {
 		interface HostContext { readonly marker: string; readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
 		let hostEffects = 0
-		const child = defineAgent('directWorkflowHostChild', { input: z.string(), output: z.string(), instructions: 'Child.', prompt: input => ({ role: 'user', content: input }) })
+		const child = defineAgent('directWorkflowHostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Child.', prompt: input => ({ role: 'user', content: input }) })
 		const hosted = defineHostTool(owner, 'workflowHostEffect', { description: 'Run a host effect.', input: z.string(), output: z.string(),
 			async handler(context, input) { hostEffects += 1; const first = await context.nestedTargets.run(child.contract, input, { callId: 'nested' }); const replay = await context.nestedTargets.run(child.contract, input, { callId: 'nested' }); return `${context.marker}:${first}:${replay}` } })
 		const workflow = defineWorkflow('directHostedWorkflow', { input: z.string(), output: z.string(), tools: [hosted], durable: true,
@@ -456,7 +458,7 @@ describe('hosted Harness runtime', () => {
 	it('preserves workflow caller lineage for failed nested-target replay', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('workflowFailureChild', { input: z.string(), output: z.string(), instructions: 'Fail.', prompt: input => ({ role: 'user', content: input }) })
+		const child = defineAgent('workflowFailureChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Fail.', prompt: input => ({ role: 'user', content: input }) })
 		let opens = 0
 		const dispatcher: HarnessTargetDispatcher = {
 			assertTarget: target => routeFor(target, 'f'),
@@ -490,7 +492,7 @@ describe('hosted Harness runtime', () => {
 		let approvedEffects = 0
 		const effect = defineTool('bash', { description: 'Approve.', input: z.string(), output: z.string(),
 			async handler(_context, input) { approvedEffects += 1; return input } })
-		const child = defineAgent('workflowInterruptedChild', { input: z.string(), output: z.string(), instructions: 'Approve.', tools: [effect],
+		const child = defineAgent('workflowInterruptedChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Approve.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
 		const hostTool = defineHostTool(owner, 'workflowInterruptedHost', { description: 'Call child.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(child.contract, input, { callId: 'nested-child' }) } })
@@ -520,7 +522,7 @@ describe('hosted Harness runtime', () => {
 			logger: logger(), telemetry: createTelemetryShim() }
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: effect.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
-		current = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		current = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await current.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'go', input: 'go', invokeOptions: {
 			sessionId: 'workflow-interrupted-session', idempotencyKey: 'workflow-interrupted-root',
 		}, hostInvocation: {}, authorize: allowHostedTarget })
@@ -529,7 +531,7 @@ describe('hosted Harness runtime', () => {
 		const approval = interrupted.interrupt.requests[0]!
 		const repeatedProvider = new FakeModelProvider({ strict: true })
 		repeatedProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call-2', name: effect.id, arguments: 'go-again' }], usage, finishReason: 'tool_calls' })
-		current = await instantiateHostedHarness(definition, { model: { provider: repeatedProvider, model: 'fake' }, storage }, bindings)
+		current = await instantiateHostedHarness(definition, { models: { chat: { provider: repeatedProvider, model: 'fake' } }, storage }, bindings)
 		const interruptedAgain = await current.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'go', invokeOptions: {
 			sessionId: 'workflow-interrupted-session', resume: {
 				type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
@@ -541,7 +543,7 @@ describe('hosted Harness runtime', () => {
 		await current.close()
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'child-complete', toolCalls: [], usage, finishReason: 'stop' })
-		current = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		current = await instantiateHostedHarness(definition, { models: { chat: { provider: resumedProvider, model: 'fake' } }, storage }, bindings)
 		const repeatedApproval = interruptedAgain.interrupt.requests[0]!
 		await expect(current.runHosted({ delivery: 'resume', target: workflow.contract, wireInput: 'go', invokeOptions: {
 			sessionId: 'workflow-interrupted-session', resume: {
@@ -668,14 +670,14 @@ describe('hosted Harness runtime', () => {
 		expect(infer).toMatchObject({ enumerable: false, configurable: false, writable: false })
 		expect(Object.isFrozen(infer?.value)).toBe(true)
 		expect({ ...hosted }).not.toHaveProperty('$infer')
-		const agent = defineAgent('ownerAgent', { instructions: 'Call.', tools: [hosted] })
+		const agent = defineAgent('ownerAgent', { model: 'chat', instructions: 'Call.', tools: [hosted] })
 		const definition = defineHarness({ name: 'ownerHarness', revision: 'v1' }).addAgent(agent)
 		let initialized = 0
 		const provider = new FakeModelProvider()
-		const target = defineAgent('unusedTarget', { instructions: 'Unused.' })
+		const target = defineAgent('unusedTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(target, () => { initialized += 1 })
 		await expect(instantiateHostedHarness(definition, {
-			model: { provider, model: 'fake' }, storage: persistentStorage(),
+			models: { chat: { provider, model: 'fake' } }, storage: persistentStorage(),
 		}, {
 			hostOwner: otherOwner, targetDispatcher: dispatcher,
 			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
@@ -685,6 +687,7 @@ describe('hosted Harness runtime', () => {
 
 		const copiedOwner = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(owner)))
 		const portable = defineHarness({ name: 'portableHostedOwner' }).addAgent(defineAgent('portableHostedOwnerAgent', {
+			model: 'chat',
 			instructions: 'Answer.',
 		}))
 		let configReads = 0
@@ -708,6 +711,7 @@ describe('hosted Harness runtime', () => {
 			description: 'Foreign.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
 		})
 		const ownedDefinition = defineHarness({ name: 'ownedPreflight', revision: 'v1' }).addAgent(defineAgent('ownedPreflightAgent', {
+			model: 'chat',
 			instructions: 'Call.', tools: [owned],
 		}))
 		const blueprint = getHarnessRuntimeBlueprint(ownedDefinition)!
@@ -716,6 +720,7 @@ describe('hosted Harness runtime', () => {
 		expect(descriptorGraphContains(ownedDefinition, blueprint.graph)).toBe(false)
 		expect(ownedDefinition.inspect()).toEqual(inspection)
 		const definition = defineHarness({ name: 'ownerPreflight', revision: 'v1' }).addAgent(defineAgent('ownerPreflightAgent', {
+			model: 'chat',
 			instructions: 'Call.', tools: [owned, foreign],
 		}))
 
@@ -735,6 +740,7 @@ describe('hosted Harness runtime', () => {
 			description: 'Copied owner.', input: z.string(), output: z.string(), async handler(_context, input) { return input },
 		})).toThrowError(expect.objectContaining({ meta: { reason: 'invalid_host_binding', path: 'hostOwner' } }))
 		const portableDefinition = defineHarness({ name: 'portableOwnerPreflight' }).addAgent(defineAgent('portableOwnerAgent', {
+			model: 'chat',
 			instructions: 'Answer.',
 		}))
 		expect(() => assertHarnessHostToolOwner(portableDefinition, copiedOwner as never)).toThrowError(expect.objectContaining({
@@ -746,6 +752,7 @@ describe('hosted Harness runtime', () => {
 		const copiedTool = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(owned)))
 		expect(hostToolOwner(copiedTool)).toBeUndefined()
 		const copiedToolDefinition = defineHarness({ name: 'copiedToolPreflight', revision: 'v1' }).addAgent(defineAgent('copiedToolAgent', {
+			model: 'chat',
 			instructions: 'Call.', tools: [copiedTool as never],
 		}))
 		expect(() => assertHarnessHostToolOwner(copiedToolDefinition, owner)).toThrowError(expect.objectContaining({
@@ -761,6 +768,7 @@ describe('hosted Harness runtime', () => {
 		let transforms = 0
 		const input = z.string().transform(value => { transforms += 1; return value.length })
 		const agent = defineAgent('validatedRoot', {
+			model: 'chat',
 			input, instructions: 'Answer.', prompt: value => ({ role: 'user', content: String(value) }),
 		})
 		const definition = defineHarness({ name: 'validatedHosted' }).addAgent(agent)
@@ -770,10 +778,10 @@ describe('hosted Harness runtime', () => {
 		const authorizations: unknown[] = []
 		let identities = 0
 		let traces = 0
-		const unused = defineAgent('unusedValidationTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedValidationTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
-		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' }, storage }, {
+		const instance = await instantiateHostedHarness(definition, { models: { chat: { provider, model: 'fake' } }, storage }, {
 			hostOwner: owner, targetDispatcher: dispatcher,
 			projectIdentity: () => { identities += 1; return { tenantId: 'tenant-a', principalId: 'principal-a' } },
 			projectTraceContext: () => { traces += 1; return trace }, createHostContext: () => ({}),
@@ -880,15 +888,16 @@ describe('hosted Harness runtime', () => {
 			description: 'Unused.', input: z.string(), output: z.string(), async handler(_context, value) { return value },
 		})
 		const agent = defineAgent('dispatchedValidatedRoot', {
+			model: 'chat',
 			input, instructions: 'Answer.', tools: [unusedHostTool], prompt: value => ({ role: 'user', content: String(value) }),
 		})
 		const definition = defineHarness({ name: 'dispatchedValidatedHarness', revision: 'v1' }).addAgent(agent)
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
-		const unused = defineAgent('unusedDispatchedTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedDispatchedTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
-		const instance = await instantiateHostedHarness(definition, { model: { provider, model: 'fake' }, storage }, {
+		const instance = await instantiateHostedHarness(definition, { models: { chat: { provider, model: 'fake' } }, storage }, {
 			hostOwner: owner, targetDispatcher: dispatcher,
 			projectIdentity: () => { identities += 1; return { tenantId: 'tenant-a', principalId: 'principal-a' } },
 			projectTraceContext: () => { traces += 1; return trace }, createHostContext: () => ({}),
@@ -924,11 +933,11 @@ describe('hosted Harness runtime', () => {
 		const input = z.string().transform(value => { transforms += 1; return value.length })
 		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
-		const agent = defineAgent('hostedResumeRoot', { input, instructions: 'Use the effect.', tools: [effect],
+		const agent = defineAgent('hostedResumeRoot', { model: 'chat', input, instructions: 'Use the effect.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: String(value) }) })
 		const definition = defineHarness({ name: 'hostedResumeHarness', revision: 'v1' }).addAgent(agent)
 		const storage = persistentStorage()
-		const unused = defineAgent('unusedResumeDispatchTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedResumeDispatchTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
@@ -937,7 +946,7 @@ describe('hosted Harness runtime', () => {
 
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
-		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		let instance = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 5,
 			invokeOptions: { sessionId: 'hosted-resume-session' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -949,7 +958,7 @@ describe('hosted Harness runtime', () => {
 		const authorized: unknown[] = []
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
-		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: resumedProvider, model: 'fake' } }, storage }, bindings)
 		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'hello',
 			invokeOptions: { sessionId: 'hosted-resume-session', resume }, hostInvocation: {}, authorize: request => { authorized.push(request) } }))
 			.resolves.toMatchObject({ status: 'completed', output: 'done' })
@@ -959,7 +968,7 @@ describe('hosted Harness runtime', () => {
 		await instance.close()
 
 		const replayProvider = new FakeModelProvider({ strict: true })
-		instance = await instantiateHostedHarness(definition, { model: { provider: replayProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: replayProvider, model: 'fake' } }, storage }, bindings)
 		const eventsBeforeReplay = await storage.listEvents(interrupted.runId)
 		const acquireRun = vi.spyOn(storage, 'acquireRun')
 		const originalGetRun = storage.getRun.bind(storage)
@@ -1039,12 +1048,13 @@ describe('hosted Harness runtime', () => {
 			async handler(context, value) { effects.push(context.token); return value },
 		})
 		const agent = defineAgent('storedOwnerRoot', {
+			model: 'chat',
 			input: z.string(), instructions: 'Use the reviewed effect.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }),
 		})
 		const definition = defineHarness({ name: 'storedOwnerHarness', revision: 'v1' }).addAgent(agent)
 		const storage = persistentStorage()
-		const unused = defineAgent('unusedStoredOwnerDispatchTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedStoredOwnerDispatchTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const bindings = {
 			hostOwner: owner, targetDispatcher: dispatcher,
@@ -1056,7 +1066,7 @@ describe('hosted Harness runtime', () => {
 		const creator = Object.freeze({ tenantId: 'tenant-a-private', principalId: 'owner-private', token: 'creator-host-context' })
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'reviewed-effect-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
-		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		let instance = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'wire-request', input: 'validated-input-private',
 			invokeOptions: { sessionId: 'stored-owner-session' }, hostInvocation: creator, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -1067,7 +1077,7 @@ describe('hosted Harness runtime', () => {
 			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
-		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: resumedProvider, model: 'fake' } }, storage }, bindings)
 		const rejectedAuthorizer = vi.fn()
 		const reviewer = Object.freeze({ tenantId: 'tenant-a-private', principalId: 'reviewer-private', token: 'reviewer-host-context' })
 		const currentCallerError = await instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'wire-request',
@@ -1111,11 +1121,11 @@ describe('hosted Harness runtime', () => {
 	it.each(['failed', 'cancelled'] as const)('reauthorizes and replays a hosted root %s terminal without a lease or execution', async status => {
 		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { return value } })
-		const agent = defineAgent(`terminalReplay${status}`, { input: z.string(), instructions: 'Use the effect.', tools: [effect],
+		const agent = defineAgent(`terminalReplay${status}`, { model: 'chat', input: z.string(), instructions: 'Use the effect.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
 		const definition = defineHarness({ name: `terminalReplayHarness${status}`, revision: 'v1' }).addAgent(agent)
 		const storage = persistentStorage()
-		const unused = defineAgent(`unusedTerminalReplay${status}`, { instructions: 'Unused.' })
+		const unused = defineAgent(`unusedTerminalReplay${status}`, { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
@@ -1123,7 +1133,7 @@ describe('hosted Harness runtime', () => {
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: `terminal-${status}-call`, name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
-		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		let instance = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'request', input: 'request',
 			invokeOptions: { sessionId: `terminal-${status}-session` }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -1135,7 +1145,7 @@ describe('hosted Harness runtime', () => {
 		const terminalProvider = new FakeModelProvider({ strict: true })
 		vi.spyOn(terminalProvider, 'text').mockRejectedValue(status === 'cancelled'
 			? new OperationCancelledError('cancelled', { scope: 'agent' }) : new Error('private provider failure'))
-		instance = await instantiateHostedHarness(definition, { model: { provider: terminalProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: terminalProvider, model: 'fake' } }, storage }, bindings)
 		const expectedCode = status === 'cancelled' ? 'OPERATION_CANCELLED' : 'INTERNAL_ERROR'
 		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'request',
 			invokeOptions: { sessionId: `terminal-${status}-session`, resume }, hostInvocation: {}, authorize: allowHostedTarget }))
@@ -1146,7 +1156,7 @@ describe('hosted Harness runtime', () => {
 		const eventsBeforeReplay = await storage.listEvents(interrupted.runId)
 		const acquireRun = vi.spyOn(storage, 'acquireRun')
 		const replayProvider = new FakeModelProvider({ strict: true })
-		instance = await instantiateHostedHarness(definition, { model: { provider: replayProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: replayProvider, model: 'fake' } }, storage }, bindings)
 		const authorize = vi.fn()
 		await expect(instance.runHosted({ delivery: 'resume', target: agent.contract, wireInput: 'request',
 			invokeOptions: { sessionId: `terminal-${status}-session`, resume }, hostInvocation: {}, authorize }))
@@ -1164,10 +1174,10 @@ describe('hosted Harness runtime', () => {
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
-		const agent = defineAgent(`hostedPriorReceipt${mode}`, { input: z.string(), instructions: 'Use effects.', tools: [effect],
+		const agent = defineAgent(`hostedPriorReceipt${mode}`, { model: 'chat', input: z.string(), instructions: 'Use effects.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
 		const definition = defineHarness({ name: `hostedPriorReceiptHarness${mode}`, revision: 'v1' }).addAgent(agent)
-		const unused = defineAgent(`unusedPriorReceipt${mode}`, { instructions: 'Unused.' })
+		const unused = defineAgent(`unusedPriorReceipt${mode}`, { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const bindings = { hostOwner: createHostOwnerToken<object>(), targetDispatcher: dispatcher,
 			projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
@@ -1183,7 +1193,7 @@ describe('hosted Harness runtime', () => {
 				])
 			}
 		}
-		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		let instance = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const invokeFresh = async () => {
 			const request = { delivery: 'fresh' as const, target: agent.contract, wireInput: 'start', input: 'start',
 				invokeOptions: { sessionId: `hosted-prior-receipt-${mode}` }, hostInvocation: {}, authorize: allowHostedTarget }
@@ -1214,7 +1224,7 @@ describe('hosted Harness runtime', () => {
 		const finalProvider = new FakeModelProvider({ strict: true })
 		if (mode === 'run') finalProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		else finalProvider.enqueueTextStream([{ kind: 'delta', text: 'done' }, { kind: 'finish', usage, finishReason: 'stop' }])
-		instance = await instantiateHostedHarness(definition, { model: { provider: finalProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: finalProvider, model: 'fake' } }, storage }, bindings)
 		await expect(invokeResume(firstResume)).resolves.toEqual(second)
 		expect(finalProvider.requests).toHaveLength(0)
 		const secondResume = Object.freeze({ type: 'tool-approval' as const, runId: second.runId,
@@ -1230,11 +1240,11 @@ describe('hosted Harness runtime', () => {
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
-		const agent = defineAgent('authorizationRaceRoot', { input: z.string(), instructions: 'Use the effect.', tools: [effect],
+		const agent = defineAgent('authorizationRaceRoot', { model: 'chat', input: z.string(), instructions: 'Use the effect.', tools: [effect],
 			permissions: { bash: 'require_approval' }, prompt: value => ({ role: 'user', content: value }) })
 		const definition = defineHarness({ name: 'authorizationRaceHarness', revision: 'v1' }).addAgent(agent)
 		const storage = persistentStorage()
-		const unused = defineAgent('unusedAuthorizationRaceTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedAuthorizationRaceTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const owner = createHostOwnerToken<object>()
 		const bindings = { hostOwner: owner, targetDispatcher: dispatcher,
@@ -1242,7 +1252,7 @@ describe('hosted Harness runtime', () => {
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'authorization-race-call', name: effect.id, arguments: 'run' }], usage, finishReason: 'tool_calls' })
-		let instance = await instantiateHostedHarness(definition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		let instance = await instantiateHostedHarness(definition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'request', input: 'request',
 			invokeOptions: { sessionId: 'authorization-race-session' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -1253,7 +1263,7 @@ describe('hosted Harness runtime', () => {
 			decisions: Object.freeze([{ approvalId: approval.approvalId, approved: true }]) })
 		const resumedProvider = new FakeModelProvider({ strict: true })
 		resumedProvider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
-		instance = await instantiateHostedHarness(definition, { model: { provider: resumedProvider, model: 'fake' }, storage }, bindings)
+		instance = await instantiateHostedHarness(definition, { models: { chat: { provider: resumedProvider, model: 'fake' } }, storage }, bindings)
 		let releaseAuthorizers!: () => void
 		const bothAuthorized = new Promise<void>(resolve => { releaseAuthorizers = resolve })
 		let authorizationCount = 0
@@ -1281,7 +1291,7 @@ describe('hosted Harness runtime', () => {
 		interface HostInvocation { readonly token: string }
 		interface HostContext { readonly token: string; readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('hostChild', { input: z.string(), output: z.string(), instructions: 'Child.',
+		const child = defineAgent('hostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Child.',
 			prompt: input => ({ role: 'user', content: input }) })
 		const hostTool = defineHostTool(owner, 'hostLookup', {
 			description: 'Call one hosted child.', input: z.string(), output: z.string(),
@@ -1291,7 +1301,7 @@ describe('hosted Harness runtime', () => {
 				return `${context.token}:${first}:${replay}`
 			},
 		})
-		const parent = defineAgent('hostParent', { input: z.string(), instructions: 'Use the host tool.', tools: [hostTool],
+		const parent = defineAgent('hostParent', { model: 'chat', input: z.string(), instructions: 'Use the host tool.', tools: [hostTool],
 			prompt: input => ({ role: 'user', content: input }) })
 		const definition = defineHarness({ name: 'hostCalls', revision: 'v1' }).addAgent(child).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
@@ -1304,7 +1314,7 @@ describe('hosted Harness runtime', () => {
 		let contextRequests = 0
 		const hostInvocation = Object.freeze({ token: 'opaque-host-token' })
 		const instance = await instantiateHostedHarness(definition, {
-			model: { provider, model: 'fake' }, storage: persistentStorage(),
+			models: { chat: { provider, model: 'fake' } }, storage: persistentStorage(),
 		}, {
 			hostOwner: owner, targetDispatcher: dispatch.dispatcher,
 			projectIdentity: invocation => ({ tenantId: invocation.token, principalId: 'principal-a' }),
@@ -1341,7 +1351,7 @@ describe('hosted Harness runtime', () => {
 		}
 		const storage = persistentStorage()
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('checkpointChild', { input: z.string(), output: z.string(), instructions: 'Child.',
+		const child = defineAgent('checkpointChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Child.',
 			prompt: input => ({ role: 'user', content: input }) })
 		let managedEffects = 0
 		let capturedCall: RunCheckpoint | undefined
@@ -1359,7 +1369,7 @@ describe('hosted Harness runtime', () => {
 				return `${first}:${replay}`
 			},
 		})
-		const parent = defineAgent('checkpointParent', { input: z.string(), instructions: 'Use host.', tools: [hostTool],
+		const parent = defineAgent('checkpointParent', { model: 'chat', input: z.string(), instructions: 'Use host.', tools: [hostTool],
 			prompt: input => ({ role: 'user', content: input }) })
 		const definition = defineHarness({ name: 'hostCheckpointHarness', revision: 'v1' }).addAgent(child).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
@@ -1367,7 +1377,7 @@ describe('hosted Harness runtime', () => {
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const dispatch = dispatcherFor(child, () => {})
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage }, {
 				hostOwner: owner, targetDispatcher: dispatch.dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 				projectTraceContext: () => undefined,
 				createHostContext: request => Object.freeze({ runId: request.runId,
@@ -1397,9 +1407,9 @@ describe('hosted Harness runtime', () => {
 	it('checks exact target identity before replay conflicts and gives target mismatch precedence', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const firstChild = defineAgent('firstConflictChild', { input: z.string(), output: z.string(), instructions: 'First.',
+		const firstChild = defineAgent('firstConflictChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'First.',
 			prompt: input => ({ role: 'user', content: input }) })
-		const secondChild = defineAgent('secondConflictChild', { input: z.string(), output: z.string(), instructions: 'Second.',
+		const secondChild = defineAgent('secondConflictChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Second.',
 			prompt: input => ({ role: 'user', content: input }) })
 		let assertions = 0
 		let opens = 0
@@ -1443,14 +1453,14 @@ describe('hosted Harness runtime', () => {
 					.rejects.toMatchObject({ code: 'HOST_NESTED_TARGET_REPLAY_CONFLICT', meta: { reason: 'input_mismatch' } })
 				return 'checked'
 			} })
-		const parent = defineAgent('conflictParent', { instructions: 'Use host.', tools: [hostTool] })
+		const parent = defineAgent('conflictParent', { model: 'chat', instructions: 'Use host.', tools: [hostTool] })
 		const definition = defineHarness({ name: 'hostConflictHarness', revision: 'v1' })
 			.addAgent(firstChild).addAgent(secondChild).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'conflict-tool-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage: persistentStorage() }, {
 				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
@@ -1464,9 +1474,9 @@ describe('hosted Harness runtime', () => {
 	it('persists and reconstructs failed and cancelled nested terminals without redispatch', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const failedChild = defineAgent('failedHostChild', { input: z.string(), output: z.string(), instructions: 'Fail.',
+		const failedChild = defineAgent('failedHostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Fail.',
 			prompt: input => ({ role: 'user', content: input }) })
-		const cancelledChild = defineAgent('cancelledHostChild', { input: z.string(), output: z.string(), instructions: 'Cancel.',
+		const cancelledChild = defineAgent('cancelledHostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Cancel.',
 			prompt: input => ({ role: 'user', content: input }) })
 		let opens = 0
 		const routes = new Map<AnyHarnessTargetContract, HarnessTargetRouteReceiptV1>([
@@ -1513,14 +1523,14 @@ describe('hosted Harness runtime', () => {
 				}
 				return 'handled'
 			} })
-		const parent = defineAgent('terminalParent', { instructions: 'Use host.', tools: [hostTool] })
+		const parent = defineAgent('terminalParent', { model: 'chat', instructions: 'Use host.', tools: [hostTool] })
 		const definition = defineHarness({ name: 'hostTerminalHarness', revision: 'v1' })
 			.addAgent(failedChild).addAgent(cancelledChild).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'terminal-tool-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage: persistentStorage() }, {
 				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
@@ -1534,7 +1544,7 @@ describe('hosted Harness runtime', () => {
 	it('rejects a concurrent distinct nested call before a second dispatch', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('concurrentHostChild', { input: z.string(), output: z.string(), instructions: 'Child.',
+		const child = defineAgent('concurrentHostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Child.',
 			prompt: input => ({ role: 'user', content: input }) })
 		let release!: () => void
 		const blocked = new Promise<void>(resolve => { release = resolve })
@@ -1571,13 +1581,13 @@ describe('hosted Harness runtime', () => {
 				await first
 				return 'done'
 			} })
-		const parent = defineAgent('concurrentParent', { instructions: 'Use host.', tools: [hostTool] })
+		const parent = defineAgent('concurrentParent', { model: 'chat', instructions: 'Use host.', tools: [hostTool] })
 		const definition = defineHarness({ name: 'concurrentHostHarness', revision: 'v1' }).addAgent(child).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'concurrent-tool-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage: persistentStorage() }, {
 				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
@@ -1590,7 +1600,7 @@ describe('hosted Harness runtime', () => {
 	it('rejects a host nested target at the delegation depth ceiling before dispatch', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('depthCeilingHostChild', { input: z.string(), output: z.string(), instructions: 'Child.',
+		const child = defineAgent('depthCeilingHostChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Child.',
 			prompt: input => ({ role: 'user', content: input }) })
 		let opens = 0
 		const dispatcher: HarnessTargetDispatcher = {
@@ -1605,14 +1615,14 @@ describe('hosted Harness runtime', () => {
 				})
 				return 'blocked'
 			} })
-		const parent = defineAgent('depthCeilingParent', { instructions: 'Use host.', tools: [hostTool] })
+		const parent = defineAgent('depthCeilingParent', { model: 'chat', instructions: 'Use host.', tools: [hostTool] })
 		const definition = defineHarness({ name: 'depthCeilingHostHarness', revision: 'v1', defaults: { maxDepth: 1 } })
 			.addAgent(child).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'depth-tool-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		provider.enqueueText({ content: 'done', toolCalls: [], usage, finishReason: 'stop' })
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage: persistentStorage() }, {
 				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
@@ -1630,7 +1640,7 @@ describe('hosted Harness runtime', () => {
 	it('cancels the active host child stream once when its parent is aborted', async () => {
 		interface HostContext { readonly nestedTargets: HarnessNestedTargetInvoker }
 		const owner = createHostOwnerToken<HostContext>()
-		const child = defineAgent('cancelledByParentChild', { input: z.string(), output: z.string(), instructions: 'Wait.',
+		const child = defineAgent('cancelledByParentChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Wait.',
 			prompt: input => ({ role: 'user', content: input }) })
 		const route = routeFor(child.contract, 'c')
 		let opened!: () => void
@@ -1658,13 +1668,13 @@ describe('hosted Harness runtime', () => {
 		}
 		const hostTool = defineHostTool(owner, 'parentCancellationHost', { description: 'Wait for child.', input: z.string(), output: z.string(),
 			async handler(context) { return context.nestedTargets.run(child.contract, 'wait', { callId: 'waiting-child' }) } })
-		const parent = defineAgent('parentCancellationAgent', { input: z.string(), instructions: 'Use host.', tools: [hostTool],
+		const parent = defineAgent('parentCancellationAgent', { model: 'chat', input: z.string(), instructions: 'Use host.', tools: [hostTool],
 			prompt: input => ({ role: 'user', content: input }) })
 		const definition = defineHarness({ name: 'parentCancellationHarness', revision: 'v1' }).addAgent(child).addAgent(parent)
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'cancel-host-call', name: hostTool.id, arguments: 'go' }], usage, finishReason: 'tool_calls' })
 		const instance = await instantiateHostedHarness(definition,
-			{ model: { provider, model: 'fake' }, storage: persistentStorage() }, {
+			{ models: { chat: { provider, model: 'fake' } }, storage: persistentStorage() }, {
 				hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }), projectTraceContext: () => undefined,
 				createHostContext: request => ({ nestedTargets: request.nestedTargets }), logger: logger(), telemetry: createTelemetryShim(),
 			})
@@ -1687,27 +1697,27 @@ describe('hosted Harness runtime', () => {
 			async handler(_context, input) { return input } })
 		const beta = defineHostTool(secondOwner, 'betaOwnerTool', { description: 'Beta.', input: z.string(), output: z.string(),
 			async handler(_context, input) { return input } })
-		const agent = defineAgent('mixedOwnerAgent', { instructions: 'Use host.', tools: [alpha, beta] })
+		const agent = defineAgent('mixedOwnerAgent', { model: 'chat', instructions: 'Use host.', tools: [alpha, beta] })
 		const definition = defineHarness({ name: 'mixedOwnerHarness', revision: 'v1' }).addAgent(agent)
 		let configReads = 0
 		const config = Object.defineProperty({}, 'model', { enumerable: true, get() { configReads += 1; return undefined } })
-		const unused = defineAgent('unusedMixedOwnerTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedMixedOwnerTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		await expect(instantiateHostedHarness(definition, config as never, {
 			hostOwner: firstOwner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => undefined, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
 		})).rejects.toMatchObject({ meta: { reason: 'host_owner_mismatch', id: 'betaOwnerTool' } })
 		expect(configReads).toBe(0)
-		expect(() => definition.getInstance({ model: { provider: new FakeModelProvider(), model: 'fake' },
+		expect(() => definition.getInstance({ models: { chat: { provider: new FakeModelProvider(), model: 'fake' } },
 			storage: persistentStorage() })).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'standalone_host_tools_unsupported' }) }))
 	})
 
 	it('sanitizes projector throws after request validation', async () => {
-		const agent = defineAgent('projectorFailure', { instructions: 'Answer.' })
+		const agent = defineAgent('projectorFailure', { model: 'chat', instructions: 'Answer.' })
 		const definition = defineHarness({ name: 'projectorFailureHarness' }).addAgent(agent)
-		const unused = defineAgent('unusedProjectorTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedProjectorTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
-		const instance = await instantiateHostedHarness(definition, { model: { provider: new FakeModelProvider(), model: 'fake' } }, {
+		const instance = await instantiateHostedHarness(definition, { models: { chat: { provider: new FakeModelProvider(), model: 'fake' } } }, {
 			hostOwner: createHostOwnerToken(), targetDispatcher: dispatcher,
 			projectIdentity: () => { throw new Error('private identity detail') }, projectTraceContext: () => undefined,
 			createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim(),
@@ -1724,10 +1734,10 @@ describe('hosted Harness runtime', () => {
 		const owner = createHostOwnerToken<object>()
 		const transfer = defineTool('bash', { description: 'Transfer.', input: z.string(), output: z.string(),
 			async handler(_context, input) { return input } })
-		const firstAgent = defineAgent('digestAgent', { input: z.string(), instructions: 'Transfer.', tools: [transfer],
+		const firstAgent = defineAgent('digestAgent', { model: 'chat', input: z.string(), instructions: 'Transfer.', tools: [transfer],
 			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
 		const firstDefinition = defineHarness({ name: 'hostDigestHarness', revision: 'v1' }).addAgent(firstAgent)
-		const unused = defineAgent('unusedDigestTarget', { instructions: 'Unused.' })
+		const unused = defineAgent('unusedDigestTarget', { model: 'chat', instructions: 'Unused.' })
 		const { dispatcher } = dispatcherFor(unused, () => {})
 		const bindings = {
 			hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
@@ -1736,7 +1746,7 @@ describe('hosted Harness runtime', () => {
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: transfer.id, arguments: '€10' }],
 			usage, finishReason: 'tool_calls' })
-		const first = await instantiateHostedHarness(firstDefinition, { model: { provider: firstProvider, model: 'fake' }, storage }, bindings)
+		const first = await instantiateHostedHarness(firstDefinition, { models: { chat: { provider: firstProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await first.runHosted({ delivery: 'fresh', target: firstAgent.contract, wireInput: 'send', input: 'send',
 			invokeOptions: { sessionId: 'digest-session', idempotencyKey: 'stable-digest-run' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected approval interruption.')
@@ -1744,11 +1754,11 @@ describe('hosted Harness runtime', () => {
 
 		const hostTool = defineHostTool(owner, 'addedHostTool', { description: 'Host.', input: z.string(), output: z.string(),
 			async handler(_context, input) { return input } })
-		const changedAgent = defineAgent('digestAgent', { input: z.string(), instructions: 'Transfer.', tools: [transfer, hostTool],
+		const changedAgent = defineAgent('digestAgent', { model: 'chat', input: z.string(), instructions: 'Transfer.', tools: [transfer, hostTool],
 			permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
 		const changedDefinition = defineHarness({ name: 'hostDigestHarness', revision: 'v1' }).addAgent(changedAgent)
 		const changed = await instantiateHostedHarness(changedDefinition,
-			{ model: { provider: new FakeModelProvider(), model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, storage }, bindings)
 		const request = interrupted.interrupt.requests[0]!
 		await expect(changed.runHosted({ delivery: 'resume', target: changedAgent.contract, wireInput: 'send', invokeOptions: {
 			sessionId: 'digest-session', resume: {
@@ -1901,15 +1911,15 @@ describe('hosted Harness runtime', () => {
 		let approvedEffects = 0
 		const effect = defineTool('bash', { description: 'Approval effect.', input: z.string(), output: z.string(),
 			async handler(_context, input) { approvedEffects += 1; return `approved:${input}` } })
-		const leaf = defineAgent('workflowApprovalLeaf', { input: z.string(), output: z.string(), instructions: 'Use effect.',
+		const leaf = defineAgent('workflowApprovalLeaf', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Use effect.',
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
-		const middle = defineAgent('workflowApprovalMiddle', { input: z.string(), output: z.string(), instructions: 'Delegate.',
+		const middle = defineAgent('workflowApprovalMiddle', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Delegate.',
 			subagents: { leaf }, prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflow('hostedApprovalWorkflow', { input: z.string(), output: z.string(), agents: [middle], durable: true,
 			async handler(context) { return context.agents.workflowApprovalMiddle.run(context.input, { callId: 'workflow-middle' }) } })
 		const hostTool = defineHostTool(owner, 'workflowHostTool', { description: 'Invoke workflow.', input: z.string(), output: z.string(),
 			async handler(context, input) { return context.nestedTargets.run(workflow.contract, input, { callId: 'host-workflow' }) } })
-		const parentAgent = defineAgent('workflowHostParent', { input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool, effect], permissions: { bash: 'require_approval' },
+		const parentAgent = defineAgent('workflowHostParent', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Use host.', tools: [hostTool, effect], permissions: { bash: 'require_approval' },
 			prompt: input => ({ role: 'user', content: input }) })
 		const receiverDefinition = defineHarness({ name: 'workflowHostReceiver', revision: 'v1', defaults: { maxDepth: 4 } })
 			.addAgent(leaf).addAgent(middle).addWorkflow(workflow)
@@ -1956,11 +1966,11 @@ describe('hosted Harness runtime', () => {
 		firstReceiverProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-leaf-call', name: 'leaf', arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		firstReceiverProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-effect-call', name: effect.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
-			{ model: { provider: firstReceiverProvider, model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: firstReceiverProvider, model: 'fake' } }, storage }, bindings)
 		const firstParentProvider = new FakeModelProvider({ strict: true })
 		firstParentProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-host-call', name: hostTool.id, arguments: 'transfer' }], usage, finishReason: 'tool_calls' })
 		const firstParent = await instantiateHostedHarness(parentDefinition,
-			{ model: { provider: firstParentProvider, model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: firstParentProvider, model: 'fake' } }, storage }, bindings)
 		const interrupted = await firstParent.runHosted({ delivery: 'fresh', target: parentAgent.contract, wireInput: 'transfer', input: 'transfer',
 			invokeOptions: { sessionId: 'workflow-host-session', idempotencyKey: 'workflow-host-root' }, hostInvocation: {}, authorize: allowHostedTarget })
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('Expected workflow leaf approval.')
@@ -2001,11 +2011,11 @@ describe('hosted Harness runtime', () => {
 		resumedReceiverProvider.enqueueText({ content: 'workflow-leaf-complete', toolCalls: [], usage, finishReason: 'stop' })
 		resumedReceiverProvider.enqueueText({ content: 'workflow-middle-complete', toolCalls: [], usage, finishReason: 'stop' })
 		receiver = await instantiateHostedHarness(receiverDefinition,
-			{ model: { provider: resumedReceiverProvider, model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: resumedReceiverProvider, model: 'fake' } }, storage }, bindings)
 		const resumedParentProvider = new FakeModelProvider({ strict: true })
 		resumedParentProvider.enqueueText({ content: 'workflow-parent-complete', toolCalls: [], usage, finishReason: 'stop' })
 		const resumedParent = await instantiateHostedHarness(parentDefinition,
-			{ model: { provider: resumedParentProvider, model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: resumedParentProvider, model: 'fake' } }, storage }, bindings)
 		const approval = interrupted.interrupt.requests[0]!
 		await expect(resumedParent.runHosted({ delivery: 'resume', target: parentAgent.contract, wireInput: 'transfer', invokeOptions: {
 			sessionId: 'workflow-host-session', resume: {
@@ -2041,7 +2051,7 @@ describe('hosted Harness runtime', () => {
 		let effectCalls = 0
 		const effect = defineTool('bash', { description: 'Approve the child effect.', input: z.string(), output: z.string(),
 			async handler(_context, input) { effectCalls += 1; return `approved:${input}` } })
-		const child = defineAgent('persistedWorkflowChild', { input: z.string(), output: z.string(), instructions: 'Use the approval effect.',
+		const child = defineAgent('persistedWorkflowChild', { model: 'chat', input: z.string(), output: z.string(), instructions: 'Use the approval effect.',
 			tools: [effect], permissions: { bash: 'require_approval' }, prompt: input => ({ role: 'user', content: input }) })
 		const workflow = defineWorkflow('persistedWorkflowParent', { input: z.string(), output: z.string(), agents: [child], durable: true,
 			async handler({ input, agents }) { return agents.persistedWorkflowChild.run(input, { callId: 'persisted-child-call' }) } })
@@ -2073,10 +2083,10 @@ describe('hosted Harness runtime', () => {
 		const bindings = { hostOwner: owner, targetDispatcher: dispatcher, projectIdentity: () => Object.freeze({ tenantId: 'tenant-a', principalId: 'principal-a' }),
 			projectTraceContext: () => trace, createHostContext: () => ({}), logger: logger(), telemetry: createTelemetryShim() }
 		const startReceiver = async (provider: FakeModelProvider) => {
-			receiver = await instantiateHostedHarness(receiverDefinition, { model: { provider, model: 'fake' }, storage }, bindings)
+			receiver = await instantiateHostedHarness(receiverDefinition, { models: { chat: { provider, model: 'fake' } }, storage }, bindings)
 		}
 		const startCaller = async () => instantiateHostedHarness(callerDefinition,
-			{ model: { provider: new FakeModelProvider({ strict: true }), model: 'fake' }, storage }, bindings)
+			{ models: { chat: { provider: new FakeModelProvider({ strict: true }), model: 'fake' } }, storage }, bindings)
 
 		const firstProvider = new FakeModelProvider({ strict: true })
 		firstProvider.enqueueText({ content: '', toolCalls: [{ id: 'workflow-child-approval-1', name: effect.id, arguments: 'first' }], usage, finishReason: 'tool_calls' })

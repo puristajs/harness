@@ -17,7 +17,7 @@ function copyOwnDescriptors(value: object): object {
 
 describe('integrator target-contract authenticity', () => {
 	it('accepts only the original agent and workflow contracts', () => {
-		const agent = defineAgent('authenticAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('authenticAgent', { model: 'chat', instructions: 'Answer.' })
 		const workflow = defineWorkflow('authenticWorkflow', { async handler({ input }) { return input } })
 
 		for (const contract of [agent.contract, workflow.contract]) {
@@ -26,7 +26,7 @@ describe('integrator target-contract authenticity', () => {
 	})
 
 	it('rejects plain, spread, reflective-descriptor, wrong-kind, and definition-object forgeries', () => {
-		const agent = defineAgent('protectedAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('protectedAgent', { model: 'chat', instructions: 'Answer.' })
 		const tool = defineTool('notATarget', {
 			description: 'Not a target.', input: agent.input, output: agent.output,
 			async handler(_context, input) { return input },
@@ -49,7 +49,7 @@ describe('integrator target-contract authenticity', () => {
 	it('rejects an original contract created by another package instance', async () => {
 		vi.resetModules()
 		const foreignAgentModule = await import('../src/definitions/agent.js?foreign-package-instance')
-		const foreign = foreignAgentModule.defineAgent('foreignAgent', { instructions: 'Answer.' })
+		const foreign = foreignAgentModule.defineAgent('foreignAgent', { model: 'chat', instructions: 'Answer.' })
 
 		expect(isHarnessTargetContract(foreign.contract)).toBe(false)
 	})

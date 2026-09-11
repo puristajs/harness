@@ -25,7 +25,7 @@ describe('composable definition factories', () => {
 			public readonly [agentGuardrailsBinding] = Object.freeze({ id: 'addonGuardrails' })
 		}
 		const rails = new AddonGuardrails()
-		const agent = defineAgent('classBoundAgent', { instructions: 'Answer safely.', guardrails: rails })
+		const agent = defineAgent('classBoundAgent', { model: 'chat', instructions: 'Answer safely.', guardrails: rails })
 
 		expect(agent.guardrails).not.toBe(rails)
 		expect(agent.guardrails?.[agentGuardrailsBinding]).toBe(rails[agentGuardrailsBinding])
@@ -35,7 +35,7 @@ describe('composable definition factories', () => {
 	it.each([
 		['tool', () => defineTool('NotLowerCamel', { description: 'test', input: inputSchema, output: outputSchema, async handler(_context, input) { return { answer: input.message } } })],
 		['MCP server', () => defineMcpServer('with-hyphen', { tools: { lookup: { remoteName: 'lookup', description: 'test', input: inputSchema, output: outputSchema } } })],
-		['agent', () => defineAgent('_agent', { instructions: 'test' })],
+		['agent', () => defineAgent('_agent', { model: 'chat', instructions: 'test' })],
 		['workflow', () => defineWorkflow('workflow.dot', { input: inputSchema, output: outputSchema, async handler({ input }) { return { answer: input.message } } })],
 	])('rejects an invalid %s id synchronously', (_name, create) => {
 		expect(create).toThrow(HarnessConfigError)
@@ -47,8 +47,8 @@ describe('composable definition factories', () => {
 	)
 
 	it('creates frozen values with private, reference-stable identities', () => {
-		const first = defineAgent('assistant', { instructions: 'Help.' })
-		const second = defineAgent('assistant', { instructions: 'Help.' })
+		const first = defineAgent('assistant', { model: 'chat', instructions: 'Help.' })
+		const second = defineAgent('assistant', { model: 'chat', instructions: 'Help.' })
 
 		expect(Object.isFrozen(first)).toBe(true)
 		expect(Object.isFrozen(first.contract)).toBe(true)
@@ -91,7 +91,7 @@ describe('composable definition factories', () => {
 		const mcp = defineMcpServer('inferKnowledge', {
 			tools: { search: { remoteName: 'search', description: 'Search.', input: inputSchema, output: outputSchema } },
 		})
-		const agent = defineAgent('inferAgent', { instructions: 'Answer.' })
+		const agent = defineAgent('inferAgent', { model: 'chat', instructions: 'Answer.' })
 		const workflow = defineWorkflow('inferWorkflow', { async handler({ input }) { return input } })
 		const owner = createHostOwnerToken<Record<never, never>>()
 		const hostTool = defineHostTool(owner, 'inferHost', {
@@ -121,11 +121,11 @@ describe('composable definition factories', () => {
 	})
 
 	it('uses the minimal text-agent contract defaults', async () => {
-		const agent = defineAgent('assistant', { instructions: 'Answer concisely.' })
+		const agent = defineAgent('assistant', { model: 'chat', instructions: 'Answer concisely.' })
 
 		expect(agent.kind).toBe('agent')
 		expect(agent.id).toBe('assistant')
-		expect(agent.model).toBe('primary')
+		expect(agent.model).toBe('chat')
 		expect(await agent.input['~standard'].validate('hello')).toEqual({ value: 'hello' })
 		expect(await agent.output['~standard'].validate('hello')).toEqual({ value: 'hello' })
 		expect(agent.contract).toMatchObject({
@@ -144,9 +144,10 @@ describe('composable definition factories', () => {
 			async handler(_context, input) { return { answer: input.message } },
 		})
 		const approvedChild = defineAgent('approvedChild', {
+			model: 'chat',
 			instructions: 'Ask before calling.', tools: [tool], permissions: { bash: 'require_approval' },
 		})
-		const parent = defineAgent('approvalParent', { instructions: 'Delegate.', subagents: { child: approvedChild } })
+		const parent = defineAgent('approvalParent', { model: 'chat', instructions: 'Delegate.', subagents: { child: approvedChild } })
 		const plainWorkflow = defineWorkflow('plainInterruptWorkflow', {
 			input: inputSchema, output: outputSchema, async handler({ input }) { return { answer: input.message } },
 		})
@@ -166,6 +167,7 @@ describe('composable definition factories', () => {
 	it('derives text mode from an explicit string output schema and retains schema identity', () => {
 		const explicitStringOutput = z.string()
 		const agent = defineAgent('classify', {
+			model: 'chat',
 			input: inputSchema,
 			output: explicitStringOutput,
 			instructions: 'Classify.',
@@ -181,30 +183,41 @@ describe('composable definition factories', () => {
 	it('requires an explicit ambiguous response mode and rejects incompatible modes', () => {
 		const ambiguous = z.union([z.string(), outputSchema])
 		expect(() => defineAgent('ambiguousOutput', {
-			output: ambiguous, instructions: 'Choose a response.', responseMode: undefined,
+			model: 'chat', output: ambiguous, instructions: 'Choose a response.', responseMode: undefined,
 		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_agent_response_mode' }) }))
 		expect(() => defineAgent('wrongStringMode', {
-			output: outputSchema, instructions: 'Respond.', responseMode: 'text',
+			model: 'chat', output: outputSchema, instructions: 'Respond.', responseMode: 'text',
 		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_agent_response_mode' }) }))
 		expect(defineAgent('explicitTextMode', {
+			model: 'chat',
 			output: z.string(), instructions: 'Respond.', responseMode: 'text',
 		}).contract.updates).toBe('text-delta')
 	})
 
 	it('uses a deterministic default prompt for structured JSON input and requires a mapper for media', () => {
 		const structured = defineAgent('defaultStructuredPrompt', {
+			model: 'chat',
 			input: inputSchema,
 			output: outputSchema,
 			instructions: 'Classify.',
 		})
 		expect(structured.prompt?.({ message: 'hello' })).toEqual({ role: 'user', content: '{"message":"hello"}' })
 		expect(() => defineAgent('mediaNeedsPrompt', {
-			instructions: 'Describe.', inputCapabilities: ['vision_input'],
+			model: 'chat', instructions: 'Describe.', inputCapabilities: ['vision_input'],
 		} as never)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'missing_agent_prompt' }) }))
+	})
+
+	it('requires an explicit application-defined model alias', () => {
+		expect(() => defineAgent('missingModel', {
+			instructions: 'Answer.',
+		} as never)).toThrow(expect.objectContaining({
+			meta: expect.objectContaining({ reason: 'invalid_definition_id', path: 'agent.model' }),
+		}))
 	})
 
 	it('validates prompt messages before they can reach a provider', () => {
 		const safe = defineAgent('classify', {
+			model: 'chat',
 			input: inputSchema,
 			instructions: 'Classify.',
 			prompt: input => ({ role: 'user', content: input.message }),
@@ -212,6 +225,7 @@ describe('composable definition factories', () => {
 		expect(() => safe.prompt({ message: 'hello' })).not.toThrow()
 
 		const unsafe = defineAgent('unsafeAtRuntime', {
+			model: 'chat',
 			input: inputSchema,
 			instructions: 'Classify.',
 			prompt: (() => ({ role: 'assistant', content: 'unsafe' })) as never,
@@ -229,6 +243,7 @@ describe('composable definition factories', () => {
 		{ role: 'user', content: 'hello', extra: true },
 	])('rejects an invalid prompt payload before provider use %#', message => {
 		const agent = defineAgent('invalidPromptPayload', {
+			model: 'chat',
 			input: inputSchema,
 			instructions: 'Read the content.',
 			inputCapabilities: ['vision_input', 'audio_input', 'file_input'],
@@ -243,8 +258,9 @@ describe('composable definition factories', () => {
 			async handler(_context, input) { return { answer: input.message } },
 		})
 		const skill = defineSkill('support-policy', { directory: new URL('./support-policy/', import.meta.url) })
-		const helper = defineAgent('helper', { instructions: 'Help.' })
+		const helper = defineAgent('helper', { model: 'chat', instructions: 'Help.' })
 		const agent = defineAgent('assistant', {
+			model: 'chat',
 			instructions: 'Answer.', tools: [tool], skills: [skill], subagents: { helper },
 			loop: { maxSteps: 8, maxToolCalls: 12, maxSubagentCalls: 3, maxParallelSubagents: 1, maxDepth: 1 },
 		})
@@ -259,7 +275,7 @@ describe('composable definition factories', () => {
 		{ maxSteps: 0 }, { maxToolCalls: -1 }, { maxSubagentCalls: 1.5 },
 		{ maxParallelSubagents: Number.NaN }, { maxDepth: 0 },
 	])('rejects invalid loop settings %#', loop => {
-		expect(() => defineAgent('invalidLoop', { instructions: 'test', loop })).toThrow(HarnessConfigError)
+		expect(() => defineAgent('invalidLoop', { model: 'chat', instructions: 'test', loop })).toThrow(HarnessConfigError)
 	})
 
 	it('copies and freezes tool requirements without changing caller-owned schemas', () => {
@@ -359,6 +375,7 @@ describe('composable definition factories', () => {
 		const replacement = { id: 'replacement' }
 		const binding = { [agentGuardrailsBinding]: interceptor }
 		const agent = defineAgent('snapshotAgent', {
+			model: 'chat',
 			instructions: 'Answer.', permissions, sandbox, memory, guardrails: binding,
 		})
 
@@ -388,11 +405,12 @@ describe('composable definition factories', () => {
 		{ capabilities: ['memory.kv'] as const, embedding: { model: 'embeddings', extra: true } as never },
 		{ capabilities: ['memory.kv'] as const, summary: { model: 'summary', unknown: true } as never },
 	])('rejects invalid agent memory configuration %#', memory => {
-		expect(() => defineAgent('invalidMemory', { instructions: 'test', memory })).toThrow(HarnessConfigError)
+		expect(() => defineAgent('invalidMemory', { model: 'chat', instructions: 'test', memory })).toThrow(HarnessConfigError)
 	})
 
 	it('rejects an invalid Guardrail binding', () => {
 		expect(() => defineAgent('invalidGuardrails', {
+			model: 'chat',
 			instructions: 'test', guardrails: { [agentGuardrailsBinding]: { id: '' } },
 		})).toThrow(HarnessConfigError)
 	})
@@ -404,12 +422,13 @@ describe('composable definition factories', () => {
 		{ sandbox: { group: 'analysis', unknown: true } as never },
 	])('rejects invalid agent policy configuration %#', options => {
 		expect(() => defineAgent('invalidAgentPolicy', {
+			model: 'chat',
 			instructions: 'test', ...options,
 		})).toThrow(HarnessConfigError)
 	})
 
 	it('preserves workflow schemas and exact declared allowlists', () => {
-		const agent = defineAgent('assistant', { instructions: 'Help.' })
+		const agent = defineAgent('assistant', { model: 'chat', instructions: 'Help.' })
 		const workflow = defineWorkflow('resolveCase', {
 			input: inputSchema, output: outputSchema, agents: [agent],
 			models: { embeddings: { capabilities: ['embeddings'] } },

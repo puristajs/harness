@@ -417,6 +417,7 @@ describe('opaPolicy', () => {
       async handler() { handlerCalls += 1; return { accepted: true } },
     })
     const agent = defineAgent('governedTransfer', {
+      model: 'chat',
       instructions: 'Call transferFunds once.', tools: [transfer], governance: helpers => ({ policies: [opaPolicy(helpers, {
         id: 'forgedEffectPolicy', effects: ['allow'],
         client: { query: async () => ({ defined: true, result: { effect: 'deny' } }) },
@@ -430,7 +431,7 @@ describe('opaPolicy', () => {
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls',
     })
     const runtime = await defineHarness({ name: 'opaStrictDecision' }).addAgent(agent)
-      .getInstance({ model: { provider, model: 'fake' } })
+      .getInstance({ models: { chat: { provider, model: 'fake' } } })
     const session = await runtime.getSession('strict-decision')
     await expect(session.agents.governedTransfer.run('transfer')).rejects.toMatchObject({
       constructor: DecisionEvaluationError, meta: { failureKind: 'invalid_result' },
@@ -472,6 +473,7 @@ describe('opaPolicy', () => {
       async handler() { handlerCalls += 1; return { found: true } },
     })
     const agent = definePublicAgent('sharedOpaAgent', {
+      model: 'chat',
       instructions: 'Call lookupAccount once.', tools: [lookup], governance: (helpers: Pick<GovernanceDefinitionHelpers<GovernanceToolMap>, 'adapter'>) => ({ policies: [opaPolicy(helpers, {
         id: 'sharedPolicy', effects: ['allow'], client, decisionPath: ['shared'],
         mapInput: context => ({ tool: context.toolId, accountId: (context.input as { accountId: string }).accountId }),
@@ -514,8 +516,8 @@ describe('opaPolicy', () => {
       hostOwner: createHostOwnerToken(), targetDispatcher: dispatcher,
       projectIdentity: () => undefined, projectTraceContext: () => undefined, createHostContext: () => ({}), logger, telemetry,
     })
-    const first = await instantiateHostedHarness(definition, { model: { provider: provider(false), model: 'fake' } }, bindings(firstTelemetry) as never)
-    const second = await instantiateHostedHarness(definition, { model: { provider: provider(true), model: 'fake' } }, bindings(secondTelemetry) as never)
+    const first = await instantiateHostedHarness(definition, { models: { chat: { provider: provider(false), model: 'fake' } } }, bindings(firstTelemetry) as never)
+    const second = await instantiateHostedHarness(definition, { models: { chat: { provider: provider(true), model: 'fake' } } }, bindings(secondTelemetry) as never)
     const outcomes = await Promise.allSettled([
       first.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'first', input: 'first',
         invokeOptions: { sessionId: 'first' }, hostInvocation: {}, authorize: () => undefined }),

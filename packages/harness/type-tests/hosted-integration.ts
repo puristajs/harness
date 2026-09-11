@@ -54,11 +54,11 @@ const lookup = defineHostTool(owner, 'lookupAccount', {
 })
 type _HostToolDefinitionInference = Expect<Equal<typeof lookup.$infer.input, { accountId: string }>>
 type _HostToolDefinitionOutput = Expect<Equal<typeof lookup.$infer.output, { balance: number }>>
-const agent = defineAgent('accountAssistant', { instructions: 'Help.', tools: [lookup] })
+const agent = defineAgent('accountAssistant', { model: 'chat', instructions: 'Help.', tools: [lookup] })
 const workflow = defineWorkflow('hostedWorkflow', { input: z.string(), output: z.number(),
 	async handler({ input }) { return input.length } })
 type _WorkflowDefinitionInference = Expect<Equal<typeof workflow.$infer, typeof workflow.contract.$infer>>
-const dependencyAgent = defineAgent('dependencyAgent', { instructions: 'Dependency only.' })
+const dependencyAgent = defineAgent('dependencyAgent', { model: 'chat', instructions: 'Dependency only.' })
 const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
 	async handler() { return 'done' } })
 const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow).addWorkflow(dependencyWorkflow)
@@ -86,7 +86,7 @@ integratorExports.isHostOwnerToken
 declare const provider: ModelProvider
 declare const storage: HarnessStorage
 const config: HostedHarnessInstanceConfig<typeof harness.requirements> = {
-	model: { provider, model: 'model' },
+	models: { chat: { provider, model: 'model' } },
 	storage,
 }
 void config
@@ -97,20 +97,20 @@ void options
 const callerTrace: HostedInvokeOptions<typeof agent.contract> = { sessionId: 'session', traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' }
 void callerTrace
 const callerLogger: HostedHarnessInstanceConfig<typeof harness.requirements> = {
-	model: { provider, model: 'model' }, storage,
+	models: { chat: { provider, model: 'model' } }, storage,
 	// @ts-expect-error hosted runtime configuration cannot replace the host logger
 	logger: { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return this } },
 }
 void callerLogger
 const callerTelemetry: HostedHarnessInstanceConfig<typeof harness.requirements> = {
-	model: { provider, model: 'model' }, storage,
+	models: { chat: { provider, model: 'model' } }, storage,
 	// @ts-expect-error hosted runtime configuration cannot replace host telemetry
 	telemetry: {} as TelemetryShim,
 }
 void callerTelemetry
 
 // @ts-expect-error host-aware graphs require persistent storage in hosted configuration
-const missingStorage: HostedHarnessInstanceConfig<typeof harness.requirements> = { model: { provider, model: 'model' } }
+const missingStorage: HostedHarnessInstanceConfig<typeof harness.requirements> = { models: { chat: { provider, model: 'model' } } }
 void missingStorage
 
 declare const dispatcher: HarnessTargetDispatcher
@@ -149,7 +149,7 @@ hostedInstance.then(instance => {
 	instance.runHosted({ delivery: 'fresh', target: dependencyAgent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
 		hostInvocation: { authorization: 'token' }, authorize: () => {} })
 	// @ts-expect-error targets outside the retained compiled graph cannot be dispatched
-	instance.streamDispatched({ delivery: 'fresh', target: defineAgent('outsideDependency', { instructions: 'Outside.' }).contract,
+	instance.streamDispatched({ delivery: 'fresh', target: defineAgent('outsideDependency', { model: 'chat', instructions: 'Outside.' }).contract,
 		wireInput: 'hello', input: 'hello', invocation: {
 			sessionId: 'outside-session', invocationId: 'outside-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 			parentWorkflowId: dependencyWorkflow.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
@@ -183,7 +183,7 @@ hostedInstance.then(instance => {
 		identity: { tenantId: 'caller-controlled' },
 	}, hostInvocation: { authorization: 'token' } })
 	// @ts-expect-error hosted targets are exact contracts mounted in this Harness
-	instance.runHosted({ delivery: 'fresh', target: defineAgent('outsideAgent', { instructions: 'Outside.' }).contract, wireInput: 'hello', input: 'hello',
+	instance.runHosted({ delivery: 'fresh', target: defineAgent('outsideAgent', { model: 'chat', instructions: 'Outside.' }).contract, wireInput: 'hello', input: 'hello',
 		invokeOptions: { sessionId: 'session' }, hostInvocation: { authorization: 'token' }, authorize: () => {} })
 	// @ts-expect-error agent input is the exact validated logical input
 	instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 1, invokeOptions: { sessionId: 'session' },
@@ -199,7 +199,7 @@ hostedInstance.then(instance => {
 })
 
 // @ts-expect-error ordinary getInstance never accepts host-owned binding maps
-harness.getInstance({ model: { provider, model: 'model' }, storage, hostTools: { lookupAccount: lookup.handler } })
+harness.getInstance({ models: { chat: { provider, model: 'model' } }, storage, hostTools: { lookupAccount: lookup.handler } })
 defineHostTool(createHostOwnerToken<{ wrong: true }>(), 'badContext', {
 	description: 'Bad.', input: z.string(), output: z.string(),
 	// @ts-expect-error owner context determines the host tool handler context

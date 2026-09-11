@@ -175,6 +175,7 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
         },
       })
   const support = defineAgent('support', {
+      model: 'chat',
       input: z.string(),
       output: z.string(),
       instructions: 'Answer safely and use the available tools when needed.',
@@ -213,7 +214,7 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
     revision: 'v1',
     defaults: { decisionTimeoutMs: options.decisionTimeoutMs ?? 1_000, toolTimeoutMs: 5_000 },
   }).addAgent(support).getInstance({
-    model: { provider, model: 'fake' },
+    models: { chat: { provider, model: 'fake' } },
     sandbox: inMemorySandbox(),
     storage,
     logger: new JsonLogger({ level: 'error' }),

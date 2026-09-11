@@ -188,6 +188,7 @@ describe('kubernetesSandboxRuntime', () => {
 
   it('uses explicit runtimes during Core instance preflight without opening a sandbox', async () => {
     const agent = defineAgent('runtimeGuardAgent', {
+      model: 'chat',
       instructions: 'Return a short answer.', guardrails: runtimeGuardrails(['python']),
     })
     const definition = defineHarness({ name: 'kubernetesRuntimeGuard' }).addAgent(agent)
@@ -196,7 +197,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const matchingOpen = vi.spyOn(matching.sandbox, 'open')
     const instance = await definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: matching.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: matching.sandbox,
     })
     expect(matchingOpen).not.toHaveBeenCalled()
     await instance.close()
@@ -206,7 +207,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const missingOpen = vi.spyOn(missing.sandbox, 'open')
     expect(() => definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: missing.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: missing.sandbox,
     })).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
     }))
@@ -218,6 +219,7 @@ describe('kubernetesSandboxRuntime', () => {
       directory: new URL('./fixtures/runtime-skill/', import.meta.url), runtimes: ['python'],
     })
     const agent = defineAgent('runtimeSkillAgent', {
+      model: 'chat',
       instructions: 'Use the supplied Skill.', skills: [skill],
     })
     const definition = defineHarness({ name: 'kubernetesRuntimeSkill' }).addAgent(agent)
@@ -226,7 +228,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const open = vi.spyOn(execution.sandbox, 'open')
     expect(() => definition.getInstance({
-      model: { provider: new FakeModelProvider(), model: 'fake' }, sandbox: execution.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: execution.sandbox,
     } as never)).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
     }))

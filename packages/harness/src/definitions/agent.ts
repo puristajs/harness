@@ -61,13 +61,14 @@ type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args:
 /**
  * Defines one standard bounded model-loop agent.
  *
- * Omit schemas for a string-to-string agent using the `primary` model alias.
- * Supplying an input schema requires a pure prompt mapper, and supplying any
+ * Every agent selects an application-defined model alias explicitly. Omit
+ * schemas for a string-to-string agent. Supplying an input schema requires a pure prompt mapper, and supplying any
  * output schema selects structured generation and object-snapshot updates.
  *
  * @example
  * ```ts
  * const assistant = defineAgent('assistant', {
+ *   model: 'chat',
  *   instructions: 'Answer clearly and concisely.',
  * })
  * ```
@@ -75,6 +76,7 @@ type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args:
  * @example
  * ```ts
  * const classify = defineAgent('classify', {
+ *   model: 'classification',
  *   input: z.object({ message: z.string() }),
  *   output: z.object({ category: z.string() }),
  *   instructions: 'Classify the message.',
@@ -87,7 +89,7 @@ export function defineAgent<
 	const Input extends ModelSchema | undefined = undefined,
 	const Output extends ModelSchema | undefined = undefined,
 	const ResponseMode extends AgentResponseMode | undefined = undefined,
-	const Model extends string = 'primary',
+	const Model extends string = string,
 	const Tools extends readonly AnyToolDefinition[] | undefined = undefined,
 	const Skills extends readonly SkillDefinition[] | undefined = undefined,
 	const Subagents extends AgentSubagentMap | undefined = undefined,
@@ -122,7 +124,7 @@ export function defineAgent<
 	assertKnownFields(options, agentFields, 'agent', id)
 	assertNonemptyText(options.instructions, 'agent.instructions', id)
 	if (options.description !== undefined) assertNonemptyText(options.description, 'agent.description', id)
-	const model = options.model ?? 'primary'
+	const model = options.model
 	assertDefinitionId(model, 'agent.model')
 	if (options.workspace !== undefined && options.workspace !== true) throw invalidPresenceFlag(id, 'agent.workspace')
 	if (options.durable !== undefined && options.durable !== true) throw invalidPresenceFlag(id, 'agent.durable')

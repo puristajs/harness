@@ -17,7 +17,7 @@ export type { DockerSandboxOptions, DockerSandboxResources } from './options.js'
  * const sandbox = dockerSandbox({
  *   root: '/var/lib/app/sandboxes', image: pinnedImage, runtimes: ['python'],
  * })
- * const instance = await definition.getInstance({ model, sandbox })
+ * const instance = await definition.getInstance({ models: { chat: model }, sandbox })
  * ```
  */
 export function dockerSandbox(options: DockerSandboxOptions): Sandbox<typeof CAPABILITIES> & Readonly<{

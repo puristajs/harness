@@ -33,7 +33,7 @@ type _skillMountCapabilities = Expect<Equal<SkillRequirements['sandbox']['capabi
 type GuidanceRequirements = RuntimeRequirementsFor<{}, { guide: SkillDefinition<'guide', never> }, {}, {}, {}>
 type _guidanceNoRuntime = Expect<Equal<GuidanceRequirements['skillRuntimes'][number], never>>
 type _guidanceNoSandbox = Expect<Equal<GuidanceRequirements['sandbox']['capabilities'][number], never>>
-const guardrailRuntimeAgent = defineAgent('guardrailRuntimeAgent', { instructions: 'Use the guardrail.', guardrails: {
+const guardrailRuntimeAgent = defineAgent('guardrailRuntimeAgent', { model: 'chat', instructions: 'Use the guardrail.', guardrails: {
 	[agentGuardrailsBinding]: { id: 'runtime-guardrail', requirements: { skillRuntimes: ['python'] as const } },
 } })
 type GuardrailRuntimeRequirements = RuntimeRequirementsFor<{}, {}, {}, { guardrailRuntimeAgent: typeof guardrailRuntimeAgent }, {}>
@@ -89,39 +89,39 @@ void emptyConfig
 // @ts-expect-error an empty graph forbids model selectors
 const emptyWithModel: HarnessInstanceConfig<Requirements> = { model: modelBinding }
 void emptyWithModel
+// @ts-expect-error an empty graph forbids the models map
+const emptyWithModels: HarnessInstanceConfig<Requirements> = { models: {} }
+void emptyWithModels
 
-type PrimaryRequirements = Requirements<Readonly<{ primary: Readonly<{ capabilities: readonly ['text', 'text_stream'] }> }>>
-const primaryConfig: HarnessInstanceConfig<PrimaryRequirements> = { model: modelBinding }
-void primaryConfig
-// @ts-expect-error the exact primary-only case requires the concise model field
-const primaryMissing: HarnessInstanceConfig<PrimaryRequirements> = {}
-void primaryMissing
-// @ts-expect-error the exact primary-only case forbids models
-const primaryModels: HarnessInstanceConfig<PrimaryRequirements> = { models: { primary: modelBinding } }
-void primaryModels
+type ChatRequirements = Requirements<Readonly<{ chat: Readonly<{ capabilities: readonly ['text', 'text_stream'] }> }>>
+const chatConfig: HarnessInstanceConfig<ChatRequirements> = { models: { chat: modelBinding } }
+void chatConfig
+// @ts-expect-error every inferred model alias requires an exact models binding
+const chatMissing: HarnessInstanceConfig<ChatRequirements> = {}
+void chatMissing
 
 type MultiRequirements = Requirements<Readonly<{
-	primary: Readonly<{ capabilities: readonly ['text'] }>
+	chat: Readonly<{ capabilities: readonly ['text'] }>
 	fast: Readonly<{ capabilities: readonly ['text_stream'] }>
 }>>
 const multiConfig: HarnessInstanceConfig<MultiRequirements> = {
-	model: modelBinding, models: { fast: modelBinding },
+	models: { chat: modelBinding, fast: modelBinding },
 }
 void multiConfig
 // @ts-expect-error every inferred model alias is required
-const multiMissingAlias: HarnessInstanceConfig<MultiRequirements> = { model: modelBinding, models: {} }
+const multiMissingAlias: HarnessInstanceConfig<MultiRequirements> = { models: { chat: modelBinding } }
 void multiMissingAlias
 const multiExtraAlias: HarnessInstanceConfig<MultiRequirements> = {
 	// @ts-expect-error undeclared model aliases are rejected
-	model: modelBinding, models: { fast: modelBinding, other: modelBinding },
+	models: { chat: modelBinding, fast: modelBinding, other: modelBinding },
 }
 void multiExtraAlias
-// @ts-expect-error multi-model graphs still require the non-primary aliases
-const multiConcise: HarnessInstanceConfig<MultiRequirements> = { model: modelBinding }
+// @ts-expect-error multi-model graphs require the full exact models map
+const multiConcise: HarnessInstanceConfig<MultiRequirements> = { models: { chat: modelBinding } }
 void multiConcise
 
 type AdvancedRequirements = Requirements<
-	Readonly<{ primary: Readonly<{ capabilities: readonly ['text'] }> }>,
+	Readonly<{ chat: Readonly<{ capabilities: readonly ['text'] }> }>,
 	'knowledge',
 	'python',
 	'memory.kv',
@@ -136,7 +136,7 @@ const stdio: McpBinding = { transport: 'stdio', command: 'node', args: ['server.
 void http
 void stdio
 const advancedConfig: HarnessInstanceConfig<AdvancedRequirements> = {
-	model: modelBinding,
+	models: { chat: modelBinding },
 	mcp: { knowledge: http },
 	storage,
 	memory,
@@ -152,10 +152,10 @@ const advancedConfig: HarnessInstanceConfig<AdvancedRequirements> = {
 }
 void advancedConfig
 // @ts-expect-error required infrastructure groups cannot be omitted
-const missingAdvanced: HarnessInstanceConfig<AdvancedRequirements> = { model: modelBinding }
+const missingAdvanced: HarnessInstanceConfig<AdvancedRequirements> = { models: { chat: modelBinding } }
 void missingAdvanced
-const primaryWithMemory: HarnessInstanceConfig<PrimaryRequirements> = { model: modelBinding, memory, storage }
-void primaryWithMemory
+const chatWithMemory: HarnessInstanceConfig<ChatRequirements> = { models: { chat: modelBinding }, memory, storage }
+void chatWithMemory
 
 type HostRequirements = Requirements<EmptyModels, never, never, never, never, 'invokeCommand'>
 // @ts-expect-error host-aware graphs cannot be configured through the standalone entry point
@@ -182,10 +182,10 @@ void runtimeOnlyConfig
 const missingRuntimeMetadata: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: noSpawnSandbox }
 void missingRuntimeMetadata
 
-const guardrailRuntimeConfig: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { model: modelBinding, sandbox: runtimeOnlySandbox }
+const guardrailRuntimeConfig: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { models: { chat: modelBinding }, sandbox: runtimeOnlySandbox }
 void guardrailRuntimeConfig
 // @ts-expect-error a guardrail-only Skill runtime still requires a matching sandbox
-const missingGuardrailRuntimeSandbox: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { model: modelBinding }
+const missingGuardrailRuntimeSandbox: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { models: { chat: modelBinding } }
 void missingGuardrailRuntimeSandbox
 
 type SandboxOnlyRequirements = Requirements<EmptyModels, never, never, never, 'sandbox.fs'>

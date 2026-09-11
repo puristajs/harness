@@ -26,7 +26,7 @@ and return output accepted by the declared schema.
 
 ```ts
 const answerQuestion = defineAgent('answerQuestion', {
-  model: 'primary',
+  model: 'support-chat',
   input: z.object({ question: z.string() }),
   output: z.object({ answer: z.string() }),
   tools: [findAccount],

@@ -58,6 +58,7 @@ still contains no EventBridge or service instance.
 
 ```ts
 const support = defineAgent('support', {
+  model: 'chat',
   instructions: 'Help the customer using verified order data.',
   tools: [findOrder, searchNotes],
 })
@@ -93,6 +94,7 @@ authority; the agent still needs a selected tool to execute anything.
 
 ```ts
 const support = defineAgent('support', {
+  model: 'chat',
   instructions: 'Follow the support method.',
   tools: [findOrder],
   skills: [supportMethod],

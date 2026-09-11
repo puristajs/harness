@@ -167,11 +167,12 @@ describe('postgresHarnessStorage', () => {
     const storage = postgresHarnessStorage({ pool: pglitePool() as never })
     const provider = new FakeModelProvider()
     const agent = defineAgent('historyAgent', {
+      model: 'chat',
       input: z.object({ question: z.string() }), output: z.object({ answer: z.string() }), instructions: 'Answer every question.',
     })
     const harness = await defineHarness({ name: 'postgresHistory', defaults: { historyRetention: { maxTurns: 8 } } })
       .addAgent(agent)
-      .getInstance({ storage, model: { provider, model: 'fake' } })
+      .getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
     try {
       const session = await harness.getSession('history')
       for (let index = 0; index < 9; index += 1) {

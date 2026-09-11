@@ -74,6 +74,7 @@ type AddonRequirements = AgentExecutionRequirements<
 >
 declare const addonGuardrails: AgentGuardrailsBinding<AddonRequirements>
 const guardedAgent = defineAgent('guardedAgent', {
+	model: 'chat',
 	instructions: 'Answer safely.',
 	tools: [lookup],
 	guardrails: addonGuardrails,
@@ -109,6 +110,7 @@ declare function externalPolicy<
 ): GovernancePolicyEvaluator<Tools>
 
 defineAgent('externalPolicyAgent', {
+	model: 'chat',
 	instructions: 'Use an external policy.',
 	tools: [lookup, transfer],
 	governance: helpers => ({ policies: [externalPolicy(helpers, {

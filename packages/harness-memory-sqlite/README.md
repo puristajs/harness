@@ -12,7 +12,7 @@ import { sqliteMemoryEngine } from '@purista/harness-memory-sqlite'
 
 const memory = sqliteMemoryEngine({ file: '.purista/memory.sqlite' })
 const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
-const harness = await definition.getInstance({ model, memory })
+const harness = await definition.getInstance({ models: { chat: model }, memory })
 ```
 
 For exact local vector search, install the optional peer and opt in explicitly:

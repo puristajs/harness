@@ -88,6 +88,7 @@ the capabilities it needs:
 
 ```ts
 const workspaceAgent = defineAgent('workspaceAgent', {
+  model: 'chat',
   instructions: 'Inspect and update the isolated workspace.',
   tools: [builtInTools.read, builtInTools.write],
   sandbox: { group: 'workspace' },
@@ -96,7 +97,7 @@ const workspaceAgent = defineAgent('workspaceAgent', {
 
 const definition = defineHarness({ name: 'workspaceApp' }).addAgent(workspaceAgent)
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
   sandbox: customSandbox,
   workspace: customDurableWorkspace,
   storage,
@@ -123,7 +124,7 @@ cancellation-aware controls and release leases in every terminal path.
 
 ```ts
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini', admission: modelAdmission },
+  models: { chat: { provider, model: 'gpt-5-mini', admission: modelAdmission } },
   agentAdmission,
 })
 ```

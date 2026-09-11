@@ -39,7 +39,7 @@ const definition = defineHarness({ name: 'workspaceApp', revision: 'v1' })
   .addAgent(workspaceAgent)
 
 const instance = await definition.getInstance({
-  model: { provider, model: 'gpt-5-mini' },
+  models: { chat: { provider, model: 'gpt-5-mini' } },
   storage,
   sandbox: execution.sandbox,
   workspace: execution.workspace,

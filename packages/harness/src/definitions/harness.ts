@@ -209,7 +209,7 @@ export function getHarnessRuntimeBlueprint(value: unknown): HarnessRuntimeBluepr
  * @example
  * ```ts
  * const definition = defineHarness({ name: 'support' }).addAgent(supportAgent)
- * const instance = await definition.getInstance({ model: { provider, model: 'gpt-5' } })
+ * const instance = await definition.getInstance({ models: { chat: { provider, model: 'gpt-5' } } })
  * ```
  */
 export function defineHarness<const Name extends string>(options: HarnessOptions<Name>): HarnessDefinition<EmptyCatalogView, Name> {

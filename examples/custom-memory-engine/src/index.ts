@@ -8,6 +8,7 @@ import {
 
 export function createTicketMemoryHarness(client: TicketMemoryClient) {
   const memoryUser = defineAgent('memoryUser', {
+    model: 'chat',
     instructions: 'Use the session memory configured by the application.',
     memory: { capabilities: ['memory.kv', 'memory.list', 'memory.delete', 'memory.ttl'] },
   })
@@ -17,7 +18,7 @@ export function createTicketMemoryHarness(client: TicketMemoryClient) {
     async *textStream() { yield { kind: 'finish', content: '', finishReason: 'stop', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
   }
   return defineHarness({ name: 'customMemoryExample' }).addAgent(memoryUser)
-    .getInstance({ model: { provider, model: 'not-called' }, memory: new TicketMemoryEngine(client) })
+    .getInstance({ models: { chat: { provider, model: 'not-called' } }, memory: new TicketMemoryEngine(client) })
 }
 
 export async function runCustomMemoryExample(): Promise<string | undefined> {

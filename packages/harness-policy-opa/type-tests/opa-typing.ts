@@ -16,6 +16,7 @@ const readBalance = defineTool('readBalance', {
 const client = createOpaClient({ baseUrl: 'https://opa.example.test/' })
 
 const approvalAgent = defineAgent('approvalAgent', {
+	model: 'chat',
 	instructions: 'Use the selected tool.', tools: [transferFunds, readBalance],
 	governance: helpers => ({ policies: [opaPolicy(helpers, {
 		id: 'typedOpaPolicy', effects: ['allow', 'deny', 'require_approval'], client, decisionPath: ['bank', 'tool'],
@@ -51,6 +52,7 @@ const approvalHarness = defineHarness({ name: 'approvalHarness' }).addAgent(appr
 type _ApprovalRequiresDurable = Expect<Equal<typeof approvalHarness.$infer.requirements.storage.durable, true>>
 
 const allowAgent = defineAgent('allowAgent', {
+	model: 'chat',
 	instructions: 'Read safely.', tools: [readBalance], governance: helpers => ({ policies: [opaPolicy(helpers, {
 		id: 'allowPolicy', effects: ['allow'], client, decisionPath: ['allow'], mapInput: () => ({}),
 		resultSchema: z.object({ effect: z.literal('allow') }), mapDecision: result => ({ effect: result.effect }),
@@ -59,12 +61,12 @@ const allowAgent = defineAgent('allowAgent', {
 const allowHarness = defineHarness({ name: 'allowHarness' }).addAgent(allowAgent)
 type _AllowDoesNotRequireDurable = Expect<Equal<typeof allowHarness.$infer.requirements.storage.durable, false>>
 
-defineAgent('emptyEffects', { instructions: 'Invalid.', governance: helpers => ({ policies: [
+defineAgent('emptyEffects', { model: 'chat', instructions: 'Invalid.', governance: helpers => ({ policies: [
 	// @ts-expect-error effects must be a nonempty tuple
 	opaPolicy(helpers, { id: 'empty', effects: [], client, decisionPath: ['x'], mapInput: () => ({}), resultSchema: z.object({}), mapDecision: () => undefined }),
 ] }) })
 
-defineAgent('undeclaredEffect', { instructions: 'Invalid.', governance: helpers => ({ policies: [
+defineAgent('undeclaredEffect', { model: 'chat', instructions: 'Invalid.', governance: helpers => ({ policies: [
 	opaPolicy(helpers, {
 		id: 'badEffect', effects: ['allow'], client, decisionPath: ['x'], mapInput: () => ({}), resultSchema: z.object({}),
 		// @ts-expect-error decision effects are restricted to the declared tuple
@@ -73,7 +75,7 @@ defineAgent('undeclaredEffect', { instructions: 'Invalid.', governance: helpers 
 ] }) })
 
 const nonJsonSchema = z.custom<Date>()
-defineAgent('nonJsonResult', { instructions: 'Invalid.', governance: helpers => ({ policies: [
+defineAgent('nonJsonResult', { model: 'chat', instructions: 'Invalid.', governance: helpers => ({ policies: [
 	opaPolicy(helpers, {
 		id: 'nonJson', effects: ['allow'], client, decisionPath: ['x'], mapInput: () => ({}),
 		// @ts-expect-error OPA result schemas cannot produce undefined or non-JSON output

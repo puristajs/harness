@@ -33,6 +33,7 @@ const transferFunds = defineTool('transferFunds', {
 })
 
 const transferAgent = defineAgent('transferAgent', {
+  model: 'chat',
   instructions: 'Help the customer make an allowed transfer.',
   tools: [transferFunds],
   governance: ({ native, rule, exposureRule, adapter }) => ({

@@ -7,6 +7,7 @@ const reviewInput = z.object({ documentId: z.string() })
 const reviewOutput = z.object({ documentId: z.string(), verdict: z.string() })
 
 const reviewer = defineAgent('reviewer', {
+  model: 'chat',
   input: reviewInput,
   output: reviewOutput,
   instructions: 'Review the document and return its id and verdict.',
@@ -14,6 +15,7 @@ const reviewer = defineAgent('reviewer', {
 })
 
 const clarifier = defineAgent('clarifier', {
+  model: 'chat',
   input: z.string(),
   output: z.string(),
   instructions: 'Answer each private follow-up concisely.',
@@ -57,7 +59,7 @@ export function createReviewHarness() {
   provider.enqueueObject({ object: { documentId: 'DOC-42', verdict: 'approved' }, usage, finishReason: 'stop' })
   provider.enqueueText({ content: 'first response', usage, finishReason: 'stop' })
   provider.enqueueText({ content: 'follow-up response', usage, finishReason: 'stop' })
-  return reviewHarness.getInstance({ model: { provider, model: 'example' } })
+  return reviewHarness.getInstance({ models: { chat: { provider, model: 'example' } } })
 }
 
 export async function runExample(): Promise<void> {

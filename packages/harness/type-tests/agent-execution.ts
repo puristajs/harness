@@ -31,7 +31,7 @@ type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B 
 type Expect<T extends true> = T
 
 const lookup = defineTool('lookup', { description: 'Lookup.', input: z.object({ id: z.string() }), output: z.object({ value: z.string() }), async handler(_context, input) { return { value: input.id } } })
-const agent = defineAgent('typed', { instructions: 'Lookup.', tools: [lookup], output: z.string(), governance: ({ native, rule }) => ({
+const agent = defineAgent('typed', { model: 'chat', instructions: 'Lookup.', tools: [lookup], output: z.string(), governance: ({ native, rule }) => ({
 	policies: [native({ id: 'policy', rules: [rule({ id: 'allow', tools: ['lookup'], effect: 'allow' })] })],
 }) })
 const update: 'text-delta' = agent.contract.updates
@@ -46,7 +46,7 @@ const mixedCaller: HarnessExecutionCaller = { kind: 'workflow', workflowId: 'orc
 const absentCaller: HarnessExecutionCaller = { kind: 'agent' }
 void agentCaller; void workflowCaller; void mixedCaller; void absentCaller
 
-const noInterruptAgent = defineAgent('noInterrupt', { instructions: 'Answer.' })
+const noInterruptAgent = defineAgent('noInterrupt', { model: 'chat', instructions: 'Answer.' })
 const inferenceMcp = defineMcpServer('inferenceMcp', {
 	tools: { search: { remoteName: 'search', description: 'Search.', input: z.string(), output: z.number() } },
 })
@@ -59,7 +59,7 @@ type _TargetDefinitionInferenceAlias = Expect<Equal<
 >>
 type _McpServerInferenceAlias = Expect<Equal<McpServerInference<typeof inferenceMcp.tools>, typeof inferenceMcp.$infer>>
 type _SkillInferenceAlias = Expect<Equal<SkillInference<readonly ['node', 'python']>, typeof inferenceSkill.$infer>>
-const approvalAgent = defineAgent('approvalAgent', { instructions: 'Review.', tools: [lookup], governance: ({ native, rule }) => ({
+const approvalAgent = defineAgent('approvalAgent', { model: 'chat', instructions: 'Review.', tools: [lookup], governance: ({ native, rule }) => ({
 	policies: [native({ id: 'approval', rules: [rule({ id: 'review', tools: ['lookup'], effect: 'require_approval' })] })],
 }) })
 const externalWaitWorkflow = defineWorkflow('externalWaitWorkflow', { durable: true, async handler({ input }) { return input } })
@@ -106,7 +106,7 @@ const invalidRootParent: PlainEvent = { ...plainTerminal, parentRunId: 'parent' 
 void plainRun; void plainStream; void approvalStream; void externalWaitStream; void plainTerminal; void nestedStarted
 void correlatedRoot; void incompleteNested; void plainObjectUpdate; void invalidRootParent
 
-defineAgent('badTool', { instructions: 'Bad.', tools: [lookup], governance: ({ native, rule }) => ({ policies: [native({ id: 'p', rules: [rule({
+defineAgent('badTool', { model: 'chat', instructions: 'Bad.', tools: [lookup], governance: ({ native, rule }) => ({ policies: [native({ id: 'p', rules: [rule({
 	id: 'r',
 	// @ts-expect-error governance selectors use only the complete agent binding map
 	tools: ['missing'],
@@ -114,14 +114,14 @@ defineAgent('badTool', { instructions: 'Bad.', tools: [lookup], governance: ({ n
 })] })] }) })
 
 // @ts-expect-error external policy evaluators must declare possible effects
-defineAgent('badExternal', { instructions: 'Bad.', governance: { policies: [{ id: 'external', evaluate: () => ({ effect: 'allow' }) }] } })
+defineAgent('badExternal', { model: 'chat', instructions: 'Bad.', governance: { policies: [{ id: 'external', evaluate: () => ({ effect: 'allow' }) }] } })
 
-const directNativeEffectsFromRules = defineAgent('directNativeEffectsFromRules', { instructions: 'Typed.', governance: { policies: [{
+const directNativeEffectsFromRules = defineAgent('directNativeEffectsFromRules', { model: 'chat', instructions: 'Typed.', governance: { policies: [{
 	kind: 'native', id: 'native', rules: [{ id: 'review', effect: 'require_approval' }],
 }] } })
 const directNativeDurable: true = defineHarness({ name: 'directNativeHarness', revision: 'v1' }).addAgent(directNativeEffectsFromRules).requirements.storage.durable
 void directNativeDurable
-defineAgent('badNativeEffectsDeclaration', { instructions: 'Bad.', governance: { policies: [{
+defineAgent('badNativeEffectsDeclaration', { model: 'chat', instructions: 'Bad.', governance: { policies: [{
 	// @ts-expect-error native effects are derived from rules and cannot be authored separately
 	kind: 'native', id: 'native', rules: [{ id: 'allow', effect: 'allow' }],
 	effects: ['require_approval'],
@@ -129,7 +129,7 @@ defineAgent('badNativeEffectsDeclaration', { instructions: 'Bad.', governance: {
 
 const jsonTransform = z.string().transform(value => ({ value }))
 defineTool('jsonTransform', { description: 'JSON transform.', input: jsonTransform, output: jsonTransform, async handler() { return 'output' } })
-defineAgent('jsonTransformAgent', { instructions: 'JSON.', input: jsonTransform, output: jsonTransform, prompt: input => ({ role: 'user', content: input.value }) })
+defineAgent('jsonTransformAgent', { model: 'chat', instructions: 'JSON.', input: jsonTransform, output: jsonTransform, prompt: input => ({ role: 'user', content: input.value }) })
 defineWorkflow('jsonTransformWorkflow', { input: jsonTransform, output: jsonTransform, async handler() { return 'output' } })
 
 // @ts-expect-error schema transforms may not produce Date instances at a Tool factory
@@ -137,7 +137,7 @@ defineTool('dateTool', { description: 'Invalid.', input: z.string().transform(va
 // @ts-expect-error top-level undefined is not a JSON transport value
 defineTool('undefinedTool', { description: 'Invalid.', input: z.string(), output: z.undefined(), async handler() { return undefined } })
 // @ts-expect-error schema transforms may not produce functions at an Agent factory
-defineAgent('functionAgent', { instructions: 'Invalid.', input: z.string().transform(() => () => undefined), prompt: () => ({ role: 'user', content: '' }) })
+defineAgent('functionAgent', { model: 'chat', instructions: 'Invalid.', input: z.string().transform(() => () => undefined), prompt: () => ({ role: 'user', content: '' }) })
 class NonJsonValue { value = 'x'; method() { return this.value } }
 // @ts-expect-error class instances are not valid Workflow transport values
 defineWorkflow('classWorkflow', { input: z.string(), output: z.instanceof(NonJsonValue), async handler() { return new NonJsonValue() } })

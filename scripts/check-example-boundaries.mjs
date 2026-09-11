@@ -127,7 +127,10 @@ function structuralDefinitionViolations(source, fileName) {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && (node.expression.text === 'defineAgent' || node.expression.text === 'defineWorkflow')) {
       const options = node.arguments[1] && unwrapExpression(node.arguments[1])
       if (options && ts.isObjectLiteralExpression(options)) {
-        if (node.expression.text === 'defineAgent' && directProperty(options, 'handler')) labels.push('custom agent handler')
+        if (node.expression.text === 'defineAgent') {
+          if (directProperty(options, 'handler')) labels.push('custom agent handler')
+          if (!directProperty(options, 'model')) labels.push('agent missing explicit model alias')
+        }
         if (node.expression.text === 'defineWorkflow') {
           const agents = propertyValue(directProperty(options, 'agents'))
           if (agents && ts.isObjectLiteralExpression(agents)) labels.push('workflow agents object map')
@@ -136,6 +139,12 @@ function structuralDefinitionViolations(source, fileName) {
             labels.push('workflow raw model binding')
           }
         }
+      }
+    }
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'getInstance') {
+      const config = node.arguments[0] && unwrapExpression(node.arguments[0])
+      if (config && ts.isObjectLiteralExpression(config) && directProperty(config, 'model')) {
+        labels.push('singular runtime model binding')
       }
     }
     ts.forEachChild(node, visit)
@@ -170,12 +179,20 @@ for (const fixture of [
     label: 'workflow raw model binding',
     source: "defineWorkflow('bad', { options: { nested: { enabled: true } }, models: { writer: { retry: { attempts: 2 }, provider, model: 'x' } } })",
   },
+  {
+    label: 'agent missing explicit model alias',
+    source: "defineAgent('bad', { instructions: 'Missing alias.' })",
+  },
+  {
+    label: 'singular runtime model binding',
+    source: "definition.getInstance({ model: { provider, model: 'x' } })",
+  },
 ]) {
   assert.ok(structuralDefinitionViolations(fixture.source, 'adversarial.ts').includes(fixture.label), `AST scanner missed ${fixture.label}`)
   assert.ok(structuralViolationsForFile(`Documentation\n\n\`\`\`ts\n${fixture.source}\n\`\`\`\n`, 'adversarial.md').includes(fixture.label), `fenced AST scanner missed ${fixture.label}`)
 }
 assert.deepEqual(structuralDefinitionViolations(
-  "defineAgent('ok', { input: z.object({ handler: z.string() }) }); defineWorkflow('ok', { agents: [reviewer], models: [writer] })",
+  "defineAgent('ok', { model: 'chat', input: z.object({ handler: z.string() }) }); defineWorkflow('ok', { agents: [reviewer], models: [writer] })",
   'allowed.ts',
 ), [])
 
@@ -250,8 +267,8 @@ for (const [label, pattern, expected] of [
 if (/\bdefine(?:Workflow|Tool|Catalog|Skill|McpServer)\s*\(/.test(quickstart)) {
   failures.push('examples/quickstart/src/index.ts: quickstart must contain only one agent definition')
 }
-if (!/\.getInstance\s*\(\s*\{\s*model\s*:/.test(quickstart)) {
-  failures.push('examples/quickstart/src/index.ts: quickstart needs one direct model runtime binding')
+if (!/\.getInstance\s*\(\s*\{\s*models\s*:\s*\{\s*chat\s*:/.test(quickstart)) {
+  failures.push('examples/quickstart/src/index.ts: quickstart needs one exact application-defined model map')
 }
 
 const markdownFiles = [...new Set([
